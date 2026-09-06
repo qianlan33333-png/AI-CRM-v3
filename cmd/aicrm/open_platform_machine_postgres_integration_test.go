@@ -105,8 +105,13 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	assertMachineCapabilities(t, clients, mcp.Client.ClientID, []string{"mcp_execute", "mcp_read"})
 
 	machineExecutor := &openPlatformMachineExecutor{}
+	rateLimiter, err := accessapp.NewMachineRequestRateLimiter(repository, unit, accessapp.MachineRequestRateLimitConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
-		MachineAuthentication: service, AdminAuthentication: openPlatformMachineAdmin{}, Management: service,
+		MachineAuthentication: service,
+		RateLimiter:           rateLimiter, AdminAuthentication: openPlatformMachineAdmin{}, Management: service,
 		Operations: machineExecutor, Executor: machineExecutor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test",
 	})
 	if err != nil {
@@ -194,6 +199,95 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Rate decisions use the existing Access locked row store. Eight concurrent
+	// requests with the same authenticated caller and source must consume one
+	// durable slot, and a fresh limiter instance must observe the blocked row.
+	ratePrincipal, err := service.AuthenticateBearer(ctx, issued.AccessToken, "external_integration", mustOpenPlatformAddr(t, "203.0.113.77"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	strictRateLimiter, err := accessapp.NewMachineRequestRateLimiter(repository, unit, accessapp.MachineRequestRateLimitConfig{Window: time.Minute, MaxClientCredentialChecks: 1, MaxMachineRequests: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rateStart := make(chan struct{})
+	rateResults := make(chan error, 8)
+	var rateWorkers sync.WaitGroup
+	rateWorkers.Add(8)
+	for worker := 0; worker < 8; worker++ {
+		go func() {
+			defer rateWorkers.Done()
+			<-rateStart
+			rateResults <- strictRateLimiter.AllowMachineRequest(ctx, ratePrincipal, mustOpenPlatformAddr(t, "203.0.113.77"))
+		}()
+	}
+	close(rateStart)
+	rateWorkers.Wait()
+	close(rateResults)
+	successes, limited := 0, 0
+	for rateErr := range rateResults {
+		switch {
+		case rateErr == nil:
+			successes++
+		case errors.Is(rateErr, accessdomain.ErrRateLimited):
+			limited++
+		default:
+			t.Fatalf("concurrent machine rate decision=%v", rateErr)
+		}
+	}
+	if successes != 1 || limited != 7 {
+		t.Fatalf("machine rate successes=%d limited=%d", successes, limited)
+	}
+	restartedRateLimiter, err := accessapp.NewMachineRequestRateLimiter(accessstore.NewPostgreSQL(), unit, accessapp.MachineRequestRateLimitConfig{Window: time.Minute, MaxClientCredentialChecks: 1, MaxMachineRequests: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = restartedRateLimiter.AllowMachineRequest(ctx, ratePrincipal, mustOpenPlatformAddr(t, "203.0.113.77")); !errors.Is(err, accessdomain.ErrRateLimited) {
+		t.Fatalf("restarted limiter bypassed persisted machine limit: %v", err)
+	}
+
+	// Token credential checks and authenticated protocol calls have independent
+	// persistent buckets. The latter is intentionally reached only after Access
+	// verifies the JWT, so invalid credentials cannot exhaust a valid caller's
+	// machine-request quota.
+	strictHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
+		MachineAuthentication: service, RateLimiter: strictRateLimiter, AdminAuthentication: openPlatformMachineAdmin{}, Management: service,
+		Operations: machineExecutor, Executor: machineExecutor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "https://crm.example.test/oauth/token", strings.NewReader("grant_type=client_credentials&client_id="+url.QueryEscape(external.Client.ClientID)+"&client_secret=wrong-secret&audience=external_integration"))
+		request.TLS = &tls.ConnectionState{}
+		request.RemoteAddr = "203.0.113.88:443"
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		strictHandler.Routes().ServeHTTP(response, request)
+		want := http.StatusUnauthorized
+		if attempt == 1 {
+			want = http.StatusTooManyRequests
+		}
+		if response.Code != want || (attempt == 1 && !strings.Contains(response.Body.String(), `"error":"rate_limited"`)) {
+			t.Fatalf("credential rate attempt=%d status=%d body=%s", attempt, response.Code, response.Body.String())
+		}
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		request := httptest.NewRequest(http.MethodGet, "https://crm.example.test/mcp", nil)
+		request.TLS = &tls.ConnectionState{}
+		request.RemoteAddr = "203.0.113.89:443"
+		request.Header.Set("Authorization", "Bearer "+issued.AccessToken)
+		response := httptest.NewRecorder()
+		strictHandler.Routes().ServeHTTP(response, request)
+		want := http.StatusOK
+		if attempt == 1 {
+			want = http.StatusTooManyRequests
+		}
+		if response.Code != want || (attempt == 1 && !strings.Contains(response.Body.String(), `"code":"rate_limited"`)) {
+			t.Fatalf("machine HTTP rate attempt=%d status=%d body=%s", attempt, response.Code, response.Body.String())
+		}
+	}
+
 	// This crosses the real PostgreSQL Access service and a freshly signed
 	// machine JWT through a retained V1 transport endpoint. Retired /api
 	// routes are not a compatibility surface.

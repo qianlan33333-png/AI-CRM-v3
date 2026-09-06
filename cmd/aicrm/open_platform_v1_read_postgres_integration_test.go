@@ -157,7 +157,11 @@ func TestOpenPlatformV1ReadPortsPostgreSQLJourney(t *testing.T) {
 	if err = executor.BindV1OperationAudit(accessRepository, uow); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := openplatformhttp.NewHandler(openplatformhttp.Config{MachineAuthentication: machine, AdminAuthentication: openPlatformMachineAdmin{}, Management: machine, Operations: executor, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test"})
+	rateLimiter, err := accessapp.NewMachineRequestRateLimiter(accessRepository, uow, accessapp.MachineRequestRateLimitConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := openplatformhttp.NewHandler(openplatformhttp.Config{MachineAuthentication: machine, RateLimiter: rateLimiter, AdminAuthentication: openPlatformMachineAdmin{}, Management: machine, Operations: executor, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}

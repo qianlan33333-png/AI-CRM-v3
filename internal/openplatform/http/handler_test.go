@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
@@ -24,6 +25,22 @@ func (stub handlerMachineStub) IssueClientCredentialsToken(context.Context, acce
 }
 func (stub handlerMachineStub) AuthenticateBearer(context.Context, string, string, netip.Addr) (accessdomain.MachinePrincipal, error) {
 	return stub.principal, stub.err
+}
+
+type handlerRateLimiterStub struct {
+	credentialErr error
+	machineErr    error
+	credentialHit int
+	machineHit    int
+}
+
+func (stub *handlerRateLimiterStub) AllowClientCredentials(context.Context, string, netip.Addr) error {
+	stub.credentialHit++
+	return stub.credentialErr
+}
+func (stub *handlerRateLimiterStub) AllowMachineRequest(context.Context, accessdomain.MachinePrincipal, netip.Addr) error {
+	stub.machineHit++
+	return stub.machineErr
 }
 
 type handlerAdminStub struct{}
@@ -69,18 +86,25 @@ func (handlerManagementStub) SetEnabled(context.Context, accessdomain.Principal,
 }
 
 type handlerOperationStub struct {
-	available    []openplatformport.Descriptor
-	invocations  []openplatformport.Invocation
-	result       openplatformport.Result
-	invokeErr    error
-	availableErr error
+	available       []openplatformport.Descriptor
+	invocations     []openplatformport.Invocation
+	result          openplatformport.Result
+	invokeErr       error
+	availableErr    error
+	waitForDeadline bool
+	deadlineSeen    bool
 }
 
 func (stub *handlerOperationStub) Available(context.Context, accessdomain.MachinePrincipal) ([]openplatformport.Descriptor, error) {
 	return append([]openplatformport.Descriptor(nil), stub.available...), stub.availableErr
 }
-func (stub *handlerOperationStub) Invoke(_ context.Context, invocation openplatformport.Invocation) (openplatformport.Result, error) {
+func (stub *handlerOperationStub) Invoke(ctx context.Context, invocation openplatformport.Invocation) (openplatformport.Result, error) {
 	stub.invocations = append(stub.invocations, invocation)
+	if stub.waitForDeadline {
+		<-ctx.Done()
+		stub.deadlineSeen = true
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "deadline")
+	}
 	if stub.result.Data == nil && stub.invokeErr == nil {
 		return openplatformport.Result{Data: map[string]any{"ok": true}}, nil
 	}
@@ -89,7 +113,7 @@ func (stub *handlerOperationStub) Invoke(_ context.Context, invocation openplatf
 
 func newV1Handler(t *testing.T, principal accessdomain.MachinePrincipal, operations *handlerOperationStub) *Handler {
 	t.Helper()
-	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: principal}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Operations: operations, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: principal}, RateLimiter: &handlerRateLimiterStub{}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Operations: operations, SessionCookieName: "session", CSRFCookieName: "csrf"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +241,7 @@ func TestMCPPreservesApplicationErrorCategory(t *testing.T) {
 }
 
 func TestTrustedProxyTakesRightmostUntrustedForwardedSource(t *testing.T) {
-	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Operations: &handlerOperationStub{}, SessionCookieName: "session", CSRFCookieName: "csrf", TrustedProxyCIDRs: []string{"192.0.2.0/24"}})
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{}, RateLimiter: &handlerRateLimiterStub{}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Operations: &handlerOperationStub{}, SessionCookieName: "session", CSRFCookieName: "csrf", TrustedProxyCIDRs: []string{"192.0.2.0/24"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,5 +388,65 @@ func TestV1MachinePatchInputRejectsDuplicateAndEmptyGrantAmbiguity(t *testing.T)
 		if _, err := v1MachinePatchInput(request); err == nil {
 			t.Fatalf("patch body %s was accepted", body)
 		}
+	}
+}
+
+func TestV1MachineRateLimitRejectsBeforeOperationAcrossRESTAndMCP(t *testing.T) {
+	operations := &handlerOperationStub{}
+	limiter := &handlerRateLimiterStub{machineErr: accessdomain.ErrRateLimited}
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{ClientID: "client-a", ClientRecord: 7}}, RateLimiter: limiter, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Operations: operations, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest := machineRequest(http.MethodGet, "https://crm.example.com/open/v1/capabilities", "")
+	restResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(restResponse, rest)
+	if restResponse.Code != http.StatusTooManyRequests || !strings.Contains(restResponse.Body.String(), `"code":"rate_limited"`) || len(operations.invocations) != 0 {
+		t.Fatalf("REST status=%d invocations=%d body=%s", restResponse.Code, len(operations.invocations), restResponse.Body.String())
+	}
+	mcp := machineRequest(http.MethodPost, "https://crm.example.com/mcp", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	mcpResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(mcpResponse, mcp)
+	if mcpResponse.Code != http.StatusOK || !strings.Contains(mcpResponse.Body.String(), `"category":"rate_limited"`) || limiter.machineHit != 2 {
+		t.Fatalf("MCP status=%d hits=%d body=%s", mcpResponse.Code, limiter.machineHit, mcpResponse.Body.String())
+	}
+}
+
+func TestOAuthCredentialRateLimitAndBodyBound(t *testing.T) {
+	limiter := &handlerRateLimiterStub{credentialErr: accessdomain.ErrRateLimited}
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{}, RateLimiter: limiter, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Operations: &handlerOperationStub{}, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://crm.example.com/oauth/token", strings.NewReader("grant_type=client_credentials&client_id=client-a&client_secret=secret&audience=external_integration"))
+	request.TLS = &tls.ConnectionState{}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"error":"rate_limited"`) || limiter.credentialHit != 1 {
+		t.Fatalf("rate status=%d hits=%d body=%s", response.Code, limiter.credentialHit, response.Body.String())
+	}
+
+	overse := httptest.NewRequest(http.MethodPost, "https://crm.example.com/oauth/token", strings.NewReader("grant_type=client_credentials&client_id="+strings.Repeat("x", int(maxBodyBytes))))
+	overse.TLS = &tls.ConnectionState{}
+	overse.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	overseResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(overseResponse, overse)
+	if overseResponse.Code != http.StatusBadRequest || limiter.credentialHit != 1 {
+		t.Fatalf("oversize status=%d hits=%d body=%s", overseResponse.Code, limiter.credentialHit, overseResponse.Body.String())
+	}
+}
+
+func TestV1RequestDeadlinePropagatesToOperation(t *testing.T) {
+	operations := &handlerOperationStub{waitForDeadline: true}
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{ClientID: "client-a", ClientRecord: 7}}, RateLimiter: &handlerRateLimiterStub{}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Operations: operations, SessionCookieName: "session", CSRFCookieName: "csrf", RequestTimeout: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := machineRequest(http.MethodGet, "https://crm.example.com/open/v1/capabilities", "")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !operations.deadlineSeen || len(operations.invocations) != 1 {
+		t.Fatalf("status=%d deadline=%t invocations=%d body=%s", response.Code, operations.deadlineSeen, len(operations.invocations), response.Body.String())
 	}
 }

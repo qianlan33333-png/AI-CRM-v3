@@ -119,6 +119,18 @@ type MachineTokenIssuer interface {
 	AuthenticateBearer(context.Context, string, string, netip.Addr) (domain.MachinePrincipal, error)
 }
 
+// MachineRequestLimiter is the Access-owned persistent throttle used by the
+// public machine protocol. The HTTP host supplies only an already-normalized
+// client identifier/principal and source address; it never reads or writes
+// Access rate-limit state itself.
+//
+// Both methods must make the decision durably. In-process counters would let a
+// restart or a second API process bypass the same credential boundary.
+type MachineRequestLimiter interface {
+	AllowClientCredentials(context.Context, string, netip.Addr) error
+	AllowMachineRequest(context.Context, domain.MachinePrincipal, netip.Addr) error
+}
+
 type MachineManagement interface {
 	Create(context.Context, domain.Principal, CreateMachineClientInput) (IssuedMachineClient, error)
 	CreateV1(context.Context, domain.Principal, CreateMachineClientInput) (IssuedMachineClient, error)

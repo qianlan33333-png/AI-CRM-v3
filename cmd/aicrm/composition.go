@@ -179,6 +179,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	machineRateLimiter, err := accessapp.NewMachineRequestRateLimiter(accessRepository, uow, accessapp.MachineRequestRateLimitConfig{})
+	if err != nil {
+		return fail(err)
+	}
 	staffProjector, err := accessapp.NewWeComStaffProjector(accessRepository, passwords, auditService)
 	if err != nil {
 		return fail(err)
@@ -844,6 +848,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
 		MachineAuthentication: machineService,
+		RateLimiter:           machineRateLimiter,
 		AdminAuthentication:   authentication,
 		Management:            machineService,
 		Operations:            openPlatformExecutor,
@@ -852,6 +857,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		CSRFCookieName:        accesshttp.CSRFCookieName,
 		TrustedProxyCIDRs:     cfg.OpenPlatform.TrustedProxyCIDRs,
 		PublicOrigin:          cfg.PublicOrigin,
+		RequestTimeout:        10 * time.Second,
 	})
 	if err != nil {
 		return fail(err)

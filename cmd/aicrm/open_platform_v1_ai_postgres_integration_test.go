@@ -297,7 +297,11 @@ func newOpenPlatformV1AIHandler(t *testing.T, native *pgxpool.Pool, uow *platfor
 	if err = executor.BindV1AI(aiService, aiService, uow); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := openplatformhttp.NewHandler(openplatformhttp.Config{MachineAuthentication: machine, AdminAuthentication: openPlatformMachineAdmin{}, Management: machine, Operations: executor, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test"})
+	rateLimiter, err := accessapp.NewMachineRequestRateLimiter(accessstore.NewPostgreSQL(), uow, accessapp.MachineRequestRateLimitConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := openplatformhttp.NewHandler(openplatformhttp.Config{MachineAuthentication: machine, RateLimiter: rateLimiter, AdminAuthentication: openPlatformMachineAdmin{}, Management: machine, Operations: executor, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}

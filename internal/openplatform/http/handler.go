@@ -32,6 +32,7 @@ type AdminAuthentication interface {
 
 type Config struct {
 	MachineAuthentication accessport.MachineTokenIssuer
+	RateLimiter           accessport.MachineRequestLimiter
 	AdminAuthentication   AdminAuthentication
 	Management            accessport.MachineManagement
 	Operations            openplatformport.OperationService
@@ -42,10 +43,13 @@ type Config struct {
 	CSRFCookieName    string
 	TrustedProxyCIDRs []string
 	PublicOrigin      string
+	RequestTimeout    time.Duration
 }
 
 type Handler struct {
 	machine        accessport.MachineTokenIssuer
+	rateLimiter    accessport.MachineRequestLimiter
+	requestTimeout time.Duration
 	admin          AdminAuthentication
 	management     accessport.MachineManagement
 	operations     openplatformport.OperationService
@@ -57,8 +61,11 @@ type Handler struct {
 }
 
 func NewHandler(config Config) (*Handler, error) {
-	if config.MachineAuthentication == nil || config.AdminAuthentication == nil || config.Management == nil || config.Operations == nil || config.SessionCookieName == "" || config.CSRFCookieName == "" {
+	if config.MachineAuthentication == nil || config.RateLimiter == nil || config.AdminAuthentication == nil || config.Management == nil || config.Operations == nil || config.SessionCookieName == "" || config.CSRFCookieName == "" {
 		return nil, errors.New("open platform HTTP dependencies are required")
+	}
+	if config.RequestTimeout <= 0 {
+		config.RequestTimeout = 10 * time.Second
 	}
 	proxies := make([]netip.Prefix, 0, len(config.TrustedProxyCIDRs))
 	for _, raw := range config.TrustedProxyCIDRs {
@@ -68,7 +75,7 @@ func NewHandler(config Config) (*Handler, error) {
 		}
 		proxies = append(proxies, prefix.Masked())
 	}
-	return &Handler{machine: config.MachineAuthentication, admin: config.AdminAuthentication, management: config.Management,
+	return &Handler{machine: config.MachineAuthentication, rateLimiter: config.RateLimiter, requestTimeout: config.RequestTimeout, admin: config.AdminAuthentication, management: config.Management,
 		operations: config.Operations, executor: config.Executor, sessionCookie: config.SessionCookieName, csrfCookie: config.CSRFCookieName, trustedProxies: proxies, publicOrigin: strings.TrimRight(strings.TrimSpace(config.PublicOrigin), "/")}, nil
 }
 
@@ -95,7 +102,20 @@ func (handler *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/enable", handler.enableClient)
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/disable", handler.disableClient)
 	mux.HandleFunc("GET /api/admin/open-platform/routes", handler.routes)
-	return noStore(mux)
+	return noStore(handler.withBoundedRequest(mux))
+}
+
+// withBoundedRequest applies the public V1 body and deadline limits before a
+// protocol handler parses forms or JSON. The derived context is passed through
+// every stable Port; neither Access nor an Owner Port receives an unbounded
+// machine request.
+func (handler *Handler) withBoundedRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
+		ctx, cancel := context.WithTimeout(request.Context(), handler.requestTimeout)
+		defer cancel()
+		next.ServeHTTP(response, request.WithContext(ctx))
+	})
 }
 
 // Mount installs the V1 machine protocol ahead of the main application.
@@ -158,6 +178,10 @@ func (handler *Handler) token(response http.ResponseWriter, request *http.Reques
 	if !hasBasic {
 		clientID, clientSecret = formID, formSecret
 	}
+	if err := handler.rateLimiter.AllowClientCredentials(request.Context(), clientID, source); err != nil {
+		writeOAuthError(response, statusForMachineError(err), oauthErrorFor(err))
+		return
+	}
 	requestedScopes := strings.Fields(request.Form.Get("scope"))
 	issued, err := handler.machine.IssueClientCredentialsToken(request.Context(), accessport.ClientCredentialsInput{
 		ClientID: clientID, ClientSecret: clientSecret, Audience: request.Form.Get("audience"), RequestedScopes: requestedScopes, SourceIP: source,
@@ -175,6 +199,10 @@ func (handler *Handler) mcpMetadata(response http.ResponseWriter, request *http.
 	requestID := requestID(request)
 	if err != nil {
 		writeV1Error(response, http.StatusUnauthorized, openplatformport.ErrorAuthentication, requestID)
+		return
+	}
+	if err = handler.allowMachineRequest(request, principal); err != nil {
+		writeV1Error(response, statusForMachineError(err), operationErrorForMachineError(err), requestID)
 		return
 	}
 	writeV1Data(response, http.StatusOK, map[string]any{"transport": "jsonrpc", "methods": []string{"initialize", "tools/list", "tools/call"}, "client_id": principal.ClientID}, requestID)
@@ -205,6 +233,10 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 	principal, err := handler.authenticateMachine(request)
 	if err != nil {
 		writeJSONRPCOperationError(response, rpc.ID, openplatformport.ErrorAuthentication)
+		return
+	}
+	if err = handler.allowMachineRequest(request, principal); err != nil {
+		writeJSONRPCOperationError(response, rpc.ID, operationErrorForMachineError(err))
 		return
 	}
 	switch rpc.Method {
@@ -283,6 +315,10 @@ func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Req
 		writeV1Error(response, http.StatusUnauthorized, openplatformport.ErrorAuthentication, id)
 		return
 	}
+	if err = handler.allowMachineRequest(request, principal); err != nil {
+		writeV1Error(response, statusForMachineError(err), operationErrorForMachineError(err), id)
+		return
+	}
 	input, err := normalize(request)
 	if err != nil {
 		writeV1Error(response, http.StatusBadRequest, openplatformport.ErrorValidation, id)
@@ -321,6 +357,14 @@ func (handler *Handler) authenticateMachine(request *http.Request) (accessdomain
 		return accessdomain.MachinePrincipal{}, errors.New("machine bearer is required")
 	}
 	return handler.machine.AuthenticateBearer(request.Context(), bearer, "external_integration", source)
+}
+
+func (handler *Handler) allowMachineRequest(request *http.Request, principal accessdomain.MachinePrincipal) error {
+	source, err := handler.source(request)
+	if err != nil {
+		return err
+	}
+	return handler.rateLimiter.AllowMachineRequest(request.Context(), principal, source)
 }
 
 func requestJSONInput(request *http.Request) (json.RawMessage, error) {
@@ -872,6 +916,10 @@ func (handler *Handler) machinePrincipal(response http.ResponseWriter, request *
 		writeJSON(response, statusForMachineError(err), map[string]string{"error": "invalid_token"})
 		return accessdomain.MachinePrincipal{}, false
 	}
+	if err = handler.allowMachineRequest(request, principal); err != nil {
+		writeJSON(response, statusForMachineError(err), map[string]string{"error": string(operationErrorForMachineError(err))})
+		return accessdomain.MachinePrincipal{}, false
+	}
 	if !principal.HasScope(scope) || !principal.HasCapability(capability) {
 		writeJSON(response, http.StatusForbidden, map[string]string{"error": "permission_denied"})
 		return accessdomain.MachinePrincipal{}, false
@@ -1419,6 +1467,8 @@ func audienceFor(Route) string { return "external_integration" }
 
 func statusForMachineError(err error) int {
 	switch {
+	case errors.Is(err, accessdomain.ErrRateLimited):
+		return http.StatusTooManyRequests
 	case errors.Is(err, accessdomain.ErrMachineAudience), errors.Is(err, accessdomain.ErrMachineScope), errors.Is(err, accessdomain.ErrMachineSourceIP):
 		return http.StatusForbidden
 	case errors.Is(err, accessdomain.ErrMachineClientDisabled), errors.Is(err, accessdomain.ErrMachineClientExpired), errors.Is(err, accessdomain.ErrMachineReissueRequired), errors.Is(err, accessdomain.ErrMachineCredential):
@@ -1429,6 +1479,9 @@ func statusForMachineError(err error) int {
 }
 
 func oauthErrorFor(err error) string {
+	if errors.Is(err, accessdomain.ErrRateLimited) {
+		return "rate_limited"
+	}
 	if errors.Is(err, accessdomain.ErrMachineAudience) || errors.Is(err, accessdomain.ErrMachineScope) || errors.Is(err, accessdomain.ErrMachineSourceIP) {
 		return "invalid_scope"
 	}
@@ -1436,6 +1489,13 @@ func oauthErrorFor(err error) string {
 		return "invalid_client"
 	}
 	return "invalid_request"
+}
+
+func operationErrorForMachineError(err error) openplatformport.ErrorCode {
+	if errors.Is(err, accessdomain.ErrRateLimited) {
+		return openplatformport.ErrorRateLimited
+	}
+	return openplatformport.ErrorDependencyUnavailable
 }
 
 func writeAdminError(response http.ResponseWriter, err error) {
