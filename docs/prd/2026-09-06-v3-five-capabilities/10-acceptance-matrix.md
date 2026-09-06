@@ -4,8 +4,8 @@
 
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
-| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `f711900f5383845c29689f60595abb97731bf5a4` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；早期Chrome失败已定点修复；当前本地正在对齐main8ec5072，运行装配/两模式与Excel完整Chrome及最终CI待收口 |
-| 通用客户标签 | 02 已批准 | 根独立 PG/race、历史/101恢复/来源门禁、真实 Chromium 与全量 CI 通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | 整板块代码验收通过；main 8ec5072d169c25abd25f80e29cb9f6222834b320；部署及真实业务验收另记 |
+| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `7d84b1577a5833874dc2085f57096953041284ab` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；已对齐main8ec5072；根新增PG/race与安装/文件契约通过；准确7d84 Linux Chrome在Host上下文/模板初始化失败，待修 |
+| 通用客户标签 | 02 已批准 | 根独立 PG/race、历史/101恢复/来源门禁、真实 Chromium 与全量 CI 通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | 整板块代码验收通过；main 8ec5072d169c25abd25f80e29cb9f6222834b320自动部署成功，12:07 UTC线上ready核实；真实业务验收未进行 |
 | 配置中心运行生效 | 05 已批准 | 根独立PG/race、实际消费者/历史/制品及真实Chrome完整CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 整板块代码验收通过；main 5494537fb4d95a916c2754a3c1387335905d2861，部署及生产发布另记 |
 | 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `c90a7c2b60adb5a624e06d362cb88810b4327e1e` | 已对齐main8ec5072；新参数改造后完整付款旅程出现投递0次，准确原因为业务参数进入目标policy摘要但运行配置未包含；修复后须重新验证完整付款到投递。历史/订单结果读取/Chromium继续 |
 | 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ba0155a16d366889573697a12dbd05e50e12d776`（开发checkpoint） | 鉴权管理根PG/race增量通过；缺身份scope阻断普通后台启动已修，最新CI进行中。56路由装配、原协议兼容、历史跨快照幂等及旧客户授权scope映射、浏览器仍未闭环 |
@@ -102,3 +102,10 @@
 - #172 c90a7c2 CI34030684616准确失败为 TestPostgreSQLCommerceFundsHTTPJourney: signed commerce provider deliveries=0。根定位到商品业务参数与受控目标policy摘要边界不一致，已派修复；不得删目标撤销检查或重读当前商品配置替换旧任务冻结载荷。之前687/424的局部通过不能覆盖此新回归。
 - #173 ba0155a 修复缺WeComScope导致普通后台装配失败，以及原operation-cycle固定token（包括含点token）/AI签名与通用机器鉴权的路由归属；需最新LinuxCI与真实旧handler协议回归。历史导入尚有两项阻断：来源Git SHA不能代替独立业务快照ID，跨批次源行须全局幂等；旧owner_scope中的客户数字ID不能直接解释为V3 OneID，须经既有可信映射，未映射不可因轮换密钥而激活。
 - 标签main34028859329 check成功，自动部署仍处于Install versioned release；未记录为已上线。配置5494537的此前线上ready证据有效。无人工生产配置、历史导入或真实Provider操作。
+
+## 最新独立复核与部署（2026-09-06 12:08 UTC）
+
+- 标签main流水线34028859329全部成功；根12:07 UTC GET https://id-dev.youcangogogo.com/readyz，release_sha=8ec5072d169c25abd25f80e29cb9f6222834b320/status=ready。代码部署完成，真实打标/去标与生产历史导入未做。
+- 负责人c7aaade根真实PG/race通过全量范围本地Owner优先、仅企微观察客户、截断拒绝、无企微ID本地Owner、CustomerSync/Welcome；标签HTTP最初因根review环境缺jsdom未执行，补测试依赖后独立通过。日志aicrm-five-owner-c7-root-review.log及aicrm-five-owner-c7-tag-recheck.log。
+- 负责人准确7d84b1577a5833874dc2085f57096953041284ab仅补安装路径/正负例及Chrome布尔参数解析；根完整安装契约、旧.xls兼容、冻结HTML/选择器哈希通过。不能使用曾误报的7d84b152...完整SHA。Linux CI34031927510仍失败，准确为Owner Chromium local_only初始化错误，未到完整执行/回读；本机Chrome因Darwin启动限制明确SKIP，不能算浏览器通过。
+- 开放平台本地207775212458603a482b94d3e9e990affba6a40f根独立真实PG/race通过历史CLI与管理Journey，无skip。覆盖跨快照幂等、同号客户限制隔离、旧group_broadcast/Direct映射和管理回读。该证据仅为历史/授权增量；目标已存在client的排除回执verify仍有具体修正要求，56条业务路由未齐，未通过整板块。
