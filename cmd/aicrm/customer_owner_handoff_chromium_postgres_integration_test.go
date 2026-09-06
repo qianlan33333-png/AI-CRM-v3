@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -156,6 +157,144 @@ func TestPostgreSQLOwnerHandoffComposedTransferResultHTTP(t *testing.T) {
 	if err = application.pool.Native().QueryRow(ctx, `SELECT state,COALESCE(transfer_status,0) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND line_no=1`, batch.ID).Scan(&state, &transferStatus); err != nil || state != "observed" || transferStatus != 1 {
 		t.Fatalf("transfer-result projection state=%q status=%d err=%v", state, transferStatus, err)
 	}
+}
+
+// TestPostgreSQLOwnerHandoffComposedExecutionUsesCustomerUOW fixes the
+// Composition seam: the EER worker invokes outbound outside a transaction, so
+// its frozen Customer execution must pass through customerOwnerHandoffExecutionAdapter.
+// This runs the real outer preview/confirm HTTP flow and River provider call
+// without a browser; the Chromium journey separately verifies page behavior.
+func TestPostgreSQLOwnerHandoffComposedExecutionUsesCustomerUOW(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	var transferCalls atomic.Int32
+	providerServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "access_token": "owner-handoff-execution-token", "expires_in": 7200})
+		case "/cgi-bin/externalcontact/transfer_customer":
+			transferCalls.Add(1)
+			var body struct {
+				Source   string   `json:"handover_userid"`
+				Target   string   `json:"takeover_userid"`
+				External []string `json:"external_userid"`
+				Welcome  string   `json:"transfer_success_msg"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Source != "execution-source" || body.Target != "execution-target" || len(body.External) != 1 || body.External[0] != "execution-external" || body.Welcome != "execution welcome" {
+				http.Error(writer, "unexpected frozen transfer request", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "customer": []map[string]any{{"external_userid": body.External[0], "errcode": 0}}})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer providerServer.Close()
+	application, err := composeWithWeComClientFactory(ctx, platformconfig.Runtime{
+		Role:         platformconfig.RoleAPI,
+		DatabaseURL:  databaseURL,
+		PublicOrigin: "https://owner-handoff-execution.test",
+		ReleaseSHA:   "owner-handoff-execution",
+		WorkerOwner:  "owner-handoff-execution",
+		WorkerLimit:  1,
+		Effects:      platformconfig.Effects{ProviderEnabled: true},
+		WeCom:        platformconfig.WeCom{Enabled: true, CorpID: "execution-corp", AgentID: "execution-agent", Secret: "execution-secret", ContactSecret: "execution-contact-secret", ContextSigningKey: "01234567890123456789012345678901"},
+		GroupOps:     platformconfig.GroupOps{WebhookSecret: "owner-handoff-execution-webhook"},
+		Survey:       platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(key), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(key)},
+		Bootstrap:    platformconfig.Bootstrap{Enabled: true, Username: "owner-execution", Password: "owner-execution-password", DisplayName: "Owner Execution"},
+	}, func(config wecomadapter.Config) (*wecomadapter.Client, error) {
+		config.APIBase = providerServer.URL
+		config.HTTPClient = providerServer.Client()
+		return wecomadapter.New(config)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "owner-execution", Password: "owner-execution-password", DisplayName: "Owner Execution"}); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID, targetID, customerID int64
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('owner-execution-source','$argon2id$fixture','Execution Source','execution-source',false) RETURNING id`).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('owner-execution-target','$argon2id$fixture','Execution Target','execution-target',true) RETURNING id`).Scan(&targetID); err != nil {
+		t.Fatal(err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO wecom_follow_relationships(corp_id,employee_id,customer_id,active) VALUES('execution-corp','execution-source',$1,true)`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,'wecom_external_userid','wecom-corp:execution-corp','execution-external','verified','execution_fixture',1,clock_timestamp())`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	session, csrf := adminAccessLogin(t, application.handler, "owner-execution", "owner-execution-password")
+	requestJSON := func(path string, value any) *httptest.ResponseRecorder {
+		body, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		request := httptest.NewRequestWithContext(ctx, http.MethodPost, path, strings.NewReader(string(body)))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-CSRF-Token", csrf)
+		request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: session})
+		request.AddCookie(&http.Cookie{Name: "aicrm_admin_csrf", Value: csrf})
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		return response
+	}
+	previewResponse := requestJSON("/api/admin/customers/owner-handoffs/previews", map[string]any{
+		"mode": "wecom_then_crm", "scope": "excel_include", "source_staff_id": sourceID, "target_staff_id": targetID,
+		"customer_ids": []int64{}, "external_userids": []string{"execution-external"}, "welcome_message": "execution welcome",
+		"confirmation_phrase": "EXECUTION CONFIRM", "idempotency_key": "owner-handoff-execution-preview-001",
+	})
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("composed preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	var preview customerport.OwnerHandoffPreview
+	if err = json.NewDecoder(previewResponse.Body).Decode(&preview); err != nil || len(preview.Rows) != 1 {
+		t.Fatalf("composed preview=%+v err=%v", preview, err)
+	}
+	confirmResponse := requestJSON("/api/admin/customers/owner-handoffs/confirm", map[string]any{
+		"preview_id": preview.ID, "preview_hash": preview.Hash, "confirmation_phrase": "EXECUTION CONFIRM", "idempotency_key": "owner-handoff-execution-confirm-001",
+	})
+	if confirmResponse.Code != http.StatusAccepted {
+		t.Fatalf("composed confirm status=%d body=%s", confirmResponse.Code, confirmResponse.Body.String())
+	}
+	var batch customerport.OwnerHandoffBatch
+	if err = json.NewDecoder(confirmResponse.Body).Decode(&batch); err != nil || batch.ID == "" {
+		t.Fatalf("composed batch=%+v err=%v", batch, err)
+	}
+	effectsCtx, stopEffects := context.WithCancel(ctx)
+	effectsDone := make(chan error, 1)
+	go func() { effectsDone <- application.effectsRuntime.Run(effectsCtx) }()
+	defer func() {
+		stopEffects()
+		if runtimeErr := <-effectsDone; runtimeErr != nil && !errors.Is(runtimeErr, context.Canceled) {
+			t.Errorf("owner handoff effects runtime: %v", runtimeErr)
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		var owner int64
+		err = application.pool.Native().QueryRow(ctx, `SELECT line.state,local.staff_id FROM customer_owner_handoff_lines line LEFT JOIN customer_local_owners local ON local.customer_id=line.customer_id WHERE line.batch_id=$1 AND line.line_no=1`, batch.ID).Scan(&state, &owner)
+		if err == nil && state == "provider_accepted" && owner == targetID && transferCalls.Load() == 1 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	var state, effectState string
+	_ = application.pool.Native().QueryRow(ctx, `SELECT line.state,COALESCE(effect.state,'') FROM customer_owner_handoff_lines line LEFT JOIN external_effects effect ON effect.id=regexp_replace(line.effect_id,'^eer_','')::bigint WHERE line.batch_id=$1 AND line.line_no=1`, batch.ID).Scan(&state, &effectState)
+	t.Fatalf("composed EER did not complete state=%q effect_state=%q provider_calls=%d", state, effectState, transferCalls.Load())
 }
 
 // TestPostgreSQLOwnerHandoffChromiumJourney drives both authorized Owner
