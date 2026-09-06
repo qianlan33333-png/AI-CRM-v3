@@ -2,13 +2,15 @@
 
 基线50b86c8，更新2026-09-06。只按证据更新，不把计划/派发当完成。
 
+开放平台权威范围更新（用户最新明确指令）：#173采用03-open-platform.md与ADR0010定义的V3原生最小方案。旧56路由清单只保留历史，不再作为开发、审核、上线条件；未列V1旧路径不挂载并返回标准404。保留已验证Access/OAuth2/grant/CIDR/audit/MCP/OneID/history/machine actor基础，REST /open/v1与MCP /mcp共享六个Operation处理器。
+
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
 | 负责人迁移 | 01 已批准 | 旧流程/PG/恢复/协议/历史通过，实际Composition修正后Linux Chrome收口 | #171 `7772d013398c36a92b7cb684a536ea4b34cfb882` | 88b实际失败为provider line retryable_failed，已定位Provider直连需事务的Store；c95改现有Customer UoW Adapter，777新增真实HTTP→River→Provider→Owner更新测试；等待准确HEAD完整CI |
 | 通用客户标签 | 02 已批准 | 根PG/race、历史/101恢复/协议、真实Chromium与全CI通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | main8ec5072于13:01 UTC再次核实线上ready；代码已部署，13:23 UTC通用标签开关已启用并核实API/Worker实际加载；真实业务验收未进行 |
 | 配置中心运行生效 | 05 已批准 | 根PG/race、实际消费者/历史/制品、真实Chrome及CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 已随5494537及后续main8ec上线；生产业务配置发布与真实消费者业务验收另记 |
 | 商品／订单外推 | 04 已批准 | paid、expiry、配置CAS、历史与协议根PG/race通过，真实Chrome收口 | #172 `ff8e51a1b19de83d3e78b8986e38ece150e2c8ad` | 普通商品保存/重载/测试投递已推进，当前周期商品Host未呈现；另已发现main旧保存收据摘要升级兼容缺陷，要求真实PG升级重放修复；未批准整板块 |
-| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Segment机器actor已根审核并合入，Survey原生/历史读模型已补 | #173 远端`ba0155a16d366889573697a12dbd05e50e12d776`，本地`19351eceff071b10fadc46b7c16eb6ce64b4024e` | Archive真实wrapper提取已修；Survey/Access分层PG通过但单一完整HTTP旅程未齐；根要求阻断非Survey scope作为历史Union selector，其余Audience/Operations路由继续；未批准整板块 |
+| 通用开放平台 | 03原生V1及ADR0010已批准；03a仅历史 | 保留现有API Client/OAuth2/grant/CIDR/audit/MCP/OneID/history/machine actor | #173远端ba0155a（已刷新核实），本地e221801e55b206dac89ad0324cad4d4d7a3a2cf7；执行者正在推送当前成果 | 仅审6Operation；活动message/survey/radar/order稳定Port、AI待审阅计划/状态、REST/MCP一致、旧path404和PR164管理Journey；56旧路由停止派工和验收 |
 | 新前端壳 | 12 已批准 | 沿用原PR164工作，在独立clone合入main8ec | #164 远端`c8819d7a9b837c00116682e860310717e5f94b20`，本地a96b162 | 现有远端CI在donor manifest失败；待修正确V3适配归属、完整制品、模块Host路由、侧边栏CSP/素材可见性，最终组合浏览器和部署待验收 |
 
 共用验收：完整路由/Composition、冻结供体复用、PG原子性/并发/重启、身份权限、未知结果、历史零新效果。各PR需链接实际日志/测试/浏览器证据，跳过与Mock明确标识。
@@ -138,3 +140,15 @@
 - 生产只读源事实：旧负责人迁移结果34行；商品外推配置31条，其中12启用且均HTTPS、均未到期。源配置历史导入不等于V3运行配置启用，仍需稳定产品映射与受保护target槽位。
 
 2026-09-06 14:10 UTC增量：#171 97f70428限定最终PG断言的b/l列名，CI已越过实际Go/Chrome流程，后续web/scripts/e2e.mjs仍引用旧临时data-scope表单而失败，正改为冻结Picker/文件实际流程并要求本地完整前端回归。#172 469914a精确main8ec旧binding收据重放根PG通过；根并发专项实际出现successes=2/conflicts=0/events=2，已定位Product LEFT JOIN配置和行锁处于同一statement导致等待前快照，要求分开锁与读并加写入CAS，不以偶尔通过抹除竞态。469真实Chrome周期页面仍未挂载Host，要求优先核对实际Composition路径及脚本入口。#173 e221801已限定Survey历史Union selector到明确Survey scope并返回稳定409，源审核通过，完整路由旅程继续。
+
+## 原生V1现行验收矩阵（覆盖旧开放平台记录）
+
+| 项目 | 当前基础 | 完成证据要求 |
+|---|---|---|
+| 共享Operation Catalog | 原有MCP与授权可复用 | 六operation_id/REST DTO/MCP schema/error/capability/幂等契约冻结，Composition可用性一致 |
+| 授权管理与能力目录 | 现有Access真实PG增量已审 | OAuth2 client_credentials、细粒度capability、实时撤销/轮换、CIDR/代理、数据范围、新UI |
+| OneID解析及客户上下文 | scoped解析/Customer Port已有 | 同一处理器处理REST/MCP；缺scope/pending/conflict/no-create、范围前置校验 |
+| 客户活动 | 已有Archive/Survey/Radar/Order读取增量 | 四Owner Port真实PG，稳定cursor/权限/类型化payload，依赖失败不伪空成功 |
+| AI审阅计划和状态 | 现有AI领域审批/任务链 | machine actor、同UoW计划/receipt/audit、同key同结果/漂移拒绝、审批不可绕过、重启后状态读回 |
+| PR164管理页 | 新壳现有开发继续 | client创建/一次secret/grant/轮换停用/audit/V1catalog与真实只读调用；不展示56目录 |
+| 历史与移除旧路径 | 既有停用导入基础保留 | 不恢复旧token/secret，旧路径标准404；真实PG/REST/MCP/Chrome/fullCI |

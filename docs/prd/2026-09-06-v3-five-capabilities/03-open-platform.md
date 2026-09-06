@@ -1,102 +1,133 @@
-# PRD 03：通用机器授权、MCP 与旧外部业务 API
+# PRD 03：V3 原生最小开放平台
 
-状态：批准开发，按名额派发；遵循总控。不以AI助手专用HMAC或凭据投影代替通用授权。
+状态：2026-09-06 产品范围已确认，替代本目录此前“兼容旧版 56 条机器接口”的交付口径。沿用 PR #173 已完成成果，在同一个板块 PR 内收口；不推倒重来。
 
-## 旧来源和V3差异
+## 目标
 
-旧dd8d60d的 platform/platform_foundation/auth_platform/{api,models,service}.py、platform/admin_config/{api_clients,direct_api_key}.py、API Client/Direct Key管理模板；mcp_tool_catalog.py、channels/integration_gateway/{api,mcp,dispatch}.py、mcp_composition.py、router_registry.py。当前实际MCP三工具为resolve_customer/get_customer_context/get_recent_messages，旧文档未注册的写helper不算现成工具。
+为外部系统与 Agent 提供一个可安全上线、可持续扩展的 V3 原生入口：调用方登记与授权、短期 Token、能力发现、客户解析与上下文读取、客户活动读取、AI 审阅计划创建、异步结果查询，以及 MCP 工具发现和调用。
 
-V3 Access已有session/RBAC和service principal类型，AdminOps direct_api_key/api_client仅安全状态投影和构造secret://引用，不是真实secret/hash/token；AI助手HMAC保持现有特定接入，不能冒充本模块完成。
+REST 与 MCP 是同一组应用操作的两种传输方式，必须调用相同的领域 Port、权限判定与审计链。禁止分别实现两套业务逻辑。
 
-## 用户流程和授权
+本轮不兼容旧仓 56 条 method/path，不迁旧路径、旧响应字段、旧 Token 或旧 Direct API Key 协议；未纳入 V1 能力目录的旧路径不得挂载占位路由。旧路由清单只保留为历史证据，见 `03a-machine-route-inventory.md`。
 
-管理员复用旧客户端/Direct Key页面：登记调用方、用途、owner数据范围、audience、scopes/capabilities、CIDR、到期、Token TTL；创建一次展示secret、轮换、启停/吊销、查看掩码/最近使用/审计。只存安全摘要，不再次回读secret。旧固定权限模板等价承接，不能API key→super_admin。
+## 最高优先级分类
 
-恢复 /oauth/token client_credentials，支持旧Basic/form凭据语义、请求scope只能收窄、audience严格验证、HTTPS/可信proxy/CIDR、no-store。短JWT默认旧30分钟、上限60分钟（已核实profiles.py默认1800、service.py允许60..3600秒），不引入refresh token或授权码OAuth产品。每次机器调用校验enabled/expiry/auth_version，轮换停用即时使旧secret/旧token失效；禁只验JWT签名直到过期。
+- **OneID：涉及。** 所有客户解析和读取以 `customers.id` 为唯一业务主键。外部身份必须携带 kind、scope、value；只调用 Identity Port 的可信解析，不隐式建客、绑定、合并或升级 assurance。pending、not_found、conflict 必须如实返回。
+- **持久化：涉及。** Access 拥有 API Client、credential digest、auth version、grant 与审计；管理状态、版本和审计在同一个 PostgreSQL UoW 提交。业务读取只能通过对应领域 Owner Port，不跨域读表。
+- **内部持久任务：仅复用。** AI 审阅计划进入现有 AI Assistant 审批/任务链；本模块不创建队列、Worker、lease、重试或对账框架。
+- **外部效果：本轮不直接执行。** 开放平台只创建审阅计划或业务意图，不直接发送企微消息、不直接群发。后续效果仍由原领域审批、outbound 与 External Effects 链执行并回读状态。
 
-Direct API Key保持旧只读权限模板，不可调用写接口。机器principal与后台用户分开，写命令身份/审计来自认证结果，不能从payload.operator提权。机器和后台各自鉴权后进同一领域Port。
+## V3 已有能力与复用策略
 
-## 实际旧接口清单（本轮全部登记承接）
+旧仓固定只读供体为 `qianlan33333-png/AI-CRM@dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`，仅用于理解安全边界和业务语义，不再作为接口兼容基线。
 
-以下列出/api/external前缀下7项GET和11项POST；完整机器接口另见03a-machine-route-inventory.md，亦属于本板块验收，不得因路径前缀不同遗漏。
-
-| 方法/路径 | 旧文件 | V3 Owner与要求 |
+| 分类 | 复用内容 | 本轮处理 |
 |---|---|---|
-| GET /api/external/orders | extensions/commerce/commerce/external_orders.py | Order只读、分页过滤/字段scope |
-| GET /api/external/orders/{order_no} | 同上 | Order详情，不因猜order_no绕权限 |
-| GET /api/external/users/resolve | 同上 | scoped Identity Resolve，不建客 |
-| GET /api/external/radar-clicks | extensions/radar/radar_links/api.py | Radar受授权客户/范围查询 |
-| GET /api/external/radar-links | 同上 | Radar只读 |
-| GET /api/external/chat-records | extensions/archive/message_archive/api.py | Archive授权读取，不回旧库 |
-| GET /api/external/questionnaire-submissions | extensions/forms/questionnaire/api.py | Survey只读、归属/分页 |
-| POST /api/external/ai-audience/templates/preview | extensions/ai/ai_audience_ops/external_api.py | 既有人群定义预览 |
-| POST /api/external/ai-audience/templates/apply | 同上 | 既有人群定义受控保存 |
-| POST /api/external/ai-audience/spec/dry-run | 同上 | 既有声明式人群预览 |
-| POST /api/external/ai-audience/spec/apply | 同上 | 既有定义保存；publish gate保持 |
-| POST /api/external/ai-audience/spec/publish | 同上 | 既有定义发布与版本/权限 |
-| POST /api/external/ai-audience/packages/{package_key}/archive | 同上 | 归档幂等 |
-| POST /api/external/ai-audience/e2e/run | 同上 | 现有受控演练编排；旧main实际装配runner；恢复其受控业务编排与gate，不新建发送旁路 |
-| POST /api/external/ai-audience/simple/preview | 同上 | 旧受限simple语义转现有声明式定义 |
-| POST /api/external/ai-audience/simple/apply | 同上 | 同上保存；保留retired webhook配置410 |
-| POST /api/external/ai-audience/simple/{package_key}/activate | 同上 | 既有人群激活/刷新，River和业务gate |
-| POST /api/external/ai-audience/simple/{package_key}/archive | 同上 | 既有归档 |
+| V3 已有，直接保留 | API Client 管理、grant、一次性 secret、轮换/停用、OAuth2 client_credentials、audience/scope/capability/CIDR、每次调用的 enabled/expiry/auth_version 校验 | 补齐 V1 能力授权和完整运行装配，不重写授权核心 |
+| V3 已有，直接保留 | MCP JSON-RPC、initialize、tools/list、tools/call、OneID scoped resolve、PostgreSQL 审计/历史导入基础 | 统一接入下述 Operation Catalog |
+| Go 等价接入 | Customer、Identity、Archive、Survey、Radar、Order、AI Assistant 已有稳定 Port | Host 只做认证、DTO、授权和组合；不跨域访问 store/app/http/provider |
+| 停止迁移 | 旧版 56 条路由、旧字段兼容、旧 audience/package/simple/e2e 等专用机器入口 | 不再作为 #173 验收条件；未完成路径不挂载 |
+| 历史凭据 | 已完成的旧调用方/授权/审计提取与停用导入 | 可保留审计事实；默认 disabled/reissue_required，不恢复旧 secret/token，不阻塞 V1 上线 |
 
-首次实施冻结每路由请求/响应/错误/权限/数据范围和旧实际注册证据；表中7+11计数正确性以fixture路由清单为准；还须覆盖03a登记的其他真实机器路由。旧业务prefix gate、publish gate、废弃参数拒绝不能省。受限SQL输入只接受可证明等价翻译的旧允许子集，转换现有声明式规则；绝不将外部SQL直接执行，也不为兼容创建新数据库查询平台。若现有领域缺必要语义，提交具体缺口由根协调领域Port并纳入本板块同一个完整PR；仅已存在且可独立定位的共用基础缺陷另走小PR。禁止用501/伪200充作全项完成。
+已通过审查的增量迁移和共享基础不回滚。只为旧响应兼容存在、且尚未形成稳定 V3 契约的投影不得成为上线依赖；若保留会扩大攻击面或长期维护面，应停止挂载并在 #173 中删除。
 
-按用户最新指令，机器鉴权、三MCP工具、全部GET/POST业务适配、管理前端、历史导入及运行测试必须在一个完整板块PR内收口；可拆实施提交，不拆业务PR。全部清单有实际等价结果或有证据的旧本来不可用边界才完成，不能擅自缩成只读平台。
+## 统一 Operation Catalog
 
-## MCP契约
+V1 只承诺以下应用操作。能力目录按当前真实装配返回；领域能力未就绪时不得通过空数组、伪 200 或固定 `accepted` 冒充可用。
 
-恢复GET/POST /mcp及initialize/tools/list/tools/call；以旧JSON-RPC和protocolVersion 2024-11-05为兼容基线。工具按权限发现，输入schema/错误与旧fixture一致；未知工具/方法、bad JSON、非法ID/批处理范围清晰拒绝。三个工具调用Customer/Identity/Archive既有Port，不跨表。
+| operation_id | REST | MCP 工具 | 权限能力 | 结果 |
+|---|---|---|---|---|
+| `platform.capabilities.list` | `GET /open/v1/capabilities` | `list_capabilities` | `platform.capabilities.read` | 当前调用方可用操作、活动类型和 schema 版本 |
+| `customer.resolve` | `POST /open/v1/customers:resolve` | `resolve_customer` | `customer.resolve` | canonical customer 或 pending/not_found/conflict |
+| `customer.context.get` | `GET /open/v1/customers/{customer_id}` | `get_customer_context` | `customer.read` | 经授权的数据范围内客户上下文 |
+| `customer.activities.list` | `GET /open/v1/customers/{customer_id}/activities` | `list_customer_activities` | `customer.activity.read` | 分页的 message/survey/radar/order 类型化活动 |
+| `ai.review_plan.create` | `POST /open/v1/ai/review-plans` | `create_ai_review_plan` | `ai.review_plan.create` | 审阅计划 ID 与当前审批状态 |
+| `operation.get` | `GET /open/v1/operations/{operation_id}` | `get_operation_status` | `operation.read` | accepted/queued/attempted/executed/outcome_unknown/reconciled |
 
-resolve_customer兼容customer_ref/scoped external_userid等旧实际支持输入；对mobile仅允许通过既有可信Identity语义解析，缺scope/冲突保持pending，不隐式建客。context/recent_messages只返回授权且V3已有记录；存档未就绪如实状态，不绕gate或远程旧环境读取。不新增MCP写工具。
+认证端点沿用 `POST /oauth/token`；MCP 沿用 `GET /mcp` 与 `POST /mcp`。路径和 operation_id 一经发布即按版本化契约维护。
 
-## Owner、事务与历史
+### 通用协议
 
-OneID：客户API/工具读取canonical、scoped解析，不provision；凭据自身不涉及。持久化：Access本地UoW，已有业务写通过原领域UoW/River/EER；不新建机器执行框架。
+- JSON 响应使用稳定 envelope：`data`、`error`、`request_id`；错误至少区分 authentication、permission、validation、not_found、identity_pending、identity_conflict、rate_limited、dependency_unavailable、outcome_unknown。
+- 列表默认 50 条、最大 100 条，使用不透明 cursor。调用方不得提交数据库 offset、SQL、表名或任意筛选表达式。
+- 写入要求 `Idempotency-Key`。同一调用方、同一操作、同一 key、同一请求摘要返回原 receipt；请求摘要不同则冲突拒绝。
+- `request_id`、`operation_id` 和审计 actor 可关联，但响应与日志不得泄露 secret、Token、openid、external_userid、手机号或未授权 PII。
+- 内容类型、body 大小、分页和超时均设上限；生产只允许 TLS，并对 Token 与凭据响应设置 `Cache-Control: no-store`。
 
-Access独占真实机器clients、credential digest、auth_version、grant与audit；AdminOps安全管理投影通过稳定Port。token签名安全引用来自现有受保护配置，禁止任意ref或明文配置。Host层仅认证/DTO适配/Port调用；读范围必须进入领域查询，禁止先取全量再无上限过滤。PII字段授权和日志脱敏。
+## 客户解析与上下文
 
-Client管理同事务状态/版本/审计/幂等；轮换安全返回一次凭据，重放不能凭明文补存。业务写稳定幂等键/receipt保留现有审批与Provider gate；外部调用不能跳过审批自动发送。
+`customers:resolve` 接收一个或多个带作用域的外部身份引用。HTTP 请求不能自报 `verified`；只有内部已验证 Adapter 可以构造可信 identity。多个可信证据落到不同 Customer 时返回 conflict，不能择一绑定。
 
-历史调用方/授权/审计离线映射，旧hash算法/secret不可验证的客户端默认disabled/reissue_required；现有AdminOps投影绝不能导入即成为有效凭据。历史Token不重签恢复。源ID幂等/每行结果，secret不出文件日志。迁移0096。
+客户详情和活动读取在进入各领域查询前完成调用方的数据范围校验。禁止先读全量再在 Host 内过滤，也不得通过猜测 `customer_id`、订单号或活动游标绕过 owner 范围。
 
-## 验收
+活动流由 Host 通过稳定 Owner Port 组合，支持 `types=message,survey,radar,order`。每项包含 `activity_id`、`type`、`occurred_at`、`source` 和该类型受控 payload；不制造跨领域公共表。只在对应 Owner Port 已真实装配、授权和测试通过时将该类型发布到 capability catalog。
 
-- A01 管理页面创建→一次显示→token→真实授权API/MCP→轮换/停用→旧secret/token立即拒绝；到期/CIDR/audience/scope和可信proxy覆盖。
-- A02 三真实MCP工具schema/JSON-RPC/错误/授权/identity冲突/存档边界；无隐式建客与跨scope。
-- A03 7GET路径fixture和实际Port结果等价，分页、PII和owner范围不可绕过。
-- A04 11POST逐路由旧行为对照，preview/apply/publish/activate/archive真实领域事实；无rawSQL执行/审批绕过/新Provider旁路。旧本来disabled能力单列证据。
-- A05 真实PG并发client轮换/停用/幂等/回滚与重启；业务API重放不重复效果。
-- A06 UI/API docs真实凭据状态与工具发现；历史导入不启用旧token、不泄密且可对账。
+## AI 审阅计划
 
-测试Provider和真实业务验收分开。仅有认证、metadata、空工具或排队不能标本板块完成。
+外部调用只能创建待审阅计划，载荷沿用 AI Assistant 已有计划输入和审批规则。调用方不能在 payload 中指定管理员、伪造审批通过或直接触发 Provider 写入。
 
-## 补充核查（首次派发前冻结）
+创建计划与幂等收据、审计在原领域 PostgreSQL UoW 中原子提交。计划后续执行继续使用既有持久任务和 External Effects；开放平台通过 `operation.get` 回读真实状态。`outcome_unknown` 不换幂等键盲重试。
 
-旧main.py:120确实注入ai_audience_e2e_runner_factory，不能援引fallback503声称旧能力不存在。其默认gate关闭、指定测试对象、显式确认与最大真实发送次数约束必须保留；本轮仅在隔离测试Provider验证，不使用旧硬编码真实对象进行发送。运营周期/AI计划/群广播/完整人群包机器接口按03a清单逐项承接现有业务，不扩展新产品。
+群广播、自动化计划发布和直接企微发送不属于本轮最小平台。未来新增时先在领域内形成稳定命令，再向 Operation Catalog 增加版本化操作。
 
-## 冻结供体复用清单（本次确认收口）
+## 调用方管理与授权
 
-旧仓 https://github.com/qianlan33333-png/AI-CRM，提交 `dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`。下表与总控最新规则共同生效；已有V3实现优先复用，实际完成状态以验收矩阵当前HEAD为准。
+管理员页面保留 V3 已完成的调用方创建、一次展示 secret、轮换、停用/吊销、到期、Token TTL、CIDR、grant 和审计。OAuth2 client_credentials 是 V1 唯一对外凭据模式；不引入 refresh token 或授权码模式。
 
-| 分类 | 冻结依据/复用对象 | 收口要求 |
-|---|---|---|
-| 原样复用 | integration_gateway/mcp.py、mcp_tool_catalog.py 的协议/工具样例；admin_config/api_clients.py、Direct API Key相关页面的字段与顺序 | 复用实际旧契约，前端经Host/Adapter接入 |
-| Go 等价迁移 | 调用方/Key/Token生命周期、授权、MCP发现/调用和03a冻结56条method/path | 同一个完整板块PR；不能以只读工具或少数API代替全部约定 |
-| V3 已有 | Access会话/RBAC、客户/会话/AI等业务稳定Port、现有Go路由和OneID | 机器主体不伪装超级管理员，业务写复用既有事务和执行链 |
-| 待补齐 | 通用机器凭据实际校验、运行装配、旧页面适配、历史停用导入和完整协议/PG/浏览器证据 | 不新增任意SQL查询平台，不迁旧运行依赖；尚未有完整PR |
+请求 scope 只能比客户端 grant 更窄。每次 API/MCP 调用都校验 client enabled、expiry、auth_version、audience、scope、capability 和可信代理解析后的来源 CIDR。机器 actor 固定为 `machine:<client_id>`，不得转换成虚假管理员 ID；领域仍只接受人工 actor 时，通过该领域 Owner 的最小 actor_kind/actor_ref Port 扩展。
 
-## 实际旧授权模板核对补充
+建议继续使用现有 `external_integration` audience，减少配置改动；V1 权限以表中细粒度 capability 为准。Direct API Key 已有实现如删除风险较大可留在代码中，但不得在新页面、能力目录和验收中作为推荐或必需入口。
 
-旧 `platform/platform_foundation/auth_platform/profiles.py:105-112`、`platform/admin_config/api_clients.py:46-54` 和 `scripts/ci/update_route_policy_manifest.py:385` 的 MCP 使用 `audience=external_integration`，`scopes=read/write`，`capabilities=mcp_read/mcp_execute`，purpose=mcp。保持旧调用方请求：GET/read和POST/write按对应capability/purpose校验；不得强迫改用新增audience=mcp或scope=mcp。token请求scope只能收窄，不能凭客户端存在write capability绕过token的read范围。
+## MCP 约束
 
-旧 `api_clients.py:123-232` 的创建默认停用、轮换后停用、停用后可编辑display_name/Token TTL/CIDR均需承接。管理页面原client_type/token_ttl_minutes等字段通过HTTP DTO/Host薄映射到Go稳定Port；底层安全摘要/认证版本保留，勿为了原样复用而恢复明文密钥。
+MCP 协议继续支持 initialize、tools/list、tools/call，工具列表根据同一调用方 grant 动态裁剪。每个工具只适配 Operation Catalog，不直接引用领域 store/app/http/provider。
 
-## 历史与机器主体边界补充（具体供体审核）
+REST 与 MCP 对同一 operation 必须产生相同权限结果、OneID 结果、幂等 receipt、审计 actor 和业务状态。MCP 输入 schema 与 REST DTO 可以采用不同传输形态，但不得出现能力或业务语义分叉。
 
-- source_revision记录冻结源码版本；快照批次独立命名。相同源码版本允许后续抓取，来源作用域与源行身份跨批次幂等；相同行重放、重叠快照新增行、同源行漂移分别验证。不能以批次ID掩盖重复授权或审计事实。
-- 旧owner_scope中的customer_id等本地数字引用只作为源事实，经既有可信映射转换后才能参与V3授权；原值与映射回执保留。未映射或冲突保持不可启用，禁止轮换密钥解除此阻断，也禁止删除限制变成全量授权。外部owner_userid须验证同企业作用域。
-- 旧auth_platform/profiles.py的group_broadcast是principal_type=service且audience=external_integration，属于本轮已冻结服务模板；不能因不是api_client全部排除。internal_worker模板仍不对外恢复。
-- 旧Direct API Key记录为client_id=aicrm-direct-external-api-key、purpose=external_agent、read/external_read；若V3使用direct_external_api_key/direct_api_key，迁移须显式登记映射并供原Direct页面回读，不能误入普通OAuth调用方。保持停用待重颁、只读和来源审计，不迁旧secret/token。
-- 机器主体进入业务命令优先使用现有string actor或ActorService。需要兼容只支持人工int64 actor的领域时，使用领域Owner最小actor_kind/actor_ref适配并保留人工字段兼容；不得把机器client数值当管理员ID。实际机器client须可审计追溯，不另建身份或授权平台。
+## 管理前端与 PR #164
+
+新前端壳只需接入调用方列表/详情、创建、一次性 secret、轮换、停用、grant 编辑、最近调用/审计，以及 V1 capability catalog。删除“旧接口目录完整兼容”的页面要求；接口文档展示 V1 Operation Catalog、权限、请求示例、错误和当前真实可用状态。
+
+前端不得缓存或再次显示 secret，不允许通过 UI 配出超出服务器白名单的 capability、audience 或任意 secret 引用。
+
+## 历史与迁移
+
+开放平台迁移继续使用已分配的 0096 及经协调的后续 additive migration。旧 client、grant 与 audit 可离线导入为来源事实；不可验证凭据始终 disabled/reissue_required。相同源行跨批次幂等，旧本地客户数字 ID 必须经过可信映射；未映射或冲突不能因轮换凭据而获得数据范围。
+
+不导入历史 Token，不恢复旧 secret，不把旧 Direct API Key 转换成可用 OAuth 凭据。新 V1 调用方由管理员重新创建或明确重颁。
+
+## 非功能要求和失败方式
+
+- 授权撤销或 secret 轮换后，旧 Token 在下一次调用立即失效。
+- Identity pending/conflict、数据范围拒绝、领域 Port 不可用和 outcome_unknown 都必须保持可区分，不降级成空成功。
+- 审计写失败时，管理写和计划创建整体回滚；Provider 网络调用不得持有数据库事务。
+- capability catalog 只声明当前 Composition Root 已注册且通过契约测试的操作。
+- 每个领域故障被隔离：某一活动 Owner 不可用时返回明确部分失败或依赖错误，不推进虚假游标。
+
+## #173 收口顺序
+
+1. 以当前 #173 准确 HEAD 为起点，先删除旧 56 路由的剩余派工和验收引用，盘点已完成代码为“直接复用／改接 V1／停止挂载”；不得回滚已验证的 Access、MCP、历史和机器 actor 基础。
+2. 冻结 6 个 operation_id、REST DTO、MCP schema、错误、capability、数据范围和幂等契约，生成一份共享 Operation Catalog；之后前后端和测试都从该目录读取或校验。
+3. 先完成调用方管理、OAuth 与 `platform.capabilities.list`，以真实授权证明控制面可用；再完成 `customer.resolve` 与 `customer.context.get`，锁定 OneID 和 owner scope。
+4. 将已存在的 chat、survey、radar、order 查询适配到 `customer.activities.list`。每种类型独立通过 Owner Port 契约后才登记可用，不等待未就绪的历史兼容接口。
+5. 接入 `ai.review_plan.create` 和 `operation.get`，验证机器 actor、幂等、审批与重启恢复；不增加直接发送入口。
+6. PR #164 接入管理页与 capability catalog，跑真实 PostgreSQL、REST/MCP 协议、Chromium 和全量 CI。只修新范围的具体失败，不再补旧路径测试。
+
+第 2 至第 5 步可以在 #173 内按提交分段审核，但最终仍以一个完整板块 PR 合并。message、survey、radar、order 四种活动均须通过对应 Owner Port；发现缺 Port 时补最小稳定读取 Port，不得跨域读表换取表面完成。
+
+## 验收标准
+
+1. **授权闭环：** 管理员创建调用方、一次取 secret、取 Token、调用授权 API/MCP、轮换/停用后旧 secret 与旧 Token 立即拒绝；覆盖到期、CIDR、audience、scope、capability 和可信代理伪造。
+2. **双传输同义：** 上述 6 个应用操作通过 REST 与 MCP 使用同一处理器；成功结果、错误、权限、审计和幂等行为一致。
+3. **OneID 边界：** scoped identity 正常解析；缺 scope、pending、conflict 不误绑、不建客，越权 customer_id 被拒绝。
+4. **真实数据读取：** 在真实 PostgreSQL 中验证客户上下文与已发布活动类型的分页、cursor、owner 范围、PII 字段授权和依赖失败；没有数据的真实空结果与能力未装配可区分。
+5. **AI 计划闭环：** 重复请求只创建一个待审阅计划；机器 actor 可追溯，不能绕审批直接发送；任务重启后 `operation.get` 回读真实状态，unknown 不盲重试。
+6. **管理与历史：** 管理 UI/API、审计、并发轮换/停用、事务回滚和历史导入对账在真实 PostgreSQL 通过；历史导入不激活旧凭据。
+7. **新壳 Journey：** PR #164 页面完成创建、授权、轮换、停用、能力目录和一次真实只读调用；浏览器不得依赖旧 56 路由。
+8. **移除伪兼容：** 未纳入 V1 的旧路径不挂载，返回标准 404；代码、OpenAPI、前端和测试不存在 501、固定 accepted 或空工具冒充完成。
+
+## 完成定义
+
+PR #173 在一个准确 HEAD 中交付上述后端、管理前端适配、数据库迁移/历史工具、Composition Root 装配、OpenAPI/MCP schema、真实 PostgreSQL、并发/恢复、协议和 Chromium 证据。完整 CI 全绿后方可整板块审核。
+
+“旧版 56 路由等价迁移”及其兼容测试自本口径起不再是阻塞项。任何新增操作必须先说明领域 Owner、OneID/持久化/外部效果分类和授权能力，再独立扩展 Operation Catalog。

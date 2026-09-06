@@ -49,3 +49,7 @@ PR包含必要后端适配、最小前端修改、构建制品与部署契约、
 - 新侧边栏使用blob URL显示缩略图，当前CSP只允许Media页面的img-src blob；需要限于侧边栏页面的兼容与实际naturalWidth验证，保持其他页面限制。
 - 新的缩略图API须复用Media可见性判定，检验停用/归档图片不通过猜测ID绕过侧边栏列表约束。
 - 当前AI/Channel/Product/GroupOps挂载删除了既有UI binding，而真实业务Host仍承担字段适配和执行按钮。新壳必须接回同一业务链后才可替换；不能仅以新页面成功渲染为准。
+
+## 开放平台最新范围覆盖
+
+用户已明确采用03-open-platform.md与ADR0010的六个原生V1 Operation，旧56接口目录和等价迁移停止。PR173继续同一完整板块PR，REST /open/v1与MCP /mcp共享处理器/权限/OneID/幂等/审计。PR164只接调用方列表详情、创建及一次secret、轮换停用、grant、审计和V1 capability catalog，不显示旧56目录。负责人、标签、配置、商品外推及其他新壳交付要求保持现行已授权范围。
