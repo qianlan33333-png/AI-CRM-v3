@@ -42,7 +42,7 @@ V3 受保护文件为 `/var/tmp/aicrm-push-history-20260906T150000Z/history.seal
 ## 2026-09-06 16:06 UTC 运行前置核验
 
 - #172已合并为 main65d，但主线CI失败、部署跳过；须经独立修复#174完整门禁及实际release验证后才能应用0095和外推历史。
-- 31条旧外推配置中，24条有明确 V3 商品来源映射，7条缺映射。旧库只读核实缺映射中的3条仍有 active 商品且启用外推，另外4条对应商品已不在两张旧商品表中且配置停用。不能按数字ID猜测。先恢复3条真实商品的受控追加映射；预计27条运行配置可恢复，4条仅保留历史并显式记录未恢复原因。现有全量配置定义迁移器强制31条基线且拒绝已存在商品代码，不能直接重复全量导入。
+- 2026-09-06 16:56 UTC交叉复核纠正：31条旧外推配置中24条有明确V3商品来源映射（9启用）；7条缺映射，其中3条启用配置引用的商品在旧wechat_pay_products和service_period_products中均不存在，另外4条停用配置中3条对应现存active普通商品、1条也不存在。此前把 enabled_configs=3 与 existing_configs=3 误当同3行，预计27条恢复的结论撤销。PR175的3商品追加不适用于恢复这些启用配置，停止合并和执行；不得创建替代商品或猜配。先恢复准确映射的24条，7条完整保留历史并逐条记录目标缺失或定义未导入原因。只读交叉证据：aicrm-push-config-cross-classify.py。
 - V3 Open JWT签名材料及可信代理配置已在 `/var/tmp/aicrm-open-platform-v1-20260906/runtime-prepared.json` 受保护文件准备，尚未应用、未发放机器凭据。可信代理仅127.0.0.1/32，对应只读核实的现有Caddy回源；不得信任任意转发头。密钥不进入文档或代码。
 - 根已用服务器现有受保护 bootstrap 凭据验证正常 HTTPS 登录并退出，未重置管理员。外推业务配置恢复将沿真实认证/CSRF/Product HTTP UoW路径，不能伪造actor或直接写Product表。
 
@@ -56,3 +56,13 @@ inspect/dry-run审核后，root以准确摘要apply并verify均通过：标签19
 ## Open 历史准备（尚未应用）
 
 090889a已审工具从同一旧revision只读提取17个API Client、14条调用方审计。V3 `/var/tmp/aicrm-v3-open-platform-history-090889a/open-platform.snapshot` 与同目录snapshot.key，父目录0700、文件0600。manifest `6d01d492fb6f4fb5bc450cfa9e65d175ddb56fa836a73efa852e2455d791cfcb`，密封文件SHA256 `911da5d065cc4d4ae50f22306bbd0635fb62eda93fc455a42273b8803590e1b4`。extract/inspect/dry-run通过，旧源及本地敏感临时文件已删除。未应用目标数据库，所有旧client仅允许disabled/reissue_required或带原因excluded，不恢复secret/token。
+
+## 2026-09-06 17:18 UTC 商品外推代码已部署、历史已对账
+
+main05045c645f95d269b624771ceb215713e3300f59的Linux check job101518074524已成功。自动部署跨区上传缓慢，根在独立精确HEAD构建全部20个Linux二进制、94项迁移及前端资源，制品226文件/77,118,012字节；归档SHA256 `7173309f191848d72c705276ca375b2eb4d080f6156f818bdde5f89e651835f0`。本地cgo runner使用Zig 0.13，未声称与CI GCC字节相同；生产服务器已验证SHA及Linux loader兼容。原流水线34044888183仅在check成功后取消慢速deploy，根使用仓库原installer/run983完成安装；这是人工部署证据，不把取消的整条workflow写成成功。
+
+17:15公网readyz、current symlink、aicrm与effects-worker的实际exe均为05045，原outbound/customer-tag/wecom开关均保留true。普通HTTPS管理员登录、运行配置读取和退出通过；有效配置仍revision0/environment_default/max_recipients1，未发布新值。CommercePush Provider仍false，新壳#164和负责人#171/开放平台#173尚未上线。
+
+外推旧源manifest c8c20c8c1ef30bb19296eb01a7274a39c8997fb4b27375d3818d9bb8b784fbce已用当前发布的迁移器apply并verify：800输入=406 imported+10 pending+384 excluded。生产SQL逐项回读：24配置/382投递已关联，7配置/3投递product_mapping_unavailable，384旧domain_event_outbox以legacy_domain_event_not_replayed保留排除事实；live commerce intent及commerce_product_push effect均0。
+
+运行配置受保护准备文件为 `/var/tmp/aicrm-push-history-20260906T150000Z/runtime-prepared.json`，24配置、9原启用、7排除项、9受控目标；payload key已生成并封存，尚未应用runtime或保存业务配置。PR175已关闭且未合并/部署/apply，明确撤回不适用的追加方案。

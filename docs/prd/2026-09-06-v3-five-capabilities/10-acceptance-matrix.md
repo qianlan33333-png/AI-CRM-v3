@@ -193,3 +193,20 @@
 - #173090 CI暴露既有自动化导入器漏填0097 actor。用户侧边补丁仅两个导入文件；根独立PG/race四包0跳过通过（3.073/1.770/2.025/1.229s），原失败用例1.59s通过，架构910文件通过。选择复用AdminMutationActor及管理员42的五表dry-run/apply/replay断言版本，替换并行手拼actor重复修复；不增加六Operation以外业务。最终提交及完整CI待核验。
 - #1647cca25da68fe079c50a0e760de4e5cfb7b67dc31修复Chromium测试工作目录导致web/dist回落旧壳，增加外层Host/资产预检；源码审核通过，Linux浏览器仍待证据。
 - 标签305条及配置8条生产历史已apply/verify，具体pending/excluded明细见11；没有新的真实Provider业务操作。
+
+## 2026-09-06 16:58 UTC 收口核对
+
+- #173准确fb9dbb4d048c18cd8bd546ddbfb24110d1f55492完整CI34045870718成功；用户actor导入补丁已用AdminMutationActor原样纳入，根独立四包PG/race及空CIDR协议复核通过。仍限定六个V1 Operation。
+- #164准确4fcdeb4d6766e45ed1b9c465e479ef1b127334a1完整CI34045781073成功。尚待最终173/171组合及新壳开放平台Chromium收口，不等于最终发布包完成；组合测试90秒等待超时仍在定点定位。
+- #175 f9a0c95的摘要绑定、逐源映射/商品code/version核验，根真实PG/race三包通过。但实际旧源交叉预检证实拟恢复的3条启用配置属于商品缺失，追加不适用，停止执行。此前27条/12启用恢复预期撤销，按11部署待办的24已映射/9启用与7条历史分类处理。
+- #171 cc34d6bc6be40bcf395f77b01891fca1c37f38c4完整CI仍在最终race；main05045部署仍传输，线上未声称更新。
+
+## 2026-09-06 17:18 UTC 商品外推代码已部署、历史已对账
+
+main05045c645f95d269b624771ceb215713e3300f59的Linux check job101518074524已成功。自动部署跨区上传缓慢，根在独立精确HEAD构建全部20个Linux二进制、94项迁移及前端资源，制品226文件/77,118,012字节；归档SHA256 `7173309f191848d72c705276ca375b2eb4d080f6156f818bdde5f89e651835f0`。本地cgo runner使用Zig 0.13，未声称与CI GCC字节相同；生产服务器已验证SHA及Linux loader兼容。原流水线34044888183仅在check成功后取消慢速deploy，根使用仓库原installer/run983完成安装；这是人工部署证据，不把取消的整条workflow写成成功。
+
+17:15公网readyz、current symlink、aicrm与effects-worker的实际exe均为05045，原outbound/customer-tag/wecom开关均保留true。普通HTTPS管理员登录、运行配置读取和退出通过；有效配置仍revision0/environment_default/max_recipients1，未发布新值。CommercePush Provider仍false，新壳#164和负责人#171/开放平台#173尚未上线。
+
+外推旧源manifest c8c20c8c1ef30bb19296eb01a7274a39c8997fb4b27375d3818d9bb8b784fbce已用当前发布的迁移器apply并verify：800输入=406 imported+10 pending+384 excluded。生产SQL逐项回读：24配置/382投递已关联，7配置/3投递product_mapping_unavailable，384旧domain_event_outbox以legacy_domain_event_not_replayed保留排除事实；live commerce intent及commerce_product_push effect均0。
+
+运行配置受保护准备文件为 `/var/tmp/aicrm-push-history-20260906T150000Z/runtime-prepared.json`，24配置、9原启用、7排除项、9受控目标；payload key已生成并封存，尚未应用runtime或保存业务配置。PR175已关闭且未合并/部署/apply，明确撤回不适用的追加方案。
