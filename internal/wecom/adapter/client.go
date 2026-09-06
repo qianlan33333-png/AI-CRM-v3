@@ -828,10 +828,15 @@ func (client *Client) TransferCustomer(ctx context.Context, sourceUserID, target
 	if !topLevelOK || topLevelCode != 0 {
 		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(ErrResponse, true, true)
 	}
-	if len(payload.Customer) != len(externalUserIDs) {
+	// A batched response can conclusively report some rows while omitting
+	// others. Preserve those exact row identities for the owner-handoff
+	// artifact; an omitted or non-strict per-row code remains unclassified.
+	// Any cross-row ambiguity is unsafe for every member and remains a whole
+	// call outcome_unknown.
+	if len(payload.Customer) > len(externalUserIDs) {
 		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
 	}
-	result := wecomport.CustomerTransferResult{AcceptedExternalUserIDs: make([]string, 0, len(payload.Customer))}
+	result := wecomport.CustomerTransferResult{AcceptedExternalUserIDs: make([]string, 0, len(payload.Customer)), RejectedExternalUserIDs: make([]string, 0, len(payload.Customer))}
 	reported := make(map[string]struct{}, len(payload.Customer))
 	for _, item := range payload.Customer {
 		item.ExternalUserID = strings.TrimSpace(item.ExternalUserID)
@@ -847,13 +852,19 @@ func (client *Client) TransferCustomer(ctx context.Context, sourceUserID, target
 		reported[item.ExternalUserID] = struct{}{}
 		code, valid := transferSubmissionCode(item.ErrCode)
 		if !valid {
-			return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+			continue
 		}
 		if code == 0 {
 			result.AcceptedExternalUserIDs = append(result.AcceptedExternalUserIDs, item.ExternalUserID)
 		} else {
 			result.FailedCount++
+			result.RejectedExternalUserIDs = append(result.RejectedExternalUserIDs, item.ExternalUserID)
 		}
+	}
+	// Keep the established one-row contract: it has no independently proven
+	// peer result to retain, so an omitted/invalid row is reported as unknown.
+	if len(externalUserIDs) == 1 && len(result.AcceptedExternalUserIDs)+len(result.RejectedExternalUserIDs) != 1 {
+		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
 	}
 	return result, nil
 }

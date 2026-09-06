@@ -19,7 +19,6 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
-	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
@@ -65,17 +64,23 @@ func (worker stopAfterOwnerHandoffSegment) ProcessOwnerHandoffBatch(ctx context.
 
 type ownerHandoffRuntimeWriter struct {
 	mu    sync.Mutex
-	calls []struct{ source, target, external, welcome string }
+	calls []struct {
+		source, target, welcome string
+		external                []string
+	}
 }
 
 func (writer *ownerHandoffRuntimeWriter) TransferCustomer(_ context.Context, source, target string, external []string, welcome string) (wecomport.CustomerTransferResult, error) {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
-	if len(external) != 1 {
+	if len(external) == 0 || len(external) > 100 {
 		return wecomport.CustomerTransferResult{}, fmt.Errorf("unexpected transfer target count")
 	}
-	writer.calls = append(writer.calls, struct{ source, target, external, welcome string }{source, target, external[0], welcome})
-	return wecomport.CustomerTransferResult{AcceptedExternalUserIDs: []string{external[0]}}, nil
+	writer.calls = append(writer.calls, struct {
+		source, target, welcome string
+		external                []string
+	}{source: source, target: target, welcome: welcome, external: append([]string(nil), external...)})
+	return wecomport.CustomerTransferResult{AcceptedExternalUserIDs: append([]string(nil), external...)}, nil
 }
 
 func (*ownerHandoffRuntimeWriter) TransferResult(context.Context, string, string, string) (wecomport.CustomerTransferResult, error) {
@@ -83,9 +88,9 @@ func (*ownerHandoffRuntimeWriter) TransferResult(context.Context, string, string
 }
 
 // TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS covers the
-// actual bounded path: Customer UoW accepts/binds one EER intent, a restarted
-// River runtime executes outbound after that commit, and completion atomically
-// projects only the accepted frozen target as the local CRM owner.
+// actual bounded path: 101 eligible rows freeze into two EER intents (100+1),
+// River executes both bounded outbound calls after their Customer UoWs commit,
+// and completion atomically projects only accepted frozen targets locally.
 func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.T) {
 	native, cleanup := channelWelcomeIntegrationPool(t)
 	defer cleanup()
@@ -137,7 +142,9 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 	store := customer.NewPostgreSQLOwnerHandoffStoreWithCipher(cipher)
 	staff := accessstore.NewPostgreSQL()
 	var sourceID, targetID int64
-	var customerID customerdomain.CustomerID
+	const handoffRows = 101
+	ids := make([]customerdomain.CustomerID, 0, handoffRows)
+	candidates := make([]customerport.OwnerHandoffCandidate, 0, handoffRows)
 	if err = uow.Within(ctx, func(txctx context.Context) error {
 		tx, txErr := platformpostgres.RequireTransaction(txctx)
 		if txErr != nil {
@@ -149,16 +156,23 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('handoff-runtime-target','$argon2id$fixture','Next','next-user',true) RETURNING id`).Scan(&targetID); txErr != nil {
 			return txErr
 		}
-		return tx.QueryRow(txctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID)
+		for index := 0; index < handoffRows; index++ {
+			var customerID customerdomain.CustomerID
+			if txErr = tx.QueryRow(txctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); txErr != nil {
+				return txErr
+			}
+			ids = append(ids, customerID)
+			candidates = append(candidates, customerport.OwnerHandoffCandidate{CustomerID: customerID, State: "ready", RelationshipDigest: sha256.Sum256([]byte(fmt.Sprintf("runtime-trusted-relation-%d", index))), SourceUserID: "former-user", TargetUserID: "next-user", ExternalUserID: fmt.Sprintf("external-runtime-%03d", index)})
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	candidate := customerport.OwnerHandoffCandidate{CustomerID: customerID, State: "ready", RelationshipDigest: sha256.Sum256([]byte("runtime-trusted-relation")), SourceUserID: "former-user", TargetUserID: "next-user", ExternalUserID: "external-runtime"}
 	audit, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := customerapp.NewOwnerHandoffService(uow, store, staff, ownerHandoffRuntimeResolver{candidate: candidate}, audit, platformoutbox.NewPostgreSQL())
+	service, err := customerapp.NewOwnerHandoffService(uow, store, staff, ownerHandoffRuntimeResolver{candidates: candidates}, audit, platformoutbox.NewPostgreSQL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,14 +183,14 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 		t.Fatal(err)
 	}
 	service.SetWeComProviderEnabled(true)
-	preview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: sourceID, Mode: customerport.OwnerHandoffWeComThenCRM, SourceStaffID: sourceID, TargetStaffID: targetID, CorpScope: "wecom-corp:runtime", CustomerIDs: []customerdomain.CustomerID{customerID}, WelcomeMessage: "欢迎", ConfirmationPhrase: "CONFIRM", IdempotencyKey: "runtime-preview-key"})
+	preview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: sourceID, Mode: customerport.OwnerHandoffWeComThenCRM, SourceStaffID: sourceID, TargetStaffID: targetID, CorpScope: "wecom-corp:runtime", CustomerIDs: ids, WelcomeMessage: "欢迎", ConfirmationPhrase: "CONFIRM", IdempotencyKey: "runtime-preview-key"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A second independently generated preview sees the same still-current
 	// relation. Confirm both concurrently: the Customer row lock must allow
 	// exactly one EER acceptance, rather than issue transfer_customer twice.
-	secondPreview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: sourceID, Mode: customerport.OwnerHandoffWeComThenCRM, SourceStaffID: sourceID, TargetStaffID: targetID, CorpScope: "wecom-corp:runtime", CustomerIDs: []customerdomain.CustomerID{customerID}, WelcomeMessage: "欢迎", ConfirmationPhrase: "CONFIRM", IdempotencyKey: "runtime-preview-key-second"})
+	secondPreview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: sourceID, Mode: customerport.OwnerHandoffWeComThenCRM, SourceStaffID: sourceID, TargetStaffID: targetID, CorpScope: "wecom-corp:runtime", CustomerIDs: ids, WelcomeMessage: "欢迎", ConfirmationPhrase: "CONFIRM", IdempotencyKey: "runtime-preview-key-second"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +227,7 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 		}
 		t.Fatalf("concurrent confirmation: %v", result.err)
 	}
-	if accepted != 1 || conflicts != 1 || len(batch.Lines) != 1 || batch.Lines[0].State != "queued" || batch.Lines[0].EffectID != "" {
+	if accepted != 1 || conflicts != 1 || len(batch.Lines) != handoffRows || batch.Lines[0].State != "queued" || batch.Lines[0].EffectID != "" {
 		t.Fatalf("accepted=%d conflicts=%d batch=%+v", accepted, conflicts, batch)
 	}
 	var acceptedEffects int
@@ -243,6 +257,46 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 	if err = effects.SetCompletionSink(completion); err != nil {
 		t.Fatal(err)
 	}
+	// Commit the first Customer segment in an isolated runtime, then stop it
+	// before an Outbound worker is present. The second Customer job and the
+	// first frozen EER receipt must survive this restart without a provider
+	// call; the following full runtime resumes both stable sub-batches.
+	firstStop := func() {}
+	firstBatchWorker := customer.NewOwnerHandoffBatchWorker()
+	if err = firstBatchWorker.Bind(stopAfterOwnerHandoffSegment{service: service, stop: func() { firstStop() }}); err != nil {
+		t.Fatal(err)
+	}
+	firstWorkers := river.NewWorkers()
+	if err = river.AddWorkerSafely[customer.OwnerHandoffBatchJobArgs](firstWorkers, firstBatchWorker); err != nil {
+		t.Fatal(err)
+	}
+	firstRuntime, err := platformjobqueue.NewRuntime(native, firstWorkers, customer.OwnerHandoffQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCtx, cancelFirst := context.WithCancel(ctx)
+	firstStop = cancelFirst
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- firstRuntime.Run(firstCtx) }()
+	select {
+	case runErr := <-firstDone:
+		if runErr != nil && runErr != context.Canceled {
+			t.Fatalf("first owner handoff runtime stop: %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		cancelFirst()
+		t.Fatal("first owner handoff segment did not stop")
+	}
+	var firstEffects int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects WHERE kind='customer_owner_handoff'`).Scan(&firstEffects); err != nil || firstEffects != 1 {
+		t.Fatalf("first frozen effect=%d err=%v", firstEffects, err)
+	}
+	writer.mu.Lock()
+	if len(writer.calls) != 0 {
+		writer.mu.Unlock()
+		t.Fatalf("provider called before restart: %+v", writer.calls)
+	}
+	writer.mu.Unlock()
 	runtimeService, err := platformjobqueue.NewRuntime(native, workers, platformjobqueue.OutboundQueue, customer.OwnerHandoffQueue)
 	if err != nil {
 		t.Fatal(err)
@@ -263,30 +317,26 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		var lineState, effectState string
-		var ownerStaff int64
-		err = native.QueryRow(ctx, `SELECT l.state,e.state,lo.staff_id
-			FROM customer_owner_handoff_lines l
-			JOIN external_effects e ON e.id=substring(l.effect_id FROM 5)::bigint
-			JOIN customer_local_owners lo ON lo.customer_id=l.customer_id
-			WHERE l.batch_id=$1`, batch.ID).Scan(&lineState, &effectState, &ownerStaff)
-		if err == nil && lineState == "provider_accepted" && effectState == string(effectport.StateExecuted) && ownerStaff == targetID {
+		var acceptedLines, acceptedEffects, localOwners int
+		err = native.QueryRow(ctx, `SELECT
+			(SELECT count(*) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND state='provider_accepted'),
+			(SELECT count(*) FROM external_effects WHERE kind='customer_owner_handoff' AND state='executed'),
+			(SELECT count(*) FROM customer_local_owners WHERE staff_id=$2 AND source='owner_handoff_wecom_then_crm')`, batch.ID, targetID).Scan(&acceptedLines, &acceptedEffects, &localOwners)
+		if err == nil && acceptedLines == handoffRows && acceptedEffects == 2 && localOwners == handoffRows {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	var lineState, effectState string
-	var ownerStaff int64
-	if err = native.QueryRow(ctx, `SELECT l.state,e.state,lo.staff_id
-		FROM customer_owner_handoff_lines l
-		JOIN external_effects e ON e.id=substring(l.effect_id FROM 5)::bigint
-		JOIN customer_local_owners lo ON lo.customer_id=l.customer_id
-		WHERE l.batch_id=$1`, batch.ID).Scan(&lineState, &effectState, &ownerStaff); err != nil || lineState != "provider_accepted" || effectState != string(effectport.StateExecuted) || ownerStaff != targetID {
-		t.Fatalf("completion line=%s effect=%s owner=%d err=%v", lineState, effectState, ownerStaff, err)
+	var acceptedLines, executedEffects, localOwners int
+	if err = native.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND state='provider_accepted'),
+		(SELECT count(*) FROM external_effects WHERE kind='customer_owner_handoff' AND state='executed'),
+		(SELECT count(*) FROM customer_local_owners WHERE staff_id=$2 AND source='owner_handoff_wecom_then_crm')`, batch.ID, targetID).Scan(&acceptedLines, &executedEffects, &localOwners); err != nil || acceptedLines != handoffRows || executedEffects != 2 || localOwners != handoffRows {
+		t.Fatalf("completion lines=%d effects=%d owners=%d err=%v", acceptedLines, executedEffects, localOwners, err)
 	}
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
-	if len(writer.calls) != 1 || writer.calls[0].source != "former-user" || writer.calls[0].target != "next-user" || writer.calls[0].external != "external-runtime" || writer.calls[0].welcome != "欢迎" {
+	if len(writer.calls) != 2 || len(writer.calls[0].external) != 100 || len(writer.calls[1].external) != 1 || writer.calls[0].source != "former-user" || writer.calls[0].target != "next-user" || writer.calls[1].source != "former-user" || writer.calls[1].target != "next-user" || writer.calls[0].welcome != "欢迎" || writer.calls[1].welcome != "欢迎" || writer.calls[0].external[0] != "external-runtime-000" || writer.calls[0].external[99] != "external-runtime-099" || writer.calls[1].external[0] != "external-runtime-100" {
 		t.Fatalf("provider calls=%+v", writer.calls)
 	}
 }

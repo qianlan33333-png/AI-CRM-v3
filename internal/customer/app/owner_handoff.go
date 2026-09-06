@@ -295,18 +295,28 @@ func (service *OwnerHandoffService) ProcessOwnerHandoffBatch(ctx context.Context
 			if service.effects == nil || !service.wecomProviderEnabled {
 				return ErrOwnerHandoffForbidden
 			}
-			for _, item := range work.Lines {
-				line := item.OwnerHandoffLine
-				accept := effectport.AcceptCommand{ReceiptKey: effectport.Hash("customer-owner-handoff.accept.v1", work.BatchID, strconv.FormatInt(line.Line, 10)), Envelope: effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindCustomerOwnerHandoff, SourceRefDigest: effectport.Hash("customer-owner-handoff.v1", "source-ref", work.BatchID, strconv.FormatInt(line.Line, 10)), TargetRefDigest: effectport.Hash("customer-owner-handoff.v1", "target-ref", work.BatchID, strconv.FormatInt(line.Line, 10)), PayloadDigest: effectport.Hash("customer-owner-handoff.v1", "payload-ref", work.BatchID, strconv.FormatInt(line.Line, 10)), PolicyVersionHash: effectport.Hash("customer-owner-handoff.v1", "policy-ref", work.BatchID, strconv.FormatInt(line.Line, 10))}}
+			if len(work.Lines) > 0 {
+				ordinal := segment + 1
+				envelope, envelopeErr := ownerHandoffSubBatchEnvelope(work.BatchID, ordinal, work.Lines)
+				if envelopeErr != nil {
+					return envelopeErr
+				}
+				accept := effectport.AcceptCommand{ReceiptKey: effectport.Hash("customer-owner-handoff.accept.v2", work.BatchID, strconv.FormatInt(ordinal, 10)), Envelope: envelope}
 				projection, receipt, acceptErr := service.effects.AcceptAndQueueWithin(txctx, accept)
 				if acceptErr != nil {
 					return acceptErr
 				}
-				if bindErr := service.store.BindOwnerHandoffEffect(txctx, customerport.OwnerHandoffEffectBinding{BatchID: work.BatchID, Line: line.Line, EffectID: projection.ID, ReceiptID: receipt.ID}); bindErr != nil {
+				lineNumbers := make([]int64, 0, len(work.Lines))
+				for _, item := range work.Lines {
+					lineNumbers = append(lineNumbers, item.Line)
+				}
+				if bindErr := service.store.BindOwnerHandoffEffect(txctx, customerport.OwnerHandoffEffectBinding{BatchID: work.BatchID, SubBatchOrdinal: ordinal, Lines: lineNumbers, EffectID: projection.ID, ReceiptID: receipt.ID, SourceRefDigest: string(envelope.SourceRefDigest), TargetRefDigest: string(envelope.TargetRefDigest), PayloadRefDigest: string(envelope.PayloadDigest), PolicyRefDigest: string(envelope.PolicyVersionHash)}); bindErr != nil {
 					return bindErr
 				}
-				if factErr := service.appendProviderAcceptedFacts(txctx, work.ActorID, work.PreviewID, line, service.now().UTC()); factErr != nil {
-					return factErr
+				for _, item := range work.Lines {
+					if factErr := service.appendProviderAcceptedFacts(txctx, work.ActorID, work.PreviewID, item.OwnerHandoffLine, service.now().UTC()); factErr != nil {
+						return factErr
+					}
 				}
 			}
 		} else if work.Mode == customerport.OwnerHandoffLocalOnly {
@@ -483,6 +493,26 @@ func ownerHandoffPreviewDigest(command customerport.OwnerHandoffPreviewCommand, 
 }
 
 func int64String(value int64) string { return strconv.FormatInt(value, 10) }
+
+func ownerHandoffSubBatchEnvelope(batchID string, ordinal int64, lines []customerport.OwnerHandoffSegmentLine) (effectport.Envelope, error) {
+	if batchID == "" || ordinal < 1 || len(lines) == 0 || len(lines) > ownerHandoffBatchSegmentSize {
+		return effectport.Envelope{}, ErrOwnerHandoffDrift
+	}
+	sources := []string{"customer-owner-handoff.subbatch.v1", batchID, strconv.FormatInt(ordinal, 10)}
+	targets := append([]string(nil), sources...)
+	payloads := append([]string(nil), sources...)
+	policies := append([]string(nil), sources...)
+	for index, line := range lines {
+		if line.Line < 1 || (line.Line-1)/ownerHandoffBatchSegmentSize+1 != ordinal || (index > 0 && lines[index-1].Line >= line.Line) {
+			return effectport.Envelope{}, ErrOwnerHandoffDrift
+		}
+		sources = append(sources, strconv.FormatInt(line.Line, 10), hex.EncodeToString(line.SourceSnapshotDigest[:]))
+		targets = append(targets, strconv.FormatInt(line.Line, 10), hex.EncodeToString(line.TargetSnapshotDigest[:]))
+		payloads = append(payloads, strconv.FormatInt(line.Line, 10), hex.EncodeToString(line.PayloadSnapshotDigest[:]))
+		policies = append(policies, strconv.FormatInt(line.Line, 10), hex.EncodeToString(line.PolicySnapshotDigest[:]))
+	}
+	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindCustomerOwnerHandoff, SourceRefDigest: effectport.Hash(sources...), TargetRefDigest: effectport.Hash(targets...), PayloadDigest: effectport.Hash(payloads...), PolicyVersionHash: effectport.Hash(policies...)}, nil
+}
 
 func ownerHandoffID() (string, error) {
 	bytes := make([]byte, 18)

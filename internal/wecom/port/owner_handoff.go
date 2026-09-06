@@ -35,6 +35,10 @@ type CustomerTransferResult struct {
 	// AcceptedExternalUserIDs applies only to transfer_customer: it means the
 	// provider accepted an individual request, not that transfer completed.
 	AcceptedExternalUserIDs []string
+	// RejectedExternalUserIDs is the exact provider-reported counterpart of
+	// AcceptedExternalUserIDs. A count without a row identity is insufficient
+	// to decide a local CRM owner update for a batched transfer.
+	RejectedExternalUserIDs []string
 	FailedCount             int
 	Cursor                  string
 	Observations            []CustomerTransferObservation

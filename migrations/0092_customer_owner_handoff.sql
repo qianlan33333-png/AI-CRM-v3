@@ -84,8 +84,37 @@ CREATE TABLE customer_owner_handoff_lines (
     observed_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (batch_id,line_no),
-    UNIQUE (batch_id,customer_id),
-    UNIQUE (effect_id)
+    UNIQUE (batch_id,customer_id)
+);
+
+-- One transfer_customer protocol request is a bounded, Customer-owned
+-- sub-batch. Its mapping freezes the exact rows for its one EER receipt;
+-- multiple lines intentionally share the same effect_id.
+CREATE TABLE customer_owner_handoff_effects (
+    batch_id TEXT NOT NULL REFERENCES customer_owner_handoff_batches(id) ON DELETE CASCADE,
+    subbatch_ordinal BIGINT NOT NULL CHECK (subbatch_ordinal > 0),
+    source_ref_digest TEXT NOT NULL CHECK (length(source_ref_digest)=71),
+    target_ref_digest TEXT NOT NULL CHECK (length(target_ref_digest)=71),
+    payload_digest TEXT NOT NULL CHECK (length(payload_digest)=71),
+    policy_digest TEXT NOT NULL CHECK (length(policy_digest)=71),
+    effect_id TEXT NOT NULL UNIQUE,
+    effect_receipt_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (batch_id,subbatch_ordinal),
+    UNIQUE (batch_id,effect_id)
+);
+
+CREATE TABLE customer_owner_handoff_effect_lines (
+    batch_id TEXT NOT NULL,
+    subbatch_ordinal BIGINT NOT NULL,
+    line_no INTEGER NOT NULL CHECK (line_no > 0),
+    PRIMARY KEY (batch_id,line_no),
+    FOREIGN KEY (batch_id,subbatch_ordinal)
+        REFERENCES customer_owner_handoff_effects(batch_id,subbatch_ordinal)
+        ON DELETE CASCADE,
+    FOREIGN KEY (batch_id,line_no)
+        REFERENCES customer_owner_handoff_lines(batch_id,line_no)
+        ON DELETE CASCADE
 );
 
 ALTER TABLE customer_owner_handoff_previews

@@ -80,7 +80,11 @@ type OwnerHandoffBatchSegment struct {
 
 type OwnerHandoffSegmentLine struct {
 	OwnerHandoffLine
-	ExpectedLocalVersion int64
+	ExpectedLocalVersion  int64
+	SourceSnapshotDigest  [32]byte
+	TargetSnapshotDigest  [32]byte
+	PayloadSnapshotDigest [32]byte
+	PolicySnapshotDigest  [32]byte
 }
 
 type OwnerHandoffReader interface {
@@ -89,11 +93,12 @@ type OwnerHandoffReader interface {
 }
 
 type OwnerHandoffExecution struct {
-	EffectID      string
-	SourceStaffID int64
-	TargetStaffID int64
-	CorpScope     string
-	// SourceRefDigest and TargetRefDigest bind this exact frozen batch line to
+	EffectID        string
+	SubBatchOrdinal int64
+	SourceStaffID   int64
+	TargetStaffID   int64
+	CorpScope       string
+	// SourceRefDigest and TargetRefDigest bind this exact frozen sub-batch to
 	// its opaque EER envelope. They are deliberately distinct from provider IDs.
 	SourceRefDigest  string
 	TargetRefDigest  string
@@ -101,12 +106,20 @@ type OwnerHandoffExecution struct {
 	PolicyRefDigest  string
 	SourceUserID     string
 	TargetUserID     string
-	ExternalUserID   string
 	WelcomeMessage   string
 	SourceDigest     string
 	TargetDigest     string
 	PayloadDigest    string
 	PolicyDigest     string
+	Lines            []OwnerHandoffExecutionLine
+}
+
+// OwnerHandoffExecutionLine is one frozen member of a bounded
+// transfer_customer call. It exists only at the Customer/Outbound boundary.
+type OwnerHandoffExecutionLine struct {
+	Line           int64
+	CustomerID     customerdomain.CustomerID
+	ExternalUserID string
 }
 
 type OwnerHandoffExecutionReader interface {
@@ -120,6 +133,15 @@ type OwnerHandoffCompletion struct {
 	Attempt      int32
 	Generation   int64
 	Fence        int64
+	Lines        []OwnerHandoffLineCompletion
+}
+
+// OwnerHandoffLineCompletion is decoded from Outbound's opaque EER artifact.
+// EvidenceDigest is safe to persist; it never contains a provider identifier.
+type OwnerHandoffLineCompletion struct {
+	Line           int64
+	State          string
+	EvidenceDigest string
 }
 
 type OwnerHandoffCompletionWriter interface {
@@ -226,11 +248,16 @@ type OwnerHandoffBatchRecord struct {
 	Lines         []OwnerHandoffLine
 }
 
-// OwnerHandoffEffectBinding binds a Customer-owned frozen line to the single
-// opaque EER receipt accepted in the same PostgreSQL Unit of Work.
+// OwnerHandoffEffectBinding binds one Customer-owned frozen protocol sub-batch
+// to its one opaque EER receipt in the same PostgreSQL Unit of Work.
 type OwnerHandoffEffectBinding struct {
-	BatchID   string
-	Line      int64
-	EffectID  string
-	ReceiptID string
+	BatchID          string
+	SubBatchOrdinal  int64
+	Lines            []int64
+	EffectID         string
+	ReceiptID        string
+	SourceRefDigest  string
+	TargetRefDigest  string
+	PayloadRefDigest string
+	PolicyRefDigest  string
 }

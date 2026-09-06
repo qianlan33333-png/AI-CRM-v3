@@ -96,10 +96,10 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &databaseError) && databaseError.Code == "23505"
 }
 
-// ReadOwnerHandoffExecution returns only the single immutable line owned by
-// the requested effect.  It refuses a line whose stored ciphertext cannot be
-// authenticated against its batch/line binding; no current directory lookup
-// can substitute a changed provider identity.
+// ReadOwnerHandoffExecution returns one immutable, bounded protocol sub-batch
+// owned by the requested effect. It refuses ciphertext whose batch/line
+// binding no longer authenticates; no current directory lookup can substitute
+// a changed provider identity.
 func (store *PostgreSQLOwnerHandoffStore) ReadOwnerHandoffExecution(ctx context.Context, effectID string) (customerport.OwnerHandoffExecution, error) {
 	if store == nil || store.cipher == nil || effectID == "" {
 		return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
@@ -110,42 +110,78 @@ func (store *PostgreSQLOwnerHandoffStore) ReadOwnerHandoffExecution(ctx context.
 	}
 	var batchID, previewID, mode, scope string
 	var sourceStaffID, targetStaffID int64
-	var line int64
-	var sourceCipher, targetCipher, externalCipher, welcomeCipher []byte
-	var sourceDigest, targetDigest, payloadDigest, policyDigest []byte
-	err = tx.QueryRow(ctx, `SELECT line.batch_id,b.preview_id,line.line_no,b.mode,b.corp_scope,b.source_staff_id,b.target_staff_id,line.source_userid_ciphertext,line.target_userid_ciphertext,line.external_identity_ciphertext,line.welcome_message_ciphertext,line.source_userid_digest,line.target_userid_digest,line.payload_digest,line.policy_digest
-		FROM customer_owner_handoff_lines line JOIN customer_owner_handoff_batches b ON b.id=line.batch_id
-		WHERE line.effect_id=$1 AND line.mode='wecom_then_crm' FOR UPDATE`, effectID).Scan(&batchID, &previewID, &line, &mode, &scope, &sourceStaffID, &targetStaffID, &sourceCipher, &targetCipher, &externalCipher, &welcomeCipher, &sourceDigest, &targetDigest, &payloadDigest, &policyDigest)
+	var ordinal int64
+	var sourceRef, targetRef, payloadRef, policyRef string
+	err = tx.QueryRow(ctx, `SELECT e.batch_id,b.preview_id,e.subbatch_ordinal,b.mode,b.corp_scope,b.source_staff_id,b.target_staff_id,e.source_ref_digest,e.target_ref_digest,e.payload_digest,e.policy_digest
+		FROM customer_owner_handoff_effects e JOIN customer_owner_handoff_batches b ON b.id=e.batch_id
+		WHERE e.effect_id=$1 AND b.mode='wecom_then_crm' FOR UPDATE OF e`, effectID).Scan(&batchID, &previewID, &ordinal, &mode, &scope, &sourceStaffID, &targetStaffID, &sourceRef, &targetRef, &payloadRef, &policyRef)
 	if err != nil {
 		return customerport.OwnerHandoffExecution{}, err
 	}
-	source, err := store.cipher.Open(previewID, line, "source_userid", sourceCipher)
-	if err != nil {
-		return customerport.OwnerHandoffExecution{}, err
+	if ordinal < 1 || !effectport.ValidDigest(effectport.Digest(sourceRef)) || !effectport.ValidDigest(effectport.Digest(targetRef)) || !effectport.ValidDigest(effectport.Digest(payloadRef)) || !effectport.ValidDigest(effectport.Digest(policyRef)) {
+		return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
 	}
-	target, err := store.cipher.Open(previewID, line, "target_userid", targetCipher)
-	if err != nil {
-		return customerport.OwnerHandoffExecution{}, err
+	rows, queryErr := tx.Query(ctx, `SELECT l.line_no,l.customer_id,l.source_userid_ciphertext,l.target_userid_ciphertext,l.external_identity_ciphertext,l.welcome_message_ciphertext,l.source_userid_digest,l.target_userid_digest,l.payload_digest,l.policy_digest
+		FROM customer_owner_handoff_effect_lines m
+		JOIN customer_owner_handoff_lines l ON l.batch_id=m.batch_id AND l.line_no=m.line_no
+		WHERE m.batch_id=$1 AND m.subbatch_ordinal=$2 AND l.effect_id=$3 AND l.mode='wecom_then_crm'
+		ORDER BY l.line_no FOR UPDATE`, batchID, ordinal, effectID)
+	if queryErr != nil {
+		return customerport.OwnerHandoffExecution{}, queryErr
 	}
-	external, err := store.cipher.Open(previewID, line, "external_userid", externalCipher)
-	if err != nil {
-		return customerport.OwnerHandoffExecution{}, err
+	defer rows.Close()
+	execution := customerport.OwnerHandoffExecution{EffectID: effectID, SubBatchOrdinal: ordinal, SourceStaffID: sourceStaffID, TargetStaffID: targetStaffID, CorpScope: scope, SourceRefDigest: sourceRef, TargetRefDigest: targetRef, PayloadRefDigest: payloadRef, PolicyRefDigest: policyRef}
+	for rows.Next() {
+		var line int64
+		var customerID customerdomain.CustomerID
+		var sourceCipher, targetCipher, externalCipher, welcomeCipher []byte
+		var sourceDigest, targetDigest, payloadDigest, policyDigest []byte
+		if err = rows.Scan(&line, &customerID, &sourceCipher, &targetCipher, &externalCipher, &welcomeCipher, &sourceDigest, &targetDigest, &payloadDigest, &policyDigest); err != nil {
+			return customerport.OwnerHandoffExecution{}, err
+		}
+		if line < 1 || (line-1)/100+1 != ordinal || len(execution.Lines) >= 100 {
+			return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
+		}
+		source, openErr := store.cipher.Open(previewID, line, "source_userid", sourceCipher)
+		if openErr != nil {
+			return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
+		}
+		target, openErr := store.cipher.Open(previewID, line, "target_userid", targetCipher)
+		if openErr != nil {
+			return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
+		}
+		external, openErr := store.cipher.Open(previewID, line, "external_userid", externalCipher)
+		if openErr != nil {
+			return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
+		}
+		welcome := ""
+		if len(welcomeCipher) > 0 {
+			welcome, openErr = store.cipher.Open(previewID, line, "welcome_message", welcomeCipher)
+			if openErr != nil {
+				return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
+			}
+		}
+		if len(sourceDigest) != 32 || len(targetDigest) != 32 || len(payloadDigest) != 32 || len(policyDigest) != 32 ||
+			!sameSnapshotDigest(sourceDigest, "source-userid", source) || !sameSnapshotDigest(targetDigest, "target-userid", target) ||
+			!sameSnapshotDigest(payloadDigest, "transfer-payload", external, welcome) ||
+			!sameSnapshotDigest(policyDigest, "policy", mode, scope, strconv.FormatInt(sourceStaffID, 10), strconv.FormatInt(targetStaffID, 10)) {
+			return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
+		}
+		if len(execution.Lines) == 0 {
+			execution.SourceUserID, execution.TargetUserID, execution.WelcomeMessage = source, target, welcome
+			execution.SourceDigest, execution.TargetDigest, execution.PayloadDigest, execution.PolicyDigest = effectDigestString(sourceDigest), effectDigestString(targetDigest), effectDigestString(payloadDigest), effectDigestString(policyDigest)
+		} else if execution.SourceUserID != source || execution.TargetUserID != target || execution.WelcomeMessage != welcome {
+			return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
+		}
+		execution.Lines = append(execution.Lines, customerport.OwnerHandoffExecutionLine{Line: line, CustomerID: customerID, ExternalUserID: external})
 	}
-	welcome := ""
-	if len(welcomeCipher) > 0 {
-		welcome, err = store.cipher.Open(previewID, line, "welcome_message", welcomeCipher)
+	if err = rows.Err(); err != nil || len(execution.Lines) == 0 {
 		if err != nil {
 			return customerport.OwnerHandoffExecution{}, err
 		}
-	}
-	if len(sourceDigest) != 32 || len(targetDigest) != 32 || len(payloadDigest) != 32 || len(policyDigest) != 32 ||
-		!sameSnapshotDigest(sourceDigest, "source-userid", source) || !sameSnapshotDigest(targetDigest, "target-userid", target) ||
-		!sameSnapshotDigest(payloadDigest, "transfer-payload", external, welcome) ||
-		!sameSnapshotDigest(policyDigest, "policy", mode, scope, strconv.FormatInt(sourceStaffID, 10), strconv.FormatInt(targetStaffID, 10)) {
 		return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
 	}
-	return customerport.OwnerHandoffExecution{EffectID: effectID, SourceStaffID: sourceStaffID, TargetStaffID: targetStaffID, CorpScope: scope, SourceRefDigest: string(effectDigestForLine("source-ref", batchID, line)), TargetRefDigest: string(effectDigestForLine("target-ref", batchID, line)), PayloadRefDigest: string(effectDigestForLine("payload-ref", batchID, line)), PolicyRefDigest: string(effectDigestForLine("policy-ref", batchID, line)), SourceUserID: source, TargetUserID: target, ExternalUserID: external, WelcomeMessage: welcome,
-		SourceDigest: effectDigestString(sourceDigest), TargetDigest: effectDigestString(targetDigest), PayloadDigest: effectDigestString(payloadDigest), PolicyDigest: effectDigestString(policyDigest)}, nil
+	return execution, nil
 }
 
 func effectDigestString(raw []byte) string { return "sha256:" + hex.EncodeToString(raw) }
@@ -379,7 +415,7 @@ func (store *PostgreSQLOwnerHandoffStore) LoadOwnerHandoffBatchSegment(ctx conte
 	}
 	start := segment*int64(size) + 1
 	end := start + int64(size) - 1
-	query := `SELECT line_no,customer_id,state,COALESCE(effect_id,''),observed_at,COALESCE(transfer_status,0),transfer_takeover_at,COALESCE(expected_local_owner_version,0)
+	query := `SELECT line_no,customer_id,state,COALESCE(effect_id,''),observed_at,COALESCE(transfer_status,0),transfer_takeover_at,COALESCE(expected_local_owner_version,0),source_userid_digest,target_userid_digest,payload_digest,policy_digest
 		FROM customer_owner_handoff_lines
 		WHERE batch_id=$1 AND line_no BETWEEN $2 AND $3 AND state='queued'`
 	if result.Mode == customerport.OwnerHandoffWeComThenCRM {
@@ -395,8 +431,18 @@ func (store *PostgreSQLOwnerHandoffStore) LoadOwnerHandoffBatchSegment(ctx conte
 	defer rows.Close()
 	for rows.Next() {
 		var item customerport.OwnerHandoffSegmentLine
-		if err = rows.Scan(&item.Line, &item.CustomerID, &item.State, &item.EffectID, &item.ObservedAt, &item.TransferStatus, &item.TakeoverAt, &item.ExpectedLocalVersion); err != nil {
+		var sourceDigest, targetDigest, payloadDigest, policyDigest []byte
+		if err = rows.Scan(&item.Line, &item.CustomerID, &item.State, &item.EffectID, &item.ObservedAt, &item.TransferStatus, &item.TakeoverAt, &item.ExpectedLocalVersion, &sourceDigest, &targetDigest, &payloadDigest, &policyDigest); err != nil {
 			return customerport.OwnerHandoffBatchSegment{}, err
+		}
+		if result.Mode == customerport.OwnerHandoffWeComThenCRM {
+			if len(sourceDigest) != 32 || len(targetDigest) != 32 || len(payloadDigest) != 32 || len(policyDigest) != 32 {
+				return customerport.OwnerHandoffBatchSegment{}, ErrOwnerHandoffConflict
+			}
+			copy(item.SourceSnapshotDigest[:], sourceDigest)
+			copy(item.TargetSnapshotDigest[:], targetDigest)
+			copy(item.PayloadSnapshotDigest[:], payloadDigest)
+			copy(item.PolicySnapshotDigest[:], policyDigest)
 		}
 		result.Lines = append(result.Lines, item)
 	}
@@ -563,131 +609,245 @@ func (store *PostgreSQLOwnerHandoffStore) CreateWeComOwnerHandoffBatch(ctx conte
 }
 
 func (store *PostgreSQLOwnerHandoffStore) BindOwnerHandoffEffect(ctx context.Context, binding customerport.OwnerHandoffEffectBinding) error {
-	if binding.BatchID == "" || binding.Line < 1 || binding.EffectID == "" || binding.ReceiptID == "" {
+	if binding.BatchID == "" || binding.SubBatchOrdinal < 1 || len(binding.Lines) == 0 || len(binding.Lines) > 100 || binding.EffectID == "" || binding.ReceiptID == "" ||
+		!effectport.ValidDigest(effectport.Digest(binding.SourceRefDigest)) || !effectport.ValidDigest(effectport.Digest(binding.TargetRefDigest)) || !effectport.ValidDigest(effectport.Digest(binding.PayloadRefDigest)) || !effectport.ValidDigest(effectport.Digest(binding.PolicyRefDigest)) {
 		return ErrOwnerHandoffConflict
 	}
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return err
 	}
-	command, err := tx.Exec(ctx, `UPDATE customer_owner_handoff_lines SET effect_id=$3,effect_receipt_id=$4,state='queued',updated_at=clock_timestamp() WHERE batch_id=$1 AND line_no=$2 AND mode='wecom_then_crm' AND state='queued' AND effect_id IS NULL`, binding.BatchID, binding.Line, binding.EffectID, binding.ReceiptID)
+	for index, line := range binding.Lines {
+		if line < 1 || (line-1)/100+1 != binding.SubBatchOrdinal || (index > 0 && binding.Lines[index-1] >= line) {
+			return ErrOwnerHandoffConflict
+		}
+	}
+	command, err := tx.Exec(ctx, `INSERT INTO customer_owner_handoff_effects(batch_id,subbatch_ordinal,source_ref_digest,target_ref_digest,payload_digest,policy_digest,effect_id,effect_receipt_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (batch_id,subbatch_ordinal) DO NOTHING`, binding.BatchID, binding.SubBatchOrdinal, binding.SourceRefDigest, binding.TargetRefDigest, binding.PayloadRefDigest, binding.PolicyRefDigest, binding.EffectID, binding.ReceiptID)
 	if err != nil {
 		return err
 	}
-	if command.RowsAffected() == 1 {
-		return nil
+	if command.RowsAffected() == 0 {
+		var priorEffect, priorReceipt, sourceRef, targetRef, payloadRef, policyRef string
+		if err = tx.QueryRow(ctx, `SELECT effect_id,effect_receipt_id,source_ref_digest,target_ref_digest,payload_digest,policy_digest FROM customer_owner_handoff_effects WHERE batch_id=$1 AND subbatch_ordinal=$2`, binding.BatchID, binding.SubBatchOrdinal).Scan(&priorEffect, &priorReceipt, &sourceRef, &targetRef, &payloadRef, &policyRef); err != nil {
+			return err
+		}
+		if priorEffect != binding.EffectID || priorReceipt != binding.ReceiptID || sourceRef != binding.SourceRefDigest || targetRef != binding.TargetRefDigest || payloadRef != binding.PayloadRefDigest || policyRef != binding.PolicyRefDigest {
+			return ErrOwnerHandoffConflict
+		}
 	}
-	var priorEffect, priorReceipt string
-	err = tx.QueryRow(ctx, `SELECT COALESCE(effect_id,''),COALESCE(effect_receipt_id,'') FROM customer_owner_handoff_lines WHERE batch_id=$1 AND line_no=$2 AND mode='wecom_then_crm'`, binding.BatchID, binding.Line).Scan(&priorEffect, &priorReceipt)
+	command, err = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_effect_lines(batch_id,subbatch_ordinal,line_no)
+		SELECT $1,$2,unnest($3::bigint[])
+		ON CONFLICT (batch_id,line_no) DO NOTHING`, binding.BatchID, binding.SubBatchOrdinal, binding.Lines)
 	if err != nil {
 		return err
 	}
-	if priorEffect == binding.EffectID && priorReceipt == binding.ReceiptID {
-		return nil
+	if command.RowsAffected() != int64(len(binding.Lines)) {
+		var mapped int
+		if err = tx.QueryRow(ctx, `SELECT count(*) FROM customer_owner_handoff_effect_lines WHERE batch_id=$1 AND subbatch_ordinal=$2 AND line_no=ANY($3::bigint[])`, binding.BatchID, binding.SubBatchOrdinal, binding.Lines).Scan(&mapped); err != nil || mapped != len(binding.Lines) {
+			if err != nil {
+				return err
+			}
+			return ErrOwnerHandoffConflict
+		}
 	}
-	return ErrOwnerHandoffConflict
+	command, err = tx.Exec(ctx, `UPDATE customer_owner_handoff_lines SET effect_id=$3,effect_receipt_id=$4,state='queued',updated_at=clock_timestamp()
+		WHERE batch_id=$1 AND line_no=ANY($2::bigint[]) AND mode='wecom_then_crm' AND state='queued' AND (effect_id IS NULL OR (effect_id=$3 AND effect_receipt_id=$4))`, binding.BatchID, binding.Lines, binding.EffectID, binding.ReceiptID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != int64(len(binding.Lines)) {
+		return ErrOwnerHandoffConflict
+	}
+	return nil
 }
 
-// CompleteOwnerHandoffEffect projects only EER's terminal transport fact.
-// A successful transfer_customer response is provider acceptance. It triggers
-// exactly one frozen local CAS; transfer_result remains a separate read-only
-// final-observation projection and can never repeat that assignment.
+// CompleteOwnerHandoffEffect consumes one EER terminal fact for its whole
+// frozen protocol sub-batch. Provider acceptance is projected per line from a
+// validated opaque artifact; a missing or malformed row never authorizes a
+// local owner update. Parent, lines, and canonical customer rows are locked in
+// that order before the local CAS writes.
 func (store *PostgreSQLOwnerHandoffStore) CompleteOwnerHandoffEffect(ctx context.Context, completion customerport.OwnerHandoffCompletion) error {
 	if completion.EffectID == "" || completion.Attempt < 1 || completion.Generation < 1 || completion.Fence < 1 {
 		return ErrOwnerHandoffConflict
 	}
-	digest, err := parseOwnerHandoffDigest(completion.ResultDigest)
+	defaultDigest, err := parseOwnerHandoffDigest(completion.ResultDigest)
 	if err != nil {
 		return ErrOwnerHandoffConflict
 	}
-	lineState := ""
-	switch completion.State {
-	case string(effectport.StateExecuted):
-		lineState = "provider_accepted"
-	case string(effectport.StateUnknown):
-		lineState = "outcome_unknown"
-	case string(effectport.StateRetryable):
-		lineState = "retryable_failed"
-	case string(effectport.StateFinalFailed):
-		lineState = "final_failed"
-	default:
+	if completion.State != string(effectport.StateExecuted) && completion.State != string(effectport.StateUnknown) && len(completion.Lines) != 0 {
 		return ErrOwnerHandoffConflict
 	}
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return err
 	}
-	// Every completion locks parent then child. This keeps concurrent EER
-	// completions from overwriting a batch-level needs_attention outcome.
 	var batchID string
-	err = tx.QueryRow(ctx, `SELECT b.id FROM customer_owner_handoff_batches b JOIN customer_owner_handoff_lines l ON l.batch_id=b.id WHERE l.effect_id=$1 AND l.mode='wecom_then_crm' FOR UPDATE OF b`, completion.EffectID).Scan(&batchID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if err = tx.QueryRow(ctx, `SELECT b.id FROM customer_owner_handoff_effects e JOIN customer_owner_handoff_batches b ON b.id=e.batch_id WHERE e.effect_id=$1 FOR UPDATE OF b`, completion.EffectID).Scan(&batchID); errors.Is(err, pgx.ErrNoRows) {
 		return ErrOwnerHandoffConflict
-	}
-	if err != nil {
+	} else if err != nil {
 		return err
 	}
-	var customerID customerdomain.CustomerID
-	var targetStaffID, expectedVersion int64
-	var priorState string
-	var priorDigest []byte
-	var priorAttempt int32
-	var priorGeneration, priorFence int64
-	err = tx.QueryRow(ctx, `SELECT customer_id,target_staff_id,COALESCE(expected_local_owner_version,0),state,result_digest,effect_attempt,effect_generation,effect_fence
-		FROM customer_owner_handoff_lines WHERE effect_id=$1 AND batch_id=$2 FOR UPDATE`, completion.EffectID, batchID).Scan(&customerID, &targetStaffID, &expectedVersion, &priorState, &priorDigest, &priorAttempt, &priorGeneration, &priorFence)
-	if err != nil {
-		return err
+	type frozenLine struct {
+		line, target, expectedVersion int64
+		customer                      customerdomain.CustomerID
+		state                         string
+		digest                        []byte
+		attempt                       int32
+		generation, fence             int64
 	}
-	if priorAttempt > completion.Attempt {
-		return ErrOwnerHandoffConflict
+	rows, queryErr := tx.Query(ctx, `SELECT l.line_no,l.customer_id,l.target_staff_id,COALESCE(l.expected_local_owner_version,0),l.state,l.result_digest,l.effect_attempt,l.effect_generation,l.effect_fence
+		FROM customer_owner_handoff_effects e
+		JOIN customer_owner_handoff_effect_lines m ON m.batch_id=e.batch_id AND m.subbatch_ordinal=e.subbatch_ordinal
+		JOIN customer_owner_handoff_lines l ON l.batch_id=m.batch_id AND l.line_no=m.line_no
+		WHERE e.effect_id=$1 AND l.effect_id=$1 AND l.mode='wecom_then_crm'
+		ORDER BY l.line_no FOR UPDATE OF l`, completion.EffectID)
+	if queryErr != nil {
+		return queryErr
 	}
-	if priorAttempt == completion.Attempt && priorAttempt != 0 {
-		if priorGeneration == completion.Generation && priorFence == completion.Fence && bytes.Equal(priorDigest, digest) {
-			return nil
+	frozen := make([]frozenLine, 0, 100)
+	for rows.Next() {
+		var item frozenLine
+		if err = rows.Scan(&item.line, &item.customer, &item.target, &item.expectedVersion, &item.state, &item.digest, &item.attempt, &item.generation, &item.fence); err != nil {
+			rows.Close()
+			return err
 		}
+		frozen = append(frozen, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(frozen) == 0 || len(frozen) > 100 {
 		return ErrOwnerHandoffConflict
 	}
-	if priorAttempt != 0 && (priorGeneration != completion.Generation || completion.Fence <= priorFence) {
-		return ErrOwnerHandoffConflict
-	}
-	if priorState != "queued" && priorState != "retryable_failed" {
-		return ErrOwnerHandoffConflict
-	}
-	if completion.State == string(effectport.StateExecuted) {
-		if _, assignErr := store.AssignLocalOwner(ctx, customerID, targetStaffID, expectedVersion, "owner_handoff_wecom_then_crm", time.Now().UTC()); assignErr != nil {
-			if !errors.Is(assignErr, ErrOwnerHandoffConflict) {
-				return assignErr
+	lineCompletion := make(map[int64]customerport.OwnerHandoffLineCompletion, len(completion.Lines))
+	lineDigests := make(map[int64][]byte, len(completion.Lines))
+	if len(completion.Lines) != 0 {
+		if len(completion.Lines) != len(frozen) {
+			return ErrOwnerHandoffConflict
+		}
+		for _, result := range completion.Lines {
+			validState := result.State == "provider_accepted" || result.State == "final_failed" || (completion.State == string(effectport.StateUnknown) && result.State == "outcome_unknown")
+			if result.Line < 1 || !validState {
+				return ErrOwnerHandoffConflict
 			}
-			lineState = "cas_conflict"
+			digest, parseErr := parseOwnerHandoffDigest(result.EvidenceDigest)
+			if parseErr != nil {
+				return ErrOwnerHandoffConflict
+			}
+			if _, duplicate := lineCompletion[result.Line]; duplicate {
+				return ErrOwnerHandoffConflict
+			}
+			lineCompletion[result.Line], lineDigests[result.Line] = result, digest
 		}
 	}
-	command, err := tx.Exec(ctx, `UPDATE customer_owner_handoff_lines SET state=$2,result_digest=$3,effect_attempt=$4,effect_generation=$5,effect_fence=$6,updated_at=clock_timestamp()
-		WHERE effect_id=$1 AND batch_id=$7 AND state IN ('queued','retryable_failed')`, completion.EffectID, lineState, digest, completion.Attempt, completion.Generation, completion.Fence, batchID)
-	if err != nil {
-		return err
+	for _, item := range frozen {
+		if completion.State == string(effectport.StateExecuted) || len(completion.Lines) != 0 {
+			if _, found := lineCompletion[item.line]; !found {
+				return ErrOwnerHandoffConflict
+			}
+		}
+		if item.attempt > completion.Attempt || (item.attempt != 0 && item.attempt < completion.Attempt && (item.generation != completion.Generation || completion.Fence <= item.fence)) {
+			return ErrOwnerHandoffConflict
+		}
 	}
-	if command.RowsAffected() != 1 {
-		return ErrOwnerHandoffConflict
+	replay := true
+	for _, item := range frozen {
+		if item.attempt != completion.Attempt || item.attempt == 0 || item.generation != completion.Generation || item.fence != completion.Fence {
+			replay = false
+			break
+		}
+		expectedState, expectedDigest := ownerHandoffCompletionProjection(completion, item.line, defaultDigest, lineCompletion, lineDigests)
+		if expectedState == "" || (item.state != expectedState && !(expectedState == "provider_accepted" && item.state == "cas_conflict")) || !bytes.Equal(item.digest, expectedDigest) {
+			return ErrOwnerHandoffConflict
+		}
 	}
-	var pending, attention, failed bool
-	err = tx.QueryRow(ctx, `SELECT
-		COALESCE(bool_or(state IN ('queued','retryable_failed')),false),
-		COALESCE(bool_or(state IN ('outcome_unknown','cas_conflict')),false),
-		COALESCE(bool_or(state='final_failed'),false)
-		FROM customer_owner_handoff_lines WHERE batch_id=$1`, batchID).Scan(&pending, &attention, &failed)
-	if err != nil {
-		return err
+	if replay {
+		return nil
 	}
-	batchState := "completed"
-	if attention {
-		batchState = "needs_attention"
-	} else if pending {
-		batchState = "executing"
-	} else if failed {
-		batchState = "failed"
+	for _, item := range frozen {
+		if item.state != "queued" && item.state != "retryable_failed" {
+			return ErrOwnerHandoffConflict
+		}
 	}
-	_, err = tx.Exec(ctx, `UPDATE customer_owner_handoff_batches SET state=$2,updated_at=clock_timestamp() WHERE id=$1`, batchID, batchState)
-	return err
+	acceptedCustomerIDs := make([]int64, 0, len(frozen))
+	if len(completion.Lines) != 0 {
+		for _, item := range frozen {
+			if lineCompletion[item.line].State == "provider_accepted" {
+				acceptedCustomerIDs = append(acceptedCustomerIDs, int64(item.customer))
+			}
+		}
+	}
+	if len(acceptedCustomerIDs) > 0 {
+		locked, lockErr := tx.Query(ctx, `SELECT id FROM customers WHERE id=ANY($1::bigint[]) ORDER BY id FOR UPDATE`, acceptedCustomerIDs)
+		if lockErr != nil {
+			return lockErr
+		}
+		lockedCount := 0
+		for locked.Next() {
+			lockedCount++
+		}
+		if lockErr = locked.Err(); lockErr != nil {
+			locked.Close()
+			return lockErr
+		}
+		locked.Close()
+		if lockedCount != len(acceptedCustomerIDs) {
+			return ErrOwnerHandoffConflict
+		}
+	}
+	for _, item := range frozen {
+		state, digest := ownerHandoffCompletionProjection(completion, item.line, defaultDigest, lineCompletion, lineDigests)
+		if state == "" {
+			return ErrOwnerHandoffConflict
+		}
+		if state == "provider_accepted" {
+			if _, assignErr := store.AssignLocalOwner(ctx, item.customer, item.target, item.expectedVersion, "owner_handoff_wecom_then_crm", time.Now().UTC()); assignErr != nil {
+				if !errors.Is(assignErr, ErrOwnerHandoffConflict) {
+					return assignErr
+				}
+				state = "cas_conflict"
+			}
+		}
+		command, updateErr := tx.Exec(ctx, `UPDATE customer_owner_handoff_lines SET state=$3,result_digest=$4,effect_attempt=$5,effect_generation=$6,effect_fence=$7,updated_at=clock_timestamp()
+			WHERE batch_id=$1 AND line_no=$2 AND effect_id=$8 AND state IN ('queued','retryable_failed')`, batchID, item.line, state, digest, completion.Attempt, completion.Generation, completion.Fence, completion.EffectID)
+		if updateErr != nil {
+			return updateErr
+		}
+		if command.RowsAffected() != 1 {
+			return ErrOwnerHandoffConflict
+		}
+	}
+	return store.RecomputeOwnerHandoffBatchState(ctx, batchID)
+}
+
+func ownerHandoffCompletionProjection(completion customerport.OwnerHandoffCompletion, line int64, defaultDigest []byte, results map[int64]customerport.OwnerHandoffLineCompletion, digests map[int64][]byte) (string, []byte) {
+	switch completion.State {
+	case string(effectport.StateExecuted):
+		result, found := results[line]
+		if !found {
+			return "", nil
+		}
+		return result.State, digests[line]
+	case string(effectport.StateUnknown):
+		if len(results) != 0 {
+			result, found := results[line]
+			if !found {
+				return "", nil
+			}
+			return result.State, digests[line]
+		}
+		return "outcome_unknown", defaultDigest
+	case string(effectport.StateRetryable):
+		return "retryable_failed", defaultDigest
+	case string(effectport.StateFinalFailed):
+		return "final_failed", defaultDigest
+	default:
+		return "", nil
+	}
 }
 
 // LoadOwnerHandoffTransferRead reveals a frozen source/target pair only to

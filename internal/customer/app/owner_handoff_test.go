@@ -131,8 +131,10 @@ func (s *ownerHandoffStoreStub) CreateWeComOwnerHandoffBatch(_ context.Context, 
 }
 func (s *ownerHandoffStoreStub) BindOwnerHandoffEffect(_ context.Context, binding customerport.OwnerHandoffEffectBinding) error {
 	for i := range s.batch.Lines {
-		if s.batch.Lines[i].Line == binding.Line {
-			s.batch.Lines[i].EffectID = binding.EffectID
+		for _, line := range binding.Lines {
+			if s.batch.Lines[i].Line == line {
+				s.batch.Lines[i].EffectID = binding.EffectID
+			}
 		}
 	}
 	return nil

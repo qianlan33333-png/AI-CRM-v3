@@ -16,6 +16,8 @@ func TestOwnerHandoffMigrationKeepsLocalAndWeComFactsSeparate(t *testing.T) {
 		"CREATE TABLE customer_local_owners",
 		"CREATE TABLE customer_owner_handoff_previews",
 		"CREATE TABLE customer_owner_handoff_lines",
+		"CREATE TABLE customer_owner_handoff_effects",
+		"CREATE TABLE customer_owner_handoff_effect_lines",
 		"owner_handoff_local_only",
 		"owner_handoff_wecom_then_crm",
 		"external_identity_digest",
@@ -31,5 +33,8 @@ func TestOwnerHandoffMigrationKeepsLocalAndWeComFactsSeparate(t *testing.T) {
 	}
 	if strings.Contains(value, "wecom_customer_owner_observations") || strings.Contains(value, "wecom_customer_profile_primary_owners") {
 		t.Fatal("owner handoff must not write WeCom observations")
+	}
+	if strings.Contains(value, "UNIQUE (effect_id)") {
+		t.Fatal("one bounded provider effect must be able to map its frozen lines")
 	}
 }

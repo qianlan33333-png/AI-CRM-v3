@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
@@ -46,7 +47,7 @@ func TestCustomerOwnerHandoffExecutionAdapterUsesUOWAndCurrentFrozenStaffGate(t 
 		},
 	}
 	actual, err := adapter.ReadOwnerHandoffExecution(context.Background(), "effect")
-	if err != nil || actual != execution || uow.calls != 1 {
+	if err != nil || !reflect.DeepEqual(actual, execution) || uow.calls != 1 {
 		t.Fatalf("execution=%+v err=%v uow=%d", actual, err, uow.calls)
 	}
 
