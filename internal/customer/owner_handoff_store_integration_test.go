@@ -128,7 +128,7 @@ func ownerHandoffPool(t *testing.T, ctx context.Context, databaseURL string) (*p
 		t.Fatal(err)
 	}
 	root := filepath.Clean(filepath.Join("..", ".."))
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0092_customer_owner_handoff.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0092_customer_owner_handoff.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			native.Close()

@@ -104,7 +104,9 @@ CREATE TABLE customer_owner_handoff_history_imports (
 ALTER TABLE customer_owner_handoff_preview_rows
     ADD COLUMN source_userid_digest BYTEA NULL CHECK (source_userid_digest IS NULL OR octet_length(source_userid_digest)=32),
     ADD COLUMN target_userid_digest BYTEA NULL CHECK (target_userid_digest IS NULL OR octet_length(target_userid_digest)=32),
-    ADD COLUMN external_identity_digest BYTEA NULL CHECK (external_identity_digest IS NULL OR octet_length(external_identity_digest)=32);
+    ADD COLUMN external_identity_digest BYTEA NULL CHECK (external_identity_digest IS NULL OR octet_length(external_identity_digest)=32),
+    ADD COLUMN payload_digest BYTEA NULL CHECK (payload_digest IS NULL OR octet_length(payload_digest)=32),
+    ADD COLUMN policy_digest BYTEA NULL CHECK (policy_digest IS NULL OR octet_length(policy_digest)=32);
 
 ALTER TABLE customer_owner_handoff_lines
     ADD COLUMN source_userid_digest BYTEA NULL CHECK (source_userid_digest IS NULL OR octet_length(source_userid_digest)=32),

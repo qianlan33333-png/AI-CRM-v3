@@ -182,6 +182,7 @@ func (store *PostgreSQLOwnerHandoffStore) CreateOwnerHandoffPreview(ctx context.
 			expectedVersion = candidate.ExpectedLocalVersion
 		}
 		var sourceCipher, targetCipher, externalCipher, welcomeCipher []byte
+		var sourceDigest, targetDigest, externalDigest, payloadDigest, policyDigest []byte
 		if record.Preview.Mode == customerport.OwnerHandoffWeComThenCRM && candidate.State == "ready" {
 			if store.cipher == nil || candidate.SourceUserID == "" || candidate.TargetUserID == "" || candidate.ExternalUserID == "" {
 				return customerport.OwnerHandoffPreview{}, ErrOwnerHandoffConflict
@@ -200,8 +201,14 @@ func (store *PostgreSQLOwnerHandoffStore) CreateOwnerHandoffPreview(ctx context.
 					return customerport.OwnerHandoffPreview{}, err
 				}
 			}
+			source := ownerHandoffSnapshotDigest("source-userid", candidate.SourceUserID)
+			target := ownerHandoffSnapshotDigest("target-userid", candidate.TargetUserID)
+			external := ownerHandoffSnapshotDigest("external-userid", candidate.ExternalUserID)
+			payload := ownerHandoffSnapshotDigest("transfer-payload", candidate.ExternalUserID, record.WelcomeMessage)
+			policy := ownerHandoffSnapshotDigest("policy", string(record.Preview.Mode), record.Preview.CorpScope, strconv.FormatInt(record.Preview.SourceStaffID, 10), strconv.FormatInt(record.Preview.TargetStaffID, 10))
+			sourceDigest, targetDigest, externalDigest, payloadDigest, policyDigest = source[:], target[:], external[:], payload[:], policy[:]
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_preview_rows(preview_id,line_no,customer_id,expected_local_owner_staff_id,expected_local_owner_version,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,welcome_message_ciphertext,state,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, record.Preview.ID, line, candidate.CustomerID, expectedOwner, expectedVersion, candidate.RelationshipDigest[:], sourceCipher, targetCipher, externalCipher, welcomeCipher, candidate.State, candidate.Reason); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_preview_rows(preview_id,line_no,customer_id,expected_local_owner_staff_id,expected_local_owner_version,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,welcome_message_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,state,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, record.Preview.ID, line, candidate.CustomerID, expectedOwner, expectedVersion, candidate.RelationshipDigest[:], sourceCipher, targetCipher, externalCipher, welcomeCipher, sourceDigest, targetDigest, externalDigest, payloadDigest, policyDigest, candidate.State, candidate.Reason); err != nil {
 			return customerport.OwnerHandoffPreview{}, err
 		}
 		rows = append(rows, customerport.OwnerHandoffPreviewRow{Line: line, CustomerID: candidate.CustomerID, ExpectedOwnerID: candidate.ExpectedLocalOwnerID, ExpectedVersion: candidate.ExpectedLocalVersion, State: candidate.State, Reason: candidate.Reason})
