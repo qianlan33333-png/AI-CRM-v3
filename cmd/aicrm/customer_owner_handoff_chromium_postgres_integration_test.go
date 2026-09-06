@@ -17,9 +17,146 @@ import (
 	"testing"
 	"time"
 
+	customer "github.com/qianlan33333-png/AI-CRM-v3/internal/customer"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	wecomadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/adapter"
 )
+
+// TestPostgreSQLOwnerHandoffComposedTransferResultHTTP verifies the fully
+// composed outer route binds Customer's read-only transfer-result port to the
+// WeCom client. It deliberately runs without Chromium, so a Darwin browser
+// sandbox skip cannot conceal a missing Composition Root dependency.
+func TestPostgreSQLOwnerHandoffComposedTransferResultHTTP(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	var transferResultCalls atomic.Int32
+	providerServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "access_token": "owner-handoff-reader-token", "expires_in": 7200})
+		case "/cgi-bin/externalcontact/transfer_result":
+			transferResultCalls.Add(1)
+			var body struct {
+				Source string `json:"handover_userid"`
+				Target string `json:"takeover_userid"`
+				Cursor string `json:"cursor"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				http.Error(writer, "invalid transfer result request", http.StatusBadRequest)
+				return
+			}
+			if body.Source != "reader-source" || body.Target != "reader-target" || body.Cursor != "" {
+				http.Error(writer, "unexpected frozen transfer result request", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "customer": []map[string]any{{"external_userid": "reader-external", "status": 1, "takeover_time": 1}}})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer providerServer.Close()
+	application, err := composeWithWeComClientFactory(ctx, platformconfig.Runtime{
+		Role:         platformconfig.RoleAPI,
+		DatabaseURL:  databaseURL,
+		PublicOrigin: "https://owner-handoff-reader.test",
+		ReleaseSHA:   "owner-handoff-reader",
+		WorkerOwner:  "owner-handoff-reader",
+		WorkerLimit:  1,
+		Effects:      platformconfig.Effects{ProviderEnabled: true},
+		WeCom:        platformconfig.WeCom{Enabled: true, CorpID: "reader-corp", AgentID: "reader-agent", Secret: "reader-secret", ContactSecret: "reader-contact-secret", ContextSigningKey: "01234567890123456789012345678901"},
+		GroupOps:     platformconfig.GroupOps{WebhookSecret: "owner-handoff-reader-webhook"},
+		Survey:       platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(key), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(key)},
+		Bootstrap:    platformconfig.Bootstrap{Enabled: true, Username: "owner-reader", Password: "owner-reader-password", DisplayName: "Owner Reader"},
+	}, func(config wecomadapter.Config) (*wecomadapter.Client, error) {
+		config.APIBase = providerServer.URL
+		config.HTTPClient = providerServer.Client()
+		return wecomadapter.New(config)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "owner-reader", Password: "owner-reader-password", DisplayName: "Owner Reader"}); err != nil {
+		t.Fatal(err)
+	}
+	var actorID, targetID, customerID int64
+	if err = application.pool.Native().QueryRow(ctx, `SELECT id FROM admin_users WHERE username='owner-reader'`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('owner-reader-target','$argon2id$fixture','Reader Target','reader-target',true) RETURNING id`).Scan(&targetID); err != nil {
+		t.Fatal(err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := customer.NewOwnerHandoffCipher(base64.RawStdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := customer.NewPostgreSQLOwnerHandoffStoreWithCipher(cipher)
+	uow, err := platformpostgres.NewUnitOfWork(application.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var batch customerport.OwnerHandoffBatch
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		digest := [32]byte{1}
+		record := customerport.OwnerHandoffPreviewRecord{
+			ActorAdminUserID: actorID,
+			Preview:          customerport.OwnerHandoffPreview{ID: "owner-handoff-reader-preview", Mode: customerport.OwnerHandoffWeComThenCRM, SourceStaffID: actorID, TargetStaffID: targetID, CorpScope: "wecom-corp:reader-corp", ConfirmationPhrase: "CONFIRM", ExpiresAt: time.Now().Add(time.Hour)},
+			Candidates:       []customerport.OwnerHandoffCandidate{{CustomerID: customerdomain.CustomerID(customerID), State: "ready", RelationshipDigest: [32]byte{2}, SourceUserID: "reader-source", TargetUserID: "reader-target", ExternalUserID: "reader-external"}},
+			RequestDigest:    digest,
+		}
+		if _, createErr := store.CreateOwnerHandoffPreview(txctx, record); createErr != nil {
+			return createErr
+		}
+		var createErr error
+		batch, createErr = store.CreateWeComOwnerHandoffBatch(txctx, customerport.OwnerHandoffBatchRecord{Preview: record, ActorID: actorID, Idempotency: "owner-handoff-reader-confirm", RequestDigest: digest, Lines: []customerport.OwnerHandoffLine{{Line: 1, CustomerID: customerdomain.CustomerID(customerID), State: "provider_accepted"}}})
+		if createErr != nil {
+			return createErr
+		}
+		tx, txErr := platformpostgres.RequireTransaction(txctx)
+		if txErr != nil {
+			return txErr
+		}
+		_, txErr = tx.Exec(txctx, `UPDATE customer_owner_handoff_lines SET state='provider_accepted' WHERE batch_id=$1 AND line_no=1`, batch.ID)
+		return txErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session, csrf := adminAccessLogin(t, application.handler, "owner-reader", "owner-reader-password")
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/admin/customers/owner-handoffs/batches/"+batch.ID+"/transfer-result", strings.NewReader(`{"idempotency_key":"owner-handoff-reader-result"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: session})
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_csrf", Value: csrf})
+	response := httptest.NewRecorder()
+	application.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("composed transfer-result status=%d body=%s", response.Code, response.Body.String())
+	}
+	var observed customerport.OwnerHandoffBatch
+	if err = json.NewDecoder(response.Body).Decode(&observed); err != nil {
+		t.Fatal(err)
+	}
+	if transferResultCalls.Load() != 1 || len(observed.Lines) != 1 || observed.Lines[0].State != "observed" || observed.Lines[0].TransferStatus != 1 {
+		t.Fatalf("transfer-result calls=%d batch=%+v", transferResultCalls.Load(), observed)
+	}
+	var state string
+	var transferStatus int
+	if err = application.pool.Native().QueryRow(ctx, `SELECT state,COALESCE(transfer_status,0) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND line_no=1`, batch.ID).Scan(&state, &transferStatus); err != nil || state != "observed" || transferStatus != 1 {
+		t.Fatalf("transfer-result projection state=%q status=%d err=%v", state, transferStatus, err)
+	}
+}
 
 // TestPostgreSQLOwnerHandoffChromiumJourney drives both authorized Owner
 // Migration modes through the real login, Host, HTTP handlers and PostgreSQL.
@@ -39,6 +176,7 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	var providerCalls atomic.Int32
+	var transferResultCalls atomic.Int32
 	providerServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/cgi-bin/gettoken":
@@ -61,6 +199,7 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 			}
 			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "customer": []map[string]any{{"external_userid": ids[0], "errcode": 0}}})
 		case "/cgi-bin/externalcontact/transfer_result":
+			transferResultCalls.Add(1)
 			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "customer": []map[string]any{{"external_userid": "browser-external", "status": 1, "takeover_time": 1}}})
 		default:
 			http.NotFound(writer, request)
@@ -244,10 +383,13 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 	runJourney("wecom_then_crm", true, "excel_include")
 	waitOwner(wecomCustomer, target, "provider_accepted WeCom line did not update the local owner")
 	if providerCalls.Load() != 1 {
-		t.Fatalf("test Provider calls=%d want=1", providerCalls.Load())
+		t.Fatalf("test Provider transfer_customer calls=%d want=1", providerCalls.Load())
 	}
-	var local, wecom, accepted int
-	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE mode='local_only'), count(*) FILTER (WHERE mode='wecom_then_crm'), count(*) FILTER (WHERE state='provider_accepted') FROM customer_owner_handoff_batches b LEFT JOIN customer_owner_handoff_lines l ON l.batch_id=b.id`).Scan(&local, &wecom, &accepted); err != nil || local < 1 || wecom < 1 || accepted < 1 {
-		t.Fatalf("batches local/wecom/accepted=%d/%d/%d err=%v", local, wecom, accepted, err)
+	if transferResultCalls.Load() != 1 {
+		t.Fatalf("test Provider transfer_result calls=%d want=1", transferResultCalls.Load())
+	}
+	var local, wecom, accepted, observed int
+	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE mode='local_only'), count(*) FILTER (WHERE mode='wecom_then_crm'), count(*) FILTER (WHERE state='provider_accepted'), count(*) FILTER (WHERE state='observed' AND transfer_status=1) FROM customer_owner_handoff_batches b LEFT JOIN customer_owner_handoff_lines l ON l.batch_id=b.id`).Scan(&local, &wecom, &accepted, &observed); err != nil || local < 1 || wecom < 1 || accepted+observed < 1 || observed < 1 {
+		t.Fatalf("batches local/wecom/accepted/observed=%d/%d/%d/%d err=%v", local, wecom, accepted, observed, err)
 	}
 }

@@ -1016,6 +1016,12 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if err != nil {
 		return fail(err)
 	}
+	// The transfer-result endpoint is a read-only WeCom protocol leaf. Keep the
+	// Customer UoW separate from this Provider call; its service persists the
+	// returned status projection only after the read finishes.
+	if err = ownerHandoffService.SetTransferResultReader(providerClient); err != nil {
+		return fail(err)
+	}
 	groupOpsDirectory.groups = providerClient
 	groupOpsDirectory.staffs = providerClient
 	if cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled {

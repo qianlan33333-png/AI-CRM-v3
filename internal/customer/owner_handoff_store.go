@@ -917,7 +917,10 @@ func (store *PostgreSQLOwnerHandoffStore) RecordOwnerHandoffTransferResult(ctx c
 		if observation.ExternalUserID == "" || observation.Status < 1 || observation.Status > 5 || observation.TakeoverTime < 0 {
 			return customerport.OwnerHandoffBatch{}, 0, ErrOwnerHandoffConflict
 		}
-		digest := sha256.Sum256([]byte(observation.ExternalUserID))
+		// This is the frozen Customer snapshot digest written with the encrypted
+		// external identity, not a raw identifier hash. It lets the read-only
+		// Provider observation join only the exact accepted preview line.
+		digest := ownerHandoffSnapshotDigest("external-userid", observation.ExternalUserID)
 		if _, duplicate := byDigest[digest]; duplicate {
 			return customerport.OwnerHandoffBatch{}, 0, ErrOwnerHandoffConflict
 		}

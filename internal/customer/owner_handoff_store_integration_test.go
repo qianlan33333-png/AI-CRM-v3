@@ -3,7 +3,6 @@ package customer
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -215,7 +214,7 @@ func TestPostgreSQLOwnerHandoffExecutionUsesFrozenCiphertextAndFourDigests(t *te
 		}
 		sourceDigest := ownerHandoffSnapshotDigest("source-userid", "source-user")
 		targetDigest := ownerHandoffSnapshotDigest("target-userid", "target-user")
-		externalDigest := sha256.Sum256([]byte("external-1"))
+		externalDigest := ownerHandoffSnapshotDigest("external-userid", "external-1")
 		payloadDigest := ownerHandoffSnapshotDigest("transfer-payload", "external-1", "")
 		policyDigest := ownerHandoffSnapshotDigest("policy", "wecom_then_crm", "wecom-corp:fixture", int64Text(sourceStaff), int64Text(targetStaff))
 		_, transactionErr = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,effect_id,state) VALUES($1,1,$2,'wecom_then_crm',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'queued')`, batchID, customerID, sourceStaff, targetStaff, digest, sourceCipher, targetCipher, externalCipher, sourceDigest[:], targetDigest[:], externalDigest[:], payloadDigest[:], policyDigest[:], effectID)
@@ -398,7 +397,7 @@ func TestPostgreSQLOwnerHandoffCompletionPreservesAttentionAndReplaysReceipt(t *
 		if e != nil {
 			return e
 		}
-		externalDigest := sha256.Sum256([]byte("completion-external"))
+		externalDigest := ownerHandoffSnapshotDigest("external-userid", "completion-external")
 		if _, e = tx.Exec(txctx, `UPDATE customer_owner_handoff_lines SET source_userid_ciphertext=$1,target_userid_ciphertext=$2,external_identity_ciphertext=$3,external_identity_digest=$4 WHERE batch_id='batch-completion' AND line_no=2`, sourceCipher, targetCipher, externalCipher, externalDigest[:]); e != nil {
 			return e
 		}
