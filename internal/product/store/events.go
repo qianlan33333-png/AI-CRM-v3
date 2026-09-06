@@ -5,13 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
-	"sync/atomic"
-	"time"
 
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
-	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
@@ -82,32 +79,3 @@ func (a *TransactionalEventAppender) Append(ctx context.Context, event productpo
 }
 
 var _ productport.EventAppender = (*TransactionalEventAppender)(nil)
-
-// LocalExternalPushEffectAccepter records a local acceptance fact.  It is
-// intentionally not a River worker and never owns a Provider client; a later
-// outbound integration must replace this adapter before any real effect is
-// claimed.
-type LocalExternalPushEffectAccepter struct {
-	sequence atomic.Int64
-}
-
-func NewLocalExternalPushEffectAccepter() *LocalExternalPushEffectAccepter {
-	return &LocalExternalPushEffectAccepter{}
-}
-
-func (a *LocalExternalPushEffectAccepter) AcceptProductExternalPushTest(_ context.Context, command productapp.ProductExternalPushEffectCommand) (productport.ExternalPushTest, error) {
-	if a == nil || command.ProductID < 1 || command.ProductKind == "" {
-		return productport.ExternalPushTest{}, ErrInvalid
-	}
-	// The sequence is only a process-local uniqueness aid for the local
-	// acceptance identifier.  The durable Product receipt remains the source
-	// of truth across restarts.
-	now := time.Now().UTC()
-	return productport.ExternalPushTest{
-		ProductID: command.ProductID, ProductKind: command.ProductKind,
-		EffectID: "eer_" + strconv.FormatInt(a.sequence.Add(1), 10),
-		State:    "accepted", CreatedAt: now,
-		ProviderAccepted: false, DeliveryProven: false,
-		RealExternalCallExecuted: false, AutoRetryAllowed: false,
-	}, nil
-}

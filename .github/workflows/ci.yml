@@ -20,7 +20,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Full PostgreSQL/race/browser verification can exceed twenty minutes; keep
+    # every gate and give the final race phase a bounded additional margin.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -153,7 +155,7 @@ jobs:
           command -v google-chrome
           go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLSidebarThumbnailChromiumJourney)$' ./cmd/aicrm
       - name: Race-check security and identity boundaries
-        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-v2-commerce-external-push-history ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
@@ -226,6 +228,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-automation-operations ./cmd/migrate-automation-operations
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-runtime-config-releases ./cmd/migrate-v2-runtime-config-releases
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-commerce-external-push-history ./cmd/migrate-v2-commerce-external-push-history
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-customer-tag-history ./cmd/migrate-v2-customer-tag-history

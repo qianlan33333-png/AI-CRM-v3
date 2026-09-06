@@ -604,6 +604,81 @@ func (r *Repository) RecordExport(ctx context.Context, receipt orderapp.ExportRe
 	return stored, false, nil
 }
 
+// AppendPaidEvent persists the first native paid event next to the Order state
+// transition. It is idempotent by the immutable order/version pair and writes
+// the Order outbox fact before returning the event to the composition consumer.
+func (r *Repository) AppendPaidEvent(ctx context.Context, snapshot domain.Snapshot) (orderport.PaidEvent, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return orderport.PaidEvent{}, false, err
+	}
+	if snapshot.ID < 1 || snapshot.Version < 2 || snapshot.Status != domain.StatusPaid ||
+		snapshot.RecordOrigin != domain.RecordOriginNative || !snapshot.EffectEligible || snapshot.UpdatedAt.IsZero() {
+		return orderport.PaidEvent{}, false, ErrInvalid
+	}
+	source := orderport.NewPaidEventSourceDigest(snapshot.ID, snapshot.Version)
+	var event orderport.PaidEvent
+	var returnedSource []byte
+	err = tx.QueryRow(ctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at)
+VALUES($1,$2,$3,$4)
+ON CONFLICT(order_id) DO NOTHING
+RETURNING id,order_id,order_version,source_digest,occurred_at`, snapshot.ID, snapshot.Version, source[:], snapshot.UpdatedAt.UTC()).Scan(
+		&event.ID, &event.OrderID, &event.OrderVersion, &returnedSource, &event.OccurredAt,
+	)
+	created := err == nil
+	if created {
+		if len(returnedSource) != 32 || string(returnedSource) != string(source[:]) {
+			return orderport.PaidEvent{}, false, ErrInvalid
+		}
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		var stored []byte
+		err = tx.QueryRow(ctx, `SELECT id,order_id,order_version,source_digest,occurred_at FROM order_paid_events WHERE order_id=$1 FOR UPDATE`, snapshot.ID).Scan(
+			&event.ID, &event.OrderID, &event.OrderVersion, &stored, &event.OccurredAt,
+		)
+		if err == nil {
+			if len(stored) != 32 || event.OrderVersion != snapshot.Version || string(stored) != string(source[:]) {
+				return orderport.PaidEvent{}, false, orderport.ErrConflict
+			}
+			copy(source[:], stored)
+		}
+	}
+	if err != nil {
+		return orderport.PaidEvent{}, false, mapError(err)
+	}
+	event.SourceDigest, event.Order = source, snapshot
+	if !event.ValidOrderFact() {
+		return orderport.PaidEvent{}, false, ErrInvalid
+	}
+	checkout, checkoutErr := r.ReadCheckoutSnapshot(ctx, event.OrderID)
+	if checkoutErr == nil {
+		event.CheckoutProductID, event.CheckoutGrossAmountMinor = checkout.ProductID, checkout.GrossAmountMinor
+	} else if !errors.Is(checkoutErr, orderport.ErrNotFound) {
+		return orderport.PaidEvent{}, false, checkoutErr
+	}
+	key := "order.paid.v1:" + strconv.FormatInt(event.ID, 10)
+	if created {
+		payload, marshalErr := json.Marshal(map[string]any{"order_id": event.OrderID, "order_version": event.OrderVersion, "paid_event_id": event.ID})
+		if marshalErr != nil {
+			return orderport.PaidEvent{}, false, ErrInvalid
+		}
+		if err = tx.QueryRow(ctx, `INSERT INTO order_outbox(event_type,idempotency_key,aggregate_id,payload,occurred_at)
+VALUES('order.paid.v1',$1,$2,$3::jsonb,$4) RETURNING id`, key, event.OrderID, payload, event.OccurredAt.UTC()).Scan(&event.DomainEventOutboxID); err != nil {
+			return orderport.PaidEvent{}, false, mapError(err)
+		}
+	} else if err = tx.QueryRow(ctx, `SELECT id FROM order_outbox
+WHERE event_type='order.paid.v1' AND idempotency_key=$1 AND aggregate_id=$2 FOR KEY SHARE`, key, event.OrderID).Scan(&event.DomainEventOutboxID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return orderport.PaidEvent{}, false, orderport.ErrConflict
+		}
+		return orderport.PaidEvent{}, false, mapError(err)
+	}
+	if !event.Valid() {
+		return orderport.PaidEvent{}, false, ErrInvalid
+	}
+	return event, created, nil
+}
+
 func (r *Repository) UpdateSettlement(ctx context.Context, order domain.Order, event domain.StatusEvent, actorScope string) (domain.Order, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
@@ -613,7 +688,7 @@ func (r *Repository) UpdateSettlement(ctx context.Context, order domain.Order, e
 	if snapshot.ID < 1 || snapshot.Version < 2 || actorScope == "" || event.Version != snapshot.Version {
 		return domain.Order{}, ErrInvalid
 	}
-	command, err := tx.Exec(ctx, `UPDATE orders SET status=$2,refunded_minor=$3,version=$4,updated_at=$5 WHERE id=$1 AND version=$6`, snapshot.ID, snapshot.Status, snapshot.RefundedMinor, snapshot.Version, snapshot.UpdatedAt, snapshot.Version-1)
+	command, err := tx.Exec(ctx, `UPDATE orders SET status=$2,refunded_minor=$3,provider_transaction_no=$4,version=$5,updated_at=$6 WHERE id=$1 AND version=$7`, snapshot.ID, snapshot.Status, snapshot.RefundedMinor, snapshot.ProviderTransactionNo, snapshot.Version, snapshot.UpdatedAt, snapshot.Version-1)
 	if err != nil {
 		return domain.Order{}, mapError(err)
 	}
@@ -723,4 +798,69 @@ func mapError(err error) error {
 		return orderport.ErrConflict
 	}
 	return err
+}
+
+// CommercePushDeliveryReference resolves the compatibility route using only
+// Order-owned rows. The returned historical coordinates are never derived
+// from orders.id; a V2 numeric order id can be visible only when it is the
+// exact imported Order source kind/scope/key under the commerce-history
+// scope.
+func (r *Repository) CommercePushDeliveryReference(ctx context.Context, provider domain.Provider, reference string) (orderport.CommercePushDeliveryReference, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return orderport.CommercePushDeliveryReference{}, err
+	}
+	if provider == "" || reference == "" || len(reference) > 200 || strings.TrimSpace(reference) != reference {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrNotFound
+	}
+	rows, err := tx.Query(ctx, `SELECT o.id,o.record_origin,o.effect_eligible,o.source_system,o.source_key,COALESCE(p.id,0)
+FROM orders o
+LEFT JOIN order_paid_events p ON p.order_id=o.id
+WHERE o.provider=$1 AND (o.merchant_order_no=$2 OR o.provider_transaction_no=$2 OR o.source_key=$2)
+ORDER BY o.id LIMIT 2`, provider, reference)
+	if err != nil {
+		return orderport.CommercePushDeliveryReference{}, mapError(err)
+	}
+	defer rows.Close()
+	type candidate struct {
+		id, paidEventID         int64
+		recordOrigin            domain.RecordOrigin
+		effectEligible          bool
+		sourceSystem, sourceKey string
+	}
+	var matches []candidate
+	for rows.Next() {
+		var candidate candidate
+		if err = rows.Scan(&candidate.id, &candidate.recordOrigin, &candidate.effectEligible, &candidate.sourceSystem, &candidate.sourceKey, &candidate.paidEventID); err != nil {
+			return orderport.CommercePushDeliveryReference{}, mapError(err)
+		}
+		matches = append(matches, candidate)
+	}
+	if err = rows.Err(); err != nil {
+		return orderport.CommercePushDeliveryReference{}, mapError(err)
+	}
+	if len(matches) == 0 {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrNotFound
+	}
+	if len(matches) != 1 {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+	}
+	match := matches[0]
+	out := orderport.CommercePushDeliveryReference{OrderID: match.id}
+	switch match.recordOrigin {
+	case domain.RecordOriginNative:
+		if !match.effectEligible {
+			return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+		}
+		out.PaidEventID, out.HistoricalMappingState = match.paidEventID, "current"
+	case domain.RecordOriginHistory:
+		if match.sourceSystem == "commerce-history" && match.sourceKey != "" {
+			out.HistoricalSourceKind, out.HistoricalSourceSystem, out.HistoricalSourceKey, out.HistoricalMappingState = "wechat_pay_order", match.sourceSystem, match.sourceKey, "mapped"
+		} else {
+			out.HistoricalMappingState = "pending"
+		}
+	default:
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+	}
+	return out, nil
 }

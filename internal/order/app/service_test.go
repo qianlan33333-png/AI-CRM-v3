@@ -26,10 +26,11 @@ type memoryStore struct {
 	exports  map[string]ExportReceipt
 	contacts map[int64][]byte
 	checkout map[int64]orderport.CheckoutSnapshot
+	paid     map[int64]orderport.PaidEvent
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{nextID: 1, orders: map[int64]domain.Snapshot{}, receipts: map[string]Receipt{}, imports: map[string]ImportReceipt{}, exports: map[string]ExportReceipt{}, contacts: map[int64][]byte{}, checkout: map[int64]orderport.CheckoutSnapshot{}}
+	return &memoryStore{nextID: 1, orders: map[int64]domain.Snapshot{}, receipts: map[string]Receipt{}, imports: map[string]ImportReceipt{}, exports: map[string]ExportReceipt{}, contacts: map[int64][]byte{}, checkout: map[int64]orderport.CheckoutSnapshot{}, paid: map[int64]orderport.PaidEvent{}}
 }
 
 func (s *memoryStore) Reserve(_ context.Context, reservation Reservation) (Receipt, bool, error) {
@@ -184,6 +185,25 @@ func (s *memoryStore) UpdateSettlement(_ context.Context, order domain.Order, _ 
 	return order, nil
 }
 
+func (s *memoryStore) AppendPaidEvent(_ context.Context, snapshot domain.Snapshot) (orderport.PaidEvent, bool, error) {
+	if event, ok := s.paid[snapshot.ID]; ok {
+		if event.OrderVersion != snapshot.Version || event.SourceDigest != orderport.NewPaidEventSourceDigest(snapshot.ID, snapshot.Version) {
+			return orderport.PaidEvent{}, false, orderport.ErrConflict
+		}
+		event.Order = snapshot
+		return event, false, nil
+	}
+	event := orderport.PaidEvent{ID: int64(len(s.paid) + 1), OrderID: snapshot.ID, OrderVersion: snapshot.Version, DomainEventOutboxID: int64(len(s.paid) + 1), OccurredAt: snapshot.UpdatedAt.UTC(), SourceDigest: orderport.NewPaidEventSourceDigest(snapshot.ID, snapshot.Version), Order: snapshot}
+	if checkout, found := s.checkout[snapshot.ID]; found {
+		event.CheckoutProductID, event.CheckoutGrossAmountMinor = checkout.ProductID, checkout.GrossAmountMinor
+	}
+	if !event.Valid() {
+		return orderport.PaidEvent{}, false, errors.New("invalid paid event")
+	}
+	s.paid[snapshot.ID] = event
+	return event, true, nil
+}
+
 func (s *memoryStore) Import(_ context.Context, runID string, digest [32]byte, order domain.Order) (domain.Order, bool, error) {
 	key := runID + ":" + order.SourceSystem + ":" + order.SourceKey
 	if receipt, ok := s.imports[key]; ok {
@@ -305,8 +325,17 @@ func TestPaymentCheckoutFreezesCouponPriceAndSettlesWithinOrderTransaction(t *te
 	// the callback time from the created snapshot so this test stays valid as
 	// the test clock advances without weakening the payment assertion.
 	paidAt := created.CreatedAt.Add(time.Minute)
-	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: created.ID, OccurredAt: paidAt, ReceiptKey: "payment-callback-1"}); err != nil {
+	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: created.ID, OccurredAt: paidAt, ReceiptKey: "payment-missing-transaction"}); !errors.Is(err, orderport.ErrConflict) {
+		t.Fatalf("missing verified provider transaction err=%v", err)
+	}
+	if got := store.orders[created.ID].Status; got != domain.StatusPendingPayment {
+		t.Fatalf("missing transaction changed order status=%q", got)
+	}
+	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: created.ID, ProviderTransactionNo: "tx-payment-callback-1", OccurredAt: paidAt, ReceiptKey: "payment-callback-1"}); err != nil {
 		t.Fatal(err)
+	}
+	if got := store.orders[created.ID].ProviderTransactionNo; got != "tx-payment-callback-1" {
+		t.Fatalf("verified payment transaction was not frozen in Order: %q", got)
 	}
 	if len(coupons.consume) != 1 || coupons.consume[0].SettledAmountMinor != 7000 || coupons.consume[0].SettledCurrency != "CNY" || coupons.consume[0].ReservationRef != "redemption-1" || len(coupons.release) != 0 {
 		t.Fatalf("consume=%+v release=%+v", coupons.consume, coupons.release)
@@ -348,7 +377,7 @@ func TestPaymentCheckoutFinalFailureReleasesCouponAndServicePeriodRefundsOnce(t 
 		t.Fatal(err)
 	}
 	paidAt := paid.CreatedAt.Add(time.Minute)
-	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: paid.ID, OccurredAt: paidAt, ReceiptKey: "payment-paid-key-0001"}); err != nil {
+	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: paid.ID, ProviderTransactionNo: "tx-payment-paid-1", OccurredAt: paidAt, ReceiptKey: "payment-paid-key-0001"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fulfillment.grants) != 1 || fulfillment.grants[0].DurationDays != 31 || fulfillment.grants[0].BeneficiaryCustomerID != 22 {
@@ -426,4 +455,35 @@ func TestExportCSVIsReceiptBackedReplayAndEscapesFormulas(t *testing.T) {
 	if err != nil || replay.ReceiptID != first.ReceiptID || len(store.exports) != 1 {
 		t.Fatalf("replay=%+v err=%v receipts=%d", replay, err, len(store.exports))
 	}
+}
+
+func (s *memoryStore) CommercePushDeliveryReference(_ context.Context, provider domain.Provider, reference string) (orderport.CommercePushDeliveryReference, error) {
+	matches := []domain.Snapshot{}
+	for _, snapshot := range s.orders {
+		if snapshot.Provider == provider && (snapshot.MerchantOrderNo == reference || snapshot.ProviderTransactionNo == reference || snapshot.SourceKey == reference) {
+			matches = append(matches, snapshot)
+		}
+	}
+	if len(matches) == 0 {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrNotFound
+	}
+	if len(matches) != 1 {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+	}
+	match := matches[0]
+	out := orderport.CommercePushDeliveryReference{OrderID: match.ID}
+	if match.RecordOrigin == domain.RecordOriginNative && match.EffectEligible {
+		out.HistoricalMappingState = "current"
+		out.PaidEventID = s.paid[match.ID].ID
+		return out, nil
+	}
+	if match.RecordOrigin == domain.RecordOriginHistory {
+		if match.SourceSystem == "commerce-history" && match.SourceKey != "" {
+			out.HistoricalSourceKind, out.HistoricalSourceSystem, out.HistoricalSourceKey, out.HistoricalMappingState = "wechat_pay_order", match.SourceSystem, match.SourceKey, "mapped"
+		} else {
+			out.HistoricalMappingState = "pending"
+		}
+		return out, nil
+	}
+	return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
 }

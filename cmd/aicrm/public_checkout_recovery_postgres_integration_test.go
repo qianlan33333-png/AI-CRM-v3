@@ -16,6 +16,7 @@ import (
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
@@ -196,12 +197,12 @@ func TestPostgreSQLPublicCheckoutResponseLossRejectsRenewedSessionReplay(t *test
 	eventDigest := sha256.Sum256([]byte("checkout-recovery-terminal-event-0001"))
 	bodyDigest := sha256.Sum256([]byte("checkout-recovery-terminal-body-0001"))
 	if err = paymentService.ApplyVerifiedCallback(ctx, paymentprovider.CallbackResult{
-		Kind:                      "payment",
-		MerchantOrderNo:           replayBody.MerchantOrderNo,
+		Kind:                         "payment",
+		ProviderTransactionReference: "tx-public-checkout-recovery", MerchantOrderNo: replayBody.MerchantOrderNo,
 		AmountMinor:               990,
 		Currency:                  "CNY",
 		OccurredAt:                time.Now().UTC(),
-		ProviderTransactionDigest: "sha256:" + strings.Repeat("b", 64),
+		ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", "tx-public-checkout-recovery")),
 		EventDigest:               eventDigest,
 		BodyDigest:                bodyDigest,
 	}); err != nil {

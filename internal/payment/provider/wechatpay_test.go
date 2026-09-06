@@ -132,7 +132,7 @@ func TestCallbackVerifiesSignatureAndDecrypts(t *testing.T) {
 	}
 	verifier.now = func() time.Time { return now }
 	result, err := verifier.Verify(context.Background(), body, headers)
-	if err != nil || result.Kind != "payment" || result.MerchantOrderNo != "order-1" || result.AmountMinor != 99 || result.ProviderTransactionDigest == "" {
+	if err != nil || result.Kind != "payment" || result.MerchantOrderNo != "order-1" || result.AmountMinor != 99 || result.ProviderTransactionDigest == "" || result.ProviderTransactionReference != "tx-1" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	headers.Set("Wechatpay-Signature", "bad")
@@ -166,7 +166,7 @@ func TestSignedExactPaymentAndRefundReconciliationQueries(t *testing.T) {
 	provider.now = func() time.Time { return now }
 	provider.nonce = func() (string, error) { return "request-nonce", nil }
 	payment, err := provider.QueryPayment(context.Background(), "order-1")
-	if err != nil || payment.Status != "SUCCESS" || payment.AmountMinor != 99 || !effectport.ValidDigest(payment.TransactionDigest) {
+	if err != nil || payment.Status != "SUCCESS" || payment.AmountMinor != 99 || !effectport.ValidDigest(payment.TransactionDigest) || payment.TransactionReference != "tx-1" {
 		t.Fatalf("payment=%+v err=%v", payment, err)
 	}
 	refund, err := provider.QueryRefund(context.Background(), "refund-1")
