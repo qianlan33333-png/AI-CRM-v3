@@ -1140,7 +1140,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if providerErr != nil {
 		return fail(providerErr)
 	}
-	ownerHandoffProvider, ownerProviderErr := outbound.NewCustomerOwnerHandoffProvider(ownerHandoffStore, providerClient)
+	ownerHandoffProvider, ownerProviderErr := outbound.NewCustomerOwnerHandoffProvider(customerOwnerHandoffExecutionAdapter{uow: uow, executions: ownerHandoffStore, staff: accessRepository}, providerClient)
 	if ownerProviderErr != nil {
 		return fail(ownerProviderErr)
 	}
