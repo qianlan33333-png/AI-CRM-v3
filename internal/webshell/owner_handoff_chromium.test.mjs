@@ -21,6 +21,17 @@ const parseOptionalBoolean = name => {
   throw new Error(`${name} must be true or false`);
 };
 const readTransfer = parseOptionalBoolean("AICRM_OWNER_HANDOFF_TEST_READ_TRANSFER");
+const legacyOwnerFileCSV = [
+  "external_userid,是否迁移,当前负责人userid,客户备注名,备注",
+  "browser-external,是,browser-source,已知客户,可迁移",
+  "browser-external,是,browser-source,重复客户,不可迁移",
+  ",是,browser-source,缺少 external_userid,不可迁移",
+  "browser-invalid,maybe,browser-source,非法标记,不可迁移",
+  "browser-skipped,否,browser-source,文件跳过,保留",
+  "browser-mismatch,是,not-browser-source,负责人不符,保留",
+].join("\n");
+const uploadLegacyFileExpression = () => `(() => { const root=document.querySelector("[data-owner-handoff-host] [data-owner-migration-page]"); const input=root.querySelector("[data-import-file]"); const csv=${JSON.stringify(legacyOwnerFileCSV)}; const files=new DataTransfer(); files.items.add(new File([csv], "legacy-owner-list.xls", {type:"text/csv"})); Object.defineProperty(input,"files",{configurable:true,value:files.files}); root.querySelector("[data-upload-file]").click(); return true; })()`;
+try { new Function(uploadLegacyFileExpression()); } catch (_) { throw new Error("owner handoff Excel fixture expression is invalid"); }
 if (!/^https:\/\//.test(baseURL || "") || !username || !password || !source || !target || !sourceUserID || !targetUserID) throw new Error("owner handoff Chromium journey requires HTTPS URL, credentials, and fixture IDs");
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const chrome = () => {
@@ -56,7 +67,7 @@ try {
   await browserCDP.call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:downloads,eventsEnabled:true});
   const page=await (await fetch(`${address}/json/new?about:blank`,{method:"PUT"})).json();
   cdp=await openCDP(page.webSocketDebuggerUrl); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
-  const evaluate=async expression=>{ const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) throw new Error("page evaluation failed"); return result.result?.value; };
+  const evaluate=async (expression, step="page_evaluation")=>{ const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) { const category=String(result.exceptionDetails.exception?.className || result.exceptionDetails.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g,"_").slice(0,96); throw new Error(`${step} page evaluation failed (${category})`); } return result.result?.value; };
   const waitFor=async(expression,message)=>{for(let attempt=0;attempt<160;attempt++){if(await evaluate(expression))return;await sleep(50);}throw new Error(message);};
   const readDownloadedWorkbook=async (filename, expectedValues) => {
     const destination=path.join(downloads,filename);
@@ -121,7 +132,8 @@ try {
     await evaluate("document.querySelector('[data-operation-member-confirm]').click(); true");
     await waitFor(`document.querySelector('[data-owner-handoff-host] [data-owner-userid="target"]').value === ${JSON.stringify(target)}`, "target picker did not persist the selected Access staff");
     if (scope === "excel_include") {
-      await evaluate(`(() => { const root=document.querySelector("[data-owner-handoff-host] [data-owner-migration-page]"); root.querySelector("[data-scope-segment=\"excel_include\"]").click(); const input=root.querySelector("[data-import-file]"); const csv=["external_userid,是否迁移,当前负责人userid,客户备注名,备注","browser-external,是,browser-source,已知客户,可迁移","browser-external,是,browser-source,重复客户,不可迁移",",是,browser-source,缺少 external_userid,不可迁移","browser-invalid,maybe,browser-source,非法标记,不可迁移","browser-skipped,否,browser-source,文件跳过,保留","browser-mismatch,是,not-browser-source,负责人不符,保留"].join("\n"); const files=new DataTransfer(); files.items.add(new File([csv], "legacy-owner-list.xls", {type:"text/csv"})); Object.defineProperty(input,"files",{configurable:true,value:files.files}); root.querySelector("[data-upload-file]").click(); return true; })()`);
+      await evaluate(`(() => { document.querySelector("[data-owner-handoff-host] [data-scope-segment=\"excel_include\"]").click(); return true; })()`, "excel_scope_select");
+      await evaluate(uploadLegacyFileExpression(), "excel_fixture_upload");
       await waitFor(`!document.querySelector("[data-owner-handoff-host] [data-import-summary]").hidden`, "old .xls import did not parse");
     }
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const wecom=root.querySelector('[data-include-wecom-transfer]'); wecom.checked=${mode === "wecom_then_crm"}; wecom.dispatchEvent(new Event('change',{bubbles:true})); root.querySelector('[data-preview]').click(); return true; })()`);

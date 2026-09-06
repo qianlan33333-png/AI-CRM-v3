@@ -12,7 +12,7 @@ const host = output.outputFiles[0].text;
 const wait = () => new Promise(resolve => setTimeout(resolve, 40));
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body, text: async () => body });
 
-async function mountFixture(contextBody, contextStatus = 200, exercisePicker = false) {
+async function mountFixture(contextBody, contextStatus = 200, exercisePicker = false, exerciseLegacyImport = false) {
   const requests = [];
   const pickerOpens = [];
   const dom = new JSDOM('<!doctype html><html><body><main data-owner-handoff-host></main></body></html>', {
@@ -44,6 +44,24 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
     page.querySelector('[data-owner-picker="target"]')?.click();
     await wait();
   }
+  if (exerciseLegacyImport && page) {
+    const csv = [
+      "external_userid,是否迁移,当前负责人userid,客户备注名,备注",
+      "browser-external,是,inactive-source,已知客户,可迁移",
+      "browser-external,是,inactive-source,重复客户,不可迁移",
+      ",是,inactive-source,缺少 external_userid,不可迁移",
+      "browser-invalid,maybe,inactive-source,非法标记,不可迁移",
+      "browser-skipped,否,inactive-source,文件跳过,保留",
+      "browser-mismatch,是,other-owner,负责人不符,保留",
+    ].join("\n");
+    const file = new Blob([csv], { type: "text/csv" });
+    Object.defineProperty(file, "name", { value: "legacy-owner-list.xls" });
+    const input = page.querySelector("[data-import-file]");
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    page.querySelector('[data-scope-segment="excel_include"]')?.click();
+    page.querySelector("[data-upload-file]")?.click();
+    await wait(); await wait(); await wait();
+  }
   const diagnostic = {
     init: stage?.dataset.ownerHandoffInit || "missing",
     http_status: stage?.dataset.ownerHandoffInitStatus || "",
@@ -59,6 +77,14 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
     picker_opens: pickerOpens,
     source_id: page?.querySelector('[data-owner-userid="source"]')?.value || "",
     target_id: page?.querySelector('[data-owner-userid="target"]')?.value || "",
+    import_visible: !page?.querySelector("[data-import-summary]")?.hidden,
+    import_filename: page?.querySelector("[data-import-filename]")?.textContent || "",
+    import_total_rows: page?.querySelector('[data-import-stat="total_rows"]')?.textContent || "",
+    import_unique_external_userids: page?.querySelector('[data-import-stat="unique_external_userids"]')?.textContent || "",
+    import_marked_move: page?.querySelector('[data-import-stat="marked_move"]')?.textContent || "",
+    import_marked_skip: page?.querySelector('[data-import-stat="marked_skip"]')?.textContent || "",
+    import_duplicate_rows: page?.querySelector('[data-import-stat="duplicate_rows"]')?.textContent || "",
+    import_invalid_rows: page?.querySelector('[data-import-stat="invalid_rows"]')?.textContent || "",
   };
   dom.window.close();
   return diagnostic;
@@ -82,5 +108,14 @@ if (picker.init !== "ready" || picker.source_id !== "11" || picker.target_id !==
   { scope: "owner_migration", pageSize: 100, includeInactive: true, allowRefresh: false, title: "选择原负责人" },
   { scope: "owner_migration", pageSize: 100, includeInactive: false, allowRefresh: false, title: "选择目标负责人" },
 ])) throw new Error(`owner handoff Host picker contract mismatch ${JSON.stringify(picker)}`);
+
+const legacyImport = await mountFixture({
+  staff: [
+    { ID: 11, UserID: "inactive-source", DisplayName: "Inactive source", Active: false },
+    { ID: 12, UserID: "active-target", DisplayName: "Active target", Active: true },
+  ],
+  operator: "管理员 #42",
+}, 200, true, true);
+if (legacyImport.init !== "ready" || legacyImport.source_id !== "11" || legacyImport.target_id !== "12" || !legacyImport.import_visible || legacyImport.import_filename !== "legacy-owner-list.xls" || legacyImport.import_total_rows !== "6" || legacyImport.import_unique_external_userids !== "4" || legacyImport.import_marked_move !== "2" || legacyImport.import_marked_skip !== "1" || legacyImport.import_duplicate_rows !== "1" || legacyImport.import_invalid_rows !== "2") throw new Error(`owner handoff Host legacy file-import fixture mismatch ${JSON.stringify(legacyImport)}`);
 
 console.log("owner_handoff_host: PASS");
