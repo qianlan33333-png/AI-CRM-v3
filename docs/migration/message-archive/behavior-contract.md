@@ -18,7 +18,7 @@ SDK 不提交仓库。Linux CI 从企业微信官方 [91774 文档所列下载�
 
 ## 历史导入
 
-`cmd/migrate-message-archive` 的 `extract` 只能由操作员显式执行：它从非符号链接、权限 `0600` 的 `--source-database-url-file` 打开旧 PostgreSQL，在 `REPEATABLE READ READ ONLY` 事务内读取 `archived_messages(id, seq, msgid, unionid, raw_payload)`。它将 `unionid` 原样映射为 `historical_unionid`，先取可选行字段 `group_name`，缺失时取 `raw_payload.group_name`；不会启动 SDK、推进正常通知 cursor 或调用 Provider。提取要求冻结的 `--source-revision` 与 `--wecom-corp-id`，并以独占创建的 `0600` 文件写出显式离线快照（`aicrm-message-archive-history-v1`）。
+`cmd/migrate-message-archive` 的 `extract` 只能由操作员显式执行：它从非符号链接、权限 `0600` 的 `--source-database-url-file` 打开旧 PostgreSQL，在 `REPEATABLE READ READ ONLY` 事务内读取 `archived_messages(id, seq, msgid, unionid, raw_payload)`。它将 `unionid` 原样映射为 `historical_unionid`，先取可选行字段 `group_name`，缺失时取 `raw_payload.group_name`；对冻结供体的实际 SDK 包装 `{seq, encrypted_record, decrypted_message}`，只把 `decrypted_message` 交给 Archive 正规化器，并严格核验包装层与行的 `seq`、有效 `msgid` 一致。完整受保护包装不复制到 V3；快照保存其 SHA-256，连同解密消息、投影字段进入逐行 receipt/reconcile digest，因此包装层变更也可核验。未知但格式完整的消息类型仍由 Archive 保留受保护 payload。提取不会启动 SDK、推进正常通知 cursor 或调用 Provider。提取要求冻结的 `--source-revision` 与 `--wecom-corp-id`，并以独占创建的 `0600` 文件写出显式离线快照（`aicrm-message-archive-history-v1`）。
 
 其余模式只读取该离线快照：`inspect`、`dry-run`、`apply`、`reconcile` 与受操作员显式调用、有限额的 `re-resolve`；`apply` 要求快照 SHA-256 和 `--confirm-apply`。`dry-run` 会在隔离 PostgreSQL 事务执行与 `apply` 相同的目标冲突、OneID/Access 只读查询、消息与 receipt 写入逻辑，再整体回滚并返回逐源行预计结果。
 

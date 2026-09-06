@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,11 +135,13 @@ func TestMessageArchiveExtractLegacyRowsPreservesHistoricalProjectionAndReplaysP
 		)`); err != nil {
 		t.Fatal(err)
 	}
-	rawFallback := `{"msgid":"legacy-raw-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-raw","msgtype":"text","msgtime":1788336000,"text":{"content":"raw group"},"group_name":"Raw payload group"}`
-	rowPreferred := `{"msgid":"legacy-row-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-row","msgtype":"text","msgtime":1788336060,"text":{"content":"row group"},"group_name":"Raw group must not win"}`
+	rawFallback := `{"seq":1,"encrypted_record":{"msgid":"legacy-raw-group","encrypt_chat_msg":"protected-text"},"decrypted_message":{"msgid":"legacy-raw-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-raw","msgtype":"text","msgtime":1788336000,"text":{"content":"raw group"},"group_name":"Raw payload group"}}`
+	rowPreferred := `{"seq":2,"encrypted_record":{"msgid":"legacy-row-group","encrypt_chat_msg":"protected-image"},"decrypted_message":{"msgid":"legacy-row-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-row","msgtype":"image","msgtime":1788336060,"image":{"sdkfileid":"sdk-image","md5sum":"abc","filesize":42},"group_name":"Raw group must not win"}}`
+	unknownAttachment := `{"seq":3,"encrypted_record":{"msgid":"legacy-file","encrypt_chat_msg":"protected-file"},"decrypted_message":{"msgid":"legacy-file","from":"staff-one","tolist":["wm_known"],"msgtype":"file","msgtime":1788336120,"file":{"sdkfileid":"sdk-file","filename":"history.pdf"}}}`
 	if _, err := source.Exec(ctx, `INSERT INTO archived_messages(id,seq,msgid,unionid,group_name,raw_payload) VALUES
 		(11,1,'legacy-raw-group','union-raw','',$1),
-		(12,2,'legacy-row-group','union-row','Row column group',$2)`, rawFallback, rowPreferred); err != nil {
+		(12,2,'legacy-row-group','union-row','Row column group',$2),
+		(13,3,'legacy-file','union-file','',$3)`, rawFallback, rowPreferred, unknownAttachment); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,11 +162,15 @@ func TestMessageArchiveExtractLegacyRowsPreservesHistoricalProjectionAndReplaysP
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SourceName != "ai-crm:archived_messages:"+revision || len(manifest.Records) != 2 || manifest.Records[0].HistoricalUnionID != "union-raw" || manifest.Records[0].HistoricalGroupName != "Raw payload group" || manifest.Records[1].HistoricalUnionID != "union-row" || manifest.Records[1].HistoricalGroupName != "Row column group" {
+	if manifest.SourceName != "ai-crm:archived_messages:"+revision || len(manifest.Records) != 3 || manifest.Records[0].HistoricalUnionID != "union-raw" || manifest.Records[0].HistoricalGroupName != "Raw payload group" || manifest.Records[1].HistoricalUnionID != "union-row" || manifest.Records[1].HistoricalGroupName != "Row column group" || manifest.Records[2].MsgID != "legacy-file" || manifest.Records[2].SourcePayloadDigest == "" {
 		t.Fatalf("extracted manifest=%+v", manifest)
 	}
+	var extractedPayload map[string]any
+	if err = json.Unmarshal(manifest.Records[1].Payload, &extractedPayload); err != nil || extractedPayload["msgtype"] != "image" {
+		t.Fatalf("extracted decrypted payload=%v err=%v", extractedPayload, err)
+	}
 	var sourceRows int
-	if err = source.QueryRow(ctx, `SELECT count(*) FROM archived_messages`).Scan(&sourceRows); err != nil || sourceRows != 2 {
+	if err = source.QueryRow(ctx, `SELECT count(*) FROM archived_messages`).Scan(&sourceRows); err != nil || sourceRows != 3 {
 		t.Fatalf("source rows=%d err=%v", sourceRows, err)
 	}
 
@@ -173,16 +180,16 @@ func TestMessageArchiveExtractLegacyRowsPreservesHistoricalProjectionAndReplaysP
 	}
 	resolver := newHistoricalResolver(manifest)
 	dry, err := dryRun(ctx, native, manifest, resolver)
-	if err != nil || dry.Inserted != 2 || dry.Unresolved != 0 {
+	if err != nil || dry.Inserted != 3 || dry.Unresolved != 0 {
 		t.Fatalf("dry run=%+v err=%v", dry, err)
 	}
 	assertArchiveMigrationCounts(t, ctx, native, 0, 0, 0)
 	applied, err := apply(ctx, native, manifest, resolver)
-	if err != nil || applied.Inserted != 2 || applied.Duplicates != 0 {
+	if err != nil || applied.Inserted != 3 || applied.Duplicates != 0 {
 		t.Fatalf("apply=%+v err=%v", applied, err)
 	}
 	replayed, err := apply(ctx, native, manifest, resolver)
-	if err != nil || replayed.Duplicates != 2 || replayed.Inserted != 0 {
+	if err != nil || replayed.Duplicates != 3 || replayed.Inserted != 0 {
 		t.Fatalf("replay=%+v err=%v", replayed, err)
 	}
 	if matched, reconcileErr := reconcile(ctx, native, manifest); reconcileErr != nil || !matched {
@@ -196,6 +203,10 @@ func TestMessageArchiveExtractLegacyRowsPreservesHistoricalProjectionAndReplaysP
 		if err = native.QueryRow(ctx, `SELECT legacy.historical_unionid,legacy.historical_group_name FROM message_archive_legacy_projections legacy JOIN message_archive_messages message ON message.id=legacy.message_id WHERE message.msgid=$1`, msgID).Scan(&gotUnion, &gotGroup); err != nil || gotUnion != expected[0] || gotGroup != expected[1] {
 			t.Fatalf("projection msgid=%s union=%q group=%q err=%v", msgID, gotUnion, gotGroup, err)
 		}
+	}
+	var messageType, providerPayload string
+	if err = native.QueryRow(ctx, `SELECT msgtype,provider_payload::text FROM message_archive_messages WHERE msgid='legacy-file'`).Scan(&messageType, &providerPayload); err != nil || messageType != "file" || !strings.Contains(providerPayload, "sdk-file") {
+		t.Fatalf("unknown attachment msgtype=%q provider_payload=%q err=%v", messageType, providerPayload, err)
 	}
 }
 

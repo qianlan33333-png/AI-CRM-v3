@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -61,8 +62,10 @@ func extractLegacyArchiveSnapshot(ctx context.Context, cfg options) (archivemigr
 // extractLegacyArchiveRows maps exactly the frozen archived_messages facts.
 // to_jsonb(message)->>'group_name' supports donor instances that retained a
 // row-level group_name while remaining compatible with the older table where
-// the value lives only in raw_payload. The normal importer validates the full
-// SDK envelope before any target write is possible.
+// the value lives only in raw_payload. The frozen donor stores an SDK wrapper
+// in raw_payload: {seq, encrypted_record, decrypted_message}. Only the
+// decrypted member is a PlainArchiveRecord payload; the full wrapper is never
+// copied into V3, but its SHA-256 is frozen in the offline snapshot.
 func extractLegacyArchiveRows(ctx context.Context, tx pgx.Tx, revision, corpID string) (archivemigration.Manifest, error) {
 	if tx == nil || !archiveSourceRevision.MatchString(revision) || !validCorpID(corpID) {
 		return archivemigration.Manifest{}, errInvalidArguments
@@ -115,25 +118,92 @@ func extractedArchiveSourceRow(id, seq int64, msgID, unionID, rowGroupName, rawP
 	if id < 1 || seq < 1 || strings.TrimSpace(msgID) != msgID || msgID == "" || !json.Valid([]byte(rawPayload)) {
 		return archivemigration.SourceRow{}, errors.New("legacy archived_messages row is invalid")
 	}
-	var raw map[string]json.RawMessage
-	if json.Unmarshal([]byte(rawPayload), &raw) != nil {
+	var wrapper map[string]json.RawMessage
+	decoder := json.NewDecoder(strings.NewReader(rawPayload))
+	decoder.UseNumber()
+	if decoder.Decode(&wrapper) != nil || wrapper == nil {
 		return archivemigration.SourceRow{}, errors.New("legacy archived_messages payload is invalid")
+	}
+	wrappedSeq, ok := archiveWrapperSeq(wrapper["seq"])
+	if !ok || wrappedSeq != seq {
+		return archivemigration.SourceRow{}, errors.New("legacy archived_messages sequence contract drift")
+	}
+	payload, payloadObject, ok := archiveWrapperObject(wrapper["decrypted_message"])
+	if !ok {
+		return archivemigration.SourceRow{}, errors.New("legacy archived_messages decrypted message is invalid")
+	}
+	_, encrypted, ok := archiveWrapperObject(wrapper["encrypted_record"])
+	if !ok {
+		return archivemigration.SourceRow{}, errors.New("legacy archived_messages encrypted record is invalid")
+	}
+	if archiveWrapperMessageID(payloadObject, encrypted, seq) != msgID {
+		return archivemigration.SourceRow{}, errors.New("legacy archived_messages message contract drift")
 	}
 	groupName := strings.TrimSpace(rowGroupName)
 	if groupName == "" {
-		var rawGroupName string
-		if value, found := raw["group_name"]; found && json.Unmarshal(value, &rawGroupName) == nil {
-			groupName = strings.TrimSpace(rawGroupName)
-		}
+		groupName = archiveWrapperText(wrapper["group_name"])
 	}
+	if groupName == "" {
+		groupName = archiveWrapperText(payloadObject["group_name"])
+	}
+	if len(groupName) > 512 {
+		return archivemigration.SourceRow{}, errors.New("legacy archived_messages group name is invalid")
+	}
+	sourceDigest := sha256.Sum256([]byte(rawPayload))
 	return archivemigration.SourceRow{
 		SourceRowKey:        fmt.Sprintf("archived_messages/%d", id),
 		Seq:                 uint64(seq),
 		MsgID:               msgID,
-		Payload:             append(json.RawMessage(nil), []byte(rawPayload)...),
+		Payload:             payload,
+		SourcePayloadDigest: fmt.Sprintf("%x", sourceDigest),
 		HistoricalUnionID:   strings.TrimSpace(unionID),
 		HistoricalGroupName: groupName,
 	}, nil
+}
+
+func archiveWrapperObject(raw json.RawMessage) (json.RawMessage, map[string]json.RawMessage, bool) {
+	if !json.Valid(raw) {
+		return nil, nil, false
+	}
+	object := map[string]json.RawMessage{}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if decoder.Decode(&object) != nil || object == nil {
+		return nil, nil, false
+	}
+	return append(json.RawMessage(nil), raw...), object, true
+}
+
+func archiveWrapperSeq(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var number json.Number
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if decoder.Decode(&number) != nil {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(number.String(), 10, 64)
+	return value, err == nil && value > 0
+}
+
+func archiveWrapperText(raw json.RawMessage) string {
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func archiveWrapperMessageID(payload, encrypted map[string]json.RawMessage, seq int64) string {
+	if value := archiveWrapperText(payload["msgid"]); value != "" {
+		return value
+	}
+	if value := archiveWrapperText(encrypted["msgid"]); value != "" {
+		return value
+	}
+	return fmt.Sprintf("seq-%d", seq)
 }
 
 func validCorpID(value string) bool {
