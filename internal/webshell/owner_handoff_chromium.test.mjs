@@ -31,8 +31,55 @@ const legacyOwnerFileCSV = [
   "browser-mismatch,是,not-browser-source,负责人不符,保留",
 ].join("\n");
 const uploadLegacyFileExpression = () => `(() => { const root=document.querySelector("[data-owner-handoff-host] [data-owner-migration-page]"); const input=root.querySelector("[data-import-file]"); const csv=${JSON.stringify(legacyOwnerFileCSV)}; const files=new DataTransfer(); files.items.add(new File([csv], "legacy-owner-list.xls", {type:"text/csv"})); Object.defineProperty(input,"files",{configurable:true,value:files.files}); root.querySelector("[data-upload-file]").click(); return true; })()`;
-try { new Function(uploadLegacyFileExpression()); } catch (_) { throw new Error("owner handoff Excel fixture expression is invalid"); }
+const selectExcelScopeExpression = () => `(() => { document.querySelector('[data-owner-handoff-host] [data-scope-segment="excel_include"]').click(); return true; })()`;
+const operationMemberSelector = userID => `[data-operation-member-row][data-user-id=${JSON.stringify(userID)}]`;
+const operationMemberPresentExpression = userID => `Boolean(document.querySelector(${JSON.stringify(operationMemberSelector(userID))}))`;
+const operationMemberChooseExpression = userID => `document.querySelector(${JSON.stringify(`${operationMemberSelector(userID)} [data-operation-member-row-select]`)}).click(); true`;
+const compileRuntimeExpression = (expression, step) => {
+  try { new Function(expression); } catch (error) {
+    const category = String(error?.name || "SyntaxError").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96);
+    throw new Error(`${step} expression is invalid (${category})`);
+  }
+  return expression;
+};
 if (!/^https:\/\//.test(baseURL || "") || !username || !password || !source || !target || !sourceUserID || !targetUserID) throw new Error("owner handoff Chromium journey requires HTTPS URL, credentials, and fixture IDs");
+const preflightRuntimeExpressions = () => [
+  `Boolean(document.querySelector('form[action="/login"] input[name="login_csrf_token"]'))`,
+  `(() => { const stage=document.querySelector('[data-owner-handoff-host]'); return ['ready','donor_error','context_error','host_error'].includes(stage?.dataset.ownerHandoffInit || ''); })()`,
+  `(() => { const stage=document.querySelector('[data-owner-handoff-host]'); const root=stage?.querySelector('[data-owner-migration-page]'); return { init: stage?.dataset.ownerHandoffInit || 'missing', http_status: stage?.dataset.ownerHandoffInitStatus || '', page: Boolean(root), has_curly_marker: Boolean(root?.innerHTML.includes('{{')), has_block_marker: Boolean(root?.innerHTML.includes('{%')), operator_ready: Boolean(root?.querySelector('#operator')?.value.startsWith('管理员 #')), welcome_ready: root?.querySelector('[data-transfer-welcome-msg]')?.value === '您好，后续将由新的服务同事继续为您服务。', wecom_checked: Boolean(root?.querySelector('[data-include-wecom-transfer]')?.checked) }; })()`,
+  `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const header=root?.querySelector('.owner-migration-header'); return { page_max_width: root ? getComputedStyle(root).maxWidth : '', header_display: header ? getComputedStyle(header).display : '' }; })()`,
+  `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`,
+  `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); root.querySelector('[data-owner-picker="source"]').click(); return true; })()`,
+  operationMemberPresentExpression(sourceUserID),
+  `(() => { const picker=document.querySelector('[data-operation-member-picker]'); return { hidden: Boolean(picker?.hidden), display: picker ? getComputedStyle(picker).display : '', visibility: picker ? getComputedStyle(picker).visibility : '' }; })()`,
+  operationMemberChooseExpression(sourceUserID),
+  `document.querySelector('[data-operation-member-confirm]').click(); true`,
+  `document.querySelector('[data-owner-handoff-host] [data-owner-userid="source"]').value === ${JSON.stringify(source)}`,
+  `document.querySelector('[data-owner-handoff-host] [data-owner-picker="target"]').click(); true`,
+  operationMemberPresentExpression(targetUserID),
+  operationMemberChooseExpression(targetUserID),
+  `document.querySelector('[data-operation-member-confirm]').click(); true`,
+  `document.querySelector('[data-owner-handoff-host] [data-owner-userid="target"]').value === ${JSON.stringify(target)}`,
+  selectExcelScopeExpression(),
+  uploadLegacyFileExpression(),
+  `!document.querySelector('[data-owner-handoff-host] [data-import-summary]').hidden`,
+  `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const wecom=root.querySelector('[data-include-wecom-transfer]'); wecom.checked=true; wecom.dispatchEvent(new Event('change',{bubbles:true})); root.querySelector('[data-preview]').click(); return true; })()`,
+  `Boolean(document.querySelector('[data-owner-handoff-host] [data-preview-content]:not([hidden])'))`,
+  `(() => { const text=document.querySelector('[data-owner-handoff-host] [data-preview-rows]').textContent; return ["browser-external","duplicate","missing_external_userid","invalid_move_flag","skipped_by_file","not_under_source_owner"].every(value => text.includes(value)); })()`,
+  `document.querySelector('[data-owner-handoff-host] [data-download-errors]').click(); true`,
+  `document.querySelector('[data-owner-handoff-host] [data-confirm-phrase-display]').textContent`,
+  `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const input=root.querySelector('[data-confirm-phrase-input]'); input.value=${JSON.stringify("确认迁移")}; input.dispatchEvent(new Event('input',{bubbles:true})); root.querySelector('[data-execute]').click(); return true; })()`,
+  `document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('batch_id=')`,
+  `document.querySelector('[data-owner-handoff-host] [data-read-transfer-result]').click(); true`,
+  `document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('transfer_status=1')`,
+  `document.querySelector('[data-owner-handoff-host] [data-download-result]').click(); true`,
+  `Boolean(document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'))`,
+];
+if (process.env.AICRM_OWNER_HANDOFF_TEST_COMPILE_ONLY === "1") {
+  preflightRuntimeExpressions().forEach((expression, index) => compileRuntimeExpression(expression, `expression_${index + 1}`));
+  console.log("owner_handoff_chromium_expression_preflight: PASS");
+  process.exit(0);
+}
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const chrome = () => {
   for (const value of [process.env.AICRM_CHROMIUM_BINARY, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"].filter(Boolean)) {
@@ -67,7 +114,7 @@ try {
   await browserCDP.call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:downloads,eventsEnabled:true});
   const page=await (await fetch(`${address}/json/new?about:blank`,{method:"PUT"})).json();
   cdp=await openCDP(page.webSocketDebuggerUrl); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
-  const evaluate=async (expression, step="page_evaluation")=>{ const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) { const category=String(result.exceptionDetails.exception?.className || result.exceptionDetails.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g,"_").slice(0,96); throw new Error(`${step} page evaluation failed (${category})`); } return result.result?.value; };
+  const evaluate=async (expression, step="page_evaluation")=>{ compileRuntimeExpression(expression, step); const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) { const category=String(result.exceptionDetails.exception?.className || result.exceptionDetails.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g,"_").slice(0,96); throw new Error(`${step} page evaluation failed (${category})`); } return result.result?.value; };
   const waitFor=async(expression,message)=>{for(let attempt=0;attempt<160;attempt++){if(await evaluate(expression))return;await sleep(50);}throw new Error(message);};
   const readDownloadedWorkbook=async (filename, expectedValues) => {
     const destination=path.join(downloads,filename);
@@ -120,19 +167,19 @@ try {
   if (pageStyle.page_max_width !== '1440px' || pageStyle.header_display !== 'flex') throw new Error(`owner handoff frozen-page styles were blocked ${JSON.stringify(pageStyle)}`);
   const run=async (mode, scope=requestedScope)=>{
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); root.querySelector('[data-owner-picker="source"]').click(); return true; })()`);
-    await waitFor(`Boolean(document.querySelector('[data-operation-member-row][data-user-id="${sourceUserID}"]'))`,"source picker did not include inactive source");
+    await waitFor(operationMemberPresentExpression(sourceUserID),"source picker did not include inactive source");
     const pickerStyle = await evaluate(`(() => { const picker=document.querySelector('[data-operation-member-picker]'); return { hidden: Boolean(picker?.hidden), display: picker ? getComputedStyle(picker).display : '', visibility: picker ? getComputedStyle(picker).visibility : '' }; })()`);
     if (pickerStyle.hidden || pickerStyle.display !== 'flex' || pickerStyle.visibility !== 'visible') throw new Error(`owner handoff shared picker styles were blocked ${JSON.stringify(pickerStyle)}`);
-    await evaluate(`document.querySelector('[data-operation-member-row][data-user-id="${sourceUserID}"] [data-operation-member-row-select]').click(); true`);
+    await evaluate(operationMemberChooseExpression(sourceUserID));
     await evaluate("document.querySelector('[data-operation-member-confirm]').click(); true");
     await waitFor(`document.querySelector('[data-owner-handoff-host] [data-owner-userid="source"]').value === ${JSON.stringify(source)}`, "source picker did not persist the selected Access staff");
     await evaluate(`document.querySelector('[data-owner-handoff-host] [data-owner-picker="target"]').click(); true`);
-    await waitFor(`Boolean(document.querySelector('[data-operation-member-row][data-user-id="${targetUserID}"]'))`,"target picker did not include active target");
-    await evaluate(`document.querySelector('[data-operation-member-row][data-user-id="${targetUserID}"] [data-operation-member-row-select]').click(); true`);
+    await waitFor(operationMemberPresentExpression(targetUserID),"target picker did not include active target");
+    await evaluate(operationMemberChooseExpression(targetUserID));
     await evaluate("document.querySelector('[data-operation-member-confirm]').click(); true");
     await waitFor(`document.querySelector('[data-owner-handoff-host] [data-owner-userid="target"]').value === ${JSON.stringify(target)}`, "target picker did not persist the selected Access staff");
     if (scope === "excel_include") {
-      await evaluate(`(() => { document.querySelector("[data-owner-handoff-host] [data-scope-segment=\"excel_include\"]").click(); return true; })()`, "excel_scope_select");
+      await evaluate(selectExcelScopeExpression(), "excel_scope_select");
       await evaluate(uploadLegacyFileExpression(), "excel_fixture_upload");
       await waitFor(`!document.querySelector("[data-owner-handoff-host] [data-import-summary]").hidden`, "old .xls import did not parse");
     }
