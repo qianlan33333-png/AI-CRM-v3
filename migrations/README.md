@@ -14,3 +14,9 @@ v3 从新的 Schema 基线开始，不复制 production 或 V2 的完整 migrati
 - `0090_survey_oauth_state_redirect.sql`：修正 Survey OAuth state 的旧 redirect 正则，使既有 Host `/h5/all.html` 与 `/h5/one.html` 回跳可持久化；forward-only，不修改已保存 state 或身份事实。
 - `0086_wecom_profile_primary_owner.sql`：WeCom 完整目录同步后从受信 follow 集合恢复主负责人事实；空集合保留旧值，旧存量在下一次完整同步前保持 unknown。
 - `0091_survey_assessment_business_keys.sql`：修正 Survey 测评维度和类型业务键的 ASCII-only 约束，保留旧版中文、内部空格和斜杠键；forward-only，不转换既有键或放宽通用 opaque 标识。
+
+- `0097_segment_audience_mutation_actor.sql`：Segment/Audience 将既有人工 `admin:<id>` 审计与幂等投影前向填充为 `actor_kind`/`actor_ref`，并支持可追溯的机器主体；不把 machine client 映射为管理员 ID。
+- `0098_message_archive_historical_projection.sql`：Archive 保留旧 `archived_messages` 的 UnionID 和群名兼容投影；仅由授权 Archive 外部读取使用，源包装只保留 digest，不成为当前身份或第二消息流。
+- `0099_survey_historical_external_projection.sql`：Survey 保留旧 `questionnaire_submissions.unionid` 的受保护历史读取投影及来源摘要；仅供授权外部问卷读取，绝不作为 OneID 匹配、建客或合并依据。
+
+- `0100_ai_assistant_machine_actor.sql`：AI Assistant 为认证 machine:<client_id> 保留可审计创建者与审计引用；数值管理员投影只为兼容保留，机器主体绝不映射为管理员。

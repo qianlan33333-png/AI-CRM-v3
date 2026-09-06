@@ -59,6 +59,8 @@ type Plan struct {
 	IneligibleCount     int               `json:"ineligible_count"`
 	NeedsAttentionCount int               `json:"needs_attention_count"`
 	CreatedBy           int64             `json:"created_by"`
+	CreatedActorKind    string            `json:"-"`
+	CreatedActorRef     string            `json:"-"`
 	CreatedAt           time.Time         `json:"created_at"`
 	UpdatedAt           time.Time         `json:"updated_at"`
 }

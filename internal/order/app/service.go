@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -54,14 +55,15 @@ type Cursor struct {
 }
 
 type ListFilter struct {
-	Offset      int32
-	Provider    domain.Provider
-	Status      domain.Status
-	OrderRef    string
-	CustomerID  int64
-	Product     string
-	CreatedFrom *time.Time
-	CreatedTo   *time.Time
+	Offset         int32
+	Provider       domain.Provider
+	Status         domain.Status
+	OrderRef       string
+	CustomerID     int64
+	Product        string
+	CreatedFrom    *time.Time
+	CreatedTo      *time.Time
+	CreatedThrough *time.Time
 }
 
 type ExportReceipt struct {
@@ -510,6 +512,56 @@ func (s *Service) List(ctx context.Context, query orderport.ListQuery) (orderpor
 	return page, nil
 }
 
+func (s *Service) CustomerActivities(ctx context.Context, query orderport.CustomerActivityQuery) (orderport.CustomerActivityPage, error) {
+	if !ready(s) || query.CustomerID < 1 || query.Limit < 1 || query.Limit > MaximumLimit+1 || query.Watermark.IsZero() || query.AfterID < 0 ||
+		(query.AfterAt.IsZero() && query.AfterID != 0) || (!query.AfterAt.IsZero() && query.AfterAt.After(query.Watermark)) {
+		return orderport.CustomerActivityPage{}, orderport.ErrConflict
+	}
+	beforeAt, beforeID := query.AfterAt, query.AfterID
+	if beforeAt.IsZero() {
+		beforeAt, beforeID = query.Watermark.UTC(), math.MaxInt64
+	}
+	rows := []domain.Order{}
+	through := query.Watermark.UTC()
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var listErr error
+		rows, listErr = s.store.List(tx, &Cursor{CreatedAt: beforeAt.UTC(), ID: beforeID}, query.Limit, ListFilter{CustomerID: query.CustomerID, CreatedThrough: &through})
+		return listErr
+	})
+	if err != nil {
+		return orderport.CustomerActivityPage{}, classify(err)
+	}
+	page := orderport.CustomerActivityPage{Items: make([]orderport.CustomerActivity, 0, len(rows))}
+	for _, row := range rows {
+		snapshot := row.Snapshot()
+		relationship := customerOrderRelationship(snapshot, query.CustomerID)
+		if relationship == "" { // Store predicates must remain defense in depth.
+			return orderport.CustomerActivityPage{}, orderport.ErrUnavailable
+		}
+		page.Items = append(page.Items, orderport.CustomerActivity{OrderID: snapshot.ID, Relationship: relationship,
+			Provider: snapshot.Provider, Status: snapshot.Status, Amount: snapshot.Amount, RefundedMinor: snapshot.RefundedMinor,
+			RecordOrigin: snapshot.RecordOrigin, OccurredAt: snapshot.CreatedAt})
+	}
+	return page, nil
+}
+
+func customerOrderRelationship(snapshot domain.Snapshot, customerID int64) string {
+	payer := snapshot.PayerCustomerID != nil && *snapshot.PayerCustomerID == customerID
+	beneficiary := snapshot.BeneficiaryCustomerID != nil && *snapshot.BeneficiaryCustomerID == customerID
+	switch {
+	case payer && beneficiary:
+		return "payer_and_beneficiary"
+	case payer:
+		return "payer"
+	case beneficiary:
+		return "beneficiary"
+	default:
+		return ""
+	}
+}
+
+var _ orderport.CustomerActivityReader = (*Service)(nil)
+
 func (s *Service) CustomerOrderSummary(ctx context.Context, customerID int64, recentLimit int32) (orderport.CustomerOrderSummary, error) {
 	if !ready(s) || customerID < 1 || recentLimit < 1 || recentLimit > MaximumLimit {
 		return orderport.CustomerOrderSummary{}, orderport.ErrConflict
@@ -552,6 +604,7 @@ func (s *Service) CustomerOrderSummary(ctx context.Context, customerID int64, re
 }
 
 var _ orderport.CustomerOrderSummaryReader = (*Service)(nil)
+var _ orderport.CustomerScopedQuery = (*Service)(nil)
 
 // CommercePushDeliveryReference resolves the existing compatibility order
 // reference without exposing Order persistence. Historical snapshots only
@@ -584,6 +637,31 @@ func (s *Service) GetByReference(ctx context.Context, reference string) (domain.
 		var findErr error
 		matches, findErr = s.store.FindByReference(tx, reference)
 		return findErr
+	})
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	if len(matches) == 0 {
+		return domain.Snapshot{}, orderport.ErrNotFound
+	}
+	if len(matches) != 1 {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	return matches[0].Snapshot(), nil
+}
+
+func (s *Service) GetByReferenceForCustomer(ctx context.Context, reference string, customerID int64) (domain.Snapshot, error) {
+	if !ready(s) || !validScope(reference) || customerID < 1 {
+		return domain.Snapshot{}, orderport.ErrNotFound
+	}
+	var matches []domain.Order
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var listErr error
+		// Store.List compiles CustomerID and OrderRef into the same SQL WHERE
+		// clause. The service must never perform an unrestricted detail read
+		// and apply a machine-client scope after the fact.
+		matches, listErr = s.store.List(tx, nil, 2, ListFilter{CustomerID: customerID, OrderRef: reference})
+		return listErr
 	})
 	if err != nil {
 		return domain.Snapshot{}, classify(err)

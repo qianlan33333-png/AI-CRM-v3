@@ -98,20 +98,14 @@ func (r *Repository) CreatePlan(ctx context.Context, aggregate aiassistantdomain
 		return aiassistantport.Plan{}, nil, ErrInvalid
 	}
 	plan := aggregate.Projection
-	err = tx.QueryRow(ctx, `INSERT INTO ai_assistant_plans(name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_at,updated_at)
+	plan, err = scanPlan(tx.QueryRow(ctx, `INSERT INTO ai_assistant_plans(name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_at,updated_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
-		RETURNING id,name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_at,updated_at`,
-		plan.Name, plan.SourceKind, sourceDigest, string(plan.State), plan.Version, plan.TargetCount, plan.PendingCount, plan.ApprovedCount, plan.RejectedCount, plan.IneligibleCount, plan.NeedsAttentionCount, actor, now.UTC()).Scan(
-		&plan.ID, &plan.Name, &plan.SourceKind, &sourceDigest, &plan.State, &plan.Version, &plan.TargetCount, &plan.PendingCount, &plan.ApprovedCount, &plan.RejectedCount, &plan.IneligibleCount, &plan.NeedsAttentionCount, &plan.CreatedBy, &plan.CreatedAt, &plan.UpdatedAt,
-	)
+		RETURNING `+planColumns,
+		plan.Name, plan.SourceKind, sourceDigest, string(plan.State), plan.Version, plan.TargetCount, plan.PendingCount, plan.ApprovedCount, plan.RejectedCount, plan.IneligibleCount, plan.NeedsAttentionCount, actor, now.UTC()))
 	if err != nil {
 		if unique(err) {
 			return aiassistantport.Plan{}, nil, ErrConflict
 		}
-		return aiassistantport.Plan{}, nil, err
-	}
-	plan.SourceDigest, err = digestFromBytes(sourceDigest)
-	if err != nil {
 		return aiassistantport.Plan{}, nil, err
 	}
 	created := make([]aiassistantport.Recipient, 0, len(recipients))
@@ -157,21 +151,11 @@ func (r *Repository) GetPlan(ctx context.Context, id aiassistantport.PlanID, loc
 	if id < 1 {
 		return aiassistantport.Plan{}, ErrNotFound
 	}
-	query := `SELECT id,name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_at,updated_at FROM ai_assistant_plans WHERE id=$1`
+	query := `SELECT ` + planColumns + ` FROM ai_assistant_plans WHERE id=$1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
-	var plan aiassistantport.Plan
-	var sourceDigest []byte
-	err = tx.QueryRow(ctx, query, id).Scan(&plan.ID, &plan.Name, &plan.SourceKind, &sourceDigest, &plan.State, &plan.Version, &plan.TargetCount, &plan.PendingCount, &plan.ApprovedCount, &plan.RejectedCount, &plan.IneligibleCount, &plan.NeedsAttentionCount, &plan.CreatedBy, &plan.CreatedAt, &plan.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return aiassistantport.Plan{}, ErrNotFound
-	}
-	if err != nil {
-		return aiassistantport.Plan{}, err
-	}
-	plan.SourceDigest, err = digestFromBytes(sourceDigest)
-	return plan, err
+	return scanPlan(tx.QueryRow(ctx, query, id))
 }
 
 func (r *Repository) Reserve(ctx context.Context, input Reservation) (Receipt, bool, error) {

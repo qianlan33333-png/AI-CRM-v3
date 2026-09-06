@@ -17,7 +17,7 @@ func (r *Repository) ScheduledConfigurations(ctx context.Context, limit int) ([]
 	if err != nil {
 		return nil, err
 	}
-	rows, err := database.Query(ctx, `SELECT p.id,c.id,scheduled.cron_utc,scheduled.kind,c.created_by,c.created_at,s.next_due_at,COALESCE(s.version,0)
+	rows, err := database.Query(ctx, `SELECT p.id,c.id,scheduled.cron_utc,scheduled.kind,c.created_by,c.created_actor_kind,c.created_actor_ref,c.created_at,s.next_due_at,COALESCE(s.version,0)
 		FROM segment_audience_packages p
 		JOIN segment_audience_configuration_versions c ON c.id=p.current_configuration_version_id AND c.package_id=p.id
 		CROSS JOIN LATERAL (
@@ -35,8 +35,15 @@ func (r *Repository) ScheduledConfigurations(ctx context.Context, limit int) ([]
 	items := []segmentdomain.ScheduledConfiguration{}
 	for rows.Next() {
 		var item segmentdomain.ScheduledConfiguration
-		if err = rows.Scan(&item.PackageID, &item.ConfigurationVersionID, &item.CronUTC, &item.Kind, &item.Actor, &item.ConfigurationCreatedAt, &item.NextDueAt, &item.ScheduleVersion); err != nil {
+		var actorID *int64
+		if err = rows.Scan(&item.PackageID, &item.ConfigurationVersionID, &item.CronUTC, &item.Kind, &actorID, &item.ActorKind, &item.ActorReference, &item.ConfigurationCreatedAt, &item.NextDueAt, &item.ScheduleVersion); err != nil {
 			return nil, err
+		}
+		if actorID != nil {
+			item.Actor = *actorID
+		}
+		if actor, actorErr := storedActor(item.ActorKind, item.ActorReference, item.Actor); actorErr != nil || actor.Reference != item.ActorReference {
+			return nil, ErrInvalid
 		}
 		items = append(items, item)
 	}
@@ -47,7 +54,8 @@ func (r *Repository) ScheduledConfigurations(ctx context.Context, limit int) ([]
 // caller accepts the refresh in the same UoW; any acceptance failure rolls the
 // cursor back with it.
 func (r *Repository) ClaimScheduledOccurrence(ctx context.Context, item segmentdomain.ScheduledConfiguration, occurrence, next, now time.Time) (bool, error) {
-	if item.PackageID < 1 || item.ConfigurationVersionID < 1 || item.Actor < 1 || item.CronUTC == "" || (item.Kind != "legacy" && item.Kind != "incremental" && item.Kind != "daily") || occurrence.IsZero() || next.IsZero() || !next.After(occurrence) || now.IsZero() {
+	actor, actorErr := storedActor(item.ActorKind, item.ActorReference, item.Actor)
+	if item.PackageID < 1 || item.ConfigurationVersionID < 1 || actorErr != nil || (item.ActorReference != "" && actor.Reference != item.ActorReference) || item.CronUTC == "" || (item.Kind != "legacy" && item.Kind != "incremental" && item.Kind != "daily") || occurrence.IsZero() || next.IsZero() || !next.After(occurrence) || now.IsZero() {
 		return false, ErrInvalid
 	}
 	database, err := tx(ctx)

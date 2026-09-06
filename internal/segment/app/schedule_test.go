@@ -92,3 +92,27 @@ func TestScheduledRefreshKeepsKindsIndependent(t *testing.T) {
 		t.Fatalf("claimed=%d commands=%d err=%v", store.claimed, len(accepter.commands), err)
 	}
 }
+
+func TestScheduledRefreshPreservesMachineMutationActor(t *testing.T) {
+	created := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	store := &scheduleStoreStub{items: []segmentdomain.ScheduledConfiguration{{
+		PackageID: 8, ConfigurationVersionID: 9, CronUTC: "0 2 * * *", ActorKind: "machine", ActorReference: "machine:open-audience", ConfigurationCreatedAt: created,
+	}}}
+	accepter := &scheduledAccepterStub{}
+	service, err := NewScheduledRefreshService(directUOW{}, store, accepter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now }
+	if err = service.ScanScheduled(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(accepter.commands) != 1 {
+		t.Fatalf("commands=%+v", accepter.commands)
+	}
+	command := accepter.commands[0]
+	if command.Actor != 0 || command.MutationActor.Kind != "machine" || command.MutationActor.Reference != "machine:open-audience" {
+		t.Fatalf("machine schedule actor lost: %+v", command)
+	}
+}

@@ -43,8 +43,17 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if err := importSnapshot(args); err != nil {
 		t.Fatalf("import frozen snapshot: %v", err)
 	}
+	var historicalSubmissionID int64
+	if err := pool.QueryRow(context.Background(), `SELECT target_pk FROM survey_migration_source_map WHERE source_table='questionnaire_submissions' AND source_pk='40'`).Scan(&historicalSubmissionID); err != nil {
+		t.Fatal(err)
+	}
+	// A replay of a snapshot that was imported before the forward-only 0099
+	// migration backfills its historical read projection without changing OneID.
+	if _, err := pool.Exec(context.Background(), `DELETE FROM survey_legacy_external_projections WHERE submission_id=$1`, historicalSubmissionID); err != nil {
+		t.Fatal(err)
+	}
 	if err := importSnapshot(args); err != nil {
-		t.Fatalf("same frozen snapshot replay: %v", err)
+		t.Fatalf("same frozen snapshot replay/backfill: %v", err)
 	}
 	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err != nil {
 		t.Fatalf("reconcile frozen snapshot: %v", err)
@@ -65,6 +74,15 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	}
 	if questionnaires != 1 || submissions != 2 || unresolved != 1 || missingDefinition != 1 || receipts != 3 || quarantined != 1 || missingToken != 1 || mutableEffects != 0 || customers != 0 {
 		t.Fatalf("questionnaires=%d submissions=%d unresolved=%d missing_definition=%d receipts=%d quarantined=%d missing_token=%d outbox=%d customers=%d", questionnaires, submissions, unresolved, missingDefinition, receipts, quarantined, missingToken, mutableEffects, customers)
+	}
+	var historicalUnionID string
+	var historicalDigest []byte
+	if err := pool.QueryRow(ctx, `SELECT historical_unionid,source_projection_digest FROM survey_legacy_external_projections WHERE submission_id=$1`, historicalSubmissionID).Scan(&historicalUnionID, &historicalDigest); err != nil || historicalUnionID != "unresolved-union" || len(historicalDigest) != 32 {
+		t.Fatalf("historical union projection=%q digest=%x err=%v", historicalUnionID, historicalDigest, err)
+	}
+	var projections int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM survey_legacy_external_projections`).Scan(&projections); err != nil || projections != 1 {
+		t.Fatalf("historical projection count=%d err=%v", projections, err)
 	}
 	var importedDimension, importedType string
 	if err := pool.QueryRow(ctx, `SELECT q.assessment_dimension_key,o.assessment_type_key FROM survey_definition_questions q JOIN survey_definition_options o ON o.question_id=q.id ORDER BY q.id,o.id LIMIT 1`).Scan(&importedDimension, &importedType); err != nil {
@@ -109,6 +127,16 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	clean("submission snapshot restore")
+	if _, err := pool.Exec(ctx, `UPDATE survey_legacy_external_projections SET historical_unionid='unrelated-union' WHERE submission_id=$1`, submissionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "historical survey projection drift") {
+		t.Fatalf("historical union projection drift err=%v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_legacy_external_projections SET historical_unionid=$2,source_projection_digest=$3 WHERE submission_id=$1`, submissionID, historicalUnionID, historicalDigest); err != nil {
+		t.Fatal(err)
+	}
+	clean("historical union projection restore")
 
 	var answerID int64
 	var originalSelected string
@@ -380,7 +408,7 @@ func surveyMigrationIntegrationTarget(t *testing.T) (string, *pgxpool.Pool, func
 		t.Fatal(err)
 	}
 	root := filepath.Join("..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0091_survey_assessment_business_keys.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0091_survey_assessment_business_keys.sql", "0099_survey_historical_external_projection.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			pool.Close()

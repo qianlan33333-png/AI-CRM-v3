@@ -85,6 +85,59 @@ type CustomerHistoryReader interface {
 	CustomerHistoryWindow(context.Context, CustomerHistoryQuery) (CustomerHistoryWindow, error)
 }
 
+// ExternalSubmissionQuery describes the frozen donor external-read filter
+// after the Host has authenticated the machine principal and resolved the
+// supplied identity through OneID. HistoricalUnionIDs are Survey-owned source
+// facts, not Identity inputs: Survey never resolves, provisions, or links a
+// customer from them.
+type ExternalSubmissionQuery struct {
+	// CustomerID is supplied only after the Host's scoped OneID resolution. It
+	// selects V3-native submissions; historical rows remain filtered by their
+	// separate source union projection.
+	CustomerID            int64
+	HistoricalUnionIDs    []string
+	QuestionnaireSourceID int64
+	SubmittedFrom         time.Time
+	SubmittedTo           time.Time
+	Limit                 int32
+	Offset                int64
+}
+
+// ExternalSubmission is the unmasked compatibility projection required by the
+// authorized external questionnaire API. It deliberately has no Customer or
+// Identity fields; the API Host supplies current identity aliases separately.
+type ExternalSubmission struct {
+	HistoricalUnionID     string                     `json:"unionid"`
+	Legacy                bool                       `json:"-"`
+	QuestionnaireSourceID int64                      `json:"questionnaire_id"`
+	QuestionnaireTitle    string                     `json:"questionnaire_title"`
+	SubmittedAt           time.Time                  `json:"submitted_at"`
+	FinalTags             json.RawMessage            `json:"final_tags"`
+	AssessmentResult      json.RawMessage            `json:"assessment_result_snapshot"`
+	Answers               []ExternalSubmissionAnswer `json:"answers"`
+}
+
+type ExternalSubmissionAnswer struct {
+	QuestionTitle       string   `json:"question_title_snapshot"`
+	SelectedOptionTexts []string `json:"selected_option_texts_snapshot"`
+	TextValue           string   `json:"text_value"`
+	ScoreContribution   float64  `json:"score_contribution"`
+}
+
+type ExternalSubmissionPage struct {
+	Items  []ExternalSubmission
+	Total  int64
+	Limit  int32
+	Offset int64
+}
+
+// ExternalSubmissionReader is an owner-scoped projection for the frozen
+// external questionnaire API. Callers must establish identity and machine
+// authorization before passing historic union values to this read boundary.
+type ExternalSubmissionReader interface {
+	ExternalSubmissions(context.Context, ExternalSubmissionQuery) (ExternalSubmissionPage, error)
+}
+
 type Analytics struct {
 	QuestionnaireID   ID                  `json:"questionnaire_id"`
 	DefinitionVersion int64               `json:"definition_version"`

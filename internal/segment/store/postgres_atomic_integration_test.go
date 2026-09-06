@@ -187,12 +187,12 @@ func TestPostgreSQLCurrentBindingQualifiesJoinedColumns(t *testing.T) {
 	}
 
 	var packageID int64
-	err = native.QueryRow(ctx, `INSERT INTO segment_audience_packages(code,name,created_by,updated_by,created_at,updated_at) VALUES('binding-read','Binding read',7,7,now(),now()) RETURNING id`).Scan(&packageID)
+	err = native.QueryRow(ctx, `INSERT INTO segment_audience_packages(code,name,created_by,created_actor_kind,created_actor_ref,updated_by,updated_actor_kind,updated_actor_ref,created_at,updated_at) VALUES('binding-read','Binding read',7,'admin','admin:7',7,'admin','admin:7',now(),now()) RETURNING id`).Scan(&packageID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var bindingID int64
-	err = native.QueryRow(ctx, `INSERT INTO segment_audience_automation_binding_versions(package_id,version,agent_id,automation_type,agent_published_version,content_digest,materials_digest,created_by,created_at) VALUES($1,1,9,'fixed_script',3,decode(repeat('11',32),'hex'),decode(repeat('22',32),'hex'),7,now()) RETURNING id`, packageID).Scan(&bindingID)
+	err = native.QueryRow(ctx, `INSERT INTO segment_audience_automation_binding_versions(package_id,version,agent_id,automation_type,agent_published_version,content_digest,materials_digest,created_by,created_actor_kind,created_actor_ref,created_at) VALUES($1,1,9,'fixed_script',3,decode(repeat('11',32),'hex'),decode(repeat('22',32),'hex'),7,'admin','admin:7',now()) RETURNING id`, packageID).Scan(&bindingID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,10 +220,10 @@ func TestPostgreSQLAudienceImmutableFacts(t *testing.T) {
 	native, cleanup := segmentDatabase(t, ctx)
 	defer cleanup()
 	statements := []string{
-		`INSERT INTO segment_audience_groups(name,created_by,updated_by,created_at,updated_at) VALUES('g',1,1,now(),now())`,
-		`INSERT INTO segment_audience_packages(code,name,created_by,updated_by,created_at,updated_at) VALUES('p','p',1,1,now(),now())`,
-		`INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,digest,created_by,created_at) VALUES(1,1,1,'{}',decode(repeat('00',32),'hex'),1,now())`,
-		`INSERT INTO segment_audience_audit_events(resource_kind,resource_id,operation,actor_id,occurred_at,payload_digest) VALUES('package',1,'create',1,now(),decode(repeat('00',32),'hex'))`,
+		`INSERT INTO segment_audience_groups(name,created_by,created_actor_kind,created_actor_ref,updated_by,updated_actor_kind,updated_actor_ref,created_at,updated_at) VALUES('g',1,'admin','admin:1',1,'admin','admin:1',now(),now())`,
+		`INSERT INTO segment_audience_packages(code,name,created_by,created_actor_kind,created_actor_ref,updated_by,updated_actor_kind,updated_actor_ref,created_at,updated_at) VALUES('p','p',1,'admin','admin:1',1,'admin','admin:1',now(),now())`,
+		`INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,digest,created_by,created_actor_kind,created_actor_ref,created_at) VALUES(1,1,1,'{}',decode(repeat('00',32),'hex'),1,'admin','admin:1',now())`,
+		`INSERT INTO segment_audience_audit_events(resource_kind,resource_id,operation,actor_id,actor_kind,actor_ref,occurred_at,payload_digest) VALUES('package',1,'create',1,'admin','admin:1',now(),decode(repeat('00',32),'hex'))`,
 		`INSERT INTO segment_audience_outbox(event_type,aggregate_kind,aggregate_id,payload,idempotency_digest,occurred_at) VALUES('created','package',1,'{}',decode(repeat('00',32),'hex'),now())`,
 	}
 	for _, statement := range statements {
@@ -292,10 +292,10 @@ func TestPostgreSQLAudienceMemberEventsUseTypedSnapshotParameters(t *testing.T) 
 	}
 	now := time.Date(2026, 9, 4, 6, 30, 0, 0, time.UTC)
 	var packageID, configurationID, refreshID, snapshotID int64
-	if err = native.QueryRow(ctx, `INSERT INTO segment_audience_packages(code,name,created_by,updated_by,created_at,updated_at) VALUES('typed-events','typed events',7,7,$1,$1) RETURNING id`, now).Scan(&packageID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO segment_audience_packages(code,name,created_by,created_actor_kind,created_actor_ref,updated_by,updated_actor_kind,updated_actor_ref,created_at,updated_at) VALUES('typed-events','typed events',7,'admin','admin:7',7,'admin','admin:7',$1,$1) RETURNING id`, now).Scan(&packageID); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,digest,created_by,created_at) VALUES($1,1,1,'{"schema_version":1,"expression":{"kind":"all"}}',decode(repeat('00',32),'hex'),7,$2) RETURNING id`, packageID, now).Scan(&configurationID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,digest,created_by,created_actor_kind,created_actor_ref,created_at) VALUES($1,1,1,'{"schema_version":1,"expression":{"kind":"all"}}',decode(repeat('00',32),'hex'),7,'admin','admin:7',$2) RETURNING id`, packageID, now).Scan(&configurationID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = native.Exec(ctx, `UPDATE segment_audience_packages SET current_configuration_version_id=$2 WHERE id=$1`, packageID, configurationID); err != nil {
