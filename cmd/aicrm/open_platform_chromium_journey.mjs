@@ -102,14 +102,19 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
   cdp = new CDP(socket);
   await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
-  const resources = new Map(); const exceptions = [];
+  const resources = new Map(); const requests = new Map(); const exceptions = [];
+  cdp.on("Network.requestWillBeSent", (params) => {
+    try { requests.set(String(params.requestId || ""), { method: String(params.request?.method || ""), pathname: new URL(String(params.request?.url || "")).pathname }); } catch (_) {}
+  });
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
   cdp.on("Network.responseReceived", (params) => { try {
     const pathname = new URL(String(params.response?.url || "")).pathname;
     const status = Number(params.response?.status) || 0;
     if (pathname.startsWith("/assets/")) resources.set("/assets/", status);
     if (pathname === "/api/admin/open-platform/clients" || pathname === "/api/admin/open-platform/routes") resources.set(pathname, status);
+    const request = requests.get(String(params.requestId || ""));
     if (pathname === "/api/admin/open-platform/clients/browser-open-agent/activate") resources.set(pathname, { status, requestID: String(params.requestId || "") });
+    if (pathname === "/api/admin/open-platform/clients/browser-open-agent" && request?.method === "PATCH") resources.set(`PATCH:${pathname}`, { status, requestID: String(params.requestId || "") });
   } catch (_) {} });
 
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin%2Fapidocs.html` });
@@ -140,6 +145,7 @@ try {
   const oauth = (secret, scope = "read") => evaluate(cdp, `fetch('/oauth/token',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+btoa('browser-open-agent:'+${JSON.stringify(secret)})},body:new URLSearchParams({grant_type:'client_credentials',audience:'external_integration',scope:${JSON.stringify(scope)}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
   const restCatalog = (token) => evaluate(cdp, `fetch('/open/v1/capabilities',{headers:{Authorization:'Bearer '+${JSON.stringify(token)}}}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
   const mcpCatalog = (token) => evaluate(cdp, `fetch('/mcp',{method:'POST',headers:{Authorization:'Bearer '+${JSON.stringify(token)},'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:'browser-catalog',method:'tools/list',params:{}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
+  const clientDetail = () => evaluate(cdp, "fetch('/api/admin/open-platform/clients/browser-open-agent',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
 
   const firstActivationPath = "/api/admin/open-platform/clients/browser-open-agent/activate";
   resources.delete(firstActivationPath);
@@ -154,9 +160,19 @@ try {
   const firstMCP = await mcpCatalog(firstToken);
   if (firstMCP?.status !== 200 || !Array.isArray(firstMCP?.body?.result?.tools) || !firstMCP.body.result.tools.some((tool) => tool?.name === "list_capabilities")) throw new Error("MCP catalog was not available to the activated caller");
 
+  const beforeGrant = await clientDetail();
+  const beforeGrantVersion = beforeGrant?.body?.client?.auth_version;
+  if (beforeGrant?.status !== 200 || !Number.isInteger(beforeGrantVersion)) throw new Error("grant baseline was unavailable");
+  const grantPatchPath = "PATCH:/api/admin/open-platform/clients/browser-open-agent";
+  resources.delete(grantPatchPath);
   await evaluate(cdp, "document.querySelector('input[name=\"edit-capability\"][value=\"customer.resolve\"]')?.click(); true");
   if (!await click("保存授权")) throw new Error("grant save action was unavailable");
-  await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"] input[name=\"edit-capability\"][value=\"customer.resolve\"]')?.checked === true", "grant edit did not reload the caller");
+  const grantPatch = await waitForResource(resources, grantPatchPath, "grant save did not issue its PATCH request");
+  if (grantPatch.status !== 200) throw new Error(`grant save status=${grantPatch.status} category=${await activationFailureCategory(cdp, grantPatch)}`);
+  const afterGrant = await clientDetail();
+  const grantVersion = afterGrant?.body?.client?.auth_version;
+  if (afterGrant?.status !== 200 || !Number.isInteger(grantVersion) || grantVersion <= beforeGrantVersion || !Array.isArray(afterGrant?.body?.client?.capabilities) || !afterGrant.body.client.capabilities.includes("customer.resolve")) throw new Error("grant save did not durably advance caller authorization");
+  await waitFor(cdp, `(() => { const card=document.querySelector('[data-open-platform-client=\"browser-open-agent\"]'); const checkbox=card?.querySelector('input[name=\"edit-capability\"][value=\"customer.resolve\"]'); return Boolean(checkbox?.checked && card?.textContent.includes('OAuth 版本 ${grantVersion}')); })()`, "grant save completed but the caller Host did not reload its authorization revision");
   if ((await restCatalog(firstToken))?.status !== 401) throw new Error("grant update did not revoke the prior OAuth token");
   const grantedOAuth = await oauth(firstSecret); const grantedToken = grantedOAuth?.body?.access_token;
   if (grantedOAuth?.status !== 200 || typeof grantedToken !== "string") throw new Error("credential did not issue a replacement token after grant update");
