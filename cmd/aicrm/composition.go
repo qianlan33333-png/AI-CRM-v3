@@ -1078,7 +1078,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if providerErr != nil {
 		return fail(providerErr)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
