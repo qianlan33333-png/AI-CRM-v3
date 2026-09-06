@@ -933,11 +933,20 @@ VALUES('wechat_pay','another-history-scope','909001','history-scope-miss-909001'
 VALUES($1,'delivery',909001,$2,'legacy-delivery-909001','transaction.paid','product','101','wechat_pay_order','commerce-history','909001',909001,'failed',3,77,502,'legacy upstream timeout',TRUE,$3,$3,'pending','product_mapping_unavailable',TRUE) RETURNING id`, historySourceSystem, rowDigest[:], now.UTC()).Scan(&historyRowID); err != nil {
 		t.Fatal(err)
 	}
+
+	simulatedDigest := sha256.Sum256([]byte("legacy-delivery-simulated-909001"))
+	var simulatedRowID int64
+	if err := pool.QueryRow(ctx, "INSERT INTO outbound_commerce_push_history_rows(source_system,source_kind,source_id,source_digest,source_delivery_id,source_event_type,source_target_type,source_target_id,source_order_kind,source_order_scope,source_order_key,source_order_id,source_state,source_attempt_count,source_effect_job_id,source_effect_state,source_created_at,source_updated_at,outcome,reason_code,read_only) VALUES($1,'delivery',909003,$2,'legacy-delivery-simulated','transaction.paid','product','101','wechat_pay_order','commerce-history','909001',909001,'skipped',1,78,'simulated',$3,$3,'pending','product_mapping_unavailable',TRUE) RETURNING id", historySourceSystem, simulatedDigest[:], now.UTC()).Scan(&simulatedRowID); err != nil {
+		t.Fatal(err)
+	}
 	manifestDigest := sha256.Sum256([]byte("legacy-delivery-batch-909001"))
-	if err := pool.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_batches(source_system,source_revision,manifest_digest,snapshot_at,status,input_count,imported_count,pending_count,excluded_count,applied_at) VALUES($1,$2,$3,$4,'applied',1,0,1,0,$4) RETURNING id`, historySourceSystem, strings.Repeat("d", 40), manifestDigest[:], now.UTC()).Scan(&batchID); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_batches(source_system,source_revision,manifest_digest,snapshot_at,status,input_count,imported_count,pending_count,excluded_count,applied_at) VALUES($1,$2,$3,$4,'applied',2,0,2,0,$4) RETURNING id`, historySourceSystem, strings.Repeat("d", 40), manifestDigest[:], now.UTC()).Scan(&batchID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO outbound_commerce_push_history_batch_rows(batch_id,source_row_id,source_digest) VALUES($1,$2,$3)`, batchID, historyRowID, rowDigest[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO outbound_commerce_push_history_batch_rows(batch_id,source_row_id,source_digest) VALUES($1,$2,$3)", batchID, simulatedRowID, simulatedDigest[:]); err != nil {
 		t.Fatal(err)
 	}
 	wrongKindDigest := sha256.Sum256([]byte("legacy-delivery-wrong-kind-909001"))
@@ -961,14 +970,42 @@ VALUES($1,'delivery',909002,$2,'legacy-delivery-wrong-kind','transaction.paid','
 	}
 	history := httptest.NewRecorder()
 	handler.ServeHTTP(history, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/history-collision-909001/external-push-deliveries", nil))
-	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), `"source":"history"`) || !strings.Contains(history.Body.String(), `"legacy_delivery_id":"legacy-delivery-909001"`) || !strings.Contains(history.Body.String(), `"legacy_effect_job_id":77`) || !strings.Contains(history.Body.String(), `"external_effect_id":null`) || !strings.Contains(history.Body.String(), `"provider_call_attempted":true`) || !strings.Contains(history.Body.String(), `"real_external_call_executed":true`) || !strings.Contains(history.Body.String(), `"provider_result_received":true`) || !strings.Contains(history.Body.String(), `"response_status":502`) || !strings.Contains(history.Body.String(), "legacy upstream timeout") || !strings.Contains(history.Body.String(), `"response_body_protected":true`) || !strings.Contains(history.Body.String(), `"total":1`) || strings.Contains(history.Body.String(), "legacy-delivery-wrong-kind") {
+	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), "\"source\":\"history\"") || !strings.Contains(history.Body.String(), "\"legacy_delivery_id\":\"legacy-delivery-909001\"") || !strings.Contains(history.Body.String(), "\"legacy_effect_job_id\":77") || !strings.Contains(history.Body.String(), "\"external_effect_id\":null") || !strings.Contains(history.Body.String(), "\"provider_call_attempted\":true") || !strings.Contains(history.Body.String(), "\"real_external_call_executed\":true") || !strings.Contains(history.Body.String(), "\"provider_result_received\":true") || !strings.Contains(history.Body.String(), "\"response_status\":502") || !strings.Contains(history.Body.String(), "legacy upstream timeout") || !strings.Contains(history.Body.String(), "\"response_body_protected\":true") || !strings.Contains(history.Body.String(), "\"total\":2") || strings.Contains(history.Body.String(), "legacy-delivery-wrong-kind") {
 		t.Fatalf("mapped history delivery route status=%d body=%s", history.Code, history.Body.String())
 	}
+	commerceFundsAssertHistoricalNoCallEvidence(t, history.Body.Bytes(), "legacy-delivery-simulated")
 	wrongScope := httptest.NewRecorder()
 	handler.ServeHTTP(wrongScope, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/history-scope-miss-909001/external-push-deliveries", nil))
 	if wrongScope.Code != http.StatusOK || !strings.Contains(wrongScope.Body.String(), `"history_mapping_state":"pending"`) || !strings.Contains(wrongScope.Body.String(), `"total":0`) || strings.Contains(wrongScope.Body.String(), "legacy-delivery-909001") {
 		t.Fatalf("unmapped historical source scope status=%d body=%s", wrongScope.Code, wrongScope.Body.String())
 	}
+}
+
+// commerceFundsAssertHistoricalNoCallEvidence distinguishes a legacy simulated
+// record from a response-bearing delivery. The frozen V2 settlement path can
+// increment attempt_count for simulated work, but records the no-call terminal
+// state separately; this browser-compatible projection must retain false.
+func commerceFundsAssertHistoricalNoCallEvidence(t *testing.T, body []byte, deliveryID string) {
+	t.Helper()
+	var page map[string]any
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatal(err)
+	}
+	items, ok := page["items"].([]any)
+	if !ok {
+		t.Fatalf("history delivery page has no items: %s", body)
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok || item["legacy_delivery_id"] != deliveryID {
+			continue
+		}
+		if item["attempt_count"] != float64(1) || item["provider_call_attempted"] != false || item["real_external_call_executed"] != false || item["provider_result_received"] != false || item["response_status"] != nil {
+			t.Fatalf("simulated legacy delivery invented Provider call facts: %#v", item)
+		}
+		return
+	}
+	t.Fatalf("simulated legacy delivery %q was absent: %s", deliveryID, body)
 }
 
 // commerceFundsAssertTargetPolicyRejected creates a new explicit synthetic

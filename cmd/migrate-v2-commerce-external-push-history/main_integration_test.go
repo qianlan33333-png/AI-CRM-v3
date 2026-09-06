@@ -48,7 +48,7 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Configs) != 1 || len(s.Deliveries) != 1 || len(s.Outbox) != 1 || s.Configs[0].Secret != "legacy-secret" || s.Deliveries[0].EffectState == nil || *s.Deliveries[0].EffectState != "succeeded" {
+	if len(s.Configs) != 1 || len(s.Deliveries) != 2 || len(s.Outbox) != 1 || s.Configs[0].Secret != "legacy-secret" || s.Deliveries[0].EffectState == nil || *s.Deliveries[0].EffectState != "succeeded" || s.Deliveries[1].EffectState == nil || *s.Deliveries[1].EffectState != "simulated" || s.Deliveries[1].ResponseStatus != nil || s.Deliveries[1].AttemptCount != 1 {
 		t.Fatalf("sealed source extraction did not preserve source facts: %#v", s)
 	}
 	want := hex.EncodeToString(digest[:])
@@ -89,13 +89,13 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 
 	// Keep the protected source digest unchanged but alter target facts. Every
 	// source field, Product mapping, and read-only outcome is checked again.
-	if _, err = target.Exec(ctx, `UPDATE outbound_commerce_push_history_rows SET source_state='failed',source_updated_at=source_updated_at+INTERVAL '1 second',target_product_id=999 WHERE source_kind='delivery'`); err != nil {
+	if _, err = target.Exec(ctx, `UPDATE outbound_commerce_push_history_rows SET source_state='failed',source_updated_at=source_updated_at+INTERVAL '1 second',target_product_id=999 WHERE source_kind='delivery' AND source_delivery_id='delivery-old-2'`); err != nil {
 		t.Fatal(err)
 	}
 	if err = run(ctx, []string{"--mode=verify", "--snapshot=" + snapshotPath, "--snapshot-key-file=" + keyPath, "--manifest-sha256=" + want}); err == nil {
 		t.Fatal("verify accepted delivery state/time/product mapping drift")
 	}
-	if _, err = target.Exec(ctx, `UPDATE outbound_commerce_push_history_rows SET source_state='success',source_updated_at='2026-09-06T12:02:00Z',target_product_id=1001 WHERE source_kind='delivery'`); err != nil {
+	if _, err = target.Exec(ctx, `UPDATE outbound_commerce_push_history_rows SET source_state='success',source_updated_at='2026-09-06T12:02:00Z',target_product_id=1001 WHERE source_kind='delivery' AND source_delivery_id='delivery-old-2'`); err != nil {
 		t.Fatal(err)
 	}
 	if err = run(ctx, []string{"--mode=verify", "--snapshot=" + snapshotPath, "--snapshot-key-file=" + keyPath, "--manifest-sha256=" + want}); err != nil {
@@ -154,13 +154,13 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 		t.Fatalf("second snapshot apply: %v", err)
 	}
 	var allBatches, sourceRows, members int
-	if err = target.QueryRow(ctx, `SELECT (SELECT count(*) FROM outbound_commerce_push_history_batches),(SELECT count(*) FROM outbound_commerce_push_history_rows),(SELECT count(*) FROM outbound_commerce_push_history_batch_rows)`).Scan(&allBatches, &sourceRows, &members); err != nil || allBatches != 2 || sourceRows != 6 || members != 9 {
+	if err = target.QueryRow(ctx, `SELECT (SELECT count(*) FROM outbound_commerce_push_history_batches),(SELECT count(*) FROM outbound_commerce_push_history_rows),(SELECT count(*) FROM outbound_commerce_push_history_batch_rows)`).Scan(&allBatches, &sourceRows, &members); err != nil || allBatches != 2 || sourceRows != 7 || members != 11 {
 		t.Fatalf("overlap batches/source_rows/members=%d/%d/%d err=%v", allBatches, sourceRows, members, err)
 	}
 	if err = run(ctx, apply2); err != nil {
 		t.Fatalf("second snapshot replay: %v", err)
 	}
-	if err = target.QueryRow(ctx, `SELECT count(*) FROM outbound_commerce_push_history_rows`).Scan(&sourceRows); err != nil || sourceRows != 6 {
+	if err = target.QueryRow(ctx, `SELECT count(*) FROM outbound_commerce_push_history_rows`).Scan(&sourceRows); err != nil || sourceRows != 7 {
 		t.Fatalf("second replay duplicated source rows=%d err=%v", sourceRows, err)
 	}
 	assertCommercePushHistoryNoEffects(t, ctx, target)
@@ -269,7 +269,7 @@ const commercePushHistorySourceSchema = `CREATE TABLE external_push_config(id BI
 func seedCommercePushHistorySource(t *testing.T, ctx context.Context, source *pgxpool.Pool) {
 	t.Helper()
 	at := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	_, err := source.Exec(ctx, `INSERT INTO external_push_config VALUES(1,'product','101','transaction.paid',TRUE,'https://legacy.example/push?source=v2','member_open',NULL,30,1,'old remark','{"count":9007199254740993}'::jsonb,'legacy-secret','old-admin','new-admin',$1,$2); INSERT INTO external_push_delivery VALUES(2,1,'transaction.paid','delivery-old-2','product','101',44,101,'success',2,'https://legacy.example/push?source=v2','{"X-AICRM-Signature":"redacted"}'::jsonb,'{"phone_number":"sensitive"}'::jsonb,200,'accepted','',NULL,$1,$2); INSERT INTO domain_event_outbox VALUES(3,'transaction.paid','wechat_pay_order','44','{"order":"sensitive"}'::jsonb,'success',1,NULL,$1,$2); INSERT INTO external_effect_job VALUES(4,'external_push_delivery','delivery-old-2','webhook.order_paid.push','succeeded')`, at, at.Add(2*time.Minute))
+	_, err := source.Exec(ctx, `INSERT INTO external_push_config VALUES(1,'product','101','transaction.paid',TRUE,'https://legacy.example/push?source=v2','member_open',NULL,30,1,'old remark','{"count":9007199254740993}'::jsonb,'legacy-secret','old-admin','new-admin',$1,$2); INSERT INTO external_push_delivery VALUES(2,1,'transaction.paid','delivery-old-2','product','101',44,101,'success',2,'https://legacy.example/push?source=v2','{"X-AICRM-Signature":"redacted"}'::jsonb,'{"phone_number":"sensitive"}'::jsonb,200,'accepted','',NULL,$1,$2); INSERT INTO external_push_delivery VALUES(5,1,'transaction.paid','delivery-old-simulated-5','product','101',46,101,'skipped',1,'https://legacy.example/push?source=v2','{}'::jsonb,'{}'::jsonb,NULL,'','',NULL,$1,$2); INSERT INTO domain_event_outbox VALUES(3,'transaction.paid','wechat_pay_order','44','{"order":"sensitive"}'::jsonb,'success',1,NULL,$1,$2); INSERT INTO external_effect_job VALUES(4,'external_push_delivery','delivery-old-2','webhook.order_paid.push','succeeded'); INSERT INTO external_effect_job VALUES(6,'external_push_delivery','delivery-old-simulated-5','webhook.order_paid.push','simulated')`, at, at.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func assertCommercePushHistoryLedger(t *testing.T, ctx context.Context, pool *pg
 	if err := pool.QueryRow(ctx, `SELECT input_count,imported_count,pending_count,excluded_count,status FROM outbound_commerce_push_history_batches`).Scan(&input, &imported, &pending, &excluded, &status); err != nil {
 		t.Fatal(err)
 	}
-	if input != 3 || imported != 2 || pending != 0 || excluded != 1 || status != want {
+	if input != 4 || imported != 3 || pending != 0 || excluded != 1 || status != want {
 		t.Fatalf("history conservation input/imported/pending/excluded/status=%d/%d/%d/%d/%s", input, imported, pending, excluded, status)
 	}
 	var configTarget, deliveryTarget *int64
@@ -301,13 +301,23 @@ func assertCommercePushHistoryLedger(t *testing.T, ctx context.Context, pool *pg
 	if err := pool.QueryRow(ctx, `SELECT target_product_id FROM outbound_commerce_push_history_rows WHERE source_kind='config'`).Scan(&configTarget); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT target_product_id,source_effect_job_id,source_state,source_response_status,source_error_message,source_response_body_protected FROM outbound_commerce_push_history_rows WHERE source_kind='delivery'`).Scan(&deliveryTarget, &deliveryEffect, &deliveryState, &deliveryStatus, &deliveryError, &bodyProtected); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT target_product_id,source_effect_job_id,source_state,source_response_status,source_error_message,source_response_body_protected FROM outbound_commerce_push_history_rows WHERE source_kind='delivery' AND source_delivery_id='delivery-old-2'`).Scan(&deliveryTarget, &deliveryEffect, &deliveryState, &deliveryStatus, &deliveryError, &bodyProtected); err != nil {
 		t.Fatal(err)
 	}
 	if configTarget == nil || deliveryTarget == nil || *configTarget != 1001 || *deliveryTarget != 1001 || deliveryEffect == nil || *deliveryEffect != 4 || deliveryState != "success" || deliveryStatus == nil || *deliveryStatus != 200 || deliveryError != "" || !bodyProtected {
 		t.Fatalf("target facts config=%v delivery=%v effect=%v state=%q response=%v error=%q protected=%t", configTarget, deliveryTarget, deliveryEffect, deliveryState, deliveryStatus, deliveryError, bodyProtected)
 	}
+	var simulatedAttempts int
+	var simulatedEffectState string
+	var simulatedStatus *int
+	if err := pool.QueryRow(ctx, `SELECT source_attempt_count,COALESCE(source_effect_state,''),source_response_status FROM outbound_commerce_push_history_rows WHERE source_kind='delivery' AND source_delivery_id='delivery-old-simulated-5'`).Scan(&simulatedAttempts, &simulatedEffectState, &simulatedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if simulatedAttempts != 1 || simulatedEffectState != "simulated" || simulatedStatus != nil {
+		t.Fatalf("simulated delivery source evidence attempts/state/status=%d/%q/%v", simulatedAttempts, simulatedEffectState, simulatedStatus)
+	}
 }
+
 func assertCommercePushHistoryNoEffects(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	var intents, effects, jobs int

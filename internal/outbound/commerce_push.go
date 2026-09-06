@@ -1075,7 +1075,7 @@ FROM outbound_commerce_push_intents WHERE order_paid_event_id=$1 ORDER BY create
 			}
 			return rows.Err()
 		}
-		rows, readErr := tx.Query(txctx, `SELECT r.id,r.source_delivery_id,r.source_effect_job_id,r.source_state,r.source_attempt_count,r.source_response_status,r.source_error_message,r.source_response_body_protected,r.source_created_at,r.source_updated_at
+		rows, readErr := tx.Query(txctx, `SELECT r.id,r.source_delivery_id,r.source_effect_job_id,r.source_state,r.source_attempt_count,r.source_effect_state,r.source_response_status,r.source_error_message,r.source_response_body_protected,r.source_created_at,r.source_updated_at
 FROM outbound_commerce_push_history_rows r
 WHERE r.source_kind='delivery' AND r.source_order_kind=$1 AND r.source_order_scope=$2 AND r.source_order_key=$3
   AND EXISTS (SELECT 1 FROM outbound_commerce_push_history_batch_rows membership
@@ -1089,17 +1089,11 @@ ORDER BY r.source_created_at,r.id`, query.HistoricalSourceKind, query.Historical
 		for rows.Next() {
 			var row outboundport.CommercePushDelivery
 			var id int64
-			if err = rows.Scan(&id, &row.HistoricalDeliveryID, &row.LegacyEffectJobID, &row.State, &row.AttemptCount, &row.ResponseStatus, &row.ErrorMessage, &row.ResponseBodyProtected, &row.CreatedAt, &row.UpdatedAt); err != nil {
+			var legacyEffectState *string
+			if err = rows.Scan(&id, &row.HistoricalDeliveryID, &row.LegacyEffectJobID, &row.State, &row.AttemptCount, &legacyEffectState, &row.ResponseStatus, &row.ErrorMessage, &row.ResponseBodyProtected, &row.CreatedAt, &row.UpdatedAt); err != nil {
 				return err
 			}
-			if row.AttemptCount > 0 {
-				attempted := true
-				row.ProviderCallAttempted = &attempted
-			}
-			if row.ResponseStatus != nil {
-				received := true
-				row.RealExternalCallExecuted, row.ProviderResultReceived = &received, &received
-			}
+			row.ProviderCallAttempted, row.RealExternalCallExecuted, row.ProviderResultReceived = legacyCommercePushProviderFacts(legacyEffectState, row.ResponseStatus)
 			row.ID, row.Source = "history:"+strconv.FormatInt(id, 10), "history"
 			out = append(out, row)
 		}
@@ -1109,6 +1103,36 @@ ORDER BY r.source_created_at,r.id`, query.HistoricalSourceKind, query.Historical
 		return nil, err
 	}
 	return out, nil
+}
+
+// legacyCommercePushProviderFacts only projects facts that the frozen V2
+// delivery/effect relation can prove. In particular, the old settlement path
+// assigns attempt_count=1 to blocked, cancelled, and simulated jobs, so that
+// counter alone cannot establish a Provider call.
+func legacyCommercePushProviderFacts(effectState *string, responseStatus *int) (attempted, realExternalCallExecuted, resultReceived *bool) {
+	trueValue := true
+	falseValue := false
+	if responseStatus != nil {
+		return &trueValue, &trueValue, &trueValue
+	}
+	if effectState == nil {
+		return nil, nil, nil
+	}
+	switch *effectState {
+	case "succeeded":
+		// V2's webhook effect reports success only after its adapter completion.
+		return &trueValue, &trueValue, &trueValue
+	case "unknown_after_dispatch":
+		// The legacy kernel explicitly records that dispatch began but leaves the
+		// call/result outcome unresolved.
+		return &trueValue, nil, nil
+	case "simulated", "blocked", "cancelled":
+		// These terminal states are explicit no-call outcomes in the old effect
+		// adapter; preserving false is safe and more precise than unknown.
+		return &falseValue, &falseValue, &falseValue
+	default:
+		return nil, nil, nil
+	}
 }
 
 var _ outboundport.CommercePushDeliveryReader = (*CommercePushService)(nil)
