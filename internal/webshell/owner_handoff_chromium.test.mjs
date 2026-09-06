@@ -105,7 +105,8 @@ const chrome = () => {
 class CDP {
   constructor(socket) { this.socket=socket; this.id=0; this.pending=new Map(); this.events=new Map(); socket.addEventListener("message", event => { const message=JSON.parse(String(event.data)); if (message.id && this.pending.has(message.id)) { const {resolve,reject}=this.pending.get(message.id); this.pending.delete(message.id); message.error ? reject(new Error(`CDP ${message.error.code}`)) : resolve(message.result || {}); return; } for (const listener of this.events.get(message.method) || []) listener(message.params || {}); }); }
   call(method, params={}) { return new Promise((resolve,reject) => { const id=++this.id; this.pending.set(id,{resolve,reject}); this.socket.send(JSON.stringify({id,method,params})); }); }
-  next(method, predicate, message) { return new Promise((resolve,reject) => { let off=()=>{}; const timer=setTimeout(() => { off(); reject(new Error(message)); }, 8000); const listener=params => { if (!predicate(params)) return; clearTimeout(timer); off(); resolve(params); }; off=() => this.events.set(method,(this.events.get(method)||[]).filter(item => item !== listener)); this.events.set(method,[...(this.events.get(method)||[]),listener]); }); }
+  on(method, listener) { this.events.set(method,[...(this.events.get(method)||[]),listener]); return () => this.events.set(method,(this.events.get(method)||[]).filter(item => item !== listener)); }
+  next(method, predicate, message) { return new Promise((resolve,reject) => { let off=()=>{}; const timer=setTimeout(() => { off(); reject(new Error(message)); }, 8000); const listener=params => { if (!predicate(params)) return; clearTimeout(timer); off(); resolve(params); }; off=this.on(method,listener); }); }
   close() { for (const {reject} of this.pending.values()) reject(new Error("CDP closed")); this.pending.clear(); this.socket.close(); }
 }
 const openCDP = async webSocketDebuggerUrl => {
@@ -146,23 +147,24 @@ try {
   cdp=await openCDP(page.webSocketDebuggerUrl); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
   const evaluate=async (expression, step="page_evaluation")=>{ compileRuntimeExpression(expression, step); const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) { const category=String(result.exceptionDetails.exception?.className || result.exceptionDetails.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g,"_").slice(0,96); throw new Error(`${step} page evaluation failed (${category})`); } return result.result?.value; };
   const waitFor=async(expression,message)=>{for(let attempt=0;attempt<160;attempt++){if(await evaluate(expression))return;await sleep(50);}throw new Error(message);};
-  const readDownloadedWorkbook=async (filename, expectedValues) => {
+  const awaitDownloadCompletion=(filename)=>new Promise((resolve,reject) => {
+    let guid=""; let offBegin=()=>{}; let offProgress=()=>{};
+    const finish=(error)=>{ clearTimeout(timer); offBegin(); offProgress(); error ? reject(error) : resolve(); };
+    const timer=setTimeout(() => finish(new Error(`download ${filename} did not complete`)), 8000);
+    offBegin=browserCDP.on("Browser.downloadWillBegin", event => { if (event.suggestedFilename === filename) guid=String(event.guid || ""); });
+    offProgress=browserCDP.on("Browser.downloadProgress", event => {
+      if (!guid || String(event.guid || "") !== guid || (event.state !== "completed" && event.state !== "canceled")) return;
+      finish(event.state === "completed" ? undefined : new Error(`download ${filename} ended ${event.state}`));
+    });
+  });
+  const readDownloadedWorkbook=async (filename, expectedValues, trigger) => {
+    const completed=awaitDownloadCompletion(filename);
+    await trigger();
+    await completed;
     const destination=path.join(downloads,filename);
-    let bytes; let observedBytes=0; let observedPrefix=""; let partial=false;
-    for (let attempt=0;attempt<160;attempt++) {
-      try {
-        bytes=await fs.readFile(destination);
-        observedBytes=bytes.length;
-        observedPrefix=Buffer.from(bytes.subarray(0,8)).toString("hex");
-        await fs.access(`${destination}.crdownload`);
-        partial=true;
-      } catch (error) {
-        if (bytes && error?.code === "ENOENT") { partial=false; break; }
-        bytes=undefined;
-      }
-      await sleep(50);
-    }
-    if (!bytes || bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error(`downloaded ${filename} was not a readable XLSX file (bytes=${observedBytes},prefix=${observedPrefix || "none"},partial=${partial})`);
+    let bytes;
+    try { bytes=await fs.readFile(destination); } catch (_) { throw new Error(`completed download ${filename} was not written`); }
+    if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error(`completed download ${filename} was not a readable XLSX file (bytes=${bytes.length},prefix=${Buffer.from(bytes.subarray(0,8)).toString("hex") || "none"})`);
     let workbook;
     try { workbook=unzipSync(bytes); } catch (_) { throw new Error(`downloaded ${filename} could not be opened as XLSX`); }
     const sheet=workbook["xl/worksheets/sheet1.xml"];
@@ -220,8 +222,7 @@ try {
     await waitFor("Boolean(document.querySelector('[data-owner-handoff-host] [data-preview-content]:not([hidden])'))",`${mode} preview was not persisted through actual HTTP API`);
     if (scope === "excel_include") {
       await waitFor(`(() => { const text=document.querySelector("[data-owner-handoff-host] [data-preview-rows]").textContent; return ["browser-external","duplicate","missing_external_userid","invalid_move_flag","skipped_by_file","not_under_source_owner"].every(value => text.includes(value)); })()`, "Excel preview lost donor row states or fields");
-      await evaluate(`document.querySelector("[data-owner-handoff-host] [data-download-errors]").click(); true`);
-      await readDownloadedWorkbook("owner_migration_blocked_rows.xlsx", ["行号", "external_userid", "状态", "原因", "duplicate", "missing_external_userid", "invalid_move_flag", "not_under_source_owner"]);
+      await readDownloadedWorkbook("owner_migration_blocked_rows.xlsx", ["行号", "external_userid", "状态", "原因", "duplicate", "missing_external_userid", "invalid_move_flag", "not_under_source_owner"], () => evaluate(`document.querySelector("[data-owner-handoff-host] [data-download-errors]").click(); true`, "blocked_rows_download"));
     }
     const phrase=await evaluate("document.querySelector('[data-owner-handoff-host] [data-confirm-phrase-display]').textContent");
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const input=root.querySelector('[data-confirm-phrase-input]'); input.value=${JSON.stringify(phrase)}; input.dispatchEvent(new Event('input',{bubbles:true})); root.querySelector('[data-execute]').click(); return true; })()`);
