@@ -21,6 +21,40 @@ import (
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 )
 
+// frozenV1DeliveryRow and frozenV1Snapshot exactly mirror the 73cdaa legacy
+// snapshot wire types. Keeping this fixture independent from deliveryRow
+// proves old JSON has no effect_jobs member before the current decoder sees it.
+type frozenV1DeliveryRow struct {
+	ID             int64           `json:"id"`
+	ConfigID       int64           `json:"config_id"`
+	EventType      string          `json:"event_type"`
+	DeliveryID     string          `json:"delivery_id"`
+	TargetType     string          `json:"target_type"`
+	TargetID       string          `json:"target_id"`
+	OrderID        int64           `json:"order_id"`
+	ProductID      int64           `json:"product_id"`
+	Status         string          `json:"status"`
+	AttemptCount   int             `json:"attempt_count"`
+	RequestURL     string          `json:"request_url"`
+	RequestHeaders json.RawMessage `json:"request_headers"`
+	RequestBody    json.RawMessage `json:"request_body"`
+	ResponseStatus *int            `json:"response_status,omitempty"`
+	ResponseBody   string          `json:"response_body"`
+	ErrorMessage   string          `json:"error_message"`
+	NextRetryAt    *time.Time      `json:"next_retry_at,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	EffectJobID    *int64          `json:"effect_job_id,omitempty"`
+	EffectState    *string         `json:"effect_state,omitempty"`
+}
+
+type frozenV1Snapshot struct {
+	Manifest   manifest              `json:"manifest"`
+	Configs    []configRow           `json:"configs"`
+	Deliveries []frozenV1DeliveryRow `json:"deliveries"`
+	Outbox     []outboxRow           `json:"domain_event_outbox"`
+}
+
 // OneID decision: not involved. Historical rows preserve legacy delivery
 // evidence and Product source-map IDs only; they never resolve, create, or
 // link a Customer. Persistence decision: one serializable Outbound-ledger
@@ -60,7 +94,7 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 	cancelled := sourceDelivery(t, s, "delivery-old-retryable-cancelled-7")
 	multiple := sourceDelivery(t, s, "delivery-old-multiple-9")
 	withoutJob := sourceDelivery(t, s, "delivery-old-no-job-10")
-	if len(primary.EffectJobs) != 1 || primary.EffectJobs[0] != (effectJobRelation{ID: 4, EffectType: "webhook.order_paid.push", State: "succeeded"}) || len(simulated.EffectJobs) != 1 || simulated.EffectJobs[0] != (effectJobRelation{ID: 6, EffectType: "webhook.order_paid.push", State: "simulated"}) || simulated.ResponseStatus != nil || simulated.AttemptCount != 1 || len(cancelled.EffectJobs) != 1 || cancelled.EffectJobs[0] != (effectJobRelation{ID: 8, EffectType: "webhook.order_paid.push", State: "cancelled"}) || cancelled.ResponseStatus != nil || cancelled.AttemptCount != 1 || len(multiple.EffectJobs) != 2 || multiple.EffectJobs[0] != (effectJobRelation{ID: 9, EffectType: "webhook.order_paid.push", State: "succeeded"}) || multiple.EffectJobs[1] != (effectJobRelation{ID: 10, EffectType: "webhook.order_paid.push", State: "cancelled"}) || len(withoutJob.EffectJobs) != 0 {
+	if len(primary.EffectJobs) != 1 || primary.EffectJobs[0] != (effectJobRelation{ID: 4, EffectType: "webhook.order_paid.push", State: "succeeded"}) || len(simulated.EffectJobs) != 1 || simulated.EffectJobs[0] != (effectJobRelation{ID: 6, EffectType: "webhook.order_paid.push", State: "simulated"}) || simulated.ResponseStatus != nil || simulated.AttemptCount != 1 || len(cancelled.EffectJobs) != 1 || cancelled.EffectJobs[0] != (effectJobRelation{ID: 8, EffectType: "webhook.order_paid.push", State: "cancelled"}) || cancelled.ResponseStatus != nil || cancelled.AttemptCount != 1 || len(multiple.EffectJobs) != 2 || multiple.EffectJobs[0] != (effectJobRelation{ID: 9, EffectType: "webhook.order_paid.push", State: "succeeded"}) || multiple.EffectJobs[1] != (effectJobRelation{ID: 10, EffectType: "webhook.order_paid.push", State: "cancelled"}) || withoutJob.EffectJobs == nil || len(withoutJob.EffectJobs) != 0 {
 		t.Fatalf("sealed source extraction did not preserve all delivery effect relations: %#v", s.Deliveries)
 	}
 	want := hex.EncodeToString(digest[:])
@@ -178,22 +212,26 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 	assertCommercePushHistoryNoEffects(t, ctx, target)
 }
 
-func TestLoadFileReadsLegacyV1EffectRelation(t *testing.T) {
+func TestLoadFileReadsFrozenV1EffectRelation(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	effectID := int64(44)
 	effectState := "succeeded"
-	s := snapshot{Deliveries: []deliveryRow{{
+	s := frozenV1Snapshot{Deliveries: []frozenV1DeliveryRow{{
 		ID: 1, ConfigID: 1, EventType: "transaction.paid", DeliveryID: "legacy-delivery-1",
 		TargetType: "product", TargetID: "101", OrderID: 1, ProductID: 101, Status: "success", AttemptCount: 1,
 		RequestURL: "https://legacy.example/push", RequestHeaders: json.RawMessage(`{}`), RequestBody: json.RawMessage(`{}`),
 		ResponseBody: "", ErrorMessage: "", CreatedAt: at, UpdatedAt: at, EffectJobID: &effectID, EffectState: &effectState,
 	}}}
-	s.Manifest = legacyManifest(t, s, at)
-	raw, wantDigest, err := canonical(s)
+	s.Manifest = frozenV1Manifest(t, s, at)
+	raw, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(string(raw), `"effect_jobs"`) {
+		t.Fatalf("73c V1 fixture unexpectedly contains effect_jobs: %s", raw)
+	}
+	wantDigest := sha256.Sum256(raw)
 	key := bytes32(t)
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -219,7 +257,7 @@ func TestLoadFileReadsLegacyV1EffectRelation(t *testing.T) {
 	}
 	got, digest, err := loadFile(snapshotPath, keyPath)
 	if err != nil || digest != wantDigest || got.Manifest.SchemaVersion != legacySchemaVersion || len(got.Deliveries) != 1 || got.Deliveries[0].EffectJobID == nil || *got.Deliveries[0].EffectJobID != effectID || got.Deliveries[0].EffectState == nil || *got.Deliveries[0].EffectState != effectState || got.Deliveries[0].EffectJobs != nil {
-		t.Fatalf("load legacy snapshot err=%v digest=%x want=%x snapshot=%#v", err, digest, wantDigest, got)
+		t.Fatalf("load frozen V1 snapshot err=%v digest=%x want=%x snapshot=%#v", err, digest, wantDigest, got)
 	}
 	legacyFacts := facts(got)
 	if len(legacyFacts) != 1 || legacyFacts[0].effectID == nil || *legacyFacts[0].effectID != effectID || legacyFacts[0].effectState == nil || *legacyFacts[0].effectState != effectState {
@@ -227,7 +265,7 @@ func TestLoadFileReadsLegacyV1EffectRelation(t *testing.T) {
 	}
 }
 
-func legacyManifest(t *testing.T, s snapshot, at time.Time) manifest {
+func frozenV1Manifest(t *testing.T, s frozenV1Snapshot, at time.Time) manifest {
 	t.Helper()
 	sets := map[string]any{"configs": s.Configs, "deliveries": s.Deliveries, "domain_event_outbox": s.Outbox}
 	digests := make(map[string]string, len(sets))
@@ -242,7 +280,7 @@ func legacyManifest(t *testing.T, s snapshot, at time.Time) manifest {
 		switch rows := value.(type) {
 		case []configRow:
 			counts[name] = len(rows)
-		case []deliveryRow:
+		case []frozenV1DeliveryRow:
 			counts[name] = len(rows)
 		case []outboxRow:
 			counts[name] = len(rows)

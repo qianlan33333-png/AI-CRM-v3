@@ -99,12 +99,78 @@ type deliveryRow struct {
 	UpdatedAt      time.Time       `json:"updated_at"`
 	// EffectJobs is the V2 snapshot relation. It records every matching
 	// external_effect_job, including the zero- and multi-job cases.
-	EffectJobs []effectJobRelation `json:"effect_jobs"`
+	EffectJobs []effectJobRelation `json:"-"`
 	// These fields occur only in a sealed v1 snapshot. They keep that immutable
 	// legacy artifact readable without reinterpreting its source digest.
 	EffectJobID *int64  `json:"effect_job_id,omitempty"`
 	EffectState *string `json:"effect_state,omitempty"`
 }
+
+// deliveryRowWire deliberately keeps the V1 wire field order. The legacy
+// snapshot never contained effect_jobs; V2 includes it only when the decoded
+// or extracted slice is non-nil, including an empty [] relation.
+type deliveryRowWire struct {
+	ID             int64                `json:"id"`
+	ConfigID       int64                `json:"config_id"`
+	EventType      string               `json:"event_type"`
+	DeliveryID     string               `json:"delivery_id"`
+	TargetType     string               `json:"target_type"`
+	TargetID       string               `json:"target_id"`
+	OrderID        int64                `json:"order_id"`
+	ProductID      int64                `json:"product_id"`
+	Status         string               `json:"status"`
+	AttemptCount   int                  `json:"attempt_count"`
+	RequestURL     string               `json:"request_url"`
+	RequestHeaders json.RawMessage      `json:"request_headers"`
+	RequestBody    json.RawMessage      `json:"request_body"`
+	ResponseStatus *int                 `json:"response_status,omitempty"`
+	ResponseBody   string               `json:"response_body"`
+	ErrorMessage   string               `json:"error_message"`
+	NextRetryAt    *time.Time           `json:"next_retry_at,omitempty"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
+	EffectJobID    *int64               `json:"effect_job_id,omitempty"`
+	EffectState    *string              `json:"effect_state,omitempty"`
+	EffectJobs     *[]effectJobRelation `json:"effect_jobs,omitempty"`
+}
+
+func (row deliveryRow) MarshalJSON() ([]byte, error) {
+	wire := deliveryRowWire{
+		ID: row.ID, ConfigID: row.ConfigID, EventType: row.EventType, DeliveryID: row.DeliveryID,
+		TargetType: row.TargetType, TargetID: row.TargetID, OrderID: row.OrderID, ProductID: row.ProductID,
+		Status: row.Status, AttemptCount: row.AttemptCount, RequestURL: row.RequestURL,
+		RequestHeaders: row.RequestHeaders, RequestBody: row.RequestBody, ResponseStatus: row.ResponseStatus,
+		ResponseBody: row.ResponseBody, ErrorMessage: row.ErrorMessage, NextRetryAt: row.NextRetryAt,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, EffectJobID: row.EffectJobID, EffectState: row.EffectState,
+	}
+	if row.EffectJobs != nil {
+		effectJobs := row.EffectJobs
+		wire.EffectJobs = &effectJobs
+	}
+	return json.Marshal(wire)
+}
+
+func (row *deliveryRow) UnmarshalJSON(raw []byte) error {
+	var wire deliveryRowWire
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wire); err != nil || !errors.Is(dec.Decode(&struct{}{}), io.EOF) {
+		return errors.New("invalid delivery row")
+	}
+	*row = deliveryRow{
+		ID: wire.ID, ConfigID: wire.ConfigID, EventType: wire.EventType, DeliveryID: wire.DeliveryID,
+		TargetType: wire.TargetType, TargetID: wire.TargetID, OrderID: wire.OrderID, ProductID: wire.ProductID,
+		Status: wire.Status, AttemptCount: wire.AttemptCount, RequestURL: wire.RequestURL,
+		RequestHeaders: wire.RequestHeaders, RequestBody: wire.RequestBody, ResponseStatus: wire.ResponseStatus,
+		ResponseBody: wire.ResponseBody, ErrorMessage: wire.ErrorMessage, NextRetryAt: wire.NextRetryAt,
+		CreatedAt: wire.CreatedAt, UpdatedAt: wire.UpdatedAt, EffectJobID: wire.EffectJobID, EffectState: wire.EffectState,
+	}
+	if wire.EffectJobs != nil {
+		row.EffectJobs = *wire.EffectJobs
+	}
+	return nil
+}
+
 type outboxRow struct {
 	ID            int64           `json:"id"`
 	EventType     string          `json:"event_type"`
