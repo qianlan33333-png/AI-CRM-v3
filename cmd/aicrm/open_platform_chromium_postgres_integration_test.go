@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -82,9 +83,39 @@ func TestPostgreSQLOpenPlatformV1ChromiumJourney(t *testing.T) {
 	// it. This proves the release artifact rendered from web/dist contains the
 	// V3 Host asset, rather than allowing a package-relative missing artifact or
 	// a stale frozen shell to turn into a generic browser timeout.
-	outerSession, _ := adminAccessLogin(t, application.handler, "open-platform-browser-owner", "open-platform-browser-owner-password")
+	outerSession, outerCSRF := adminAccessLogin(t, application.handler, "open-platform-browser-owner", "open-platform-browser-owner-password")
 	if _, authenticateErr := application.authentication.Authenticate(ctx, outerSession); authenticateErr != nil {
 		t.Fatal("test login did not issue a usable administrator session")
+	}
+	// An empty Postgres cidr[] can be projected as JSON null (and a future
+	// Access normalizer may emit []). Read the actual composed management
+	// endpoint before Chrome performs the same detail reload, so the Host's
+	// null-tolerant path is tied to a real wire response rather than a DTO stub.
+	probe := httptest.NewRequest(http.MethodPost, "/api/admin/open-platform/clients", strings.NewReader(`{"client_id":"browser-open-null-cidr-probe","display_name":"Browser Null CIDR Probe","purpose":"external_agent","audiences":["external_integration"],"scopes":["read"],"capabilities":["platform.capabilities.read"],"allowed_cidrs":[],"token_ttl_seconds":1800}`))
+	probe.Header.Set("Content-Type", "application/json")
+	probe.Header.Set("X-CSRF-Token", outerCSRF)
+	probe.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
+	probe.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: outerCSRF})
+	probeResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(probeResponse, probe)
+	if probeResponse.Code != http.StatusCreated {
+		t.Fatalf("Open Platform null-CIDR probe create status=%d", probeResponse.Code)
+	}
+	probeRead := httptest.NewRequest(http.MethodGet, "/api/admin/open-platform/clients/browser-open-null-cidr-probe", nil)
+	probeRead.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
+	probeReadResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(probeReadResponse, probeRead)
+	var probeDetail struct {
+		Client struct {
+			AllowedCIDRs json.RawMessage `json:"allowed_cidrs"`
+		} `json:"client"`
+	}
+	if probeReadResponse.Code != http.StatusOK || json.Unmarshal(probeReadResponse.Body.Bytes(), &probeDetail) != nil {
+		t.Fatalf("Open Platform empty-CIDR detail status=%d response_valid=%t", probeReadResponse.Code, probeReadResponse.Code == http.StatusOK)
+	}
+	allowedCIDRShape := string(probeDetail.Client.AllowedCIDRs)
+	if allowedCIDRShape != "null" && allowedCIDRShape != "[]" {
+		t.Fatalf("Open Platform empty-CIDR detail nullable_shape=false")
 	}
 	outer := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/admin/apidocs.html", nil)
