@@ -1199,10 +1199,29 @@ func mcpInputSchema(operation openplatformport.OperationID) map[string]any {
 			"customer_id": map[string]any{"type": "integer", "minimum": 1}, "types": map[string]any{"type": "array", "items": stringValue}, "cursor": stringValue, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
 		}}
 	case openplatformport.OperationAIReviewPlanCreate:
-		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"name", "source_kind", "source_digest", "recipients"}, "properties": map[string]any{
-			"name": stringValue, "source_kind": stringValue, "source_digest": stringValue,
-			"recipients": map[string]any{"type": "array", "minItems": 1, "maxItems": 5000, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id", "staff_id", "content"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "staff_id": map[string]any{"type": "integer", "minimum": 1}, "content": map[string]any{"type": "array", "minItems": 1, "maxItems": 20}}}},
-		}}
+		contentBlock := map[string]any{
+			"type": "object", "additionalProperties": false, "required": []string{"kind"},
+			"properties": map[string]any{
+				"kind": map[string]any{"type": "string", "enum": []string{"text", "image", "mini_program", "link", "attachment"}},
+				"text": stringValue, "material_kind": stringValue,
+				"material_id": map[string]any{"type": "integer", "minimum": 1}, "material_digest": stringValue,
+			},
+		}
+		recipient := map[string]any{
+			"type": "object", "additionalProperties": false, "required": []string{"customer_id", "staff_id", "content"},
+			"properties": map[string]any{
+				"customer_id": map[string]any{"type": "integer", "minimum": 1}, "staff_id": map[string]any{"type": "integer", "minimum": 1},
+				"content": map[string]any{"type": "array", "minItems": 1, "maxItems": 20, "items": contentBlock},
+			},
+		}
+		return map[string]any{
+			"type": "object", "additionalProperties": false, "required": []string{"name", "source_kind", "source_digest", "recipients"},
+			"properties": map[string]any{
+				"name": stringValue, "source_kind": stringValue, "source_digest": stringValue,
+				"recipients": map[string]any{"type": "array", "minItems": 1, "maxItems": 5000, "items": recipient},
+			},
+		}
+
 	case openplatformport.OperationGet:
 		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation_id"}, "properties": map[string]any{"operation_id": stringValue}}
 	default:
