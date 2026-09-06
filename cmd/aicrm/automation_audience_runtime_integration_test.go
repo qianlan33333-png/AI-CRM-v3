@@ -560,7 +560,16 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	// script. Only its ordinary bootstrap reads are stubbed; Preview, Confirm,
 	// and the resulting run list travel to this real Runtime HTTP handler and
 	// the PostgreSQL fixture.
-	detailServer := httptest.NewServer(runtimeHandler)
+	// The frozen page receives the actual PostgreSQL preview response only
+	// after this bounded fixture delay.  Its journey must wait for the rendered
+	// success or error state rather than assume a fixed browser idle interval.
+	const manualBroadcastPreviewResponseDelay = 600 * time.Millisecond
+	detailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/admin/ai-audience/packages/"+automationAudienceInt(packageID)+"/broadcast-previews" {
+			time.Sleep(manualBroadcastPreviewResponseDelay)
+		}
+		runtimeHandler.ServeHTTP(w, r)
+	}))
 	defer detailServer.Close()
 	_, testFile, _, callerOK := goruntime.Caller(0)
 	if !callerOK {
