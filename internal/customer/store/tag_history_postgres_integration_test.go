@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,5 +70,53 @@ func TestTagHistoryPostgreSQLApplyVerifyReplayAndDrift(t *testing.T) {
 	conflicting[0].SourceDigest = string(effectport.Hash("changed-source-fact"))
 	if _, err = service.ApplyHistoricalTagRecords(ctx, batch, conflicting); !errors.Is(err, customerport.ErrTagCommandConflict) {
 		t.Fatalf("source drift err=%v", err)
+	}
+}
+
+func TestTagHistoryPostgreSQLConcurrentOverlappingSnapshotsReplayOnce(t *testing.T) {
+	url, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("AICRM_DATABASE_URL is not configured")
+	}
+	ctx := context.Background()
+	pool, clean := tagCommandPGPool(t, ctx, url)
+	defer clean()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := customerapp.HistoricalTagImportService{UOW: uow, Store: TagHistoryPostgreSQL{}}
+	at := time.Date(2026, 9, 6, 13, 0, 0, 0, time.UTC)
+	record := customerport.HistoricalTagRecord{SourceJobID: 91, SourceDigest: string(effectport.Hash("same-v2-job")), EffectType: "wecom.contact.tag.mark", Operation: "tag_mark", SourceState: "provider_result_received", Resolution: "pending", Reason: "identity_unresolved", OccurredAt: at}
+	batches := []customerport.HistoricalTagBatch{{SourceSystem: "v2_external_effect_job", SnapshotDigest: string(effectport.Hash("snapshot-one")), SnapshotAt: at}, {SourceSystem: "v2_external_effect_job", SnapshotDigest: string(effectport.Hash("snapshot-two")), SnapshotAt: at.Add(time.Second)}}
+	results := make(chan customerport.HistoricalTagImportResult, 2)
+	failures := make(chan error, 2)
+	var start sync.WaitGroup
+	start.Add(1)
+	for _, batch := range batches {
+		batch := batch
+		go func() {
+			start.Wait()
+			got, applyErr := service.ApplyHistoricalTagRecords(ctx, batch, []customerport.HistoricalTagRecord{record})
+			if applyErr != nil {
+				failures <- applyErr
+				return
+			}
+			results <- got
+		}()
+	}
+	start.Done()
+	first, second := <-results, <-results
+	select {
+	case applyErr := <-failures:
+		t.Fatal(applyErr)
+	default:
+	}
+	if first.Pending+second.Pending != 1 || first.Replayed+second.Replayed != 1 {
+		t.Fatalf("concurrent results first=%+v second=%+v", first, second)
+	}
+	var count int
+	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FROM customer_tag_history_receipts WHERE source_job_id=91`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("receipt count=%d err=%v", count, err)
 	}
 }

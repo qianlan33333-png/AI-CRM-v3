@@ -35,18 +35,6 @@ func (TagHistoryPostgreSQL) ApplyHistoricalTagRecords(ctx context.Context, batch
 		if !validHistoricalTagRecord(record) {
 			return customerport.HistoricalTagImportResult{}, customerport.ErrTagCommandInvalid
 		}
-		var previousDigest string
-		err = tx.QueryRow(ctx, `SELECT source_digest FROM customer_tag_history_receipts WHERE source_system=$1 AND source_job_id=$2 FOR UPDATE`, batch.SourceSystem, record.SourceJobID).Scan(&previousDigest)
-		if err == nil {
-			if previousDigest != record.SourceDigest {
-				return customerport.HistoricalTagImportResult{}, customerport.ErrTagCommandConflict
-			}
-			result.Replayed++
-			continue
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return customerport.HistoricalTagImportResult{}, err
-		}
 		var customer, staff any
 		if record.CustomerID > 0 {
 			customer = record.CustomerID
@@ -54,8 +42,22 @@ func (TagHistoryPostgreSQL) ApplyHistoricalTagRecords(ctx context.Context, batch
 		if record.StaffID > 0 {
 			staff = record.StaffID
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO customer_tag_history_receipts(batch_id,source_system,source_job_id,source_digest,effect_type,operation,source_state,resolution,reason,customer_id,staff_id,add_tag_ids,remove_tag_ids,occurred_at,completed_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,$13,$14,$15)`, batchID, batch.SourceSystem, record.SourceJobID, record.SourceDigest, record.EffectType, record.Operation, record.SourceState, record.Resolution, record.Reason, customer, staff, normalizedIDs(record.AddTagIDs), normalizedIDs(record.RemoveTagIDs), record.OccurredAt.UTC(), record.CompletedAt); err != nil {
+		var inserted bool
+		err = tx.QueryRow(ctx, `INSERT INTO customer_tag_history_receipts(batch_id,source_system,source_job_id,source_digest,effect_type,operation,source_state,resolution,reason,customer_id,staff_id,add_tag_ids,remove_tag_ids,occurred_at,completed_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,$13,$14,$15)
+			ON CONFLICT(source_system,source_job_id) DO NOTHING RETURNING true`, batchID, batch.SourceSystem, record.SourceJobID, record.SourceDigest, record.EffectType, record.Operation, record.SourceState, record.Resolution, record.Reason, customer, staff, normalizedIDs(record.AddTagIDs), normalizedIDs(record.RemoveTagIDs), record.OccurredAt.UTC(), record.CompletedAt).Scan(&inserted)
+		if errors.Is(err, pgx.ErrNoRows) {
+			var previousDigest string
+			if err = tx.QueryRow(ctx, `SELECT source_digest FROM customer_tag_history_receipts WHERE source_system=$1 AND source_job_id=$2`, batch.SourceSystem, record.SourceJobID).Scan(&previousDigest); err != nil {
+				return customerport.HistoricalTagImportResult{}, err
+			}
+			if previousDigest != record.SourceDigest {
+				return customerport.HistoricalTagImportResult{}, customerport.ErrTagCommandConflict
+			}
+			result.Replayed++
+			continue
+		}
+		if err != nil || !inserted {
 			return customerport.HistoricalTagImportResult{}, err
 		}
 		switch record.Resolution {
@@ -99,8 +101,12 @@ func (TagHistoryPostgreSQL) VerifyHistoricalTagRecords(ctx context.Context, batc
 		var add, remove []int64
 		var occurredAt time.Time
 		var completedAt *time.Time
+		// Receipts are globally idempotent by (source_system, source_job_id). A
+		// later protected snapshot may intentionally overlap a previous capture,
+		// so verification compares that immutable receipt rather than demand a
+		// duplicate row in the current snapshot batch.
 		err = tx.QueryRow(ctx, `SELECT source_digest,effect_type,operation,source_state,resolution,COALESCE(reason,''),customer_id,staff_id,add_tag_ids,remove_tag_ids,occurred_at,completed_at
-			FROM customer_tag_history_receipts WHERE batch_id=$1 AND source_system=$2 AND source_job_id=$3`, batchID, batch.SourceSystem, record.SourceJobID).Scan(&digest, &effectType, &operation, &sourceState, &resolution, &reason, &customerID, &staffID, &add, &remove, &occurredAt, &completedAt)
+			FROM customer_tag_history_receipts WHERE source_system=$1 AND source_job_id=$2`, batch.SourceSystem, record.SourceJobID).Scan(&digest, &effectType, &operation, &sourceState, &resolution, &reason, &customerID, &staffID, &add, &remove, &occurredAt, &completedAt)
 		if err != nil || digest != record.SourceDigest || effectType != record.EffectType || operation != record.Operation || sourceState != record.SourceState || resolution != record.Resolution || reason != record.Reason || int64OrZero(customerID) != int64(record.CustomerID) || int64OrZero(staffID) != record.StaffID || !sameIDs(add, record.AddTagIDs) || !sameIDs(remove, record.RemoveTagIDs) || !occurredAt.UTC().Equal(record.OccurredAt.UTC()) || !sameHistoricalTime(completedAt, record.CompletedAt) {
 			return customerport.HistoricalTagImportResult{}, customerport.ErrTagCommandConflict
 		}
@@ -137,6 +143,9 @@ func validHistoricalTagRecord(record customerport.HistoricalTagRecord) bool {
 	return record.Resolution != "imported" || (record.CustomerID > 0 && len(add)+len(remove) > 0)
 }
 func normalizedIDs(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return []int64{}
+	}
 	out := append([]int64(nil), ids...)
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	for i, id := range out {
