@@ -10,7 +10,7 @@ V3 已有 web/src/admin/templates/ownerMig.html、ownerReassignmentFile.ts、web
 
 ## 流程和业务规则
 
-1. 授权管理员选源/目标有效员工，范围全部符合客户或 Excel/CSV 名单，下载模板、校验格式/大小、逐行列错。已有 CSV API 兼容；Excel 复用本地解析器。
+1. 授权管理员选存在的源员工和有效目标员工，范围全部符合客户或 Excel/CSV 名单，下载模板、校验格式/大小、逐行列错。已有 CSV API 兼容；Excel 复用本地解析器。
 2. 选择 local_only 或 wecom_then_crm，保留可选企微转接及转接提示语。预览列候选/排除/冲突，冻结 customer ID、staff ID、关系版本、范围/hash、模式和提示语；有效 30 分钟。
 3. 确认带预览 ID/hash、确认语、幂等键。重验权限、目标有效、关系版本/范围；变化显式冲突，不扩大范围。重复同请求返回同批次，不同参数拒绝。大批 River 分段。
 4. local_only：只更新本地，企微 skipped/local_only，零 Provider。
@@ -46,3 +46,5 @@ local_only 分段 UoW 同时 CAS关系/结果/收据/审计/Outbox。Provider �
 - O07 历史导入重跑数量守恒/零新转接；页面受理不伪称成功。
 
 交付源码、浏览器/协议/真实PG证据和PR准确HEAD，真实企微验收独立部署待办；不可只交骨架或本地模式。
+
+补充旧行为：application.py:419-434只要求目标员工active，源员工须存在但可停用；本地交接不因源停用被拦。Provider模式按原转接协议的适用条件处理，禁止自动换成离职继承API。

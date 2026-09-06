@@ -10,3 +10,5 @@
 - 配置旧历史导入保持inactive；审核业务草稿后发布，分别回读API/Worker实际使用revision，回滚验证。
 - 历史导入工具先dry-run/fixture对账，再独立生产导入，pending/conflict逐条处理，不因导入触发发送、转接或标签写入。
 - 最终分开报告上线代码、有效配置、实际业务Provider证据、尚未启用能力；旧系统独立保留。
+
+负责人冻结快照复用现有AICRM_SURVEY_DATA_KEY，AAD独立为customer-owner-handoff:v1；不增加Owner专用主密钥。后续轮换该现有键必须同时考虑Survey与Owner历史密文，不能单独替换使旧记录不可读。

@@ -56,3 +56,7 @@ Config拥有草稿/不可变版本/active指针/校验与使用观测/发布收�
 - C06 回滚为新版本、旧业务效果不撤销；历史导入幂等、不自动激活、不触发Provider。
 
 迁移0094；交付真实消费者、UI/PG/Journey与准确PR HEAD。禁止只交发布表/接口，真实部署单独待办。
+
+## 必要基线修复：并发 AI 回执聚合（2026-09-06）
+
+文档PR166的基线CI与独立PG均复现：同一AI计划的两条effect completion并发时，旧聚合快照可将存在outcome_unknown的计划覆盖回dispatching。属于配置消费者联合回归的既有正确性缺陷，不是新功能。由当前Config执行者在AI Owner内提交独立修复commit：按既有一致锁顺序锁plan后更新/汇总recipient与binding，同一UoW保存；不得延长超时代替修复或把unknown视作成功。新增并发PG反例，原TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL必须通过。根按独立准确HEAD审核；不部署。
