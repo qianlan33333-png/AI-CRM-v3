@@ -1,6 +1,7 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -31,7 +32,7 @@ type ProductAppendResult struct {
 }
 
 func (r ProductAppendRunner) Preflight(ctx context.Context, snapshot source.ProductAppend, digest [sha256.Size]byte, actor int64) error {
-	if !r.ready(snapshot, actor) {
+	if !r.ready(snapshot, actor) || !validProductAppendDigest(snapshot, digest) {
 		return ErrInvalid
 	}
 	return r.UOW.Within(ctx, func(tx context.Context) error {
@@ -60,11 +61,8 @@ func (r ProductAppendRunner) Preflight(ctx context.Context, snapshot source.Prod
 }
 
 func (r ProductAppendRunner) Apply(ctx context.Context, snapshot source.ProductAppend, digest [sha256.Size]byte, actor int64) (out ProductAppendResult, err error) {
-	if !r.ready(snapshot, actor) {
-		return out, ErrInvalid
-	}
-	manifest, err := json.Marshal(snapshot)
-	if err != nil {
+	manifest, valid := canonicalProductAppend(snapshot, digest)
+	if !r.ready(snapshot, actor) || !valid {
 		return out, ErrInvalid
 	}
 	err = r.UOW.Within(ctx, func(tx context.Context) error {
@@ -121,7 +119,7 @@ func (r ProductAppendRunner) Apply(ctx context.Context, snapshot source.ProductA
 }
 
 func (r ProductAppendRunner) Verify(ctx context.Context, snapshot source.ProductAppend, digest [sha256.Size]byte) (out ProductAppendResult, err error) {
-	if r.UOW == nil || snapshot.Validate() != nil {
+	if r.UOW == nil || !validProductAppendDigest(snapshot, digest) {
 		return out, ErrInvalid
 	}
 	err = r.UOW.Within(ctx, func(tx context.Context) error {
@@ -139,15 +137,24 @@ func (r ProductAppendRunner) Verify(ctx context.Context, snapshot source.Product
 		if status != "applied" && status != "verified" {
 			return ErrInvalid
 		}
-		keys := productAppendSourceKeys(snapshot)
-		var mapped, products int
-		if e = t.QueryRow(tx, `SELECT count(*) FROM config_definition_import_source_maps WHERE batch_id=$1 AND domain='product' AND source_kind='wechat_pay_products' AND target_table='products' AND source_key=ANY($2)`, out.BatchID, keys).Scan(&mapped); e != nil || mapped != len(keys) {
-			return ErrInvalid
+		for _, product := range snapshot.Products {
+			expectedSourceDigest, digestErr := sourceRowDigest(product)
+			if digestErr != nil {
+				return ErrInvalid
+			}
+			var mappedSourceDigest []byte
+			var productCode string
+			var version int64
+			e = t.QueryRow(tx, `SELECT m.source_digest,p.product_code,p.version
+				FROM config_definition_import_source_maps m
+				JOIN products p ON p.id=m.target_id
+				WHERE m.batch_id=$1 AND m.domain='product' AND m.source_kind='wechat_pay_products'
+					AND m.target_table='products' AND m.source_key=$2`, out.BatchID, fmt.Sprint(product.ID)).Scan(&mappedSourceDigest, &productCode, &version)
+			if e != nil || len(mappedSourceDigest) != sha256.Size || !bytes.Equal(mappedSourceDigest, expectedSourceDigest[:]) || productCode != product.ProductCode || version != 1 {
+				return ErrInvalid
+			}
 		}
-		if e = t.QueryRow(tx, `SELECT count(*) FROM config_definition_import_source_maps m JOIN products p ON p.id=m.target_id WHERE m.batch_id=$1 AND m.domain='product' AND m.source_kind='wechat_pay_products' AND m.target_table='products' AND m.source_key=ANY($2)`, out.BatchID, keys).Scan(&products); e != nil || products != len(keys) {
-			return ErrInvalid
-		}
-		out.Products = products
+		out.Products = len(snapshot.Products)
 		if status == "applied" {
 			tag, e := t.Exec(tx, `UPDATE config_definition_import_batches SET status='verified',verified_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 AND status='applied'`, out.BatchID)
 			if e != nil || tag.RowsAffected() != 1 {
@@ -161,6 +168,24 @@ func (r ProductAppendRunner) Verify(ctx context.Context, snapshot source.Product
 
 func (r ProductAppendRunner) ready(snapshot source.ProductAppend, actor int64) bool {
 	return r.UOW != nil && r.Products != nil && actor > 0 && snapshot.Validate() == nil
+}
+
+func validProductAppendDigest(snapshot source.ProductAppend, digest [sha256.Size]byte) bool {
+	_, ok := canonicalProductAppend(snapshot, digest)
+	return ok
+}
+
+func canonicalProductAppend(snapshot source.ProductAppend, digest [sha256.Size]byte) ([]byte, bool) {
+	// Validate before Canonical so callers cannot rely on normalization to make
+	// an unordered caller-provided manifest acceptable at this mutation boundary.
+	if snapshot.Validate() != nil {
+		return nil, false
+	}
+	manifest, actual, err := snapshot.Canonical()
+	if err != nil || actual != digest {
+		return nil, false
+	}
+	return manifest, true
 }
 
 func activeActor(ctx context.Context, tx pgx.Tx, actor int64) error {

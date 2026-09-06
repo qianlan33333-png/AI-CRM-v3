@@ -200,11 +200,10 @@ func mapRow(ctx context.Context, batch int64, system, domain, kind string, id in
 	if e != nil {
 		return e
 	}
-	raw, e := json.Marshal(row)
+	d, e := sourceRowDigest(row)
 	if e != nil {
 		return e
 	}
-	d := sha256.Sum256(raw)
 	if actorLabels == nil {
 		actorLabels = map[string]string{}
 	}
@@ -214,6 +213,17 @@ func mapRow(ctx context.Context, batch int64, system, domain, kind string, id in
 	}
 	_, e = t.Exec(ctx, `INSERT INTO config_definition_import_source_maps(batch_id,source_system,domain,source_kind,source_key,source_digest,source_actor_labels,target_table,target_id) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)`, batch, system, domain, kind, fmt.Sprint(id), d[:], actors, table, target)
 	return e
+}
+
+// sourceRowDigest is the immutable source-row provenance used by every
+// definition import mapping. Verifiers must use this same representation
+// rather than merely count mapping rows.
+func sourceRowDigest(row any) ([sha256.Size]byte, error) {
+	raw, err := json.Marshal(row)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(raw), nil
 }
 
 func sourceActors(createdBy, updatedBy string) map[string]string {

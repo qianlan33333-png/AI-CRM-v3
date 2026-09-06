@@ -920,6 +920,104 @@ func TestProductAppendPostgresIntegrationPreservesSourceKeyProvenanceAndReplay(t
 	}
 }
 
+func TestProductAppendPostgresIntegrationRejectsDigestMismatchAndTamperedMappings(t *testing.T) {
+	ctx := context.Background()
+
+	// The runner is a stable mutation boundary too: a caller cannot substitute
+	// a digest after the append has been constructed.
+	{
+		pool, cleanup := configMigrationIntegrationPool(t)
+		actor := configMigrationActor(t, ctx, pool)
+		snapshot := configMigrationFixture(t, strings.Repeat("a", 40))
+		appendSnapshot, digest, err := source.NewProductAppend(snapshot, []int64{1, 2, 3})
+		if err != nil {
+			cleanup()
+			t.Fatal(err)
+		}
+		wrongDigest := digest
+		wrongDigest[0] ^= 0xff
+		runner := configProductAppendRunner(t, pool)
+		if err = runner.Preflight(ctx, appendSnapshot, wrongDigest, actor); !errors.Is(err, configtarget.ErrInvalid) {
+			cleanup()
+			t.Fatalf("preflight accepted mismatched append digest: %v", err)
+		}
+		if _, err = runner.Apply(ctx, appendSnapshot, wrongDigest, actor); !errors.Is(err, configtarget.ErrInvalid) {
+			cleanup()
+			t.Fatalf("apply accepted mismatched append digest: %v", err)
+		}
+		if _, err = runner.Verify(ctx, appendSnapshot, wrongDigest); !errors.Is(err, configtarget.ErrInvalid) {
+			cleanup()
+			t.Fatalf("verify accepted mismatched append digest: %v", err)
+		}
+		var batches int
+		if err = pool.Native().QueryRow(ctx, `SELECT count(*) FROM config_definition_import_batches`).Scan(&batches); err != nil || batches != 0 {
+			cleanup()
+			t.Fatalf("mismatched digest wrote batches=%d err=%v", batches, err)
+		}
+		cleanup()
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(context.Context, *platformpostgres.Pool, int64) error
+	}{
+		{
+			name: "target-swap",
+			mutate: func(ctx context.Context, pool *platformpostgres.Pool, batchID int64) error {
+				_, err := pool.Native().Exec(ctx, `UPDATE config_definition_import_source_maps
+					SET target_id=CASE source_key
+						WHEN '1' THEN (SELECT target_id FROM config_definition_import_source_maps WHERE batch_id=$1 AND source_key='2')
+						WHEN '2' THEN (SELECT target_id FROM config_definition_import_source_maps WHERE batch_id=$1 AND source_key='1')
+						ELSE target_id
+					END
+					WHERE batch_id=$1 AND source_key IN ('1','2')`, batchID)
+				return err
+			},
+		},
+		{
+			name: "source-row-digest",
+			mutate: func(ctx context.Context, pool *platformpostgres.Pool, batchID int64) error {
+				_, err := pool.Native().Exec(ctx, `UPDATE config_definition_import_source_maps SET source_digest=decode(repeat('00',32),'hex') WHERE batch_id=$1 AND source_key='1'`, batchID)
+				return err
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pool, cleanup := configMigrationIntegrationPool(t)
+			defer cleanup()
+			actor := configMigrationActor(t, ctx, pool)
+			snapshot := configMigrationFixture(t, strings.Repeat("b", 40))
+			appendSnapshot, digest, err := source.NewProductAppend(snapshot, []int64{1, 2, 3})
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := configProductAppendRunner(t, pool)
+			applied, err := runner.Apply(ctx, appendSnapshot, digest, actor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = pool.Native().Exec(ctx, `ALTER TABLE config_definition_import_source_maps DISABLE TRIGGER config_definition_import_source_maps_append_only`); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if _, enableErr := pool.Native().Exec(ctx, `ALTER TABLE config_definition_import_source_maps ENABLE TRIGGER config_definition_import_source_maps_append_only`); enableErr != nil {
+					t.Errorf("restore append-only trigger: %v", enableErr)
+				}
+			}()
+			if err = test.mutate(ctx, pool, applied.BatchID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = runner.Verify(ctx, appendSnapshot, digest); !errors.Is(err, configtarget.ErrInvalid) {
+				t.Fatalf("verify accepted tampered %s map: %v", test.name, err)
+			}
+			var status string
+			if err = pool.Native().QueryRow(ctx, `SELECT status FROM config_definition_import_batches WHERE id=$1`, applied.BatchID).Scan(&status); err != nil || status != "applied" {
+				t.Fatalf("tampered verify advanced batch status=%q err=%v", status, err)
+			}
+		})
+	}
+}
+
 func TestProductAppendPostgresIntegrationRollsBackAndSerializesReplay(t *testing.T) {
 	pool, cleanup := configMigrationIntegrationPool(t)
 	defer cleanup()
