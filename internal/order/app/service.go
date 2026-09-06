@@ -88,6 +88,7 @@ type Store interface {
 	Export(context.Context, ListFilter, int32) ([]domain.Order, error)
 	RecordExport(context.Context, ExportReceipt) (ExportReceipt, bool, error)
 	UpdateSettlement(context.Context, domain.Order, domain.StatusEvent, string) (domain.Order, error)
+	AppendPaidEvent(context.Context, domain.Snapshot) (orderport.PaidEvent, bool, error)
 	Import(context.Context, string, [32]byte, domain.Order) (domain.Order, bool, error)
 	InsertCheckoutSnapshot(context.Context, orderport.CheckoutSnapshot) error
 	ReadCheckoutSnapshot(context.Context, int64) (orderport.CheckoutSnapshot, error)
@@ -102,6 +103,7 @@ type Service struct {
 	}
 	coupons      couponport.OrderCouponCoordinator
 	entitlements orderport.ServicePeriodEntitlementCoordinator
+	paidEvents   orderport.PaidEventConsumer
 	now          func() time.Time
 }
 
@@ -123,6 +125,17 @@ func (s *Service) SetServicePeriodEntitlementCoordinator(coordinator orderport.S
 		return orderport.ErrConflict
 	}
 	s.entitlements = coordinator
+	return nil
+}
+
+// SetPaidEventConsumer binds the sole composition-owned consumer for the
+// Order-owned first-paid event. It receives the existing transaction so Order
+// settlement, dispatch intent, EER acceptance and River enqueue are atomic.
+func (s *Service) SetPaidEventConsumer(consumer orderport.PaidEventConsumer) error {
+	if s == nil || consumer == nil {
+		return orderport.ErrConflict
+	}
+	s.paidEvents = consumer
 	return nil
 }
 
@@ -286,6 +299,9 @@ func (s *Service) SettlePaymentWithin(ctx context.Context, command orderport.Pay
 		return domain.Snapshot{}, classify(err)
 	}
 	if err = s.applyCheckoutSettlement(ctx, updated.Snapshot(), command); err != nil {
+		return domain.Snapshot{}, err
+	}
+	if err = s.consumeFirstNativePaidEvent(ctx, current.Snapshot(), updated.Snapshot()); err != nil {
 		return domain.Snapshot{}, err
 	}
 	return updated.Snapshot(), nil
@@ -695,6 +711,9 @@ func (s *Service) ApplySettlement(ctx context.Context, command orderport.Settlem
 			if settleErr != nil {
 				return settleErr
 			}
+			if settleErr = s.consumeFirstNativePaidEvent(tx, current.Snapshot(), updated.Snapshot()); settleErr != nil {
+				return settleErr
+			}
 		}
 		result = updated.Snapshot()
 		snapshot, _ := json.Marshal(result)
@@ -729,6 +748,34 @@ func (s *Service) ImportHistorical(ctx context.Context, command orderport.Histor
 		return domain.Snapshot{}, classify(err)
 	}
 	return result.Snapshot(), nil
+}
+
+// consumeFirstNativePaidEvent appends exactly one immutable Order event when
+// a native, effect-eligible order first transitions into paid. The consumer is
+// optional only for old direct-library callers; cmd/aicrm always injects the
+// Outbound bridge so a live settlement cannot commit a split intent/effect.
+func (s *Service) consumeFirstNativePaidEvent(ctx context.Context, previous, current domain.Snapshot) error {
+	if previous.Status == domain.StatusPaid || current.Status != domain.StatusPaid ||
+		current.RecordOrigin != domain.RecordOriginNative || !current.EffectEligible || current.Version == previous.Version {
+		return nil
+	}
+	event, created, err := s.store.AppendPaidEvent(ctx, current)
+	if err != nil {
+		return classify(err)
+	}
+	if !event.Valid() {
+		return orderport.ErrUnavailable
+	}
+	if s.paidEvents == nil {
+		// A pre-composition library caller still preserves the Order event. The
+		// deployed composition always provides the bridge before payment routes
+		// are exposed, so this cannot claim an outbound dispatch was accepted.
+		return nil
+	}
+	if !created && event.OrderID != current.ID {
+		return orderport.ErrConflict
+	}
+	return s.paidEvents.ConsumePaidEventWithin(ctx, event)
 }
 
 func ready(service *Service) bool {

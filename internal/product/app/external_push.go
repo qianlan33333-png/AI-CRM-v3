@@ -27,27 +27,19 @@ var ErrExternalPushNotConfigured = errors.New("product external push is not loca
 // receipts and immutable test bindings. It carries no Provider adapter.
 type CommerceExternalPushStore interface {
 	ReadCommerceExternalPushConfiguration(context.Context, productport.ID, productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error)
+	ReadCommerceExternalPushConfigurationForOrder(context.Context, productport.ID) (productport.ExternalPushConfiguration, error)
 	LockCommerceExternalPushConfiguration(context.Context, productport.ID, productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error)
 	SaveCommerceExternalPushConfiguration(context.Context, productport.ExternalPushConfiguration, time.Time) (productport.ExternalPushConfiguration, error)
 	ReserveCommerceExternalPush(context.Context, Reservation) (Receipt, bool, error)
 	CompleteCommerceExternalPush(context.Context, int64, json.RawMessage, time.Time) (Receipt, error)
-	CommerceExternalPushTestExists(context.Context, productport.ID, productport.ExternalPushProductKind, [32]byte) (bool, error)
 	CreateCommerceExternalPushTest(context.Context, productport.ExternalPushTest, [32]byte, int64) (productport.ExternalPushTest, error)
 }
 
-// ProductExternalPushEffectAccepter is the narrow adapter seam to EER. Its
-// input has only server-computed digests, and successful output remains a
-// local accepted/queued fact rather than a Provider receipt.
-type ProductExternalPushEffectAccepter interface {
-	AcceptProductExternalPushTest(context.Context, ProductExternalPushEffectCommand) (productport.ExternalPushTest, error)
-}
-
-type ProductExternalPushEffectCommand struct {
-	ProductID           productport.ID
-	ProductKind         productport.ExternalPushProductKind
-	ConfigurationDigest [32]byte
-	ReceiptKeyDigest    [32]byte
-}
+// Product uses this Port-only seam so its HTTP/application layer never
+// imports an Outbound implementation. The concrete accepter is composed by
+// cmd/aicrm and shares the Product transaction.
+type ProductExternalPushEffectAccepter = productport.ExternalPushTestAccepter
+type ProductExternalPushEffectCommand = productport.ExternalPushTestIntent
 
 type CommerceExternalPushService struct {
 	uow     platformport.UnitOfWork
@@ -92,6 +84,29 @@ func (service *CommerceExternalPushService) GetExternalPushConfiguration(
 		return productport.ExternalPushConfiguration{}, classifyCommerceExternalPush(err)
 	}
 	if !validExternalPushConfiguration(result, productID, kind) {
+		return productport.ExternalPushConfiguration{}, ErrUnavailable
+	}
+	return result, nil
+}
+
+// ReadExternalPushConfigurationForOrder is the only Product read exposed to
+// the Outbound Order-event consumer. It returns the current opaque ref and
+// revision for the already frozen Product ID; product master data stays in the
+// Order item snapshot and is not re-read here.
+func (service *CommerceExternalPushService) ReadExternalPushConfigurationForOrder(ctx context.Context, productID productport.ID) (productport.ExternalPushConfiguration, error) {
+	if !commerceExternalPushReady(service) || ctx == nil || ctx.Err() != nil || productID < 1 {
+		return productport.ExternalPushConfiguration{}, ErrUnavailable
+	}
+	var result productport.ExternalPushConfiguration
+	err := service.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		result, readErr = service.store.ReadCommerceExternalPushConfigurationForOrder(tx, productID)
+		return readErr
+	})
+	if err != nil {
+		return productport.ExternalPushConfiguration{}, classifyCommerceExternalPush(err)
+	}
+	if !validExternalPushConfiguration(result, productID, result.ProductKind) {
 		return productport.ExternalPushConfiguration{}, ErrUnavailable
 	}
 	return result, nil
@@ -195,16 +210,10 @@ func (service *CommerceExternalPushService) QueueExternalPushTest(
 			return ErrExternalPushNotConfigured
 		}
 		configurationDigest := commerceExternalPushConfigurationDigest(configuration)
-		exists, readErr := service.store.CommerceExternalPushTestExists(tx, command.ProductID, command.ProductKind, configurationDigest)
-		if readErr != nil {
-			return readErr
-		}
-		if exists {
-			return ErrConflict
-		}
-		effect, acceptErr := service.effects.AcceptProductExternalPushTest(tx, ProductExternalPushEffectCommand{
+		effect, acceptErr := service.effects.AcceptExternalPushTestWithin(tx, productport.ExternalPushTestIntent{
 			ProductID: command.ProductID, ProductKind: command.ProductKind,
-			ConfigurationDigest: configurationDigest, ReceiptKeyDigest: reservation.KeyDigest,
+			ConfigurationReference: configuration.ConfigurationReference, ConfigurationRevision: configuration.Revision,
+			ReceiptKeyDigest: reservation.KeyDigest,
 		})
 		if acceptErr != nil {
 			return acceptErr
@@ -297,13 +306,14 @@ func commerceExternalPushConfigurationDigest(value productport.ExternalPushConfi
 		ProductKind            productport.ExternalPushProductKind `json:"product_kind"`
 		Enabled                bool                                `json:"enabled"`
 		ConfigurationReference string                              `json:"configuration_reference"`
-	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference})
+		Revision               int64                               `json:"revision"`
+	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference, value.Revision})
 	return sha256.Sum256(payload)
 }
 
 func validSaveCommerceExternalPush(command productport.SaveExternalPushConfigurationCommand) bool {
 	return command.ProductID > 0 && validExternalPushKind(command.ProductKind) && command.Actor > 0 && validIdempotencyKey(command.IdempotencyKey) &&
-		validExternalPushConfiguration(productport.ExternalPushConfiguration{ProductID: command.ProductID, ProductKind: command.ProductKind, Enabled: command.Enabled, ConfigurationReference: command.ConfigurationReference, UpdatedAt: time.Unix(1, 0)}, command.ProductID, command.ProductKind)
+		validExternalPushConfiguration(productport.ExternalPushConfiguration{ProductID: command.ProductID, ProductKind: command.ProductKind, Enabled: command.Enabled, ConfigurationReference: command.ConfigurationReference, Revision: 1, UpdatedAt: time.Unix(1, 0)}, command.ProductID, command.ProductKind)
 }
 
 func validQueueCommerceExternalPushTest(command productport.QueueExternalPushTestCommand) bool {
@@ -315,7 +325,7 @@ func validExternalPushKind(value productport.ExternalPushProductKind) bool {
 }
 
 func validExternalPushConfiguration(value productport.ExternalPushConfiguration, productID productport.ID, kind productport.ExternalPushProductKind) bool {
-	if value.ProductID != productID || value.ProductKind != kind || productID < 1 || !validExternalPushKind(kind) || value.UpdatedAt.IsZero() {
+	if value.ProductID != productID || value.ProductKind != kind || productID < 1 || !validExternalPushKind(kind) || value.Revision < 1 || value.UpdatedAt.IsZero() {
 		return false
 	}
 	if !value.Enabled {

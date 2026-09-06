@@ -604,6 +604,66 @@ func (r *Repository) RecordExport(ctx context.Context, receipt orderapp.ExportRe
 	return stored, false, nil
 }
 
+// AppendPaidEvent persists the first native paid event next to the Order state
+// transition. It is idempotent by the immutable order/version pair and writes
+// the Order outbox fact before returning the event to the composition consumer.
+func (r *Repository) AppendPaidEvent(ctx context.Context, snapshot domain.Snapshot) (orderport.PaidEvent, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return orderport.PaidEvent{}, false, err
+	}
+	if snapshot.ID < 1 || snapshot.Version < 2 || snapshot.Status != domain.StatusPaid ||
+		snapshot.RecordOrigin != domain.RecordOriginNative || !snapshot.EffectEligible || snapshot.UpdatedAt.IsZero() {
+		return orderport.PaidEvent{}, false, ErrInvalid
+	}
+	source := orderport.NewPaidEventSourceDigest(snapshot.ID, snapshot.Version)
+	var event orderport.PaidEvent
+	var returnedSource []byte
+	err = tx.QueryRow(ctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at)
+VALUES($1,$2,$3,$4)
+ON CONFLICT(order_id) DO NOTHING
+RETURNING id,order_id,order_version,source_digest,occurred_at`, snapshot.ID, snapshot.Version, source[:], snapshot.UpdatedAt.UTC()).Scan(
+		&event.ID, &event.OrderID, &event.OrderVersion, &returnedSource, &event.OccurredAt,
+	)
+	created := err == nil
+	if created {
+		if len(returnedSource) != 32 || string(returnedSource) != string(source[:]) {
+			return orderport.PaidEvent{}, false, ErrInvalid
+		}
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		var stored []byte
+		err = tx.QueryRow(ctx, `SELECT id,order_id,order_version,source_digest,occurred_at FROM order_paid_events WHERE order_id=$1 FOR UPDATE`, snapshot.ID).Scan(
+			&event.ID, &event.OrderID, &event.OrderVersion, &stored, &event.OccurredAt,
+		)
+		if err == nil {
+			if len(stored) != 32 || event.OrderVersion != snapshot.Version || string(stored) != string(source[:]) {
+				return orderport.PaidEvent{}, false, orderport.ErrConflict
+			}
+			copy(source[:], stored)
+		}
+	}
+	if err != nil {
+		return orderport.PaidEvent{}, false, mapError(err)
+	}
+	event.SourceDigest, event.Order = source, snapshot
+	if !event.Valid() {
+		return orderport.PaidEvent{}, false, ErrInvalid
+	}
+	if !created {
+		return event, false, nil
+	}
+	payload, marshalErr := json.Marshal(map[string]any{"order_id": event.OrderID, "order_version": event.OrderVersion, "paid_event_id": event.ID})
+	if marshalErr != nil {
+		return orderport.PaidEvent{}, false, ErrInvalid
+	}
+	key := "order.paid.v1:" + strconv.FormatInt(event.ID, 10)
+	if _, err = tx.Exec(ctx, `INSERT INTO order_outbox(event_type,idempotency_key,aggregate_id,payload,occurred_at) VALUES('order.paid.v1',$1,$2,$3::jsonb,$4)`, key, event.OrderID, payload, event.OccurredAt.UTC()); err != nil {
+		return orderport.PaidEvent{}, false, mapError(err)
+	}
+	return event, true, nil
+}
+
 func (r *Repository) UpdateSettlement(ctx context.Context, order domain.Order, event domain.StatusEvent, actorScope string) (domain.Order, error) {
 	tx, err := transaction(ctx)
 	if err != nil {

@@ -26,10 +26,11 @@ type memoryStore struct {
 	exports  map[string]ExportReceipt
 	contacts map[int64][]byte
 	checkout map[int64]orderport.CheckoutSnapshot
+	paid     map[int64]orderport.PaidEvent
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{nextID: 1, orders: map[int64]domain.Snapshot{}, receipts: map[string]Receipt{}, imports: map[string]ImportReceipt{}, exports: map[string]ExportReceipt{}, contacts: map[int64][]byte{}, checkout: map[int64]orderport.CheckoutSnapshot{}}
+	return &memoryStore{nextID: 1, orders: map[int64]domain.Snapshot{}, receipts: map[string]Receipt{}, imports: map[string]ImportReceipt{}, exports: map[string]ExportReceipt{}, contacts: map[int64][]byte{}, checkout: map[int64]orderport.CheckoutSnapshot{}, paid: map[int64]orderport.PaidEvent{}}
 }
 
 func (s *memoryStore) Reserve(_ context.Context, reservation Reservation) (Receipt, bool, error) {
@@ -182,6 +183,22 @@ func (s *memoryStore) RecordExport(_ context.Context, receipt ExportReceipt) (Ex
 func (s *memoryStore) UpdateSettlement(_ context.Context, order domain.Order, _ domain.StatusEvent, _ string) (domain.Order, error) {
 	s.orders[order.ID] = order.Snapshot()
 	return order, nil
+}
+
+func (s *memoryStore) AppendPaidEvent(_ context.Context, snapshot domain.Snapshot) (orderport.PaidEvent, bool, error) {
+	if event, ok := s.paid[snapshot.ID]; ok {
+		if event.OrderVersion != snapshot.Version || event.SourceDigest != orderport.NewPaidEventSourceDigest(snapshot.ID, snapshot.Version) {
+			return orderport.PaidEvent{}, false, orderport.ErrConflict
+		}
+		event.Order = snapshot
+		return event, false, nil
+	}
+	event := orderport.PaidEvent{ID: int64(len(s.paid) + 1), OrderID: snapshot.ID, OrderVersion: snapshot.Version, OccurredAt: snapshot.UpdatedAt.UTC(), SourceDigest: orderport.NewPaidEventSourceDigest(snapshot.ID, snapshot.Version), Order: snapshot}
+	if !event.Valid() {
+		return orderport.PaidEvent{}, false, errors.New("invalid paid event")
+	}
+	s.paid[snapshot.ID] = event
+	return event, true, nil
 }
 
 func (s *memoryStore) Import(_ context.Context, runID string, digest [32]byte, order domain.Order) (domain.Order, bool, error) {

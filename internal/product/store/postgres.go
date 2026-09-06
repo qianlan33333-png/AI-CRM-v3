@@ -645,7 +645,7 @@ func (r *Repository) readExternalPushConfiguration(ctx context.Context, id produ
 	if id < 1 || !validExternalKind(kind) {
 		return productport.ExternalPushConfiguration{}, ErrInvalid
 	}
-	query := `SELECT p.id,COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.updated_at,p.updated_at)
+	query := `SELECT p.id,COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.version,1),COALESCE(c.updated_at,p.updated_at)
 FROM products p LEFT JOIN product_external_push_configurations c ON c.product_id=p.id AND c.product_kind=$2
 WHERE p.id=$1 AND ` + serviceKindStatus(kind)
 	if forUpdate {
@@ -653,7 +653,7 @@ WHERE p.id=$1 AND ` + serviceKindStatus(kind)
 	}
 	var result productport.ExternalPushConfiguration
 	var enabled bool
-	err = tx.QueryRow(ctx, query, int64(id), string(kind)).Scan(&result.ProductID, &enabled, &result.ConfigurationReference, &result.UpdatedAt)
+	err = tx.QueryRow(ctx, query, int64(id), string(kind)).Scan(&result.ProductID, &enabled, &result.ConfigurationReference, &result.Revision, &result.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
 	}
@@ -661,6 +661,26 @@ WHERE p.id=$1 AND ` + serviceKindStatus(kind)
 		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
 	}
 	result.ProductKind, result.Enabled = kind, enabled
+	return result, nil
+}
+
+func (r *Repository) ReadCommerceExternalPushConfigurationForOrder(ctx context.Context, id productport.ID) (productport.ExternalPushConfiguration, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.ExternalPushConfiguration{}, err
+	}
+	if id < 1 {
+		return productport.ExternalPushConfiguration{}, ErrInvalid
+	}
+	query := `SELECT p.id,c.product_kind,c.enabled,c.configuration_reference,c.version,c.updated_at
+FROM products p JOIN product_external_push_configurations c ON c.product_id=p.id
+WHERE p.id=$1 AND ((c.product_kind='service_period' AND p.legacy_admin_projection ->> 'status'='service_period') OR (c.product_kind='wechat_pay' AND COALESCE(p.legacy_admin_projection ->> 'status','') <> 'service_period'))`
+	var result productport.ExternalPushConfiguration
+	if err = tx.QueryRow(ctx, query, int64(id)).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.Revision, &result.UpdatedAt); errors.Is(err, pgx.ErrNoRows) {
+		return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
+	} else if err != nil {
+		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
+	}
 	return result, nil
 }
 
@@ -681,10 +701,10 @@ func (r *Repository) SaveCommerceExternalPushConfiguration(ctx context.Context, 
 		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
 	}
 	var result productport.ExternalPushConfiguration
-	err = tx.QueryRow(ctx, `INSERT INTO product_external_push_configurations(product_id,product_kind,enabled,configuration_reference,updated_at)
-VALUES($1,$2,$3,$4,$5)
-ON CONFLICT(product_id,product_kind) DO UPDATE SET enabled=EXCLUDED.enabled,configuration_reference=EXCLUDED.configuration_reference,updated_at=EXCLUDED.updated_at
-RETURNING product_id,product_kind,enabled,configuration_reference,updated_at`, productID, string(value.ProductKind), value.Enabled, value.ConfigurationReference, now.UTC()).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.UpdatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO product_external_push_configurations(product_id,product_kind,enabled,configuration_reference,version,updated_at)
+VALUES($1,$2,$3,$4,1,$5)
+ON CONFLICT(product_id,product_kind) DO UPDATE SET enabled=EXCLUDED.enabled,configuration_reference=EXCLUDED.configuration_reference,version=product_external_push_configurations.version+1,updated_at=EXCLUDED.updated_at
+RETURNING product_id,product_kind,enabled,configuration_reference,version,updated_at`, productID, string(value.ProductKind), value.Enabled, value.ConfigurationReference, now.UTC()).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.Revision, &result.UpdatedAt)
 	if err != nil {
 		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
 	}

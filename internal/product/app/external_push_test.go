@@ -35,10 +35,18 @@ func (store *commerceExternalPushTestStore) ReadCommerceExternalPushConfiguratio
 	if value, ok := store.configs[id]; ok {
 		return value, nil
 	}
-	return productport.ExternalPushConfiguration{ProductID: id, ProductKind: kind, UpdatedAt: time.Date(2026, 8, 25, 1, 0, 0, 0, time.UTC)}, nil
+	return productport.ExternalPushConfiguration{ProductID: id, ProductKind: kind, Revision: 1, UpdatedAt: time.Date(2026, 8, 25, 1, 0, 0, 0, time.UTC)}, nil
 }
 
 func (store *commerceExternalPushTestStore) LockCommerceExternalPushConfiguration(ctx context.Context, id productport.ID, kind productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error) {
+	return store.ReadCommerceExternalPushConfiguration(ctx, id, kind)
+}
+
+func (store *commerceExternalPushTestStore) ReadCommerceExternalPushConfigurationForOrder(ctx context.Context, id productport.ID) (productport.ExternalPushConfiguration, error) {
+	kind, ok := store.products[id]
+	if !ok {
+		return productport.ExternalPushConfiguration{}, ErrNotFound
+	}
 	return store.ReadCommerceExternalPushConfiguration(ctx, id, kind)
 }
 
@@ -47,6 +55,11 @@ func (store *commerceExternalPushTestStore) SaveCommerceExternalPushConfiguratio
 		return productport.ExternalPushConfiguration{}, ErrNotFound
 	}
 	store.saves++
+	if previous, ok := store.configs[value.ProductID]; ok {
+		value.Revision = previous.Revision + 1
+	} else {
+		value.Revision = 1
+	}
 	value.UpdatedAt = now.UTC()
 	store.configs[value.ProductID] = value
 	return value, nil
@@ -97,10 +110,10 @@ func commerceExternalPushTestReceiptKey(reservation Reservation) string {
 type commerceExternalPushTestEffects struct {
 	result productport.ExternalPushTest
 	calls  int
-	inputs []ProductExternalPushEffectCommand
+	inputs []productport.ExternalPushTestIntent
 }
 
-func (effects *commerceExternalPushTestEffects) AcceptProductExternalPushTest(_ context.Context, input ProductExternalPushEffectCommand) (productport.ExternalPushTest, error) {
+func (effects *commerceExternalPushTestEffects) AcceptExternalPushTestWithin(_ context.Context, input productport.ExternalPushTestIntent) (productport.ExternalPushTest, error) {
 	effects.calls++
 	effects.inputs = append(effects.inputs, input)
 	return effects.result, nil
@@ -159,7 +172,7 @@ func TestCommerceExternalPushTestCreatesOnlyAcceptedLocalEERFactAndReplays(t *te
 	updated := time.Date(2026, 8, 25, 11, 0, 0, 0, time.UTC)
 	store := &commerceExternalPushTestStore{
 		products: map[productport.ID]productport.ExternalPushProductKind{52: productport.ExternalPushServicePeriod},
-		configs:  map[productport.ID]productport.ExternalPushConfiguration{52: {ProductID: 52, ProductKind: productport.ExternalPushServicePeriod, Enabled: true, ConfigurationReference: "service-period-notify-52", UpdatedAt: updated}},
+		configs:  map[productport.ID]productport.ExternalPushConfiguration{52: {ProductID: 52, ProductKind: productport.ExternalPushServicePeriod, Enabled: true, ConfigurationReference: "service-period-notify-52", Revision: 1, UpdatedAt: updated}},
 		receipts: map[string]Receipt{},
 	}
 	effects := &commerceExternalPushTestEffects{result: productport.ExternalPushTest{ProductID: 52, ProductKind: productport.ExternalPushServicePeriod, EffectID: "eer_1", State: "accepted", CreatedAt: updated}}
@@ -169,7 +182,7 @@ func TestCommerceExternalPushTestCreatesOnlyAcceptedLocalEERFactAndReplays(t *te
 	if err != nil || first.EffectID != "eer_1" || first.State != "accepted" || first.ProviderAccepted || first.DeliveryProven || first.RealExternalCallExecuted || first.AutoRetryAllowed || len(store.tests) != 1 || effects.calls != 1 {
 		t.Fatalf("first=%#v tests=%#v effects=%d err=%v", first, store.tests, effects.calls, err)
 	}
-	if effects.inputs[0].ProductID != 52 || effects.inputs[0].ProductKind != productport.ExternalPushServicePeriod || effects.inputs[0].ConfigurationDigest == ([32]byte{}) || effects.inputs[0].ReceiptKeyDigest == ([32]byte{}) {
+	if effects.inputs[0].ProductID != 52 || effects.inputs[0].ProductKind != productport.ExternalPushServicePeriod || effects.inputs[0].ConfigurationReference != "service-period-notify-52" || effects.inputs[0].ConfigurationRevision != 1 || effects.inputs[0].ReceiptKeyDigest == ([32]byte{}) {
 		t.Fatalf("effect input=%#v", effects.inputs[0])
 	}
 	replayed, err := service.QueueExternalPushTest(context.Background(), command)
@@ -177,8 +190,9 @@ func TestCommerceExternalPushTestCreatesOnlyAcceptedLocalEERFactAndReplays(t *te
 		t.Fatalf("replayed=%#v tests=%d effects=%d err=%v", replayed, len(store.tests), effects.calls, err)
 	}
 	command.IdempotencyKey = "commerce-push-test-different-key"
-	if _, err = service.QueueExternalPushTest(context.Background(), command); !errors.Is(err, ErrConflict) || len(store.tests) != 1 || effects.calls != 1 {
-		t.Fatalf("different key error=%v tests=%d effects=%d", err, len(store.tests), effects.calls)
+	second, err := service.QueueExternalPushTest(context.Background(), command)
+	if err != nil || second.EffectID != "eer_1" || len(store.tests) != 2 || effects.calls != 2 {
+		t.Fatalf("explicit new test=%#v err=%v tests=%d effects=%d", second, err, len(store.tests), effects.calls)
 	}
 }
 
@@ -190,7 +204,7 @@ func TestCommerceExternalPushTestFailsClosedWithoutConfigurationOrWithDeliveryCl
 	if _, err := service.QueueExternalPushTest(context.Background(), command); !errors.Is(err, ErrExternalPushNotConfigured) || effects.calls != 0 || len(store.tests) != 0 {
 		t.Fatalf("unconfigured error=%v effects=%d tests=%d", err, effects.calls, len(store.tests))
 	}
-	store.configs[61] = productport.ExternalPushConfiguration{ProductID: 61, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "commerce-push-config-61", UpdatedAt: time.Date(2026, 8, 25, 11, 0, 0, 0, time.UTC)}
+	store.configs[61] = productport.ExternalPushConfiguration{ProductID: 61, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "commerce-push-config-61", Revision: 1, UpdatedAt: time.Date(2026, 8, 25, 11, 0, 0, 0, time.UTC)}
 	command.IdempotencyKey = "commerce-push-test-0003"
 	effects.result = productport.ExternalPushTest{ProductID: 61, ProductKind: productport.ExternalPushWeChatPay, EffectID: "eer_74", State: "accepted", ProviderAccepted: true, CreatedAt: time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)}
 	if _, err := service.QueueExternalPushTest(context.Background(), command); !errors.Is(err, ErrUnavailable) || effects.calls != 1 || len(store.tests) != 0 {
