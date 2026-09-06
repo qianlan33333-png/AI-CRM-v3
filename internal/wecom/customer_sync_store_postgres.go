@@ -93,7 +93,7 @@ func (PostgreSQLCustomerSyncStore) List(ctx context.Context, limit int) ([]Custo
 	rows, err := tx.Query(ctx, `SELECT id,run_key,trigger_type,status,COALESCE(resume_status,''),corp_scope,staff_ids,staff_index,provider_cursor,
 		discovered_count,activated_count,already_linked_count,conflict_count,terminal_failed_count,projected_count,stale_count,
 		version,COALESCE(last_error_code,''),COALESCE(requested_by,0),started_at,completed_at,created_at,updated_at
-		FROM wecom_customer_sync_runs ORDER BY created_at DESC,id DESC LIMIT $1`, limit)
+		FROM wecom_customer_sync_runs WHERE trigger_type IN ('initial','daily','manual') ORDER BY created_at DESC,id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -203,28 +203,32 @@ func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context
 		owners[follow.EmployeeID] = follow
 	}
 	for employeeID, follow := range owners {
+		seenTags := map[string]struct{}{}
+		for _, tag := range follow.Tags {
+			if tag.ProviderTagID == "" || tag.Type < 1 || tag.Type > 2 {
+				return ErrSyncCAS
+			}
+			seenTags[tag.ProviderTagID] = struct{}{}
+		}
 		if _, err = tx.Exec(ctx, `INSERT INTO wecom_customer_owner_observations(customer_id,corp_scope,employee_id,relationship_status,last_seen_run_id,observed_at)
 			VALUES($1,$2,$3,'active',$4,$5) ON CONFLICT(customer_id,corp_scope,employee_id) DO UPDATE SET
 			relationship_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`,
 			customerID, corpScope, employeeID, runID, observedAt.UTC()); err != nil {
 			return err
 		}
-		seenTags := map[string]struct{}{}
-		for _, tag := range follow.Tags {
-			if tag.ProviderTagID == "" || tag.Type < 1 || tag.Type > 2 {
-				return ErrSyncCAS
-			}
-			if _, duplicate := seenTags[tag.ProviderTagID]; duplicate {
-				continue
-			}
-			seenTags[tag.ProviderTagID] = struct{}{}
-			if _, err = tx.Exec(ctx, `INSERT INTO wecom_customer_tag_observations(customer_id,corp_scope,employee_id,provider_tag_id,provider_tag_type,observed_name,observation_status,last_seen_run_id,observed_at)
-				VALUES($1,$2,$3,$4,$5,$6,'active',$7,$8) ON CONFLICT(customer_id,corp_scope,employee_id,provider_tag_id) DO UPDATE SET
-				provider_tag_type=EXCLUDED.provider_tag_type,observed_name=EXCLUDED.observed_name,observation_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,
-				observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`, customerID, corpScope, employeeID,
-				tag.ProviderTagID, tag.Type, tag.Name, runID, observedAt.UTC()); err != nil {
-				return err
-			}
+		// The watermark is a shared version row for both a full page and a
+		// single-contact refresh. Its conditional upsert locks the same row for
+		// the rest of this UoW, so an older read cannot revive tags after a newer
+		// complete read has committed.
+		advanced, advanceErr := advanceCustomerTagObservation(ctx, tx, customerID, corpScope, employeeID, runID, observedAt)
+		if advanceErr != nil {
+			return advanceErr
+		}
+		if !advanced {
+			continue
+		}
+		if err = replaceCustomerTagObservation(ctx, tx, customerID, corpScope, employeeID, follow.Tags, runID, observedAt); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -284,9 +288,20 @@ func (PostgreSQLCustomerSyncStore) ReconcileProfileObservations(ctx context.Cont
 		AND last_seen_run_id<>$1 AND relationship_status='active'`, runID, at.UTC()); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE wecom_customer_tag_observations SET observation_status='stale',stale_at=$2,updated_at=$2
-		WHERE corp_scope=(SELECT corp_scope FROM wecom_customer_sync_runs WHERE id=$1)
-		AND last_seen_run_id<>$1 AND observation_status='active'`, runID, at.UTC())
+	_, err = tx.Exec(ctx, `UPDATE wecom_customer_tag_observations observation SET observation_status='stale',stale_at=$2,updated_at=$2
+		WHERE observation.corp_scope=(SELECT corp_scope FROM wecom_customer_sync_runs WHERE id=$1)
+		AND observation.last_seen_run_id<>$1 AND observation.observation_status='active'
+		-- This row predicate is intentionally independent of the watermark
+		-- subquery. PostgreSQL rechecks it after waiting on a refresh's row
+		-- lock, so an older reconciliation statement cannot stale the refresh's
+		-- later complete observation from an earlier statement snapshot.
+		AND observation.observed_at <= COALESCE((SELECT started_at FROM wecom_customer_sync_runs WHERE id=$1),(SELECT created_at FROM wecom_customer_sync_runs WHERE id=$1))
+		AND NOT EXISTS (SELECT 1 FROM wecom_customer_tag_refresh_watermarks watermark
+			JOIN wecom_customer_sync_runs run ON run.id=$1
+			WHERE watermark.customer_id=observation.customer_id AND watermark.corp_scope=observation.corp_scope
+			AND watermark.employee_id=observation.employee_id
+			AND watermark.last_seen_run_id<>$1
+			AND watermark.observed_at > COALESCE(run.started_at,run.created_at))`, runID, at.UTC())
 	return err
 }
 
@@ -528,3 +543,78 @@ func (scanner staffJSONScanner) Scan(src any) error {
 	}
 	return json.Unmarshal(raw, scanner.target)
 }
+
+// RecordCustomerTagRefresh persists a complete tag set for one verified
+// follow-user returned by the single-contact read endpoint. It does not run
+// full-directory stale reconciliation; the next completed directory sync does
+// that. The synthetic successful run exists only to preserve the immutable
+// observation provenance FK already used by this WeCom-owned projection.
+func (PostgreSQLCustomerSyncStore) RecordCustomerTagRefresh(ctx context.Context, corpScope string, customerID customerdomain.CustomerID, employeeID string, tags []wecomport.ExternalContactTag, observedAt time.Time, runKey string) error {
+	if customerID < 1 || corpScope == "" || employeeID == "" || observedAt.IsZero() || runKey == "" {
+		return ErrSyncCAS
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	var runID int64
+	err = tx.QueryRow(ctx, `INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,staff_ids,completed_at)
+		VALUES($1,'tag_refresh','succeeded',$2,jsonb_build_array($3::text),$4) RETURNING id`, runKey, corpScope, employeeID, observedAt.UTC()).Scan(&runID)
+	if err != nil {
+		return err
+	}
+	advanced, err := advanceCustomerTagObservation(ctx, tx, customerID, corpScope, employeeID, runID, observedAt)
+	if err != nil {
+		return err
+	}
+	if !advanced {
+		return nil
+	}
+	return replaceCustomerTagObservation(ctx, tx, customerID, corpScope, employeeID, tags, runID, observedAt)
+}
+
+// advanceCustomerTagObservation is the sole version gate for complete tag
+// sets. The insert/update obtains a row lock; the lock remains held until the
+// caller finishes staling and replacing that exact customer/scope/employee
+// set in the same transaction.
+func advanceCustomerTagObservation(ctx context.Context, tx pgx.Tx, customerID customerdomain.CustomerID, corpScope, employeeID string, runID int64, observedAt time.Time) (bool, error) {
+	var version int64
+	err := tx.QueryRow(ctx, `INSERT INTO wecom_customer_tag_refresh_watermarks(customer_id,corp_scope,employee_id,last_seen_run_id,observed_at,observation_version)
+		VALUES($1,$2,$3,$4,$5,1) ON CONFLICT(customer_id,corp_scope,employee_id) DO UPDATE SET
+		last_seen_run_id=EXCLUDED.last_seen_run_id,observed_at=EXCLUDED.observed_at,observation_version=wecom_customer_tag_refresh_watermarks.observation_version+1,updated_at=clock_timestamp()
+		WHERE wecom_customer_tag_refresh_watermarks.observed_at < EXCLUDED.observed_at
+		RETURNING observation_version`, customerID, corpScope, employeeID, runID, observedAt.UTC()).Scan(&version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func replaceCustomerTagObservation(ctx context.Context, tx pgx.Tx, customerID customerdomain.CustomerID, corpScope, employeeID string, tags []wecomport.ExternalContactTag, runID int64, observedAt time.Time) error {
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		if tag.ProviderTagID == "" || tag.Type < 1 || tag.Type > 2 {
+			return ErrSyncCAS
+		}
+		seen[tag.ProviderTagID] = struct{}{}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE wecom_customer_tag_observations SET observation_status='stale',stale_at=$4,updated_at=$4
+		WHERE customer_id=$1 AND corp_scope=$2 AND employee_id=$3 AND observation_status='active'`, customerID, corpScope, employeeID, observedAt.UTC()); err != nil {
+		return err
+	}
+	for _, tag := range tags {
+		if _, duplicate := seen[tag.ProviderTagID]; !duplicate {
+			continue
+		}
+		delete(seen, tag.ProviderTagID)
+		if _, err := tx.Exec(ctx, `INSERT INTO wecom_customer_tag_observations(customer_id,corp_scope,employee_id,provider_tag_id,provider_tag_type,observed_name,observation_status,last_seen_run_id,observed_at)
+			VALUES($1,$2,$3,$4,$5,$6,'active',$7,$8) ON CONFLICT(customer_id,corp_scope,employee_id,provider_tag_id) DO UPDATE SET
+			provider_tag_type=EXCLUDED.provider_tag_type,observed_name=EXCLUDED.observed_name,observation_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,
+			observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`, customerID, corpScope, employeeID, tag.ProviderTagID, tag.Type, tag.Name, runID, observedAt.UTC()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var _ CustomerTagObservationStore = PostgreSQLCustomerSyncStore{}

@@ -22,6 +22,7 @@ import (
 	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -74,9 +75,9 @@ func TestChannelWelcomePostgreSQLAcceptanceJourney(t *testing.T) {
 	}
 	adminID := insertChannelWelcomeAdmin(t, ctx, native)
 	states := channel.NewPostgreSQLStore()
-	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "ready", "welcome-ready", false, 1)
-	materialUnavailable := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "material", "welcome-material", true, 1)
-	missingAsset := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "missing", "welcome-missing", false, 99)
+	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "ready", "welcome-ready", false, 1, 0)
+	materialUnavailable := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "material", "welcome-material", true, 1, 0)
+	missingAsset := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "missing", "welcome-missing", false, 99, 0)
 
 	inbox, err := webhook.NewService(webhook.NewPostgreSQLStore())
 	if err != nil {
@@ -230,7 +231,7 @@ type channelWelcomeFixture struct {
 	resolution     channeldomain.StateResolution
 }
 
-func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platformpostgres.UnitOfWork, states *channel.PostgreSQLStore, digester wecom.StateDigester, adminID int64, name, rawState string, material bool, assetVersion int64) channelWelcomeFixture {
+func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platformpostgres.UnitOfWork, states *channel.PostgreSQLStore, digester wecom.StateDigester, adminID int64, name, rawState string, material bool, assetVersion, entryTagID int64) channelWelcomeFixture {
 	t.Helper()
 	var channelID int64
 	if err := unit.Within(ctx, func(tx context.Context) error {
@@ -246,7 +247,11 @@ func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platform
 		if material {
 			images = []int64{1}
 		}
-		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,welcome_message,welcome_image_ids,assignment_mode,assignment_strategy,config_digest,created_by,created_at) VALUES($1,1,'qrcode','qrcode',$2,'welcome',$3,'single_owner','ratio',$4,$5,clock_timestamp())`, channelID, "Welcome "+name, images, digest[:], adminID); transactionErr != nil {
+		entryTagName, entryTagGroupName := "", ""
+		if entryTagID > 0 {
+			entryTagName, entryTagGroupName = "fixture entry tag", "fixture entry tag group"
+		}
+		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,welcome_message,welcome_image_ids,entry_tag_id,entry_tag_name,entry_tag_group_name,assignment_mode,assignment_strategy,config_digest,created_by,created_at) VALUES($1,1,'qrcode','qrcode',$2,'welcome',$3,NULLIF($4,0),$5,$6,'single_owner','ratio',$7,$8,clock_timestamp())`, channelID, "Welcome "+name, images, entryTagID, entryTagName, entryTagGroupName, digest[:], adminID); transactionErr != nil {
 			return transactionErr
 		}
 		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_assignees(channel_id,config_version,staff_id,priority,ratio_percent,created_at) VALUES($1,1,$2,1,100,clock_timestamp())`, channelID, adminID); transactionErr != nil {
@@ -375,7 +380,7 @@ func channelWelcomeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate Channel Welcome test")
 	}
 	base := filepath.Join(filepath.Dir(source), "..", "..", "migrations")
-	for _, migration := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0006_wecom_callback_channel_acquisition.sql", "0009_customer_activation.sql", "0029_channel_center.sql", "0031_channel_history_import.sql", "0032_channel_acquisition_assets.sql", "0033_wecom_welcome_grants.sql", "0034_channel_entrant_actions.sql", "0035_channel_acquisition_links.sql", "0059_channel_v1_semantic_repair.sql", "0065_channel_legacy_asset_retirement.sql", "0066_channel_welcome_intents.sql"} {
+	for _, migration := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0006_wecom_callback_channel_acquisition.sql", "0009_customer_activation.sql", "0029_channel_center.sql", "0031_channel_history_import.sql", "0032_channel_acquisition_assets.sql", "0033_wecom_welcome_grants.sql", "0034_channel_entrant_actions.sql", "0035_channel_acquisition_links.sql", "0059_channel_v1_semantic_repair.sql", "0065_channel_legacy_asset_retirement.sql", "0066_channel_welcome_intents.sql", "0093_customer_tag_commands.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(base, migration))
 		if readErr != nil {
 			native.Close()
@@ -394,5 +399,77 @@ func channelWelcomeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		defer cleanupCancel()
 		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE")
 		admin.Close()
+	}
+}
+
+type channelBusyTagSubmitter struct{}
+
+func (channelBusyTagSubmitter) SubmitTagCommand(context.Context, customerport.TagCommand) (customerport.TagCommandResult, error) {
+	return customerport.TagCommandResult{}, customerport.ErrTagCommandConflict
+}
+func (channelBusyTagSubmitter) SubmitTagCommandWithin(context.Context, customerport.TagCommand) (customerport.TagCommandResult, error) {
+	return customerport.TagCommandResult{}, customerport.ErrTagCommandConflict
+}
+
+func TestChannelEntrantBusyTagCommandKeepsAssignmentAndRecordsRejectedActionPostgreSQL(t *testing.T) {
+	native, cleanup := channelWelcomeIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workers := river.NewWorkers()
+	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, externaleffects.NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	insert, err := platformjobqueue.NewInsertClient(native, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects, err := externaleffects.NewRepository(native, insert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digester, err := wecom.NewHMACStateDigester([]byte("12345678901234567890123456789012"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminID := insertChannelWelcomeAdmin(t, ctx, native)
+	states := channel.NewPostgreSQLStore()
+	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "tag-busy", "tag-busy-state", false, 1, 7)
+	var customerID int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	actions := channel.NewEntrantActionStore(effects, nil)
+	if err = actions.SetTagCommandSubmitter(channelBusyTagSubmitter{}); err != nil {
+		t.Fatal(err)
+	}
+	callbackID := "channel-tag-busy-0001"
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		return actions.AcceptEntrantActions(tx, channelport.EntrantActionCommand{CallbackID: callbackID, CustomerID: customerdomain.CustomerID(customerID), Resolution: ready.resolution, OccurredAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatalf("entrant acceptance=%v", err)
+	}
+	var assignments, actionsCount, refs int
+	var state, reason string
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM channel_entrant_assignments WHERE callback_id=$1`, callbackID).Scan(&assignments); err != nil || assignments != 1 {
+		t.Fatalf("assignments=%d err=%v", assignments, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT state,result_reason,(effect_ref IS NOT NULL)::int+(accept_receipt_ref IS NOT NULL)::int+(queue_receipt_ref IS NOT NULL)::int FROM channel_entrant_actions WHERE callback_id=$1 AND action_kind='entry_tag'`, callbackID).Scan(&state, &reason, &refs); err != nil || state != "rejected" || reason != "customer_tag_busy" || refs != 0 {
+		t.Fatalf("action state=%q reason=%q refs=%d err=%v", state, reason, refs, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM channel_entrant_actions WHERE callback_id=$1`, callbackID).Scan(&actionsCount); err != nil || actionsCount != 1 {
+		t.Fatalf("actions=%d err=%v", actionsCount, err)
+	}
+	var effectCount int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectCount); err != nil || effectCount != 0 {
+		t.Fatalf("effects=%d err=%v", effectCount, err)
 	}
 }

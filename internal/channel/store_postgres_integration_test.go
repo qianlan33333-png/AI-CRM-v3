@@ -21,6 +21,7 @@ import (
 	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
@@ -635,6 +636,80 @@ func TestPostgreSQLAudienceEntriesCombineNativeHistoryByExactCodeAndLatestTime(t
 	}
 }
 
+type channelNoopEffects struct{}
+
+func (channelNoopEffects) AcceptAndQueueWithin(context.Context, effectport.AcceptCommand) (effectport.Projection, effectport.Receipt, error) {
+	return effectport.Projection{}, effectport.Receipt{}, errors.New("not used")
+}
+
+func TestPostgreSQLChannelEntryTagLegacyAndRejectedProjectionIntegration(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := insertChannelAdmin(t, ctx, pool)
+	catalog := NewPostgreSQLCatalogStore()
+	events, err := NewChannelCatalogEventAppender(mustChannelAuditService(t), platformoutbox.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := validCatalogCreate()
+	create.Code = "entry-tag-projection"
+	create.Config.Assignment.Assignees[0].StaffID = actor
+	created, err := NewCatalogService(unit, catalog, catalog, events, nil, nil, fixedCatalogStaffReader{actorID: actor}).Create(ctx, CatalogMutation{ActorID: actor, IdempotencyKey: "entry-tag-projection-create", Create: create})
+	if err != nil {
+		t.Fatal(err)
+	}
+	customer := insertChannelCustomer(t, ctx, pool)
+	var oldAssignment, newAssignment int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO channel_entrant_assignments(callback_id,channel_id,config_version,customer_id,staff_id,strategy,assignment_digest,assigned_at) VALUES('legacy-entry-tag',$1,$2,$3,$4,'ratio',$5,clock_timestamp()) RETURNING id`, created.ID, created.ConfigVersion, customer, actor, make([]byte, sha256.Size)).Scan(&oldAssignment); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO channel_entrant_assignments(callback_id,channel_id,config_version,customer_id,staff_id,strategy,assignment_digest,assigned_at) VALUES('rejected-entry-tag',$1,$2,$3,$4,'ratio',$5,clock_timestamp()) RETURNING id`, created.ID, created.ConfigVersion, customer, actor, append(make([]byte, sha256.Size-1), byte(1))).Scan(&newAssignment); err != nil {
+		t.Fatal(err)
+	}
+	legacySource := effectport.Hash("channel.entrant.action.source.v1", "legacy-entry-tag", "entry_tag")
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO channel_entrant_actions(callback_id,assignment_id,channel_id,config_version,customer_id,staff_id,action_kind,local_tag_id,source_ref_digest,effect_ref,accept_receipt_ref,queue_receipt_ref,state) VALUES('legacy-entry-tag',$1,$2,$3,$4,$5,'entry_tag',1,$6,'eer_99','eerop_99','eerop_100','queued')`, oldAssignment, created.ID, created.ConfigVersion, customer, actor, legacySource); err != nil {
+		t.Fatal(err)
+	}
+	rejectedSource := effectport.Hash("channel.entrant.action.source.v1", "rejected-entry-tag", "entry_tag")
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO channel_entrant_actions(callback_id,assignment_id,channel_id,config_version,customer_id,staff_id,action_kind,local_tag_id,source_ref_digest,state,result_reason) VALUES('rejected-entry-tag',$1,$2,$3,$4,$5,'entry_tag',1,$6,'rejected','target_unavailable')`, newAssignment, created.ID, created.ConfigVersion, customer, actor, rejectedSource); err != nil {
+		t.Fatal(err)
+	}
+	// The callback/action unique key is the cross-kind dedupe guard: a later
+	// legacy/new adapter attempt cannot manufacture a second tag action.
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO channel_entrant_actions(callback_id,assignment_id,channel_id,config_version,customer_id,staff_id,action_kind,local_tag_id,source_ref_digest,state,result_reason) VALUES('rejected-entry-tag',$1,$2,$3,$4,$5,'entry_tag',1,$6,'rejected','target_unavailable') ON CONFLICT(callback_id,action_kind) DO NOTHING`, newAssignment, created.ID, created.ConfigVersion, customer, actor, rejectedSource); err != nil {
+		t.Fatal(err)
+	}
+	var rejected, assignments int
+	var reason string
+	var refs int
+	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FROM channel_entrant_actions WHERE callback_id='rejected-entry-tag'`).Scan(&rejected); err != nil || rejected != 1 {
+		t.Fatalf("rejected=%d err=%v", rejected, err)
+	}
+	if err = pool.Native().QueryRow(ctx, `SELECT result_reason,(effect_ref IS NOT NULL)::int+(accept_receipt_ref IS NOT NULL)::int+(queue_receipt_ref IS NOT NULL)::int FROM channel_entrant_actions WHERE callback_id='rejected-entry-tag'`).Scan(&reason, &refs); err != nil || reason != "target_unavailable" || refs != 0 {
+		t.Fatalf("failure reason=%q refs=%d err=%v", reason, refs, err)
+	}
+	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FROM channel_entrant_assignments WHERE callback_id IN ('legacy-entry-tag','rejected-entry-tag')`).Scan(&assignments); err != nil || assignments != 2 {
+		t.Fatalf("assignments=%d err=%v", assignments, err)
+	}
+	actions := NewEntrantActionStore(channelNoopEffects{}, nil)
+	completion := channelport.EntrantActionCompletion{EffectRef: "eer_99", State: "executed", ResultDigest: string(effectport.Hash("entry-tag-done")), Attempt: 1, CompletedAt: time.Now()}
+	if err = unit.Within(ctx, func(tx context.Context) error { return actions.CompleteEntrantAction(tx, completion) }); err != nil {
+		t.Fatal(err)
+	}
+	if err = unit.Within(ctx, func(tx context.Context) error { return actions.CompleteEntrantAction(tx, completion) }); err != nil {
+		t.Fatalf("completion replay=%v", err)
+	}
+	var state string
+	if err = pool.Native().QueryRow(ctx, `SELECT state FROM channel_entrant_actions WHERE effect_ref='eer_99'`).Scan(&state); err != nil || state != "executed" {
+		t.Fatalf("legacy state=%q err=%v", state, err)
+	}
+}
+
 func platformpostgresRow(ctx context.Context, query string, arguments ...any) pgx.Row {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
@@ -823,5 +898,6 @@ func channelMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0059_channel_v1_semantic_repair.sql"),
 		filepath.Join(root, "migrations", "0065_channel_legacy_asset_retirement.sql"),
 		filepath.Join(root, "migrations", "0066_channel_welcome_intents.sql"),
+		filepath.Join(root, "migrations", "0093_customer_tag_commands.sql"),
 	}
 }

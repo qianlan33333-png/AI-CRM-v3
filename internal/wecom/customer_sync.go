@@ -248,11 +248,15 @@ func (service CustomerSyncService) processRunOnce(ctx context.Context, run Custo
 			return err
 		}
 		staffID := run.StaffIDs[run.StaffIndex]
+		// This is an observation clock, so capture it before the Provider read.
+		// A delayed older response must never win merely because it persisted
+		// after a newer complete contact read.
+		observedAt := service.now()
 		page, providerErr := service.Provider.BatchExternalContacts(ctx, staffID, run.ProviderCursor, 100)
 		if providerErr != nil {
 			return service.recordFailure(ctx, run, providerErr)
 		}
-		err = service.ingestPage(ctx, run, staffID, page)
+		err = service.ingestPage(ctx, run, staffID, page, observedAt)
 		return err
 	case SyncReconciling:
 		err = service.reconcile(ctx, run)
@@ -291,7 +295,7 @@ func syncRetryCode(err error) string {
 	return "sync_step_failed"
 }
 
-func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerSyncRun, staffID string, page wecomport.ExternalContactPage) error {
+func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerSyncRun, staffID string, page wecomport.ExternalContactPage, observedAt time.Time) error {
 	now := service.now()
 	return service.UOW.Within(ctx, func(txContext context.Context) error {
 		var activated, linked, conflicts, terminal, projected int64
@@ -326,7 +330,7 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 			if insertErr != nil {
 				return insertErr
 			}
-			if err := service.Store.UpsertProfileObservations(txContext, run.ID, run.CorpScope, provision.CustomerID, contact.FollowInfo, now); err != nil {
+			if err := service.Store.UpsertProfileObservations(txContext, run.ID, run.CorpScope, provision.CustomerID, contact.FollowInfo, observedAt); err != nil {
 				return err
 			}
 			if !inserted {

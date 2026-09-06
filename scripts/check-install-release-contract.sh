@@ -110,6 +110,7 @@ for migration_contract in \
   '0088_order_service_entitlement_alliance.sql:service-period alliance' \
   '0090_survey_oauth_state_redirect.sql:Survey OAuth redirect repair' \
   '0091_survey_assessment_business_keys.sql:Survey assessment business key repair' \
+  '0093_customer_tag_commands.sql:Customer tag command runtime' \
   '0094_runtime_config_releases.sql:runtime Config releases'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
@@ -151,6 +152,8 @@ grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-runtime-
 grep -qx 'test -x "$release_dir/bin/migrate-media-legacy-materials"' "$installer" || { echo "release must include legacy Media mapping migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials' .github/workflows/ci.yml || { echo "CI must build the legacy Media mapping migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-v2-customer-tag-history"' "$installer" || { echo "release must include customer tag history migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-customer-tag-history ./cmd/migrate-v2-customer-tag-history' .github/workflows/ci.yml || { echo "release workflow must build customer tag history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-radar-v2"' "$installer" || { echo "release must include Radar migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2' .github/workflows/ci.yml || { echo "release workflow must build Radar migration tool" >&2; exit 1; }
 for page in radar radarDetail radarForm; do
