@@ -208,10 +208,14 @@ type OwnerHandoffTransferObservation struct {
 // Its candidate provider identifiers are encrypted before the store writes it.
 type OwnerHandoffPreviewRecord struct {
 	ActorAdminUserID int64
-	Preview          OwnerHandoffPreview
-	WelcomeMessage   string
-	Candidates       []OwnerHandoffCandidate
-	RequestDigest    [32]byte
+	// ExecutedBatchID is the immutable one-time confirmation binding. A replay
+	// with its original idempotency key returns that batch; any other key must
+	// not create a second transfer or local migration from the same preview.
+	ExecutedBatchID string
+	Preview         OwnerHandoffPreview
+	WelcomeMessage  string
+	Candidates      []OwnerHandoffCandidate
+	RequestDigest   [32]byte
 }
 
 type OwnerHandoffBatchRecord struct {

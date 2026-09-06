@@ -109,6 +109,25 @@ func TestPostgreSQLOwnerHandoffLocalOnlyPreviewConfirmIsAtomic(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = service.ConfirmOwnerHandoff(ctx, customerport.OwnerHandoffConfirmCommand{ActorAdminUserID: source, PreviewID: preview.ID, PreviewHash: preview.Hash, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "confirm-owner-other-key"}); !errors.Is(err, customerapp.ErrOwnerHandoffDrift) {
+		t.Fatalf("second key for one preview=%v", err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		tx, e := platformpostgres.RequireTransaction(txctx)
+		if e != nil {
+			return e
+		}
+		var batches int
+		if e = tx.QueryRow(txctx, `SELECT count(*) FROM customer_owner_handoff_batches WHERE preview_id=$1`, preview.ID).Scan(&batches); e != nil {
+			return e
+		}
+		if batches != 1 {
+			t.Fatalf("one preview created %d batches", batches)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func ownerHandoffAppPool(t *testing.T, ctx context.Context, databaseURL string) (*platformpostgres.Pool, func()) {

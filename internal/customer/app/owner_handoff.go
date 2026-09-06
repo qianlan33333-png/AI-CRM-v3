@@ -197,6 +197,12 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 		if draft.ActorAdminUserID != command.ActorAdminUserID || draft.Preview.Hash != command.PreviewHash || draft.Preview.ConfirmationPhrase != command.ConfirmationPhrase {
 			return ErrOwnerHandoffDrift
 		}
+		if draft.ExecutedBatchID != "" {
+			// The original key was handled above. A second key for this frozen
+			// preview must fail before batch/EER creation rather than rely on a
+			// database unique violation as its only duplicate-write protection.
+			return ErrOwnerHandoffDrift
+		}
 		if !service.now().UTC().Before(draft.Preview.ExpiresAt) {
 			return ErrOwnerHandoffExpired
 		}

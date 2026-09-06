@@ -231,13 +231,13 @@ func (store *PostgreSQLOwnerHandoffStore) LoadOwnerHandoffPreview(ctx context.Co
 	if err != nil {
 		return customerport.OwnerHandoffPreviewRecord{}, err
 	}
-	query := `SELECT id,actor_admin_user_id,mode,source_staff_id,target_staff_id,corp_scope,request_digest,confirmation_phrase,expires_at FROM customer_owner_handoff_previews WHERE id=$1`
+	query := `SELECT id,actor_admin_user_id,mode,source_staff_id,target_staff_id,corp_scope,request_digest,confirmation_phrase,expires_at,COALESCE(executed_batch_id,'') FROM customer_owner_handoff_previews WHERE id=$1`
 	if lock {
 		query += " FOR UPDATE"
 	}
 	var record customerport.OwnerHandoffPreviewRecord
 	var requestDigest []byte
-	if err = tx.QueryRow(ctx, query, previewID).Scan(&record.Preview.ID, &record.ActorAdminUserID, &record.Preview.Mode, &record.Preview.SourceStaffID, &record.Preview.TargetStaffID, &record.Preview.CorpScope, &requestDigest, &record.Preview.ConfirmationPhrase, &record.Preview.ExpiresAt); err != nil {
+	if err = tx.QueryRow(ctx, query, previewID).Scan(&record.Preview.ID, &record.ActorAdminUserID, &record.Preview.Mode, &record.Preview.SourceStaffID, &record.Preview.TargetStaffID, &record.Preview.CorpScope, &requestDigest, &record.Preview.ConfirmationPhrase, &record.Preview.ExpiresAt, &record.ExecutedBatchID); err != nil {
 		return customerport.OwnerHandoffPreviewRecord{}, err
 	}
 	if len(requestDigest) != 32 {
@@ -496,18 +496,17 @@ func (store *PostgreSQLOwnerHandoffStore) CreateLocalOnlyOwnerHandoffBatch(ctx c
 	if err != nil {
 		return customerport.OwnerHandoffBatch{}, err
 	}
-	for index, line := range record.Lines {
-		candidate := record.Preview.Candidates[index]
-		if line.Line != int64(index+1) || line.CustomerID != candidate.CustomerID {
-			return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
-		}
-		var expectedVersion any
-		if candidate.ExpectedLocalVersion > 0 {
-			expectedVersion = candidate.ExpectedLocalVersion
-		}
-		if _, err = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,expected_local_owner_version,relation_digest,state) VALUES($1,$2,$3,'local_only',$4,$5,$6,$7,$8)`, batchID, line.Line, line.CustomerID, record.Preview.Preview.SourceStaffID, record.Preview.Preview.TargetStaffID, expectedVersion, candidate.RelationshipDigest[:], line.State); err != nil {
-			return customerport.OwnerHandoffBatch{}, err
-		}
+	// The preview already owns all immutable candidates. Copying its rows with
+	// one INSERT … SELECT avoids 20k client/server round trips while preserving
+	// the exact frozen scope and line numbers for River segments.
+	command, err := tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,expected_local_owner_version,relation_digest,state)
+		SELECT $1,line_no,customer_id,'local_only',$2,$3,expected_local_owner_version,relation_digest,CASE WHEN state='ready' THEN 'queued' ELSE state END
+		FROM customer_owner_handoff_preview_rows WHERE preview_id=$4 ORDER BY line_no`, batchID, record.Preview.Preview.SourceStaffID, record.Preview.Preview.TargetStaffID, record.Preview.Preview.ID)
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	if command.RowsAffected() != int64(len(record.Lines)) {
+		return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
 	}
 	if _, err = tx.Exec(ctx, `UPDATE customer_owner_handoff_previews SET executed_batch_id=$2 WHERE id=$1 AND executed_batch_id IS NULL`, record.Preview.Preview.ID, batchID); err != nil {
 		return customerport.OwnerHandoffBatch{}, err
@@ -546,16 +545,16 @@ func (store *PostgreSQLOwnerHandoffStore) CreateWeComOwnerHandoffBatch(ctx conte
 	if err != nil {
 		return customerport.OwnerHandoffBatch{}, err
 	}
-	for index, line := range record.Lines {
-		candidate := record.Preview.Candidates[index]
-		if line.Line != int64(index+1) || line.CustomerID != candidate.CustomerID {
-			return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
-		}
-		if _, err = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,expected_local_owner_version,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,welcome_message_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,state)
-			SELECT $1,line_no,customer_id,'wecom_then_crm',$2,$3,expected_local_owner_version,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,welcome_message_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,$4
-			FROM customer_owner_handoff_preview_rows WHERE preview_id=$5 AND line_no=$6`, batchID, record.Preview.Preview.SourceStaffID, record.Preview.Preview.TargetStaffID, line.State, record.Preview.Preview.ID, line.Line); err != nil {
-			return customerport.OwnerHandoffBatch{}, err
-		}
+	// Keep encrypted provider snapshots inside Customer ownership, but copy the
+	// entire frozen preview in one set operation before bounded River execution.
+	command, err := tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,expected_local_owner_version,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,welcome_message_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,state)
+		SELECT $1,line_no,customer_id,'wecom_then_crm',$2,$3,expected_local_owner_version,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,welcome_message_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,CASE WHEN state='ready' THEN 'queued' ELSE state END
+		FROM customer_owner_handoff_preview_rows WHERE preview_id=$4 ORDER BY line_no`, batchID, record.Preview.Preview.SourceStaffID, record.Preview.Preview.TargetStaffID, record.Preview.Preview.ID)
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	if command.RowsAffected() != int64(len(record.Lines)) {
+		return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
 	}
 	if _, err = tx.Exec(ctx, `UPDATE customer_owner_handoff_previews SET executed_batch_id=$2 WHERE id=$1 AND executed_batch_id IS NULL`, record.Preview.Preview.ID, batchID); err != nil {
 		return customerport.OwnerHandoffBatch{}, err
