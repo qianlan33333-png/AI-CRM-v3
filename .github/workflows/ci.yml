@@ -353,5 +353,5 @@ jobs:
           scp "${ssh_flags[@]}" "$local_config" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_config}"
           scp "${ssh_flags[@]}" deploy/configure-payment-h5-oauth-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}"
+            "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA} skip-if-provider-disabled"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
