@@ -1,4 +1,7 @@
-# 开放平台旧机器路由完整盘点
+# 开放平台旧机器路由历史盘点（非当前验收范围）
+
+状态：已被用户确认的V3原生最小方案替代。权威为03-open-platform.md和ADR0010；本文件仅保留历史来源证据，以下旧执行规则、56路径缺口与兼容要求全部失效。不得据此派工、挂载旧路由或阻塞PR173/PR164。当前只交付六个V1 Operation；未纳入V1旧路径返回标准404。
+
 
 固定供体dd8d60d。来源：docs/architecture/route_ownership_manifest.yml中external_integration + api_client_jwt，配合Python实际路由装饰器定位。清单是兼容验收输入，首次实施须再核对router_registry/main是否真实注册；manifest本身不能证明可运行。human_session和内部worker路由不擅自开放。
 
