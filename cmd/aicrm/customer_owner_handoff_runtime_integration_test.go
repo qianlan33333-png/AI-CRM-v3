@@ -50,6 +50,19 @@ func (resolver ownerHandoffRuntimeResolver) ResolveOwnerHandoffCandidates(_ cont
 	return append([]customerport.OwnerHandoffCandidate(nil), candidates...), nil
 }
 
+type stopAfterOwnerHandoffSegment struct {
+	service *customerapp.OwnerHandoffService
+	stop    func()
+}
+
+func (worker stopAfterOwnerHandoffSegment) ProcessOwnerHandoffBatch(ctx context.Context, batchID string, segment int64) error {
+	err := worker.service.ProcessOwnerHandoffBatch(ctx, batchID, segment)
+	if err == nil && segment == 0 && worker.stop != nil {
+		worker.stop()
+	}
+	return err
+}
+
 type ownerHandoffRuntimeWriter struct {
 	mu    sync.Mutex
 	calls []struct{ source, target, external, welcome string }
@@ -369,30 +382,59 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
 	if err != nil || len(batch.Lines) != 101 || batch.State != "accepted" {
 		t.Fatalf("accept batch=%+v err=%v", batch, err)
 	}
-	runtimeWorker := customer.NewOwnerHandoffBatchWorker()
-	if err = runtimeWorker.Bind(service); err != nil {
+	runCtx, stopRun := context.WithCancel(ctx)
+	// Stop immediately after the first committed segment. The second durable
+	// River job already exists at that point, so a fresh runtime must resume it.
+	firstWorker := customer.NewOwnerHandoffBatchWorker()
+	if err = firstWorker.Bind(stopAfterOwnerHandoffSegment{service: service, stop: stopRun}); err != nil {
 		t.Fatal(err)
 	}
 	workers = river.NewWorkers()
-	if err = river.AddWorkerSafely[customer.OwnerHandoffBatchJobArgs](workers, runtimeWorker); err != nil {
+	if err = river.AddWorkerSafely[customer.OwnerHandoffBatchJobArgs](workers, firstWorker); err != nil {
 		t.Fatal(err)
 	}
-	runtimeService, err := platformjobqueue.NewRuntime(native, workers, customer.OwnerHandoffQueue)
+	firstRuntime, err := platformjobqueue.NewRuntime(native, workers, customer.OwnerHandoffQueue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runCtx, stopRun := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() { done <- runtimeService.Run(runCtx) }()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- firstRuntime.Run(runCtx) }()
+	select {
+	case runErr := <-firstDone:
+		if runErr != nil && runErr != context.Canceled {
+			t.Fatalf("first runtime stop: %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first owner-handoff segment did not stop")
+	}
+	var firstUpdated, firstQueued int
+	if err = native.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state='local_updated'),count(*) FILTER (WHERE state='queued') FROM customer_owner_handoff_lines WHERE batch_id=$1`, batch.ID).Scan(&firstUpdated, &firstQueued); err != nil || firstUpdated != 100 || firstQueued != 1 {
+		t.Fatalf("first segment updated=%d queued=%d err=%v", firstUpdated, firstQueued, err)
+	}
+	restartWorker := customer.NewOwnerHandoffBatchWorker()
+	if err = restartWorker.Bind(service); err != nil {
+		t.Fatal(err)
+	}
+	workers = river.NewWorkers()
+	if err = river.AddWorkerSafely[customer.OwnerHandoffBatchJobArgs](workers, restartWorker); err != nil {
+		t.Fatal(err)
+	}
+	restartRuntime, err := platformjobqueue.NewRuntime(native, workers, customer.OwnerHandoffQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartCtx, restartStop := context.WithCancel(ctx)
+	restartDone := make(chan error, 1)
+	go func() { restartDone <- restartRuntime.Run(restartCtx) }()
 	defer func() {
-		stopRun()
+		restartStop()
 		select {
-		case runErr := <-done:
+		case runErr := <-restartDone:
 			if runErr != nil && runErr != context.Canceled {
-				t.Errorf("runtime stop: %v", runErr)
+				t.Errorf("restart runtime stop: %v", runErr)
 			}
 		case <-time.After(5 * time.Second):
-			t.Error("owner-handoff segment runtime did not stop")
+			t.Error("owner-handoff restart runtime did not stop")
 		}
 	}()
 	deadline := time.Now().Add(8 * time.Second)
@@ -408,6 +450,7 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+
 	var updated, owners, jobs, effects int
 	if err = native.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND state='local_updated'),
