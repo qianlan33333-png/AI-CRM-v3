@@ -297,6 +297,73 @@ func TestPostgreSQLOwnerHandoffComposedExecutionUsesCustomerUOW(t *testing.T) {
 	t.Fatalf("composed EER did not complete state=%q effect_state=%q provider_calls=%d", state, effectState, transferCalls.Load())
 }
 
+// TestPostgreSQLOwnerHandoffJourneyFinalCountsQueryUsesAliases executes the
+// exact final Chromium-journey query against PostgreSQL without a browser. Both
+// handoff tables expose mode/state fields, so every predicate must name its
+// table alias to avoid hiding this regression behind a Darwin Chromium skip.
+func TestPostgreSQLOwnerHandoffJourneyFinalCountsQueryUsesAliases(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	pool, err := platformpostgres.Open(ctx, platformpostgres.Config{URL: databaseURL, MaxConnections: 4, MinConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var actor, source, target int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('final-count-actor','$argon2id$fixture','Final Count Actor') RETURNING id`).Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('final-count-source','$argon2id$fixture','Final Count Source') RETURNING id`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('final-count-target','$argon2id$fixture','Final Count Target') RETURNING id`).Scan(&target); err != nil {
+		t.Fatal(err)
+	}
+	var localCustomer, acceptedCustomer, observedCustomer int64
+	for _, customerID := range []*int64{&localCustomer, &acceptedCustomer, &observedCustomer} {
+		if err = pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(customerID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	digest := make([]byte, 32)
+	for _, fixture := range []struct {
+		preview, batch, key, mode string
+	}{
+		{preview: "final-count-local-preview", batch: "final-count-local-batch", key: "final-count-local-key", mode: "local_only"},
+		{preview: "final-count-wecom-preview", batch: "final-count-wecom-batch", key: "final-count-wecom-key", mode: "wecom_then_crm"},
+	} {
+		if _, err = pool.Native().Exec(ctx, `INSERT INTO customer_owner_handoff_previews(id,actor_admin_user_id,mode,source_staff_id,target_staff_id,corp_scope,request_digest,confirmation_phrase,expires_at) VALUES($1,$2,$3,$4,$5,'wecom-corp:final-count',$6,'FINAL COUNT',clock_timestamp()+interval '1 hour')`, fixture.preview, actor, fixture.mode, source, target, digest); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Native().Exec(ctx, `INSERT INTO customer_owner_handoff_batches(id,preview_id,actor_admin_user_id,idempotency_key,request_digest,mode,source_staff_id,target_staff_id,corp_scope,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'wecom-corp:final-count','completed')`, fixture.batch, fixture.preview, actor, fixture.key, digest, fixture.mode, source, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, fixture := range []struct {
+		batch, mode, state string
+		customer           int64
+		transferStatus     *int
+	}{
+		{batch: "final-count-local-batch", mode: "local_only", state: "local_updated", customer: localCustomer},
+		{batch: "final-count-wecom-batch", mode: "wecom_then_crm", state: "provider_accepted", customer: acceptedCustomer},
+		{batch: "final-count-wecom-batch", mode: "wecom_then_crm", state: "observed", customer: observedCustomer, transferStatus: func() *int { value := 1; return &value }()},
+	} {
+		if _, err = pool.Native().Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,relation_digest,state,transfer_status) VALUES($1,(SELECT COALESCE(MAX(line_no),0)+1 FROM customer_owner_handoff_lines WHERE batch_id=$1),$2,$3,$4,$5,$6,$7,$8)`, fixture.batch, fixture.customer, fixture.mode, source, target, digest, fixture.state, fixture.transferStatus); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var local, wecom, accepted, observed int
+	err = pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE b.mode='local_only'), count(*) FILTER (WHERE b.mode='wecom_then_crm'), count(*) FILTER (WHERE l.state='provider_accepted'), count(*) FILTER (WHERE l.state='observed' AND l.transfer_status=1) FROM customer_owner_handoff_batches b LEFT JOIN customer_owner_handoff_lines l ON l.batch_id=b.id`).Scan(&local, &wecom, &accepted, &observed)
+	if err != nil {
+		t.Fatalf("qualified final journey counts query: %v", err)
+	}
+	if local != 1 || wecom != 2 || accepted != 1 || observed != 1 {
+		t.Fatalf("fixture counts=%d/%d/%d/%d want=1/2/1/1", local, wecom, accepted, observed)
+	}
+}
+
 // TestPostgreSQLOwnerHandoffChromiumJourney drives both authorized Owner
 // Migration modes through the real login, Host, HTTP handlers and PostgreSQL.
 // OneID is read only: the WeCom customer uses an already verified external
@@ -528,7 +595,7 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 		t.Fatalf("test Provider transfer_result calls=%d want=1", transferResultCalls.Load())
 	}
 	var local, wecom, accepted, observed int
-	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE mode='local_only'), count(*) FILTER (WHERE mode='wecom_then_crm'), count(*) FILTER (WHERE state='provider_accepted'), count(*) FILTER (WHERE state='observed' AND transfer_status=1) FROM customer_owner_handoff_batches b LEFT JOIN customer_owner_handoff_lines l ON l.batch_id=b.id`).Scan(&local, &wecom, &accepted, &observed); err != nil || local < 1 || wecom < 1 || accepted+observed < 1 || observed < 1 {
+	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE b.mode='local_only'), count(*) FILTER (WHERE b.mode='wecom_then_crm'), count(*) FILTER (WHERE l.state='provider_accepted'), count(*) FILTER (WHERE l.state='observed' AND l.transfer_status=1) FROM customer_owner_handoff_batches b LEFT JOIN customer_owner_handoff_lines l ON l.batch_id=b.id`).Scan(&local, &wecom, &accepted, &observed); err != nil || local < 1 || wecom < 1 || accepted+observed < 1 || observed < 1 {
 		t.Fatalf("batches local/wecom/accepted/observed=%d/%d/%d/%d err=%v", local, wecom, accepted, observed, err)
 	}
 }
