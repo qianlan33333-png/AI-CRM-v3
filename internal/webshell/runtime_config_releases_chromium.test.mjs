@@ -32,13 +32,18 @@ class CDP {
     this.socket = socket;
     this.nextID = 0;
     this.pending = new Map();
+    this.events = new Map();
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(String(event.data));
-      if (!message.id || !this.pending.has(message.id)) return;
-      const { resolve, reject } = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      if (message.error) reject(new Error(`CDP ${message.error.code || "error"}`));
-      else resolve(message.result || {});
+      if (message.id && this.pending.has(message.id)) {
+        const { resolve, reject } = this.pending.get(message.id);
+        this.pending.delete(message.id);
+        if (message.error) reject(new Error(`CDP ${message.error.code || "error"}`));
+        else resolve(message.result || {});
+        return;
+      }
+      if (!message.method) return;
+      for (const listener of this.events.get(message.method) || []) listener(message.params || {});
     });
   }
   call(method, params = {}) {
@@ -48,9 +53,27 @@ class CDP {
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
+  nextEvent(method, predicate, timeoutMilliseconds, timeoutMessage) {
+    return new Promise((resolve, reject) => {
+      const listeners = this.events.get(method) || [];
+      const listener = (params) => {
+        if (!predicate(params)) return;
+        clearTimeout(timer);
+        this.events.set(method, listeners.filter((candidate) => candidate !== listener));
+        resolve(params);
+      };
+      const timer = setTimeout(() => {
+        this.events.set(method, listeners.filter((candidate) => candidate !== listener));
+        reject(new Error(timeoutMessage));
+      }, timeoutMilliseconds);
+      listeners.push(listener);
+      this.events.set(method, listeners);
+    });
+  }
   close() {
     for (const { reject } of this.pending.values()) reject(new Error("CDP browser closed"));
     this.pending.clear();
+    this.events.clear();
     this.socket.close();
   }
 }
@@ -82,6 +105,13 @@ const evaluate = async (cdp, expression) => {
   if (result.exceptionDetails) throw new Error("page evaluation failed");
   return result.result?.value;
 };
+
+const waitForTopLevelNavigation = (cdp, message) => cdp.nextEvent(
+  "Page.frameNavigated",
+  (params) => Boolean(params.frame && !params.frame.parentId),
+  8000,
+  message,
+);
 
 const waitForBrowserExit = async (child, timeoutMilliseconds) => {
   if (!child || child.exitCode !== null || child.signalCode !== null) return true;
@@ -129,12 +159,15 @@ try {
 
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin%2Fconfig%2Freleases%2Fnew` });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
+  const loginNavigation = waitForTopLevelNavigation(cdp, "login form did not complete top-level navigation");
   await evaluate(cdp, `(() => {
     document.querySelector('input[name="username"]').value = ${JSON.stringify(username)};
     document.querySelector('input[name="password"]').value = ${JSON.stringify(password)};
     document.querySelector('form[action="/login"]').requestSubmit();
     return true;
   })()`);
+  const loginFrame = await loginNavigation;
+  if (new URL(loginFrame.frame.url).pathname !== "/admin/config/releases/new") throw new Error("login did not redirect to the requested Config release route");
 
   const snapshot = () => evaluate(cdp, "fetch('/api/admin/config/runtime-releases', {credentials:'same-origin'}).then((response) => response.ok ? response.json() : null).then((body) => ({revision: body?.runtime_releases?.active_revision, limit: body?.runtime_releases?.effective?.automation_max_recipients_per_run}))");
   const releasePath = (id) => `/admin/config/releases/${id}`;
@@ -152,15 +185,20 @@ try {
     await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-publish]'))", `validation ${ordinal} was not persisted through actual HTTP API`);
     await evaluate(cdp, "document.querySelector('[data-runtime-release-publish]').click(); true");
     await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-rollback]'))", `publication ${ordinal} was not persisted through actual HTTP API`);
+    const publishedID = Number(await evaluate(cdp, "document.querySelector('[data-runtime-release-rollback]')?.dataset.runtimeReleaseRollback"));
     const current = await snapshot();
-    if (!Number.isSafeInteger(current?.revision) || current.limit !== limit) throw new Error(`publication ${ordinal} did not change the actual effective value`);
-    return current.revision;
+    if (!Number.isSafeInteger(publishedID) || publishedID <= 0 || current?.revision !== publishedID || current.limit !== limit) throw new Error(`publication ${ordinal} did not change the actual effective value`);
+    return publishedID;
   };
   const navigateToRelease = async (id) => {
     await cdp.call("Page.navigate", { url: `${baseURL}${releasePath(id)}` });
     await waitFor(cdp, `location.pathname === ${JSON.stringify(releasePath(id))} && document.querySelector('[data-runtime-release-rollback]')?.dataset.runtimeReleaseRollback === ${JSON.stringify(String(id))}`, `release ${id} detail did not render after navigation`);
   };
 
+  // Native login has issued the real Secure session and CSRF cookies. Navigate
+  // once more only after its redirect completes so a deferred Host resource
+  // cannot be sampled from the pre-redirect document.
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin/config/releases/new` });
   const firstReleaseID = await publish(2, 1);
   await cdp.call("Page.navigate", { url: `${baseURL}/admin/config/releases/new` });
   const secondReleaseID = await publish(3, 2);
