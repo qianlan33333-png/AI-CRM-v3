@@ -1168,6 +1168,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/channel-acquisition-entrant-receipts/", entrantAdminHandler.Routes())
 	adminAPIs.Handle("/api/admin/customers", customerHandler.Routes())
 	adminAPIs.Handle("/api/admin/customers/", customerHandler.Routes())
+	adminAPIs.Handle("/api/v1/customer-tag-commands", customerHandler.TagCommandRoutes())
+	adminAPIs.Handle("/api/v1/customer-tag-commands/", customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/hxc-dashboard/", hxcHandler.Routes())
