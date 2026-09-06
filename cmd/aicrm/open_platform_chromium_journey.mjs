@@ -222,7 +222,7 @@ try {
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('待启用或已停用')", "disable did not update the caller detail");
   if ((await restCatalog(secondToken))?.status !== 401) throw new Error("disable did not revoke the current OAuth token");
   const audit = await evaluate(cdp, "fetch('/api/admin/open-platform/clients/browser-open-agent/audit?limit=20',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
-  if (audit?.status !== 200 || !Array.isArray(audit?.body?.items) || !audit.body.items.some((item) => item?.action === "machine_client_disabled")) throw new Error("caller audit did not record final disable");
+  if (audit?.status !== 200 || !Array.isArray(audit?.body?.items) || !audit.body.items.some((item) => item?.action === "machine_client_enabled" && item?.outcome === "disabled")) throw new Error("caller audit did not record final disable outcome");
   progress("disabled");
   console.log("open_platform_chromium: PASS");
 } catch (error) { failed = true; throw error; }
