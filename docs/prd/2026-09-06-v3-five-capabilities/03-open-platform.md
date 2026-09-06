@@ -86,3 +86,9 @@ Client管理同事务状态/版本/审计/幂等；轮换安全返回一次凭�
 | Go 等价迁移 | 调用方/Key/Token生命周期、授权、MCP发现/调用和03a冻结56条method/path | 同一个完整板块PR；不能以只读工具或少数API代替全部约定 |
 | V3 已有 | Access会话/RBAC、客户/会话/AI等业务稳定Port、现有Go路由和OneID | 机器主体不伪装超级管理员，业务写复用既有事务和执行链 |
 | 待补齐 | 通用机器凭据实际校验、运行装配、旧页面适配、历史停用导入和完整协议/PG/浏览器证据 | 不新增任意SQL查询平台，不迁旧运行依赖；尚未有完整PR |
+
+## 实际旧授权模板核对补充
+
+旧 `platform/platform_foundation/auth_platform/profiles.py:105-112`、`platform/admin_config/api_clients.py:46-54` 和 `scripts/ci/update_route_policy_manifest.py:385` 的 MCP 使用 `audience=external_integration`，`scopes=read/write`，`capabilities=mcp_read/mcp_execute`，purpose=mcp。保持旧调用方请求：GET/read和POST/write按对应capability/purpose校验；不得强迫改用新增audience=mcp或scope=mcp。token请求scope只能收窄，不能凭客户端存在write capability绕过token的read范围。
+
+旧 `api_clients.py:123-232` 的创建默认停用、轮换后停用、停用后可编辑display_name/Token TTL/CIDR均需承接。管理页面原client_type/token_ttl_minutes等字段通过HTTP DTO/Host薄映射到Go稳定Port；底层安全摘要/认证版本保留，勿为了原样复用而恢复明文密钥。

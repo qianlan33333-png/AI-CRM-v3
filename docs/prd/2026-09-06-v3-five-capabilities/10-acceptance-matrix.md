@@ -5,10 +5,10 @@
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
 | 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `f711900f5383845c29689f60595abb97731bf5a4` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；当前Chrome local_only预览未保存，旧页面复用/执行结果旅程及最终CI待收口 |
-| 通用客户标签 | 02 已批准 | 根独立 PG/race 通过74f560e；后续网关unknown、Channel冲突及观察刷新已修 | #169 `fee40250a862e532a58a9a32b8e32395f5022d1a` | 未通过整板块：历史/观察PG根复核通过；真实Chrome和手动结果刷新已推GitHub；100+真实River重启尚缺，须补齐再跑完整CI |
+| 通用客户标签 | 02 已批准 | 根独立 PG/race 通过74f560e；后续网关unknown、Channel冲突及观察刷新已修 | #169 `7ce98693f1c714d46d290b047a771e10e86d0ecf` | 未通过整板块：历史/观察PG根复核通过；101真实重启/source gate根复核通过；真实Chrome最终CI34027299426进行中 |
 | 配置中心运行生效 | 05 已批准 | 根独立PG/race、实际消费者/历史/制品及真实Chrome完整CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 整板块代码验收通过；main 5494537fb4d95a916c2754a3c1387335905d2861，部署及生产发布另记 |
-| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `c0ca7ec0b22244f107be656721f2f36d8622497b` | 分支已吸收main5494537（本PR未合并）；旧paid协议差异修正、历史/浏览器等整板块验收继续 |
-| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | 新建单一完整板块 PR，尚未提交 | 等待完整交付 |
+| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `687f4cc8faec79bff1e140f2d0f749034c637520` | 分支已吸收main5494537（本PR未合并）；paid协议已纠正且根PG/race通过，当前Host两断言失败，业务参数编辑/历史/浏览器继续 |
+| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ecf86c2d2445091cb7567a9eed48e84553790f7d`（开发checkpoint） | 跨域import/scope收窄/代理来源已修；旧MCP模板与生命周期、业务装配/UI/历史仍在同PR继续 |
 
 共用验收：完整路由/Composition、冻结供体复用、PG原子性/并发/重启、身份权限、未知结果、历史零新效果。各PR需链接实际日志/测试/浏览器证据，跳过与Mock明确标识。
 
@@ -67,3 +67,7 @@
 | 配置 | 代码范围完成 | 真实PG/Chrome/CI通过 | 通过准确07b0af3 | #170已合并 | main既有部署进行中 | 未进行 |
 | 商品外推 | #172开发中 | paid真实PG已有，编译修正及完整验收待交 | 未通过整板块 | 未合并 | 未部署 | 未进行 |
 | 开放平台 | 独立执行者开发中 | 未提交完整证据 | 未开始最终审核 | 未合并 | 未部署 | 未进行 |
+
+根复核更新（2026-09-06 10:25 UTC）：标签rebase后的编译/Provider/Completion装配遗漏均已具体定位，97b1ea835b370817f535736dfb781c158b5851cc在根独立PG/race通过真实101人停/重建与两向来源门禁，日志 aicrm-five-tag-97b-root-review.log。执行者继续最终路由/浏览器门禁后提交GitHub新HEAD；不能把本地HEAD当已推送。商品687f4cc根独立PG/race支付完整旅程和checkout响应丢失/会话重放通过；CI34026945723失败在商品Host两条DOM断言（452通过/2失败），另有document关闭后observer错误。TS2550已修，不重复派。开放平台#173首checkpoint已建；CI34027083142准确失败为openplatform/http跨域import access/app，根同时提出请求read scope不能继承client全部write权限、可信proxy链须防伪造前缀的具体授权修正。均未整板块批准。
+
+标签7ce9869的后续路由/迁移装配根独立PG/race验证通过：CustomerTagCommandCompositionHTTP、CustomerSyncJourney、ChannelWelcomeAcceptance，日志 aicrm-five-tag-7ce-root-review.log；没有因新增通用标签把同步/欢迎语路径破坏。7ce9869已核实推到GitHub。MCP真实旧scope/audience模板与默认停用/轮换停用规则见03新增节，取代开发checkpoint引入的新mcp词汇。
