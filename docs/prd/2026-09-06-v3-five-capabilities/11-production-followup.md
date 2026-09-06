@@ -16,3 +16,5 @@
 截至 2026-09-06 10:58 UTC：#170/main5494537 自动部署成功，生产 /readyz 已核实该 SHA；#169/main8ec5072 已合并，部署待核实。两者均未据此执行生产业务配置发布、历史导入或真实 Provider 操作。上述待办保持未完成。
 
 2026-09-06 12:07 UTC更新：#169/main8ec5072自动部署已成功，根GET生产readyz核实完整SHA与ready状态。配置#170随该main继续包含。真实打标/转接/外推、业务配置发布、凭据启用与历史导入仍未执行；负责人/外推/开放平台未合并部署。
+
+2026-09-06 用户最新明确要求继续直到完全上线并包含PR164新壳，开发后发布已有授权。根13:01 UTC只读复核V3：ubuntu SSH可用，current及readyz均为8ec5072，aicrm.service和aicrm-effects-worker.service active。后续以实际最终准确HEAD、制品及业务流程验收推进；旧root SSH账号不可用，不属于密钥整体失效。新壳release制品缺页及CSP兼容列入12文档。
