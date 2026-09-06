@@ -332,6 +332,54 @@ func TestCustomerTagObservationFullEmptySetAndReconcileKeepNewerReadPostgreSQL(t
 	assertActiveTags(t, ctx, pool.Native(), customerID, "newtag")
 }
 
+func TestCustomerTagObservationReconcileWaitsForRefreshAndKeepsLaterCompleteReadPostgreSQL(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	store := PostgreSQLCustomerSyncStore{}
+	at := time.Date(2026, 9, 6, 13, 0, 0, 0, time.UTC)
+	customerID := newObservationCustomer(t, ctx, pool.Native())
+	priorRun := seedObservationRun(t, ctx, pool.Native(), "reconcile-prior", "manual", "wecom-corp:corp-1", "staff-1", at.Add(-time.Minute))
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		return store.UpsertProfileObservations(tx, priorRun, "wecom-corp:corp-1", customerID, []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1", Tags: []wecomport.ExternalContactTag{{ProviderTagID: "shared", Name: "Old", Type: 1}}}}, at.Add(-time.Minute))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fullRun := seedObservationRun(t, ctx, pool.Native(), "reconcile-current", "manual", "wecom-corp:corp-1", "staff-1", at)
+	refreshRun := seedObservationRun(t, ctx, pool.Native(), "reconcile-refresh", "tag_refresh", "wecom-corp:corp-1", "staff-1", at.Add(time.Minute))
+	refreshTx, err := pool.Native().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshCtx := platformpostgres.BindTransaction(ctx, refreshTx)
+	if advanced, advanceErr := advanceCustomerTagObservation(refreshCtx, refreshTx, customerID, "wecom-corp:corp-1", "staff-1", refreshRun, at.Add(time.Minute)); advanceErr != nil || !advanced {
+		t.Fatalf("refresh advance=%t err=%v", advanced, advanceErr)
+	}
+	if err = replaceCustomerTagObservation(refreshCtx, refreshTx, customerID, "wecom-corp:corp-1", "staff-1", []wecomport.ExternalContactTag{{ProviderTagID: "shared", Name: "Fresh", Type: 1}}, refreshRun, at.Add(time.Minute)); err != nil {
+		_ = refreshTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	reconcileDone := make(chan error, 1)
+	go func() {
+		reconcileDone <- unit.Within(ctx, func(tx context.Context) error {
+			return store.ReconcileProfileObservations(tx, fullRun, at.Add(2*time.Minute))
+		})
+	}()
+	assertBlocked(t, reconcileDone)
+	if err = refreshTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-reconcileDone; err != nil {
+		t.Fatal(err)
+	}
+	assertActiveTags(t, ctx, pool.Native(), customerID, "shared")
+}
+
 func newObservationCustomer(t *testing.T, ctx context.Context, pool interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }) customerdomain.CustomerID {

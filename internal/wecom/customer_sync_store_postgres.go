@@ -291,6 +291,11 @@ func (PostgreSQLCustomerSyncStore) ReconcileProfileObservations(ctx context.Cont
 	_, err = tx.Exec(ctx, `UPDATE wecom_customer_tag_observations observation SET observation_status='stale',stale_at=$2,updated_at=$2
 		WHERE observation.corp_scope=(SELECT corp_scope FROM wecom_customer_sync_runs WHERE id=$1)
 		AND observation.last_seen_run_id<>$1 AND observation.observation_status='active'
+		-- This row predicate is intentionally independent of the watermark
+		-- subquery. PostgreSQL rechecks it after waiting on a refresh's row
+		-- lock, so an older reconciliation statement cannot stale the refresh's
+		-- later complete observation from an earlier statement snapshot.
+		AND observation.observed_at <= COALESCE((SELECT started_at FROM wecom_customer_sync_runs WHERE id=$1),(SELECT created_at FROM wecom_customer_sync_runs WHERE id=$1))
 		AND NOT EXISTS (SELECT 1 FROM wecom_customer_tag_refresh_watermarks watermark
 			JOIN wecom_customer_sync_runs run ON run.id=$1
 			WHERE watermark.customer_id=observation.customer_id AND watermark.corp_scope=observation.corp_scope
