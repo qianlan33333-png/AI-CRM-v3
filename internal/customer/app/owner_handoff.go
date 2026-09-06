@@ -45,6 +45,9 @@ type OwnerHandoffStore interface {
 	CreateWeComOwnerHandoffBatch(context.Context, customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error)
 	BindOwnerHandoffEffect(context.Context, customerport.OwnerHandoffEffectBinding) error
 	OwnerHandoffBatchByIdempotency(context.Context, int64, string) (customerport.OwnerHandoffBatch, [32]byte, bool, error)
+	LoadOwnerHandoffBatchSegment(context.Context, string, int64, int) (customerport.OwnerHandoffBatchSegment, error)
+	SetOwnerHandoffLineState(context.Context, string, int64, string) error
+	RecomputeOwnerHandoffBatchState(context.Context, string) error
 	// LockOwnerHandoffCustomersAndRejectActiveWeCom serializes every pending
 	// transfer_customer request for each canonical customer. It is called inside
 	// the confirmation UoW before accepting any external effect.
@@ -57,6 +60,12 @@ type ownerHandoffStaffReader interface {
 	UserByID(context.Context, int64, bool) (accessdomain.User, error)
 }
 
+type ownerHandoffBatchEnqueuer interface {
+	EnqueueOwnerHandoffBatchWithin(context.Context, string, int64) error
+}
+
+const ownerHandoffBatchSegmentSize = 100
+
 type OwnerHandoffService struct {
 	uow      platformport.UnitOfWork
 	store    OwnerHandoffStore
@@ -67,6 +76,7 @@ type OwnerHandoffService struct {
 	}
 	outbox               platformoutbox.Appender
 	effects              effectport.TransactionalAccepter
+	batchJobs            ownerHandoffBatchEnqueuer
 	transferResults      ownerHandoffTransferReader
 	wecomProviderEnabled bool
 	now                  func() time.Time
@@ -97,6 +107,17 @@ func (service *OwnerHandoffService) SetWeComProviderEnabled(enabled bool) {
 	if service != nil {
 		service.wecomProviderEnabled = enabled
 	}
+}
+
+// SetBatchEnqueuer supplies the existing River-backed internal-job port. Both
+// modes fail closed without it so a 20k confirmation can never commit an
+// unbounded synchronous mutation.
+func (service *OwnerHandoffService) SetBatchEnqueuer(enqueuer ownerHandoffBatchEnqueuer) error {
+	if service == nil || enqueuer == nil {
+		return errors.New("owner handoff batch enqueuer is required")
+	}
+	service.batchJobs = enqueuer
+	return nil
 }
 
 // SetTransferResultReader installs the existing WeCom-owned, read-only
@@ -191,6 +212,9 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 		if resolveErr != nil || !sameOwnerHandoffCandidates(draft.Candidates, current) {
 			return ErrOwnerHandoffDrift
 		}
+		if service.batchJobs == nil {
+			return ErrOwnerHandoffForbidden
+		}
 		if draft.Preview.Mode == customerport.OwnerHandoffWeComThenCRM {
 			// Take Customer-owned row locks before reading pending lines. A different
 			// preview may still contain the same frozen relation while its first
@@ -214,32 +238,10 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 			if createErr != nil {
 				return createErr
 			}
-			for _, line := range batch.Lines {
-				if line.State != "queued" {
-					continue
-				}
-				accept := effectport.AcceptCommand{ReceiptKey: effectport.Hash("customer-owner-handoff.accept.v1", batch.ID, strconv.FormatInt(line.Line, 10)), Envelope: effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindCustomerOwnerHandoff, SourceRefDigest: effectport.Hash("customer-owner-handoff.v1", "source-ref", batch.ID, strconv.FormatInt(line.Line, 10)), TargetRefDigest: effectport.Hash("customer-owner-handoff.v1", "target-ref", batch.ID, strconv.FormatInt(line.Line, 10)), PayloadDigest: effectport.Hash("customer-owner-handoff.v1", "payload-ref", batch.ID, strconv.FormatInt(line.Line, 10)), PolicyVersionHash: effectport.Hash("customer-owner-handoff.v1", "policy-ref", batch.ID, strconv.FormatInt(line.Line, 10))}}
-				// The opaque payload/policy EER digests are checked against the frozen
-				// Customer snapshot by the Outbound provider immediately before call.
-				projection, receipt, acceptErr := service.effects.AcceptAndQueueWithin(txctx, accept)
-				if acceptErr != nil {
-					return acceptErr
-				}
-				if bindErr := service.store.BindOwnerHandoffEffect(txctx, customerport.OwnerHandoffEffectBinding{BatchID: batch.ID, Line: line.Line, EffectID: projection.ID, ReceiptID: receipt.ID}); bindErr != nil {
-					return bindErr
-				}
-				if factErr := service.appendProviderAcceptedFacts(txctx, command.ActorAdminUserID, draft.Preview.ID, line, service.now().UTC()); factErr != nil {
-					return factErr
-				}
+			if enqueueErr := service.batchJobs.EnqueueOwnerHandoffBatchWithin(txctx, batch.ID, 0); enqueueErr != nil {
+				return enqueueErr
 			}
-			loaded, _, found, readErr := service.store.OwnerHandoffBatchByIdempotency(txctx, command.ActorAdminUserID, command.IdempotencyKey)
-			if readErr != nil {
-				return readErr
-			}
-			if !found {
-				return ErrOwnerHandoffDrift
-			}
-			out = loaded
+			out = batch
 			return nil
 		}
 		if draft.Preview.Mode != customerport.OwnerHandoffLocalOnly {
@@ -247,34 +249,103 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 		}
 		lines := make([]customerport.OwnerHandoffLine, 0, len(draft.Candidates))
 		for _, candidate := range draft.Candidates {
-			line := customerport.OwnerHandoffLine{Line: int64(len(lines) + 1), CustomerID: candidate.CustomerID, State: candidate.State}
-			if candidate.State != "ready" {
-				lines = append(lines, line)
-				continue
+			state := candidate.State
+			if state == "ready" {
+				state = "queued"
 			}
-			owner, found, readErr := service.store.LocalOwner(txctx, candidate.CustomerID, true)
-			if readErr != nil || (found && owner.Version != candidate.ExpectedLocalVersion) || (!found && candidate.ExpectedLocalVersion != 0) {
-				line.State = "cas_conflict"
-				lines = append(lines, line)
-				continue
-			}
-			if _, readErr = service.store.AssignLocalOwner(txctx, candidate.CustomerID, draft.Preview.TargetStaffID, candidate.ExpectedLocalVersion, "owner_handoff_local_only", service.now().UTC()); readErr != nil {
-				if !errors.Is(readErr, customerport.ErrOwnerHandoffConflict) {
-					return readErr
-				}
-				line.State = "cas_conflict"
-			} else {
-				line.State = "local_updated"
-				if readErr = service.appendLocalOnlyFacts(txctx, command.ActorAdminUserID, draft.Preview.ID, line, service.now().UTC()); readErr != nil {
-					return readErr
-				}
-			}
-			lines = append(lines, line)
+			lines = append(lines, customerport.OwnerHandoffLine{Line: int64(len(lines) + 1), CustomerID: candidate.CustomerID, State: state})
 		}
-		out, err = service.store.CreateLocalOnlyOwnerHandoffBatch(txctx, customerport.OwnerHandoffBatchRecord{Preview: draft, ActorID: command.ActorAdminUserID, Idempotency: command.IdempotencyKey, RequestDigest: confirmDigest, Lines: lines})
-		return err
+		batch, createErr := service.store.CreateLocalOnlyOwnerHandoffBatch(txctx, customerport.OwnerHandoffBatchRecord{Preview: draft, ActorID: command.ActorAdminUserID, Idempotency: command.IdempotencyKey, RequestDigest: confirmDigest, Lines: lines})
+		if createErr != nil {
+			return createErr
+		}
+		if enqueueErr := service.batchJobs.EnqueueOwnerHandoffBatchWithin(txctx, batch.ID, 0); enqueueErr != nil {
+			return enqueueErr
+		}
+		out = batch
+		return nil
+
 	})
 	return out, err
+}
+
+// ProcessOwnerHandoffBatch accepts exactly one durable 100-line segment. It
+// never performs provider I/O: provider work remains EER-owned and occurs only
+// after this Customer UoW commits. River retries the same segment and its
+// receipt keys, so a restart cannot create a second transfer_customer request.
+func (service *OwnerHandoffService) ProcessOwnerHandoffBatch(ctx context.Context, batchID string, segment int64) error {
+	if service == nil || batchID == "" || segment < 0 || service.batchJobs == nil {
+		return ErrOwnerHandoffInvalid
+	}
+	return service.uow.Within(ctx, func(txctx context.Context) error {
+		work, err := service.store.LoadOwnerHandoffBatchSegment(txctx, batchID, segment, ownerHandoffBatchSegmentSize)
+		if err != nil {
+			return err
+		}
+		if work.BatchID == "" {
+			return ErrOwnerHandoffDrift
+		}
+		if work.Mode == customerport.OwnerHandoffWeComThenCRM {
+			if service.effects == nil || !service.wecomProviderEnabled {
+				return ErrOwnerHandoffForbidden
+			}
+			for _, item := range work.Lines {
+				line := item.OwnerHandoffLine
+				accept := effectport.AcceptCommand{ReceiptKey: effectport.Hash("customer-owner-handoff.accept.v1", work.BatchID, strconv.FormatInt(line.Line, 10)), Envelope: effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindCustomerOwnerHandoff, SourceRefDigest: effectport.Hash("customer-owner-handoff.v1", "source-ref", work.BatchID, strconv.FormatInt(line.Line, 10)), TargetRefDigest: effectport.Hash("customer-owner-handoff.v1", "target-ref", work.BatchID, strconv.FormatInt(line.Line, 10)), PayloadDigest: effectport.Hash("customer-owner-handoff.v1", "payload-ref", work.BatchID, strconv.FormatInt(line.Line, 10)), PolicyVersionHash: effectport.Hash("customer-owner-handoff.v1", "policy-ref", work.BatchID, strconv.FormatInt(line.Line, 10))}}
+				projection, receipt, acceptErr := service.effects.AcceptAndQueueWithin(txctx, accept)
+				if acceptErr != nil {
+					return acceptErr
+				}
+				if bindErr := service.store.BindOwnerHandoffEffect(txctx, customerport.OwnerHandoffEffectBinding{BatchID: work.BatchID, Line: line.Line, EffectID: projection.ID, ReceiptID: receipt.ID}); bindErr != nil {
+					return bindErr
+				}
+				if factErr := service.appendProviderAcceptedFacts(txctx, work.ActorID, work.PreviewID, line, service.now().UTC()); factErr != nil {
+					return factErr
+				}
+			}
+		} else if work.Mode == customerport.OwnerHandoffLocalOnly {
+			target, targetErr := service.staff.UserByID(txctx, work.TargetStaffID, false)
+			if targetErr != nil || !target.Active {
+				for _, item := range work.Lines {
+					if stateErr := service.store.SetOwnerHandoffLineState(txctx, work.BatchID, item.Line, "cas_conflict"); stateErr != nil {
+						return stateErr
+					}
+				}
+			} else {
+				for _, item := range work.Lines {
+					line := item.OwnerHandoffLine
+					owner, found, readErr := service.store.LocalOwner(txctx, line.CustomerID, true)
+					state := "local_updated"
+					if readErr != nil || (found && owner.Version != item.ExpectedLocalVersion) || (!found && item.ExpectedLocalVersion != 0) {
+						state = "cas_conflict"
+					} else if _, assignErr := service.store.AssignLocalOwner(txctx, line.CustomerID, work.TargetStaffID, item.ExpectedLocalVersion, "owner_handoff_local_only", service.now().UTC()); assignErr != nil {
+						if !errors.Is(assignErr, customerport.ErrOwnerHandoffConflict) {
+							return assignErr
+						}
+						state = "cas_conflict"
+					}
+					if stateErr := service.store.SetOwnerHandoffLineState(txctx, work.BatchID, line.Line, state); stateErr != nil {
+						return stateErr
+					}
+					if state == "local_updated" {
+						line.State = state
+						if factErr := service.appendLocalOnlyFacts(txctx, work.ActorID, work.PreviewID, line, service.now().UTC()); factErr != nil {
+							return factErr
+						}
+					}
+				}
+			}
+		} else {
+			return ErrOwnerHandoffDrift
+		}
+		if err = service.store.RecomputeOwnerHandoffBatchState(txctx, work.BatchID); err != nil {
+			return err
+		}
+		if work.HasNext {
+			return service.batchJobs.EnqueueOwnerHandoffBatchWithin(txctx, work.BatchID, segment+1)
+		}
+		return nil
+	})
 }
 
 // RefreshOwnerHandoffTransferResult executes one read-only documented result

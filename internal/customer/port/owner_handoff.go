@@ -65,6 +65,24 @@ type OwnerHandoffBatch struct {
 	UpdatedAt time.Time
 }
 
+// OwnerHandoffBatchSegment is a Customer-owned durable work slice. It carries
+// no provider identifiers: outbound reads that separately from the immutable
+// line after the effect has been accepted.
+type OwnerHandoffBatchSegment struct {
+	BatchID       string
+	PreviewID     string
+	ActorID       int64
+	TargetStaffID int64
+	Mode          OwnerHandoffMode
+	Lines         []OwnerHandoffSegmentLine
+	HasNext       bool
+}
+
+type OwnerHandoffSegmentLine struct {
+	OwnerHandoffLine
+	ExpectedLocalVersion int64
+}
+
 type OwnerHandoffReader interface {
 	OwnerHandoffPreview(context.Context, string) (OwnerHandoffPreview, error)
 	OwnerHandoffBatch(context.Context, string) (OwnerHandoffBatch, error)

@@ -357,6 +357,118 @@ func (store *PostgreSQLOwnerHandoffStore) LockOwnerHandoffCustomersAndRejectActi
 	return nil
 }
 
+// LoadOwnerHandoffBatchSegment locks the batch and returns exactly one bounded
+// durable work segment. The worker retries this same segment safely: provider
+// lines whose effect is already bound are omitted, and local rows no longer
+// queued are omitted. A following segment is enqueued in the same UoW.
+func (store *PostgreSQLOwnerHandoffStore) LoadOwnerHandoffBatchSegment(ctx context.Context, batchID string, segment int64, size int) (customerport.OwnerHandoffBatchSegment, error) {
+	if batchID == "" || segment < 0 || size < 1 || size > 1000 {
+		return customerport.OwnerHandoffBatchSegment{}, ErrOwnerHandoffConflict
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return customerport.OwnerHandoffBatchSegment{}, err
+	}
+	var result customerport.OwnerHandoffBatchSegment
+	var state string
+	if err = tx.QueryRow(ctx, `SELECT id,preview_id,actor_admin_user_id,target_staff_id,mode,state FROM customer_owner_handoff_batches WHERE id=$1 FOR UPDATE`, batchID).Scan(&result.BatchID, &result.PreviewID, &result.ActorID, &result.TargetStaffID, &result.Mode, &state); err != nil {
+		return customerport.OwnerHandoffBatchSegment{}, err
+	}
+	if state == "completed" || state == "failed" {
+		return result, nil
+	}
+	start := segment*int64(size) + 1
+	end := start + int64(size) - 1
+	query := `SELECT line_no,customer_id,state,COALESCE(effect_id,''),observed_at,COALESCE(transfer_status,0),transfer_takeover_at,COALESCE(expected_local_owner_version,0)
+		FROM customer_owner_handoff_lines
+		WHERE batch_id=$1 AND line_no BETWEEN $2 AND $3 AND state='queued'`
+	if result.Mode == customerport.OwnerHandoffWeComThenCRM {
+		query += " AND effect_id IS NULL"
+	} else if result.Mode != customerport.OwnerHandoffLocalOnly {
+		return customerport.OwnerHandoffBatchSegment{}, ErrOwnerHandoffConflict
+	}
+	query += " ORDER BY line_no FOR UPDATE"
+	rows, err := tx.Query(ctx, query, batchID, start, end)
+	if err != nil {
+		return customerport.OwnerHandoffBatchSegment{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item customerport.OwnerHandoffSegmentLine
+		if err = rows.Scan(&item.Line, &item.CustomerID, &item.State, &item.EffectID, &item.ObservedAt, &item.TransferStatus, &item.TakeoverAt, &item.ExpectedLocalVersion); err != nil {
+			return customerport.OwnerHandoffBatchSegment{}, err
+		}
+		result.Lines = append(result.Lines, item)
+	}
+	if err = rows.Err(); err != nil {
+		return customerport.OwnerHandoffBatchSegment{}, err
+	}
+	if result.Mode == customerport.OwnerHandoffWeComThenCRM {
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customer_owner_handoff_lines WHERE batch_id=$1 AND line_no>$2 AND state='queued' AND effect_id IS NULL)`, batchID, end).Scan(&result.HasNext)
+	} else {
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customer_owner_handoff_lines WHERE batch_id=$1 AND line_no>$2 AND state='queued')`, batchID, end).Scan(&result.HasNext)
+	}
+	if err != nil {
+		return customerport.OwnerHandoffBatchSegment{}, err
+	}
+	return result, nil
+}
+
+func (store *PostgreSQLOwnerHandoffStore) SetOwnerHandoffLineState(ctx context.Context, batchID string, line int64, state string) error {
+	if batchID == "" || line < 1 || (state != "local_updated" && state != "cas_conflict") {
+		return ErrOwnerHandoffConflict
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	command, err := tx.Exec(ctx, `UPDATE customer_owner_handoff_lines SET state=$3,updated_at=clock_timestamp() WHERE batch_id=$1 AND line_no=$2 AND mode='local_only' AND state='queued'`, batchID, line, state)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return ErrOwnerHandoffConflict
+	}
+	return nil
+}
+
+// RecomputeOwnerHandoffBatchState derives a batch projection from durable line
+// facts. It deliberately preserves an accepted batch with no worker mutation
+// only until its first segment runs; thereafter queued lines mean executing.
+func (store *PostgreSQLOwnerHandoffStore) RecomputeOwnerHandoffBatchState(ctx context.Context, batchID string) error {
+	if batchID == "" {
+		return ErrOwnerHandoffConflict
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	var pending, attention, failed bool
+	if err = tx.QueryRow(ctx, `SELECT
+		COALESCE(bool_or(state IN ('queued','retryable_failed')),false),
+		COALESCE(bool_or(state IN ('outcome_unknown','cas_conflict')),false),
+		COALESCE(bool_or(state='final_failed'),false)
+		FROM customer_owner_handoff_lines WHERE batch_id=$1`, batchID).Scan(&pending, &attention, &failed); err != nil {
+		return err
+	}
+	state := "completed"
+	if attention {
+		state = "needs_attention"
+	} else if pending {
+		state = "executing"
+	} else if failed {
+		state = "failed"
+	}
+	command, err := tx.Exec(ctx, `UPDATE customer_owner_handoff_batches SET state=$2,updated_at=clock_timestamp() WHERE id=$1`, batchID, state)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return ErrOwnerHandoffConflict
+	}
+	return nil
+}
+
 func (store *PostgreSQLOwnerHandoffStore) CreateLocalOnlyOwnerHandoffBatch(ctx context.Context, record customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error) {
 	if record.Preview.Preview.Mode != customerport.OwnerHandoffLocalOnly || record.ActorID < 1 || record.Idempotency == "" || len(record.Lines) != len(record.Preview.Candidates) {
 		return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
@@ -370,7 +482,7 @@ func (store *PostgreSQLOwnerHandoffStore) CreateLocalOnlyOwnerHandoffBatch(ctx c
 		return customerport.OwnerHandoffBatch{}, err
 	}
 	var created time.Time
-	err = tx.QueryRow(ctx, `INSERT INTO customer_owner_handoff_batches(id,preview_id,actor_admin_user_id,idempotency_key,request_digest,mode,source_staff_id,target_staff_id,corp_scope,state) VALUES($1,$2,$3,$4,$5,'local_only',$6,$7,$8,'completed') ON CONFLICT (actor_admin_user_id,idempotency_key) DO NOTHING RETURNING created_at`, batchID, record.Preview.Preview.ID, record.ActorID, record.Idempotency, record.RequestDigest[:], record.Preview.Preview.SourceStaffID, record.Preview.Preview.TargetStaffID, record.Preview.Preview.CorpScope).Scan(&created)
+	err = tx.QueryRow(ctx, `INSERT INTO customer_owner_handoff_batches(id,preview_id,actor_admin_user_id,idempotency_key,request_digest,mode,source_staff_id,target_staff_id,corp_scope,state) VALUES($1,$2,$3,$4,$5,'local_only',$6,$7,$8,'accepted') ON CONFLICT (actor_admin_user_id,idempotency_key) DO NOTHING RETURNING created_at`, batchID, record.Preview.Preview.ID, record.ActorID, record.Idempotency, record.RequestDigest[:], record.Preview.Preview.SourceStaffID, record.Preview.Preview.TargetStaffID, record.Preview.Preview.CorpScope).Scan(&created)
 	if errors.Is(err, pgx.ErrNoRows) {
 		prior, priorDigest, found, readErr := store.OwnerHandoffBatchByIdempotency(ctx, record.ActorID, record.Idempotency)
 		if readErr != nil {
@@ -400,7 +512,7 @@ func (store *PostgreSQLOwnerHandoffStore) CreateLocalOnlyOwnerHandoffBatch(ctx c
 	if _, err = tx.Exec(ctx, `UPDATE customer_owner_handoff_previews SET executed_batch_id=$2 WHERE id=$1 AND executed_batch_id IS NULL`, record.Preview.Preview.ID, batchID); err != nil {
 		return customerport.OwnerHandoffBatch{}, err
 	}
-	return customerport.OwnerHandoffBatch{ID: batchID, Mode: customerport.OwnerHandoffLocalOnly, State: "completed", Lines: append([]customerport.OwnerHandoffLine(nil), record.Lines...), CreatedAt: created.UTC(), UpdatedAt: created.UTC()}, nil
+	return customerport.OwnerHandoffBatch{ID: batchID, Mode: customerport.OwnerHandoffLocalOnly, State: "accepted", Lines: append([]customerport.OwnerHandoffLine(nil), record.Lines...), CreatedAt: created.UTC(), UpdatedAt: created.UTC()}, nil
 }
 
 // CreateWeComOwnerHandoffBatch copies the already encrypted, preview-bound
@@ -463,10 +575,18 @@ func (store *PostgreSQLOwnerHandoffStore) BindOwnerHandoffEffect(ctx context.Con
 	if err != nil {
 		return err
 	}
-	if command.RowsAffected() != 1 {
-		return ErrOwnerHandoffConflict
+	if command.RowsAffected() == 1 {
+		return nil
 	}
-	return nil
+	var priorEffect, priorReceipt string
+	err = tx.QueryRow(ctx, `SELECT COALESCE(effect_id,''),COALESCE(effect_receipt_id,'') FROM customer_owner_handoff_lines WHERE batch_id=$1 AND line_no=$2 AND mode='wecom_then_crm'`, binding.BatchID, binding.Line).Scan(&priorEffect, &priorReceipt)
+	if err != nil {
+		return err
+	}
+	if priorEffect == binding.EffectID && priorReceipt == binding.ReceiptID {
+		return nil
+	}
+	return ErrOwnerHandoffConflict
 }
 
 // CompleteOwnerHandoffEffect projects only EER's terminal transport fact.

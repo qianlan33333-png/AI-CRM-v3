@@ -80,6 +80,9 @@ func TestPostgreSQLOwnerHandoffLocalOnlyPreviewConfirmIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = service.SetBatchEnqueuer(ownerHandoffPGEnqueuer{}); err != nil {
+		t.Fatal(err)
+	}
 	preview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: source, Mode: customerport.OwnerHandoffLocalOnly, SourceStaffID: source, TargetStaffID: target, CorpScope: "wecom-corp:fixture", CustomerIDs: []customerdomain.CustomerID{customerID}, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "preview-owner-handoff"})
 	if err != nil {
 		t.Fatal(err)
@@ -88,8 +91,11 @@ func TestPostgreSQLOwnerHandoffLocalOnlyPreviewConfirmIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(batch.Lines) != 1 || batch.Lines[0].State != "local_updated" {
-		t.Fatalf("batch=%+v", batch)
+	if len(batch.Lines) != 1 || batch.Lines[0].State != "queued" {
+		t.Fatalf("accepted batch=%+v", batch)
+	}
+	if err = service.ProcessOwnerHandoffBatch(ctx, batch.ID, 0); err != nil {
+		t.Fatal(err)
 	}
 	if err = uow.Within(ctx, func(txctx context.Context) error {
 		owner, found, e := customer.NewPostgreSQLOwnerHandoffStore().LocalOwner(txctx, customerID, false)
@@ -165,6 +171,12 @@ func mustOwnerHandoffAudit(t *testing.T) *platformaudit.Service {
 	return value
 }
 
+type ownerHandoffPGEnqueuer struct{}
+
+func (ownerHandoffPGEnqueuer) EnqueueOwnerHandoffBatchWithin(context.Context, string, int64) error {
+	return nil
+}
+
 type failingOwnerHandoffAudit struct{}
 
 func (failingOwnerHandoffAudit) Append(context.Context, platformaudit.Event) (platformaudit.Event, error) {
@@ -205,12 +217,19 @@ func TestPostgreSQLOwnerHandoffLocalOnlyRollsBackWhenAuditFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = service.SetBatchEnqueuer(ownerHandoffPGEnqueuer{}); err != nil {
+		t.Fatal(err)
+	}
 	preview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: source, Mode: customerport.OwnerHandoffLocalOnly, SourceStaffID: source, TargetStaffID: target, CorpScope: "wecom-corp:fixture", CustomerIDs: []customerdomain.CustomerID{customerID}, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "preview-owner-failure"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.ConfirmOwnerHandoff(ctx, customerport.OwnerHandoffConfirmCommand{ActorAdminUserID: source, PreviewID: preview.ID, PreviewHash: preview.Hash, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "confirm-owner-failure"}); err == nil {
-		t.Fatal("expected audit failure")
+	batch, err := service.ConfirmOwnerHandoff(ctx, customerport.OwnerHandoffConfirmCommand{ActorAdminUserID: source, PreviewID: preview.ID, PreviewHash: preview.Hash, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "confirm-owner-failure"})
+	if err != nil {
+		t.Fatalf("accept batch: %v", err)
+	}
+	if err = service.ProcessOwnerHandoffBatch(ctx, batch.ID, 0); err == nil {
+		t.Fatal("expected worker audit failure")
 	}
 	if err = uow.Within(ctx, func(txctx context.Context) error {
 		tx, e := platformpostgres.RequireTransaction(txctx)
@@ -227,8 +246,8 @@ func TestPostgreSQLOwnerHandoffLocalOnlyRollsBackWhenAuditFails(t *testing.T) {
 		if e = tx.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_id=$1`, fmt.Sprintf("%d", customerID)).Scan(&outbox); e != nil {
 			return e
 		}
-		if owners != 0 || batches != 0 || outbox != 0 {
-			t.Fatalf("rollback leaked owners=%d batches=%d outbox=%d", owners, batches, outbox)
+		if owners != 0 || batches != 1 || outbox != 0 {
+			t.Fatalf("worker rollback leaked owners=%d batches=%d outbox=%d", owners, batches, outbox)
 		}
 		return nil
 	}); err != nil {
@@ -290,6 +309,9 @@ func TestPostgreSQLOwnerHandoffRejectsNewPreviewAfterUnknownTransfer(t *testing.
 	candidate := customerport.OwnerHandoffCandidate{CustomerID: customerID, RelationshipDigest: [32]byte{7}, State: "ready", SourceUserID: "unknown-source", TargetUserID: "unknown-target", ExternalUserID: "external-unknown"}
 	service, err := customerapp.NewOwnerHandoffService(uow, store, ownerHandoffPGStaff{source: {ID: source, WeComUserID: "unknown-source", Active: true}, target: {ID: target, WeComUserID: "unknown-target", Active: true}}, ownerHandoffPGResolver{candidate: candidate}, mustOwnerHandoffAudit(t), platformoutbox.NewPostgreSQL())
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.SetBatchEnqueuer(ownerHandoffPGEnqueuer{}); err != nil {
 		t.Fatal(err)
 	}
 	service.SetWeComProviderEnabled(true)

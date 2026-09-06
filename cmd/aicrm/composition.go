@@ -241,11 +241,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[groupopsapp.ContinuationJobArgs](effectWorkers, groupOpsContinuationWorker); err != nil {
 		return fail(err)
 	}
+	ownerHandoffBatchWorker := customer.NewOwnerHandoffBatchWorker()
+	if err = river.AddWorkerSafely[customer.OwnerHandoffBatchJobArgs](effectWorkers, ownerHandoffBatchWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
 	}
 	groupOpsContinuationEnqueuer, err := groupopsapp.NewRiverContinuationEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	ownerHandoffBatchEnqueuer, err := customer.NewRiverOwnerHandoffEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -269,7 +277,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -818,6 +826,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(ownerServiceErr)
 	}
 	if ownerServiceErr = ownerHandoffService.SetExternalEffectAccepter(effectRepository); ownerServiceErr != nil {
+		return fail(ownerServiceErr)
+	}
+	if ownerServiceErr = ownerHandoffService.SetBatchEnqueuer(ownerHandoffBatchEnqueuer); ownerServiceErr != nil {
+		return fail(ownerServiceErr)
+	}
+	if ownerServiceErr = ownerHandoffBatchWorker.Bind(ownerHandoffService); ownerServiceErr != nil {
 		return fail(ownerServiceErr)
 	}
 	ownerHandoffService.SetWeComProviderEnabled(cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.ContactSecret != "")
