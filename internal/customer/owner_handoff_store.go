@@ -293,6 +293,70 @@ func (store *PostgreSQLOwnerHandoffStore) LoadOwnerHandoffPreview(ctx context.Co
 	return record, nil
 }
 
+// LockOwnerHandoffCustomersAndRejectActiveWeCom takes deterministic Customer
+// row locks, then rejects another transfer_customer while a prior effect for
+// the same canonical customer can still be sent or has an unknown outcome.
+// The lock lives in the caller's Customer UoW, so two independently previewed
+// confirmations cannot both accept a provider write. It deliberately leaves
+// provider_accepted/observed lines out: those already have a single immutable
+// effect and are resolved by the local CAS/result-readback paths.
+func (store *PostgreSQLOwnerHandoffStore) LockOwnerHandoffCustomersAndRejectActiveWeCom(ctx context.Context, customerIDs []customerdomain.CustomerID) error {
+	if len(customerIDs) == 0 || len(customerIDs) > 20000 {
+		return ErrOwnerHandoffConflict
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	ids := make([]int64, 0, len(customerIDs))
+	seen := make(map[int64]struct{}, len(customerIDs))
+	for _, customerID := range customerIDs {
+		if customerID < 1 {
+			return ErrOwnerHandoffConflict
+		}
+		id := int64(customerID)
+		if _, duplicate := seen[id]; duplicate {
+			return ErrOwnerHandoffConflict
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	rows, err := tx.Query(ctx, `SELECT id FROM customers WHERE id=ANY($1::bigint[]) ORDER BY id FOR UPDATE`, ids)
+	if err != nil {
+		return err
+	}
+	locked := 0
+	for rows.Next() {
+		locked++
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		rows.Close()
+		return rowsErr
+	}
+	rows.Close()
+	if locked != len(ids) {
+		return ErrOwnerHandoffConflict
+	}
+	var active bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1
+		FROM customer_owner_handoff_lines line
+		JOIN customer_owner_handoff_batches batch ON batch.id=line.batch_id
+		WHERE line.customer_id=ANY($1::bigint[])
+		  AND line.mode='wecom_then_crm'
+		  AND batch.mode='wecom_then_crm'
+		  AND batch.state IN ('accepted','executing','needs_attention')
+		  AND line.state IN ('queued','retryable_failed','outcome_unknown')
+	)`, ids).Scan(&active)
+	if err != nil {
+		return err
+	}
+	if active {
+		return ErrOwnerHandoffConflict
+	}
+	return nil
+}
+
 func (store *PostgreSQLOwnerHandoffStore) CreateLocalOnlyOwnerHandoffBatch(ctx context.Context, record customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error) {
 	if record.Preview.Preview.Mode != customerport.OwnerHandoffLocalOnly || record.ActorID < 1 || record.Idempotency == "" || len(record.Lines) != len(record.Preview.Candidates) {
 		return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict

@@ -69,6 +69,9 @@ func (s *ownerHandoffStoreStub) LoadOwnerHandoffPreview(_ context.Context, _ str
 func (s *ownerHandoffStoreStub) OwnerHandoffBatchByIdempotency(context.Context, int64, string) (customerport.OwnerHandoffBatch, [32]byte, bool, error) {
 	return customerport.OwnerHandoffBatch{}, [32]byte{}, false, nil
 }
+func (s *ownerHandoffStoreStub) LockOwnerHandoffCustomersAndRejectActiveWeCom(context.Context, []customerdomain.CustomerID) error {
+	return nil
+}
 func (s *ownerHandoffStoreStub) LocalOwner(_ context.Context, id customerdomain.CustomerID, _ bool) (customerport.LocalOwner, bool, error) {
 	v, ok := s.owners[id]
 	return v, ok, nil

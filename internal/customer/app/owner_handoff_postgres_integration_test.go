@@ -235,3 +235,88 @@ func TestPostgreSQLOwnerHandoffLocalOnlyRollsBackWhenAuditFails(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestPostgreSQLOwnerHandoffRejectsNewPreviewAfterUnknownTransfer proves that
+// an independently generated preview cannot turn an outcome_unknown provider
+// write into a second transfer_customer attempt while the local owner remains
+// unchanged. The rejection happens before any EER acceptance.
+func TestPostgreSQLOwnerHandoffRejectsNewPreviewAfterUnknownTransfer(t *testing.T) {
+	databaseURL, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("AICRM_DATABASE_URL is not configured; skipping owner-handoff PostgreSQL journey")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, cleanup := ownerHandoffAppPool(t, ctx, databaseURL)
+	defer cleanup()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source, target int64
+	var customerID customerdomain.CustomerID
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		tx, e := platformpostgres.RequireTransaction(txctx)
+		if e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('unknown-source','$argon2id$fixture','Source','unknown-source',true) RETURNING id`).Scan(&source); e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('unknown-target','$argon2id$fixture','Target','unknown-target',true) RETURNING id`).Scan(&target); e != nil {
+			return e
+		}
+		const priorPreview, priorBatch = "unknown-preview", "unknown-batch"
+		digest := make([]byte, 32)
+		if _, e = tx.Exec(txctx, `INSERT INTO customer_owner_handoff_previews(id,actor_admin_user_id,mode,source_staff_id,target_staff_id,corp_scope,request_digest,confirmation_phrase,expires_at) VALUES($1,$2,'wecom_then_crm',$3,$4,'wecom-corp:fixture',$5,'CONFIRM',clock_timestamp()+interval '1 hour')`, priorPreview, source, source, target, digest); e != nil {
+			return e
+		}
+		if _, e = tx.Exec(txctx, `INSERT INTO customer_owner_handoff_batches(id,preview_id,actor_admin_user_id,idempotency_key,request_digest,mode,source_staff_id,target_staff_id,corp_scope,state) VALUES($1,$2,$3,'prior-unknown-key',$4,'wecom_then_crm',$5,$6,'wecom-corp:fixture','needs_attention')`, priorBatch, priorPreview, source, digest, source, target); e != nil {
+			return e
+		}
+		_, e = tx.Exec(txctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,relation_digest,effect_id,state) VALUES($1,1,$2,'wecom_then_crm',$3,$4,$5,'eer_prior_unknown','outcome_unknown')`, priorBatch, customerID, source, target, digest)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := customer.NewOwnerHandoffCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := customer.NewPostgreSQLOwnerHandoffStoreWithCipher(cipher)
+	candidate := customerport.OwnerHandoffCandidate{CustomerID: customerID, RelationshipDigest: [32]byte{7}, State: "ready", SourceUserID: "unknown-source", TargetUserID: "unknown-target", ExternalUserID: "external-unknown"}
+	service, err := customerapp.NewOwnerHandoffService(uow, store, ownerHandoffPGStaff{source: {ID: source, WeComUserID: "unknown-source", Active: true}, target: {ID: target, WeComUserID: "unknown-target", Active: true}}, ownerHandoffPGResolver{candidate: candidate}, mustOwnerHandoffAudit(t), platformoutbox.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetWeComProviderEnabled(true)
+	preview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: source, Mode: customerport.OwnerHandoffWeComThenCRM, SourceStaffID: source, TargetStaffID: target, CorpScope: "wecom-corp:fixture", CustomerIDs: []customerdomain.CustomerID{customerID}, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "new-preview-after-unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ConfirmOwnerHandoff(ctx, customerport.OwnerHandoffConfirmCommand{ActorAdminUserID: source, PreviewID: preview.ID, PreviewHash: preview.Hash, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "new-confirm-after-unknown"}); !errors.Is(err, customer.ErrOwnerHandoffConflict) {
+		t.Fatalf("expected unknown transfer conflict, got %v", err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		tx, e := platformpostgres.RequireTransaction(txctx)
+		if e != nil {
+			return e
+		}
+		var effects, batches int
+		if e = tx.QueryRow(txctx, `SELECT count(*) FROM external_effects WHERE kind='customer_owner_handoff'`).Scan(&effects); e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `SELECT count(*) FROM customer_owner_handoff_batches`).Scan(&batches); e != nil {
+			return e
+		}
+		if effects != 0 || batches != 1 {
+			t.Fatalf("unknown guard accepted a new transfer: effects=%d batches=%d", effects, batches)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -45,6 +45,10 @@ type OwnerHandoffStore interface {
 	CreateWeComOwnerHandoffBatch(context.Context, customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error)
 	BindOwnerHandoffEffect(context.Context, customerport.OwnerHandoffEffectBinding) error
 	OwnerHandoffBatchByIdempotency(context.Context, int64, string) (customerport.OwnerHandoffBatch, [32]byte, bool, error)
+	// LockOwnerHandoffCustomersAndRejectActiveWeCom serializes every pending
+	// transfer_customer request for each canonical customer. It is called inside
+	// the confirmation UoW before accepting any external effect.
+	LockOwnerHandoffCustomersAndRejectActiveWeCom(context.Context, []customerdomain.CustomerID) error
 	LocalOwner(context.Context, customerdomain.CustomerID, bool) (customerport.LocalOwner, bool, error)
 	AssignLocalOwner(context.Context, customerdomain.CustomerID, int64, int64, string, time.Time) (customerport.LocalOwner, error)
 }
@@ -188,6 +192,13 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 			return ErrOwnerHandoffDrift
 		}
 		if draft.Preview.Mode == customerport.OwnerHandoffWeComThenCRM {
+			// Take Customer-owned row locks before reading pending lines. A different
+			// preview may still contain the same frozen relation while its first
+			// transfer is queued or outcome_unknown; accepting a second effect would
+			// issue a duplicate, potentially conflicting WeCom transfer.
+			if lockErr := service.store.LockOwnerHandoffCustomersAndRejectActiveWeCom(txctx, customerIDs); lockErr != nil {
+				return lockErr
+			}
 			if service.effects == nil || !service.wecomProviderEnabled {
 				return ErrOwnerHandoffForbidden
 			}

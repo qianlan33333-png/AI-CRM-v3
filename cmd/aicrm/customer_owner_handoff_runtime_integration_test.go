@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,9 +140,52 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch, err := service.ConfirmOwnerHandoff(ctx, customerport.OwnerHandoffConfirmCommand{ActorAdminUserID: sourceID, PreviewID: preview.ID, PreviewHash: preview.Hash, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "runtime-confirm-key"})
-	if err != nil || len(batch.Lines) != 1 || batch.Lines[0].State != "queued" || batch.Lines[0].EffectID == "" {
-		t.Fatalf("batch=%+v err=%v", batch, err)
+	// A second independently generated preview sees the same still-current
+	// relation. Confirm both concurrently: the Customer row lock must allow
+	// exactly one EER acceptance, rather than issue transfer_customer twice.
+	secondPreview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: sourceID, Mode: customerport.OwnerHandoffWeComThenCRM, SourceStaffID: sourceID, TargetStaffID: targetID, CorpScope: "wecom-corp:runtime", CustomerIDs: []customerdomain.CustomerID{customerID}, WelcomeMessage: "欢迎", ConfirmationPhrase: "CONFIRM", IdempotencyKey: "runtime-preview-key-second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type confirmation struct {
+		batch customerport.OwnerHandoffBatch
+		err   error
+	}
+	start := make(chan struct{})
+	results := make(chan confirmation, 2)
+	for _, input := range []struct {
+		preview customerport.OwnerHandoffPreview
+		key     string
+	}{{preview: preview, key: "runtime-confirm-key-first"}, {preview: secondPreview, key: "runtime-confirm-key-second"}} {
+		input := input
+		go func() {
+			<-start
+			batch, confirmErr := service.ConfirmOwnerHandoff(ctx, customerport.OwnerHandoffConfirmCommand{ActorAdminUserID: sourceID, PreviewID: input.preview.ID, PreviewHash: input.preview.Hash, ConfirmationPhrase: "CONFIRM", IdempotencyKey: input.key})
+			results <- confirmation{batch: batch, err: confirmErr}
+		}()
+	}
+	close(start)
+	var batch customerport.OwnerHandoffBatch
+	accepted, conflicts := 0, 0
+	for range 2 {
+		result := <-results
+		if result.err == nil {
+			accepted++
+			batch = result.batch
+			continue
+		}
+		if errors.Is(result.err, customer.ErrOwnerHandoffConflict) {
+			conflicts++
+			continue
+		}
+		t.Fatalf("concurrent confirmation: %v", result.err)
+	}
+	if accepted != 1 || conflicts != 1 || len(batch.Lines) != 1 || batch.Lines[0].State != "queued" || batch.Lines[0].EffectID == "" {
+		t.Fatalf("accepted=%d conflicts=%d batch=%+v", accepted, conflicts, batch)
+	}
+	var acceptedEffects int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects WHERE kind='customer_owner_handoff'`).Scan(&acceptedEffects); err != nil || acceptedEffects != 1 {
+		t.Fatalf("handoff effects=%d err=%v", acceptedEffects, err)
 	}
 	writer := &ownerHandoffRuntimeWriter{}
 	provider, err := outbound.NewCustomerOwnerHandoffProvider(customerOwnerHandoffExecutionAdapter{uow: uow, executions: store, staff: staff}, writer)
