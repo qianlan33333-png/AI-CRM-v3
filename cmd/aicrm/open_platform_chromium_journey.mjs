@@ -69,6 +69,16 @@ async function waitForResource(resources, pathname, message) {
   }
   throw new Error(message);
 }
+async function activationFailureCategory(cdp, response) {
+  const known = new Set(["authentication_required", "invalid_request", "open_platform_request_failed"]);
+  try {
+    const body = await cdp.call("Network.getResponseBody", { requestId: response.requestID });
+    const parsed = JSON.parse(String(body.body || ""));
+    return known.has(parsed?.error) ? parsed.error : "response_invalid";
+  } catch (_) {
+    return "response_unavailable";
+  }
+}
 const navigation = (cdp, message) => cdp.nextEvent("Page.frameNavigated", (params) => Boolean(params.frame && !params.frame.parentId), 8000, message);
 async function browserExit(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -99,7 +109,7 @@ try {
     const status = Number(params.response?.status) || 0;
     if (pathname.startsWith("/assets/")) resources.set("/assets/", status);
     if (pathname === "/api/admin/open-platform/clients" || pathname === "/api/admin/open-platform/routes") resources.set(pathname, status);
-    if (pathname.startsWith("/api/admin/open-platform/clients/browser-open-agent/")) resources.set(pathname, status);
+    if (pathname === "/api/admin/open-platform/clients/browser-open-agent/activate") resources.set(pathname, { status, requestID: String(params.requestId || "") });
   } catch (_) {} });
 
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin%2Fapidocs.html` });
@@ -134,8 +144,8 @@ try {
   const firstActivationPath = "/api/admin/open-platform/clients/browser-open-agent/activate";
   resources.delete(firstActivationPath);
   if (!await click("我已手动复制并确认启用")) throw new Error("manual credential confirmation was unavailable");
-  const firstActivationStatus = await waitForResource(resources, firstActivationPath, "manual confirmation did not issue an activation request");
-  if (firstActivationStatus !== 200) throw new Error(`manual confirmation activation status=${firstActivationStatus}`);
+  const firstActivation = await waitForResource(resources, firstActivationPath, "manual confirmation did not issue an activation request");
+  if (firstActivation.status !== 200) throw new Error(`manual confirmation activation status=${firstActivation.status} category=${await activationFailureCategory(cdp, firstActivation)}`);
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "activation succeeded but the caller Host did not refresh as enabled");
   const firstOAuth = await oauth(firstSecret); const firstToken = firstOAuth?.body?.access_token;
   if (firstOAuth?.status !== 200 || typeof firstToken !== "string" || !firstToken) throw new Error("OAuth did not issue an activated token");
@@ -162,8 +172,8 @@ try {
   const secondActivationPath = "/api/admin/open-platform/clients/browser-open-agent/activate";
   resources.delete(secondActivationPath);
   if (!await click("我已手动复制并确认启用")) throw new Error("rotated credential confirmation was unavailable");
-  const secondActivationStatus = await waitForResource(resources, secondActivationPath, "rotated credential confirmation did not issue an activation request");
-  if (secondActivationStatus !== 200) throw new Error(`rotated credential confirmation activation status=${secondActivationStatus}`);
+  const secondActivation = await waitForResource(resources, secondActivationPath, "rotated credential confirmation did not issue an activation request");
+  if (secondActivation.status !== 200) throw new Error(`rotated credential confirmation activation status=${secondActivation.status} category=${await activationFailureCategory(cdp, secondActivation)}`);
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "rotated activation succeeded but the caller Host did not refresh as enabled");
   const secondOAuth = await oauth(secondSecret); const secondToken = secondOAuth?.body?.access_token;
   if (secondOAuth?.status !== 200 || typeof secondToken !== "string") throw new Error("rotated credential did not issue an OAuth token");
