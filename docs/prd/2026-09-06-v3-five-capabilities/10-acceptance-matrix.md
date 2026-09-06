@@ -4,11 +4,12 @@
 
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
-| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `4688bad2f0d803eeabf5df05e07c325662cde7c5` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；已对齐main8ec5072；根新增PG/race与安装/文件契约通过；旧Chrome失败已定位并修复模板标记、context路由漏注册和页面CSP；根复核context/CSP专项通过，准确4688bad的Linux完整Chrome/CI待结果 |
-| 通用客户标签 | 02 已批准 | 根独立 PG/race、历史/101恢复/来源门禁、真实 Chromium 与全量 CI 通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | 整板块代码验收通过；main 8ec5072d169c25abd25f80e29cb9f6222834b320自动部署成功，12:07 UTC线上ready核实；真实业务验收未进行 |
-| 配置中心运行生效 | 05 已批准 | 根独立PG/race、实际消费者/历史/制品及真实Chrome完整CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 整板块代码验收通过；main 5494537fb4d95a916c2754a3c1387335905d2861，部署及生产发布另记 |
-| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `c90a7c2b60adb5a624e06d362cb88810b4327e1e` | 已对齐main8ec5072；远端c90失败的目标policy摘要已在本地9b2d903修复，根独立真实PG/race完整付款和历史CLI通过；本地fbb7132/1202d1a补订单回读/响应事实/历史投递证据，尚待最终审核与推送；真实Chromium继续 |
-| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ba0155a16d366889573697a12dbd05e50e12d776`（开发checkpoint） | 远端ba0155安装fixture失败已在本地2077752修复；根独立PG/race历史CLI、鉴权管理及ede9c42导入排除核验通过。56项中3接通、3部分、50待迁移；c79ac2e仅冻结机器actor Port，存储/运行写与完整浏览器未闭环 |
+| 负责人迁移 | 01 已批准 | 旧流程/真实PG/恢复/协议/历史专项通过，Linux Chrome收口中 | #171 `96b79b8b2182a93b9ce0f52b82d4dbb01f9bef8a` | 9ee88d1实际失败为excel_scope_select动态JS语法；新HEAD加入所有动态表达式编译预检及真实文件导入，待该HEAD完整Linux CI，不标为通过 |
+| 通用客户标签 | 02 已批准 | 根PG/race、历史/101恢复/协议、真实Chromium与全CI通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | main8ec5072于13:01 UTC再次核实线上ready；代码已部署，客户通用标签Provider开关未启用，真实业务验收未进行 |
+| 配置中心运行生效 | 05 已批准 | 根PG/race、实际消费者/历史/制品、真实Chrome及CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 已随5494537及后续main8ec上线；生产业务配置发布与真实消费者业务验收另记 |
+| 商品／订单外推 | 04 已批准 | paid完整链路、历史CLI、协议已根PG/race验证，真实Chrome收口中 | #172 `0fd897ea5b84482055338673850134cab21cb377` | 0fd修复缺构建制品导致503；Linux CI34035483933继续发现browser configuration save did not finish，已派定点修复；未批准整板块 |
+| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path，逐个接现有领域Port | #173 远端`ba0155a16d366889573697a12dbd05e50e12d776`，本地`d7e9ba28402191bed1a2d9e5dfb0722d87c10c74` | 4接通/4部分/48待迁移；根发现旧存档raw_payload wrapper与新extract不兼容，已退回修复并要求真实旧样例；Segment机器actor、Survey历史投影及其余路由继续 |
+| 新前端壳 | 12 已批准 | 沿用原PR164工作，在独立clone合入main8ec | #164 远端`c8819d7a9b837c00116682e860310717e5f94b20`，本地a96b162 | 现有远端CI在donor manifest失败；待修正确V3适配归属、完整制品、模块Host路由、侧边栏CSP/素材可见性，最终组合浏览器和部署待验收 |
 
 共用验收：完整路由/Composition、冻结供体复用、PG原子性/并发/重启、身份权限、未知结果、历史零新效果。各PR需链接实际日志/测试/浏览器证据，跳过与Mock明确标识。
 
@@ -119,3 +120,12 @@
 - 开放平台 #173 根独立通过2077752历史提取/重放/核验及管理，ede9c42已有目标排除核验。a6a4404将订单customer约束与reference放在同一Owner查询，c79ac2e冻结机器actor而不伪装管理员；仍是局部实现。开放平台完整路由、页面、历史和运行装配继续同一PR收口。
 
 本检查点没有新增合并或生产操作。标签8ec5072、配置5494537既有代码部署证据有效；三项未合并，五项真实业务验收均未进行。
+
+
+## 2026-09-06 13:20 UTC 审核增量
+
+- 最新用户明确要求完成上线，并加入PR164新壳。五业务仍各自完整PR，164独立，不向168集成；本表顶部为当前检查点，前文是带日期的历史记录。
+- #171真实Linux已通过local_only含实际Excel下载，wecom_then_crm曾因两处动态表达式语法失败；96b79b8定点修正并预检，仍须新CI完整结果。
+- #172根在b40c82b真实PG/race通过完整Funds HTTP和历史CLIextract/apply/replay/verify/drift。0fd897e实际构建Host后消除503，当前失败是页面保存未结束；不能以专项PG通过覆盖浏览器失败。
+- #173根在05ffb57真实PG/race通过Archive machine projection与Radar links disabled/keyset行为；d7e9ba2新增历史提取尚未通过根审，旧SDK实际保存{seq,encrypted_record,decrypted_message}，不能用手写顶层SDK fixture代替真实源。0098 Archive历史投影为owner保护的TEXT，并非字段加密；0099 Survey仅保留历史读取字段，不能升级成OneID证据。
+- 生产13:01 UTC只读核实main8ec5072、aicrm与effects-worker active。通用客户标签Provider及商品外推Provider未启用；外推受控目标/载荷密钥和开放平台JWT密钥尚未配置。后续必要配置在验收后按最新上线授权准备，真实写验收使用明确测试对象。
