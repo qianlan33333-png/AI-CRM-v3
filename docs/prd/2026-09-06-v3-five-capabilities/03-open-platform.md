@@ -92,3 +92,11 @@ Client管理同事务状态/版本/审计/幂等；轮换安全返回一次凭�
 旧 `platform/platform_foundation/auth_platform/profiles.py:105-112`、`platform/admin_config/api_clients.py:46-54` 和 `scripts/ci/update_route_policy_manifest.py:385` 的 MCP 使用 `audience=external_integration`，`scopes=read/write`，`capabilities=mcp_read/mcp_execute`，purpose=mcp。保持旧调用方请求：GET/read和POST/write按对应capability/purpose校验；不得强迫改用新增audience=mcp或scope=mcp。token请求scope只能收窄，不能凭客户端存在write capability绕过token的read范围。
 
 旧 `api_clients.py:123-232` 的创建默认停用、轮换后停用、停用后可编辑display_name/Token TTL/CIDR均需承接。管理页面原client_type/token_ttl_minutes等字段通过HTTP DTO/Host薄映射到Go稳定Port；底层安全摘要/认证版本保留，勿为了原样复用而恢复明文密钥。
+
+## 历史与机器主体边界补充（具体供体审核）
+
+- source_revision记录冻结源码版本；快照批次独立命名。相同源码版本允许后续抓取，来源作用域与源行身份跨批次幂等；相同行重放、重叠快照新增行、同源行漂移分别验证。不能以批次ID掩盖重复授权或审计事实。
+- 旧owner_scope中的customer_id等本地数字引用只作为源事实，经既有可信映射转换后才能参与V3授权；原值与映射回执保留。未映射或冲突保持不可启用，禁止轮换密钥解除此阻断，也禁止删除限制变成全量授权。外部owner_userid须验证同企业作用域。
+- 旧auth_platform/profiles.py的group_broadcast是principal_type=service且audience=external_integration，属于本轮已冻结服务模板；不能因不是api_client全部排除。internal_worker模板仍不对外恢复。
+- 旧Direct API Key记录为client_id=aicrm-direct-external-api-key、purpose=external_agent、read/external_read；若V3使用direct_external_api_key/direct_api_key，迁移须显式登记映射并供原Direct页面回读，不能误入普通OAuth调用方。保持停用待重颁、只读和来源审计，不迁旧secret/token。
+- 机器主体进入业务命令优先使用现有string actor或ActorService。需要兼容只支持人工int64 actor的领域时，使用领域Owner最小actor_kind/actor_ref适配并保留人工字段兼容；不得把机器client数值当管理员ID。实际机器client须可审计追溯，不另建身份或授权平台。
