@@ -41,14 +41,15 @@ const (
 // and contract tests. Availability is evaluated by the composed application;
 // no transport independently invents a route policy.
 type Descriptor struct {
-	OperationID   OperationID `json:"operation_id"`
-	RESTMethod    string      `json:"rest_method"`
-	RESTPath      string      `json:"rest_path"`
-	MCPTool       string      `json:"mcp_tool"`
-	Capability    Capability  `json:"capability"`
-	RequiredScope string      `json:"required_scope"`
-	SchemaVersion string      `json:"schema_version"`
-	ActivityTypes []string    `json:"activity_types,omitempty"`
+	OperationID        OperationID `json:"operation_id"`
+	RESTMethod         string      `json:"rest_method"`
+	RESTPath           string      `json:"rest_path"`
+	MCPTool            string      `json:"mcp_tool"`
+	Capability         Capability  `json:"capability"`
+	RequiredScope      string      `json:"required_scope"`
+	SchemaVersion      string      `json:"schema_version"`
+	ActivityTypes      []string    `json:"activity_types,omitempty"`
+	ActivityItemFields []string    `json:"activity_item_fields,omitempty"`
 }
 
 // OperationCatalog is deliberately data, rather than path-prefix dispatch, so
@@ -58,7 +59,7 @@ func OperationCatalog() []Descriptor {
 		{OperationID: OperationCapabilitiesList, RESTMethod: "GET", RESTPath: "/open/v1/capabilities", MCPTool: "list_capabilities", Capability: CapabilityPlatformCapabilitiesRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 		{OperationID: OperationCustomerResolve, RESTMethod: "POST", RESTPath: "/open/v1/customers:resolve", MCPTool: "resolve_customer", Capability: CapabilityCustomerResolve, RequiredScope: "read", SchemaVersion: SchemaVersion},
 		{OperationID: OperationCustomerContext, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}", MCPTool: "get_customer_context", Capability: CapabilityCustomerRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
-		{OperationID: OperationCustomerActivities, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/activities", MCPTool: "list_customer_activities", Capability: CapabilityCustomerActivityRead, RequiredScope: "read", SchemaVersion: SchemaVersion, ActivityTypes: []string{"message", "survey", "radar", "order"}},
+		{OperationID: OperationCustomerActivities, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/activities", MCPTool: "list_customer_activities", Capability: CapabilityCustomerActivityRead, RequiredScope: "read", SchemaVersion: SchemaVersion, ActivityTypes: []string{"message", "survey", "radar", "order"}, ActivityItemFields: []string{"activity_id", "type", "occurred_at", "source", "payload"}},
 		{OperationID: OperationAIReviewPlanCreate, RESTMethod: "POST", RESTPath: "/open/v1/ai/review-plans", MCPTool: "create_ai_review_plan", Capability: CapabilityAIReviewPlanCreate, RequiredScope: "write", SchemaVersion: SchemaVersion},
 		{OperationID: OperationGet, RESTMethod: "GET", RESTPath: "/open/v1/operations/{operation_id}", MCPTool: "get_operation_status", Capability: CapabilityOperationRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 	}
@@ -95,6 +96,7 @@ func AvailableDescriptors(principal accessdomain.MachinePrincipal, available map
 		if available[descriptor.OperationID] && descriptor.Allows(principal) {
 			copy := descriptor
 			copy.ActivityTypes = append([]string(nil), descriptor.ActivityTypes...)
+			copy.ActivityItemFields = append([]string(nil), descriptor.ActivityItemFields...)
 			result = append(result, copy)
 		}
 	}
