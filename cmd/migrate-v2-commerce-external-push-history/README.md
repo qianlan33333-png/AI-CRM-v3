@@ -18,11 +18,11 @@ OneID 不涉及：快照不解析、创建或关联客户。持久化是一个�
 
 ## 操作流程
 
-先准备一个已有的普通 0600 base64 AES-256 密钥文件，并在仅供离线命令使用的环境中设置 `AICRM_SOURCE_DATABASE_URL`。不要把 URL 或密钥放在参数或日志中。
+先准备一个已有的普通 0600 无填充标准 Base64 编码的 AES-256 密钥文件，并在仅供离线命令使用的环境中设置 `AICRM_SOURCE_DATABASE_URL`。不要把 URL 或密钥放在参数或日志中。
 
 ```sh
 install -m 600 /dev/null /secure/aicrm/commerce-push-history.key
-# 在受保护路径写入 base64url 编码的 32-byte key。
+# 在受保护路径写入 无填充标准 Base64 编码的 32-byte key。
 
 AICRM_SOURCE_DATABASE_URL=... \
 go run ./cmd/migrate-v2-commerce-external-push-history \
