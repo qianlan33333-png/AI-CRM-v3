@@ -50,6 +50,13 @@ var machineCapabilities = map[string]struct{}{
 	"operation_cycle_action_event_write": {},
 	"operation_cycle_context_read":       {},
 	"operation_cycle_strategy_propose":   {},
+	// These grants occur only in frozen legacy system profiles. No route is
+	// added for a capability merely because an inactive historical client
+	// retains it.
+	"customer_read_limited": {},
+	"customer_resolve_read": {},
+	"material_create":       {},
+	"material_read":         {},
 }
 
 type MachineConfig struct {
@@ -454,7 +461,11 @@ func (service *MachineService) newMachineClient(input CreateMachineClientInput) 
 		return domain.MachineClient{}, domain.ErrInvalidInput
 	}
 	purpose := strings.TrimSpace(input.Purpose)
-	if purpose != "external_agent" && purpose != "mcp" && purpose != "direct_api_key" {
+	if !domain.IsMachinePurpose(purpose) {
+		return domain.MachineClient{}, domain.ErrInvalidInput
+	}
+	if profile, system := domain.SystemMachineProfileForPurpose(purpose); system &&
+		(!equalMachineStrings(audiences, profile.Audiences) || !equalMachineStrings(scopes, profile.Scopes) || !equalMachineStrings(capabilities, profile.Capabilities)) {
 		return domain.MachineClient{}, domain.ErrInvalidInput
 	}
 	ownerScope, err := domain.NormalizeOwnerScope(input.OwnerScope.JSON())

@@ -205,3 +205,26 @@ func TestMachineClientCredentialsDefaultScopeMatchesIssuedJWT(t *testing.T) {
 		t.Fatalf("issued JWT scopes=%v err=%v", principal.Scopes, err)
 	}
 }
+
+func TestMachineSystemProfilesPreserveExternalIntegrationPurposes(t *testing.T) {
+	service, err := NewMachineService(&machineRepositoryStub{clients: map[string]domain.MachineClient{}}, testUOW{}, credential.PasswordHasher{}, MachineConfig{SigningKey: []byte("01234567890123456789012345678901")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, purpose := range []string{"identity", "group_broadcast", "campaign_agent", "ops_reporter", "operation_runner"} {
+		profile, ok := domain.SystemMachineProfileForPurpose(purpose)
+		if !ok || !domain.IsMachinePurpose(purpose) || domain.IsLegacyAdminManagedMachinePurpose(purpose) {
+			t.Fatalf("system profile registration for %s = %+v, %v", purpose, profile, ok)
+		}
+		client, clientErr := service.newMachineClient(CreateMachineClientInput{
+			ClientID: "system." + purpose, DisplayName: purpose, Purpose: profile.Purpose,
+			Audiences: profile.Audiences, Scopes: profile.Scopes, Capabilities: profile.Capabilities,
+		})
+		if clientErr != nil || client.Purpose != purpose {
+			t.Fatalf("system profile %s client=%+v err=%v", purpose, client, clientErr)
+		}
+	}
+	if domain.IsMachinePurpose("automation_worker") {
+		t.Fatal("internal worker profile became a machine HTTP purpose")
+	}
+}

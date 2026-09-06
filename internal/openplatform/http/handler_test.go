@@ -277,3 +277,18 @@ func TestLegacyAPIClientListPreservesClientTypeAndTTLMinutes(t *testing.T) {
 		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestGenericMachineManagementRejectsSystemProfilePurpose(t *testing.T) {
+	management := &legacyManagementStub{}
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{}, AdminAuthentication: handlerAdminStub{}, Management: management, Executor: &handlerExecutorStub{}, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://crm.example.com/api/admin/open-platform/clients", strings.NewReader(`{"client_id":"system.identity","display_name":"Identity","purpose":"identity","audiences":["external_integration"],"scopes":["read"],"capabilities":["identity_resolve"],"token_ttl_seconds":1800}`))
+	request.TLS = &tls.ConnectionState{}
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || management.created.Purpose != "" {
+		t.Fatalf("system purpose response=%d input=%+v body=%s", response.Code, management.created, response.Body.String())
+	}
+}

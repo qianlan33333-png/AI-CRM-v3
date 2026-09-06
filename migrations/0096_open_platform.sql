@@ -6,7 +6,7 @@ CREATE TABLE access_machine_clients (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     client_id TEXT NOT NULL UNIQUE CHECK (client_id ~ '^[A-Za-z0-9][A-Za-z0-9_.-]{2,119}$'),
     display_name TEXT NOT NULL CHECK (length(btrim(display_name)) BETWEEN 1 AND 160),
-    purpose TEXT NOT NULL CHECK (purpose IN ('external_agent', 'mcp', 'direct_api_key')),
+    purpose TEXT NOT NULL CHECK (purpose IN ('external_agent', 'mcp', 'direct_api_key', 'identity', 'group_broadcast', 'campaign_agent', 'ops_reporter', 'operation_runner')),
     secret_hash TEXT NOT NULL CHECK (secret_hash LIKE '$argon2id$%'),
     credential_hint TEXT NOT NULL CHECK (length(credential_hint) BETWEEN 4 AND 40),
     audiences TEXT[] NOT NULL CHECK (cardinality(audiences) BETWEEN 1 AND 16),
