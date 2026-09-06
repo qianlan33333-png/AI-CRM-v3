@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"time"
@@ -12,6 +13,8 @@ import (
 )
 
 var _ accessport.MachineRepository = (*PostgreSQL)(nil)
+var _ accessport.MachineHistoricalRepository = (*PostgreSQL)(nil)
+var _ accessport.MachineHistoricalVerificationRepository = (*PostgreSQL)(nil)
 
 func (*PostgreSQL) MachineClientByID(ctx context.Context, clientID string, lock bool) (domain.MachineClient, error) {
 	database, err := tx(ctx)
@@ -68,12 +71,83 @@ func (*PostgreSQL) ListMachineClients(ctx context.Context) ([]domain.MachineClie
 	return clients, nil
 }
 
+// ImportHistoricalMachineClient writes a source-row receipt and an inert
+// replacement credential together. A replay with the same source digest reads
+// the original result; a changed source row cannot silently alter it.
+func (*PostgreSQL) ImportHistoricalMachineClient(ctx context.Context, input accessport.HistoricalMachineImportInput, client domain.MachineClient) (domain.MachineClient, bool, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return domain.MachineClient{}, false, err
+	}
+	var storedDigest []byte
+	var storedClientID *int64
+	err = database.QueryRow(ctx, `SELECT source_row_digest,machine_client_id FROM access_machine_import_receipts WHERE import_run_id=$1 AND source_row_id=$2 FOR UPDATE`, input.ImportRunID, input.SourceRowID).Scan(&storedDigest, &storedClientID)
+	switch {
+	case err == nil:
+		if !bytes.Equal(storedDigest, input.SourceRowDigest[:]) {
+			return domain.MachineClient{}, false, domain.ErrConflict
+		}
+		if storedClientID == nil {
+			return domain.MachineClient{}, false, domain.ErrConflict
+		}
+		result, readErr := scanMachineClient(database.QueryRow(ctx, machineClientSelect+` WHERE c.id=$1`, *storedClientID))
+		if readErr != nil {
+			return domain.MachineClient{}, false, readErr
+		}
+		result.Capabilities, readErr = machineCapabilities(ctx, database, result.ID)
+		return result, true, readErr
+	case !errors.Is(err, pgx.ErrNoRows):
+		return domain.MachineClient{}, false, err
+	}
+	created, err := createMachineClient(ctx, database, client)
+	if err != nil {
+		return domain.MachineClient{}, false, err
+	}
+	if _, err = database.Exec(ctx, `INSERT INTO access_machine_import_receipts
+		(import_run_id,source_row_id,source_row_digest,machine_client_id,outcome)
+		VALUES($1,$2,$3,$4,'reissue_required')`, input.ImportRunID, input.SourceRowID, input.SourceRowDigest[:], created.ID); err != nil {
+		return domain.MachineClient{}, false, err
+	}
+	return created, false, nil
+}
+
+// VerifyHistoricalMachineClient reads the receipt without creating a row.
+func (*PostgreSQL) VerifyHistoricalMachineClient(ctx context.Context, input accessport.HistoricalMachineImportInput) (domain.MachineClient, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return domain.MachineClient{}, err
+	}
+	var storedDigest []byte
+	var clientID *int64
+	if err = database.QueryRow(ctx, `SELECT source_row_digest,machine_client_id FROM access_machine_import_receipts WHERE import_run_id=$1 AND source_row_id=$2`, input.ImportRunID, input.SourceRowID).Scan(&storedDigest, &clientID); errors.Is(err, pgx.ErrNoRows) {
+		return domain.MachineClient{}, domain.ErrNotFound
+	} else if err != nil {
+		return domain.MachineClient{}, err
+	}
+	if !bytes.Equal(storedDigest, input.SourceRowDigest[:]) || clientID == nil {
+		return domain.MachineClient{}, domain.ErrConflict
+	}
+	result, err := scanMachineClient(database.QueryRow(ctx, machineClientSelect+` WHERE c.id=$1`, *clientID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.MachineClient{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.MachineClient{}, err
+	}
+	result.Capabilities, err = machineCapabilities(ctx, database, result.ID)
+	return result, err
+}
+
 func (*PostgreSQL) CreateMachineClient(ctx context.Context, client domain.MachineClient) (domain.MachineClient, error) {
 	database, err := tx(ctx)
 	if err != nil {
 		return domain.MachineClient{}, err
 	}
-	err = database.QueryRow(ctx, `
+	return createMachineClient(ctx, database, client)
+}
+
+func createMachineClient(ctx context.Context, database pgx.Tx, client domain.MachineClient) (domain.MachineClient, error) {
+	err := database.QueryRow(ctx, `
 		INSERT INTO access_machine_clients
 			(client_id, display_name, purpose, secret_hash, credential_hint, audiences, scopes,
 			 allowed_cidrs, corp_id, owner_scope, token_ttl_seconds, expires_at, enabled, reissue_required, auth_version)

@@ -112,7 +112,8 @@ for migration_contract in \
   '0091_survey_assessment_business_keys.sql:Survey assessment business key repair' \
   '0093_customer_tag_commands.sql:Customer tag command runtime' \
   '0094_runtime_config_releases.sql:runtime Config releases' \
-  '0095_product_external_push.sql:product external push'; do
+  '0095_product_external_push.sql:product external push' \
+  '0096_open_platform.sql:Open Platform machine credentials'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
@@ -152,6 +153,9 @@ grep -qx 'test -x "$release_dir/bin/migrate-v2-runtime-config-releases"' "$insta
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-runtime-config-releases ./cmd/migrate-v2-runtime-config-releases' .github/workflows/ci.yml || { echo "CI must build the runtime configuration history tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-commerce-external-push-history"' "$installer" || { echo "release must include commerce external-push history tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-commerce-external-push-history ./cmd/migrate-v2-commerce-external-push-history' .github/workflows/ci.yml || { echo "CI must build commerce external-push history tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-open-platform"' "$installer" || { echo "release must include Open Platform history tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-open-platform ./cmd/migrate-open-platform' .github/workflows/ci.yml || { echo "CI must build the Open Platform history tool" >&2; exit 1; }
+grep -qF './cmd/migrate-open-platform' .github/workflows/ci.yml || { echo "CI must test the Open Platform history tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-media-legacy-materials"' "$installer" || { echo "release must include legacy Media mapping migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials' .github/workflows/ci.yml || { echo "CI must build the legacy Media mapping migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }

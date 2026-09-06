@@ -228,3 +228,58 @@ func TestMachineSystemProfilesPreserveExternalIntegrationPurposes(t *testing.T) 
 		t.Fatal("internal worker profile became a machine HTTP purpose")
 	}
 }
+
+type historicalMachineReceiptStub struct {
+	clientID string
+	digest   [32]byte
+}
+
+type machineHistoricalRepositoryStub struct {
+	*machineRepositoryStub
+	receipts map[string]historicalMachineReceiptStub
+}
+
+func (stub *machineHistoricalRepositoryStub) ImportHistoricalMachineClient(_ context.Context, input HistoricalMachineImportInput, client domain.MachineClient) (domain.MachineClient, bool, error) {
+	key := input.ImportRunID + "\x00" + input.SourceRowID
+	if receipt, exists := stub.receipts[key]; exists {
+		if receipt.digest != input.SourceRowDigest {
+			return domain.MachineClient{}, false, domain.ErrConflict
+		}
+		return stub.clients[receipt.clientID], true, nil
+	}
+	created, err := stub.CreateMachineClient(context.Background(), client)
+	if err != nil {
+		return domain.MachineClient{}, false, err
+	}
+	stub.receipts[key] = historicalMachineReceiptStub{clientID: created.ClientID, digest: input.SourceRowDigest}
+	return created, false, nil
+}
+
+func TestHistoricalMachineImportNeverRestoresAUsableCredential(t *testing.T) {
+	base := &machineRepositoryStub{clients: map[string]domain.MachineClient{}}
+	repository := &machineHistoricalRepositoryStub{machineRepositoryStub: base, receipts: map[string]historicalMachineReceiptStub{}}
+	service, err := NewMachineService(repository, testUOW{}, credential.PasswordHasher{}, MachineConfig{SigningKey: []byte("01234567890123456789012345678901")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := HistoricalMachineImportInput{ImportRunID: "old-auth-export-20260906", SourceRowID: "client-42", SourceRowDigest: [32]byte{4, 2}, ClientID: "historic.identity", DisplayName: "Historic Identity", Purpose: "identity", TokenTTLSeconds: 1800}
+	imported, err := service.ImportHistorical(context.Background(), input)
+	if err != nil || imported.Replayed || imported.Outcome != "reissue_required" || imported.Client.Enabled || !imported.Client.ReissueRequired {
+		t.Fatalf("historical import=%+v err=%v", imported, err)
+	}
+	stored := base.clients[input.ClientID]
+	if stored.SecretHash == "" || stored.CredentialHint == "" || stored.Enabled || !stored.ReissueRequired || stored.Purpose != "identity" {
+		t.Fatalf("stored historical credential=%+v", stored)
+	}
+	if len(base.audits) != 1 || base.audits[0].Action != "machine_client_imported" {
+		t.Fatalf("historical audits=%+v", base.audits)
+	}
+	replayed, err := service.ImportHistorical(context.Background(), input)
+	if err != nil || !replayed.Replayed || replayed.Outcome != "replayed" || len(base.audits) != 1 {
+		t.Fatalf("historical replay=%+v err=%v audits=%+v", replayed, err, base.audits)
+	}
+	input.SourceRowDigest = [32]byte{4, 3}
+	if _, err = service.ImportHistorical(context.Background(), input); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("historical digest drift=%v", err)
+	}
+}

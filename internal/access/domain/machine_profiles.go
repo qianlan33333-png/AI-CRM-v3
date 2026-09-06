@@ -11,6 +11,18 @@ type SystemMachineProfile struct {
 	Capabilities []string
 }
 
+var regularMachineProfiles = map[string]SystemMachineProfile{
+	"external_agent": {
+		Purpose: "external_agent", Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"}, Capabilities: []string{"external_read", "external_write"},
+	},
+	"mcp": {
+		Purpose: "mcp", Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"}, Capabilities: []string{"mcp_execute", "mcp_read"},
+	},
+	"direct_api_key": {
+		Purpose: "direct_api_key", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"external_read"},
+	},
+}
+
 var systemMachineProfiles = map[string]SystemMachineProfile{
 	"identity": {
 		Purpose: "identity", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"identity_resolve"},
@@ -32,10 +44,15 @@ var systemMachineProfiles = map[string]SystemMachineProfile{
 	},
 }
 
-// SystemMachineProfileForPurpose returns a copy so callers cannot mutate the
-// frozen registry for subsequent requests.
-func SystemMachineProfileForPurpose(purpose string) (SystemMachineProfile, bool) {
-	profile, ok := systemMachineProfiles[purpose]
+// MachineProfileForPurpose returns a copy of the frozen external-integration
+// profile. It deliberately excludes donor internal_worker profiles, whose
+// workers are not machine HTTP callers and whose routes must never be opened
+// through this platform.
+func MachineProfileForPurpose(purpose string) (SystemMachineProfile, bool) {
+	profile, ok := regularMachineProfiles[purpose]
+	if !ok {
+		profile, ok = systemMachineProfiles[purpose]
+	}
 	if !ok {
 		return SystemMachineProfile{}, false
 	}
@@ -45,14 +62,17 @@ func SystemMachineProfileForPurpose(purpose string) (SystemMachineProfile, bool)
 	return profile, true
 }
 
-// IsMachinePurpose covers persisted V3 purposes. It deliberately excludes the
-// donor's internal_worker profiles, since their workers are not machine HTTP
-// callers and their routes must never be opened through this platform.
-func IsMachinePurpose(purpose string) bool {
-	if purpose == "external_agent" || purpose == "mcp" || purpose == "direct_api_key" {
-		return true
+// SystemMachineProfileForPurpose distinguishes non-page-managed profiles for
+// legacy import and system registration callers.
+func SystemMachineProfileForPurpose(purpose string) (SystemMachineProfile, bool) {
+	if _, regular := regularMachineProfiles[purpose]; regular {
+		return SystemMachineProfile{}, false
 	}
-	_, ok := SystemMachineProfileForPurpose(purpose)
+	return MachineProfileForPurpose(purpose)
+}
+
+func IsMachinePurpose(purpose string) bool {
+	_, ok := MachineProfileForPurpose(purpose)
 	return ok
 }
 

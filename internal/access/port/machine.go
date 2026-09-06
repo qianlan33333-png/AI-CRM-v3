@@ -96,3 +96,43 @@ type MachineManagement interface {
 	Activate(context.Context, domain.Principal, string, string, bool) (MachineClientSummary, error)
 	SetEnabled(context.Context, domain.Principal, string, bool) (MachineClientSummary, error)
 }
+
+// HistoricalMachineImportInput contains only non-secret source facts. A
+// migration never accepts old secret hashes, keys, or access tokens.
+type HistoricalMachineImportInput struct {
+	ImportRunID     string
+	SourceRowID     string
+	SourceRowDigest [32]byte
+	ClientID        string
+	DisplayName     string
+	Purpose         string
+	AllowedCIDRs    []string
+	OwnerScope      domain.OwnerScope
+	TokenTTLSeconds int
+	ExpiresAt       *time.Time
+}
+
+type HistoricalMachineImportResult struct {
+	Client   MachineClientSummary
+	Outcome  string
+	Replayed bool
+}
+
+// MachineHistoricalImporter is for an explicit offline migration command. It
+// has no secret-returning method and always records disabled/reissue-required
+// credentials.
+type MachineHistoricalImporter interface {
+	ImportHistorical(context.Context, HistoricalMachineImportInput) (HistoricalMachineImportResult, error)
+}
+
+// MachineHistoricalRepository is the Access-owned persistence seam for
+// idempotent source-row receipts. The command never writes these tables.
+type MachineHistoricalRepository interface {
+	ImportHistoricalMachineClient(context.Context, HistoricalMachineImportInput, domain.MachineClient) (domain.MachineClient, bool, error)
+}
+
+// MachineHistoricalVerificationRepository reads an already-written receipt
+// without making an import side effect.
+type MachineHistoricalVerificationRepository interface {
+	VerifyHistoricalMachineClient(context.Context, HistoricalMachineImportInput) (domain.MachineClient, error)
+}

@@ -166,6 +166,24 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if _, err = service.AuthenticateBearer(ctx, issued.AccessToken, "external_integration", mustOpenPlatformAddr(t, "203.0.113.5")); err == nil {
 		t.Fatal("old bearer remained valid after concurrent lifecycle changes")
 	}
+
+	historical := accessapp.HistoricalMachineImportInput{ImportRunID: "open-platform-history-pg", SourceRowID: "legacy-identity-1", SourceRowDigest: [32]byte{9, 6}, ClientID: "historic.identity", DisplayName: "Historic identity", Purpose: "identity", TokenTTLSeconds: 1800}
+	imported, err := service.ImportHistorical(ctx, historical)
+	if err != nil || imported.Replayed || imported.Client.Enabled || !imported.Client.ReissueRequired || imported.Client.Purpose != "identity" {
+		t.Fatalf("historical import=%+v err=%v", imported, err)
+	}
+	verified, err := service.VerifyHistorical(ctx, historical)
+	if err != nil || verified.Outcome != "reissue_required" || verified.Client.Enabled || !verified.Client.ReissueRequired {
+		t.Fatalf("historical verification=%+v err=%v", verified, err)
+	}
+	replayed, err := service.ImportHistorical(ctx, historical)
+	if err != nil || !replayed.Replayed || replayed.Outcome != "replayed" {
+		t.Fatalf("historical replay=%+v err=%v", replayed, err)
+	}
+	var historicalAudits int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM access_machine_audit WHERE action='machine_client_imported'`).Scan(&historicalAudits); err != nil || historicalAudits != 1 {
+		t.Fatalf("historical audit count=%d err=%v", historicalAudits, err)
+	}
 	clients, err = service.List(ctx, admin)
 	if err != nil {
 		t.Fatal(err)

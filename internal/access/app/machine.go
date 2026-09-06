@@ -81,6 +81,8 @@ type MachineClientSummary = accessport.MachineClientSummary
 type ClientCredentialsInput = accessport.ClientCredentialsInput
 type IssuedAccessToken = accessport.IssuedAccessToken
 type UpdateMachineClientInput = accessport.UpdateMachineClientInput
+type HistoricalMachineImportInput = accessport.HistoricalMachineImportInput
+type HistoricalMachineImportResult = accessport.HistoricalMachineImportResult
 
 var _ accessport.MachineTokenIssuer = (*MachineService)(nil)
 var _ accessport.MachineManagement = (*MachineService)(nil)
