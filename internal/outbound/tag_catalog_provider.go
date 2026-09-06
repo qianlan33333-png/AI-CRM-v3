@@ -201,6 +201,13 @@ func (r *ProviderRouter) WithCustomerTag(provider effect.ProviderAdapter) *Provi
 	return r
 }
 
+func (r *ProviderRouter) WithCustomerOwnerHandoff(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.ownerHandoff = provider
+	}
+	return r
+}
+
 func (r *ProviderRouter) WithSurveyCompletion(provider effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.surveyCompletion = provider

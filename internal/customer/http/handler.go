@@ -8,6 +8,7 @@ import (
 	"errors"
 	nethttp "net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
@@ -123,7 +124,6 @@ func (handler *Handler) Routes() nethttp.Handler {
 			mux.HandleFunc("POST /api/admin/customers/owner-handoffs/batches/{batch_id}/transfer-result", handler.ownerHandoffTransferResult)
 		}
 	}
-	mux.HandleFunc("GET /api/admin/customers/{customer_id}/chat-activity", handler.chatSection)
 	return mux
 }
 

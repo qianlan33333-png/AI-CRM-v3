@@ -733,8 +733,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 
 func projectsStaleAttempt(kind Kind) bool {
 	switch kind {
-	case KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindSurveyCompletion, KindCustomerTagCommand:
-	KindCustomerOwnerHandoff:
+	case KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindSurveyCompletion, KindCustomerTagCommand, KindCustomerOwnerHandoff:
 		return true
 	default:
 		return false

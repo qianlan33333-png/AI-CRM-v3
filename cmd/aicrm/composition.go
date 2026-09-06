@@ -33,6 +33,7 @@ import (
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
 	couponhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/http"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
+	customer "github.com/qianlan33333-png/AI-CRM-v3/internal/customer"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
@@ -135,6 +136,13 @@ type composedApplication struct {
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
+	return composeWithWeComClientFactory(ctx, cfg, wecomadapter.New)
+}
+
+func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error)) (*composedApplication, error) {
+	if providerFactory == nil {
+		return nil, errors.New("WeCom client factory is required")
+	}
 	var hxcSource *hxcprovider.MySQL
 	pool, err := platformpostgres.Open(ctx, platformpostgres.Config{URL: cfg.DatabaseURL, MaxConnections: 20, MinConnections: 1})
 	if err != nil {
@@ -1000,7 +1008,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
-	providerClient, err := wecomadapter.New(wecomadapter.Config{
+	providerClient, err := providerFactory(wecomadapter.Config{
 		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
 		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
 		APIBase: cfg.WeCom.APIBase, HTTPClient: cfg.WeCom.HTTPClient,
@@ -1271,7 +1279,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			customerHandler.OwnerHandoffOperationMembersHandler().ServeHTTP(w, r)
 			return
 		}
-		groupOpsHandler.ServeHTTP(w, r)
+		groupOpsBindings.GroupOps.ServeHTTP(w, r)
 	}))
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey, customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
