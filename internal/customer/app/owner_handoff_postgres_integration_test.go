@@ -13,7 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customer "github.com/qianlan33333-png/AI-CRM-v3/internal/customer"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -26,6 +26,16 @@ import (
 
 type ownerHandoffPGResolver struct {
 	candidate customerport.OwnerHandoffCandidate
+}
+
+type ownerHandoffPGStaff map[int64]accessdomain.User
+
+func (staff ownerHandoffPGStaff) UserByID(_ context.Context, id int64, _ bool) (accessdomain.User, error) {
+	user, found := staff[id]
+	if !found {
+		return accessdomain.User{}, accessdomain.ErrNotFound
+	}
+	return user, nil
 }
 
 func (r ownerHandoffPGResolver) ResolveOwnerHandoffCandidates(_ context.Context, _ customerport.OwnerHandoffMode, _, _ int64, _ string, ids []customerdomain.CustomerID) ([]customerport.OwnerHandoffCandidate, error) {
@@ -66,7 +76,7 @@ func TestPostgreSQLOwnerHandoffLocalOnlyPreviewConfirmIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := customerport.OwnerHandoffCandidate{CustomerID: customerID, RelationshipDigest: [32]byte{1}, State: "ready"}
-	service, err := customerapp.NewOwnerHandoffService(uow, customer.NewPostgreSQLOwnerHandoffStore(), accessstore.NewPostgreSQL(), ownerHandoffPGResolver{candidate: candidate}, mustOwnerHandoffAudit(t), platformoutbox.NewPostgreSQL())
+	service, err := customerapp.NewOwnerHandoffService(uow, customer.NewPostgreSQLOwnerHandoffStore(), ownerHandoffPGStaff{source: {ID: source, WeComUserID: "source-a", Active: false}, target: {ID: target, WeComUserID: "target-b", Active: true}}, ownerHandoffPGResolver{candidate: candidate}, mustOwnerHandoffAudit(t), platformoutbox.NewPostgreSQL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +201,7 @@ func TestPostgreSQLOwnerHandoffLocalOnlyRollsBackWhenAuditFails(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	service, err := customerapp.NewOwnerHandoffService(uow, customer.NewPostgreSQLOwnerHandoffStore(), accessstore.NewPostgreSQL(), ownerHandoffPGResolver{candidate: customerport.OwnerHandoffCandidate{CustomerID: customerID, RelationshipDigest: [32]byte{9}, State: "ready"}}, failingOwnerHandoffAudit{}, platformoutbox.NewPostgreSQL())
+	service, err := customerapp.NewOwnerHandoffService(uow, customer.NewPostgreSQLOwnerHandoffStore(), ownerHandoffPGStaff{source: {ID: source, WeComUserID: "source-x", Active: true}, target: {ID: target, WeComUserID: "target-y", Active: true}}, ownerHandoffPGResolver{candidate: customerport.OwnerHandoffCandidate{CustomerID: customerID, RelationshipDigest: [32]byte{9}, State: "ready"}}, failingOwnerHandoffAudit{}, platformoutbox.NewPostgreSQL())
 	if err != nil {
 		t.Fatal(err)
 	}

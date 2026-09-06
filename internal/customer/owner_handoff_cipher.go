@@ -32,7 +32,7 @@ func NewOwnerHandoffCipher(encoded string) (*OwnerHandoffCipher, error) {
 }
 
 func (ciphertext *OwnerHandoffCipher) Seal(batchID string, line int64, field, value string) ([]byte, error) {
-	if ciphertext == nil || ciphertext.aead == nil || batchID == "" || line < 1 || field == "" || value == "" {
+	if ciphertext == nil || ciphertext.aead == nil || batchID == "" || line < 0 || field == "" || value == "" {
 		return nil, errors.New("owner handoff cipher unavailable")
 	}
 	nonce := make([]byte, ciphertext.aead.NonceSize())
@@ -43,7 +43,7 @@ func (ciphertext *OwnerHandoffCipher) Seal(batchID string, line int64, field, va
 }
 
 func (ciphertext *OwnerHandoffCipher) Open(batchID string, line int64, field string, value []byte) (string, error) {
-	if ciphertext == nil || ciphertext.aead == nil || batchID == "" || line < 1 || field == "" || len(value) < ciphertext.aead.NonceSize()+ciphertext.aead.Overhead() {
+	if ciphertext == nil || ciphertext.aead == nil || batchID == "" || line < 0 || field == "" || len(value) < ciphertext.aead.NonceSize()+ciphertext.aead.Overhead() {
 		return "", errors.New("owner handoff snapshot unavailable")
 	}
 	plain, err := ciphertext.aead.Open(nil, value[:ciphertext.aead.NonceSize()], value[ciphertext.aead.NonceSize():], ownerHandoffAAD(batchID, line, field))

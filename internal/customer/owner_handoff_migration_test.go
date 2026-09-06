@@ -20,6 +20,8 @@ func TestOwnerHandoffMigrationKeepsLocalAndWeComFactsSeparate(t *testing.T) {
 		"owner_handoff_wecom_then_crm",
 		"external_identity_digest",
 		"customer_owner_handoff_history_imports",
+		"transfer_result_cursor_ciphertext",
+		"transfer_status INTEGER",
 	} {
 		if !strings.Contains(value, required) {
 			t.Fatalf("migration missing %q", required)

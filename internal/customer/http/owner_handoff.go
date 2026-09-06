@@ -29,6 +29,9 @@ type ownerHandoffConfirmBody struct {
 	ConfirmationPhrase string `json:"confirmation_phrase"`
 	IdempotencyKey     string `json:"idempotency_key"`
 }
+type ownerHandoffTransferResultBody struct {
+	IdempotencyKey string `json:"idempotency_key"`
+}
 
 func (handler *Handler) ownerHandoffPrincipal(response nethttp.ResponseWriter, request *nethttp.Request, csrf bool) (accessdomain.Principal, bool) {
 	var principal accessdomain.Principal
@@ -125,6 +128,25 @@ func (handler *Handler) ownerHandoffBatchRead(response nethttp.ResponseWriter, r
 		batch, e = handler.ownerHandoffReader.OwnerHandoffBatch(tx, id)
 		return e
 	})
+	if err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	writePrivateJSON(response, nethttp.StatusOK, batch)
+}
+
+func (handler *Handler) ownerHandoffTransferResult(response nethttp.ResponseWriter, request *nethttp.Request) {
+	principal, ok := handler.ownerHandoffPrincipal(response, request, true)
+	if !ok {
+		return
+	}
+	var body ownerHandoffTransferResultBody
+	if err := decodeOwnerHandoff(request, &body); err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	batchID := strings.TrimSpace(request.PathValue("batch_id"))
+	batch, err := handler.ownerHandoffTransfers.RefreshOwnerHandoffTransferResult(request.Context(), customerport.OwnerHandoffTransferResultCommand{ActorAdminUserID: principal.InternalID, BatchID: batchID, IdempotencyKey: body.IdempotencyKey})
 	if err != nil {
 		handler.writeError(response, err)
 		return

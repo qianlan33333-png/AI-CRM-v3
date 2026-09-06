@@ -36,7 +36,10 @@ func (provider *CustomerOwnerHandoffProvider) Execute(ctx context.Context, envel
 	if err != nil {
 		attempted := wecomport.ProviderCallAttempted(err)
 		state := effectport.StateFinalFailed
-		if attempted && wecomport.ProviderOutcomeUnknown(err) {
+		// An unclassified attempted write is unsafe to retry just as a
+		// classified transport disconnect is. Only a parsed Provider rejection
+		// is final_failed after the write boundary.
+		if attempted && (!wecomport.ProviderWriteClassified(err) || wecomport.ProviderOutcomeUnknown(err)) {
 			state = effectport.StateUnknown
 		}
 		if !attempted && wecomport.ProviderRetryable(err) {
@@ -66,7 +69,7 @@ func (sink *CustomerOwnerHandoffCompletionSink) CompleteEffect(ctx context.Conte
 		return errors.New("invalid owner handoff completion")
 	}
 	return sink.writer.CompleteOwnerHandoffEffect(ctx, customerport.OwnerHandoffCompletion{
-		EffectID: effectRef, State: string(result.Completion), ResultDigest: string(result.ReceiptDigest), Attempt: attempt.Number,
+		EffectID: effectRef, State: string(result.Completion), ResultDigest: string(result.ReceiptDigest), Attempt: attempt.Number, Generation: attempt.Generation, Fence: attempt.Fence,
 	})
 }
 

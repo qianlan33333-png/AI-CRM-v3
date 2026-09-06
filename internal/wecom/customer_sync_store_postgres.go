@@ -2,8 +2,10 @@ package wecom
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -402,7 +404,7 @@ func (PostgreSQLCustomerSyncStore) AudiencePrimaryOwners(ctx context.Context, cu
 	rows, err := tx.Query(ctx, `WITH requested AS (
 		SELECT unnest($1::bigint[]) AS customer_id
 	), profiles AS (
-		SELECT profile.customer_id,profile.corp_scope,profile.primary_owner_userid,profile.primary_owner_run_id
+		SELECT profile.customer_id,profile.corp_scope,profile.primary_owner_userid,profile.primary_owner_run_id,profile.version
 		FROM wecom_external_contact_profiles profile
 		JOIN requested ON requested.customer_id=profile.customer_id
 		JOIN wecom_customer_sync_runs primary_run ON primary_run.id=profile.primary_owner_run_id AND primary_run.status='succeeded'
@@ -424,7 +426,8 @@ func (PostgreSQLCustomerSyncStore) AudiencePrimaryOwners(ctx context.Context, cu
 		CASE WHEN COALESCE(conflicts.owner_count,0)>1 THEN '' ELSE COALESCE(profiles.primary_owner_userid,'') END,
 		CASE WHEN COALESCE(conflicts.owner_count,0)>1 THEN 'ambiguous'
 			WHEN COALESCE(profiles.primary_owner_userid,'')<>'' THEN 'known'
-			ELSE 'unknown' END
+			ELSE 'unknown' END,
+		COALESCE(profiles.version,0),COALESCE(profiles.primary_owner_run_id,0)
 	FROM requested
 	LEFT JOIN profiles ON profiles.customer_id=requested.customer_id
 	LEFT JOIN conflicts ON conflicts.customer_id=requested.customer_id
@@ -436,8 +439,12 @@ func (PostgreSQLCustomerSyncStore) AudiencePrimaryOwners(ctx context.Context, cu
 	items := make([]wecomport.AudiencePrimaryOwner, 0, len(ids))
 	for rows.Next() {
 		var item wecomport.AudiencePrimaryOwner
-		if err = rows.Scan(&item.CustomerID, &item.CorpScope, &item.OwnerUserID, &item.Status); err != nil {
+		var profileVersion, primaryRunID int64
+		if err = rows.Scan(&item.CustomerID, &item.CorpScope, &item.OwnerUserID, &item.Status, &profileVersion, &primaryRunID); err != nil {
 			return nil, err
+		}
+		if item.Status == "known" {
+			item.VersionDigest = sha256.Sum256([]byte("wecom-audience-primary-owner:v1\x00" + strconv.FormatInt(int64(item.CustomerID), 10) + "\x00" + item.CorpScope + "\x00" + item.OwnerUserID + "\x00" + strconv.FormatInt(profileVersion, 10) + "\x00" + strconv.FormatInt(primaryRunID, 10)))
 		}
 		items = append(items, item)
 	}

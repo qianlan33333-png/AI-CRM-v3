@@ -813,7 +813,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(cipherErr)
 	}
 	ownerHandoffStore := customer.NewPostgreSQLOwnerHandoffStoreWithCipher(ownerHandoffCipher)
-	ownerHandoffService, ownerServiceErr := customerapp.NewOwnerHandoffService(uow, ownerHandoffStore, accessRepository, customerOwnerHandoffCandidates{staff: accessRepository, relationships: relationships, identities: queries, owners: ownerHandoffStore}, auditService, platformoutbox.NewPostgreSQL())
+	ownerHandoffService, ownerServiceErr := customerapp.NewOwnerHandoffService(uow, ownerHandoffStore, accessRepository, customerOwnerHandoffCandidates{staff: accessRepository, relationships: relationships, primaries: customerProfileStore, identities: queries, owners: ownerHandoffStore}, auditService, platformoutbox.NewPostgreSQL())
 	if ownerServiceErr != nil {
 		return fail(ownerServiceErr)
 	}
@@ -829,13 +829,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
 		Canonical:   canonicalCustomerAdapter{reader: queries},
-		Owners:      customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository},
+		Owners:      customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository, owners: ownerHandoffStore},
 		Tags:        customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
 		TagCommands: customerTagCommands,
 		TagHistory:  customerstore.TagCommandPostgreSQL{},
 		Surveys:     customerSurveyAdapter{reader: surveySubmissions},
 		Timeline:    customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey,
-		OwnerHandoff: ownerHandoffService, OwnerHandoffReader: ownerHandoffStore})
+		OwnerHandoff: ownerHandoffService, OwnerHandoffReader: ownerHandoffStore, OwnerHandoffTransfers: ownerHandoffService})
 	if err != nil {
 		return fail(err)
 	}

@@ -3,6 +3,7 @@ package customer
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -214,15 +215,16 @@ func TestPostgreSQLOwnerHandoffExecutionUsesFrozenCiphertextAndFourDigests(t *te
 		}
 		sourceDigest := ownerHandoffSnapshotDigest("source-userid", "source-user")
 		targetDigest := ownerHandoffSnapshotDigest("target-userid", "target-user")
+		externalDigest := sha256.Sum256([]byte("external-1"))
 		payloadDigest := ownerHandoffSnapshotDigest("transfer-payload", "external-1", "")
 		policyDigest := ownerHandoffSnapshotDigest("policy", "wecom_then_crm", "wecom-corp:fixture", int64Text(sourceStaff), int64Text(targetStaff))
-		_, transactionErr = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,effect_id,state) VALUES($1,1,$2,'wecom_then_crm',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'queued')`, batchID, customerID, sourceStaff, targetStaff, digest, sourceCipher, targetCipher, externalCipher, sourceDigest[:], targetDigest[:], digest, payloadDigest[:], policyDigest[:], effectID)
+		_, transactionErr = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,effect_id,state) VALUES($1,1,$2,'wecom_then_crm',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'queued')`, batchID, customerID, sourceStaff, targetStaff, digest, sourceCipher, targetCipher, externalCipher, sourceDigest[:], targetDigest[:], externalDigest[:], payloadDigest[:], policyDigest[:], effectID)
 		return transactionErr
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err = uow.Within(ctx, func(txctx context.Context) error {
-		if completeErr := store.CompleteOwnerHandoffEffect(txctx, customerport.OwnerHandoffCompletion{EffectID: effectID, State: string(effectport.StateExecuted), ResultDigest: string(effectport.Hash("owner-handoff.fixture.accepted")), Attempt: 1}); completeErr != nil {
+		if completeErr := store.CompleteOwnerHandoffEffect(txctx, customerport.OwnerHandoffCompletion{EffectID: effectID, State: string(effectport.StateExecuted), ResultDigest: string(effectport.Hash("owner-handoff.fixture.accepted")), Attempt: 1, Generation: 1, Fence: 1}); completeErr != nil {
 			return completeErr
 		}
 		var lineState string
@@ -239,6 +241,44 @@ func TestPostgreSQLOwnerHandoffExecutionUsesFrozenCiphertextAndFourDigests(t *te
 		}
 		if lineState != "provider_accepted" || localCount != 1 {
 			t.Fatalf("accepted transfer must CAS local owner once state=%s owners=%d", lineState, localCount)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// transfer_result is a Provider-read projection only: its pending/failed
+	// status is recorded against the already accepted line and never re-runs
+	// transfer_customer or changes the just-CASed local owner.
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		read, readErr := store.LoadOwnerHandoffTransferRead(txctx, sourceStaff, batchID)
+		if readErr != nil {
+			return readErr
+		}
+		if read.SourceUserID != "source-user" || read.TargetUserID != "target-user" || read.Cursor != "" {
+			t.Fatalf("read=%+v", read)
+		}
+		batch, changed, recordErr := store.RecordOwnerHandoffTransferResult(txctx, read, "", []customerport.OwnerHandoffTransferObservation{{ExternalUserID: "external-1", Status: 2, TakeoverTime: 0}})
+		if recordErr != nil {
+			return recordErr
+		}
+		if changed != 1 || len(batch.Lines) != 1 || batch.Lines[0].State != "observed" || batch.Lines[0].TransferStatus != 2 || batch.Lines[0].TakeoverAt != nil {
+			t.Fatalf("batch=%+v changed=%d", batch, changed)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		read, readErr := store.LoadOwnerHandoffTransferRead(txctx, sourceStaff, batchID)
+		if readErr != nil {
+			return readErr
+		}
+		if read.Cursor != "" {
+			t.Fatalf("cursor=%q", read.Cursor)
+		}
+		batch, changed, recordErr := store.RecordOwnerHandoffTransferResult(txctx, read, "", []customerport.OwnerHandoffTransferObservation{{ExternalUserID: "external-1", Status: 1, TakeoverTime: 100}})
+		if recordErr != nil || changed != 1 || len(batch.Lines) != 1 || batch.Lines[0].TransferStatus != 1 || batch.Lines[0].TakeoverAt == nil {
+			t.Fatalf("later final observation err=%v changed=%d batch=%+v", recordErr, changed, batch)
 		}
 		return nil
 	}); err != nil {
@@ -281,4 +321,137 @@ func int64Text(value int64) string {
 func snapshotDigestText(label string, values ...string) string {
 	digest := ownerHandoffSnapshotDigest(label, values...)
 	return effectDigestString(digest[:])
+}
+
+func TestPostgreSQLOwnerHandoffCompletionPreservesAttentionAndReplaysReceipt(t *testing.T) {
+	databaseURL, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("AICRM_DATABASE_URL is not configured; skipping owner-handoff PostgreSQL integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, cleanup := ownerHandoffPool(t, ctx, databaseURL)
+	defer cleanup()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, cipherErr := NewOwnerHandoffCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if cipherErr != nil {
+		t.Fatal(cipherErr)
+	}
+	store := NewPostgreSQLOwnerHandoffStoreWithCipher(cipher)
+	var source, target, firstCustomer, secondCustomer int64
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		tx, e := platformpostgres.RequireTransaction(txctx)
+		if e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid) VALUES('completion-source','$argon2id$fixture','Source','completion-source') RETURNING id`).Scan(&source); e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid) VALUES('completion-target','$argon2id$fixture','Target','completion-target') RETURNING id`).Scan(&target); e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&firstCustomer); e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&secondCustomer); e != nil {
+			return e
+		}
+		digest := make([]byte, 32)
+		digest[0] = 9
+		if _, e = tx.Exec(txctx, `INSERT INTO customer_owner_handoff_previews(id,actor_admin_user_id,mode,source_staff_id,target_staff_id,corp_scope,request_digest,confirmation_phrase,expires_at) VALUES('preview-completion',$1,'wecom_then_crm',$1,$2,'wecom-corp:fixture',$3,'CONFIRM',clock_timestamp()+interval '30 min')`, source, target, digest); e != nil {
+			return e
+		}
+		if _, e = tx.Exec(txctx, `INSERT INTO customer_owner_handoff_batches(id,preview_id,actor_admin_user_id,idempotency_key,request_digest,mode,source_staff_id,target_staff_id,corp_scope,state) VALUES('batch-completion','preview-completion',$1,'completion-idempotency',$2,'wecom_then_crm',$1,$3,'wecom-corp:fixture','executing')`, source, digest, target); e != nil {
+			return e
+		}
+		for line, customerID := range []int64{firstCustomer, secondCustomer} {
+			if _, e = tx.Exec(txctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,relation_digest,effect_id,state) VALUES('batch-completion',$1,$2,'wecom_then_crm',$3,$4,$5,$6,'queued')`, line+1, customerID, source, target, digest, fmt.Sprintf("effect-completion-%d", line+1)); e != nil {
+				return e
+			}
+		}
+		sourceCipher, e := cipher.Seal("preview-completion", 2, "source_userid", "completion-source")
+		if e != nil {
+			return e
+		}
+		targetCipher, e := cipher.Seal("preview-completion", 2, "target_userid", "completion-target")
+		if e != nil {
+			return e
+		}
+		externalCipher, e := cipher.Seal("preview-completion", 2, "external_userid", "completion-external")
+		if e != nil {
+			return e
+		}
+		externalDigest := sha256.Sum256([]byte("completion-external"))
+		if _, e = tx.Exec(txctx, `UPDATE customer_owner_handoff_lines SET source_userid_ciphertext=$1,target_userid_ciphertext=$2,external_identity_ciphertext=$3,external_identity_digest=$4 WHERE batch_id='batch-completion' AND line_no=2`, sourceCipher, targetCipher, externalCipher, externalDigest[:]); e != nil {
+			return e
+		}
+		// A different local owner appears after preview, so the accepted
+		// transfer is preserved as cas_conflict rather than overwriting it.
+		if _, e = tx.Exec(txctx, `INSERT INTO customer_local_owners(customer_id,staff_id,version,source) VALUES($1,$2,1,'owner_handoff_local_only')`, secondCustomer, source); e != nil {
+			return e
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unknown := customerport.OwnerHandoffCompletion{EffectID: "effect-completion-1", State: string(effectport.StateUnknown), ResultDigest: string(effectport.Hash("completion", "unknown")), Attempt: 1, Generation: 1, Fence: 1}
+	accepted := customerport.OwnerHandoffCompletion{EffectID: "effect-completion-2", State: string(effectport.StateExecuted), ResultDigest: string(effectport.Hash("completion", "accepted")), Attempt: 1, Generation: 1, Fence: 1}
+	if err = uow.Within(ctx, func(txctx context.Context) error { return store.CompleteOwnerHandoffEffect(txctx, unknown) }); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error { return store.CompleteOwnerHandoffEffect(txctx, accepted) }); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		tx, e := platformpostgres.RequireTransaction(txctx)
+		if e != nil {
+			return e
+		}
+		var batchState, secondState string
+		var ownerVersion int64
+		if e = tx.QueryRow(txctx, `SELECT state FROM customer_owner_handoff_batches WHERE id='batch-completion'`).Scan(&batchState); e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `SELECT state FROM customer_owner_handoff_lines WHERE effect_id='effect-completion-2'`).Scan(&secondState); e != nil {
+			return e
+		}
+		if e = tx.QueryRow(txctx, `SELECT version FROM customer_local_owners WHERE customer_id=$1`, secondCustomer).Scan(&ownerVersion); e != nil {
+			return e
+		}
+		if batchState != "needs_attention" || secondState != "cas_conflict" || ownerVersion != 1 {
+			t.Fatalf("batch=%s line=%s version=%d", batchState, secondState, ownerVersion)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A transfer_result page remains readable for the accepted-but-local-CAS-
+	// conflicted line. Its final observation does not erase that conflict or
+	// perform another local assignment.
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		read, e := store.LoadOwnerHandoffTransferRead(txctx, source, "batch-completion")
+		if e != nil {
+			return e
+		}
+		batch, changed, e := store.RecordOwnerHandoffTransferResult(txctx, read, "", []customerport.OwnerHandoffTransferObservation{{ExternalUserID: "completion-external", Status: 1, TakeoverTime: 100}})
+		if e != nil || changed != 1 || len(batch.Lines) != 2 || batch.Lines[1].State != "cas_conflict" || batch.Lines[1].TransferStatus != 1 {
+			t.Fatalf("readback err=%v changed=%d batch=%+v", e, changed, batch)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Same effect/receipt/attempt is a no-op replay; it must not perform a
+	// second local CAS. A stale attempt is rejected rather than rewriting facts.
+	if err = uow.Within(ctx, func(txctx context.Context) error { return store.CompleteOwnerHandoffEffect(txctx, accepted) }); err != nil {
+		t.Fatalf("same receipt replay: %v", err)
+	}
+	stale := accepted
+	stale.Fence = 2 // a completion from another EER lease must not project.
+	if err = uow.Within(ctx, func(txctx context.Context) error { return store.CompleteOwnerHandoffEffect(txctx, stale) }); !errors.Is(err, ErrOwnerHandoffConflict) {
+		t.Fatalf("stale completion err=%v", err)
+	}
 }

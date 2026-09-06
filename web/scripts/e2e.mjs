@@ -130,7 +130,7 @@ async function loadQuestionnaireEditor({ q = '', questionnaire } = {}) {
   return { dom, trace };
 }
 
-async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false } = {}) {
+async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false, ownerHandoffHttp = false } = {}) {
   const file = path.join(DIST, rel);
   let html = fs.readFileSync(file, 'utf8');
   // 用 jsdom 执行内联脚本：把 bundle 内联进去，避免资源加载配置
@@ -143,7 +143,23 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     beforeParse(window) {
       if (h5WeChat) Object.defineProperty(window.navigator, 'userAgent', { value: 'MicroMessenger/8.0', configurable: true });
       // Mock 仅由 DOM 回归测试显式注入；浏览器默认运行态不会走此路径。
-      window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp);
+      window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp || ownerHandoffHttp);
+      if (ownerHandoffHttp) {
+        window.Headers = Headers;
+        const test = window.__ownerHandoffHttpTest = { calls: [] };
+        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data });
+        window.fetch = async (input, init = {}) => {
+          const url = new URL(String(input), window.location.origin);
+          const method = init.method || 'GET';
+          const body = init.body ? JSON.parse(String(init.body)) : undefined;
+          test.calls.push({ path: url.pathname, method, body, credentials: init.credentials });
+          if (url.pathname === '/api/admin/customers/owner-handoffs/previews' && method === 'POST') return json({ ID: 'preview-owner-host', Mode: body.mode, SourceStaffID: body.source_staff_id, TargetStaffID: body.target_staff_id, CorpScope: body.corp_scope, Hash: 'preview-hash', ConfirmationPhrase: 'CONFIRM', ExpiresAt: '2026-09-06T12:00:00Z', Rows: body.customer_ids.map((CustomerID, index) => ({ Line: index + 1, CustomerID, State: 'ready' })) });
+          if (url.pathname === '/api/admin/customers/owner-handoffs/confirm' && method === 'POST') return json({ ID: 'batch-owner-host', Mode: 'wecom_then_crm', State: 'accepted', Lines: [{ Line: 1, CustomerID: 42, State: 'queued' }] });
+          if (url.pathname === '/api/admin/customers/owner-handoffs/batches/batch-owner-host/transfer-result' && method === 'POST') return json({ ID: 'batch-owner-host', Mode: 'wecom_then_crm', State: 'executing', Lines: [{ Line: 1, CustomerID: 42, State: 'observed', TransferStatus: 1, TakeoverAt: '2026-09-06T12:01:00Z' }] });
+          return json({ error: 'unexpected_owner_handoff_request' }, 500);
+        };
+        return;
+      }
       if (hxcHistoryHttp) {
         window.Headers = Headers;
         const test = window.__hxcHistoryHttpTest = { calls: [], fail: hxcHistoryHttp.fail || false };
@@ -2524,38 +2540,45 @@ console.log('admin/channelForm.html?id=49（HTTP 历史渠道读取失败关闭�
   dom.window.close();
 }
 
-console.log('admin/ownerMig.html（本地安全 CSV/XLSX 迁移边界）');
+console.log('admin/ownerMig.html（负责人迁移 Host → Preview → Confirm → 回查）');
 {
-  const dom = await loadPage('admin/ownerMig.html');
+  const dom = await loadPage('admin/ownerMig.html', { ownerHandoffHttp: true });
+  await sleep(100);
   const d = dom.window.document;
-  const csv = d.querySelector('#ownerMigCsv');
-  ok('当前负责人迁移主壳不暴露重复计数的旧历史导航', !d.querySelector('a[href="ownerMig.html?contact_history=1"]'));
-  ok('接受 CSV/XLSX 且不再显示企微转接/欢迎语控件', csv?.getAttribute('accept')?.includes('.csv') && csv?.getAttribute('accept')?.includes('.xlsx') && !d.body.textContent.includes('同时发起企微转接') && !d.body.textContent.includes('转接欢迎语'));
-  ok('初始明确为空且真实动作均已绑定', d.body.textContent.includes('尚未生成迁移预览，不会发送执行请求') && [...d.querySelectorAll('button')].filter((b) => b.__dcBound).length >= 2);
-
+  const test = dom.window.__ownerHandoffHttpTest;
+  const stage = d.querySelector('[data-owner-handoff-host]');
+  ok('冻结页面由 V3 Host 挂载两种模式和安全 CSV/XLSX 输入', Boolean(stage) && d.querySelector('[data-mode]')?.value === 'wecom_then_crm' && d.querySelector('[data-file]')?.getAttribute('accept')?.includes('.xlsx'));
+  d.querySelector('[data-scope]').value = 'wecom-corp:fixture';
+  d.querySelector('[data-source]').value = '10';
+  d.querySelector('[data-target]').value = '20';
+  d.querySelector('[data-customers]').value = '42';
+  click(dom, d.querySelector('[data-preview]'));
+  await sleep(100);
+  ok('Host 将范围和 wecom_then_crm 原样提交至真实 V3 preview 路由', test.calls.length === 1 && test.calls[0].path === '/api/admin/customers/owner-handoffs/previews' && test.calls[0].method === 'POST' && test.calls[0].body.mode === 'wecom_then_crm' && test.calls[0].body.source_staff_id === 10 && test.calls[0].body.target_staff_id === 20 && test.calls[0].body.customer_ids[0] === 42 && d.querySelector('[data-preview-result]'));
+  click(dom, d.querySelector('[data-confirm]'));
+  await sleep(100);
+  ok('Host 只在冻结 preview hash 和确认语存在时确认，并展示逐行 queued 结果', test.calls.length === 2 && test.calls[1].path === '/api/admin/customers/owner-handoffs/confirm' && test.calls[1].body.preview_id === 'preview-owner-host' && test.calls[1].body.preview_hash === 'preview-hash' && d.querySelector('[data-batch-result]')?.textContent.includes('queued'));
+  click(dom, d.querySelector('[data-refresh]'));
+  await sleep(100);
+  ok('企微回查是独立 POST，不从页面直接写 Provider，并回填逐行状态', test.calls.length === 3 && test.calls[2].path === '/api/admin/customers/owner-handoffs/batches/batch-owner-host/transfer-result' && test.calls[2].method === 'POST' && d.querySelector('[data-batch-result]')?.textContent.includes('observed'));
   dom.window.__aicrmDownload = null;
-  dom.window.URL.createObjectURL = () => 'blob:owner-migration';
+  dom.window.URL.createObjectURL = () => 'blob:owner-handoff';
   dom.window.URL.revokeObjectURL = () => {};
-  dom.window.HTMLAnchorElement.prototype.click = function () {
-    dom.window.__aicrmDownload = { filename: this.download, href: this.href };
-  };
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.includes('下载安全 CSV 模板')));
-  await sleep(250);
-  ok('下载负责人迁移模板触发本地 CSV 下载', dom.window.__aicrmDownload?.filename === '负责人迁移模板.csv');
-
-  Object.defineProperty(csv, 'files', {
-    configurable: true,
-    value: [(() => {
-      const bytes = fs.readFileSync(path.join(ROOT, 'src/admin/fixtures/owner-reassignment-valid.xlsx'));
-      const file = new dom.window.File([bytes], 'owners.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      Object.defineProperty(file, 'arrayBuffer', { value: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) });
-      return file;
-    })()],
-  });
-  const parseButton = [...d.querySelectorAll('button')].find((b) => b.textContent.includes('上传并生成预览'));
-  click(dom, parseButton);
-  await sleep(500);
-  ok('上传真实 XLSX 第一张表后生成服务端持久预览投影', d.body.textContent.includes('服务端持久预览') && d.body.textContent.includes('preview_id: cor_0123456789012345678901') && d.body.textContent.includes('预览已生成'));
+  dom.window.HTMLAnchorElement.prototype.click = function () { dom.window.__aicrmDownload = { filename: this.download, href: this.href }; };
+  click(dom, d.querySelector('[data-export-results]'));
+  ok('结果导出仅含本地行/状态投影，不含企微 external_userid', dom.window.__aicrmDownload?.filename === '负责人迁移结果-batch-owner-host.csv');
+  dom.window.close();
+}
+{
+  const dom = await loadPage('admin/ownerMig.html', { ownerHandoffHttp: true });
+  await sleep(100);
+  const d = dom.window.document;
+  const file = new dom.window.File(['customer_id,expected_owner_staff_id,expected_updated_at,target_owner_staff_id\n51,11,2026-09-06T00:00:00Z,21\n'], 'owner-range.csv', { type: 'text/csv' });
+  Object.defineProperty(d.querySelector('[data-file]'), 'files', { configurable: true, value: [file] });
+  click(dom, d.querySelector('[data-preview]'));
+  await sleep(100);
+  const call = dom.window.__ownerHandoffHttpTest.calls[0];
+  ok('CSV 范围复用冻结 XLSX/CSV 解析器并拒绝逐行改变源目标前才生成 V3 预览', call?.path === '/api/admin/customers/owner-handoffs/previews' && call.body.customer_ids[0] === 51 && call.body.source_staff_id === 11 && call.body.target_staff_id === 21);
   dom.window.close();
 }
 

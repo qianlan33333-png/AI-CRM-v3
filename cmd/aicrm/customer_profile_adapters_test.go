@@ -34,6 +34,10 @@ func (value profileObservations) CustomerTagObservations(context.Context, custom
 
 type profileUsers map[string]string
 
+func (users profileUsers) UserByID(context.Context, int64, bool) (accessdomain.User, error) {
+	return accessdomain.User{}, accessdomain.ErrNotFound
+}
+
 func (users profileUsers) UserByWeComUserID(_ context.Context, id string, _ bool) (accessdomain.User, error) {
 	name, ok := users[id]
 	if !ok {
@@ -105,4 +109,47 @@ func (failingProfileObservations) CustomerOwnerObservations(context.Context, cus
 }
 func (failingProfileObservations) CustomerTagObservations(context.Context, customerdomain.CustomerID) ([]wecomport.TagObservation, error) {
 	return nil, errors.New("database unavailable")
+}
+
+type localOwnerProfileStore struct {
+	owner customerport.LocalOwner
+	found bool
+}
+
+func (store localOwnerProfileStore) LocalOwner(context.Context, customerdomain.CustomerID, bool) (customerport.LocalOwner, bool, error) {
+	return store.owner, store.found, nil
+}
+
+type localOwnerProfileUsers struct {
+	byID    map[int64]accessdomain.User
+	byWeCom map[string]accessdomain.User
+}
+
+func (users localOwnerProfileUsers) UserByID(_ context.Context, id int64, _ bool) (accessdomain.User, error) {
+	user, found := users.byID[id]
+	if !found {
+		return accessdomain.User{}, accessdomain.ErrNotFound
+	}
+	return user, nil
+}
+
+func (users localOwnerProfileUsers) UserByWeComUserID(_ context.Context, id string, _ bool) (accessdomain.User, error) {
+	user, found := users.byWeCom[id]
+	if !found {
+		return accessdomain.User{}, accessdomain.ErrNotFound
+	}
+	return user, nil
+}
+
+func TestCustomerOwnerAdapterShowsExplicitLocalOwnerBeforeWeComFacts(t *testing.T) {
+	now := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	page, err := (customerOwnerAdapter{
+		uow:          profileTestUOW{},
+		observations: profileObservations{owners: []wecomport.OwnerObservation{{EmployeeID: "former", Status: "active", ObservedAt: now.Add(-time.Hour)}}},
+		users:        localOwnerProfileUsers{byID: map[int64]accessdomain.User{9: {ID: 9, DisplayName: "新负责人"}}, byWeCom: map[string]accessdomain.User{"former": {DisplayName: "旧跟进员工"}}},
+		owners:       localOwnerProfileStore{owner: customerport.LocalOwner{CustomerID: 42, StaffID: 9, Version: 2, Source: "owner_handoff_wecom_then_crm", UpdatedAt: now}, found: true},
+	}).CustomerOwners(context.Background(), 42)
+	if err != nil || len(page.Items) != 2 || page.Items[0].DisplayName != "新负责人" || page.Items[0].Status != "local_owner" || page.Items[0].Source != "owner_handoff_wecom_then_crm" || page.Items[1].Source != "wecom_follow" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
 }

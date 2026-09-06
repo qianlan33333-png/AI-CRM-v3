@@ -47,11 +47,13 @@ type OwnerHandoffPreview struct {
 }
 
 type OwnerHandoffLine struct {
-	Line       int64
-	CustomerID customerdomain.CustomerID
-	State      string
-	EffectID   string
-	ObservedAt *time.Time
+	Line           int64
+	CustomerID     customerdomain.CustomerID
+	State          string
+	EffectID       string
+	ObservedAt     *time.Time
+	TransferStatus int
+	TakeoverAt     *time.Time
 }
 
 type OwnerHandoffBatch struct {
@@ -69,7 +71,10 @@ type OwnerHandoffReader interface {
 }
 
 type OwnerHandoffExecution struct {
-	EffectID string
+	EffectID      string
+	SourceStaffID int64
+	TargetStaffID int64
+	CorpScope     string
 	// SourceRefDigest and TargetRefDigest bind this exact frozen batch line to
 	// its opaque EER envelope. They are deliberately distinct from provider IDs.
 	SourceRefDigest  string
@@ -95,6 +100,8 @@ type OwnerHandoffCompletion struct {
 	State        string
 	ResultDigest string
 	Attempt      int32
+	Generation   int64
+	Fence        int64
 }
 
 type OwnerHandoffCompletionWriter interface {
@@ -143,6 +150,40 @@ type OwnerHandoffConfirmCommand struct {
 type OwnerHandoffService interface {
 	PreviewOwnerHandoff(context.Context, OwnerHandoffPreviewCommand) (OwnerHandoffPreview, error)
 	ConfirmOwnerHandoff(context.Context, OwnerHandoffConfirmCommand) (OwnerHandoffBatch, error)
+}
+
+// OwnerHandoffTransferResultCommand requests one bounded, read-only WeCom
+// transfer-result page for an already accepted batch. It cannot create a
+// transfer or change local ownership; the accepted effect completion remains
+// the only path that performs that CAS.
+type OwnerHandoffTransferResultCommand struct {
+	ActorAdminUserID int64
+	BatchID          string
+	// IdempotencyKey identifies this explicit readback command. Replaying the
+	// same key is safe; a later operator refresh receives a new key so a changed
+	// final observation is not hidden behind an earlier empty cursor.
+	IdempotencyKey string
+}
+
+type OwnerHandoffTransferResultService interface {
+	RefreshOwnerHandoffTransferResult(context.Context, OwnerHandoffTransferResultCommand) (OwnerHandoffBatch, error)
+}
+
+// OwnerHandoffTransferRead and OwnerHandoffTransferObservation stay inside
+// the Customer/WeCom adapter boundary. Reader DTOs and HTTP responses only
+// expose their safe status and timestamp projection.
+type OwnerHandoffTransferRead struct {
+	BatchID      string
+	ActorAdminID int64
+	SourceUserID string
+	TargetUserID string
+	Cursor       string
+}
+
+type OwnerHandoffTransferObservation struct {
+	ExternalUserID string
+	Status         int
+	TakeoverTime   int64
 }
 
 // OwnerHandoffPreviewRecord is an internal Customer-owner persistence value.

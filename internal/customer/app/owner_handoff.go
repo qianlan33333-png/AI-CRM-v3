@@ -19,6 +19,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 var (
@@ -27,6 +28,15 @@ var (
 	ErrOwnerHandoffForbidden = errors.New("owner handoff target unavailable")
 	ErrOwnerHandoffDrift     = errors.New("owner handoff preview changed")
 )
+
+type ownerHandoffTransferStore interface {
+	LoadOwnerHandoffTransferRead(context.Context, int64, string) (customerport.OwnerHandoffTransferRead, error)
+	RecordOwnerHandoffTransferResult(context.Context, customerport.OwnerHandoffTransferRead, string, []customerport.OwnerHandoffTransferObservation) (customerport.OwnerHandoffBatch, int, error)
+}
+
+type ownerHandoffTransferReader interface {
+	TransferResult(context.Context, string, string, string) (wecomport.CustomerTransferResult, error)
+}
 
 type OwnerHandoffStore interface {
 	CreateOwnerHandoffPreview(context.Context, customerport.OwnerHandoffPreviewRecord) (customerport.OwnerHandoffPreview, error)
@@ -53,6 +63,7 @@ type OwnerHandoffService struct {
 	}
 	outbox               platformoutbox.Appender
 	effects              effectport.TransactionalAccepter
+	transferResults      ownerHandoffTransferReader
 	wecomProviderEnabled bool
 	now                  func() time.Time
 	newID                func() (string, error)
@@ -82,6 +93,17 @@ func (service *OwnerHandoffService) SetWeComProviderEnabled(enabled bool) {
 	if service != nil {
 		service.wecomProviderEnabled = enabled
 	}
+}
+
+// SetTransferResultReader installs the existing WeCom-owned, read-only
+// protocol leaf. Composition calls this during startup once the provider
+// adapter exists; the endpoint fails closed until then.
+func (service *OwnerHandoffService) SetTransferResultReader(reader ownerHandoffTransferReader) error {
+	if service == nil || reader == nil {
+		return errors.New("owner handoff transfer-result reader is required")
+	}
+	service.transferResults = reader
+	return nil
 }
 
 func (service *OwnerHandoffService) PreviewOwnerHandoff(ctx context.Context, command customerport.OwnerHandoffPreviewCommand) (customerport.OwnerHandoffPreview, error) {
@@ -244,6 +266,60 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 	return out, err
 }
 
+// RefreshOwnerHandoffTransferResult executes one read-only documented result
+// page outside PostgreSQL, then records only safe status/time projections in a
+// fresh UoW. It never retries transfer_customer or changes a local owner.
+func (service *OwnerHandoffService) RefreshOwnerHandoffTransferResult(ctx context.Context, command customerport.OwnerHandoffTransferResultCommand) (customerport.OwnerHandoffBatch, error) {
+	if service == nil || command.ActorAdminUserID < 1 || strings.TrimSpace(command.BatchID) != command.BatchID || command.BatchID == "" || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey || len(command.IdempotencyKey) < 8 || !service.wecomProviderEnabled || service.transferResults == nil {
+		return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffForbidden
+	}
+	store, ok := service.store.(ownerHandoffTransferStore)
+	if !ok {
+		return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffForbidden
+	}
+	var read customerport.OwnerHandoffTransferRead
+	if err := service.uow.Within(ctx, func(txctx context.Context) error {
+		var loadErr error
+		read, loadErr = store.LoadOwnerHandoffTransferRead(txctx, command.ActorAdminUserID, command.BatchID)
+		return loadErr
+	}); err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	providerResult, err := service.transferResults.TransferResult(ctx, read.SourceUserID, read.TargetUserID, read.Cursor)
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	observations := make([]customerport.OwnerHandoffTransferObservation, 0, len(providerResult.Observations))
+	for _, observation := range providerResult.Observations {
+		observations = append(observations, customerport.OwnerHandoffTransferObservation{ExternalUserID: observation.ExternalUserID, Status: observation.Status, TakeoverTime: observation.TakeoverTime})
+	}
+	var out customerport.OwnerHandoffBatch
+	var observed int
+	err = service.uow.Within(ctx, func(txctx context.Context) error {
+		var recordErr error
+		out, observed, recordErr = store.RecordOwnerHandoffTransferResult(txctx, read, providerResult.Cursor, observations)
+		if recordErr != nil {
+			return recordErr
+		}
+		return service.appendTransferResultFacts(txctx, command.ActorAdminUserID, command.BatchID, command.IdempotencyKey, observed, service.now().UTC())
+	})
+	return out, err
+}
+
+func (service *OwnerHandoffService) appendTransferResultFacts(ctx context.Context, actorID int64, batchID, readbackKey string, observed int, at time.Time) error {
+	keyDigest := sha256.Sum256([]byte(readbackKey))
+	key, err := idempotency.Parse("customer-owner-handoff-result:" + batchID + ":" + hex.EncodeToString(keyDigest[:8]))
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]any{"result": "observed", "observed_count": observed})
+	if _, err = service.audit.Append(ctx, platformaudit.Event{IdempotencyKey: key, Action: "customer.owner_handoff.transfer_result_observed", ActorType: "admin", ActorID: int64String(actorID), ResourceType: "customer_owner_handoff_batch", ResourceID: batchID, Payload: payload, OccurredAt: at}); err != nil && !errors.Is(err, platformaudit.ErrDuplicateEvent) {
+		return err
+	}
+	_, err = service.outbox.Append(ctx, platformoutbox.Event{AggregateType: "customer_owner_handoff_batch", AggregateID: batchID, Type: "customer.owner_handoff.transfer_result_observed.v1", Version: 1, IdempotencyKey: string(key), Payload: payload, OccurredAt: at})
+	return err
+}
+
 func (service *OwnerHandoffService) appendProviderAcceptedFacts(ctx context.Context, actorID int64, previewID string, line customerport.OwnerHandoffLine, at time.Time) error {
 	key, err := idempotency.Parse("customer-owner-handoff-provider:" + previewID + ":" + int64String(line.Line))
 	if err != nil {
@@ -275,7 +351,7 @@ func sameOwnerHandoffCandidates(frozen, current []customerport.OwnerHandoffCandi
 		return false
 	}
 	for index := range frozen {
-		if frozen[index].CustomerID != current[index].CustomerID || frozen[index].State != current[index].State || frozen[index].RelationshipDigest != current[index].RelationshipDigest {
+		if frozen[index].CustomerID != current[index].CustomerID || frozen[index].ExpectedLocalOwnerID != current[index].ExpectedLocalOwnerID || frozen[index].ExpectedLocalVersion != current[index].ExpectedLocalVersion || frozen[index].State != current[index].State || frozen[index].Reason != current[index].Reason || frozen[index].RelationshipDigest != current[index].RelationshipDigest || frozen[index].SourceUserID != current[index].SourceUserID || frozen[index].TargetUserID != current[index].TargetUserID || frozen[index].ExternalUserID != current[index].ExternalUserID {
 			return false
 		}
 	}
