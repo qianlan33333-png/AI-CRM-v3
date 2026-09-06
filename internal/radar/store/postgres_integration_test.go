@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
@@ -247,5 +248,90 @@ func TestPostgreSQLExternalLinkMappingsRetainDisabledAndUseDescendingKeyset(t *t
 	}
 	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].Title != "Disabled mapping" {
 		t.Fatalf("filtered=%+v", filtered)
+	}
+}
+
+func TestPostgreSQLCustomerActivitiesAreCustomerScopedAndUseDescendingKeyset(t *testing.T) {
+	native, cleanup := radarIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+
+	insertCustomer := func(value string) (int64, int64) {
+		t.Helper()
+		var customerID, identityID int64
+		if err := native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+			t.Fatal(err)
+		}
+		if err := native.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+			VALUES($1,'wecom_external_userid','wecom-corp:activity',$2,'verified','radar-activity-test',1,$3) RETURNING id`, customerID, value, now).Scan(&identityID); err != nil {
+			t.Fatal(err)
+		}
+		return customerID, identityID
+	}
+	customerID, identityID := insertCustomer("customer-activity")
+	otherCustomerID, otherIdentityID := insertCustomer("other-activity")
+	var radarID int64
+	if err := native.QueryRow(ctx, `INSERT INTO radar_links(public_code,name,title,content_type,destination_url,auth_policy,status,created_by,updated_by,created_at,updated_at)
+		VALUES('rd_abcdefabcdefabcd','Activity radar','Activity radar','link','https://example.test/activity','unionid_required','enabled',1,1,$1,$1) RETURNING id`, now).Scan(&radarID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO radar_link_versions(radar_id,version,snapshot,actor_id,created_at) VALUES($1,1,'{}',1,$2)`, radarID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	next := byte(1)
+	appendEvent := func(customer, identity int64, stage string, occurredAt time.Time) int64 {
+		t.Helper()
+		sessionDigest, evidence, key, payload := make([]byte, 32), make([]byte, 32), make([]byte, 32), make([]byte, 32)
+		sessionDigest[0], evidence[0], key[0], payload[0] = next, next+1, next+2, next+3
+		next += 4
+		var sessionID int64
+		if err := native.QueryRow(ctx, `INSERT INTO radar_view_sessions(session_digest,radar_id,radar_version,identity_id,customer_id,attribution_status,evidence_digest,expires_at,created_at)
+			VALUES($1,$2,1,$3,$4,'resolved',$5,$6,$7) RETURNING id`, sessionDigest, radarID, identity, customer, evidence, now.Add(time.Hour), now).Scan(&sessionID); err != nil {
+			t.Fatal(err)
+		}
+		var eventID int64
+		if err := native.QueryRow(ctx, `INSERT INTO radar_events(receipt_id,radar_id,radar_version,session_id,stage,attribution_status,identity_id,customer_id,key_digest,payload_digest,occurred_at,created_at)
+			VALUES($1,$2,1,$3,$4,'resolved',$5,$6,$7,$8,$9,$10) RETURNING id`, "customer-activity-"+hex.EncodeToString(sessionDigest[:1]), radarID, sessionID, stage, identity, customer, key, payload, occurredAt, now).Scan(&eventID); err != nil {
+			t.Fatal(err)
+		}
+		return eventID
+	}
+	oldID := appendEvent(customerID, identityID, "oauth_verified", now.Add(-2*time.Hour))
+	latestID := appendEvent(customerID, identityID, "content_opened", now.Add(-time.Hour))
+	_ = appendEvent(customerID, identityID, "redirected", now.Add(time.Hour))
+	_ = appendEvent(otherCustomerID, otherIdentityID, "content_opened", now.Add(-30*time.Minute))
+
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgres()
+	var first radarport.CustomerActivityPage
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		first, readErr = store.CustomerActivities(tx, radarport.CustomerActivityQuery{CustomerID: customerdomain.CustomerID(customerID), Limit: 1, Watermark: now})
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Items) != 1 || first.Items[0].EventID != latestID || first.Items[0].Stage != radarport.EventContentOpened {
+		t.Fatalf("first page=%+v", first)
+	}
+	var second radarport.CustomerActivityPage
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		second, readErr = store.CustomerActivities(tx, radarport.CustomerActivityQuery{CustomerID: customerdomain.CustomerID(customerID), Limit: 10, Watermark: now, AfterAt: first.Items[0].OccurredAt, AfterID: first.Items[0].EventID})
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Items) != 1 || second.Items[0].EventID != oldID || second.Items[0].Stage != radarport.EventOAuthVerified {
+		t.Fatalf("second page=%+v", second)
 	}
 }
