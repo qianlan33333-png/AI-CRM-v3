@@ -16,3 +16,12 @@ by the composed AdminOps-owned safe projection adapter, which returns real
 persisted rows and fails closed on malformed data rather than returning an
 empty success placeholder. The PR10 host adapter mounts only the verified
 donor fragments in the sole v3 admin shell.
+
+## Runtime-release UI evidence
+
+`TestRuntimeReleaseHostJSDOMJourneyUsesActualPostgreSQLHTTP` is a fast DOM,
+actual-HTTP, PostgreSQL regression; it does not claim a real browser.
+`TestPostgreSQLRuntimeReleaseChromiumJourney` starts an isolated Chromium
+profile against the production Composition Root and follows the real Access
+login, Secure session, CSRF, embedded Config shell and Host through draft,
+validation, publication, rollback and effective-value readback.

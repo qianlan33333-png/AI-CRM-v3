@@ -165,6 +165,9 @@ type RunPreview struct {
 	SenderSetVersion       int64     `json:"sender_set_version"`
 	TargetCount            int64     `json:"target_count"`
 	SkippedCount           int64     `json:"skipped_count"`
+	RuntimeConfigObserved  bool      `json:"runtime_config_observed"`
+	RuntimeConfigRevision  int64     `json:"runtime_config_revision,omitempty"`
+	MaxRecipientsPerRun    int       `json:"max_recipients_per_run,omitempty"`
 	PreviewDigest          [32]byte  `json:"-"`
 	CreatedBy              int64     `json:"created_by"`
 	CreatedAt              time.Time `json:"created_at"`
@@ -183,6 +186,9 @@ type RuntimeRun struct {
 	AIPlanState           string                  `json:"ai_plan_state,omitempty"`
 	BindingVersion        int64                   `json:"binding_version"`
 	SenderSetVersion      int64                   `json:"sender_set_version"`
+	RuntimeConfigObserved bool                    `json:"runtime_config_observed"`
+	RuntimeConfigRevision int64                   `json:"runtime_config_revision,omitempty"`
+	MaxRecipientsPerRun   int                     `json:"max_recipients_per_run,omitempty"`
 	PreviewDigest         [32]byte                `json:"-"`
 	State                 automationport.RunState `json:"state"`
 	TargetCount           int64                   `json:"target_count"`

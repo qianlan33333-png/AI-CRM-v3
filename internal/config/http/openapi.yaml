@@ -3148,6 +3148,60 @@ paths:
       tags: [Config]
       security: [{adminSession: []}]
       responses: {"200": {description: Read-only local release projection, content: {application/json: {schema: {$ref: "#/components/schemas/AdminConfigProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/config/runtime-releases:
+    get:
+      operationId: listRuntimeConfigReleases
+      tags: [Config]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}]
+      responses: {"200": {description: Immutable runtime release history and current effective snapshot, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleasePageEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: createRuntimeConfigReleaseDraft
+      tags: [Config]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseDraftRequest"}}}}
+      responses: {"201": {description: Draft saved; no runtime value changed, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/runtime-releases/{runtime_release_id}:
+    get:
+      operationId: getRuntimeConfigRelease
+      tags: [Config]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/RuntimeConfigReleaseID"}]
+      responses: {"200": {description: Immutable release plus one-time action proofs, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseDetailEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/runtime-releases/{runtime_release_id}/validate:
+    post:
+      operationId: validateRuntimeConfigRelease
+      tags: [Config]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RuntimeConfigReleaseID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseActionRequest"}}}}
+      responses: {"200": {description: Validation result; no active pointer changed, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/runtime-releases/{runtime_release_id}/publish:
+    post:
+      operationId: publishRuntimeConfigRelease
+      tags: [Config]
+      description: Compares the draft base revision and checksum before atomically changing the active pointer.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RuntimeConfigReleaseID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleasePublishRequest"}}}}
+      responses: {"200": {description: Config release published atomically; existing runs retain their frozen values, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/runtime-releases/{runtime_release_id}/rollback:
+    post:
+      operationId: rollbackRuntimeConfigRelease
+      tags: [Config]
+      description: Creates and publishes a new immutable release from the selected prior release. It never rewrites the prior release.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RuntimeConfigReleaseID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseRollbackRequest"}}}}
+      responses: {"200": {description: New rollback release published atomically, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/runtime-releases/{runtime_release_id}/usage:
+    get:
+      operationId: listRuntimeConfigReleaseUsage
+      tags: [Config]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/RuntimeConfigReleaseID"}, {$ref: "#/components/parameters/Limit"}]
+      responses: {"200": {description: Recorded API or worker uses only; absence means no observed use, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigUsageEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/config/diagnostics:
     get:
       operationId: listAdminDiagnostics
@@ -3372,6 +3426,7 @@ components:
     RadarCode: {name: code, in: path, required: true, schema: {type: string, pattern: "^rd_[A-Za-z0-9_-]{16,64}$"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ProductID: {name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    RuntimeConfigReleaseID: {name: runtime_release_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ProductCode: {name: product_code, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
     ServiceProductID: {name: service_product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagID: {name: tag_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -3986,6 +4041,108 @@ components:
         key: {type: string, minLength: 1, maxLength: 120}
         status: {type: string, enum: [ok, warning, error, unknown]}
         observed_at: {type: string, format: date-time}
+    RuntimeConfigReleaseSetting:
+      type: object
+      additionalProperties: false
+      required: [key, value]
+      properties:
+        key: {const: automation.operations.max_recipients_per_run}
+        value: {type: integer, minimum: 1, maximum: 5000}
+    RuntimeConfigEffectiveSnapshot:
+      type: object
+      additionalProperties: false
+      required: [revision, source, automation_max_recipients_per_run]
+      properties:
+        revision: {type: integer, format: int64, minimum: 0}
+        source: {type: string, enum: [environment_default, published]}
+        automation_max_recipients_per_run: {type: integer, minimum: 1, maximum: 5000}
+        published_at: {type: string, format: date-time}
+    RuntimeConfigRelease:
+      type: object
+      additionalProperties: false
+      required: [id, state, base_revision, settings, checksum, validation_errors, created_by, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        state: {type: string, enum: [draft, validated, validation_failed, published, superseded]}
+        base_revision: {type: integer, format: int64, minimum: 0}
+        rollback_of_release_id: {$ref: "#/components/schemas/PositiveID"}
+        settings: {type: array, minItems: 1, maxItems: 1, items: {$ref: "#/components/schemas/RuntimeConfigReleaseSetting"}}
+        checksum: {type: string, pattern: '^[a-f0-9]{64}$'}
+        validation_errors: {type: array, items: {type: object, additionalProperties: false, required: [key, error], properties: {key: {const: automation.operations.max_recipients_per_run}, error: {type: string, maxLength: 200}}}}
+        created_by: {type: string, minLength: 1, maxLength: 200}
+        created_at: {type: string, format: date-time}
+        validated_at: {type: string, format: date-time}
+        published_by: {type: string, minLength: 1, maxLength: 200}
+        published_at: {type: string, format: date-time}
+    RuntimeConfigReleaseDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_base_revision, settings, admin_action_token]
+      properties:
+        expected_base_revision: {type: integer, format: int64, minimum: 0}
+        settings: {type: array, minItems: 1, maxItems: 1, items: {$ref: "#/components/schemas/RuntimeConfigReleaseSetting"}}
+        admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
+    RuntimeConfigReleaseActionRequest:
+      type: object
+      additionalProperties: false
+      required: [admin_action_token]
+      properties: {admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}}
+    RuntimeConfigReleasePublishRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_base_revision, expected_checksum, admin_action_token]
+      properties:
+        expected_base_revision: {type: integer, format: int64, minimum: 0}
+        expected_checksum: {type: string, pattern: '^[a-f0-9]{64}$'}
+        admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
+    RuntimeConfigReleaseRollbackRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_base_revision, admin_action_token]
+      properties:
+        expected_base_revision: {type: integer, format: int64, minimum: 0}
+        admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
+    RuntimeConfigReleaseEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, runtime_release]
+      properties: {ok: {const: true}, runtime_release: {$ref: "#/components/schemas/RuntimeConfigRelease"}, saved: {type: boolean}, validated: {type: boolean}, published: {type: boolean}, rolled_back: {type: boolean}, published_revision: {type: integer, format: int64, minimum: 1}}
+    RuntimeConfigReleasePageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, runtime_releases, saved, published_revision, effective, admin_action_token]
+      properties:
+        ok: {const: true}
+        runtime_releases: {type: object, additionalProperties: false, required: [active_revision, effective, releases], properties: {active_revision: {type: integer, format: int64, minimum: 0}, effective: {$ref: "#/components/schemas/RuntimeConfigEffectiveSnapshot"}, releases: {type: array, items: {$ref: "#/components/schemas/RuntimeConfigRelease"}}}}
+        saved: {const: false}
+        published_revision: {type: integer, format: int64, minimum: 0}
+        effective: {$ref: "#/components/schemas/RuntimeConfigEffectiveSnapshot"}
+        admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
+    RuntimeConfigReleaseDetailEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, runtime_release, actions]
+      properties:
+        ok: {const: true}
+        runtime_release: {$ref: "#/components/schemas/RuntimeConfigRelease"}
+        actions: {type: object, additionalProperties: false, required: [validate, publish, rollback], properties: {validate: {type: string, minLength: 43, maxLength: 43}, publish: {type: string, minLength: 43, maxLength: 43}, rollback: {type: string, minLength: 43, maxLength: 43}}}
+    RuntimeConfigUsage:
+      type: object
+      additionalProperties: false
+      required: [consumer, role, operation, subject_kind, subject_id, used_at, snapshot]
+      properties:
+        snapshot: {$ref: "#/components/schemas/RuntimeConfigEffectiveSnapshot"}
+        consumer: {const: automation.operations.max_recipients_per_run}
+        role: {type: string, enum: [api, worker, effects-worker]}
+        operation: {type: string, enum: [preview, confirm, execution]}
+        subject_kind: {type: string, enum: [automation_preview, automation_run]}
+        subject_id: {$ref: "#/components/schemas/PositiveID"}
+        used_at: {type: string, format: date-time}
+    RuntimeConfigUsageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, revision, usage]
+      properties: {ok: {const: true}, revision: {type: integer, format: int64, minimum: 1}, usage: {type: array, items: {$ref: "#/components/schemas/RuntimeConfigUsage"}}}
     ConfigSettingsRead:
       type: object
       required: [ok, config, source_status, fallback_used, admin_action_token]

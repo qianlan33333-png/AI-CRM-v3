@@ -33,6 +33,7 @@ type Handler struct {
 	wizard       wizardService
 	config       configport.Service
 	projections  projectionReader
+	runtime      configport.RuntimeReleaseApplication
 	security     RequestSecurity
 	actionMu     sync.Mutex
 	actionGrants map[string]actionGrant
@@ -59,11 +60,15 @@ type wizardService interface {
 }
 type projectionReader = configport.SafeProjectionReader
 
-func NewHandler(settings settingsService, wizard wizardService, configService configport.Service, projections projectionReader, security RequestSecurity) (*Handler, error) {
-	if settings == nil || wizard == nil || configService == nil || projections == nil || security == nil {
+func NewHandler(settings settingsService, wizard wizardService, configService configport.Service, projections projectionReader, security RequestSecurity, runtime ...configport.RuntimeReleaseApplication) (*Handler, error) {
+	if settings == nil || wizard == nil || configService == nil || projections == nil || security == nil || len(runtime) > 1 {
 		return nil, errors.New("config HTTP dependencies are required")
 	}
-	return &Handler{settings: settings, wizard: wizard, config: configService, projections: projections, security: security, actionGrants: map[string]actionGrant{}, now: time.Now}, nil
+	var runtimeReleases configport.RuntimeReleaseApplication
+	if len(runtime) == 1 {
+		runtimeReleases = runtime[0]
+	}
+	return &Handler{settings: settings, wizard: wizard, config: configService, projections: projections, runtime: runtimeReleases, security: security, actionGrants: map[string]actionGrant{}, now: time.Now}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -83,11 +88,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.pushCapabilities(w, r)
 	case "releases":
 		h.releases(w, r)
+	case "runtime-releases":
+		h.runtimeReleases(w, r)
 	case "diagnostics":
 		h.diagnostics(w, r)
 	case "openapi.yaml":
 		h.openapi(w, r)
 	default:
+		if strings.HasPrefix(path, "runtime-releases/") {
+			h.runtimeRelease(w, r, strings.TrimPrefix(path, "runtime-releases/"))
+			return
+		}
 		if strings.HasPrefix(path, "categories/") {
 			h.category(w, r, strings.TrimPrefix(path, "categories/"))
 			return
@@ -439,6 +450,188 @@ func (h *Handler) pushCapabilities(w http.ResponseWriter, r *http.Request) {
 		"real_external_call_executed": false,
 	})
 }
+func (h *Handler) runtimeReleases(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_release_unavailable")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		p, ok := h.read(w, r)
+		if !ok {
+			return
+		}
+		limit := runtimeQueryLimit(r, 50)
+		page, err := h.runtime.ListRuntimeReleases(r.Context(), limit)
+		if err != nil {
+			writeRuntimeReleaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "runtime_releases": page, "saved": false,
+			"published_revision": page.ActiveRevision, "effective": page.Effective,
+			"admin_action_token": h.actionToken(r, p, "runtime-release:create", r.URL.Path),
+		})
+	case http.MethodPost:
+		p, ok := h.mutate(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			ExpectedBaseRevision int64                       `json:"expected_base_revision"`
+			Settings             []configport.RuntimeSetting `json:"settings"`
+			Action               string                      `json:"admin_action_token"`
+		}
+		if err := decode(r, &body); err != nil || body.ExpectedBaseRevision < 0 || len(body.Settings) == 0 || !h.validActionToken(r, p, "runtime-release:create", r.URL.Path, actionFrom(r, body.Action)) {
+			writeError(w, http.StatusBadRequest, "invalid_runtime_release_request")
+			return
+		}
+		key := idempotency(r)
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "invalid_idempotency_key")
+			return
+		}
+		out, err := h.runtime.CreateRuntimeReleaseDraft(r.Context(), configport.RuntimeReleaseDraftCommand{ExpectedBaseRevision: body.ExpectedBaseRevision, Settings: body.Settings, Actor: strconv.FormatInt(p.InternalID, 10), IdempotencyKey: key})
+		if err != nil {
+			writeRuntimeReleaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "runtime_release": out, "saved": true, "published": false, "effective": false})
+	default:
+		method(w, "GET, POST")
+	}
+}
+
+func (h *Handler) runtimeRelease(w http.ResponseWriter, r *http.Request, rest string) {
+	if h.runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_release_unavailable")
+		return
+	}
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			method(w, "GET")
+			return
+		}
+		p, ok := h.read(w, r)
+		if !ok {
+			return
+		}
+		out, err := h.runtime.RuntimeRelease(r.Context(), id)
+		if err != nil {
+			writeRuntimeReleaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "runtime_release": out, "actions": map[string]string{
+			"validate": h.actionToken(r, p, "runtime-release:validate", r.URL.Path+"/validate"),
+			"publish":  h.actionToken(r, p, "runtime-release:publish", r.URL.Path+"/publish"),
+			"rollback": h.actionToken(r, p, "runtime-release:rollback", r.URL.Path+"/rollback"),
+		}})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "usage" {
+		if r.Method != http.MethodGet {
+			method(w, "GET")
+			return
+		}
+		if _, ok := h.read(w, r); !ok {
+			return
+		}
+		items, err := h.runtime.ListRuntimeUsage(r.Context(), id, runtimeQueryLimit(r, 50))
+		if err != nil {
+			writeRuntimeReleaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "revision": id, "usage": items})
+		return
+	}
+	if len(parts) != 2 || r.Method != http.MethodPost {
+		method(w, "POST")
+		return
+	}
+	p, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	key := idempotency(r)
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "invalid_idempotency_key")
+		return
+	}
+	path := r.URL.Path
+	switch parts[1] {
+	case "validate":
+		var body struct {
+			Action string `json:"admin_action_token"`
+		}
+		if err := decode(r, &body); err != nil || !h.validActionToken(r, p, "runtime-release:validate", path, actionFrom(r, body.Action)) {
+			writeError(w, http.StatusBadRequest, "invalid_runtime_release_request")
+			return
+		}
+		out, err := h.runtime.ValidateRuntimeRelease(r.Context(), configport.RuntimeReleaseMutationCommand{ReleaseID: id, Actor: strconv.FormatInt(p.InternalID, 10), IdempotencyKey: key})
+		if err != nil {
+			writeRuntimeReleaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "runtime_release": out, "validated": out.State == configport.RuntimeReleaseValidated})
+	case "publish":
+		var body struct {
+			ExpectedBaseRevision int64  `json:"expected_base_revision"`
+			ExpectedChecksum     string `json:"expected_checksum"`
+			Action               string `json:"admin_action_token"`
+		}
+		if err := decode(r, &body); err != nil || body.ExpectedBaseRevision < 0 || !h.validActionToken(r, p, "runtime-release:publish", path, actionFrom(r, body.Action)) {
+			writeError(w, http.StatusBadRequest, "invalid_runtime_release_request")
+			return
+		}
+		out, err := h.runtime.PublishRuntimeRelease(r.Context(), configport.RuntimeReleasePublishCommand{ReleaseID: id, ExpectedBaseRevision: body.ExpectedBaseRevision, ExpectedChecksum: body.ExpectedChecksum, Actor: strconv.FormatInt(p.InternalID, 10), IdempotencyKey: key})
+		if err != nil {
+			writeRuntimeReleaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "runtime_release": out, "published": true, "published_revision": out.ID})
+	case "rollback":
+		var body struct {
+			ExpectedBaseRevision int64  `json:"expected_base_revision"`
+			Action               string `json:"admin_action_token"`
+		}
+		if err := decode(r, &body); err != nil || body.ExpectedBaseRevision < 0 || !h.validActionToken(r, p, "runtime-release:rollback", path, actionFrom(r, body.Action)) {
+			writeError(w, http.StatusBadRequest, "invalid_runtime_release_request")
+			return
+		}
+		out, err := h.runtime.RollbackRuntimeRelease(r.Context(), configport.RuntimeReleaseRollbackCommand{ReleaseID: id, ExpectedBaseRevision: body.ExpectedBaseRevision, Actor: strconv.FormatInt(p.InternalID, 10), IdempotencyKey: key})
+		if err != nil {
+			writeRuntimeReleaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "runtime_release": out, "rolled_back": true, "published_revision": out.ID})
+	default:
+		writeError(w, http.StatusNotFound, "not_found")
+	}
+}
+
+func writeRuntimeReleaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, configport.ErrRuntimeReleaseNotFound):
+		writeError(w, http.StatusNotFound, "runtime_release_not_found")
+	case errors.Is(err, configport.ErrRuntimeReleaseConflict):
+		writeError(w, http.StatusConflict, "runtime_release_conflict")
+	case errors.Is(err, configport.ErrRuntimeReleaseInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_runtime_release_request")
+	default:
+		writeError(w, http.StatusServiceUnavailable, "runtime_release_unavailable")
+	}
+}
+
 func (h *Handler) releases(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		method(w, "GET")
@@ -681,6 +874,21 @@ func (h *Handler) categoryCheck(w http.ResponseWriter, r *http.Request, category
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "message": message, "local_only": true, "real_external_call_executed": false})
+}
+
+func runtimeQueryLimit(r *http.Request, fallback int) int {
+	if r == nil || fallback < 1 {
+		return fallback
+	}
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 100 {
+		return fallback
+	}
+	return value
 }
 
 func decode(r *http.Request, v any) error {

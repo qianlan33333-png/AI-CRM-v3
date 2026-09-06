@@ -666,6 +666,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	configManager := configapp.NewManager(uow, configRepository, configRepository)
+	runtimeReleaseService, err := configapp.NewRuntimeReleaseService(uow, configRepository, configRepository, automationRecipientLimit)
+	if err != nil {
+		return fail(err)
+	}
+	if err = automationRuntime.SetRuntimeConfig(runtimeReleaseService, runtimeReleaseService); err != nil {
+		return fail(err)
+	}
 	settingsService := configapp.NewSettingsCompatibilityService(uow, configRepository, configManager, configapp.SecretConfiguredSnapshot{
 		DatabaseURL: cfg.DatabaseURL != "", WeComSecret: cfg.WeCom.Secret != "",
 		WeComCallbackToken: cfg.WeCom.CallbackToken != "", WeComCallbackAESKey: cfg.WeCom.CallbackAESKey != "",
@@ -692,7 +699,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	configBindings, err := configModule.Bind(settingsService, setupWizard, configManager, adminOpsProjection, requestSecurity)
+	configBindings, err := configModule.Bind(settingsService, setupWizard, configManager, adminOpsProjection, requestSecurity, runtimeReleaseService)
 	if err != nil {
 		return fail(err)
 	}
@@ -1201,7 +1208,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		var complete bool
 		checkErr := pool.Native().QueryRow(readinessContext, `SELECT
-			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
+			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089','0094']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
 			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='order_service_entitlements' AND column_name='alliance')`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
@@ -1231,9 +1238,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = couponModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
-			return checkErr
-		}
-		if checkErr = configModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = configModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
@@ -1321,6 +1325,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
 	configUI := configModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets configmodule.UIAssets) error {
+		if page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail" {
+			// Runtime releases are a V3-owned Host rather than a frozen AdminOps
+			// document. The Config module sends its small host template through
+			// this renderer callback, so preserve that page class here.
+			return renderer.RenderRuntimeConfig(writer, webshell.AdminPageForRequest(request, "配置发布", "发布受控运行时配置。", "api.admin_runtime_config_releases"), page, donorTemplate)
+		}
 		title := map[string]string{"config": "配置", "configDetail": "配置", "apidocs": "API 文档"}[page]
 		endpoint := map[string]string{"config": "api.admin_config", "configDetail": "api.admin_config", "apidocs": "api.admin_api_docs"}[page]
 		return renderer.RenderConfig(writer, webshell.AdminPageForRequest(request, title, "", endpoint), page, donorTemplate, webshell.ConfigAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
@@ -1705,6 +1715,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/config-assets/", requireAdminSession(authentication, configUI))
 	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
 	mux.Handle("/admin/operation-cycles", requireAdminSession(authentication, operationUI))
+	mux.Handle("/admin/config/releases/", requireAdminSession(authentication, configUI))
 	mux.Handle("/admin/operation-cycles/", requireAdminSession(authentication, operationUI))
 	// The staged Tags donor document is a private template carrier. Only the
 	// canonical PR10-mounted route above is public; neither its private staging
@@ -1749,7 +1760,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	for _, path := range []string{"/admin/automation-agents", "/admin/automation-agents/", "/admin/agents.html", "/admin/agentEdit.html"} {
 		mux.Handle(path, requireAdminSession(authentication, automationUI))
 	}
-	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/config.html", "/admin/configDetail.html", "/admin/api-docs", "/admin/apidocs.html"} {
+	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/config.html", "/admin/configDetail.html", "/admin/api-docs", "/admin/apidocs.html", "/admin/config/releases", "/admin/config/releases/new"} {
 		mux.Handle(path, requireAdminSession(authentication, configUI))
 	}
 	mux.Handle("/wecom/external-contact/callback", weCom)
