@@ -1228,7 +1228,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
 	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
-	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
+	mountSurveyAPIs(adminAPIs, surveyBindings.Survey, customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
@@ -1438,7 +1438,11 @@ func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
 	return mux, nil
 }
 
-func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
+func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler, tagHandlers ...http.Handler) {
+	var customerTags http.Handler
+	if len(tagHandlers) > 0 {
+		customerTags = tagHandlers[0]
+	}
 	mux.Handle("/api/admin/questionnaires", survey)
 	mux.Handle("/api/admin/questionnaires/", survey)
 	mux.Handle("/api/admin/survey-history/", survey)
@@ -1447,7 +1451,17 @@ func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
 	mux.Handle("/api/h5/surveys/oauth/", survey)
 	mux.Handle("/api/h5/surveys/session", survey)
 	mux.Handle("/q/", survey)
-	mux.Handle("/api/v1/customers/", survey)
+	mux.Handle("/api/v1/customers/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if customerTags != nil && ((r.Method == http.MethodPut || r.Method == http.MethodDelete) && strings.Contains(r.URL.Path, "/tags/") || r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tag-commands")) {
+			customerTags.ServeHTTP(w, r)
+			return
+		}
+		if customerTags != nil && r.Method == http.MethodPost && (r.URL.Path == "/api/v1/customer-tag-commands" || r.URL.Path == "/api/v1/customer-tag-commands/preview") {
+			customerTags.ServeHTTP(w, r)
+			return
+		}
+		survey.ServeHTTP(w, r)
+	}))
 	// The frozen operations workspace reads its history projection from this
 	// legacy page-shaped path. Keep it inside the authenticated admin mux so the
 	// response is JSON from Survey instead of the outer mux's plain-text 404.

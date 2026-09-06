@@ -110,7 +110,7 @@ func TestCustomerTagCommandCompositionHTTPPostgreSQL(t *testing.T) {
 	mux.Handle("/api/v1/customer-tag-commands/", handler.TagCommandRoutes())
 	mux.Handle("/api/admin/wecom/tags", catalogHandler)
 	mux.Handle("/api/admin/customers/", handler.Routes())
-	mountSurveyAPIs(mux, http.NotFoundHandler())
+	mountSurveyAPIs(mux, http.NotFoundHandler(), handler.TagCommandRoutes())
 	server := httptest.NewServer(mux)
 	defer server.Close()
 

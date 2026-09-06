@@ -140,7 +140,7 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join("..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0086_wecom_profile_primary_owner.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0086_wecom_profile_primary_owner.sql", "0093_customer_tag_commands.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
