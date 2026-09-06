@@ -105,10 +105,10 @@ func Mount(next, machine http.Handler) http.Handler {
 
 // MountWithLegacyProtocols is used by Composition for frozen paths which had
 // a dedicated V3 authentication protocol before the machine platform. A
-// syntactically JWT-shaped bearer is deliberately claimed by the machine
-// handler (and rejected there if invalid); an opaque bearer remains with its
-// existing owner. This never falls an invalid machine token through to a
-// legacy protocol.
+// exact configured dedicated bearer is dispatched to its existing owner.
+// Signed legacy requests use their established proof headers. Every other
+// bearer, including malformed or signature-invalid JWTs, remains machine
+// owned and cannot fall through to the legacy protocol.
 func MountWithLegacyProtocols(next, machine http.Handler, operationCycleServiceToken string) http.Handler {
 	return mount(next, machine, true, operationCycleServiceToken)
 }

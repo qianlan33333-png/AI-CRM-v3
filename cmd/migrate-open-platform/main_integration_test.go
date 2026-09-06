@@ -30,6 +30,17 @@ func TestOpenPlatformHistoryCLIPostgreSQLJourney(t *testing.T) {
 	seedOpenPlatformHistorySource(t, ctx, sourceURL)
 	migrateOpenPlatformHistoryTarget(t, ctx, targetURL)
 
+	// The target happens to have customers.id=42; donor local IDs remain pending.
+	targetSeed, seedErr := pgxpool.New(ctx, targetURL)
+	if seedErr != nil {
+		t.Fatal(seedErr)
+	}
+	if _, seedErr = targetSeed.Exec(ctx, `INSERT INTO customers(id,status,version,lineage_version) OVERRIDING SYSTEM VALUE VALUES(42,'active',1,1)`); seedErr != nil {
+		targetSeed.Close()
+		t.Fatal(seedErr)
+	}
+	targetSeed.Close()
+
 	directory := t.TempDir()
 	keyPath := filepath.Join(directory, "snapshot.key")
 	key := make([]byte, 32)
@@ -54,7 +65,7 @@ func TestOpenPlatformHistoryCLIPostgreSQLJourney(t *testing.T) {
 		t.Fatal("protected snapshot exposed donor secret")
 	}
 	snapshot, digest, err := loadFile(snapshotPath, keyPath)
-	if err != nil || len(snapshot.Clients) != 2 || len(snapshot.Audits) != 1 {
+	if err != nil || len(snapshot.Clients) != 5 || len(snapshot.Audits) != 1 {
 		t.Fatalf("snapshot clients=%d audits=%d err=%v", len(snapshot.Clients), len(snapshot.Audits), err)
 	}
 	if err = run(ctx, []string{"-mode", "apply", "-snapshot", snapshotPath, "-snapshot-key-file", keyPath, "-manifest-sha256", fmt.Sprintf("%x", digest), "-confirm-apply"}); err != nil {
@@ -82,22 +93,61 @@ func TestOpenPlatformHistoryCLIPostgreSQLJourney(t *testing.T) {
 	if enabled || !reissue || len(scopes) != 1 || scopes[0] != "read" || len(capabilities) != 1 || capabilities[0] != "mcp_read" || corp != "source-corp" {
 		t.Fatalf("historical client enabled=%v reissue=%v scopes=%v capabilities=%v corp=%q", enabled, reissue, scopes, capabilities, corp)
 	}
-	var excluded, audits, batchCount int
-	if err = target.QueryRow(ctx, `SELECT count(*) FILTER (WHERE outcome='excluded'),count(*) FILTER (WHERE outcome='reissue_required') FROM access_machine_import_receipts`).Scan(&excluded, &batchCount); err != nil {
+	// The donor group-broadcast service profile is an external-integration
+	// caller, while the old direct key maps to the fixed V3 direct-key record.
+	var importedDirect int
+	if err = target.QueryRow(ctx, `SELECT count(*) FROM access_machine_clients WHERE client_id IN ('historic.group','direct_external_api_key') AND enabled=false AND reissue_required=true`).Scan(&importedDirect); err != nil || importedDirect != 2 {
+		t.Fatalf("system/direct migration count=%d err=%v", importedDirect, err)
+	}
+	var scopedOutcome, scopedReason string
+	if err = target.QueryRow(ctx, `SELECT outcome,reason_code FROM access_machine_import_receipts WHERE source_row_id='auth_api_clients/historic.scoped'`).Scan(&scopedOutcome, &scopedReason); err != nil || scopedOutcome != "excluded" || scopedReason != "owner_scope_mapping_pending" {
+		t.Fatalf("numeric owner-scope collision outcome=%q reason=%q err=%v", scopedOutcome, scopedReason, err)
+	}
+	var excluded, imported, audits int
+	if err = target.QueryRow(ctx, `SELECT count(*) FILTER (WHERE outcome='excluded'),count(*) FILTER (WHERE outcome='reissue_required') FROM access_machine_import_receipts`).Scan(&excluded, &imported); err != nil {
 		t.Fatal(err)
 	}
 	if err = target.QueryRow(ctx, `SELECT count(*) FROM access_machine_historical_audit_facts`).Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
-	if excluded != 1 || batchCount != 1 || audits != 1 {
-		t.Fatalf("receipts excluded=%d reissue=%d audit=%d", excluded, batchCount, audits)
+	if excluded != 2 || imported != 3 || audits != 1 {
+		t.Fatalf("receipts excluded=%d reissue=%d audit=%d", excluded, imported, audits)
 	}
 
-	// A revised source snapshot carrying the same donor revision cannot overlap
-	// the imported batch, even when its changed row would otherwise be valid.
+	service, closeService, err := machineHistoryService(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeService()
+	// A later factual snapshot from the same frozen revision may add a new row
+	// while reusing every existing global source receipt.
+	overlapped := snapshot
+	overlapped.Clients = append(overlapped.Clients, historicalClientRow{SourceRowID: "auth_api_clients/historic.new", ClientID: "historic.new", PrincipalID: "api_client:historic.new", PrincipalType: "api_client", DisplayName: "Historic new", Purpose: "mcp", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"mcp_read"}, CorpID: "source-corp", OwnerScope: map[string][]string{}, SourceAuthVersion: 1, TokenTTLSeconds: 1800})
+	overlapped.Manifest.SnapshotAt = overlapped.Manifest.SnapshotAt.Add(time.Second)
+	if err = populateManifest(&overlapped, revision); err != nil {
+		t.Fatal(err)
+	}
+	_, overlapDigest, err := canonicalSnapshot(overlapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := applySnapshot(ctx, service, overlapped, overlapDigest)
+	if err != nil || result.Imported != 1 || result.Replayed != 5 || result.AuditReplayed != 1 {
+		t.Fatalf("overlapping snapshot result=%+v err=%v", result, err)
+	}
+	var batches, batchRows int
+	if err = target.QueryRow(ctx, `SELECT count(*) FROM access_machine_import_batches`).Scan(&batches); err != nil || batches != 2 {
+		t.Fatalf("snapshot batch count=%d err=%v", batches, err)
+	}
+	if err = target.QueryRow(ctx, `SELECT count(*) FROM access_machine_import_batch_receipts`).Scan(&batchRows); err != nil || batchRows != 11 {
+		t.Fatalf("snapshot receipt count=%d err=%v", batchRows, err)
+	}
+
+	// A changed source row has the same source namespace and record identity;
+	// its fresh batch may exist for review, but it cannot alter the global fact.
 	drifted := snapshot
 	drifted.Clients[0].Scopes = []string{"read", "write"}
-	drifted.Manifest.SnapshotAt = drifted.Manifest.SnapshotAt.Add(time.Second)
+	drifted.Manifest.SnapshotAt = drifted.Manifest.SnapshotAt.Add(2 * time.Second)
 	if err = populateManifest(&drifted, revision); err != nil {
 		t.Fatal(err)
 	}
@@ -105,13 +155,8 @@ func TestOpenPlatformHistoryCLIPostgreSQLJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, closeService, err := machineHistoryService(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeService()
 	if _, err = applySnapshot(ctx, service, drifted, driftDigest); err == nil {
-		t.Fatal("same source revision snapshot drift was accepted")
+		t.Fatal("cross-batch source row drift was accepted")
 	}
 }
 
@@ -166,7 +211,7 @@ func seedOpenPlatformHistorySource(t *testing.T, ctx context.Context, databaseUR
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	_, err = pool.Exec(ctx, `CREATE TABLE auth_api_clients (client_id TEXT PRIMARY KEY,principal_id TEXT NOT NULL,principal_type TEXT NOT NULL,purpose TEXT NOT NULL,display_name TEXT NOT NULL,secret_hash TEXT NOT NULL,audiences_json JSONB NOT NULL,scopes_json JSONB NOT NULL,capabilities_json JSONB NOT NULL,allowed_cidrs_json JSONB NOT NULL,corp_id TEXT NOT NULL,owner_scope_json JSONB NOT NULL,auth_version BIGINT NOT NULL,token_ttl_seconds INTEGER NOT NULL,enabled BOOLEAN NOT NULL); CREATE TABLE admin_operation_logs (id BIGSERIAL PRIMARY KEY,operator TEXT NOT NULL,action_type TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT NOT NULL,before_json JSONB NOT NULL,after_json JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL); INSERT INTO auth_api_clients(client_id,principal_id,principal_type,purpose,display_name,secret_hash,audiences_json,scopes_json,capabilities_json,allowed_cidrs_json,corp_id,owner_scope_json,auth_version,token_ttl_seconds,enabled) VALUES ('historic.mcp','api_client:historic.mcp','api_client','mcp','Historic MCP','source-secret-must-never-export','["external_integration"]','["read"]','["mcp_read"]','["203.0.113.0/24"]','source-corp','{"customer_id":["42"]}',9,1800,true),('historic.unsupported','api_client:historic.unsupported','api_client','internal_worker','Unsupported caller','another-secret','["external_integration"]','["read"]','["external_read"]','[]','source-corp','{}',1,1800,false); INSERT INTO admin_operation_logs(operator,action_type,target_type,target_id,before_json,after_json,created_at) VALUES('crm_console','api_client_disabled','api_client','historic.mcp','{"enabled":true}','{"enabled":false}',TIMESTAMPTZ '2026-09-05T01:02:03Z')`)
+	_, err = pool.Exec(ctx, `CREATE TABLE auth_api_clients (client_id TEXT PRIMARY KEY,principal_id TEXT NOT NULL,principal_type TEXT NOT NULL,purpose TEXT NOT NULL,display_name TEXT NOT NULL,secret_hash TEXT NOT NULL,audiences_json JSONB NOT NULL,scopes_json JSONB NOT NULL,capabilities_json JSONB NOT NULL,allowed_cidrs_json JSONB NOT NULL,corp_id TEXT NOT NULL,owner_scope_json JSONB NOT NULL,auth_version BIGINT NOT NULL,token_ttl_seconds INTEGER NOT NULL,enabled BOOLEAN NOT NULL); CREATE TABLE admin_operation_logs (id BIGSERIAL PRIMARY KEY,operator TEXT NOT NULL,action_type TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT NOT NULL,before_json JSONB NOT NULL,after_json JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL); INSERT INTO auth_api_clients(client_id,principal_id,principal_type,purpose,display_name,secret_hash,audiences_json,scopes_json,capabilities_json,allowed_cidrs_json,corp_id,owner_scope_json,auth_version,token_ttl_seconds,enabled) VALUES ('historic.mcp','api_client:historic.mcp','api_client','mcp','Historic MCP','source-secret-must-never-export','["external_integration"]','["read"]','["mcp_read"]','["203.0.113.0/24"]','source-corp','{}',9,1800,true),('historic.scoped','api_client:historic.scoped','api_client','mcp','Historic scoped MCP','scoped-secret','["external_integration"]','["read"]','["mcp_read"]','[]','source-corp','{"customer_id":["42"]}',2,1800,false),('historic.group','service:group_broadcast','service','group_broadcast','Historic group broadcast','group-secret','["external_integration"]','["write"]','["group_broadcast_execute"]','[]','source-corp','{}',1,1800,false),('aicrm-direct-external-api-key','api_client:aicrm-direct-external-api-key','api_client','external_agent','CRM 开放 API Key','direct-secret','["external_integration"]','["read"]','["external_read"]','[]','source-corp','{}',4,1800,true),('historic.unsupported','api_client:historic.unsupported','api_client','internal_worker','Unsupported caller','another-secret','["external_integration"]','["read"]','["external_read"]','[]','source-corp','{}',1,1800,false); INSERT INTO admin_operation_logs(operator,action_type,target_type,target_id,before_json,after_json,created_at) VALUES('crm_console','api_client_disabled','api_client','historic.mcp','{"enabled":true}','{"enabled":false}',TIMESTAMPTZ '2026-09-05T01:02:03Z')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +229,7 @@ func migrateOpenPlatformHistoryTarget(t *testing.T, ctx context.Context, databas
 		t.Fatal("locate migrations")
 	}
 	root := filepath.Join(filepath.Dir(source), "..", "..")
-	for _, name := range []string{"0003_access.sql", "0096_open_platform.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0003_access.sql", "0096_open_platform.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

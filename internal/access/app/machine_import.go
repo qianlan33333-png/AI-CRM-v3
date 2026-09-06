@@ -63,7 +63,7 @@ func (service *MachineService) ImportHistorical(ctx context.Context, input acces
 	if !ok {
 		return accessport.HistoricalMachineImportResult{}, errors.New("machine historical repository is not configured")
 	}
-	if reason := historicalMachineExclusionReason(input); reason != "" {
+	if reason := service.historicalMachineExclusionReason(input); reason != "" {
 		return service.excludeHistoricalMachine(ctx, repository, input, reason)
 	}
 	// Active client creation rejects past expiry, while history must retain an
@@ -155,7 +155,7 @@ func (service *MachineService) VerifyHistorical(ctx context.Context, input acces
 	if err != nil {
 		return accessport.HistoricalMachineImportResult{}, err
 	}
-	if expectedReason := historicalMachineExclusionReason(input); expectedReason != "" {
+	if expectedReason := service.historicalMachineExclusionReason(input); expectedReason != "" {
 		if outcome != "excluded" || reason != expectedReason {
 			return accessport.HistoricalMachineImportResult{}, domain.ErrConflict
 		}
@@ -217,7 +217,7 @@ func equalHistoricalCIDRs(left, right []string) bool {
 }
 
 func validateHistoricalMachineBatch(batch accessport.HistoricalMachineImportBatch) error {
-	if len(strings.TrimSpace(batch.ImportRunID)) < 1 || len(strings.TrimSpace(batch.ImportRunID)) > 160 || batch.SourceSystem != "ai-crm" || len(batch.SourceRevision) != 40 || batch.SnapshotAt.IsZero() || batch.ClientCount < 0 || batch.AuditCount < 0 || allZeroDigest(batch.ManifestDigest) {
+	if !historicalImportRunID(strings.TrimSpace(batch.ImportRunID)) || batch.SourceSystem != "ai-crm" || len(batch.SourceRevision) != 40 || batch.SnapshotAt.IsZero() || batch.ClientCount < 0 || batch.AuditCount < 0 || allZeroDigest(batch.ManifestDigest) {
 		return domain.ErrInvalidInput
 	}
 	for _, value := range batch.SourceRevision {
@@ -229,17 +229,43 @@ func validateHistoricalMachineBatch(batch accessport.HistoricalMachineImportBatc
 }
 
 func validateHistoricalMachineImport(input accessport.HistoricalMachineImportInput) error {
-	if len(strings.TrimSpace(input.ImportRunID)) < 1 || len(strings.TrimSpace(input.ImportRunID)) > 160 || len(strings.TrimSpace(input.SourceRowID)) < 1 || len(strings.TrimSpace(input.SourceRowID)) > 240 {
+	if !historicalImportRunID(strings.TrimSpace(input.ImportRunID)) || input.SourceSystem != "ai-crm" || !historicalSourceScope(input.SourceScope) || len(strings.TrimSpace(input.SourceRowID)) < 1 || len(strings.TrimSpace(input.SourceRowID)) > 240 || len(strings.TrimSpace(input.SourceClientID)) < 1 || len(strings.TrimSpace(input.SourceClientID)) > 120 {
 		return domain.ErrInvalidInput
 	}
-	if allZeroDigest(input.SourceRowDigest) {
+	if allZeroDigest(input.SourceRowDigest) || allZeroDigest(input.SourceOwnerScopeDigest) {
+		return domain.ErrInvalidInput
+	}
+	switch input.OwnerScopeMappingStatus {
+	case "not_required", "mapped", "pending", "incompatible_corp":
+	default:
 		return domain.ErrInvalidInput
 	}
 	return nil
 }
 
-func historicalMachineExclusionReason(input accessport.HistoricalMachineImportInput) string {
-	if strings.TrimSpace(input.PrincipalType) != "api_client" {
+func historicalImportRunID(value string) bool {
+	if len(value) != len("open-platform:")+32 || !strings.HasPrefix(value, "open-platform:") {
+		return false
+	}
+	for _, character := range value[len("open-platform:"):] {
+		if !(character >= 'a' && character <= 'f') && !(character >= '0' && character <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func historicalSourceScope(value string) bool {
+	value = strings.TrimSpace(value)
+	return len(value) >= 1 && len(value) <= 320 && strings.IndexFunc(value, unicode.IsControl) < 0
+}
+
+func (service *MachineService) historicalMachineExclusionReason(input accessport.HistoricalMachineImportInput) string {
+	if reason := service.historicalOwnerScopeExclusionReason(input); reason != "" {
+		return reason
+	}
+	principalType := strings.TrimSpace(input.PrincipalType)
+	if principalType != "api_client" && !(principalType == "service" && strings.TrimSpace(input.Purpose) == "group_broadcast") {
 		return "unsupported_principal_type"
 	}
 	if len(strings.TrimSpace(input.PrincipalID)) == 0 || len(strings.TrimSpace(input.PrincipalID)) > 240 || strings.IndexFunc(input.PrincipalID, unicode.IsControl) >= 0 {
@@ -286,6 +312,32 @@ func historicalMachineExclusionReason(input accessport.HistoricalMachineImportIn
 	return ""
 }
 
+func (service *MachineService) historicalOwnerScopeExclusionReason(input accessport.HistoricalMachineImportInput) string {
+	if len(input.OwnerScope) == 0 {
+		if input.OwnerScopeMappingStatus != "not_required" {
+			return "invalid_owner_scope_mapping"
+		}
+		return ""
+	}
+	if _, exists := input.OwnerScope["customer_id"]; exists {
+		// The donor local integer has no identity proof in this snapshot. Never
+		// compare it to customers.id: same-number collisions would widen access.
+		return "owner_scope_mapping_pending"
+	}
+	for key := range input.OwnerScope {
+		if key != "owner_userid" && key != "external_userid" {
+			return "owner_scope_mapping_pending"
+		}
+	}
+	if input.OwnerScopeMappingStatus != "mapped" {
+		return "owner_scope_mapping_pending"
+	}
+	if strings.TrimSpace(service.config.CorpID) == "" || strings.TrimSpace(input.CorpID) != strings.TrimSpace(service.config.CorpID) {
+		return "owner_scope_incompatible_corp"
+	}
+	return ""
+}
+
 func machineSubset(actual, allowed []string) bool {
 	allowedSet := make(map[string]struct{}, len(allowed))
 	for _, value := range allowed {
@@ -300,7 +352,7 @@ func machineSubset(actual, allowed []string) bool {
 }
 
 func validateHistoricalMachineAudit(input accessport.HistoricalMachineAuditInput) error {
-	if len(strings.TrimSpace(input.ImportRunID)) < 1 || len(strings.TrimSpace(input.ImportRunID)) > 160 || input.SourceAuditID < 1 || allZeroDigest(input.SourceRowDigest) || allZeroDigest(input.BeforeDigest) || allZeroDigest(input.AfterDigest) || input.OccurredAt.IsZero() {
+	if !historicalImportRunID(strings.TrimSpace(input.ImportRunID)) || input.SourceSystem != "ai-crm" || !historicalSourceScope(input.SourceScope) || input.SourceAuditID < 1 || allZeroDigest(input.SourceRowDigest) || allZeroDigest(input.BeforeDigest) || allZeroDigest(input.AfterDigest) || input.OccurredAt.IsZero() {
 		return domain.ErrInvalidInput
 	}
 	for _, value := range []string{input.Operator, input.Action, input.TargetType, input.TargetID} {

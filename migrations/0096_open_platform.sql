@@ -42,11 +42,11 @@ CREATE TABLE access_machine_audit (
 );
 CREATE INDEX ix_access_machine_audit_client_created ON access_machine_audit(machine_client_id, created_at DESC, id DESC);
 
--- Each protected source revision has one digest. The row is written before
--- individual client/audit receipts so an overlapping snapshot cannot grow an
--- already-reviewed migration batch.
+-- Each protected source snapshot has its own batch identity. SourceRevision is
+-- donor-code provenance only: two read-only factual snapshots may legitimately
+-- come from the same frozen revision.
 CREATE TABLE access_machine_import_batches (
-    import_run_id TEXT PRIMARY KEY CHECK (length(import_run_id) BETWEEN 1 AND 160),
+    import_run_id TEXT PRIMARY KEY CHECK (import_run_id ~ '^open-platform:[a-f0-9]{32}$'),
     source_system TEXT NOT NULL CHECK (source_system = 'ai-crm'),
     source_revision TEXT NOT NULL CHECK (source_revision ~ '^[a-f0-9]{40}$'),
     manifest_digest BYTEA NOT NULL CHECK (octet_length(manifest_digest) = 32),
@@ -54,39 +54,58 @@ CREATE TABLE access_machine_import_batches (
     client_count INTEGER NOT NULL CHECK (client_count >= 0),
     audit_count INTEGER NOT NULL CHECK (audit_count >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (source_system, source_revision)
+    UNIQUE (source_system, manifest_digest)
 );
 
--- Historical source records are never credentials. Every non-reissued legacy
--- client stays disabled and needs an explicit newly generated secret. The
--- source authorization facts are retained verbatim when V3 supports them;
--- unsupported records have an excluded receipt and no machine client.
+-- These global receipts are keyed by the donor's actual source namespace and
+-- record identity. A later snapshot may replay exactly the same record, but a
+-- different digest for the same record is a hard migration conflict.
 CREATE TABLE access_machine_import_receipts (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    import_run_id TEXT NOT NULL CHECK (length(import_run_id) BETWEEN 1 AND 160),
+    import_run_id TEXT NOT NULL REFERENCES access_machine_import_batches(import_run_id) ON DELETE RESTRICT,
+    source_system TEXT NOT NULL CHECK (source_system = 'ai-crm'),
+    source_scope TEXT NOT NULL CHECK (length(source_scope) BETWEEN 1 AND 320),
     source_row_id TEXT NOT NULL CHECK (length(source_row_id) BETWEEN 1 AND 240),
     source_row_digest BYTEA NOT NULL CHECK (octet_length(source_row_digest) = 32),
+    source_owner_scope_digest BYTEA NOT NULL CHECK (octet_length(source_owner_scope_digest) = 32),
+    owner_scope_mapping_status TEXT NOT NULL CHECK (owner_scope_mapping_status IN ('not_required', 'mapped', 'pending', 'incompatible_corp')),
     source_client_id TEXT NOT NULL CHECK (length(source_client_id) BETWEEN 1 AND 120),
     source_principal_id TEXT NOT NULL DEFAULT '' CHECK (length(source_principal_id) <= 240),
     source_principal_type TEXT NOT NULL DEFAULT '' CHECK (length(source_principal_type) <= 80),
     source_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     source_auth_version BIGINT NOT NULL DEFAULT 1 CHECK (source_auth_version > 0),
     machine_client_id BIGINT REFERENCES access_machine_clients(id),
-    outcome TEXT NOT NULL CHECK (outcome IN ('inactive', 'reissue_required', 'excluded', 'invalid', 'replayed')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('reissue_required', 'excluded')),
     reason_code TEXT NOT NULL DEFAULT '' CHECK (length(reason_code) <= 120),
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (import_run_id, source_row_id),
+    UNIQUE (source_system, source_scope, source_row_id),
     CHECK ((outcome = 'reissue_required' AND machine_client_id IS NOT NULL AND reason_code = '')
         OR (outcome = 'excluded' AND machine_client_id IS NULL AND reason_code <> ''))
 );
 CREATE INDEX ix_access_machine_import_receipts_client ON access_machine_import_receipts(machine_client_id) WHERE machine_client_id IS NOT NULL;
 
--- Legacy actions are immutable historical facts, separate from the V3 import
--- audit above. Only canonical digests of source before/after JSON are retained
--- so importing historical audit never exposes a donor secret or owner scope.
+-- Every sealed snapshot receives a row-level receipt too. It makes overlap,
+-- replay and drift reviewable without allowing a new batch to recreate an
+-- existing credential.
+CREATE TABLE access_machine_import_batch_receipts (
+    import_run_id TEXT NOT NULL REFERENCES access_machine_import_batches(import_run_id) ON DELETE RESTRICT,
+    source_system TEXT NOT NULL CHECK (source_system = 'ai-crm'),
+    source_scope TEXT NOT NULL CHECK (length(source_scope) BETWEEN 1 AND 320),
+    source_row_id TEXT NOT NULL CHECK (length(source_row_id) BETWEEN 1 AND 240),
+    source_row_digest BYTEA NOT NULL CHECK (octet_length(source_row_digest) = 32),
+    replayed BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (import_run_id, source_scope, source_row_id)
+);
+
+-- Legacy actions are global immutable source facts. The encrypted snapshot
+-- retains the protected source payload; this table retains only canonical
+-- before/after digests and original action metadata.
 CREATE TABLE access_machine_historical_audit_facts (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    import_run_id TEXT NOT NULL CHECK (length(import_run_id) BETWEEN 1 AND 160),
+    import_run_id TEXT NOT NULL REFERENCES access_machine_import_batches(import_run_id) ON DELETE RESTRICT,
+    source_system TEXT NOT NULL CHECK (source_system = 'ai-crm'),
+    source_scope TEXT NOT NULL CHECK (length(source_scope) BETWEEN 1 AND 320),
     source_audit_id BIGINT NOT NULL CHECK (source_audit_id > 0),
     source_row_digest BYTEA NOT NULL CHECK (octet_length(source_row_digest) = 32),
     source_operator TEXT NOT NULL CHECK (length(source_operator) <= 240),
@@ -97,6 +116,17 @@ CREATE TABLE access_machine_historical_audit_facts (
     after_payload_digest BYTEA NOT NULL CHECK (octet_length(after_payload_digest) = 32),
     occurred_at TIMESTAMPTZ NOT NULL,
     imported_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (import_run_id, source_audit_id)
+    UNIQUE (source_system, source_scope, source_audit_id)
 );
-CREATE INDEX ix_access_machine_historical_audit_target ON access_machine_historical_audit_facts(import_run_id, source_target_id, source_audit_id);
+CREATE INDEX ix_access_machine_historical_audit_target ON access_machine_historical_audit_facts(source_system, source_scope, source_target_id, source_audit_id);
+
+CREATE TABLE access_machine_historical_audit_batch_receipts (
+    import_run_id TEXT NOT NULL REFERENCES access_machine_import_batches(import_run_id) ON DELETE RESTRICT,
+    source_system TEXT NOT NULL CHECK (source_system = 'ai-crm'),
+    source_scope TEXT NOT NULL CHECK (length(source_scope) BETWEEN 1 AND 320),
+    source_audit_id BIGINT NOT NULL CHECK (source_audit_id > 0),
+    source_row_digest BYTEA NOT NULL CHECK (octet_length(source_row_digest) = 32),
+    replayed BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (import_run_id, source_scope, source_audit_id)
+);

@@ -153,6 +153,19 @@ type ChannelHistoryMigration struct {
 
 type RadarMigration struct{ SourceDatabaseURL string }
 
+// OpenPlatformMigration holds only the trusted corporate boundary needed to
+// decide whether a donor owner_userid/external_userid scope may be retained.
+// It deliberately has no source credential and no provider side effect.
+type OpenPlatformMigration struct{ WeComCorpID string }
+
+func LoadOpenPlatformMigration() (OpenPlatformMigration, error) {
+	value := OpenPlatformMigration{WeComCorpID: os.Getenv("AICRM_WECOM_CORP_ID")}
+	if strings.TrimSpace(value.WeComCorpID) != value.WeComCorpID {
+		return OpenPlatformMigration{}, errors.New("invalid open platform migration configuration")
+	}
+	return value, nil
+}
+
 func LoadRadarMigration() (RadarMigration, error) {
 	value := RadarMigration{SourceDatabaseURL: os.Getenv("AICRM_RADAR_SOURCE_DATABASE_URL")}
 	if strings.TrimSpace(value.SourceDatabaseURL) != value.SourceDatabaseURL {

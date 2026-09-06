@@ -168,10 +168,46 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 		t.Fatal("old bearer remained valid after concurrent lifecycle changes")
 	}
 
-	historical := accessapp.HistoricalMachineImportInput{ImportRunID: "open-platform-history-pg", SourceRowID: "legacy-identity-1", SourceRowDigest: [32]byte{9, 6}, ClientID: "historic.identity", PrincipalID: "api_client:historic.identity", PrincipalType: "api_client", DisplayName: "Historic identity", Purpose: "identity", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"identity_resolve"}, CorpID: "historic-corp", SourceEnabled: true, SourceAuthVersion: 3, TokenTTLSeconds: 1800}
+	historicalBatch := accessport.HistoricalMachineImportBatch{ImportRunID: "open-platform:11111111111111111111111111111111", SourceSystem: "ai-crm", SourceRevision: "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f", ManifestDigest: [32]byte{1, 9}, SnapshotAt: time.Date(2026, 9, 6, 1, 2, 3, 0, time.UTC), ClientCount: 2, AuditCount: 1}
+	if _, err = service.BeginHistoricalImport(ctx, historicalBatch); err != nil {
+		t.Fatalf("begin historical batch=%v", err)
+	}
+	historical := accessapp.HistoricalMachineImportInput{ImportRunID: "open-platform:11111111111111111111111111111111", SourceSystem: "ai-crm", SourceScope: "auth_api_clients", SourceRowID: "legacy-identity-1", SourceClientID: "historic.identity", SourceRowDigest: [32]byte{9, 6}, SourceOwnerScopeDigest: [32]byte{9, 7}, OwnerScopeMappingStatus: "not_required", ClientID: "historic.identity", PrincipalID: "api_client:historic.identity", PrincipalType: "api_client", DisplayName: "Historic identity", Purpose: "identity", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"identity_resolve"}, CorpID: "historic-corp", SourceEnabled: true, SourceAuthVersion: 3, TokenTTLSeconds: 1800}
 	imported, err := service.ImportHistorical(ctx, historical)
 	if err != nil || imported.Replayed || imported.Client.Enabled || !imported.Client.ReissueRequired || imported.Client.Purpose != "identity" {
 		t.Fatalf("historical import=%+v err=%v", imported, err)
+	}
+	// The donor direct-key identity is explicitly mapped before this Port:
+	// source receipt retains its old client ID while the fixed V3 direct page
+	// reads the disabled/reissue-required target record.
+	directHistorical := historical
+	directHistorical.SourceRowID = "legacy-direct-key"
+	directHistorical.SourceClientID = "aicrm-direct-external-api-key"
+	directHistorical.SourceRowDigest = [32]byte{9, 8}
+	directHistorical.ClientID = accessapp.DirectExternalAPIKeyClientID
+	directHistorical.PrincipalID = "api_client:aicrm-direct-external-api-key"
+	directHistorical.DisplayName = "CRM 开放 API Key"
+	directHistorical.Purpose = "direct_api_key"
+	directHistorical.Capabilities = []string{"external_read"}
+	directHistorical.SourceAuthVersion = 4
+	directImported, err := service.ImportHistorical(ctx, directHistorical)
+	if err != nil || directImported.Outcome != "reissue_required" || directImported.Client.Enabled || !directImported.Client.ReissueRequired || directImported.Client.ClientID != accessapp.DirectExternalAPIKeyClientID {
+		t.Fatalf("historical direct import=%+v err=%v", directImported, err)
+	}
+	directRequest := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/admin/config/api-key", nil)
+	directResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(directResponse, directRequest)
+	var directPage struct {
+		OK     bool `json:"ok"`
+		Status struct {
+			Configured     bool   `json:"configured"`
+			Enabled        bool   `json:"enabled"`
+			Status         string `json:"status"`
+			CredentialHint string `json:"credential_hint"`
+		} `json:"api_key_status"`
+	}
+	if err = json.Unmarshal(directResponse.Body.Bytes(), &directPage); err != nil || directResponse.Code != http.StatusOK || !directPage.OK || !directPage.Status.Configured || directPage.Status.Enabled || directPage.Status.Status != "disabled" || directPage.Status.CredentialHint == "" {
+		t.Fatalf("historical direct page status=%d body=%s parsed=%+v err=%v", directResponse.Code, directResponse.Body.String(), directPage, err)
 	}
 	verified, err := service.VerifyHistorical(ctx, historical)
 	if err != nil || verified.Outcome != "reissue_required" || verified.Client.Enabled || !verified.Client.ReissueRequired {
@@ -182,10 +218,10 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 		t.Fatalf("historical replay=%+v err=%v", replayed, err)
 	}
 	var historicalAudits int
-	if err = native.QueryRow(ctx, `SELECT count(*) FROM access_machine_audit WHERE action='machine_client_imported'`).Scan(&historicalAudits); err != nil || historicalAudits != 1 {
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM access_machine_audit WHERE action='machine_client_imported'`).Scan(&historicalAudits); err != nil || historicalAudits != 2 {
 		t.Fatalf("historical import audit count=%d err=%v", historicalAudits, err)
 	}
-	historicalSourceAudit := accessport.HistoricalMachineAuditInput{ImportRunID: "open-platform-history-pg", SourceAuditID: 77, SourceRowDigest: [32]byte{7, 7}, Operator: "crm_console", Action: "api_client_secret_rotated", TargetType: "api_client", TargetID: "historic.identity", BeforeDigest: [32]byte{8, 8}, AfterDigest: [32]byte{9, 9}, OccurredAt: time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)}
+	historicalSourceAudit := accessport.HistoricalMachineAuditInput{ImportRunID: "open-platform:11111111111111111111111111111111", SourceSystem: "ai-crm", SourceScope: "admin_operation_logs:api_client", SourceAuditID: 77, SourceRowDigest: [32]byte{7, 7}, Operator: "crm_console", Action: "api_client_secret_rotated", TargetType: "api_client", TargetID: "historic.identity", BeforeDigest: [32]byte{8, 8}, AfterDigest: [32]byte{9, 9}, OccurredAt: time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)}
 	auditImported, err := service.ImportHistoricalAudit(ctx, historicalSourceAudit)
 	if err != nil || auditImported.Outcome != "imported" || auditImported.Replayed {
 		t.Fatalf("historical source audit=%+v err=%v", auditImported, err)
@@ -198,7 +234,7 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 		t.Fatalf("verify historical source audit=%v", err)
 	}
 	var sourceAuditFacts int
-	if err = native.QueryRow(ctx, `SELECT count(*) FROM access_machine_historical_audit_facts WHERE import_run_id='open-platform-history-pg'`).Scan(&sourceAuditFacts); err != nil || sourceAuditFacts != 1 {
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM access_machine_historical_audit_facts WHERE import_run_id='open-platform:11111111111111111111111111111111'`).Scan(&sourceAuditFacts); err != nil || sourceAuditFacts != 1 {
 		t.Fatalf("historical source audit facts=%d err=%v", sourceAuditFacts, err)
 	}
 	clients, err = service.List(ctx, admin)

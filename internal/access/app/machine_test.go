@@ -294,7 +294,7 @@ func TestHistoricalMachineImportNeverRestoresAUsableCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := HistoricalMachineImportInput{ImportRunID: "old-auth-export-20260906", SourceRowID: "client-42", SourceRowDigest: [32]byte{4, 2}, ClientID: "historic.identity", PrincipalID: "api_client:historic.identity", PrincipalType: "api_client", DisplayName: "Historic Identity", Purpose: "identity", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"identity_resolve"}, CorpID: "historic-corp", SourceEnabled: true, SourceAuthVersion: 7, TokenTTLSeconds: 1800}
+	input := HistoricalMachineImportInput{ImportRunID: "open-platform:0123456789abcdef0123456789abcdef", SourceSystem: "ai-crm", SourceScope: "auth_api_clients", SourceRowID: "client-42", SourceClientID: "historic.identity", SourceRowDigest: [32]byte{4, 2}, SourceOwnerScopeDigest: [32]byte{4, 3}, OwnerScopeMappingStatus: "not_required", ClientID: "historic.identity", PrincipalID: "api_client:historic.identity", PrincipalType: "api_client", DisplayName: "Historic Identity", Purpose: "identity", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"identity_resolve"}, CorpID: "historic-corp", SourceEnabled: true, SourceAuthVersion: 7, TokenTTLSeconds: 1800}
 	imported, err := service.ImportHistorical(context.Background(), input)
 	if err != nil || imported.Replayed || imported.Outcome != "reissue_required" || imported.Client.Enabled || !imported.Client.ReissueRequired {
 		t.Fatalf("historical import=%+v err=%v", imported, err)
@@ -323,7 +323,7 @@ func TestHistoricalMachineImportExcludesUnsupportedSourceGrantWithoutCreatingCli
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := HistoricalMachineImportInput{ImportRunID: "old-auth-export-20260906", SourceRowID: "client-unsupported", SourceRowDigest: [32]byte{6, 2}, ClientID: "historic.unsupported", PrincipalID: "api_client:historic.unsupported", PrincipalType: "api_client", DisplayName: "Historic unsupported", Purpose: "mcp", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"external_write"}, SourceAuthVersion: 1, TokenTTLSeconds: 1800}
+	input := HistoricalMachineImportInput{ImportRunID: "open-platform:fedcba9876543210fedcba9876543210", SourceSystem: "ai-crm", SourceScope: "auth_api_clients", SourceRowID: "client-unsupported", SourceClientID: "historic.unsupported", SourceRowDigest: [32]byte{6, 2}, SourceOwnerScopeDigest: [32]byte{6, 3}, OwnerScopeMappingStatus: "not_required", ClientID: "historic.unsupported", PrincipalID: "api_client:historic.unsupported", PrincipalType: "api_client", DisplayName: "Historic unsupported", Purpose: "mcp", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"external_write"}, SourceAuthVersion: 1, TokenTTLSeconds: 1800}
 	out, err := service.ImportHistorical(context.Background(), input)
 	if err != nil || out.Outcome != "excluded" || out.ReasonCode != "unsupported_capability" || len(base.clients) != 0 {
 		t.Fatalf("out=%+v clients=%+v err=%v", out, base.clients, err)

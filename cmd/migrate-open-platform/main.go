@@ -37,11 +37,14 @@ import (
 )
 
 const (
-	historySchemaVersion = "aicrm-open-platform-machine-history-v2"
+	historySchemaVersion = "aicrm-open-platform-machine-history-v3"
 	historySourceSystem  = "ai-crm"
 )
 
-var sourceRevision = regexp.MustCompile(`^[a-f0-9]{40}$`)
+var (
+	sourceRevision = regexp.MustCompile(`^[a-f0-9]{40}$`)
+	importRunID    = regexp.MustCompile(`^open-platform:[a-f0-9]{32}$`)
+)
 
 type historicalManifest struct {
 	SchemaVersion  string            `json:"schema_version"`
@@ -305,7 +308,11 @@ func populateManifest(snapshot *historicalSnapshot, revision string) error {
 	if snapshot == nil || !sourceRevision.MatchString(revision) || snapshot.Manifest.SnapshotAt.IsZero() {
 		return errors.New("invalid source snapshot")
 	}
-	snapshot.Manifest = historicalManifest{SchemaVersion: historySchemaVersion, SourceSystem: historySourceSystem, SourceRevision: revision, ImportRunID: "open-platform:" + revision, SnapshotAt: snapshot.Manifest.SnapshotAt.UTC()}
+	runID, err := newImportRunID()
+	if err != nil {
+		return err
+	}
+	snapshot.Manifest = historicalManifest{SchemaVersion: historySchemaVersion, SourceSystem: historySourceSystem, SourceRevision: revision, ImportRunID: runID, SnapshotAt: snapshot.Manifest.SnapshotAt.UTC()}
 	normalizeSnapshot(snapshot)
 	clientRaw, err := json.Marshal(snapshot.Clients)
 	if err != nil {
@@ -320,6 +327,14 @@ func populateManifest(snapshot *historicalSnapshot, revision string) error {
 	snapshot.Manifest.Digests = map[string]string{"auth_api_clients": hex.EncodeToString(clientDigest[:]), "admin_operation_logs_api_client": hex.EncodeToString(auditDigest[:])}
 	_, _, err = canonicalSnapshot(*snapshot)
 	return err
+}
+
+func newImportRunID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return "open-platform:" + hex.EncodeToString(raw[:]), nil
 }
 
 func canonicalSnapshot(snapshot historicalSnapshot) (historicalSnapshot, [sha256.Size]byte, error) {
@@ -382,7 +397,7 @@ func canonicalStrings(values []string) []string {
 
 func validateSnapshot(snapshot historicalSnapshot) error {
 	manifest := snapshot.Manifest
-	if manifest.SchemaVersion != historySchemaVersion || manifest.SourceSystem != historySourceSystem || !sourceRevision.MatchString(manifest.SourceRevision) || manifest.ImportRunID != "open-platform:"+manifest.SourceRevision || manifest.SnapshotAt.IsZero() || len(snapshot.Clients) > 100000 || len(snapshot.Audits) > 1000000 || len(manifest.Counts) != 2 || len(manifest.Digests) != 2 || manifest.Counts["auth_api_clients"] != len(snapshot.Clients) || manifest.Counts["admin_operation_logs_api_client"] != len(snapshot.Audits) {
+	if manifest.SchemaVersion != historySchemaVersion || manifest.SourceSystem != historySourceSystem || !sourceRevision.MatchString(manifest.SourceRevision) || !importRunID.MatchString(manifest.ImportRunID) || manifest.SnapshotAt.IsZero() || len(snapshot.Clients) > 100000 || len(snapshot.Audits) > 1000000 || len(manifest.Counts) != 2 || len(manifest.Digests) != 2 || manifest.Counts["auth_api_clients"] != len(snapshot.Clients) || manifest.Counts["admin_operation_logs_api_client"] != len(snapshot.Audits) {
 		return errors.New("invalid protected source snapshot")
 	}
 	clientRaw, err := json.Marshal(snapshot.Clients)
@@ -520,12 +535,67 @@ func verifySnapshot(ctx context.Context, service *accessapp.MachineService, snap
 	return result, nil
 }
 
-func clientInput(runID string, row historicalClientRow) (accessport.HistoricalMachineImportInput, error) {
-	digest, err := clientRowDigest(row)
+const (
+	historyClientSourceScope = "auth_api_clients"
+	historyAuditSourceScope  = "admin_operation_logs:api_client"
+	legacyDirectClientID     = "aicrm-direct-external-api-key"
+)
+
+func clientInput(runID string, source historicalClientRow) (accessport.HistoricalMachineImportInput, error) {
+	digest, err := clientRowDigest(source)
 	if err != nil {
 		return accessport.HistoricalMachineImportInput{}, err
 	}
-	return accessport.HistoricalMachineImportInput{ImportRunID: runID, SourceRowID: row.SourceRowID, SourceRowDigest: digest, ClientID: row.ClientID, PrincipalID: row.PrincipalID, PrincipalType: row.PrincipalType, DisplayName: row.DisplayName, Purpose: row.Purpose, Audiences: row.Audiences, Scopes: row.Scopes, Capabilities: row.Capabilities, AllowedCIDRs: row.AllowedCIDRs, CorpID: row.CorpID, OwnerScope: row.OwnerScope, SourceEnabled: row.SourceEnabled, SourceAuthVersion: row.SourceAuthVersion, TokenTTLSeconds: row.TokenTTLSeconds}, nil
+	ownerScopeDigest := sha256.Sum256(source.OwnerScope.JSON())
+	target := mappedHistoricalClient(source)
+	return accessport.HistoricalMachineImportInput{ImportRunID: runID, SourceSystem: historySourceSystem, SourceScope: historyClientSourceScope, SourceRowID: source.SourceRowID, SourceClientID: source.ClientID, SourceRowDigest: digest, SourceOwnerScopeDigest: ownerScopeDigest, OwnerScopeMappingStatus: historicalOwnerScopeMappingStatus(source.OwnerScope), ClientID: target.ClientID, PrincipalID: source.PrincipalID, PrincipalType: source.PrincipalType, DisplayName: target.DisplayName, Purpose: target.Purpose, Audiences: target.Audiences, Scopes: target.Scopes, Capabilities: target.Capabilities, AllowedCIDRs: target.AllowedCIDRs, CorpID: target.CorpID, OwnerScope: target.OwnerScope, SourceEnabled: source.SourceEnabled, SourceAuthVersion: source.SourceAuthVersion, TokenTTLSeconds: target.TokenTTLSeconds}, nil
+}
+
+// mappedHistoricalClient is the only donor identifier translation. The legacy
+// direct key was a fixed, read-only credential, so it becomes V3's fixed
+// direct-key record and stays disabled/reissue-required. Its source ID remains
+// in the global receipt; no old secret or verifier crosses this boundary.
+func mappedHistoricalClient(source historicalClientRow) historicalClientRow {
+	if source.ClientID != legacyDirectClientID {
+		return source
+	}
+	if source.Purpose != "external_agent" || source.PrincipalType != "api_client" || !sameStrings(source.Audiences, []string{"external_integration"}) || !sameStrings(source.Scopes, []string{"read"}) || !sameStrings(source.Capabilities, []string{"external_read"}) {
+		// Preserve an invalid donor fact for exclusion rather than presenting it
+		// as a normal external-api client or broadening the direct-key boundary.
+		source.Purpose = "legacy_direct_mapping_invalid"
+		return source
+	}
+	source.ClientID = accessapp.DirectExternalAPIKeyClientID
+	source.Purpose = "direct_api_key"
+	return source
+}
+
+func historicalOwnerScopeMappingStatus(scope accessdomain.OwnerScope) string {
+	if len(scope) == 0 {
+		return "not_required"
+	}
+	if _, localCustomerID := scope["customer_id"]; localCustomerID {
+		return "pending"
+	}
+	for key := range scope {
+		if key != "owner_userid" && key != "external_userid" {
+			return "pending"
+		}
+	}
+	return "mapped"
+}
+
+func sameStrings(left, right []string) bool {
+	left, right = canonicalStrings(left), canonicalStrings(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func auditInput(runID string, row historicalAuditRow) (accessport.HistoricalMachineAuditInput, error) {
@@ -545,7 +615,7 @@ func auditInput(runID string, row historicalAuditRow) (accessport.HistoricalMach
 	if err != nil {
 		return accessport.HistoricalMachineAuditInput{}, err
 	}
-	return accessport.HistoricalMachineAuditInput{ImportRunID: runID, SourceAuditID: id, SourceRowDigest: sourceDigest, Operator: row.Operator, Action: row.Action, TargetType: row.TargetType, TargetID: row.TargetID, BeforeDigest: before, AfterDigest: after, OccurredAt: row.OccurredAt}, nil
+	return accessport.HistoricalMachineAuditInput{ImportRunID: runID, SourceSystem: historySourceSystem, SourceScope: historyAuditSourceScope, SourceAuditID: id, SourceRowDigest: sourceDigest, Operator: row.Operator, Action: row.Action, TargetType: row.TargetType, TargetID: row.TargetID, BeforeDigest: before, AfterDigest: after, OccurredAt: row.OccurredAt}, nil
 }
 
 func clientRowDigest(row historicalClientRow) ([sha256.Size]byte, error) {
@@ -586,7 +656,12 @@ func machineHistoryService(ctx context.Context) (*accessapp.MachineService, func
 		pool.Close()
 		return nil, nil, err
 	}
-	service, err := accessapp.NewMachineService(accessstore.NewPostgreSQL(), unit, credential.PasswordHasher{}, accessapp.MachineConfig{})
+	migrationConfig, err := platformconfig.LoadOpenPlatformMigration()
+	if err != nil {
+		pool.Close()
+		return nil, nil, err
+	}
+	service, err := accessapp.NewMachineService(accessstore.NewPostgreSQL(), unit, credential.PasswordHasher{}, accessapp.MachineConfig{CorpID: migrationConfig.WeComCorpID})
 	if err != nil {
 		pool.Close()
 		return nil, nil, err

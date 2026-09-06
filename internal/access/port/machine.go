@@ -100,24 +100,33 @@ type MachineManagement interface {
 // HistoricalMachineImportInput contains only non-secret source facts. A
 // migration never accepts old secret hashes, keys, or access tokens.
 type HistoricalMachineImportInput struct {
-	ImportRunID       string
-	SourceRowID       string
-	SourceRowDigest   [32]byte
-	ClientID          string
-	PrincipalID       string
-	PrincipalType     string
-	DisplayName       string
-	Purpose           string
-	Audiences         []string
-	Scopes            []string
-	Capabilities      []string
-	AllowedCIDRs      []string
-	CorpID            string
-	OwnerScope        domain.OwnerScope
-	SourceEnabled     bool
-	SourceAuthVersion int64
-	TokenTTLSeconds   int
-	ExpiresAt         *time.Time
+	// ImportRunID identifies the sealed source snapshot batch. It is never a
+	// donor Git revision: multiple factual snapshots may share one revision.
+	ImportRunID  string
+	SourceSystem string
+	SourceScope  string
+	SourceRowID  string
+	// SourceClientID is the donor identifier. It may differ from ClientID only
+	// for an explicit frozen compatibility mapping (the legacy direct key).
+	SourceClientID          string
+	SourceRowDigest         [32]byte
+	SourceOwnerScopeDigest  [32]byte
+	OwnerScopeMappingStatus string
+	ClientID                string
+	PrincipalID             string
+	PrincipalType           string
+	DisplayName             string
+	Purpose                 string
+	Audiences               []string
+	Scopes                  []string
+	Capabilities            []string
+	AllowedCIDRs            []string
+	CorpID                  string
+	OwnerScope              domain.OwnerScope
+	SourceEnabled           bool
+	SourceAuthVersion       int64
+	TokenTTLSeconds         int
+	ExpiresAt               *time.Time
 }
 
 type HistoricalMachineImportResult struct {
@@ -133,6 +142,8 @@ type HistoricalMachineImportResult struct {
 // occurrence time so import audit is never confused with a legacy action.
 type HistoricalMachineAuditInput struct {
 	ImportRunID     string
+	SourceSystem    string
+	SourceScope     string
 	SourceAuditID   int64
 	SourceRowDigest [32]byte
 	Operator        string
@@ -149,9 +160,9 @@ type HistoricalMachineAuditResult struct {
 	Replayed bool
 }
 
-// HistoricalMachineImportBatch seals one protected source snapshot. A source
-// revision may have only one digest, which prevents overlap or source drift
-// from being treated as a second historical import.
+// HistoricalMachineImportBatch seals one protected source snapshot. SourceRevision
+// identifies the frozen donor code; ImportRunID identifies this actual source
+// snapshot, so later snapshots from the same revision remain possible.
 type HistoricalMachineImportBatch struct {
 	ImportRunID    string
 	SourceSystem   string
