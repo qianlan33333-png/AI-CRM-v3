@@ -92,21 +92,41 @@ ALTER TABLE customer_owner_handoff_previews
     ADD CONSTRAINT customer_owner_handoff_previews_batch_fk
     FOREIGN KEY (executed_batch_id) REFERENCES customer_owner_handoff_batches(id);
 
+-- A history import is a read-only projection of one protected source
+-- snapshot. It deliberately has no effect, provider, or local-owner binding:
+-- replay and verification can only append/read this Customer-owned ledger.
+CREATE TABLE customer_owner_handoff_history_runs (
+    run_key TEXT PRIMARY KEY,
+    snapshot_digest BYTEA NOT NULL CHECK (octet_length(snapshot_digest)=32),
+    source_system TEXT NOT NULL,
+    input_count BIGINT NOT NULL CHECK (input_count >= 0),
+    status TEXT NOT NULL CHECK (status IN ('applied','reconciled')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    reconciled_at TIMESTAMPTZ NULL
+);
+
 CREATE TABLE customer_owner_handoff_history_imports (
+    run_key TEXT NOT NULL REFERENCES customer_owner_handoff_history_runs(run_key),
     source_batch_id TEXT NOT NULL,
     source_line_id TEXT NOT NULL,
     mode TEXT NOT NULL CHECK (mode IN ('local_only','wecom_then_crm')),
     source_state TEXT NOT NULL,
     source_occurred_at TIMESTAMPTZ NOT NULL,
     source_digest BYTEA NOT NULL CHECK (octet_length(source_digest)=32),
+    source_subject_digest BYTEA NOT NULL CHECK (octet_length(source_subject_digest)=32),
     customer_id BIGINT NULL REFERENCES customers(id),
+    source_staff_id BIGINT NULL REFERENCES admin_users(id),
+    target_staff_id BIGINT NULL REFERENCES admin_users(id),
     source_staff_ref_digest BYTEA NULL CHECK (source_staff_ref_digest IS NULL OR octet_length(source_staff_ref_digest)=32),
     target_staff_ref_digest BYTEA NULL CHECK (target_staff_ref_digest IS NULL OR octet_length(target_staff_ref_digest)=32),
     source_result_digest BYTEA NOT NULL CHECK (octet_length(source_result_digest)=32),
+    resolution_digest BYTEA NOT NULL CHECK (octet_length(resolution_digest)=32),
     imported_state TEXT NOT NULL CHECK (imported_state IN ('observed','pending_mapping','conflict','invalid')),
     imported_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (source_batch_id,source_line_id)
 );
+CREATE INDEX ix_customer_owner_handoff_history_imports_run
+    ON customer_owner_handoff_history_imports(run_key, imported_state);
 ALTER TABLE customer_owner_handoff_preview_rows
     ADD COLUMN source_userid_digest BYTEA NULL CHECK (source_userid_digest IS NULL OR octet_length(source_userid_digest)=32),
     ADD COLUMN target_userid_digest BYTEA NULL CHECK (target_userid_digest IS NULL OR octet_length(target_userid_digest)=32),

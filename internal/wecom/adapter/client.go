@@ -1503,7 +1503,6 @@ func definitiveTransferRejection(err error) bool {
 	var responseErr *providerResponseError
 	return errors.As(err, &responseErr) && responseErr.errCode != 0
 }
-}
 
 func providerError(statusCode int, body []byte) error {
 	var payload response
