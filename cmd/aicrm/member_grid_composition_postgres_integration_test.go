@@ -289,6 +289,9 @@ func (memberGridPGExternal) SaveExternalPushConfiguration(context.Context, produ
 func (memberGridPGExternal) QueueExternalPushTest(context.Context, productport.QueueExternalPushTestCommand) (productport.ExternalPushTest, error) {
 	return productport.ExternalPushTest{}, nil
 }
+func (memberGridPGExternal) ListExternalPushTests(context.Context, productport.ID, productport.ExternalPushProductKind) ([]productport.ExternalPushTest, error) {
+	return nil, nil
+}
 
 type memberGridPGWorkspace struct{}
 

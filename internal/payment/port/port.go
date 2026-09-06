@@ -221,7 +221,12 @@ type ReconciliationTarget struct {
 }
 
 type WeChatPayPaymentQuery struct {
-	MerchantOrderNo, Currency, Status string
+	MerchantOrderNo string
+	Currency        string
+	Status          string
+	// TransactionReference is the provider-verified query fact passed only to
+	// Order's same-transaction paid settlement; Payment persists its digest.
+	TransactionReference              string
 	AmountMinor                       int64
 	OccurredAt                        time.Time
 	EvidenceDigest, TransactionDigest effectport.Digest

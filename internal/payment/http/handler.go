@@ -13,6 +13,9 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
@@ -58,15 +61,17 @@ type H5OAuthApplication interface {
 }
 
 type Handler struct {
-	app               Application
-	verifier          *paymentprovider.CallbackVerifier
-	security          RequestSecurity
-	writesEnabled     bool
-	shopWritesEnabled bool
-	shopVerifier      paymentport.ShopCallbackVerifier
-	sessionVerifier   SessionIdentityVerifier
-	sessionIssuer     TrustedSessionIssuer
-	h5OAuth           H5OAuthApplication
+	app                Application
+	verifier           *paymentprovider.CallbackVerifier
+	security           RequestSecurity
+	writesEnabled      bool
+	shopWritesEnabled  bool
+	shopVerifier       paymentport.ShopCallbackVerifier
+	sessionVerifier    SessionIdentityVerifier
+	sessionIssuer      TrustedSessionIssuer
+	h5OAuth            H5OAuthApplication
+	commerceOrders     orderport.CommercePushDeliveryReferenceReader
+	commerceDeliveries outboundport.CommercePushDeliveryReader
 }
 
 func (handler *Handler) SetH5OAuth(application H5OAuthApplication) error {
@@ -90,6 +95,17 @@ func (handler *Handler) SetShopCallbackVerifier(verifier paymentport.ShopCallbac
 		return paymentport.ErrInvalid
 	}
 	handler.shopVerifier = verifier
+	return nil
+}
+
+// SetCommercePushDeliveryReaders binds the two stable read Ports used only by
+// the legacy order-delivery compatibility route. Payment owns neither Order
+// references nor Outbound delivery rows.
+func (handler *Handler) SetCommercePushDeliveryReaders(orders orderport.CommercePushDeliveryReferenceReader, deliveries outboundport.CommercePushDeliveryReader) error {
+	if handler == nil || orders == nil || deliveries == nil {
+		return paymentport.ErrInvalid
+	}
+	handler.commerceOrders, handler.commerceDeliveries = orders, deliveries
 	return nil
 }
 
@@ -393,25 +409,73 @@ func (handler *Handler) orderEffects(writer http.ResponseWriter, request *http.R
 		writeError(writer, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	if handler.commerceOrders == nil || handler.commerceDeliveries == nil {
+		writeError(writer, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
 	orderRef := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSuffix(request.URL.Path, "/external-push-deliveries"), "/api/admin/wechat-pay/orders/"), "/")
 	if orderRef == "" {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	effects, err := handler.app.ListOrderEffects(request.Context(), domain.ProviderWeChatPay, orderRef)
+	reference, err := handler.commerceOrders.CommercePushDeliveryReference(request.Context(), orderdomain.ProviderWeChatPay, orderRef)
 	if err != nil {
-		resultError(writer, err)
+		commerceDeliveryError(writer, err)
 		return
 	}
-	items := make([]map[string]any, 0, len(effects))
-	for _, effect := range effects {
-		items = append(items, map[string]any{
-			"id": effect.EffectID, "external_effect_id": effect.EffectID,
-			"kind": effect.Kind, "status": effect.State, "state": effect.State,
-			"attempt_count": effect.AttemptCount, "created_at": effect.UpdatedAt, "updated_at": effect.UpdatedAt,
+	if reference.HistoricalMappingState == "pending" {
+		writeJSON(writer, http.StatusOK, map[string]any{"items": []any{}, "effects": []any{}, "total": 0, "history_mapping_state": "pending"})
+		return
+	}
+	// A native checkout is a valid order-detail record before its first paid
+	// fact exists. No paid event means no eligible commerce delivery, rather
+	// than a failed Outbound read or a fabricated event ID.
+	if reference.HistoricalMappingState == "current" && reference.PaidEventID == 0 {
+		writeJSON(writer, http.StatusOK, map[string]any{"items": []any{}, "effects": []any{}, "total": 0, "history_mapping_state": "current"})
+		return
+	}
+	query := outboundport.CommercePushDeliveryQuery{PaidEventID: reference.PaidEventID}
+	if reference.HistoricalMappingState == "mapped" {
+		query = outboundport.CommercePushDeliveryQuery{HistoricalSourceKind: reference.HistoricalSourceKind, HistoricalSourceSystem: reference.HistoricalSourceSystem, HistoricalSourceKey: reference.HistoricalSourceKey}
+	}
+	items, err := handler.commerceDeliveries.ListCommercePushDeliveries(request.Context(), query)
+	if err != nil {
+		commerceDeliveryError(writer, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		var externalEffectID, legacyDeliveryID, legacyEffectJobID any
+		if item.Source == "current" {
+			externalEffectID = item.EffectID
+		} else {
+			legacyDeliveryID, legacyEffectJobID = item.HistoricalDeliveryID, item.LegacyEffectJobID
+		}
+		out = append(out, map[string]any{
+			"id": item.ID, "external_effect_id": externalEffectID, "legacy_delivery_id": legacyDeliveryID, "legacy_effect_job_id": legacyEffectJobID, "source": item.Source,
+			"kind": "commerce_product_push", "status": item.State, "state": item.State,
+			"attempt_count": item.AttemptCount, "provider_call_attempted": item.ProviderCallAttempted,
+			"real_external_call_executed": item.RealExternalCallExecuted, "provider_result_received": item.ProviderResultReceived,
+			"response_status": item.ResponseStatus, "result_code": item.ResultCode, "error_message": item.ErrorMessage,
+			"response_body_protected": item.ResponseBodyProtected, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt,
 		})
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"items": items, "effects": items, "total": len(items)})
+	writeJSON(writer, http.StatusOK, map[string]any{"items": out, "effects": out, "total": len(out), "history_mapping_state": reference.HistoricalMappingState})
+}
+
+func commerceDeliveryError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, orderport.ErrNotFound):
+		writeError(writer, http.StatusNotFound, "not_found")
+	case errors.Is(err, orderport.ErrConflict):
+		writeError(writer, http.StatusConflict, "conflict")
+	case errors.Is(err, paymentport.ErrNotFound):
+		writeError(writer, http.StatusNotFound, "not_found")
+	case errors.Is(err, paymentport.ErrConflict):
+		writeError(writer, http.StatusConflict, "conflict")
+	default:
+		writeError(writer, http.StatusServiceUnavailable, "unavailable")
+	}
 }
 
 func compatRefundStatus(status domain.RefundStatus) string {

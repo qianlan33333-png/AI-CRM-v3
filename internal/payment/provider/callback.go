@@ -28,15 +28,16 @@ type CallbackVerifier struct {
 }
 
 type CallbackResult struct {
-	EventDigest, BodyDigest   [32]byte
-	Kind                      string
-	MerchantOrderNo, RefundNo string
-	AppID                     string
-	ProviderTransactionDigest string
-	ProviderRefundDigest      string
-	AmountMinor               int64
-	Currency                  string
-	OccurredAt                time.Time
+	EventDigest, BodyDigest      [32]byte
+	Kind                         string
+	MerchantOrderNo, RefundNo    string
+	AppID                        string
+	ProviderTransactionDigest    string
+	ProviderTransactionReference string // decrypted in memory; passed only to Order's same-UoW paid fact
+	ProviderRefundDigest         string
+	AmountMinor                  int64
+	Currency                     string
+	OccurredAt                   time.Time
 }
 
 func NewCallbackVerifier(keys map[string]*rsa.PublicKey, apiV3Key []byte, appID, merchantID string, additionalAppIDs ...string) (*CallbackVerifier, error) {
@@ -114,6 +115,7 @@ func (verifier *CallbackVerifier) Verify(_ context.Context, body []byte, headers
 			return CallbackResult{}, ErrInvalidCallback
 		}
 		result.Kind = "payment"
+		result.ProviderTransactionReference = value.TransactionID
 		result.ProviderTransactionDigest = string(effectport.Hash("wechatpay.transaction", value.TransactionID))
 	case "REFUND.SUCCESS":
 		if value.RefundStatus != "SUCCESS" || value.OutRefundNo == "" || value.RefundID == "" || value.Amount.Refund < 1 {

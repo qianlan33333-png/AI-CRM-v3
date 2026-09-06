@@ -105,8 +105,12 @@ func TestPostgreSQLOrderAtomicReplayCursorAndConstraints(t *testing.T) {
 	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM orders),(SELECT count(*) FROM order_items),(SELECT count(*) FROM order_status_history),(SELECT count(*) FROM order_operation_receipts),(SELECT count(*) FROM order_audit_events),(SELECT count(*) FROM order_outbox)`).Scan(&orders, &items, &history, &receipts, &audits, &outbox); err != nil {
 		t.Fatal(err)
 	}
-	if orders != 3 || items != 3 || history != 4 || receipts != 4 || audits != 4 || outbox != 4 {
+	if orders != 3 || items != 3 || history != 4 || receipts != 4 || audits != 4 || outbox != 5 {
 		t.Fatalf("rows orders=%d items=%d history=%d receipts=%d audits=%d outbox=%d", orders, items, history, receipts, audits, outbox)
+	}
+	var paidEvents int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM order_paid_events WHERE order_id=$1`, first.ID).Scan(&paidEvents); err != nil || paidEvents != 1 {
+		t.Fatalf("paid events=%d err=%v", paidEvents, err)
 	}
 
 	broken := orderapp.NewService(uow, failCompleteStore{repository})
@@ -1379,7 +1383,7 @@ func orderIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, name := range []string{"0002_identity.sql", "0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql", "0055_order_service_entitlements.sql", "0070_service_period_entitlement_fulfillment.sql", "0076_order_checkout_snapshots.sql", "0088_order_service_entitlement_alliance.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0005_external_effects.sql", "0010_product.sql", "0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql", "0055_order_service_entitlements.sql", "0070_service_period_entitlement_fulfillment.sql", "0076_order_checkout_snapshots.sql", "0088_order_service_entitlement_alliance.sql", "0095_product_external_push.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
@@ -1388,7 +1392,7 @@ func orderIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 			t.Fatalf("apply %s: %v", name, err)
 		}
 	}
-	for _, table := range []string{"orders", "order_items", "order_status_history", "order_operation_receipts", "order_export_receipts", "order_audit_events", "order_outbox", "order_import_runs", "order_import_receipts", "order_import_quarantine"} {
+	for _, table := range []string{"orders", "order_items", "order_status_history", "order_operation_receipts", "order_export_receipts", "order_audit_events", "order_outbox", "order_paid_events", "order_import_runs", "order_import_receipts", "order_import_quarantine"} {
 		var owned bool
 		if err = pool.QueryRow(ctx, `SELECT tableowner=current_user FROM pg_tables WHERE schemaname=current_schema() AND tablename=$1`, table).Scan(&owned); err != nil || !owned {
 			t.Fatalf("table %s owner=%t err=%v", table, owned, err)

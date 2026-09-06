@@ -627,12 +627,32 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	segmentBindings.Handler.BindAudienceProductReferences(audienceProductReferenceAdapter{products: productCatalog})
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
+	commercePushTargetResolver, err := commercePushTargetsFromRuntime(cfg.CommercePush)
+	if err != nil {
+		return fail(err)
+	}
+	var commercePushCipher outbound.CommercePayloadCipher
+	if cfg.CommercePush.PayloadDataKey != "" {
+		commercePushCipher, err = outbound.NewCommercePayloadAESGCM(cfg.CommercePush.PayloadDataKey)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	commercePushService, err := outbound.NewCommercePushService(pool.Native(), uow, effectRepository, commerceProductConfigurationReader{reader: productRepository}, queries, commercePushTargetResolver, commercePushCipher)
+	if err != nil {
+		return fail(err)
+	}
+	commercePushCompletionSink, err := outbound.NewCommercePushCompletionSink(commercePushService)
+	if err != nil {
+		return fail(err)
+	}
+	outboundCompletionSink.WithCommercePush(commercePushCompletionSink)
 	// 0079 is Product-owned workspace metadata.  The HTTP host still reads
 	// members through the Order port and display names through the Customer
 	// port; it does not receive either store here.
 	productMemberGridStaff := productMemberGridStaffDirectory{users: accessRepository}
 	productMemberGrid := productapp.NewMemberGridWorkspaceService(uow, productRepository, productMemberGridStaff, productEvents)
-	productExternalPush, err := productapp.NewCommerceExternalPushService(uow, productRepository, productstore.NewLocalExternalPushEffectAccepter(), productEvents)
+	productExternalPush, err := productapp.NewCommerceExternalPushService(uow, productRepository, commercePushService, commercePushService, productEvents)
 	if err != nil {
 		return fail(err)
 	}
@@ -776,6 +796,9 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	legacyAudienceSource.Orders = orderRepository
 	orderService := orderapp.NewService(uow, orderRepository)
 	if err = orderService.SetCheckoutCouponCoordinator(couponCheckout); err != nil {
+		return fail(err)
+	}
+	if err = orderService.SetPaidEventConsumer(commercePushService); err != nil {
 		return fail(err)
 	}
 	if cfg.WeChatPay.H5OAuthEnabled {
@@ -944,6 +967,9 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	paymentAdapter := paymentProviderRouter{wechatPay: wechatPayAdapter, wechatShop: wechatShopAdapter}
 	paymentHandler, err := paymenthttp.NewHandler(paymentService, paymentCallbackVerifier, requestSecurity, cfg.WeChatPay.Enabled, cfg.WeChatShop.Enabled)
 	if err != nil {
+		return fail(err)
+	}
+	if err = paymentHandler.SetCommercePushDeliveryReaders(orderService, commercePushService); err != nil {
 		return fail(err)
 	}
 	if cfg.WeChatPay.Enabled {
@@ -1144,7 +1170,11 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if ownerProviderErr != nil {
 		return fail(ownerProviderErr)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
+	commercePushProvider, err := outbound.NewCommercePushProvider(cfg.CommercePush.ProviderEnabled, commercePushService, commercePushTargetResolver, commercePushCipher)
+	if err != nil {
+		return fail(err)
+	}
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}

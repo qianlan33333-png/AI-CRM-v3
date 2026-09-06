@@ -646,7 +646,7 @@ func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64
 	outcome := "pending"
 	switch query.Status {
 	case "SUCCESS":
-		if !effectport.ValidDigest(query.TransactionDigest) {
+		if !effectport.ValidDigest(query.TransactionDigest) || !validProviderTransactionReference(query.TransactionReference) || query.TransactionDigest != effectport.Hash("wechatpay.transaction", query.TransactionReference) {
 			return domain.Payment{}, paymentport.ErrConflict
 		}
 		outcome = "paid"
@@ -676,7 +676,7 @@ func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64
 		if inner != nil {
 			return inner
 		}
-		_, inner = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: current.OrderID, Failed: outcome == "final_failed", OccurredAt: query.OccurredAt, ReceiptKey: receiptKey})
+		_, inner = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: current.OrderID, Failed: outcome == "final_failed", ProviderTransactionNo: query.TransactionReference, OccurredAt: query.OccurredAt, ReceiptKey: receiptKey})
 		return inner
 	})
 	return current, classify(err)
@@ -752,8 +752,13 @@ func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) 
 	})
 	return current, classify(err)
 }
+func validProviderTransactionReference(value string) bool {
+	return value != "" && len(value) <= 200 && value == strings.TrimSpace(value)
+}
+
 func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentprovider.CallbackResult) error {
-	if !s.ready() || (callback.Kind != "payment" && callback.Kind != "refund") || callback.AmountMinor < 1 || callback.Currency != "CNY" || callback.OccurredAt.IsZero() {
+	if !s.ready() || (callback.Kind != "payment" && callback.Kind != "refund") || callback.AmountMinor < 1 || callback.Currency != "CNY" || callback.OccurredAt.IsZero() ||
+		(callback.Kind == "payment" && (!validProviderTransactionReference(callback.ProviderTransactionReference) || callback.ProviderTransactionDigest != string(effectport.Hash("wechatpay.transaction", callback.ProviderTransactionReference)))) {
 		return paymentport.ErrInvalid
 	}
 	return classify(s.uow.Within(ctx, func(tx context.Context) error {
@@ -777,7 +782,10 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 			if _, err = s.store.UpdatePaymentSettlement(tx, payment, callback.ProviderTransactionDigest, receiptKey); err != nil {
 				return err
 			}
-			_, err = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: payment.OrderID, OccurredAt: callback.OccurredAt, ReceiptKey: receiptKey})
+			if !validProviderTransactionReference(callback.ProviderTransactionReference) {
+				return paymentport.ErrConflict
+			}
+			_, err = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: payment.OrderID, ProviderTransactionNo: callback.ProviderTransactionReference, OccurredAt: callback.OccurredAt, ReceiptKey: receiptKey})
 			return err
 		}
 		refund, err := s.store.GetRefundByNumber(tx, callback.RefundNo, true)

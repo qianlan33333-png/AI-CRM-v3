@@ -162,6 +162,7 @@ type ProviderRouter struct {
 	surveyCompletion  effect.ProviderAdapter
 	customerTag       effect.ProviderAdapter
 	ownerHandoff      effect.ProviderAdapter
+	commercePush      effect.ProviderAdapter
 }
 
 func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {
@@ -211,6 +212,15 @@ func (r *ProviderRouter) WithCustomerOwnerHandoff(provider effect.ProviderAdapte
 func (r *ProviderRouter) WithSurveyCompletion(provider effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.surveyCompletion = provider
+	}
+	return r
+}
+
+// WithCommercePush installs the explicit Product/Order webhook route. It has
+// no fallback because each frozen commerce envelope must use its own protocol.
+func (r *ProviderRouter) WithCommercePush(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.commercePush = provider
 	}
 	return r
 }
@@ -281,10 +291,13 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 			if r.customerTag != nil {
 				return r.customerTag.Execute(ctx, envelope, attempt)
 			}
-
 		case effect.KindCustomerOwnerHandoff:
 			if r.ownerHandoff != nil {
 				return r.ownerHandoff.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindCommerceProductPush:
+			if r.commercePush != nil {
+				return r.commercePush.Execute(ctx, envelope, attempt)
 			}
 		}
 	}

@@ -331,7 +331,7 @@ func TestVerifiedCallbackAppIDMustMatchFrozenPaymentChannel(t *testing.T) {
 	if err := service.SetPaymentChannelAppIDs("wx-mini", "wx-oa"); err != nil {
 		t.Fatal(err)
 	}
-	callback := paymentprovider.CallbackResult{Kind: "payment", AppID: "wx-mini", MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", OccurredAt: now.Add(time.Minute)}
+	callback := paymentprovider.CallbackResult{Kind: "payment", AppID: "wx-mini", MerchantOrderNo: "M-7", ProviderTransactionReference: "tx-payment-callback", ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", "tx-payment-callback")), AmountMinor: 1000, Currency: "CNY", OccurredAt: now.Add(time.Minute)}
 	if err := service.ApplyVerifiedCallback(context.Background(), callback); !errors.Is(err, paymentport.ErrConflict) {
 		t.Fatalf("mismatched callback err=%v", err)
 	}
@@ -476,7 +476,7 @@ func TestWeChatPayPaymentReconciliationUsesPaymentForeignKey(t *testing.T) {
 	updatedAt := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
 	store := &storeStub{payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusAwaitingPayment, Version: 2, CreatedAt: updatedAt.Add(-time.Hour), UpdatedAt: updatedAt}}
 	service := NewService(uowStub{}, store, orderStub{snapshot: nativeOrder()}, sessionStub{}, &effectStub{})
-	if err := service.SetWeChatPayReconciler(payReconcilerStub{payment: paymentport.WeChatPayPaymentQuery{MerchantOrderNo: "M-7", Currency: "CNY", Status: "SUCCESS", AmountMinor: 1000, OccurredAt: updatedAt.Add(time.Minute), EvidenceDigest: effectport.Hash("pay-query", "M-7"), TransactionDigest: effectport.Hash("pay-transaction", "M-7")}}); err != nil {
+	if err := service.SetWeChatPayReconciler(payReconcilerStub{payment: paymentport.WeChatPayPaymentQuery{MerchantOrderNo: "M-7", Currency: "CNY", Status: "SUCCESS", TransactionReference: "tx-pay-query-M-7", AmountMinor: 1000, OccurredAt: updatedAt.Add(time.Minute), EvidenceDigest: effectport.Hash("pay-query", "M-7"), TransactionDigest: effectport.Hash("wechatpay.transaction", "tx-pay-query-M-7")}}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := service.ReconcileWeChatPayPayment(context.Background(), 7)

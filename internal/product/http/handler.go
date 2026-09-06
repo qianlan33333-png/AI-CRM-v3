@@ -5,6 +5,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -768,7 +769,7 @@ func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, configuration)
+		writeJSON(w, http.StatusOK, externalConfigurationJSONResponse(configuration))
 	case http.MethodPut:
 		principal, ok := h.write(w, r)
 		if !ok {
@@ -788,45 +789,69 @@ func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64
 			writeError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
-		configuration, err := h.external.SaveExternalPushConfiguration(r.Context(), productport.SaveExternalPushConfigurationCommand{ProductID: productport.ID(id), ProductKind: kind, Enabled: body.Enabled, ConfigurationReference: body.ConfigurationReference, Actor: principal.InternalID, IdempotencyKey: key})
+		businessSet, business, valid := externalConfigurationBusiness(body)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		configuration, err := h.external.SaveExternalPushConfiguration(r.Context(), productport.SaveExternalPushConfigurationCommand{
+			ProductID: productport.ID(id), ProductKind: kind, Enabled: body.Enabled, ConfigurationReference: body.ConfigurationReference,
+			BusinessParametersSet: businessSet, PushType: business.pushType, Day: business.day, Frequency: business.frequency, ExpiresAtTS: business.expiresAtTS, Remark: business.remark, CustomParams: business.customParams,
+			ExpectedRevision: business.expectedRevision, Actor: principal.InternalID, IdempotencyKey: key,
+		})
 		if err != nil {
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, configuration)
+		writeJSON(w, http.StatusOK, externalConfigurationJSONResponse(configuration))
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPut)
 	}
 }
 
 func (h *Handler) externalTest(w http.ResponseWriter, r *http.Request, id int64, kind productport.ExternalPushProductKind) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		if !h.read(w, r) {
+			return
+		}
+		if r.URL.RawQuery != "" {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		items, err := h.external.ListExternalPushTests(r.Context(), productport.ID(id), kind)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost:
+		principal, ok := h.write(w, r)
+		if !ok {
+			return
+		}
+		if r.URL.RawQuery != "" {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if err := decodeEmptyJSON(r); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		key, err := requestIdempotencyKey(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		test, err := h.external.QueueExternalPushTest(r.Context(), productport.QueueExternalPushTestCommand{ProductID: productport.ID(id), ProductKind: kind, Actor: principal.InternalID, IdempotencyKey: key})
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, test)
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
-	principal, ok := h.write(w, r)
-	if !ok {
-		return
-	}
-	if r.URL.RawQuery != "" {
-		writeError(w, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	if err := decodeEmptyJSON(r); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	key, err := requestIdempotencyKey(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	test, err := h.external.QueueExternalPushTest(r.Context(), productport.QueueExternalPushTestCommand{ProductID: productport.ID(id), ProductKind: kind, Actor: principal.InternalID, IdempotencyKey: key})
-	if err != nil {
-		resultError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, test)
 }
 
 func (h *Handler) serviceMembers(w http.ResponseWriter, r *http.Request, id int64) {
@@ -1540,8 +1565,188 @@ type versionRequest struct {
 }
 
 type externalConfigurationRequest struct {
-	Enabled                bool   `json:"enabled"`
+	Enabled                bool            `json:"enabled"`
+	ConfigurationReference string          `json:"configuration_reference"`
+	ExpectedRevision       *int64          `json:"expected_revision"`
+	PushType               *string         `json:"type"`
+	Day                    json.RawMessage `json:"day"`
+	Frequency              json.RawMessage `json:"frequency"`
+	ExpiresAtTS            json.RawMessage `json:"expires_at_ts"`
+	Remark                 *string         `json:"remark"`
+	CustomParams           json.RawMessage `json:"custom_params"`
+}
+
+// externalConfigurationResponse keeps the canonical JSON text alongside the
+// legacy decoded value. The Host returns this exact text to the frozen textarea
+// so JavaScript never rounds a valid JSON integer before it is saved again.
+type externalConfigurationResponse struct {
+	productport.ExternalPushConfiguration
+	// ConfigurationReference is intentionally repeated without omitempty.
+	// The frozen Product Host reads the disabled binding too and needs an
+	// explicit empty string rather than an absent field.
 	ConfigurationReference string `json:"configuration_reference"`
+	CustomParamsJSON       string `json:"custom_params_json"`
+}
+
+func externalConfigurationJSONResponse(value productport.ExternalPushConfiguration) externalConfigurationResponse {
+	if value.CustomParams == nil {
+		value.CustomParams = map[string]any{}
+	}
+	raw, err := json.Marshal(value.CustomParams)
+	if err != nil {
+		// The Product application validates this field before persistence. Keep a
+		// valid response shape for the disabled legacy configuration as a
+		// defensive fallback; no request data is reflected here.
+		raw = []byte("{}")
+	}
+	return externalConfigurationResponse{ExternalPushConfiguration: value, ConfigurationReference: value.ConfigurationReference, CustomParamsJSON: string(raw)}
+}
+
+type externalConfigurationBusinessValue struct {
+	expectedRevision int64
+	pushType         string
+	day              *int64
+	frequency        *int64
+	expiresAtTS      *int64
+	remark           string
+	customParams     map[string]any
+}
+
+// externalConfigurationBusiness accepts the frozen config's JSON-object and
+// key/value-list forms. URL and secret remain absent: Product persists only
+// non-sensitive payload fields while the opaque reference selects deployment
+// credentials and the controlled target.
+func externalConfigurationBusiness(value externalConfigurationRequest) (bool, externalConfigurationBusinessValue, bool) {
+	present := value.PushType != nil || len(value.Day) != 0 || len(value.Frequency) != 0 || len(value.ExpiresAtTS) != 0 || value.Remark != nil || len(value.CustomParams) != 0 || value.ExpectedRevision != nil
+	if !present {
+		return false, externalConfigurationBusinessValue{}, true
+	}
+	if value.PushType == nil || len(value.Day) == 0 || len(value.Frequency) == 0 || len(value.ExpiresAtTS) == 0 || value.Remark == nil || len(value.CustomParams) == 0 || value.ExpectedRevision == nil || *value.ExpectedRevision < 0 {
+		return false, externalConfigurationBusinessValue{}, false
+	}
+	day, ok := externalConfigurationOptionalInteger(value.Day)
+	if !ok {
+		return false, externalConfigurationBusinessValue{}, false
+	}
+	frequency, ok := externalConfigurationOptionalInteger(value.Frequency)
+	if !ok {
+		return false, externalConfigurationBusinessValue{}, false
+	}
+	expiresAtTS, ok := externalConfigurationOptionalInteger(value.ExpiresAtTS)
+	if !ok {
+		return false, externalConfigurationBusinessValue{}, false
+	}
+	custom, ok := externalConfigurationCustomParams(value.CustomParams)
+	if !ok {
+		return false, externalConfigurationBusinessValue{}, false
+	}
+	return true, externalConfigurationBusinessValue{expectedRevision: *value.ExpectedRevision, pushType: strings.TrimSpace(*value.PushType), day: day, frequency: frequency, expiresAtTS: expiresAtTS, remark: strings.TrimSpace(*value.Remark), customParams: custom}, true
+}
+
+func externalConfigurationOptionalInteger(raw json.RawMessage) (*int64, bool) {
+	value := strings.TrimSpace(string(raw))
+	if value == "null" || value == `""` {
+		return nil, true
+	}
+	var number int64
+	if json.Unmarshal(raw, &number) == nil {
+		return &number, number >= 0
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		return nil, false
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+	if err != nil || parsed < 0 {
+		return nil, false
+	}
+	return &parsed, true
+}
+
+func externalConfigurationCustomParams(raw json.RawMessage) (map[string]any, bool) {
+	if len(raw) == 0 || len(raw) > 32768 || !json.Valid(raw) {
+		return nil, false
+	}
+	value := strings.TrimSpace(string(raw))
+	if value == `""` {
+		return map[string]any{}, true
+	}
+	if len(value) > 1 && value[0] == '"' {
+		var encoded string
+		if json.Unmarshal(raw, &encoded) != nil {
+			return nil, false
+		}
+		return externalConfigurationCustomParams(json.RawMessage(encoded))
+	}
+	if strings.HasPrefix(value, "{") {
+		var object map[string]any
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if decoder.Decode(&object) != nil {
+			return nil, false
+		}
+		return normalizeExternalConfigurationCustomParams(object)
+	}
+	if !strings.HasPrefix(value, "[") {
+		return nil, false
+	}
+	var entries []map[string]json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil {
+		return nil, false
+	}
+	object := make(map[string]any, len(entries))
+	for _, entry := range entries {
+		keyRaw := entry["key"]
+		if len(keyRaw) == 0 {
+			keyRaw = entry["name"]
+		}
+		var key string
+		if len(keyRaw) == 0 || json.Unmarshal(keyRaw, &key) != nil {
+			return nil, false
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, false
+		}
+		if _, duplicate := object[key]; duplicate {
+			return nil, false
+		}
+		valueRaw := entry["value"]
+		if len(valueRaw) == 0 {
+			object[key] = ""
+			continue
+		}
+		var item any
+		decoder := json.NewDecoder(bytes.NewReader(valueRaw))
+		decoder.UseNumber()
+		if decoder.Decode(&item) != nil {
+			return nil, false
+		}
+		object[key] = item
+	}
+	return normalizeExternalConfigurationCustomParams(object)
+}
+
+func normalizeExternalConfigurationCustomParams(value map[string]any) (map[string]any, bool) {
+	if len(value) > 64 {
+		return nil, false
+	}
+	result := make(map[string]any, len(value))
+	for key, item := range value {
+		normalized := strings.TrimSpace(key)
+		if normalized == "" || len([]rune(normalized)) > 128 || strings.ContainsFunc(normalized, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return nil, false
+		}
+		if _, duplicate := result[normalized]; duplicate {
+			return nil, false
+		}
+		raw, err := json.Marshal(item)
+		if err != nil || !json.Valid(raw) || len(raw) > 4096 {
+			return nil, false
+		}
+		result[normalized] = item
+	}
+	return result, true
 }
 
 type productResponse struct {

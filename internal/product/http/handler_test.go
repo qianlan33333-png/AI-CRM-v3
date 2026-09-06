@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -146,6 +148,12 @@ func (service *testServicePeriod) ArchiveServicePeriodProduct(context.Context, p
 type testExternalPush struct {
 	configuration productport.ExternalPushConfiguration
 	test          productport.ExternalPushTest
+	save          *productport.SaveExternalPushConfigurationCommand
+	saveErr       error
+	listCalls     int
+	listProductID productport.ID
+	listKind      productport.ExternalPushProductKind
+	queue         *productport.QueueExternalPushTestCommand
 }
 
 type testMemberEntitlements struct {
@@ -474,12 +482,33 @@ func (external *testExternalPush) GetExternalPushConfiguration(context.Context, 
 	return external.configuration, nil
 }
 
-func (external *testExternalPush) SaveExternalPushConfiguration(context.Context, productport.SaveExternalPushConfigurationCommand) (productport.ExternalPushConfiguration, error) {
-	return external.configuration, nil
+func (external *testExternalPush) SaveExternalPushConfiguration(_ context.Context, command productport.SaveExternalPushConfigurationCommand) (productport.ExternalPushConfiguration, error) {
+	external.save = &command
+	if external.saveErr != nil {
+		return productport.ExternalPushConfiguration{}, external.saveErr
+	}
+	configuration := external.configuration
+	configuration.ProductID, configuration.ProductKind = command.ProductID, command.ProductKind
+	configuration.Enabled, configuration.ConfigurationReference = command.Enabled, command.ConfigurationReference
+	if command.BusinessParametersSet {
+		configuration.PushType, configuration.Day, configuration.Frequency, configuration.Remark, configuration.CustomParams = command.PushType, command.Day, command.Frequency, command.Remark, command.CustomParams
+		configuration.Revision = command.ExpectedRevision + 1
+	}
+	if configuration.Revision < 1 {
+		configuration.Revision = 1
+	}
+	external.configuration = configuration
+	return configuration, nil
 }
 
-func (external *testExternalPush) QueueExternalPushTest(context.Context, productport.QueueExternalPushTestCommand) (productport.ExternalPushTest, error) {
+func (external *testExternalPush) QueueExternalPushTest(_ context.Context, command productport.QueueExternalPushTestCommand) (productport.ExternalPushTest, error) {
+	external.queue = &command
 	return external.test, nil
+}
+func (external *testExternalPush) ListExternalPushTests(_ context.Context, id productport.ID, kind productport.ExternalPushProductKind) ([]productport.ExternalPushTest, error) {
+	external.listCalls++
+	external.listProductID, external.listKind = id, kind
+	return []productport.ExternalPushTest{external.test}, nil
 }
 
 func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *testLifecycle) {
@@ -508,6 +537,132 @@ func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *te
 	}
 	return handler, security, catalog, lifecycle
 }
+
+func TestExternalPushTestTimelineReadsStatusAndDoesNotClaimDelivery(t *testing.T) {
+	handler, security, _, _ := newHandlerForTest(t)
+	external, ok := handler.external.(*testExternalPush)
+	if !ok {
+		t.Fatal("unexpected external test fixture")
+	}
+	external.test = productport.ExternalPushTest{
+		ProductID: 7, ProductKind: productport.ExternalPushWeChatPay, EffectID: "eer_7", State: "outcome_unknown",
+		AttemptCount: 1, ProviderAccepted: false, DeliveryProven: false, RealExternalCallExecuted: true, AutoRetryAllowed: false,
+		CreatedAt: time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 9, 6, 4, 1, 0, 0, time.UTC),
+	}
+	read := httptest.NewRecorder()
+	handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/products/7/external-push/test", nil))
+	if read.Code != http.StatusOK || security.authCalls != 1 || security.csrfCalls != 0 || external.listCalls != 1 || external.listProductID != 7 || external.listKind != productport.ExternalPushWeChatPay {
+		t.Fatalf("read status=%d auth=%d csrf=%d list=%d product=%d kind=%s body=%s", read.Code, security.authCalls, security.csrfCalls, external.listCalls, external.listProductID, external.listKind, read.Body.String())
+	}
+	var response struct {
+		Items []productport.ExternalPushTest `json:"items"`
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &response); err != nil || len(response.Items) != 1 {
+		t.Fatalf("decode=%v body=%s", err, read.Body.String())
+	}
+	item := response.Items[0]
+	if item.State != "outcome_unknown" || item.AttemptCount != 1 || item.ProviderAccepted || item.DeliveryProven || !item.RealExternalCallExecuted || item.AutoRetryAllowed {
+		t.Fatalf("unsafe timeline item=%#v", item)
+	}
+
+	write := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/products/7/external-push/test", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "external-push-test-http-0001")
+	handler.ServeHTTP(write, request)
+	if write.Code != http.StatusAccepted || security.csrfCalls != 1 || external.queue == nil || external.queue.ProductID != 7 || external.queue.ProductKind != productport.ExternalPushWeChatPay || external.queue.Actor != 9 || external.queue.IdempotencyKey != "external-push-test-http-0001" {
+		t.Fatalf("write status=%d csrf=%d command=%#v body=%s", write.Code, security.csrfCalls, external.queue, write.Body.String())
+	}
+}
+
+func TestExternalPushConfigurationHTTPPreservesLegacyBusinessJSONAndCAS(t *testing.T) {
+	handler, security, _, _ := newHandlerForTest(t)
+	external, ok := handler.external.(*testExternalPush)
+	if !ok {
+		t.Fatal("unexpected external fixture")
+	}
+	external.configuration = productport.ExternalPushConfiguration{
+		ProductID: 7, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-7",
+		PushType: "member_open", Day: pointerInt64(30), Frequency: pointerInt64(1), Remark: "旧备注", CustomParams: map[string]any{"old": true}, Revision: 3,
+		UpdatedAt: time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC),
+	}
+	body := `{"enabled":true,"configuration_reference":"product-push-7","type":"member_renew","day":45,"frequency":2,"expires_at_ts":2147483647,"remark":"保留业务备注","custom_params":{"count":9007199254740993,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]},"expected_revision":3}`
+	write := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "product-external-push-http-0001")
+	handler.ServeHTTP(write, request)
+	if write.Code != http.StatusOK || security.csrfCalls != 1 || external.save == nil {
+		t.Fatalf("status=%d csrf=%d command=%#v body=%s", write.Code, security.csrfCalls, external.save, write.Body.String())
+	}
+	command := *external.save
+	want := map[string]any{"count": json.Number("9007199254740993"), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}}
+	if !command.BusinessParametersSet || command.ExpectedRevision != 3 || command.PushType != "member_renew" || command.Day == nil || *command.Day != 45 || command.Frequency == nil || *command.Frequency != 2 || command.ExpiresAtTS == nil || *command.ExpiresAtTS != 2147483647 || command.Remark != "保留业务备注" || !reflect.DeepEqual(command.CustomParams, want) {
+		t.Fatalf("business command=%#v", command)
+	}
+	var response productport.ExternalPushConfiguration
+	decoder := json.NewDecoder(bytes.NewReader(write.Body.Bytes()))
+	decoder.UseNumber()
+	if err := decoder.Decode(&response); err != nil || response.Revision != 4 || !reflect.DeepEqual(response.CustomParams, want) {
+		t.Fatalf("response=%s decoded=%#v err=%v", write.Body.String(), response, err)
+	}
+	var rawResponse struct {
+		CustomParamsJSON string `json:"custom_params_json"`
+	}
+	if err := json.Unmarshal(write.Body.Bytes(), &rawResponse); err != nil || rawResponse.CustomParamsJSON == "" {
+		t.Fatalf("custom_params_json response=%s err=%v", write.Body.String(), err)
+	}
+	var rawParams map[string]any
+	rawDecoder := json.NewDecoder(strings.NewReader(rawResponse.CustomParamsJSON))
+	rawDecoder.UseNumber()
+	if err := rawDecoder.Decode(&rawParams); err != nil || !reflect.DeepEqual(rawParams, want) {
+		t.Fatalf("custom_params_json=%q decoded=%#v err=%v", rawResponse.CustomParamsJSON, rawParams, err)
+	}
+
+	legacy := httptest.NewRecorder()
+	legacyRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":false,"configuration_reference":""}`))
+	legacyRequest.Header.Set("Content-Type", "application/json")
+	legacyRequest.Header.Set("Idempotency-Key", "product-external-push-http-0002")
+	handler.ServeHTTP(legacy, legacyRequest)
+	if legacy.Code != http.StatusOK || external.save == nil || external.save.BusinessParametersSet || external.save.ExpectedRevision != 0 {
+		t.Fatalf("legacy status=%d command=%#v body=%s", legacy.Code, external.save, legacy.Body.String())
+	}
+
+	// The frozen editor also submits the key/value-list form. It must preserve
+	// a number beyond IEEE-754's safe integer range and accept revision 0 for
+	// the first persisted business configuration.
+	first := httptest.NewRecorder()
+	firstRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"expires_at_ts":null,"remark":"","custom_params":[{"key":"big","value":9007199254740993},{"key":"nested","value":[1,{"inner":9007199254740993}]}],"expected_revision":0}`))
+	firstRequest.Header.Set("Content-Type", "application/json")
+	firstRequest.Header.Set("Idempotency-Key", "product-external-push-http-0003")
+	handler.ServeHTTP(first, firstRequest)
+	wantList := map[string]any{"big": json.Number("9007199254740993"), "nested": []any{json.Number("1"), map[string]any{"inner": json.Number("9007199254740993")}}}
+	if first.Code != http.StatusOK || external.save == nil || !external.save.BusinessParametersSet || external.save.ExpectedRevision != 0 || !reflect.DeepEqual(external.save.CustomParams, wantList) {
+		t.Fatalf("first-save status=%d command=%#v body=%s", first.Code, external.save, first.Body.String())
+	}
+
+	external.saveErr = productapp.ErrConflict
+	stale := httptest.NewRecorder()
+	staleRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"expires_at_ts":null,"remark":"","custom_params":{},"expected_revision":0}`))
+	staleRequest.Header.Set("Content-Type", "application/json")
+	staleRequest.Header.Set("Idempotency-Key", "product-external-push-http-0004")
+	handler.ServeHTTP(stale, staleRequest)
+	external.saveErr = nil
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale first-save status=%d body=%s", stale.Code, stale.Body.String())
+	}
+
+	invalid := httptest.NewRecorder()
+	invalidRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"expires_at_ts":null,"remark":"","custom_params":"not json","expected_revision":4}`))
+	invalidRequest.Header.Set("Content-Type", "application/json")
+	invalidRequest.Header.Set("Idempotency-Key", "product-external-push-http-0005")
+	handler.ServeHTTP(invalid, invalidRequest)
+	if invalid.Code != http.StatusBadRequest || security.csrfCalls != 5 {
+		t.Fatalf("invalid status=%d csrf=%d body=%s", invalid.Code, security.csrfCalls, invalid.Body.String())
+	}
+}
+
+func pointerInt64(value int64) *int64 { return &value }
 
 // Keep the test fixture independent from the application package's internal
 // constant while asserting the public blocked sharing contract.
@@ -902,5 +1057,30 @@ func TestCompatibilityIdempotencyKeyFailsClosedWhenRandomReadFails(t *testing.T)
 	})
 	if !errors.Is(err, wantErr) || key != "" {
 		t.Fatalf("key=%q err=%v, want empty key and entropy error", key, err)
+	}
+}
+
+func TestExternalPushConfigurationHTTPReadsDisabledBindingWithCompleteFrozenShape(t *testing.T) {
+	handler, _, _, _ := newHandlerForTest(t)
+	external, ok := handler.external.(*testExternalPush)
+	if !ok {
+		t.Fatal("unexpected external fixture")
+	}
+	external.configuration = productport.ExternalPushConfiguration{
+		ProductID: 7, ProductKind: productport.ExternalPushWeChatPay,
+		Enabled: false, ConfigurationReference: "", PushType: "", Remark: "", Revision: 0,
+		UpdatedAt: time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC),
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/products/7/external-push", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("disabled configuration status=%d body=%s", response.Code, response.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["configuration_reference"]) != `""` || string(raw["expires_at_ts"]) != `null` || string(raw["custom_params"]) != `{}` || string(raw["custom_params_json"]) != `"{}"` {
+		t.Fatalf("incomplete disabled frozen configuration response=%s", response.Body.String())
 	}
 }

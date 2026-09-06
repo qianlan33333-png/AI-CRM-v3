@@ -442,3 +442,27 @@ func TestLoadChannelHistoryMigrationOwnsReadbackConfiguration(t *testing.T) {
 		t.Fatal("expected invalid provider read boolean to fail closed")
 	}
 }
+
+func TestCommercePushProviderDefaultsDisabledAndFailsClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	cfg, err := Load()
+	if err != nil || cfg.CommercePush.ProviderEnabled || cfg.CommercePush.TargetsJSON != "" || cfg.CommercePush.PayloadDataKey != "" {
+		t.Fatalf("default commerce push=%+v err=%v", cfg.CommercePush, err)
+	}
+	t.Setenv("AICRM_COMMERCE_PUSH_PROVIDER_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("commerce push provider accepted without External Effects, target configuration, and payload key")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_COMMERCE_PUSH_TARGETS_JSON", `{"paid-target":{"endpoint":"https://push.example.test"}}`)
+	t.Setenv("AICRM_COMMERCE_PUSH_PAYLOAD_DATA_KEY", "invalid")
+	if _, err = Load(); err == nil {
+		t.Fatal("commerce push provider accepted invalid payload key")
+	}
+	key := base64.RawStdEncoding.EncodeToString(make([]byte, 32))
+	t.Setenv("AICRM_COMMERCE_PUSH_PAYLOAD_DATA_KEY", key)
+	cfg, err = Load()
+	if err != nil || !cfg.CommercePush.ProviderEnabled || cfg.CommercePush.PayloadDataKey != key {
+		t.Fatalf("commerce push runtime=%+v err=%v", cfg.CommercePush, err)
+	}
+}
