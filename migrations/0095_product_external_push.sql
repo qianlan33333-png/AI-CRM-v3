@@ -91,7 +91,10 @@ CREATE TABLE outbound_commerce_push_intents (
     product_kind TEXT NOT NULL CHECK (product_kind IN ('wechat_pay','service_period')),
     target_reference TEXT NOT NULL CHECK (target_reference = btrim(target_reference) AND char_length(target_reference) BETWEEN 1 AND 128 AND target_reference !~ '[[:cntrl:]]'),
     target_slot TEXT NOT NULL CHECK (target_slot = btrim(target_slot) AND char_length(target_slot) BETWEEN 1 AND 128 AND target_slot !~ '[[:cntrl:]]'),
-    product_configuration_revision BIGINT NOT NULL CHECK (product_configuration_revision > 0),
+    -- A Product with no saved configuration is a valid paid-order input. Its
+    -- disabled intent freezes revision 0 rather than making settlement depend
+    -- on an administrator first creating an external-push row.
+    product_configuration_revision BIGINT NOT NULL CHECK (product_configuration_revision >= 0),
     source_digest BYTEA NOT NULL CHECK (octet_length(source_digest)=32),
     target_digest BYTEA NOT NULL CHECK (octet_length(target_digest)=32),
     payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest)=32),

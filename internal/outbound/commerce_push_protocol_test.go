@@ -1,7 +1,9 @@
 package outbound
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -97,14 +99,25 @@ func TestCommerceSyntheticPayloadUsesFrozenLegacyFieldNames(t *testing.T) {
 	body, err := commerceSyntheticPayload(7, "Test", CommercePushTarget{
 		Reference: "test-target", Slot: "paid", Endpoint: "http://127.0.0.1", Version: "v1", TenantID: "aicrm", AllowLoopbackHTTP: true,
 		BuyerID: CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"}, BuyerOpenID: CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"}, BuyerUnionID: CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"}, BuyerPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"}, BeneficiaryPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
-		CustomParams: map[string]any{"campaign": "control"},
+		CustomParams: map[string]any{"campaign": "control", "big": json.Number("9007199254740993"), "nested": []any{json.Number("1"), map[string]any{"id": json.Number("9007199254740993")}}},
 	}, "commerce_test_1", at)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const expected = `{"event":"external_push.test","delivery_id":"commerce_test_1","occurred_at":"2026-09-05T01:02:03Z","tenant":{"id":"aicrm"},"product":{"id":"7","name":"Test"},"custom_params":{"campaign":"control"}}`
+	const expected = `{"event":"external_push.test","delivery_id":"commerce_test_1","occurred_at":"2026-09-05T01:02:03Z","tenant":{"id":"aicrm"},"product":{"id":"7","name":"Test"},"custom_params":{"big":9007199254740993,"campaign":"control","nested":[1,{"id":9007199254740993}]}}`
 	if string(body) != expected {
 		t.Fatalf("legacy synthetic payload=%s", body)
+	}
+	var decoded struct {
+		CustomParams map[string]any `json:"custom_params"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err = decoder.Decode(&decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := decoded.CustomParams["big"].(json.Number); !ok || got.String() != "9007199254740993" {
+		t.Fatalf("synthetic payload changed large number: %#v", decoded.CustomParams)
 	}
 	if got := commercePushSignature([]byte("fixture-secret"), "1788570123", body); got == "" {
 		t.Fatal("synthetic signature was not built")

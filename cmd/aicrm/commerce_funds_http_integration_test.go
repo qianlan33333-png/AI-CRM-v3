@@ -36,6 +36,7 @@ import (
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
+	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	orderstore "github.com/qianlan33333-png/AI-CRM-v3/internal/order/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
@@ -47,6 +48,7 @@ import (
 	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 )
@@ -85,6 +87,19 @@ func (f commerceFundsFailingEntitlement) ApplyServicePeriodRefundWithin(context.
 type commerceFundsPushConfiguration struct {
 	value productport.ExternalPushConfiguration
 }
+
+type commerceFundsProductConfigurationReader struct {
+	repository *productstore.Repository
+}
+
+func (r commerceFundsProductConfigurationReader) ReadExternalPushConfigurationForOrder(ctx context.Context, id productport.ID) (productport.ExternalPushConfiguration, error) {
+	if r.repository == nil {
+		return productport.ExternalPushConfiguration{}, errors.New("product configuration repository is required")
+	}
+	return r.repository.ReadCommerceExternalPushConfigurationForOrder(ctx, id)
+}
+
+var _ productport.ExternalPushConfigurationReader = commerceFundsProductConfigurationReader{}
 
 func (c commerceFundsPushConfiguration) ReadExternalPushConfigurationForOrder(_ context.Context, id productport.ID) (productport.ExternalPushConfiguration, error) {
 	if id != c.value.ProductID {
@@ -133,6 +148,40 @@ type commerceFundsPushDelivery struct {
 	body                                    []byte
 }
 
+// commerceFundsProductPushStatuses and commerceFundsProductPushEvents keep this
+// test on Product's stable Ports while exercising its real PostgreSQL store and
+// Unit of Work. Saving configuration never queries delivery status or accepts an
+// effect, so neither stub can hide an external-effect outcome.
+type commerceFundsDisabledCommerceEffects struct{}
+
+func (commerceFundsDisabledCommerceEffects) AcceptAndQueueWithin(context.Context, effectport.AcceptCommand) (effectport.Projection, effectport.Receipt, error) {
+	return effectport.Projection{}, effectport.Receipt{}, errors.New("disabled product push must not accept an external effect")
+}
+
+type commerceFundsProductPushStatuses struct{}
+
+func (commerceFundsProductPushStatuses) ReadExternalPushTestStatus(context.Context, productport.ID, string) (productport.ExternalPushTestStatus, error) {
+	return productport.ExternalPushTestStatus{}, errors.New("status is not read while saving product configuration")
+}
+
+type commerceFundsProductPushEvents struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (e *commerceFundsProductPushEvents) Append(_ context.Context, _ productport.Event) (productport.EventID, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.count++
+	return productport.EventID(e.count), nil
+}
+
+func (e *commerceFundsProductPushEvents) Count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.count
+}
+
 func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -172,7 +221,7 @@ func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) 
 	day, frequency := int64(30), int64(1)
 	value := productport.ExternalPushConfiguration{
 		ProductID: productport.ID(ordinaryID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-roundtrip",
-		PushType: "member_open", Day: &day, Frequency: &frequency, Remark: "保留业务备注", CustomParams: map[string]any{"number": float64(2), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}},
+		PushType: "member_open", Day: &day, Frequency: &frequency, Remark: "保留业务备注", CustomParams: map[string]any{"number": json.Number("9007199254740993"), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}},
 	}
 	now := time.Date(2026, 9, 6, 5, 0, 0, 0, time.UTC)
 	var saved, read, orderRead productport.ExternalPushConfiguration
@@ -197,6 +246,9 @@ func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) 
 	if saved.Revision != 1 || read.Revision != 1 || orderRead.ProductKind != productport.ExternalPushWeChatPay || orderRead.PushType != "member_open" || orderRead.Day == nil || *orderRead.Day != 30 || orderRead.Frequency == nil || *orderRead.Frequency != 1 || orderRead.Remark != "保留业务备注" || !commerceFundsJSONEquivalent(t, orderRead.CustomParams, value.CustomParams) {
 		t.Fatalf("saved=%#v read=%#v order=%#v", saved, read, orderRead)
 	}
+	if got, ok := orderRead.CustomParams["number"].(json.Number); !ok || got.String() != "9007199254740993" {
+		t.Fatalf("PostgreSQL round trip changed the frozen integer: %#v", orderRead.CustomParams)
+	}
 	if err = uow.Within(ctx, func(tx context.Context) error {
 		service, readErr := repository.ReadCommerceExternalPushConfigurationForOrder(tx, productport.ID(serviceID))
 		if readErr != nil {
@@ -214,6 +266,163 @@ func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) 
 	}
 }
 
+func TestPostgreSQLProductExternalPushFirstBusinessSaveCAS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := productstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var productID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('push-first-cas','首次 CAS 商品',1200,'CNY',1,1,'{"schema_version":1,"status":"enabled","enabled":true}'::jsonb) RETURNING id`).Scan(&productID); err != nil {
+		t.Fatal(err)
+	}
+	events := &commerceFundsProductPushEvents{}
+	service, err := productapp.NewCommerceExternalPushService(uow, repository, nil, commerceFundsProductPushStatuses{}, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The application uses the immutable save receipt and then locks the
+	// Product row. Two different administrators holding the default revision
+	// must therefore produce one persisted version and one stale conflict.
+	commands := []productport.SaveExternalPushConfigurationCommand{
+		{ProductID: productport.ID(productID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-first-cas", BusinessParametersSet: true, PushType: "member_open", CustomParams: map[string]any{"big": json.Number("9007199254740993")}, ExpectedRevision: 0, Actor: 41, IdempotencyKey: "commerce-push-pg-first-cas-a"},
+		{ProductID: productport.ID(productID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-first-cas", BusinessParametersSet: true, PushType: "member_open", CustomParams: map[string]any{"big": json.Number("9007199254740993")}, ExpectedRevision: 0, Actor: 42, IdempotencyKey: "commerce-push-pg-first-cas-b"},
+	}
+	start := make(chan struct{})
+	results := make(chan error, len(commands))
+	var group sync.WaitGroup
+	for _, command := range commands {
+		command := command
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			_, saveErr := service.SaveExternalPushConfiguration(ctx, command)
+			results <- saveErr
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	var successes, conflicts int
+	for result := range results {
+		switch {
+		case result == nil:
+			successes++
+		case errors.Is(result, productapp.ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent first-save error: %v", result)
+		}
+	}
+	if successes != 1 || conflicts != 1 || events.Count() != 1 {
+		t.Fatalf("first-save CAS successes=%d conflicts=%d events=%d", successes, conflicts, events.Count())
+	}
+	var revision, receipts int64
+	if err = pool.QueryRow(ctx, `SELECT version FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='wechat_pay'`, productID).Scan(&revision); err != nil || revision != 1 {
+		t.Fatalf("stored first-save version=%d err=%v", revision, err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM product_operation_receipts WHERE operation='external_push_save'`).Scan(&receipts); err != nil || receipts != 1 {
+		t.Fatalf("first-save receipts=%d err=%v", receipts, err)
+	}
+}
+
+func TestPostgreSQLUnconfiguredPaidOrderPlansDisabledCommercePushOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	products, err := productstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 6, 7, 0, 0, 0, time.UTC)
+	var customerID, productID, orderID, outboxID, paidEventID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('push-unconfigured','未配置外推商品',1200,'CNY',1,1,'{"schema_version":1,"status":"enabled","enabled":true}'::jsonb) RETURNING id`).Scan(&productID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','native-checkout','push-unconfigured-source','push-unconfigured-merchant',$1,$1,1200,'CNY','paid','native',TRUE,2,$2,$2) RETURNING id`, customerID, now).Scan(&orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,1,$2,'push-unconfigured','未配置外推商品',1200,1,1200)`, orderID, productID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO order_outbox(event_type,idempotency_key,aggregate_id,payload,occurred_at) VALUES('order.paid.v1',$1,$2,'{}'::jsonb,$3) RETURNING id`, "order.paid.v1:"+strconv.FormatInt(orderID, 10), orderID, now).Scan(&outboxID); err != nil {
+		t.Fatal(err)
+	}
+	sourceDigest := orderport.NewPaidEventSourceDigest(orderID, 2)
+	if err = pool.QueryRow(ctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at) VALUES($1,2,$2,$3) RETURNING id`, orderID, sourceDigest[:], now).Scan(&paidEventID); err != nil {
+		t.Fatal(err)
+	}
+	service, err := outbound.NewCommercePushService(pool, uow, commerceFundsDisabledCommerceEffects{}, commerceFundsProductConfigurationReader{repository: products}, commerceFundsPushIdentityReader{customerID: customerID}, commerceFundsPushTargets{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	productRef := productID
+	event := orderport.PaidEvent{ID: paidEventID, OrderID: orderID, OrderVersion: 2, DomainEventOutboxID: outboxID, OccurredAt: now, SourceDigest: sourceDigest, Order: orderdomain.Snapshot{
+		ID: orderID, Provider: orderdomain.ProviderWeChatPay, SourceSystem: "native-checkout", SourceKey: "push-unconfigured-source", MerchantOrderNo: "push-unconfigured-merchant", PayerCustomerID: &customerID, BeneficiaryCustomerID: &customerID,
+		Amount: orderdomain.Money{AmountMinor: 1200, Currency: "CNY"}, Status: orderdomain.StatusPaid, Items: []orderdomain.ItemSnapshot{{LineNo: 1, ProductID: &productRef, ProductCode: "push-unconfigured", ProductName: "未配置外推商品", UnitAmountMinor: 1200, Quantity: 1, LineAmountMinor: 1200}}, RecordOrigin: orderdomain.RecordOriginNative, EffectEligible: true, Version: 2, CreatedAt: now, UpdatedAt: now,
+	}}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err = uow.Within(ctx, func(tx context.Context) error { return service.ConsumePaidEventWithin(tx, event) }); err != nil {
+			t.Fatalf("unconfigured paid consume attempt=%d err=%v", attempt, err)
+		}
+	}
+	var state, targetReference string
+	var revision int64
+	var effects, audits, outbox int
+	err = pool.QueryRow(ctx, `SELECT intent.state,intent.target_reference,intent.product_configuration_revision,
+  (SELECT count(*) FROM external_effects WHERE kind=$2),
+  (SELECT count(*) FROM outbound_commerce_push_audit_events audit WHERE audit.intent_id=intent.id),
+  (SELECT count(*) FROM outbound_commerce_push_outbox outbox WHERE outbox.intent_id=intent.id)
+FROM outbound_commerce_push_intents intent WHERE intent.order_paid_event_id=$1`, paidEventID, effectport.KindCommerceProductPush).Scan(&state, &targetReference, &revision, &effects, &audits, &outbox)
+	if err != nil || state != "planned_disabled" || targetReference != "unconfigured" || revision != 0 || effects != 0 || audits != 1 || outbox != 1 {
+		t.Fatalf("unconfigured paid intent state/ref/revision/effects/audits/outbox=%q/%q/%d/%d/%d/%d err=%v", state, targetReference, revision, effects, audits, outbox, err)
+	}
+}
+
 func commerceFundsJSONEquivalent(t *testing.T, left, right any) bool {
 	t.Helper()
 	leftRaw, leftErr := json.Marshal(left)
@@ -222,7 +431,10 @@ func commerceFundsJSONEquivalent(t *testing.T, left, right any) bool {
 		t.Fatalf("marshal values %v/%v", leftErr, rightErr)
 	}
 	var leftValue, rightValue any
-	return json.Unmarshal(leftRaw, &leftValue) == nil && json.Unmarshal(rightRaw, &rightValue) == nil && reflect.DeepEqual(leftValue, rightValue)
+	leftDecoder, rightDecoder := json.NewDecoder(bytes.NewReader(leftRaw)), json.NewDecoder(bytes.NewReader(rightRaw))
+	leftDecoder.UseNumber()
+	rightDecoder.UseNumber()
+	return leftDecoder.Decode(&leftValue) == nil && rightDecoder.Decode(&rightValue) == nil && reflect.DeepEqual(leftValue, rightValue)
 }
 
 // TestPostgreSQLCommerceFundsHTTPJourney validates the actual composition-root

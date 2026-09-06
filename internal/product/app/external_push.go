@@ -520,7 +520,12 @@ func validCommerceExternalPushReceipt(receipt Receipt, reservation Reservation) 
 }
 
 func decodeCommerceExternalPushSnapshot(raw json.RawMessage, target *productport.ExternalPushConfiguration, productID productport.ID, kind productport.ExternalPushProductKind) error {
-	if target == nil || json.Unmarshal(raw, target) != nil || !validExternalPushConfiguration(*target, productID, kind) {
+	if target == nil {
+		return ErrUnavailable
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(target) != nil || !validExternalPushConfiguration(*target, productID, kind) {
 		return ErrUnavailable
 	}
 	canonical, err := json.Marshal(*target)

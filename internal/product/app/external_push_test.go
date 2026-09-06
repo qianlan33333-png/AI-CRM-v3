@@ -249,6 +249,13 @@ func TestCommerceExternalPushFirstBusinessSaveRejectsStaleUnpersistedRevision(t 
 	if err != nil || first.Revision != 1 {
 		t.Fatalf("first=%#v err=%v", first, err)
 	}
+	replayed, err := service.SaveExternalPushConfiguration(context.Background(), command)
+	if err != nil {
+		t.Fatalf("first-save replay err=%v", err)
+	}
+	if got, ok := replayed.CustomParams["n"].(json.Number); !ok || got.String() != "9007199254740993" {
+		t.Fatalf("replay changed frozen JSON number: %#v", replayed.CustomParams)
+	}
 	command.IdempotencyKey = "commerce-push-first-0002"
 	if _, err = service.SaveExternalPushConfiguration(context.Background(), command); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale first-save err=%v", err)

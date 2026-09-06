@@ -293,7 +293,7 @@ function parseExternalPushConfiguration(value: unknown, page: ExternalPushPage):
     return parsed;
   };
   if (Number(item.product_id) !== page.productID || item.product_kind !== page.productKind || typeof enabled !== 'boolean' ||
-    typeof reference !== 'string' || !Number.isSafeInteger(revision) || revision < 1 || typeof pushType !== 'string' ||
+    typeof reference !== 'string' || !Number.isSafeInteger(revision) || revision < 0 || typeof pushType !== 'string' ||
     typeof remark !== 'string' || customParams === null || typeof customParams !== 'object' || Array.isArray(customParams) ||
     (enabled === false && reference !== '')) {
     throw new Error('外推配置响应不完整');

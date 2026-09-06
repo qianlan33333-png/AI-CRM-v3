@@ -1593,7 +1593,7 @@ func externalConfigurationBusiness(value externalConfigurationRequest) (bool, ex
 	if !present {
 		return false, externalConfigurationBusinessValue{}, true
 	}
-	if value.PushType == nil || len(value.Day) == 0 || len(value.Frequency) == 0 || value.Remark == nil || len(value.CustomParams) == 0 || value.ExpectedRevision == nil || *value.ExpectedRevision < 1 {
+	if value.PushType == nil || len(value.Day) == 0 || len(value.Frequency) == 0 || value.Remark == nil || len(value.CustomParams) == 0 || value.ExpectedRevision == nil || *value.ExpectedRevision < 0 {
 		return false, externalConfigurationBusinessValue{}, false
 	}
 	day, ok := externalConfigurationOptionalInteger(value.Day)
@@ -1685,7 +1685,9 @@ func externalConfigurationCustomParams(raw json.RawMessage) (map[string]any, boo
 			continue
 		}
 		var item any
-		if json.Unmarshal(valueRaw, &item) != nil {
+		decoder := json.NewDecoder(bytes.NewReader(valueRaw))
+		decoder.UseNumber()
+		if decoder.Decode(&item) != nil {
 			return nil, false
 		}
 		object[key] = item

@@ -406,7 +406,7 @@ type commercePlannedIntent struct {
 }
 
 func (s *CommercePushService) planCommercePushWithin(ctx context.Context, in commercePlannedIntent) error {
-	if s == nil || in.productID < 1 || !validCommercePushKind(in.productKind) || in.revision < 1 || in.sourceDigest == ([32]byte{}) ||
+	if s == nil || in.productID < 1 || !validCommercePushKind(in.productKind) || in.revision < 0 || in.sourceDigest == ([32]byte{}) ||
 		!validCommerceText(in.sourceReference, 200) || !validCommerceText(in.targetSlot, 128) || !validCommerceText(in.targetReference, 128) ||
 		!validCommercePlannedState(in.state) {
 		return ErrCommercePushInvalid
