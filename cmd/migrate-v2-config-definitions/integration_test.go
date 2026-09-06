@@ -35,6 +35,7 @@ import (
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 )
@@ -847,4 +848,181 @@ func configMigrationPaths(t *testing.T) []string {
 		paths = append(paths, filepath.Join(root, "migrations", file))
 	}
 	return paths
+}
+
+func TestProductAppendPostgresIntegrationPreservesSourceKeyProvenanceAndReplay(t *testing.T) {
+	pool, cleanup := configMigrationIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	actor := configMigrationActor(t, ctx, pool)
+	snapshot := configMigrationFixture(t, strings.Repeat("d", 40))
+	appendSnapshot, digest, err := source.NewProductAppend(snapshot, []int64{1, 2, 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := configProductAppendRunner(t, pool)
+	if err = runner.Preflight(ctx, appendSnapshot, digest, actor); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	applied, err := runner.Apply(ctx, appendSnapshot, digest, actor)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if applied.NoOp || applied.Products != 3 || applied.BatchID < 1 {
+		t.Fatalf("unexpected append apply: %+v", applied)
+	}
+	for query, want := range map[string]int64{
+		`SELECT count(*) FROM products`: 3,
+		`SELECT count(*) FROM config_definition_import_source_maps WHERE source_system=$1 AND domain='product' AND source_kind='wechat_pay_products'`: 3,
+		`SELECT count(*) FROM config_definition_import_batches`:     1,
+		`SELECT count(*) FROM external_effects`:                     0,
+		`SELECT count(*) FROM external_effect_jobs`:                 0,
+		`SELECT count(*) FROM product_external_push_configurations`: 0,
+	} {
+		var got int64
+		var queryErr error
+		if strings.Contains(query, "$1") {
+			queryErr = pool.Native().QueryRow(ctx, query, snapshot.Manifest.SourceSystem).Scan(&got)
+		} else {
+			queryErr = pool.Native().QueryRow(ctx, query).Scan(&got)
+		}
+		if queryErr != nil || got != want {
+			t.Fatalf("query %q got=%d want=%d err=%v", query, got, want, queryErr)
+		}
+	}
+	verified, err := runner.Verify(ctx, appendSnapshot, digest)
+	if err != nil || verified.BatchID != applied.BatchID || verified.Products != 3 {
+		t.Fatalf("verify=%+v err=%v", verified, err)
+	}
+	replayed, err := runner.Apply(ctx, appendSnapshot, digest, actor)
+	if err != nil || !replayed.NoOp || replayed.BatchID != applied.BatchID {
+		t.Fatalf("replay=%+v err=%v", replayed, err)
+	}
+
+	drift := appendSnapshot
+	drift.Products = append([]source.Product(nil), appendSnapshot.Products...)
+	drift.Products[0].Name = "摘要漂移商品"
+	_, driftDigest, err := drift.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runner.Preflight(ctx, drift, driftDigest, actor); !errors.Is(err, configtarget.ErrDrift) {
+		t.Fatalf("append drift error=%v", err)
+	}
+
+	alternate := configMigrationFixture(t, strings.Repeat("e", 40))
+	alternateAppend, alternateDigest, err := source.NewProductAppend(alternate, []int64{1, 2, 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runner.Preflight(ctx, alternateAppend, alternateDigest, actor); !errors.Is(err, configtarget.ErrInvalid) {
+		t.Fatalf("existing global source key error=%v", err)
+	}
+}
+
+func TestProductAppendPostgresIntegrationRollsBackAndSerializesReplay(t *testing.T) {
+	pool, cleanup := configMigrationIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	actor := configMigrationActor(t, ctx, pool)
+	snapshot := configMigrationFixture(t, strings.Repeat("f", 40))
+	appendSnapshot, digest, err := source.NewProductAppend(snapshot, []int64{1, 2, 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := configProductAppendRunner(t, pool)
+	failing := base
+	failing.Products = &failAfterFirstProductDefinitionImporter{inner: base.Products}
+	if _, err = failing.Apply(ctx, appendSnapshot, digest, actor); err == nil {
+		t.Fatal("append unexpectedly succeeded after second product importer failure")
+	}
+	for _, query := range []string{
+		`SELECT count(*) FROM products`,
+		`SELECT count(*) FROM config_definition_import_source_maps`,
+		`SELECT count(*) FROM config_definition_import_batches`,
+	} {
+		var got int64
+		if err = pool.Native().QueryRow(ctx, query).Scan(&got); err != nil || got != 0 {
+			t.Fatalf("rollback query %q got=%d err=%v", query, got, err)
+		}
+	}
+
+	type outcome struct {
+		result configtarget.ProductAppendResult
+		err    error
+	}
+	results := make(chan outcome, 2)
+	var group sync.WaitGroup
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			result, runErr := base.Apply(context.Background(), appendSnapshot, digest, actor)
+			results <- outcome{result: result, err: runErr}
+		}()
+	}
+	group.Wait()
+	close(results)
+	created, replayed := 0, 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent append: %v", result.err)
+		}
+		if result.result.NoOp {
+			replayed++
+		} else {
+			created++
+		}
+	}
+	if created != 1 || replayed != 1 {
+		t.Fatalf("concurrent append created=%d replayed=%d", created, replayed)
+	}
+	for query, want := range map[string]int64{
+		`SELECT count(*) FROM products`:                             3,
+		`SELECT count(*) FROM config_definition_import_source_maps`: 3,
+		`SELECT count(*) FROM config_definition_import_batches`:     1,
+	} {
+		var got int64
+		if err = pool.Native().QueryRow(ctx, query).Scan(&got); err != nil || got != want {
+			t.Fatalf("concurrent query %q got=%d want=%d err=%v", query, got, want, err)
+		}
+	}
+}
+
+type failAfterFirstProductDefinitionImporter struct {
+	inner productport.DefinitionImporter
+	calls int
+}
+
+func (f *failAfterFirstProductDefinitionImporter) ImportDefinition(ctx context.Context, input productport.DefinitionImport) (productport.Product, error) {
+	f.calls++
+	if f.calls > 1 {
+		return productport.Product{}, errors.New("forced append product import failure")
+	}
+	return f.inner.ImportDefinition(ctx, input)
+}
+
+func configProductAppendRunner(t *testing.T, pool *platformpostgres.Pool) configtarget.ProductAppendRunner {
+	t.Helper()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	products, err := productstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return configtarget.ProductAppendRunner{UOW: uow, Products: products}
+}
+
+func TestParseProductAppendSourceIDs(t *testing.T) {
+	ids, err := parseProductAppendSourceIDs("3,1,2")
+	if err != nil || !reflect.DeepEqual(ids, []int64{1, 2, 3}) {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+	for _, raw := range []string{"", "1,2", "1,2,3,4", "1, 2,3", "1,1,2", "0,2,3", "a,2,3"} {
+		if _, err = parseProductAppendSourceIDs(raw); err == nil {
+			t.Fatalf("invalid append ids accepted: %q", raw)
+		}
+	}
 }

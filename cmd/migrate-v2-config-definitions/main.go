@@ -7,6 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
@@ -27,13 +30,14 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("migrate-v2-config-definitions", flag.ContinueOnError)
-	mode := fs.String("mode", "inspect", "inspect|extract|dry-run|apply|verify|history-inspect|history-extract|history-dry-run|history-apply|history-verify")
+	mode := fs.String("mode", "inspect", "inspect|extract|dry-run|apply|verify|history-inspect|history-extract|history-dry-run|history-apply|history-verify|product-append-inspect|product-append-dry-run|product-append-apply|product-append-verify")
 	snapshot := fs.String("snapshot", "", "encrypted snapshot")
 	key := fs.String("snapshot-key-file", "", "0600 AES key")
 	revision := fs.String("source-revision", "", "40-char source revision")
 	actor := fs.Int64("actor-admin-user-id", 0, "explicit target administrator")
 	want := fs.String("manifest-sha256", "", "snapshot digest confirmation")
 	confirm := fs.Bool("confirm-apply", false, "confirm target write")
+	appendSourceProductIDs := fs.String("product-append-source-ids", "", "exactly three comma-separated source product ids for the bounded append")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -144,6 +148,70 @@ func run(ctx context.Context, args []string) error {
 	if e = s.Validate(); e != nil {
 		return e
 	}
+	if strings.HasPrefix(*mode, "product-append-") {
+		ids, e := parseProductAppendSourceIDs(*appendSourceProductIDs)
+		if e != nil {
+			return e
+		}
+		appendSnapshot, appendDigest, e := source.NewProductAppend(s, ids)
+		if e != nil {
+			return e
+		}
+		if appendSnapshot.SourceSnapshotDigest != target.DigestHex(d) {
+			return errors.New("product append source digest mismatch")
+		}
+		if *mode == "product-append-inspect" {
+			return print(productAppendSummary(*mode, appendSnapshot, d, appendDigest))
+		}
+		if *actor < 1 {
+			return errors.New("explicit actor-admin-user-id is required")
+		}
+		if *want != target.DigestHex(d) {
+			return errors.New("manifest-sha256 confirmation mismatch")
+		}
+		url, e := platformconfig.DatabaseURL()
+		if e != nil {
+			return e
+		}
+		pool, e := platformpostgres.Open(ctx, platformpostgres.Config{URL: url})
+		if e != nil {
+			return e
+		}
+		defer pool.Close()
+		uow, e := platformpostgres.NewUnitOfWork(pool)
+		if e != nil {
+			return e
+		}
+		products, e := productstore.NewPostgreSQL(pool.Native(), uow)
+		if e != nil {
+			return e
+		}
+		runner := target.ProductAppendRunner{UOW: uow, Products: products}
+		switch *mode {
+		case "product-append-dry-run":
+			if e = runner.Preflight(ctx, appendSnapshot, appendDigest, *actor); e != nil {
+				return e
+			}
+			return print(productAppendSummary(*mode, appendSnapshot, d, appendDigest))
+		case "product-append-apply":
+			if !*confirm {
+				return errors.New("product-append-apply requires --confirm-apply")
+			}
+			out, e := runner.Apply(ctx, appendSnapshot, appendDigest, *actor)
+			if e != nil {
+				return e
+			}
+			return print(map[string]any{"mode": *mode, "source_manifest_sha256": target.DigestHex(d), "append_manifest_sha256": target.DigestHex(appendDigest), "result": out})
+		case "product-append-verify":
+			out, e := runner.Verify(ctx, appendSnapshot, appendDigest)
+			if e != nil {
+				return e
+			}
+			return print(map[string]any{"mode": *mode, "source_manifest_sha256": target.DigestHex(d), "append_manifest_sha256": target.DigestHex(appendDigest), "result": out})
+		default:
+			return errors.New("unknown mode")
+		}
+	}
 	if e = source.ValidateExpectedBaseline(s); e != nil {
 		return e
 	}
@@ -211,6 +279,42 @@ func run(ctx context.Context, args []string) error {
 	}
 	return print(map[string]any{"mode": "apply", "manifest_sha256": target.DigestHex(d), "result": out})
 }
+func productAppendSummary(mode string, snapshot source.ProductAppend, sourceDigest, appendDigest [32]byte) map[string]any {
+	return map[string]any{
+		"mode":                   mode,
+		"source_manifest_sha256": target.DigestHex(sourceDigest),
+		"append_manifest_sha256": target.DigestHex(appendDigest),
+		"source_system":          snapshot.SourceSystem,
+		"source_revision":        snapshot.SourceRevision,
+		"product_count":          len(snapshot.Products),
+	}
+}
+
+func parseProductAppendSourceIDs(raw string) ([]int64, error) {
+	parts := strings.Split(raw, ",")
+	if len(parts) != 3 {
+		return nil, errors.New("product-append-source-ids must contain exactly three ids")
+	}
+	ids := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		if part == "" || strings.TrimSpace(part) != part {
+			return nil, errors.New("product-append-source-ids is invalid")
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id < 1 {
+			return nil, errors.New("product-append-source-ids is invalid")
+		}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for index := 1; index < len(ids); index++ {
+		if ids[index-1] == ids[index] {
+			return nil, errors.New("product-append-source-ids is invalid")
+		}
+	}
+	return ids, nil
+}
+
 func print(v any) error { return json.NewEncoder(os.Stdout).Encode(v) }
 
 func summary(mode string, snapshot source.Snapshot, digest [32]byte) map[string]any {
