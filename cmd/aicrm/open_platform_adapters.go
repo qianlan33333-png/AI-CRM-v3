@@ -74,6 +74,8 @@ type openPlatformExecutor struct {
 	timeline      customerport.CustomerTimelineReader
 	owners        wecomport.AudiencePrimaryOwnerReader
 	scopes        openPlatformIdentityScopes
+	activities    *openPlatformActivityReaders
+	activityNow   func() time.Time
 }
 
 func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
@@ -100,7 +102,28 @@ func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Qu
 	// must never authorize release of questionnaire history.
 	scopes.SurveyUnionScopes = distinctScopes(scopes.SurveyUnionScopes, "wechat-open-platform:")
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
-	return &openPlatformExecutor{identity: identity, externalUsers: externalUsers, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, externalChat: externalChat, timeline: timeline, owners: owners, scopes: scopes}, nil
+	return &openPlatformExecutor{identity: identity, externalUsers: externalUsers, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, externalChat: externalChat, timeline: timeline, owners: owners, scopes: scopes, activityNow: time.Now}, nil
+}
+
+// BindV1CustomerActivities installs the four owner-owned projections needed
+// by the V1 aggregate stream. Every reader must be present: publishing a
+// partial activity catalog would make a signed cursor silently omit facts.
+func (executor *openPlatformExecutor) BindV1CustomerActivities(survey surveyport.CustomerHistoryReader, radar radarport.CustomerActivityReader, signingKey []byte) error {
+	if executor == nil || executor.archive == nil || survey == nil || radar == nil || len(signingKey) < 32 {
+		return errOpenPlatformRouteUnavailable
+	}
+	orders, ok := executor.orders.(orderport.CustomerActivityReader)
+	if !ok || orders == nil {
+		return errOpenPlatformRouteUnavailable
+	}
+	executor.activities = &openPlatformActivityReaders{
+		messages:   executor.archive,
+		survey:     survey,
+		radar:      radar,
+		orders:     orders,
+		signingKey: append([]byte(nil), signingKey...),
+	}
+	return nil
 }
 
 // BindExternalRadarLinkMappings connects the Radar-owned historical mapping

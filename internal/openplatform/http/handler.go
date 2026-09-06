@@ -259,7 +259,7 @@ func (handler *Handler) v1CustomerContext(response http.ResponseWriter, request 
 }
 
 func (handler *Handler) v1CustomerActivities(response http.ResponseWriter, request *http.Request) {
-	handler.invokeV1(response, request, openplatformport.OperationCustomerActivities, pathJSONInput("customer_id"))
+	handler.invokeV1(response, request, openplatformport.OperationCustomerActivities, activityJSONInput)
 }
 
 func (handler *Handler) v1AIReviewPlan(response http.ResponseWriter, request *http.Request) {
@@ -357,6 +357,59 @@ func pathJSONInput(name string) func(*http.Request) (json.RawMessage, error) {
 		}
 		return json.Marshal(map[string]string{name: value})
 	}
+}
+
+// activityJSONInput canonicalizes the REST path and query into exactly the
+// DTO accepted by the MCP activity tool. It permits repeated `types`, but all
+// scalar query keys appear once and every GET body is rejected, including a
+// chunked one, so the path customer cannot be shadowed by JSON.
+func activityJSONInput(request *http.Request) (json.RawMessage, error) {
+	body, err := readBody(request)
+	if err != nil || len(bytes.TrimSpace(body)) != 0 {
+		return nil, errors.New("activity operation does not accept a body")
+	}
+	customerID, err := strconv.ParseInt(strings.TrimSpace(request.PathValue("customer_id")), 10, 64)
+	if err != nil || customerID < 1 {
+		return nil, errors.New("invalid customer_id")
+	}
+	query := request.URL.Query()
+	values := map[string]any{"customer_id": customerID}
+	for name, entries := range query {
+		switch name {
+		case "types":
+			if len(entries) == 0 {
+				return nil, errors.New("invalid activity types")
+			}
+			seen := make(map[string]struct{}, len(entries))
+			for _, value := range entries {
+				if strings.TrimSpace(value) != value || value == "" {
+					return nil, errors.New("invalid activity types")
+				}
+				if _, duplicate := seen[value]; duplicate {
+					return nil, errors.New("duplicate activity type")
+				}
+				seen[value] = struct{}{}
+			}
+			values["types"] = append([]string(nil), entries...)
+		case "cursor":
+			if len(entries) != 1 || strings.TrimSpace(entries[0]) != entries[0] || entries[0] == "" || len(entries[0]) > 4096 {
+				return nil, errors.New("invalid activity cursor")
+			}
+			values["cursor"] = entries[0]
+		case "limit":
+			if len(entries) != 1 || entries[0] == "" {
+				return nil, errors.New("invalid activity limit")
+			}
+			limit, parseErr := strconv.ParseInt(entries[0], 10, 32)
+			if parseErr != nil || strconv.FormatInt(limit, 10) != entries[0] || limit < 1 || limit > 100 {
+				return nil, errors.New("invalid activity limit")
+			}
+			values["limit"] = int32(limit)
+		default:
+			return nil, errors.New("unknown activity query")
+		}
+	}
+	return json.Marshal(values)
 }
 
 func decodeMCPParams(raw json.RawMessage, target any) error {

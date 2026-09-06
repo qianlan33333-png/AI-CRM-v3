@@ -111,6 +111,11 @@ type openPlatformOrderStub struct {
 	scopedCustomer  int64
 	scopedResult    orderdomain.Snapshot
 	scopedErr       error
+	activityPage    orderport.CustomerActivityPage
+	activityErr     error
+	activityQuery   orderport.CustomerActivityQuery
+	activityCalls   int
+	activityFn      func(orderport.CustomerActivityQuery) (orderport.CustomerActivityPage, error)
 }
 
 func (stub *openPlatformOrderStub) Get(context.Context, int64) (orderdomain.Snapshot, error) {
@@ -130,6 +135,14 @@ func (stub *openPlatformOrderStub) GetByReferenceForCustomer(_ context.Context, 
 	stub.scopedCalls++
 	stub.scopedReference, stub.scopedCustomer = reference, customerID
 	return stub.scopedResult, stub.scopedErr
+}
+func (stub *openPlatformOrderStub) CustomerActivities(_ context.Context, query orderport.CustomerActivityQuery) (orderport.CustomerActivityPage, error) {
+	stub.activityCalls++
+	stub.activityQuery = query
+	if stub.activityFn != nil {
+		return stub.activityFn(query)
+	}
+	return stub.activityPage, stub.activityErr
 }
 
 type openPlatformProfileStub struct{ calls int }
@@ -176,10 +189,16 @@ type openPlatformArchiveStub struct {
 	calls         int
 	externalCalls int
 	externalQuery archiveport.ExternalChatRecordQuery
+	activityQuery archiveport.CustomerQuery
+	activityFn    func(archiveport.CustomerQuery) (archiveport.CustomerPage, error)
 }
 
-func (stub *openPlatformArchiveStub) CustomerMessages(context.Context, archiveport.CustomerQuery) (archiveport.CustomerPage, error) {
+func (stub *openPlatformArchiveStub) CustomerMessages(_ context.Context, query archiveport.CustomerQuery) (archiveport.CustomerPage, error) {
 	stub.calls++
+	stub.activityQuery = query
+	if stub.activityFn != nil {
+		return stub.activityFn(query)
+	}
 	return stub.page, stub.err
 }
 func (stub *openPlatformArchiveStub) ExternalCustomerMessages(_ context.Context, query archiveport.ExternalChatRecordQuery) (archiveport.ExternalChatRecordPage, error) {
@@ -192,10 +211,13 @@ func (*openPlatformArchiveStub) CustomerStaff(context.Context, customerdomain.Cu
 }
 
 type openPlatformSurveyStub struct {
-	page  surveyport.ExternalSubmissionPage
-	err   error
-	calls int
-	query surveyport.ExternalSubmissionQuery
+	page         surveyport.ExternalSubmissionPage
+	err          error
+	calls        int
+	query        surveyport.ExternalSubmissionQuery
+	history      surveyport.CustomerHistoryWindow
+	historyQuery surveyport.CustomerHistoryQuery
+	historyFn    func(surveyport.CustomerHistoryQuery) (surveyport.CustomerHistoryWindow, error)
 }
 
 func (stub *openPlatformSurveyStub) ExternalSubmissions(_ context.Context, query surveyport.ExternalSubmissionQuery) (surveyport.ExternalSubmissionPage, error) {
@@ -203,12 +225,32 @@ func (stub *openPlatformSurveyStub) ExternalSubmissions(_ context.Context, query
 	stub.query = query
 	return stub.page, stub.err
 }
+func (stub *openPlatformSurveyStub) CustomerHistoryWindow(_ context.Context, query surveyport.CustomerHistoryQuery) (surveyport.CustomerHistoryWindow, error) {
+	stub.calls++
+	stub.historyQuery = query
+	if stub.historyFn != nil {
+		return stub.historyFn(query)
+	}
+	return stub.history, stub.err
+}
 
 type openPlatformRadarLinksStub struct {
-	page  radarport.ExternalLinkMappingPage
-	err   error
-	calls int
-	query radarport.ExternalLinkMappingQuery
+	page          radarport.ExternalLinkMappingPage
+	err           error
+	calls         int
+	query         radarport.ExternalLinkMappingQuery
+	activityPage  radarport.CustomerActivityPage
+	activityQuery radarport.CustomerActivityQuery
+	activityFn    func(radarport.CustomerActivityQuery) (radarport.CustomerActivityPage, error)
+}
+
+func (stub *openPlatformRadarLinksStub) CustomerActivities(_ context.Context, query radarport.CustomerActivityQuery) (radarport.CustomerActivityPage, error) {
+	stub.calls++
+	stub.activityQuery = query
+	if stub.activityFn != nil {
+		return stub.activityFn(query)
+	}
+	return stub.activityPage, stub.err
 }
 
 func (stub *openPlatformRadarLinksStub) ExternalLinkMappings(_ context.Context, query radarport.ExternalLinkMappingQuery) (radarport.ExternalLinkMappingPage, error) {

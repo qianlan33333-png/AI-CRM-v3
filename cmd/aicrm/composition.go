@@ -833,6 +833,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = openPlatformExecutor.BindExternalSurveySubmissions(surveySubmissions, openPlatformIdentities); err != nil {
 		return fail(err)
 	}
+	if err = openPlatformExecutor.BindV1CustomerActivities(surveySubmissions, radarQuery, cursorSigningKey); err != nil {
+		return fail(err)
+	}
 	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
 		MachineAuthentication: machineService,
 		AdminAuthentication:   authentication,

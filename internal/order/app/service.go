@@ -513,7 +513,7 @@ func (s *Service) List(ctx context.Context, query orderport.ListQuery) (orderpor
 }
 
 func (s *Service) CustomerActivities(ctx context.Context, query orderport.CustomerActivityQuery) (orderport.CustomerActivityPage, error) {
-	if !ready(s) || query.CustomerID < 1 || query.Limit < 1 || query.Limit > MaximumLimit || query.Watermark.IsZero() || query.AfterID < 0 ||
+	if !ready(s) || query.CustomerID < 1 || query.Limit < 1 || query.Limit > MaximumLimit+1 || query.Watermark.IsZero() || query.AfterID < 0 ||
 		(query.AfterAt.IsZero() && query.AfterID != 0) || (!query.AfterAt.IsZero() && query.AfterAt.After(query.Watermark)) {
 		return orderport.CustomerActivityPage{}, orderport.ErrConflict
 	}

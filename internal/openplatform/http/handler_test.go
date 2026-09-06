@@ -296,3 +296,35 @@ func TestV1RejectsOversizeAndDuplicateJSONBeforeOperation(t *testing.T) {
 		t.Fatalf("mcp duplicate code=%d invocations=%d request_id=%q body=%s", mcpResponse.Code, len(operations.invocations), mcpResponse.Header().Get("X-Request-ID"), mcpResponse.Body.String())
 	}
 }
+
+func TestRESTActivityQueryUsesCanonicalDTOAndRejectsAliases(t *testing.T) {
+	operations := &handlerOperationStub{}
+	principal := accessdomain.MachinePrincipal{Scopes: []string{"read"}, Capabilities: []string{string(openplatformport.CapabilityCustomerActivityRead)}}
+	handler := newV1Handler(t, principal, operations)
+	request := machineRequest(http.MethodGet, "https://crm.example.com/open/v1/customers/42/activities?types=order&types=message&limit=20", "")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(operations.invocations) != 1 || string(operations.invocations[0].Input) != `{"customer_id":42,"limit":20,"types":["order","message"]}` {
+		t.Fatalf("code=%d invocations=%+v body=%s", response.Code, operations.invocations, response.Body.String())
+	}
+	for _, target := range []string{
+		"https://crm.example.com/open/v1/customers/42/activities?customer_id=43",
+		"https://crm.example.com/open/v1/customers/42/activities?cursor=a&cursor=b",
+		"https://crm.example.com/open/v1/customers/42/activities?limit=01",
+		"https://crm.example.com/open/v1/customers/42/activities?types=message&types=message",
+	} {
+		request = machineRequest(http.MethodGet, target, "")
+		response = httptest.NewRecorder()
+		handler.Routes().ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || len(operations.invocations) != 1 {
+			t.Fatalf("target=%s code=%d invocations=%+v", target, response.Code, operations.invocations)
+		}
+	}
+	request = machineRequest(http.MethodGet, "https://crm.example.com/open/v1/customers/42/activities", `{"customer_id":43}`)
+	request.ContentLength = -1
+	response = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || len(operations.invocations) != 1 {
+		t.Fatalf("chunked activity body code=%d invocations=%+v", response.Code, operations.invocations)
+	}
+}

@@ -44,7 +44,7 @@ func (executor *openPlatformExecutor) Available(_ context.Context, principal acc
 		openplatformport.OperationCustomerContext:  executor.profiles != nil,
 		// Activities and AI are enabled only by their explicit V1 binders. The
 		// legacy compatibility readers are deliberately not a substitute.
-		openplatformport.OperationCustomerActivities: false,
+		openplatformport.OperationCustomerActivities: executor.activities != nil,
 		openplatformport.OperationAIReviewPlanCreate: false,
 		openplatformport.OperationGet:                false,
 	}
@@ -83,6 +83,8 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 		return executor.v1ResolveCustomer(ctx, invocation.Principal, invocation.Input)
 	case openplatformport.OperationCustomerContext:
 		return executor.v1CustomerContext(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationCustomerActivities:
+		return executor.v1CustomerActivities(ctx, invocation.Principal, invocation.Input)
 	default:
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
 	}
