@@ -239,7 +239,7 @@ try {
   } catch (_) {
     throw new Error("browser configuration save did not finish " + await browserSaveDiagnostic());
   }
-  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams), "browser save changed canonical custom JSON before readback");
+  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "browser save changed typed custom JSON before reload");
 
   await cdp.call("Page.navigate", { url: baseURL + productPath });
   await waitFor(cdp, "location.pathname === '/admin/productForm.html' && " + hostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded product Host did not preserve exact JSON text or expiry");
@@ -276,7 +276,7 @@ try {
   } catch (_) {
     throw new Error("service-period browser configuration save did not finish " + await browserSaveDiagnostic());
   }
-  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams), "service-period browser save changed canonical custom JSON before readback");
+  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "service-period browser save changed typed custom JSON before reload");
   await cdp.call("Page.navigate", { url: baseURL + serviceProductPath });
   await waitFor(cdp, "location.pathname === '/admin/spProductForm.html' && " + serviceHostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded service-period Host did not preserve exact JSON text or expiry");
 
