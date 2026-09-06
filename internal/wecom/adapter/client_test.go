@@ -850,3 +850,62 @@ func TestClientCustomerTransferUsesExactFrozenIDsAndRejectsOmittedRows(t *testin
 		t.Fatalf("result=%+v err=%v", observed, err)
 	}
 }
+
+func TestTransferCustomerTreatsAmbiguousTopLevelResponsesAsOutcomeUnknown(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "gateway html", status: http.StatusBadGateway, body: "<html>bad gateway</html>"},
+		{name: "server empty object", status: http.StatusServiceUnavailable, body: `{}`},
+		{name: "success malformed json", status: http.StatusOK, body: `{`},
+		{name: "success missing errcode", status: http.StatusOK, body: `{"customer":[{"external_userid":"external-1","errcode":0}]}`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/cgi-bin/gettoken":
+					_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+				case "/cgi-bin/externalcontact/transfer_customer":
+					writer.WriteHeader(test.status)
+					_, _ = writer.Write([]byte(test.body))
+				default:
+					t.Fatalf("unexpected endpoint %s", request.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "secret", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.TransferCustomer(context.Background(), "source", "target", []string{"external-1"}, "")
+			if err == nil || !wecomport.ProviderCallAttempted(err) || !wecomport.ProviderOutcomeUnknown(err) {
+				t.Fatalf("err=%v attempted=%t unknown=%t", err, wecomport.ProviderCallAttempted(err), wecomport.ProviderOutcomeUnknown(err))
+			}
+		})
+	}
+}
+
+func TestTransferCustomerTreatsStrictNonZeroTopLevelErrcodeAsFinalRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/transfer_customer":
+			_, _ = writer.Write([]byte(`{"errcode":40003,"errmsg":"invalid"}`))
+		default:
+			t.Fatalf("unexpected endpoint %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.TransferCustomer(context.Background(), "source", "target", []string{"external-1"}, "")
+	if err == nil || !wecomport.ProviderCallAttempted(err) || wecomport.ProviderOutcomeUnknown(err) {
+		t.Fatalf("err=%v attempted=%t unknown=%t", err, wecomport.ProviderCallAttempted(err), wecomport.ProviderOutcomeUnknown(err))
+	}
+}

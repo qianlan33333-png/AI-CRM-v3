@@ -811,14 +811,17 @@ func (client *Client) TransferCustomer(ctx context.Context, sourceUserID, target
 	}
 	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/transfer_customer", url.Values{"access_token": {token}}, raw)
 	if err != nil {
-		// A parsed top-level Provider error is a definitive rejection (for
-		// example permission/invalid request). A lost or malformed response is
-		// still ambiguous after the write boundary and must retain the key.
-		var responseErr *providerResponseError
-		if errors.As(err, &responseErr) {
+		// Only a strict, non-zero top-level errcode proves that WeCom rejected
+		// this write. HTTP failures, HTML, malformed JSON and missing/invalid
+		// errcodes may all happen after acceptance and therefore retain the
+		// original EER key as outcome_unknown.
+		if definitiveTransferRejection(err) {
 			return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(err, true, false)
 		}
 		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(err, true, true)
+	}
+	if len(payload.ErrCode) == 0 {
+		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(ErrResponse, true, true)
 	}
 	if len(payload.Customer) != len(externalUserIDs) {
 		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
@@ -1494,6 +1497,12 @@ func confirmedMarkTagSuccess(raw json.RawMessage) bool {
 	}
 	var value int64
 	return json.Unmarshal(raw, &value) == nil && value == 0
+}
+
+func definitiveTransferRejection(err error) bool {
+	var responseErr *providerResponseError
+	return errors.As(err, &responseErr) && responseErr.errCode != 0
+}
 }
 
 func providerError(statusCode int, body []byte) error {
