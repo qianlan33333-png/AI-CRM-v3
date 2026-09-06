@@ -676,6 +676,165 @@ func (r *Repository) CustomerHistoryWindow(ctx context.Context, query surveyport
 	}
 	return items, nil
 }
+
+// ExternalSubmissions reads only the Survey-owned historic union projection.
+// The Host has already authenticated and authorized the caller and obtained
+// these source values through OneID; this store never reads Identity tables or
+// treats the historic union as an identity assertion.
+func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.ExternalSubmissionQuery) (surveyport.ExternalSubmissionPage, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.ExternalSubmissionPage{}, err
+	}
+	clauses := []string{"projection.historical_unionid = ANY($1::text[])"}
+	args := []any{query.HistoricalUnionIDs}
+	if query.QuestionnaireSourceID > 0 {
+		args = append(args, strconv.FormatInt(query.QuestionnaireSourceID, 10))
+		clauses = append(clauses, "questionnaire_map.source_pk=$"+strconv.Itoa(len(args)))
+	}
+	if !query.SubmittedFrom.IsZero() {
+		args = append(args, query.SubmittedFrom.UTC())
+		clauses = append(clauses, "submission.submitted_at >= $"+strconv.Itoa(len(args)))
+	}
+	if !query.SubmittedTo.IsZero() {
+		args = append(args, query.SubmittedTo.UTC())
+		clauses = append(clauses, "submission.submitted_at <= $"+strconv.Itoa(len(args)))
+	}
+	where := strings.Join(clauses, " AND ")
+	from := ` FROM survey_submissions submission
+		JOIN survey_legacy_external_projections projection ON projection.submission_id=submission.id
+		JOIN survey_migration_source_map submission_map ON submission_map.target_table='survey_submissions'
+			AND submission_map.target_pk=submission.id
+			AND submission_map.source_table='questionnaire_submissions'
+			AND submission_map.import_state='imported'
+		JOIN survey_migration_source_map questionnaire_map ON questionnaire_map.source_system=submission_map.source_system
+			AND questionnaire_map.source_table='questionnaires'
+			AND questionnaire_map.target_table='survey_questionnaires'
+			AND questionnaire_map.target_pk=submission.questionnaire_id
+			AND questionnaire_map.import_state='imported'`
+	var total int64
+	if err = t.QueryRow(ctx, `SELECT count(*)`+from+` WHERE `+where, args...).Scan(&total); err != nil {
+		return surveyport.ExternalSubmissionPage{}, mapError(err)
+	}
+	limitPosition := len(args) + 1
+	offsetPosition := len(args) + 2
+	args = append(args, query.Limit, query.Offset)
+	rows, err := t.Query(ctx, `SELECT submission.id,projection.historical_unionid,questionnaire_map.source_pk,submission.title_snapshot,submission.submitted_at,submission.result_snapshot`+from+` WHERE `+where+` ORDER BY submission.submitted_at DESC,submission.id DESC LIMIT $`+strconv.Itoa(limitPosition)+` OFFSET $`+strconv.Itoa(offsetPosition), args...)
+	if err != nil {
+		return surveyport.ExternalSubmissionPage{}, mapError(err)
+	}
+	type externalSubmissionRow struct {
+		id   surveyport.ID
+		item surveyport.ExternalSubmission
+	}
+	base := make([]externalSubmissionRow, 0)
+	for rows.Next() {
+		var row externalSubmissionRow
+		var questionnaireSource string
+		var result []byte
+		if err = rows.Scan(&row.id, &row.item.HistoricalUnionID, &questionnaireSource, &row.item.QuestionnaireTitle, &row.item.SubmittedAt, &result); err != nil {
+			rows.Close()
+			return surveyport.ExternalSubmissionPage{}, mapError(err)
+		}
+		parsedSource, parseErr := strconv.ParseInt(questionnaireSource, 10, 64)
+		if parseErr != nil || parsedSource < 1 {
+			rows.Close()
+			return surveyport.ExternalSubmissionPage{}, surveyport.ErrUnavailable
+		}
+		row.item.QuestionnaireSourceID = parsedSource
+		row.item.FinalTags, row.item.AssessmentResult, err = externalAssessmentProjection(result)
+		if err != nil {
+			rows.Close()
+			return surveyport.ExternalSubmissionPage{}, err
+		}
+		row.item.Answers = []surveyport.ExternalSubmissionAnswer{}
+		base = append(base, row)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return surveyport.ExternalSubmissionPage{}, mapError(err)
+	}
+	// pgx transactions share one connection. Close the page cursor before
+	// fetching its answers so the child query cannot leave the connection busy.
+	rows.Close()
+
+	if len(base) > 0 {
+		ids := make([]int64, 0, len(base))
+		byID := make(map[surveyport.ID]*surveyport.ExternalSubmission, len(base))
+		for index := range base {
+			ids = append(ids, int64(base[index].id))
+			byID[base[index].id] = &base[index].item
+		}
+		answerRows, queryErr := t.Query(ctx, `SELECT submission_id,question_title_snapshot,selected_options_snapshot,text_value_ciphertext,score_snapshot FROM survey_submission_answers WHERE submission_id=ANY($1::bigint[]) ORDER BY submission_id,id`, ids)
+		if queryErr != nil {
+			return surveyport.ExternalSubmissionPage{}, mapError(queryErr)
+		}
+		for answerRows.Next() {
+			var submissionID surveyport.ID
+			var answer surveyport.ExternalSubmissionAnswer
+			var selected, encrypted []byte
+			if queryErr = answerRows.Scan(&submissionID, &answer.QuestionTitle, &selected, &encrypted, &answer.ScoreContribution); queryErr != nil {
+				answerRows.Close()
+				return surveyport.ExternalSubmissionPage{}, mapError(queryErr)
+			}
+			var options []surveyport.SelectedOptionSnapshot
+			if json.Unmarshal(selected, &options) != nil {
+				answerRows.Close()
+				return surveyport.ExternalSubmissionPage{}, surveyport.ErrUnavailable
+			}
+			answer.SelectedOptionTexts = make([]string, 0, len(options))
+			for _, option := range options {
+				answer.SelectedOptionTexts = append(answer.SelectedOptionTexts, option.OptionText)
+			}
+			if len(encrypted) > 0 {
+				answer.TextValue, queryErr = r.cipher.Decrypt(encrypted)
+				if queryErr != nil {
+					answerRows.Close()
+					return surveyport.ExternalSubmissionPage{}, surveyport.ErrUnavailable
+				}
+			}
+			item, found := byID[submissionID]
+			if !found {
+				answerRows.Close()
+				return surveyport.ExternalSubmissionPage{}, surveyport.ErrUnavailable
+			}
+			item.Answers = append(item.Answers, answer)
+		}
+		if queryErr = answerRows.Err(); queryErr != nil {
+			answerRows.Close()
+			return surveyport.ExternalSubmissionPage{}, mapError(queryErr)
+		}
+		answerRows.Close()
+	}
+	page := surveyport.ExternalSubmissionPage{Items: make([]surveyport.ExternalSubmission, 0, len(base)), Total: total, Limit: query.Limit, Offset: query.Offset}
+	for _, row := range base {
+		page.Items = append(page.Items, row.item)
+	}
+	return page, nil
+}
+
+func externalAssessmentProjection(raw []byte) (json.RawMessage, json.RawMessage, error) {
+	var snapshot map[string]json.RawMessage
+	if json.Unmarshal(raw, &snapshot) != nil || snapshot == nil {
+		return nil, nil, surveyport.ErrUnavailable
+	}
+	finalTags := json.RawMessage(`[]`)
+	if sourceTags, found := snapshot["_legacy_final_tags"]; found {
+		var array []json.RawMessage
+		if json.Unmarshal(sourceTags, &array) != nil {
+			return nil, nil, surveyport.ErrUnavailable
+		}
+		finalTags = append(json.RawMessage(nil), sourceTags...)
+	}
+	delete(snapshot, "_legacy_final_tags")
+	delete(snapshot, "_legacy_matched_by")
+	assessment, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, nil, surveyport.ErrUnavailable
+	}
+	return finalTags, assessment, nil
+}
+
 func (r *Repository) listSubmissionQuery(ctx context.Context, where string, args []any, limit, offset int32) ([]surveyport.Submission, int64, error) {
 	t, err := tx(ctx)
 	if err != nil {

@@ -70,6 +70,10 @@ type customerHistoryWindowStore interface {
 	CustomerHistoryWindow(context.Context, surveyport.CustomerHistoryQuery) ([]surveyport.Submission, error)
 }
 
+type externalSubmissionStore interface {
+	ExternalSubmissions(context.Context, surveyport.ExternalSubmissionQuery) (surveyport.ExternalSubmissionPage, error)
+}
+
 type SubmissionService struct {
 	uow                platformport.UnitOfWork
 	store              SubmissionStore
@@ -395,6 +399,43 @@ func (s *SubmissionService) CustomerHistory(ctx context.Context, customer int64,
 	return page, classify(err)
 }
 
+// ExternalSubmissions exposes the exact Survey-owned historic projection for
+// the API Host after it has completed machine authorization and OneID
+// resolution. Survey treats union values as source facts only.
+func (s *SubmissionService) ExternalSubmissions(ctx context.Context, query surveyport.ExternalSubmissionQuery) (surveyport.ExternalSubmissionPage, error) {
+	if s == nil || s.uow == nil || s.store == nil || !validExternalSubmissionQuery(query) {
+		return surveyport.ExternalSubmissionPage{}, surveyport.ErrInvalid
+	}
+	store, ok := s.store.(externalSubmissionStore)
+	if !ok {
+		return surveyport.ExternalSubmissionPage{}, surveyport.ErrUnavailable
+	}
+	page := surveyport.ExternalSubmissionPage{Items: []surveyport.ExternalSubmission{}, Limit: query.Limit, Offset: query.Offset}
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		page, e = store.ExternalSubmissions(tx, query)
+		return e
+	})
+	return page, classify(err)
+}
+
+func validExternalSubmissionQuery(query surveyport.ExternalSubmissionQuery) bool {
+	if len(query.HistoricalUnionIDs) == 0 || len(query.HistoricalUnionIDs) > 32 || query.QuestionnaireSourceID < 0 || query.Limit < 1 || query.Limit > 500 || query.Offset < 0 || (!query.SubmittedFrom.IsZero() && !query.SubmittedTo.IsZero() && query.SubmittedFrom.After(query.SubmittedTo)) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(query.HistoricalUnionIDs))
+	for _, unionID := range query.HistoricalUnionIDs {
+		if unionID == "" || len(unionID) > 1024 || strings.TrimSpace(unionID) != unionID {
+			return false
+		}
+		if _, duplicate := seen[unionID]; duplicate {
+			return false
+		}
+		seen[unionID] = struct{}{}
+	}
+	return true
+}
+
 func (s *SubmissionService) CustomerHistoryWindow(ctx context.Context, query surveyport.CustomerHistoryQuery) (surveyport.CustomerHistoryWindow, error) {
 	if s == nil || s.uow == nil || s.store == nil || query.CustomerID < 1 || query.Limit < 1 || query.Limit > 101 || query.Watermark.IsZero() || query.AfterID < 0 {
 		return surveyport.CustomerHistoryWindow{}, surveyport.ErrInvalid
@@ -718,3 +759,5 @@ func maskMobile(v string) string {
 
 var _ surveyport.PublicApplication = (*SubmissionService)(nil)
 var _ surveyport.SubmissionApplication = (*SubmissionService)(nil)
+
+var _ surveyport.ExternalSubmissionReader = (*SubmissionService)(nil)
