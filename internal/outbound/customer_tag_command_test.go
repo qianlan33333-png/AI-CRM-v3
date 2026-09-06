@@ -172,3 +172,27 @@ func TestCustomerTagProviderDefiniteRejectionProjectsSafeFinalReason(t *testing.
 		t.Fatalf("completion=%+v", writer.values)
 	}
 }
+
+type customerTagObservationStub struct {
+	calls int
+	err   error
+}
+
+func (stub *customerTagObservationStub) RefreshCustomerTagObservation(context.Context, string, customerdomain.CustomerID, string, string) error {
+	stub.calls++
+	return stub.err
+}
+
+func TestCustomerTagProviderKeepsExecutedWhenObservationReadFails(t *testing.T) {
+	d := customerTagDispatch()
+	writer := &customerTagWriterStub{}
+	observer := &customerTagObservationStub{err: errors.New("readback unavailable")}
+	provider, err := NewCustomerTagProvider(true, customerTagDispatchStub{d}, customerTagContactStub{value: wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}}, customerTagBindingStub{values: map[int64]string{1: "provider-a", 2: "provider-b", 3: "provider-c"}}, writer, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, executeErr := provider.Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{EffectID: "eer_7", Number: 1, Generation: 1, Fence: 1})
+	if executeErr != nil || result.Completion != effectport.StateExecuted || !result.CallAttempted || !result.RealExternalCallExecuted || writer.calls != 1 || observer.calls != 1 {
+		t.Fatalf("result=%+v executeErr=%v writes=%d observations=%d", result, executeErr, writer.calls, observer.calls)
+	}
+}

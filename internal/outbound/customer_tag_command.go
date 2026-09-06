@@ -22,13 +22,18 @@ type CustomerTagProvider struct {
 	contacts wecomport.CurrentExternalContactReader
 	tags     tagport.ProviderTagBindingReader
 	writer   wecomport.CustomerTagWriter
+	observer wecomport.CustomerTagObservationRefresher
 }
 
-func NewCustomerTagProvider(enabled bool, reader customerport.TagCommandDispatchReader, contacts wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.CustomerTagWriter) (*CustomerTagProvider, error) {
+func NewCustomerTagProvider(enabled bool, reader customerport.TagCommandDispatchReader, contacts wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.CustomerTagWriter, observers ...wecomport.CustomerTagObservationRefresher) (*CustomerTagProvider, error) {
 	if reader == nil || contacts == nil || tags == nil || writer == nil {
 		return nil, errors.New("customer tag provider dependencies are required")
 	}
-	return &CustomerTagProvider{enabled: enabled, reader: reader, contacts: contacts, tags: tags, writer: writer}, nil
+	provider := &CustomerTagProvider{enabled: enabled, reader: reader, contacts: contacts, tags: tags, writer: writer}
+	if len(observers) > 0 {
+		provider.observer = observers[0]
+	}
+	return provider, nil
 }
 func (p *CustomerTagProvider) Execute(ctx context.Context, e effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
 	if p == nil || !e.Valid() || e.Kind != effectport.KindCustomerTagCommand || e.PolicyVersionHash != effectport.Hash("customer.tag.command.policy.v1") {
@@ -77,6 +82,12 @@ func (p *CustomerTagProvider) Execute(ctx context.Context, e effectport.Envelope
 			result.CallAttempted, result.RealExternalCallExecuted = attempted, attempted
 		}
 		return result, err
+	}
+	// mark_tag has an explicit Provider success. Observation is a subsequent
+	// read-only WeCom fact: its failure never rewrites this executed result and
+	// never triggers a second mark_tag call.
+	if p.observer != nil {
+		_ = p.observer.RefreshCustomerTagObservation(ctx, d.EffectRef, d.CustomerID, contact.EmployeeUserID, contact.ExternalUserID)
 	}
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("customer.tag.executed", d.EffectRef, strconv.Itoa(int(attempt.Number))), CallAttempted: true, RealExternalCallExecuted: true}, nil
 }

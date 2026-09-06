@@ -209,6 +209,12 @@ func (store *EntrantActionStore) AcceptEntrantActions(ctx context.Context, comma
 		}
 		accepted, acceptErr := store.tagCommands.SubmitTagCommandWithin(ctx, customerport.TagCommand{Source: "channel_entry_tag", SourceRef: command.CallbackID, IdempotencyKey: "entry_tag", OccurredAt: command.OccurredAt, Targets: []customerport.TagCommandTarget{{CustomerID: command.CustomerID, StaffID: staffID, AddTagIDs: []int64{config.EntryTagID}}}})
 		if acceptErr != nil {
+			// A pending generic tag command must not roll back the independently
+			// valid entrant assignment. Record the blocked entry-tag action with
+			// no effect so a callback replay cannot silently mint one later.
+			if errors.Is(acceptErr, customerport.ErrTagCommandConflict) {
+				return store.recordRejectedEntryTag(ctx, tx, assignmentID, command, config, staffID, "customer_tag_busy")
+			}
 			return acceptErr
 		}
 		if len(accepted.Lines) != 1 {
@@ -236,6 +242,19 @@ type welcomeConfig struct {
 // readWelcomeConfig intentionally does not inspect assignees. A configured
 // welcome is eligible as soon as its verified State resolves; staff assignment
 // remains part of the later normal entrant lifecycle.
+
+func (*EntrantActionStore) recordRejectedEntryTag(ctx context.Context, tx pgx.Tx, assignmentID int64, command channelport.EntrantActionCommand, config entrantActionConfig, staffID int64, reason string) error {
+	if reason == "" {
+		return ErrEntrantActionUnavailable
+	}
+	source := effectport.Hash("channel.entrant.action.source.v1", command.CallbackID, "entry_tag")
+	_, err := tx.Exec(ctx, `INSERT INTO channel_entrant_actions(callback_id,assignment_id,channel_id,config_version,customer_id,staff_id,action_kind,local_tag_id,welcome_material_snapshot,source_ref_digest,state,result_reason)
+		VALUES($1,$2,$3,$4,$5,$6,'entry_tag',$7,$8::jsonb,$9,'rejected',$10) ON CONFLICT(callback_id,action_kind) DO NOTHING`,
+		command.CallbackID, assignmentID, config.ChannelID, config.ConfigVersion, command.CustomerID, staffID, config.EntryTagID,
+		json.RawMessage(`{"schema_version":2,"node_kind":"message","attachments":[]}`), source, reason)
+	return err
+}
+
 func readWelcomeConfig(ctx context.Context, tx pgx.Tx, resolution channeldomain.StateResolution) (welcomeConfig, error) {
 	providerKind := string(AcquisitionAssetQRCode)
 	if resolution.Asset.Kind == "link" {

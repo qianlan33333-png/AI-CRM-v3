@@ -22,6 +22,7 @@ import (
 	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -394,5 +395,80 @@ func channelWelcomeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		defer cleanupCancel()
 		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE")
 		admin.Close()
+	}
+}
+
+type channelBusyTagSubmitter struct{}
+
+func (channelBusyTagSubmitter) SubmitTagCommand(context.Context, customerport.TagCommand) (customerport.TagCommandResult, error) {
+	return customerport.TagCommandResult{}, customerport.ErrTagCommandConflict
+}
+func (channelBusyTagSubmitter) SubmitTagCommandWithin(context.Context, customerport.TagCommand) (customerport.TagCommandResult, error) {
+	return customerport.TagCommandResult{}, customerport.ErrTagCommandConflict
+}
+
+func TestChannelEntrantBusyTagCommandKeepsAssignmentAndRecordsRejectedActionPostgreSQL(t *testing.T) {
+	native, cleanup := channelWelcomeIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workers := river.NewWorkers()
+	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, externaleffects.NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	insert, err := platformjobqueue.NewInsertClient(native, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects, err := externaleffects.NewRepository(native, insert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digester, err := wecom.NewHMACStateDigester([]byte("12345678901234567890123456789012"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminID := insertChannelWelcomeAdmin(t, ctx, native)
+	states := channel.NewPostgreSQLStore()
+	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "tag-busy", "tag-busy-state", false, 1)
+	if _, err = native.Exec(ctx, `UPDATE channel_config_versions SET entry_tag_id=7 WHERE channel_id=$1 AND config_version=1`, ready.resolution.Asset.ChannelID); err != nil {
+		t.Fatal(err)
+	}
+	var customerID int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	actions := channel.NewEntrantActionStore(effects, nil)
+	if err = actions.SetTagCommandSubmitter(channelBusyTagSubmitter{}); err != nil {
+		t.Fatal(err)
+	}
+	callbackID := "channel-tag-busy-0001"
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		return actions.AcceptEntrantActions(tx, channelport.EntrantActionCommand{CallbackID: callbackID, CustomerID: customerdomain.CustomerID(customerID), Resolution: ready.resolution, OccurredAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatalf("entrant acceptance=%v", err)
+	}
+	var assignments, actionsCount, refs int
+	var state, reason string
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM channel_entrant_assignments WHERE callback_id=$1`, callbackID).Scan(&assignments); err != nil || assignments != 1 {
+		t.Fatalf("assignments=%d err=%v", assignments, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT state,result_reason,(effect_ref IS NOT NULL)::int+(accept_receipt_ref IS NOT NULL)::int+(queue_receipt_ref IS NOT NULL)::int FROM channel_entrant_actions WHERE callback_id=$1 AND action_kind='entry_tag'`, callbackID).Scan(&state, &reason, &refs); err != nil || state != "rejected" || reason != "customer_tag_busy" || refs != 0 {
+		t.Fatalf("action state=%q reason=%q refs=%d err=%v", state, reason, refs, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM channel_entrant_actions WHERE callback_id=$1`, callbackID).Scan(&actionsCount); err != nil || actionsCount != 1 {
+		t.Fatalf("actions=%d err=%v", actionsCount, err)
+	}
+	var effectCount int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectCount); err != nil || effectCount != 0 {
+		t.Fatalf("effects=%d err=%v", effectCount, err)
 	}
 }

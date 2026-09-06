@@ -164,15 +164,19 @@ func (client *Client) ListContactStaff(ctx context.Context) ([]string, error) {
 			return nil, classifyDirectoryRefreshError(err)
 		}
 	}
-	if err != nil || payload.FollowUser == nil {
+	if err != nil || len(payload.FollowUser) == 0 {
 		if err != nil {
 			return nil, classifyDirectoryReadError(err)
 		}
 		return nil, classifyDirectoryReadError(ErrResponse)
 	}
+	var followUsers []string
+	if json.Unmarshal(payload.FollowUser, &followUsers) != nil || followUsers == nil {
+		return nil, classifyDirectoryReadError(ErrResponse)
+	}
 	seen := map[string]struct{}{}
-	staff := make([]string, 0, len(payload.FollowUser))
-	for _, value := range payload.FollowUser {
+	staff := make([]string, 0, len(followUsers))
+	for _, value := range followUsers {
 		value = strings.TrimSpace(value)
 		if value == "" || invalid(value) {
 			return nil, classifyDirectoryReadError(ErrResponse)
@@ -242,6 +246,65 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 			Type: contact.Type, CorpName: strings.TrimSpace(contact.CorpName), UnionID: strings.TrimSpace(contact.UnionID), FollowInfo: followInfo})
 	}
 	return page, nil
+}
+
+// ReadExternalContact reads one known external contact for a post-write
+// observation. It shares the directory read credential path and does not make
+// any Provider write.
+func (client *Client) ReadExternalContact(ctx context.Context, externalUserID string) (wecomport.ExternalContact, error) {
+	if !client.DirectoryReady() || invalid(externalUserID) {
+		return wecomport.ExternalContact{}, wecomport.ErrDirectoryDisabled
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.ExternalContact{}, classifyDirectoryReadError(err)
+	}
+	payload, err := client.request(ctx, "/cgi-bin/externalcontact/get", url.Values{"access_token": {token}, "external_userid": {externalUserID}})
+	if directoryTokenExpired(err) {
+		token, err = client.refreshDirectoryToken(ctx)
+		if err == nil {
+			payload, err = client.request(ctx, "/cgi-bin/externalcontact/get", url.Values{"access_token": {token}, "external_userid": {externalUserID}})
+		}
+		if err != nil {
+			return wecomport.ExternalContact{}, classifyDirectoryRefreshError(err)
+		}
+	}
+	if err != nil {
+		return wecomport.ExternalContact{}, classifyDirectoryReadError(err)
+	}
+	contact := payload.ExternalContact
+	contact.ExternalUserID = strings.TrimSpace(contact.ExternalUserID)
+	if contact.ExternalUserID != externalUserID || contact.Gender < 0 || contact.Gender > 2 || contact.Type < 0 || contact.Type > 3 {
+		return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
+	}
+	var rawFollows []struct {
+		UserID string `json:"userid"`
+		Tags   []struct {
+			ID   string `json:"tag_id"`
+			Name string `json:"name"`
+			Type int16  `json:"type"`
+		} `json:"tags"`
+	}
+	if len(payload.FollowUser) == 0 || json.Unmarshal(payload.FollowUser, &rawFollows) != nil || rawFollows == nil {
+		return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
+	}
+	followInfo := make([]wecomport.ExternalContactFollowInfo, 0, len(rawFollows))
+	for _, follow := range rawFollows {
+		follow.UserID = strings.TrimSpace(follow.UserID)
+		if invalid(follow.UserID) {
+			return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
+		}
+		entry := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
+		for _, tag := range follow.Tags {
+			tag.ID, tag.Name = strings.TrimSpace(tag.ID), strings.TrimSpace(tag.Name)
+			if invalid(tag.ID) || invalidOptional(tag.Name) || tag.Type < 1 || tag.Type > 2 {
+				return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
+			}
+			entry.Tags = append(entry.Tags, wecomport.ExternalContactTag{ProviderTagID: tag.ID, Name: tag.Name, Type: tag.Type})
+		}
+		followInfo = append(followInfo, entry)
+	}
+	return wecomport.ExternalContact{ExternalUserID: contact.ExternalUserID, Name: strings.TrimSpace(contact.Name), AvatarURL: strings.TrimSpace(contact.Avatar), Gender: contact.Gender, Type: contact.Type, CorpName: strings.TrimSpace(contact.CorpName), UnionID: strings.TrimSpace(contact.UnionID), FollowInfo: followInfo}, nil
 }
 
 func (client *Client) listContactStaff(ctx context.Context, token string) (response, error) {
@@ -428,7 +491,7 @@ type response struct {
 	Ticket      string          `json:"ticket"`
 	ExpiresIn   int64           `json:"expires_in"`
 	TagGroups   *[]tagGroupWire `json:"tag_group"`
-	FollowUser  []string        `json:"follow_user"`
+	FollowUser  json.RawMessage `json:"follow_user"`
 	NextCursor  string          `json:"next_cursor"`
 	ConfigID    string          `json:"config_id"`
 	QRCode      string          `json:"qr_code"`
@@ -469,6 +532,15 @@ type response struct {
 			UserID string `json:"userid"`
 		} `json:"member_list"`
 	} `json:"group_chat"`
+	ExternalContact struct {
+		ExternalUserID string `json:"external_userid"`
+		Name           string `json:"name"`
+		Avatar         string `json:"avatar"`
+		Type           int16  `json:"type"`
+		Gender         int16  `json:"gender"`
+		UnionID        string `json:"unionid"`
+		CorpName       string `json:"corp_name"`
+	} `json:"external_contact"`
 	ExternalContactList []struct {
 		ExternalContact struct {
 			ExternalUserID string `json:"external_userid"`
@@ -713,11 +785,11 @@ func classifyContactTagWriteError(err error) error {
 	}
 	var responseErr *providerResponseError
 	if errors.As(err, &responseErr) {
-		// A 2xx response without a concrete nonzero errcode cannot prove that
-		// mark_tag was accepted (for example {}, null, string, malformed JSON,
-		// or a truncated body). Preserve it as unknown rather than inventing a
-		// final rejection or resending it.
-		if responseErr.statusCode >= http.StatusOK && responseErr.statusCode < http.StatusMultipleChoices && responseErr.errCode == 0 {
+		// A response without a concrete nonzero errcode cannot prove that
+		// mark_tag was rejected. That includes a 2xx malformed body and a
+		// gateway 429/5xx response with HTML, {}, or null: the request may
+		// already have reached WeCom. Preserve the original key as unknown.
+		if responseErr.errCode == 0 {
 			return wecomport.WrapProviderWriteDisposition(err, true, true, false)
 		}
 		// A parsed nonzero errcode is a definite business result. A 429/5xx
@@ -1463,4 +1535,5 @@ func itoa(value int64) string { return strconv.FormatInt(value, 10) }
 var _ wecom.OAuthClient = (*Client)(nil)
 var _ wecom.JSSDKSigner = (*Client)(nil)
 var _ wecomport.DirectoryProvider = (*Client)(nil)
+var _ wecomport.ExternalContactReader = (*Client)(nil)
 var _ wecomport.AcquisitionAssetWriter = (*Client)(nil)

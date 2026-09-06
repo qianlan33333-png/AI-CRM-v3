@@ -528,3 +528,47 @@ func (scanner staffJSONScanner) Scan(src any) error {
 	}
 	return json.Unmarshal(raw, scanner.target)
 }
+
+// RecordCustomerTagRefresh persists a complete tag set for one verified
+// follow-user returned by the single-contact read endpoint. It does not run
+// full-directory stale reconciliation; the next completed directory sync does
+// that. The synthetic successful run exists only to preserve the immutable
+// observation provenance FK already used by this WeCom-owned projection.
+func (PostgreSQLCustomerSyncStore) RecordCustomerTagRefresh(ctx context.Context, corpScope string, customerID customerdomain.CustomerID, employeeID string, tags []wecomport.ExternalContactTag, observedAt time.Time, runKey string) error {
+	if customerID < 1 || corpScope == "" || employeeID == "" || observedAt.IsZero() || runKey == "" {
+		return ErrSyncCAS
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	var runID int64
+	err = tx.QueryRow(ctx, `INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,staff_ids,completed_at)
+		VALUES($1,'tag_refresh','succeeded',$2,jsonb_build_array($3),$4) RETURNING id`, runKey, corpScope, employeeID, observedAt.UTC()).Scan(&runID)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE wecom_customer_tag_observations SET observation_status='stale',stale_at=$4,updated_at=$4
+		WHERE customer_id=$1 AND corp_scope=$2 AND employee_id=$3 AND observation_status='active'`, customerID, corpScope, employeeID, observedAt.UTC()); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		if tag.ProviderTagID == "" || tag.Type < 1 || tag.Type > 2 {
+			return ErrSyncCAS
+		}
+		if _, duplicate := seen[tag.ProviderTagID]; duplicate {
+			continue
+		}
+		seen[tag.ProviderTagID] = struct{}{}
+		if _, err = tx.Exec(ctx, `INSERT INTO wecom_customer_tag_observations(customer_id,corp_scope,employee_id,provider_tag_id,provider_tag_type,observed_name,observation_status,last_seen_run_id,observed_at)
+			VALUES($1,$2,$3,$4,$5,$6,'active',$7,$8) ON CONFLICT(customer_id,corp_scope,employee_id,provider_tag_id) DO UPDATE SET
+			provider_tag_type=EXCLUDED.provider_tag_type,observed_name=EXCLUDED.observed_name,observation_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,
+			observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`, customerID, corpScope, employeeID, tag.ProviderTagID, tag.Type, tag.Name, runID, observedAt.UTC()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var _ CustomerTagObservationStore = PostgreSQLCustomerSyncStore{}

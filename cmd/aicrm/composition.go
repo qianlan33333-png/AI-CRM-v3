@@ -1045,6 +1045,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
+	customerTagObservationRefresh := wecom.CustomerTagObservationService{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.CustomerTagProviderEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient, Store: customerProfileStore, UOW: uow}
+	customerTagProvider, err := outbound.NewCustomerTagProvider(cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.CustomerTagProviderEnabled, customerTagCommandReaderAdapter{uow: uow, source: customerstore.TagCommandPostgreSQL{}}, channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries}, channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient, customerTagObservationRefresh)
+	if err != nil {
+		return fail(err)
+	}
 	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}, providerClient)
 	if err != nil {
 		return fail(err)

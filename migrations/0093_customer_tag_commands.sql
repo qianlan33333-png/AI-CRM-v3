@@ -42,6 +42,14 @@ CREATE TABLE customer_tag_command_lines (
 CREATE INDEX customer_tag_command_lines_customer_idx ON customer_tag_command_lines(customer_id, created_at DESC, id DESC);
 CREATE INDEX customer_tag_command_lines_effect_idx ON customer_tag_command_lines(effect_ref);
 
+
+-- A single-contact observation read is not a full directory reconciliation.
+-- It keeps the existing run provenance foreign key while a later completed
+-- full sync remains authoritative for stale reconciliation.
+ALTER TABLE wecom_customer_sync_runs DROP CONSTRAINT IF EXISTS wecom_customer_sync_runs_trigger_type_check;
+ALTER TABLE wecom_customer_sync_runs ADD CONSTRAINT wecom_customer_sync_runs_trigger_type_check
+    CHECK (trigger_type IN ('initial','daily','manual','tag_refresh'));
+
 -- Owner coordination: new Channel entry_tag accepts the Customer-owned command
 -- in the callback UoW. A failed trusted freeze has no external effect, but must
 -- remain a visible, immutable Channel action fact and must not roll back the

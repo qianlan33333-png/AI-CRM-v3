@@ -29,6 +29,13 @@ type CustomerProfileObservationReader interface {
 	CustomerTagObservations(context.Context, customerdomain.CustomerID) ([]TagObservation, error)
 }
 
+// CustomerTagObservationRefresher reads the current Provider contact after a
+// completed mark_tag call and writes only WeCom-owned observations. It never
+// changes the already-recorded outbound command result or calls mark_tag.
+type CustomerTagObservationRefresher interface {
+	RefreshCustomerTagObservation(context.Context, string, customerdomain.CustomerID, string, string) error
+}
+
 // AudiencePrimaryOwner is the provider userid selected from a completed,
 // trusted directory scope for a canonical customer.  Ambiguous means active
 // provider scopes disagree and must never be resolved by choosing a row.

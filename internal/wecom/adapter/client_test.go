@@ -733,6 +733,14 @@ func TestClientMarkContactTagsClassifiesDefiniteRejectionAndDisconnect(t *testin
 		{name: "null errcode is unknown", mark: func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"errcode":null}`)) }, unknown: true, retryable: false},
 		{name: "string errcode is unknown", mark: func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"errcode":"0"}`)) }, unknown: true, retryable: false},
 		{name: "malformed success body is unknown", mark: func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{`)) }, unknown: true, retryable: false},
+		{name: "gateway html is unknown after request", mark: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`<html>gateway</html>`))
+		}, unknown: true, retryable: false},
+		{name: "gateway empty json is unknown after request", mark: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{}`))
+		}, unknown: true, retryable: false},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -755,5 +763,33 @@ func TestClientMarkContactTagsClassifiesDefiniteRejectionAndDisconnect(t *testin
 				t.Fatalf("err=%T %v attempted=%t unknown=%t retryable=%t", err, err, wecomport.ProviderCallAttempted(err), wecomport.ProviderOutcomeUnknown(err), wecomport.ProviderRetryable(err))
 			}
 		})
+	}
+}
+
+func TestClientReadExternalContactUsesDirectoryReadCredentialAndReturnsFollowTags(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			if r.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("contact secret query=%q", r.URL.Query().Get("corpsecret"))
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+		case "/cgi-bin/externalcontact/get":
+			if r.URL.Query().Get("access_token") != "contact-token" || r.URL.Query().Get("external_userid") != "external-1" {
+				t.Fatalf("read query=%s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"external_contact":{"external_userid":"external-1","name":"Contact","avatar":"https://avatar.example/1","type":1,"gender":2,"corp_name":"Example"},"follow_user":[{"userid":"staff-1","tags":[{"tag_id":"tag-1","name":"Tag one","type":1}]}]}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contact, err := client.ReadExternalContact(context.Background(), "external-1")
+	if err != nil || contact.ExternalUserID != "external-1" || len(contact.FollowInfo) != 1 || contact.FollowInfo[0].EmployeeID != "staff-1" || len(contact.FollowInfo[0].Tags) != 1 || contact.FollowInfo[0].Tags[0].ProviderTagID != "tag-1" {
+		t.Fatalf("contact=%+v err=%v", contact, err)
 	}
 }

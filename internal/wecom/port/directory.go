@@ -59,3 +59,9 @@ type DirectoryProvider interface {
 	ListContactStaff(context.Context) ([]string, error)
 	BatchExternalContacts(context.Context, string, string, int) (ExternalContactPage, error)
 }
+
+// ExternalContactReader reads one known external contact. It is a Provider-read
+// boundary only; it cannot mark, unmark, or otherwise mutate WeCom state.
+type ExternalContactReader interface {
+	ReadExternalContact(context.Context, string) (ExternalContact, error)
+}
