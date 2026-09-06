@@ -793,3 +793,122 @@ func TestClientReadExternalContactUsesDirectoryReadCredentialAndReturnsFollowTag
 		t.Fatalf("contact=%+v err=%v", contact, err)
 	}
 }
+func TestClientCustomerTransferUsesExactFrozenIDsAndRejectsOmittedRows(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatal("wrong contact secret endpoint")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/transfer_customer":
+			calls++
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["handover_userid"] != "source-user" || body["takeover_userid"] != "target-user" || body["transfer_success_msg"] != "您好" {
+				t.Fatalf("transfer body=%v", body)
+			}
+			ids, ok := body["external_userid"].([]any)
+			if !ok || len(ids) != 1 || ids[0] != "external-1" {
+				t.Fatalf("transfer ids=%v", body)
+			}
+			if calls == 1 {
+				_, _ = writer.Write([]byte(`{"errcode":0,"customer":[{"external_userid":"external-1","errcode":0}]}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"customer":[{"external_userid":"external-1"}]}`))
+		case "/cgi-bin/externalcontact/transfer_result":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["handover_userid"] != "source-user" || body["takeover_userid"] != "target-user" || body["cursor"] != "cursor-1" {
+				t.Fatalf("result body=%v", body)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"customer":[{"external_userid":"external-2","status":1,"takeover_time":1588262400},{"external_userid":"external-3","status":2,"takeover_time":1588482400},{"external_userid":"external-4","status":3,"takeover_time":0}],"next_cursor":"cursor-2"}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := client.TransferCustomer(context.Background(), "source-user", "target-user", []string{"external-1"}, "您好")
+	if err != nil || len(accepted.AcceptedExternalUserIDs) != 1 || accepted.AcceptedExternalUserIDs[0] != "external-1" || accepted.FailedCount != 0 {
+		t.Fatalf("transfer=%+v err=%v", accepted, err)
+	}
+	if _, err = client.TransferCustomer(context.Background(), "source-user", "target-user", []string{"external-1"}, "您好"); err == nil {
+		t.Fatal("omitted provider result was accepted")
+	}
+	observed, err := client.TransferResult(context.Background(), "source-user", "target-user", "cursor-1")
+	if err != nil || observed.Cursor != "cursor-2" || len(observed.AcceptedExternalUserIDs) != 0 || len(observed.Observations) != 3 || observed.Observations[0].Status != 1 || observed.Observations[1].Status != 2 || observed.Observations[2].Status != 3 {
+		t.Fatalf("result=%+v err=%v", observed, err)
+	}
+}
+
+func TestTransferCustomerTreatsAmbiguousTopLevelResponsesAsOutcomeUnknown(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "gateway html", status: http.StatusBadGateway, body: "<html>bad gateway</html>"},
+		{name: "server empty object", status: http.StatusServiceUnavailable, body: `{}`},
+		{name: "success malformed json", status: http.StatusOK, body: `{`},
+		{name: "success missing errcode", status: http.StatusOK, body: `{"customer":[{"external_userid":"external-1","errcode":0}]}`},
+		{name: "success null errcode", status: http.StatusOK, body: `{"errcode":null,"customer":[{"external_userid":"external-1","errcode":0}]}`},
+		{name: "success string zero errcode", status: http.StatusOK, body: `{"errcode":"0","customer":[{"external_userid":"external-1","errcode":0}]}`},
+		{name: "success fractional zero errcode", status: http.StatusOK, body: `{"errcode":0.0,"customer":[{"external_userid":"external-1","errcode":0}]}`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/cgi-bin/gettoken":
+					_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+				case "/cgi-bin/externalcontact/transfer_customer":
+					writer.WriteHeader(test.status)
+					_, _ = writer.Write([]byte(test.body))
+				default:
+					t.Fatalf("unexpected endpoint %s", request.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "secret", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.TransferCustomer(context.Background(), "source", "target", []string{"external-1"}, "")
+			if err == nil || !wecomport.ProviderCallAttempted(err) || !wecomport.ProviderOutcomeUnknown(err) {
+				t.Fatalf("err=%v attempted=%t unknown=%t", err, wecomport.ProviderCallAttempted(err), wecomport.ProviderOutcomeUnknown(err))
+			}
+		})
+	}
+}
+
+func TestTransferCustomerTreatsStrictNonZeroTopLevelErrcodeAsFinalRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/transfer_customer":
+			_, _ = writer.Write([]byte(`{"errcode":40003,"errmsg":"invalid"}`))
+		default:
+			t.Fatalf("unexpected endpoint %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.TransferCustomer(context.Background(), "source", "target", []string{"external-1"}, "")
+	if err == nil || !wecomport.ProviderCallAttempted(err) || wecomport.ProviderOutcomeUnknown(err) {
+		t.Fatalf("err=%v attempted=%t unknown=%t", err, wecomport.ProviderCallAttempted(err), wecomport.ProviderOutcomeUnknown(err))
+	}
+}

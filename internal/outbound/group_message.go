@@ -258,17 +258,18 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // CompletionRouter keeps EER's single completion-sink slot while routing
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
-	tag         *TagCatalogCompletionSink
-	group       *GroupMessageCompletionSink
-	channel     *ChannelAssetCompletionSink
-	entrant     *ChannelEntrantCompletionSink
-	link        *ChannelLinkCompletionSink
-	private     *PrivateMessageCompletionSink
-	automation  effectport.CompletionSink
-	sidebar     effectport.CompletionSink
-	survey      effectport.CompletionSink
-	customerTag effectport.CompletionSink
-	commerce    effectport.CompletionSink
+	tag          *TagCatalogCompletionSink
+	group        *GroupMessageCompletionSink
+	channel      *ChannelAssetCompletionSink
+	entrant      *ChannelEntrantCompletionSink
+	link         *ChannelLinkCompletionSink
+	private      *PrivateMessageCompletionSink
+	automation   effectport.CompletionSink
+	sidebar      effectport.CompletionSink
+	survey       effectport.CompletionSink
+	customerTag  effectport.CompletionSink
+	ownerHandoff effectport.CompletionSink
+	commerce     effectport.CompletionSink
 }
 
 func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink) (*CompletionRouter, error) {
@@ -366,6 +367,15 @@ func (r *CompletionRouter) WithSurveyCompletion(sink effectport.CompletionSink) 
 	return r
 }
 
+// WithCustomerOwnerHandoff routes the transfer acceptance completion to the
+// Customer-owned projection without exposing Customer tables to Outbound.
+func (r *CompletionRouter) WithCustomerOwnerHandoff(sink effectport.CompletionSink) *CompletionRouter {
+	if r != nil {
+		r.ownerHandoff = sink
+	}
+	return r
+}
+
 func (r *CompletionRouter) WithCommercePush(sink effectport.CompletionSink) *CompletionRouter {
 	if r != nil {
 		r.commerce = sink
@@ -453,6 +463,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("survey completion sink is unavailable")
 		}
 		return r.survey.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindCustomerOwnerHandoff:
+		if r.ownerHandoff == nil {
+			return errors.New("owner handoff completion sink is unavailable")
+		}
+		return r.ownerHandoff.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	default:
 		return errors.New("unsupported completion kind")
 	}

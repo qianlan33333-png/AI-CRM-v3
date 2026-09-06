@@ -44,6 +44,10 @@ type AudiencePrimaryOwner struct {
 	CorpScope   string
 	OwnerUserID string
 	Status      string // known, unknown, ambiguous
+	// VersionDigest freezes the completed trusted profile/run fact selected by
+	// WeCom. Consumers use it for optimistic candidate checks without reading
+	// WeCom tables. It is opaque and never contains a provider identifier.
+	VersionDigest [32]byte
 }
 
 // AudiencePrimaryOwnerReader is a bulk, read-only audience fact port.  It
@@ -51,4 +55,12 @@ type AudiencePrimaryOwner struct {
 // CustomerIDs plus the provider userid needed for owner filtering.
 type AudiencePrimaryOwnerReader interface {
 	AudiencePrimaryOwners(context.Context, []customerdomain.CustomerID) ([]AudiencePrimaryOwner, error)
+}
+
+// OwnerHandoffPrimaryOwnerLister enumerates canonical customers whose current
+// completed WeCom profile has one unambiguous primary owner in the requested
+// corp scope. It is read-only: Customer applies its own local-owner precedence
+// after this discovery and this Port never creates or changes an observation.
+type OwnerHandoffPrimaryOwnerLister interface {
+	ListOwnerHandoffPrimaryOwnerCustomerIDs(context.Context, string, string, int) ([]customerdomain.CustomerID, error)
 }

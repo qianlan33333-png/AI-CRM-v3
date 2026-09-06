@@ -125,11 +125,53 @@ func (testChat) CustomerChatActivity(context.Context, customerdomain.CustomerID,
 	return customerport.ChatActivityPage{}, customerport.ErrCapabilityNotReady
 }
 
+type testOwnerHandoffService struct{}
+
+func (testOwnerHandoffService) PreviewOwnerHandoff(context.Context, customerport.OwnerHandoffPreviewCommand) (customerport.OwnerHandoffPreview, error) {
+	return customerport.OwnerHandoffPreview{}, nil
+}
+func (testOwnerHandoffService) ConfirmOwnerHandoff(context.Context, customerport.OwnerHandoffConfirmCommand) (customerport.OwnerHandoffBatch, error) {
+	return customerport.OwnerHandoffBatch{}, nil
+}
+
+type testOwnerHandoffReader struct{}
+
+func (testOwnerHandoffReader) OwnerHandoffPreview(context.Context, string) (customerport.OwnerHandoffPreview, error) {
+	return customerport.OwnerHandoffPreview{}, nil
+}
+func (testOwnerHandoffReader) OwnerHandoffBatch(context.Context, string) (customerport.OwnerHandoffBatch, error) {
+	return customerport.OwnerHandoffBatch{}, nil
+}
+
+type testOwnerHandoffStaffDirectory struct{}
+
+func (testOwnerHandoffStaffDirectory) ListOwnerHandoffStaff(context.Context) ([]customerport.OwnerHandoffStaff, error) {
+	return []customerport.OwnerHandoffStaff{{ID: 12, UserID: "inactive-source", DisplayName: "Inactive source", Active: false}, {ID: 13, UserID: "active-target", DisplayName: "Active target", Active: true}}, nil
+}
+
 func testConfig(security testSecurity, store *testCustomerStore, identities *testIdentities, audit *testAudit) Config {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	return Config{UnitOfWork: testUOW{}, Auth: security, CSRF: security, Directory: customerapp.Directory{Store: store, SigningKey: key},
 		Store: store, Identities: identities, Audit: audit, Canonical: testCanonical{}, Owners: testOwners{}, Tags: testTags{},
 		Surveys: testSurveys{}, Timeline: testTimeline{}, Chat: testChat{}, ProfileSigningKey: key}
+}
+
+func TestOwnerHandoffContextRouteUsesAccessProjection(t *testing.T) {
+	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}}
+	config := testConfig(security, &testCustomerStore{}, &testIdentities{}, &testAudit{})
+	config.OwnerHandoff = testOwnerHandoffService{}
+	config.OwnerHandoffReader = testOwnerHandoffReader{}
+	config.OwnerHandoffStaff = testOwnerHandoffStaffDirectory{}
+	config.OwnerHandoffCorpScope = "wecom-corp:fixture"
+	handler, err := NewHandler(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers/owner-handoffs/context", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "private, no-store" || !strings.Contains(response.Body.String(), `"operator":"管理员 #7"`) || !strings.Contains(response.Body.String(), `"UserID":"inactive-source"`) || !strings.Contains(response.Body.String(), `"UserID":"active-target"`) {
+		t.Fatalf("context status=%d cache=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Body.String())
+	}
 }
 
 func TestPhoneRevealEnforcesRoleAndNoStoreAudit(t *testing.T) {

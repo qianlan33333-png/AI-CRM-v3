@@ -541,6 +541,12 @@ type response struct {
 		UnionID        string `json:"unionid"`
 		CorpName       string `json:"corp_name"`
 	} `json:"external_contact"`
+	Customer []struct {
+		ExternalUserID string          `json:"external_userid"`
+		ErrCode        json.RawMessage `json:"errcode"`
+		Status         json.RawMessage `json:"status"`
+		TakeoverTime   json.RawMessage `json:"takeover_time"`
+	} `json:"customer"`
 	ExternalContactList []struct {
 		ExternalContact struct {
 			ExternalUserID string `json:"external_userid"`
@@ -775,6 +781,155 @@ func (client *Client) SendWelcomeMessage(ctx context.Context, welcomeCode, text 
 	}
 	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/send_welcome_msg", url.Values{"access_token": {token}}, body)
 	return wecomport.WrapProviderWriteError(err, true)
+}
+
+func (client *Client) TransferCustomer(ctx context.Context, sourceUserID, targetUserID string, externalUserIDs []string, welcomeMessage string) (wecomport.CustomerTransferResult, error) {
+	if !client.DirectoryReady() || invalid(sourceUserID) || invalid(targetUserID) || sourceUserID == targetUserID || len(externalUserIDs) < 1 || len(externalUserIDs) > 100 || len([]rune(welcomeMessage)) > 4000 {
+		return wecomport.CustomerTransferResult{}, ErrUnavailable
+	}
+	seen := make(map[string]struct{}, len(externalUserIDs))
+	for _, externalUserID := range externalUserIDs {
+		if invalid(externalUserID) {
+			return wecomport.CustomerTransferResult{}, ErrUnavailable
+		}
+		if _, exists := seen[externalUserID]; exists {
+			return wecomport.CustomerTransferResult{}, ErrUnavailable
+		}
+		seen[externalUserID] = struct{}{}
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(err, false)
+	}
+	body := map[string]any{"handover_userid": sourceUserID, "takeover_userid": targetUserID, "external_userid": externalUserIDs}
+	if welcomeMessage != "" {
+		body["transfer_success_msg"] = welcomeMessage
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return wecomport.CustomerTransferResult{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/transfer_customer", url.Values{"access_token": {token}}, raw)
+	if err != nil {
+		// Only a strict, non-zero top-level errcode proves that WeCom rejected
+		// this write. HTTP failures, HTML, malformed JSON and missing/invalid
+		// errcodes may all happen after acceptance and therefore retain the
+		// original EER key as outcome_unknown.
+		if definitiveTransferRejection(err) {
+			return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(err, true, false)
+		}
+		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(err, true, true)
+	}
+	// transfer_customer is a write: unlike older read endpoints, only the JSON
+	// number 0 proves top-level acceptance. null, strings and fractions can be
+	// produced by a proxy/body mismatch after a write and must retain the EER
+	// idempotency key as outcome_unknown.
+	topLevelCode, topLevelOK := strictJSONInt(payload.ErrCode)
+	if !topLevelOK || topLevelCode != 0 {
+		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(ErrResponse, true, true)
+	}
+	// A batched response can conclusively report some rows while omitting
+	// others. Preserve those exact row identities for the owner-handoff
+	// artifact; an omitted or non-strict per-row code remains unclassified.
+	// Any cross-row ambiguity is unsafe for every member and remains a whole
+	// call outcome_unknown.
+	if len(payload.Customer) > len(externalUserIDs) {
+		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+	}
+	result := wecomport.CustomerTransferResult{AcceptedExternalUserIDs: make([]string, 0, len(payload.Customer)), RejectedExternalUserIDs: make([]string, 0, len(payload.Customer))}
+	reported := make(map[string]struct{}, len(payload.Customer))
+	for _, item := range payload.Customer {
+		item.ExternalUserID = strings.TrimSpace(item.ExternalUserID)
+		if invalid(item.ExternalUserID) {
+			return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+		}
+		if _, exists := seen[item.ExternalUserID]; !exists {
+			return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+		}
+		if _, exists := reported[item.ExternalUserID]; exists {
+			return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+		}
+		reported[item.ExternalUserID] = struct{}{}
+		code, valid := transferSubmissionCode(item.ErrCode)
+		if !valid {
+			continue
+		}
+		if code == 0 {
+			result.AcceptedExternalUserIDs = append(result.AcceptedExternalUserIDs, item.ExternalUserID)
+		} else {
+			result.FailedCount++
+			result.RejectedExternalUserIDs = append(result.RejectedExternalUserIDs, item.ExternalUserID)
+		}
+	}
+	// Keep the established one-row contract: it has no independently proven
+	// peer result to retain, so an omitted/invalid row is reported as unknown.
+	if len(externalUserIDs) == 1 && len(result.AcceptedExternalUserIDs)+len(result.RejectedExternalUserIDs) != 1 {
+		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+	}
+	return result, nil
+}
+
+// TransferResult is read-only provider evidence.  It intentionally does not
+// mutate local ownership; its rows are exposed to the owning Customer service
+// for later observation/reconciliation.
+func (client *Client) TransferResult(ctx context.Context, sourceUserID, targetUserID, cursor string) (wecomport.CustomerTransferResult, error) {
+	if !client.DirectoryReady() || invalid(sourceUserID) || invalid(targetUserID) || sourceUserID == targetUserID || strings.TrimSpace(cursor) != cursor {
+		return wecomport.CustomerTransferResult{}, wecomport.ErrDirectoryDisabled
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.CustomerTransferResult{}, err
+	}
+	raw, err := json.Marshal(map[string]any{"handover_userid": sourceUserID, "takeover_userid": targetUserID, "cursor": cursor})
+	if err != nil {
+		return wecomport.CustomerTransferResult{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/transfer_result", url.Values{"access_token": {token}}, raw)
+	if err != nil {
+		return wecomport.CustomerTransferResult{}, err
+	}
+	result := wecomport.CustomerTransferResult{Cursor: strings.TrimSpace(payload.NextCursor), Observations: make([]wecomport.CustomerTransferObservation, 0, len(payload.Customer))}
+	seen := make(map[string]struct{}, len(payload.Customer))
+	for _, item := range payload.Customer {
+		item.ExternalUserID = strings.TrimSpace(item.ExternalUserID)
+		if invalid(item.ExternalUserID) {
+			return wecomport.CustomerTransferResult{}, ErrResponse
+		}
+		if _, exists := seen[item.ExternalUserID]; exists {
+			return wecomport.CustomerTransferResult{}, ErrResponse
+		}
+		status, statusOK := transferResultStatus(item.Status)
+		takeoverTime, timeOK := strictJSONInt(item.TakeoverTime)
+		if !statusOK || !timeOK || takeoverTime < 0 {
+			return wecomport.CustomerTransferResult{}, ErrResponse
+		}
+		seen[item.ExternalUserID] = struct{}{}
+		result.Observations = append(result.Observations, wecomport.CustomerTransferObservation{ExternalUserID: item.ExternalUserID, Status: status, TakeoverTime: takeoverTime})
+	}
+	return result, nil
+}
+
+func strictJSONInt(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var value int64
+	if err := json.Unmarshal(raw, &value); err != nil || string(raw) != strconv.FormatInt(value, 10) {
+		return 0, false
+	}
+	return value, true
+}
+
+func transferSubmissionCode(raw json.RawMessage) (int64, bool) {
+	return strictJSONInt(raw)
+}
+
+func transferResultStatus(raw json.RawMessage) (int, bool) {
+	value, ok := strictJSONInt(raw)
+	if !ok || value < 1 || value > 5 {
+		return 0, false
+	}
+	return int(value), true
 }
 
 // AddContactTag is the only customer-tag mutation exposed by the WeCom
@@ -1358,6 +1513,11 @@ func confirmedMarkTagSuccess(raw json.RawMessage) bool {
 	}
 	var value int64
 	return json.Unmarshal(raw, &value) == nil && value == 0
+}
+
+func definitiveTransferRejection(err error) bool {
+	var responseErr *providerResponseError
+	return errors.As(err, &responseErr) && responseErr.errCode != 0
 }
 
 func providerError(statusCode int, body []byte) error {
