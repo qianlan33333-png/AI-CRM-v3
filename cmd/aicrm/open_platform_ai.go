@@ -9,6 +9,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
@@ -118,8 +119,16 @@ func v1AIError(err error) error {
 	// Invalid or conflicting machine commands are never treated as an accepted
 	// operation; unavailable ownership/read failures remain retryable at the
 	// protocol level without disclosing plan details.
-	if errors.Is(err, aiassistantport.ErrInvalidMachineActor) {
+	switch {
+	case errors.Is(err, aiassistantport.ErrInvalidMachineActor):
 		return openplatformport.NewError(openplatformport.ErrorAuthentication, "machine subject is invalid")
+	case errors.Is(err, aiassistantapp.ErrInvalid):
+		return openplatformport.NewError(openplatformport.ErrorValidation, "AI review plan input is invalid")
+	case errors.Is(err, aiassistantapp.ErrConflict):
+		return openplatformport.NewError(openplatformport.ErrorConflict, "AI review plan conflicts with the idempotency receipt")
+	case errors.Is(err, aiassistantapp.ErrNotFound):
+		return openplatformport.NewError(openplatformport.ErrorNotFound, "operation was not found")
+	default:
+		return openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "AI review plan is unavailable")
 	}
-	return openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "AI review plan is unavailable")
 }
