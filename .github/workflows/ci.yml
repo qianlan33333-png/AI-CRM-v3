@@ -20,7 +20,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The complete required suite reaches the race/security gate after the
+    # browser journeys; retain every gate with a bounded 30-minute job budget.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
