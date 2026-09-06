@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,6 +275,98 @@ func TestPostgreSQLCreatePlanWithinRequiresCallerTransactionAndRollsBackWithIt(t
 	}); err != nil || !replay.Replayed || replay.Plan.ID != first.Plan.ID {
 		t.Fatalf("replay=%+v first=%+v err=%v", replay, first, err)
 	}
+}
+
+func TestPostgreSQLConcurrentEffectCompletionsKeepNeedsAttentionProjection(t *testing.T) {
+	native, cleanup := integrationPool(t)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Repeat the pair because the old implementation could only expose the
+	// stale aggregate after the two independent recipient writes overlapped.
+	// Each iteration uses one plan so the assertion remains a per-aggregate
+	// invariant, not a global timing assumption.
+	for iteration := 0; iteration < 16; iteration++ {
+		planID, effects := seedConcurrentCompletionPlan(t, ctx, native, iteration)
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		var wait sync.WaitGroup
+		for index, completion := range []struct {
+			effectID string
+			state    aiassistantport.ExecutionState
+		}{
+			{effectID: effects[0], state: aiassistantport.ExecutionProviderAccepted},
+			{effectID: effects[1], state: aiassistantport.ExecutionOutcomeUnknown},
+		} {
+			wait.Add(1)
+			go func(index int, completion struct {
+				effectID string
+				state    aiassistantport.ExecutionState
+			}) {
+				defer wait.Done()
+				<-start
+				errs <- uow.Within(ctx, func(tx context.Context) error {
+					return repository.CompleteExternalEffect(tx, completion.effectID, completion.state, completion.state == aiassistantport.ExecutionProviderAccepted, false, effectport.Hash("completion-receipt", completion.effectID), 1, 1, 1, time.Now().UTC())
+				})
+			}(index, completion)
+		}
+		close(start)
+		wait.Wait()
+		close(errs)
+		for completionErr := range errs {
+			if completionErr != nil {
+				t.Fatalf("completion iteration %d: %v", iteration, completionErr)
+			}
+		}
+		var state aiassistantport.PlanState
+		var attention int
+		if err = native.QueryRow(ctx, `SELECT state,needs_attention_count FROM ai_assistant_plans WHERE id=$1`, planID).Scan(&state, &attention); err != nil {
+			t.Fatalf("read completion projection iteration %d: %v", iteration, err)
+		}
+		if state != aiassistantport.PlanNeedsAttention || attention != 1 {
+			t.Fatalf("completion projection iteration %d state=%s attention=%d", iteration, state, attention)
+		}
+	}
+}
+
+func seedConcurrentCompletionPlan(t *testing.T, ctx context.Context, pool *pgxpool.Pool, iteration int) (aiassistantport.PlanID, [2]string) {
+	t.Helper()
+	var planID aiassistantport.PlanID
+	now := time.Now().UTC()
+	if err := pool.QueryRow(ctx, `INSERT INTO ai_assistant_plans(name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_at,updated_at)
+		VALUES($1,'completion-race',decode(repeat('01',32),'hex'),'dispatching',1,2,0,2,0,0,0,1,$2,$2) RETURNING id`, "completion-race-"+strconv.Itoa(iteration), now).Scan(&planID); err != nil {
+		t.Fatal(err)
+	}
+	for recipient := 0; recipient < 2; recipient++ {
+		var recipientID int64
+		if err := pool.QueryRow(ctx, `INSERT INTO ai_assistant_plan_recipients(plan_id,customer_id,staff_id,review_state,execution_state,created_at,updated_at)
+			VALUES($1,$2,1,'approved','queued',$3,$3) RETURNING id`, planID, iteration*10+recipient+1, now).Scan(&recipientID); err != nil {
+			t.Fatal(err)
+		}
+		effectID := "eer_" + strconv.Itoa(iteration*2+recipient+1)
+		if _, err := pool.Exec(ctx, `INSERT INTO ai_assistant_effect_bindings(recipient_id,outbound_intent_id,external_effect_id,payload_digest,state,generation,created_at,updated_at)
+			VALUES($1,$2,$3,decode(repeat('02',32),'hex'),'queued',1,$4,$4)`, recipientID, iteration*2+recipient+1, effectID, now); err != nil {
+			t.Fatal(err)
+		}
+		if recipient == 0 {
+			continue
+		}
+		return planID, [2]string{"eer_" + strconv.Itoa(iteration*2+1), effectID}
+	}
+	t.Fatal("completion fixture did not create two effects")
+	return 0, [2]string{}
 }
 
 func TestPostgreSQLIntegrationNonceAllowsOnlyExactReplay(t *testing.T) {

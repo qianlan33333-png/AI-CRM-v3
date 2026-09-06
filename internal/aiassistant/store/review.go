@@ -156,9 +156,26 @@ func (r *Repository) CompleteExternalEffect(ctx context.Context, effectID string
 	if err != nil {
 		return err
 	}
-	var recipientID aiassistantport.RecipientID
+	// Approval updates a plan before it updates its recipients. Take that same
+	// aggregate lock before changing this completion's binding or recipient, so
+	// two effects for one approved plan cannot independently aggregate stale
+	// recipient snapshots and let a late dispatching projection overwrite an
+	// outcome_unknown result.
 	var planID aiassistantport.PlanID
-	err = tx.QueryRow(ctx, `UPDATE ai_assistant_effect_bindings b SET state=$2,generation=$3,fence=$4,attempt_count=$5,provider_accepted=$6,delivery_proven=$7,provider_receipt_digest=$8,updated_at=$9 FROM ai_assistant_plan_recipients r WHERE b.external_effect_id=$1 AND r.id=b.recipient_id RETURNING b.recipient_id,r.plan_id`, effectID, state, generation, fence, attempts, providerAccepted, deliveryProven, raw, now.UTC()).Scan(&recipientID, &planID)
+	err = tx.QueryRow(ctx, `SELECT p.id
+		FROM ai_assistant_plans p
+		JOIN ai_assistant_plan_recipients r ON r.plan_id=p.id
+		JOIN ai_assistant_effect_bindings b ON b.recipient_id=r.id
+		WHERE b.external_effect_id=$1
+		FOR UPDATE OF p`, effectID).Scan(&planID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var recipientID aiassistantport.RecipientID
+	err = tx.QueryRow(ctx, `UPDATE ai_assistant_effect_bindings b SET state=$2,generation=$3,fence=$4,attempt_count=$5,provider_accepted=$6,delivery_proven=$7,provider_receipt_digest=$8,updated_at=$9 FROM ai_assistant_plan_recipients r WHERE b.external_effect_id=$1 AND r.id=b.recipient_id RETURNING b.recipient_id`, effectID, state, generation, fence, attempts, providerAccepted, deliveryProven, raw, now.UTC()).Scan(&recipientID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
