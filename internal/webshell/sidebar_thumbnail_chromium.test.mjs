@@ -85,7 +85,7 @@ try {
     try {
       const pathname = new URL(String(params.response?.url || "")).pathname;
       if (pathname === "/sidebar/bind-mobile") sidebarCSP = String(params.response?.headers?.["content-security-policy"] || params.response?.headers?.["Content-Security-Policy"] || "");
-      if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/assets\/sidebarHost-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, Number(params.response?.status) || 0);
+      if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/sidebar-assets\/sidebarHost-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, Number(params.response?.status) || 0);
     } catch (_) {}
   });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin` });
@@ -97,16 +97,30 @@ try {
   if (!session) throw new Error("Access session cookie was not issued");
   await cdp.call("Network.setCookie", { name: "aicrm_sidebar_session", value: session.value, url: baseURL, path: "/", secure: true, httpOnly: true, sameSite: "Lax" });
   await cdp.call("Page.navigate", { url: `${baseURL}/sidebar/bind-mobile?external_userid=sidebar-thumbnail-external` });
-  await waitFor(cdp, "location.pathname === '/sidebar/bind-mobile' && Boolean(document.querySelector('#tabs button[data-sidebar-tab=\"materials\"]'))", "sidebar Host did not render");
+  try {
+    await waitFor(cdp, "location.pathname === '/sidebar/bind-mobile' && Boolean(document.querySelector('#tabs button[data-sidebar-tab=\"materials\"]'))", "sidebar Host did not render");
+  } catch (_) {
+    const diagnostic = JSON.stringify({
+      path: await evaluate(cdp, "location.pathname"),
+      document: await evaluate(cdp, "document.body ? 'ready' : 'missing'"),
+      tabs: await evaluate(cdp, "Boolean(document.querySelector('#tabs'))"),
+      host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200),
+      bootstrap: resources.get("/api/sidebar/v2/bootstrap") || 0,
+      materials: resources.get("/api/sidebar/v2/materials") || 0,
+      cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"),
+      exceptions,
+    });
+    throw new Error(`sidebar Host did not render: ${diagnostic}`);
+  }
   await evaluate(cdp, "document.querySelector('#tabs button[data-sidebar-tab=\"materials\"]')?.click(); true");
   const ready = "(() => { const image=document.querySelector('img[data-material-preview=\"ready\"]'); return Boolean(image && image.src.startsWith('blob:') && image.complete && image.naturalWidth === 1 && image.naturalHeight === 1); })()";
   try { await waitFor(cdp, ready, "sidebar thumbnail did not load through a blob URL"); }
   catch (_) {
-    const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), host: [...resources.entries()].some(([path, status]) => /^\/assets\/sidebarHost-/.test(path) && status === 200), bootstrap: resources.get("/api/sidebar/v2/bootstrap") || 0, materials: resources.get("/api/sidebar/v2/materials") || 0, thumbnail: [...resources.entries()].some(([path, status]) => /variants\/thumb_320$/.test(path) && status === 200), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
+    const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), bootstrap: resources.get("/api/sidebar/v2/bootstrap") || 0, materials: resources.get("/api/sidebar/v2/materials") || 0, thumbnail: [...resources.entries()].some(([path, status]) => /variants\/thumb_320$/.test(path) && status === 200), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
     throw new Error(`sidebar thumbnail did not render: ${diagnostic}`);
   }
   if (!sidebarCSP.includes("img-src 'self' data: blob:")) throw new Error("sidebar CSP did not permit its scoped thumbnail blob URL");
-  if (![...resources.entries()].some(([pathname, status]) => /^\/assets\/sidebarHost-/.test(pathname) && status === 200) || resources.get("/api/sidebar/v2/bootstrap") !== 200 || resources.get("/api/sidebar/v2/materials") !== 200 || ![...resources.entries()].some(([pathname, status]) => /\/variants\/thumb_320$/.test(pathname) && status === 200)) throw new Error("sidebar Host/resources did not use the actual scoped thumbnail route");
+  if (![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarHost-/.test(pathname) && status === 200) || resources.get("/api/sidebar/v2/bootstrap") !== 200 || resources.get("/api/sidebar/v2/materials") !== 200 || ![...resources.entries()].some(([pathname, status]) => /\/variants\/thumb_320$/.test(pathname) && status === 200)) throw new Error("sidebar Host/resources did not use the actual scoped thumbnail route");
   if (exceptions.length) throw new Error(`sidebar Host emitted runtime exceptions: ${exceptions.join(",")}`);
   console.log("sidebar_thumbnail_chromium: PASS");
 } catch (error) { failed = true; throw error; }
