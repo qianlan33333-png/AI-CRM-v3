@@ -20,6 +20,8 @@ import (
 
 type TagCommandStore interface {
 	FindTagCommand(context.Context, string, string, string) (customerport.TagCommandResult, [32]byte, bool, error)
+	LockTagCommandTargets(context.Context, []customerport.TagCommandTarget) error
+	EnsureTagCommandTargetsIdle(context.Context, []customerport.TagCommandTarget) error
 	CreateTagCommand(context.Context, customerport.TagCommand, [32]byte) (int64, error)
 	SetTagCommandState(context.Context, int64, string) error
 	CreateRejectedTagCommandLine(context.Context, int64, customerport.TagCommandTarget, string) (customerport.TagCommandLine, error)
@@ -90,6 +92,27 @@ func (s *TagCommandService) SubmitTagCommandWithin(ctx context.Context, c custom
 		}
 		return prior, nil
 	}
+	// Lock each canonical Customer row before accepting a different command.
+	// This makes concurrent opposite add/remove requests deterministic and
+	// keeps an outcome_unknown effect bound to its original key until terminal.
+	if err = s.store.LockTagCommandTargets(ctx, canonical); err != nil {
+		return customerport.TagCommandResult{}, err
+	}
+	// A same-key concurrent caller may have committed while this transaction
+	// waited for the Customer locks. Re-read its receipt before creating one.
+	prior, priorDigest, found, err = s.store.FindTagCommand(ctx, c.Source, c.SourceRef, c.IdempotencyKey)
+	if err != nil {
+		return customerport.TagCommandResult{}, err
+	}
+	if found {
+		if priorDigest != digest {
+			return customerport.TagCommandResult{}, customerport.ErrTagCommandConflict
+		}
+		return prior, nil
+	}
+	if err = s.store.EnsureTagCommandTargetsIdle(ctx, canonical); err != nil {
+		return customerport.TagCommandResult{}, err
+	}
 	id, err := s.store.CreateTagCommand(ctx, c, digest)
 	if err != nil {
 		prior, priorDigest, found, readErr := s.store.FindTagCommand(ctx, c.Source, c.SourceRef, c.IdempotencyKey)
@@ -151,7 +174,7 @@ func validTagCommand(c customerport.TagCommand) bool {
 	}
 	seen := map[int64]struct{}{}
 	for _, t := range c.Targets {
-		if t.CustomerID < 1 || t.StaffID < 0 || len(t.AddTagIDs)+len(t.RemoveTagIDs) == 0 || len(t.AddTagIDs) > 100 || len(t.RemoveTagIDs) > 100 {
+		if t.CustomerID < 1 || t.StaffID < 0 || len(t.AddTagIDs)+len(t.RemoveTagIDs) == 0 || len(t.AddTagIDs) > 100 || len(t.RemoveTagIDs) > 100 || len(t.AddTagIDs)+len(t.RemoveTagIDs) > 100 {
 			return false
 		}
 		if _, ok := seen[int64(t.CustomerID)]; ok {
@@ -208,6 +231,10 @@ func joinIDs(v []int64) string {
 	return strings.Join(parts, ",")
 }
 func commandState(lines []customerport.TagCommandLine) string {
+	if len(lines) == 0 {
+		return "rejected"
+	}
+	allRejected := true
 	for _, line := range lines {
 		if line.State == "outcome_unknown" {
 			return "outcome_unknown"
@@ -215,11 +242,12 @@ func commandState(lines []customerport.TagCommandLine) string {
 		if line.State == "queued" {
 			return "queued"
 		}
+		allRejected = allRejected && line.State == "rejected"
 	}
-	if len(lines) > 0 {
-		return "partial"
+	if allRejected {
+		return "rejected"
 	}
-	return "rejected"
+	return "partial"
 }
 
 var _ customerport.TagCommandSubmitter = (*TagCommandService)(nil)

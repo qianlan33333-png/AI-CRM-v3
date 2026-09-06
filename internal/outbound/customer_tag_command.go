@@ -31,7 +31,7 @@ func NewCustomerTagProvider(enabled bool, reader customerport.TagCommandDispatch
 	return &CustomerTagProvider{enabled: enabled, reader: reader, contacts: contacts, tags: tags, writer: writer}, nil
 }
 func (p *CustomerTagProvider) Execute(ctx context.Context, e effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
-	if p == nil || !e.Valid() || e.Kind != effectport.KindCustomerTagCommand {
+	if p == nil || !e.Valid() || e.Kind != effectport.KindCustomerTagCommand || e.PolicyVersionHash != effectport.Hash("customer.tag.command.policy.v1") {
 		return customerTagFinal("invalid_command", effectport.Hash("customer.tag.invalid")), nil
 	}
 	if !p.enabled {
@@ -40,6 +40,9 @@ func (p *CustomerTagProvider) Execute(ctx context.Context, e effectport.Envelope
 	d, err := p.reader.ReadTagCommandDispatch(ctx, string(e.SourceRefDigest))
 	if err != nil {
 		return customerTagFinal("command_unavailable", effectport.Hash("customer.tag.command-unavailable", string(e.Fingerprint()))), nil
+	}
+	if attempt.EffectID == "" || d.EffectRef != attempt.EffectID {
+		return customerTagFinal("effect_mismatch", effectport.Hash("customer.tag.effect-mismatch", d.EffectRef)), nil
 	}
 	contact, err := p.contacts.CurrentExternalContact(ctx, d.CustomerID, d.StaffID)
 	if err == nil && effectport.Hash("customer.tag.command.target.v1", contact.EmployeeUserID, contact.ExternalUserID) != effectport.Digest(d.TargetDigest) {

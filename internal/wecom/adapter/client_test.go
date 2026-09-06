@@ -729,6 +729,10 @@ func TestClientMarkContactTagsClassifiesDefiniteRejectionAndDisconnect(t *testin
 				_ = connection.Close()
 			}
 		}, unknown: true, retryable: false},
+		{name: "missing errcode is unknown", mark: func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) }, unknown: true, retryable: false},
+		{name: "null errcode is unknown", mark: func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"errcode":null}`)) }, unknown: true, retryable: false},
+		{name: "string errcode is unknown", mark: func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"errcode":"0"}`)) }, unknown: true, retryable: false},
+		{name: "malformed success body is unknown", mark: func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{`)) }, unknown: true, retryable: false},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

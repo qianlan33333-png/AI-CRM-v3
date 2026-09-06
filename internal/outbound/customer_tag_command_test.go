@@ -77,7 +77,7 @@ func customerTagProviderFixture(t *testing.T, enabled bool, d customerport.TagCo
 func TestCustomerTagProviderOneTrustedMultiTagCall(t *testing.T) {
 	d := customerTagDispatch()
 	w := &customerTagWriterStub{}
-	result, err := customerTagProviderFixture(t, true, d, wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}, w).Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	result, err := customerTagProviderFixture(t, true, d, wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}, w).Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{EffectID: "eer_7", Number: 1, Generation: 1, Fence: 1})
 	if err != nil || result.Completion != effectport.StateExecuted || w.calls != 1 || w.employee != "staff-9" || w.external != "external-42" || len(w.add) != 2 || len(w.remove) != 1 || !result.RealExternalCallExecuted {
 		t.Fatalf("result=%+v err=%v writer=%+v", result, err, w)
 	}
@@ -86,13 +86,13 @@ func TestCustomerTagProviderRefusesFrozenTargetOrBindingDriftWithoutCall(t *test
 	d := customerTagDispatch()
 	w := &customerTagWriterStub{}
 	p := customerTagProviderFixture(t, true, d, wecomport.CurrentExternalContact{EmployeeUserID: "other-staff", ExternalUserID: "external-42"}, w)
-	result, err := p.Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	result, err := p.Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{EffectID: "eer_7", Number: 1, Generation: 1, Fence: 1})
 	if err != nil || result.Completion != effectport.StateFinalFailed || result.CallAttempted || w.calls != 0 {
 		t.Fatalf("target result=%+v err=%v calls=%d", result, err, w.calls)
 	}
 	p = customerTagProviderFixture(t, true, d, wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}, w)
 	p.tags = customerTagBindingStub{values: map[int64]string{1: "changed", 2: "provider-b", 3: "provider-c"}}
-	result, err = p.Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	result, err = p.Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{EffectID: "eer_7", Number: 1, Generation: 1, Fence: 1})
 	if err != nil || result.Completion != effectport.StateFinalFailed || result.CallAttempted || w.calls != 0 {
 		t.Fatalf("binding result=%+v err=%v calls=%d", result, err, w.calls)
 	}
@@ -100,7 +100,7 @@ func TestCustomerTagProviderRefusesFrozenTargetOrBindingDriftWithoutCall(t *test
 func TestCustomerTagProviderPostCallFailureIsUnknown(t *testing.T) {
 	d := customerTagDispatch()
 	w := &customerTagWriterStub{err: customerTagCrossedError{}}
-	result, err := customerTagProviderFixture(t, true, d, wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}, w).Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	result, err := customerTagProviderFixture(t, true, d, wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}, w).Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{EffectID: "eer_7", Number: 1, Generation: 1, Fence: 1})
 	if !errors.Is(err, w.err) || result.Completion != effectport.StateUnknown || !result.CallAttempted || !result.RealExternalCallExecuted || w.calls != 1 {
 		t.Fatalf("result=%+v err=%v calls=%d", result, err, w.calls)
 	}
@@ -145,7 +145,7 @@ func TestCustomerTagCompletionSinkUsesAttemptFenceAndOnlyUpdatesChannelSource(t 
 	}
 	reader.value.Source = "channel_entry_tag"
 	sink.reader = reader
-	if err = sink.CompleteEffect(context.Background(), "eer_20", envelope, effectport.Attempt{Number: 1, Generation: 1, Fence: 1}, effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("rejected")}); err != nil {
+	if err = sink.CompleteEffect(context.Background(), "eer_20", envelope, effectport.Attempt{EffectID: "eer_7", Number: 1, Generation: 1, Fence: 1}, effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("rejected")}); err != nil {
 		t.Fatal(err)
 	}
 	if channel.calls != 1 || channel.effectRef != "eer_20" || channel.state != "final_failed" {
@@ -156,7 +156,7 @@ func TestCustomerTagCompletionSinkUsesAttemptFenceAndOnlyUpdatesChannelSource(t 
 func TestCustomerTagProviderDefiniteRejectionProjectsSafeFinalReason(t *testing.T) {
 	d := customerTagDispatch()
 	w := &customerTagWriterStub{err: wecomport.WrapProviderWriteDisposition(errors.New("provider rejected"), true, false, false)}
-	result, err := customerTagProviderFixture(t, true, d, wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}, w).Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	result, err := customerTagProviderFixture(t, true, d, wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}, w).Execute(context.Background(), customerTagEnvelope(d), effectport.Attempt{EffectID: "eer_7", Number: 1, Generation: 1, Fence: 1})
 	if !errors.Is(err, w.err) || result.Completion != effectport.StateFinalFailed || !result.CallAttempted || !result.Artifact.Valid() || string(result.Artifact.Payload) != "provider_rejected" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -165,7 +165,7 @@ func TestCustomerTagProviderDefiniteRejectionProjectsSafeFinalReason(t *testing.
 	if sinkErr != nil {
 		t.Fatal(sinkErr)
 	}
-	if sinkErr = sink.CompleteEffect(context.Background(), "eer_7", customerTagEnvelope(d), effectport.Attempt{Number: 1, Generation: 1, Fence: 1}, result); sinkErr != nil {
+	if sinkErr = sink.CompleteEffect(context.Background(), "eer_7", customerTagEnvelope(d), effectport.Attempt{EffectID: "eer_7", Number: 1, Generation: 1, Fence: 1}, result); sinkErr != nil {
 		t.Fatal(sinkErr)
 	}
 	if len(writer.values) != 1 || writer.values[0].State != "final_failed" || writer.values[0].ResultReason != "provider_rejected" {

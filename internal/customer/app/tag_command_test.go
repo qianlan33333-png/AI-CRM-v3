@@ -24,12 +24,22 @@ type tagTestStore struct {
 	found   bool
 	next    int64
 	creates int
+	state   string
 }
 
 func (s *tagTestStore) FindTagCommand(context.Context, string, string, string) (customerport.TagCommandResult, [32]byte, bool, error) {
 	return s.result, s.digest, s.found, nil
 }
-func (s *tagTestStore) SetTagCommandState(context.Context, int64, string) error { return nil }
+func (*tagTestStore) LockTagCommandTargets(context.Context, []customerport.TagCommandTarget) error {
+	return nil
+}
+func (*tagTestStore) EnsureTagCommandTargetsIdle(context.Context, []customerport.TagCommandTarget) error {
+	return nil
+}
+func (s *tagTestStore) SetTagCommandState(_ context.Context, _ int64, state string) error {
+	s.state = state
+	return nil
+}
 func (s *tagTestStore) CreateTagCommand(_ context.Context, _ customerport.TagCommand, digest [32]byte) (int64, error) {
 	s.next++
 	s.creates++
@@ -103,5 +113,44 @@ func TestTagCommandOneEffectPerCustomerAndStableReplayDigest(t *testing.T) {
 	changed.Targets[0].AddTagIDs = []int64{99}
 	if _, err = svc.SubmitTagCommand(context.Background(), changed); !errors.Is(err, customerport.ErrTagCommandConflict) {
 		t.Fatalf("payload drift err=%v", err)
+	}
+}
+
+type rejectTagGate struct{}
+
+func (rejectTagGate) FreezeTagCommandTarget(context.Context, customerport.TagCommandTarget) (customerport.FrozenTagCommandTarget, error) {
+	return customerport.FrozenTagCommandTarget{}, errors.New("unavailable")
+}
+
+func TestTagCommandAllRejectedStartsRejected(t *testing.T) {
+	store := &tagTestStore{}
+	effects := &tagEffects{}
+	svc, err := NewTagCommandService(tagTestUOW{}, store, effects, rejectTagGate{}, tagAudit{}, tagOutbox{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.SubmitTagCommand(context.Background(), customerport.TagCommand{ActorAdminUserID: 1, Source: "admin_customer_ui", SourceRef: "all-rejected", IdempotencyKey: "all-rejected", OccurredAt: time.Now(), Targets: []customerport.TagCommandTarget{{CustomerID: 1, AddTagIDs: []int64{1}}, {CustomerID: 2, AddTagIDs: []int64{1}}}})
+	if err != nil || result.State != "rejected" || store.state != "rejected" || effects.calls != 0 || len(result.Lines) != 2 {
+		t.Fatalf("result=%+v state=%q effects=%d err=%v", result, store.state, effects.calls, err)
+	}
+}
+
+func TestTagCommandRejectsCombinedWeComTagLimitBeforePreviewOrAcceptance(t *testing.T) {
+	store := &tagTestStore{}
+	effects := &tagEffects{}
+	svc, err := NewTagCommandService(tagTestUOW{}, store, effects, tagGate{}, tagAudit{}, tagOutbox{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := make([]int64, 100)
+	for index := range add {
+		add[index] = int64(index + 1)
+	}
+	command := customerport.TagCommand{ActorAdminUserID: 1, Source: "admin_customer_ui", SourceRef: "combined-tag-limit", IdempotencyKey: "combined-tag-limit", OccurredAt: time.Now(), Targets: []customerport.TagCommandTarget{{CustomerID: 1, AddTagIDs: add, RemoveTagIDs: []int64{101}}}}
+	if _, err = svc.PreviewTagCommand(context.Background(), command); !errors.Is(err, customerport.ErrTagCommandInvalid) {
+		t.Fatalf("preview err=%v", err)
+	}
+	if _, err = svc.SubmitTagCommand(context.Background(), command); !errors.Is(err, customerport.ErrTagCommandInvalid) || effects.calls != 0 || store.creates != 0 {
+		t.Fatalf("submit err=%v effects=%d creates=%d", err, effects.calls, store.creates)
 	}
 }

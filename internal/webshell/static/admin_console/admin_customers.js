@@ -4,7 +4,7 @@
   const root = document.querySelector("[data-customer-directory-root]");
   if (!root) return;
 
-  const api = { customers: root.dataset.customersUrl, sync: root.dataset.syncUrl, tagPreview: root.dataset.tagPreviewUrl, tagCommand: root.dataset.tagCommandUrl };
+  const api = { customers: root.dataset.customersUrl, sync: root.dataset.syncUrl, tagPreview: root.dataset.tagPreviewUrl, tagCommand: root.dataset.tagCommandUrl, tags: root.dataset.tagsUrl };
   const byID = (id) => document.getElementById(id);
   const el = {
     alert: byID("customer-page-alert"),
@@ -172,10 +172,33 @@
     el.wrap.hidden = true;
   }
 
-  function tagIDs(value) {
-    const values = String(value || "").split(",").map((item) => Number(item.trim())).filter((id) => Number.isSafeInteger(id) && id > 0);
-    const unique = [...new Set(values)].sort((a, b) => a - b);
-    return unique.length === values.length && unique.length <= 100 ? unique : null;
+  function tagIDs(values) {
+    const parsed = (Array.isArray(values) ? values : [values]).flatMap((value) => String(value || "").split(",")).map((item) => Number(item.trim())).filter((id) => Number.isSafeInteger(id) && id > 0);
+    const unique = [...new Set(parsed)].sort((a, b) => a - b);
+    return unique.length === parsed.length && unique.length <= 100 ? unique : null;
+  }
+
+  async function loadTagSelectors() {
+    const selects = [...root.querySelectorAll('select[name="add_tag_ids"],select[name="remove_tag_ids"]')];
+    if (!selects.length) return;
+    try {
+      const catalog = await request(api.tags);
+      const tags = Array.isArray(catalog.items) ? catalog.items : [];
+      for (const select of selects) {
+        select.replaceChildren();
+        select.disabled = false;
+        for (const tag of tags) {
+          const id = Number(tag.id || tag.tag_id);
+          if (!Number.isSafeInteger(id) || id < 1) continue;
+          const option = document.createElement("option");
+          option.value = String(id);
+          option.textContent = (tag.group_name ? tag.group_name + " / " : "") + (tag.tag_name || tag.name || ("标签 " + id));
+          select.append(option);
+        }
+      }
+    } catch (_error) {
+      for (const select of selects) select.disabled = true;
+    }
   }
 
   function commandKey() {
@@ -189,19 +212,50 @@
     return "可执行 " + eligible + " 位客户，拒绝 " + rejected + " 位。确认后会再次核验当前跟进人与标签映射。";
   }
 
-  async function loadTagHistory(customerID, resultNode) {
-    try {
-      const value = await request("/api/v1/customers/" + encodeURIComponent(customerID) + "/tag-commands?limit=5");
-      const latest = (value.items || [])[0];
-      if (latest && resultNode) resultNode.textContent = "最近命令状态：" + latest.state + "。";
-    } catch (_error) {}
+  function observedTagSummary(items) {
+    const names = (Array.isArray(items) ? items : []).map((item) => {
+      const name = String(item.name || "标签名称待同步");
+      const group = item.group_name ? String(item.group_name) + " / " : "";
+      return group + name + "（" + String(item.status || "unknown") + "）";
+    });
+    return names.length ? names.join("、") : "暂无已观察标签";
+  }
+
+  function commandLineSummary(lines, prefix) {
+    const safeLines = Array.isArray(lines) ? lines : [];
+    const detail = safeLines.map((entry) => {
+      const line = entry && entry.line ? entry.line : entry || {};
+      const reason = line.result_reason || line.reject_reason;
+      const observed = entry && entry.observed ? "；观察标签：" + observedTagSummary(entry.observed) : "";
+      return "客户 #" + String(line.customer_id || "—") + "：" + String(line.state || "unknown") + (reason ? "（" + String(reason) + "）" : "") + observed;
+    });
+    return prefix + (detail.length ? detail.join("；") : "暂无可回读的客户结果。");
+  }
+
+  async function refreshTagCommand(command, resultNode) {
+    const sourceLines = Array.isArray(command && command.lines) ? command.lines : [];
+    const customerIDs = [...new Set(sourceLines.map((line) => Number(line.customer_id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    if (!customerIDs.length) return;
+    const observations = await Promise.all(customerIDs.map(async (customerID) => {
+      const [history, observed] = await Promise.all([
+        request("/api/v1/customers/" + encodeURIComponent(customerID) + "/tag-commands?limit=5"),
+        // This is the existing WeCom observation read Port. It never treats a
+        // requested mutation as an observed Provider tag.
+        request("/api/admin/customers/" + encodeURIComponent(customerID) + "/tags"),
+      ]);
+      const matched = (history.items || []).find((item) => Number(item.id) === Number(command.id));
+      const line = matched && (matched.lines || []).find((item) => Number(item.customer_id) === customerID);
+      return { line: line || { customer_id: customerID, state: "unavailable" }, observed: observed.items || [] };
+    }));
+    if (resultNode) resultNode.textContent = commandLineSummary(observations, "已刷新执行结果：");
   }
 
   async function previewAndConfirm(customerIDs, form, resultNode) {
-    const add = tagIDs(new FormData(form).get("add_tag_ids"));
-    const remove = tagIDs(new FormData(form).get("remove_tag_ids"));
-    if (!customerIDs.length || add === null || remove === null || (!add.length && !remove.length) || add.some((id) => remove.includes(id))) {
-      if (resultNode) resultNode.textContent = "请选择客户，并填写不重复的本地标签编号。";
+    const data = new FormData(form);
+    const add = tagIDs(data.getAll("add_tag_ids"));
+    const remove = tagIDs(data.getAll("remove_tag_ids"));
+    if (!customerIDs.length || add === null || remove === null || add.length + remove.length > 100 || (!add.length && !remove.length) || add.some((id) => remove.includes(id))) {
+      if (resultNode) resultNode.textContent = "请选择客户，并从目录选择不重复的标签。";
       return;
     }
     const key = commandKey();
@@ -213,8 +267,13 @@
       if (resultNode) resultNode.textContent = summary;
       if (!window.confirm(summary)) return;
       const accepted = await request(api.tagCommand, { method: "POST", headers, body: JSON.stringify(payload) });
-      if (resultNode) resultNode.textContent = "已受理：" + (accepted.lines || []).length + " 条本地命令；等待企微执行观察回读。";
-      if (detailID) await loadTagHistory(detailID, resultNode);
+      if (resultNode) resultNode.textContent = commandLineSummary(accepted.lines, "已受理；当前结果：");
+      try {
+        await refreshTagCommand(accepted, resultNode);
+      } catch (_error) {
+        // The durable acceptance result remains visible; a later refresh can
+        // observe any Provider completion without exposing Provider details.
+      }
     } catch (error) {
       if (resultNode) resultNode.textContent = error && error.message ? "标签命令未受理：" + error.message : "标签命令未受理。";
     }
@@ -448,6 +507,7 @@
   if (el.previous) el.previous.addEventListener("click", function () { if (pageIndex > 0) loadList(pageCursors[pageIndex - 1], "previous"); });
   if (el.next) el.next.addEventListener("click", function () { if (nextCursor) loadList(nextCursor, "next"); });
   if (el.syncStart) el.syncStart.addEventListener("click", startSync);
+  void loadTagSelectors();
   const match = location.pathname.match(/^\/admin\/customers\/([1-9][0-9]*)$/);
   if (match) loadDetail(match[1]);
   else {

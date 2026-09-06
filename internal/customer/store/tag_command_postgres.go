@@ -45,6 +45,79 @@ func (TagCommandPostgreSQL) FindTagCommand(ctx context.Context, source, sourceRe
 	}
 	return r, d, true, rows.Err()
 }
+
+// LockTagCommandTargets serializes pending tag mutations per canonical
+// Customer. It deliberately rejects a different request while any line is not
+// terminal: WeCom mark_tag add/remove order is observable and an unknown prior
+// outcome may still have reached the Provider.
+func (TagCommandPostgreSQL) LockTagCommandTargets(ctx context.Context, targets []customerport.TagCommandTarget) error {
+	if len(targets) == 0 {
+		return customerport.ErrTagCommandInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	ids := make([]int64, 0, len(targets))
+	for index, target := range targets {
+		id := int64(target.CustomerID)
+		if id < 1 || (index > 0 && id <= ids[index-1]) {
+			return customerport.ErrTagCommandInvalid
+		}
+		ids = append(ids, id)
+	}
+	rows, err := tx.Query(ctx, `SELECT id FROM customers WHERE id=ANY($1::bigint[]) ORDER BY id FOR UPDATE`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	locked := 0
+	for rows.Next() {
+		locked++
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if locked != len(ids) {
+		return customerport.ErrTagCommandUnavailable
+	}
+	return nil
+}
+
+// EnsureTagCommandTargetsIdle runs after the Customer locks and same-key
+// receipt replay check. It rejects a different add/remove request while a
+// prior effect has not reached a terminal state.
+func (TagCommandPostgreSQL) EnsureTagCommandTargetsIdle(ctx context.Context, targets []customerport.TagCommandTarget) error {
+	if len(targets) == 0 {
+		return customerport.ErrTagCommandInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	ids := make([]int64, 0, len(targets))
+	for index, target := range targets {
+		id := int64(target.CustomerID)
+		if id < 1 || (index > 0 && id <= ids[index-1]) {
+			return customerport.ErrTagCommandInvalid
+		}
+		ids = append(ids, id)
+	}
+	var pending bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM customer_tag_command_lines line
+		WHERE line.customer_id=ANY($1::bigint[])
+		AND line.state IN ('accepted','queued','attempted','outcome_unknown','retryable_failed')
+	)`, ids).Scan(&pending)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return customerport.ErrTagCommandConflict
+	}
+	return nil
+}
+
 func (TagCommandPostgreSQL) CreateTagCommand(ctx context.Context, c customerport.TagCommand, d [32]byte) (int64, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
@@ -79,7 +152,11 @@ func (TagCommandPostgreSQL) CreateRejectedTagCommandLine(ctx context.Context, co
 		target.RemoveTagIDs = []int64{}
 	}
 	var l customerport.TagCommandLine
-	err = tx.QueryRow(ctx, `INSERT INTO customer_tag_command_lines(command_id,customer_id,staff_id,add_tag_ids,remove_tag_ids,state,reject_reason) VALUES($1,$2,$3,$4,$5,'rejected',$6) RETURNING id`, commandID, target.CustomerID, target.StaffID, target.AddTagIDs, target.RemoveTagIDs, reason).Scan(&l.ID)
+	var staff any
+	if target.StaffID > 0 {
+		staff = target.StaffID
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO customer_tag_command_lines(command_id,customer_id,staff_id,add_tag_ids,remove_tag_ids,state,reject_reason) VALUES($1,$2,$3,$4,$5,'rejected',$6) RETURNING id`, commandID, target.CustomerID, staff, target.AddTagIDs, target.RemoveTagIDs, reason).Scan(&l.ID)
 	l.CustomerID, l.StaffID, l.AddTagIDs, l.RemoveTagIDs, l.State, l.RejectReason = target.CustomerID, target.StaffID, target.AddTagIDs, target.RemoveTagIDs, "rejected", reason
 	return l, err
 }
@@ -160,6 +237,23 @@ func (TagCommandPostgreSQL) CompleteTagCommand(ctx context.Context, c customerpo
 	if err != nil {
 		return err
 	}
+	// Serialize every line completion of a command through its parent before
+	// locking the line. Otherwise two effects can each aggregate against the
+	// other's queued snapshot and leave the command stale after both commit.
+	var commandID int64
+	err = tx.QueryRow(ctx, `SELECT command_id FROM customer_tag_command_lines WHERE effect_ref=$1`, c.EffectRef).Scan(&commandID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return customerport.ErrTagCommandUnavailable
+	}
+	if err != nil {
+		return err
+	}
+	if err = tx.QueryRow(ctx, `SELECT id FROM customer_tag_commands WHERE id=$1 FOR UPDATE`, commandID).Scan(&commandID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return customerport.ErrTagCommandUnavailable
+		}
+		return err
+	}
 	var state, digest, resultReason string
 	var attempts int32
 	var generation, fence int64
@@ -186,7 +280,7 @@ func (TagCommandPostgreSQL) CompleteTagCommand(ctx context.Context, c customerpo
 	if result.RowsAffected() != 1 {
 		return customerport.ErrTagCommandUnavailable
 	}
-	_, err = tx.Exec(ctx, `UPDATE customer_tag_commands command SET state=states.state,updated_at=clock_timestamp() FROM (SELECT command_id,CASE WHEN bool_or(state='outcome_unknown') THEN 'outcome_unknown' WHEN bool_or(state='attempted') THEN 'attempted' WHEN bool_or(state='queued') THEN 'queued' WHEN bool_or(state='retryable_failed') THEN 'retryable_failed' WHEN bool_and(state='rejected') THEN 'rejected' WHEN bool_and(state IN ('executed','reconciled')) THEN 'executed' WHEN bool_and(state='final_failed') THEN 'final_failed' WHEN bool_and(state='cancelled') THEN 'cancelled' WHEN bool_or(state IN ('rejected','executed','reconciled','final_failed','cancelled')) THEN 'partial' ELSE 'accepted' END AS state FROM customer_tag_command_lines WHERE command_id=(SELECT command_id FROM customer_tag_command_lines WHERE effect_ref=$1) GROUP BY command_id) states WHERE command.id=states.command_id`, c.EffectRef)
+	_, err = tx.Exec(ctx, `UPDATE customer_tag_commands command SET state=states.state,updated_at=clock_timestamp() FROM (SELECT command_id,CASE WHEN bool_or(state='outcome_unknown') THEN 'outcome_unknown' WHEN bool_or(state='attempted') THEN 'attempted' WHEN bool_or(state='queued') THEN 'queued' WHEN bool_or(state='retryable_failed') THEN 'retryable_failed' WHEN bool_and(state='rejected') THEN 'rejected' WHEN bool_and(state IN ('executed','reconciled')) THEN 'executed' WHEN bool_and(state='final_failed') THEN 'final_failed' WHEN bool_and(state='cancelled') THEN 'cancelled' WHEN bool_or(state IN ('rejected','executed','reconciled','final_failed','cancelled')) THEN 'partial' ELSE 'accepted' END AS state FROM customer_tag_command_lines WHERE command_id=$1 GROUP BY command_id) states WHERE command.id=states.command_id`, commandID)
 	return err
 }
 func validTagCommandState(v string) bool {

@@ -22,7 +22,7 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}<script>${script}</
       if (url.pathname === '/api/admin/customers') {
         return new Response(JSON.stringify({ items: [{ customer_id: 1, display_name: '运行时客户', oneid: 'CID-1', phone_masked: '138****0000', updated_at: '2026-09-06T00:00:00Z' }], total: 1, total_is_estimate: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url.pathname.startsWith('/api/v1/customer-tag-commands')) calls.push(url.pathname);
+      if (url.pathname.startsWith('/api/v1/customer-tag-commands') && String(options.method || 'GET').toUpperCase() !== 'GET') calls.push(url.pathname);
       return globalThis.fetch(url, options);
     };
   },
@@ -35,15 +35,18 @@ try {
   checkbox.checked = true;
   checkbox.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   const form = dom.window.document.querySelector('#customer-tag-batch');
-  form.querySelector('[name="add_tag_ids"]').value = '7';
+  if (!form || form.querySelector('[name="add_tag_ids"] option')?.textContent !== '运行时分组 / 运行时标签') throw new Error('actual catalog route did not render the local tag name');
+  const tagOptions = [...form.querySelector('[name="add_tag_ids"]').options];
+  if (tagOptions.length !== 1 || tagOptions[0].textContent !== '运行时分组 / 运行时标签') throw new Error('actual catalog route did not render the local tag name');
+  tagOptions[0].selected = true;
   form.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
   let result = '';
   for (let remaining = 40; remaining > 0; remaining--) {
     await new Promise((resolve) => setTimeout(resolve, 10));
     result = dom.window.document.querySelector('#customer-tag-batch-result')?.textContent || '';
-    if (calls.length === 2 && result.includes('已受理')) break;
+    if (calls.length === 2 && result.includes('已刷新执行结果：客户 #1：queued；观察标签：已观察标签（active）')) break;
   }
-  if (calls.join(',') !== '/api/v1/customer-tag-commands/preview,/api/v1/customer-tag-commands' || !result.includes('已受理')) {
+  if (calls.join(',') !== '/api/v1/customer-tag-commands/preview,/api/v1/customer-tag-commands' || !result.includes('已刷新执行结果：客户 #1：queued；观察标签：已观察标签（active）')) {
     throw new Error(`Host tag interaction calls=${calls.join(',')} result=${result}`);
   }
   console.log('customer-tag-command-runtime-host: PASS');

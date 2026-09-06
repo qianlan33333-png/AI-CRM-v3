@@ -54,9 +54,11 @@ async function load(url, requests) {
       window.fetch = async (input, options = {}) => {
         const requestURL = new URL(String(input), window.location.origin);
         requests.push({ url: requestURL, options });
+        if (requestURL.pathname === '/api/admin/wecom/tags') return response({ items: [{ id: 7, group_name: '分组', tag_name: '标签七' }, { id: 8, group_name: '分组', tag_name: '标签八' }] });
         if (requestURL.pathname === '/api/v1/customer-tag-commands/preview') return response({ state: 'preview', lines: [{ customer_id: 42, state: 'eligible' }] });
         if (requestURL.pathname === '/api/v1/customer-tag-commands') return response({ state: 'queued', lines: [{ customer_id: 42, state: 'queued', effect_ref: 'eer_42' }] }, 202);
         if (requestURL.pathname === '/api/v1/customers/42/tag-commands') return response({ items: [{ id: 9, state: 'queued', lines: [{ customer_id: 42, state: 'queued' }] }] });
+        if (requestURL.pathname === '/api/admin/customers/42/tags') return response({ items: [{ name: '标签七', group_name: '分组', status: 'active' }] });
         if (requestURL.pathname === '/api/admin/customer-sync-runs') return syncPage();
         if (requestURL.pathname === '/api/admin/customers/42/phone-reveal') return response({ phone: '+8613812345678' });
         if (requestURL.pathname === '/api/admin/customers/42/360') {
@@ -117,7 +119,7 @@ try {
   selector.checked = true;
   selector.dispatchEvent(new list.window.Event('change', { bubbles: true }));
   const batch = document.querySelector('#customer-tag-batch');
-  batch.querySelector('[name="add_tag_ids"]').value = '7,8';
+  for (const option of batch.querySelector('[name="add_tag_ids"]').options) option.selected = ['7', '8'].includes(option.value);
   batch.dispatchEvent(new list.window.Event('submit', { bubbles: true, cancelable: true }));
   await sleep(30);
   const tagCalls = listRequests.filter((item) => item.url.pathname.startsWith('/api/v1/customer-tag-commands'));

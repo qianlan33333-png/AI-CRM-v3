@@ -713,8 +713,15 @@ func classifyContactTagWriteError(err error) error {
 	}
 	var responseErr *providerResponseError
 	if errors.As(err, &responseErr) {
-		// The response was parsed, so a business rejection is final and a
-		// 429/5xx response is retry-safe. Neither outcome is uncertain.
+		// A 2xx response without a concrete nonzero errcode cannot prove that
+		// mark_tag was accepted (for example {}, null, string, malformed JSON,
+		// or a truncated body). Preserve it as unknown rather than inventing a
+		// final rejection or resending it.
+		if responseErr.statusCode >= http.StatusOK && responseErr.statusCode < http.StatusMultipleChoices && responseErr.errCode == 0 {
+			return wecomport.WrapProviderWriteDisposition(err, true, true, false)
+		}
+		// A parsed nonzero errcode is a definite business result. A 429/5xx
+		// response remains retry-safe only before an outbound boundary.
 		return wecomport.WrapProviderWriteDisposition(err, true, false, responseErr.retryable)
 	}
 	// A transport error after submit has no trustworthy Provider outcome.
@@ -744,8 +751,11 @@ func (client *Client) MarkContactTags(ctx context.Context, employeeID, externalU
 	if err != nil {
 		return ErrResponse
 	}
-	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/mark_tag", url.Values{"access_token": {token}}, body)
-	return classifyContactTagWriteError(err)
+	payload, requestErr := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/mark_tag", url.Values{"access_token": {token}}, body)
+	if requestErr == nil && !confirmedMarkTagSuccess(payload.ErrCode) {
+		requestErr = &providerResponseError{statusCode: http.StatusOK}
+	}
+	return classifyContactTagWriteError(requestErr)
 }
 func (client *Client) ListManagedAcquisitionLinks(ctx context.Context, cursor string, limit int) (wecomport.CustomerAcquisitionLinkPage, error) {
 	if !client.DirectoryReady() || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
@@ -1265,6 +1275,17 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, quer
 	payload.UserIDLower = strings.TrimSpace(payload.UserIDLower)
 	payload.Ticket = strings.TrimSpace(payload.Ticket)
 	return payload, nil
+}
+
+// confirmedMarkTagSuccess is intentionally stricter than the historical
+// generic reader helper: the write leaf must never treat a missing, null, or
+// string errcode as an accepted mutation.
+func confirmedMarkTagSuccess(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var value int64
+	return json.Unmarshal(raw, &value) == nil && value == 0
 }
 
 func providerError(statusCode int, body []byte) error {

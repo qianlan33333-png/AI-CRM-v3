@@ -3,7 +3,8 @@
   data-customers-url="/api/admin/customers"
   data-sync-url="/api/admin/customer-sync-runs"
   data-tag-preview-url="/api/v1/customer-tag-commands/preview"
-  data-tag-command-url="/api/v1/customer-tag-commands">
+  data-tag-command-url="/api/v1/customer-tag-commands"
+  data-tags-url="/api/admin/wecom/tags">
 {{if eq .RequestPath "/admin/customers"}}
 <section class="admin-card">
   <div class="admin-card-head admin-card-head--tight">
@@ -39,8 +40,8 @@
     </table>
   </div>
   <form id="customer-tag-batch" class="admin-toolbar" autocomplete="off" style="margin-top:12px">
-    <label>批量加标签 <input name="add_tag_ids" inputmode="numeric" placeholder="如 12,18"></label>
-    <label>批量移除标签 <input name="remove_tag_ids" inputmode="numeric" placeholder="如 23"></label>
+    <label>批量加标签 <select name="add_tag_ids" multiple aria-label="批量加标签" disabled></select></label>
+    <label>批量移除标签 <select name="remove_tag_ids" multiple aria-label="批量移除标签" disabled></select></label>
     <button class="admin-button admin-button--secondary" type="submit">预览并确认标签变更</button>
     <span id="customer-tag-batch-result" role="status" aria-live="polite"></span>
   </form>
@@ -62,8 +63,8 @@
     <div class="customer-profile-meta" id="customer-profile-meta"></div>
     <div id="customer-phone-ephemeral" class="admin-alert admin-alert--success customer-phone-ephemeral" role="status" aria-live="polite" hidden></div>
     <form id="customer-tag-single" class="admin-toolbar" autocomplete="off">
-      <label>加标签 <input name="add_tag_ids" inputmode="numeric" placeholder="本地标签编号"></label>
-      <label>移除标签 <input name="remove_tag_ids" inputmode="numeric" placeholder="本地标签编号"></label>
+      <label>加标签 <select name="add_tag_ids" multiple aria-label="加标签" disabled></select></label>
+      <label>移除标签 <select name="remove_tag_ids" multiple aria-label="移除标签" disabled></select></label>
       <button class="admin-button admin-button--secondary" type="submit">预览并确认标签变更</button>
       <span id="customer-tag-single-result" role="status" aria-live="polite"></span>
     </form>
