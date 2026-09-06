@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -41,6 +42,18 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
+	_, source, _, ok := goruntime.Caller(0)
+	if !ok {
+		t.Fatal("locate sidebar Chromium journey")
+	}
+	repository := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	// compose resolves web/dist relative to the process directory. A package
+	// test otherwise runs from cmd/aicrm and silently falls back to the frozen
+	// shell, so Chrome never receives the staged sidebar Host it is meant to
+	// exercise. Build the exact hashed release artifact first, as CI does.
+	t.Chdir(repository)
+	prepareProductExternalPushChromiumArtifacts(t, repository)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -74,13 +87,17 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	if err = seedSidebarThumbnailChromiumJourney(ctx, application); err != nil {
 		t.Fatal(err)
 	}
+	// Assert the same outer route Chromium will open. This makes a missing
+	// repository-relative release artifact a deterministic test failure instead
+	// of a generic DOM timeout after the browser starts.
+	outerSidebar := httptest.NewRecorder()
+	application.handler.ServeHTTP(outerSidebar, httptest.NewRequest(http.MethodGet, "/sidebar/bind-mobile?external_userid=sidebar-thumbnail-external", nil))
+	if outerSidebar.Code != http.StatusOK || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)) {
+		t.Fatalf("outer composed sidebar Host status=%d sidebar_host=%t tabs=%t", outerSidebar.Code, bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)))
+	}
 	server.Config.Handler = application.handler
 	server.StartTLS()
 
-	_, source, _, ok := goruntime.Caller(0)
-	if !ok {
-		t.Fatal("locate sidebar Chromium script")
-	}
 	command := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(source), "..", "..", "internal", "webshell", "sidebar_thumbnail_chromium.test.mjs"))
 	command.Env = append(os.Environ(),
 		"AICRM_SIDEBAR_THUMBNAIL_TEST_URL="+server.URL,
