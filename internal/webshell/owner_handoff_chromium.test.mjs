@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { strFromU8, unzipSync } from "fflate";
 
 const baseURL = process.env.AICRM_OWNER_HANDOFF_TEST_URL;
 const username = process.env.AICRM_OWNER_HANDOFF_TEST_USERNAME;
@@ -33,20 +34,52 @@ class CDP {
   next(method, predicate, message) { return new Promise((resolve,reject) => { let off=()=>{}; const timer=setTimeout(() => { off(); reject(new Error(message)); }, 8000); const listener=params => { if (!predicate(params)) return; clearTimeout(timer); off(); resolve(params); }; off=() => this.events.set(method,(this.events.get(method)||[]).filter(item => item !== listener)); this.events.set(method,[...(this.events.get(method)||[]),listener]); }); }
   close() { for (const {reject} of this.pending.values()) reject(new Error("CDP closed")); this.pending.clear(); this.socket.close(); }
 }
+const openCDP = async webSocketDebuggerUrl => {
+  const socket = new WebSocket(webSocketDebuggerUrl);
+  await new Promise((resolve,reject)=>{socket.addEventListener("open",resolve,{once:true});socket.addEventListener("error",()=>reject(new Error("CDP connection failed")),{once:true});});
+  return new CDP(socket);
+};
 const waitForPort = async profile => { for (let attempt=0; attempt<160; attempt++) { try { const [port]=String(await fs.readFile(path.join(profile,"DevToolsActivePort"),"utf8")).split("\n"); if (/^\d+$/.test(port)) return `http://127.0.0.1:${port}`; } catch (_) {} await sleep(50); } throw new Error("Chromium remote debugging did not become ready"); };
 const waitForExit = async (child, ms) => !child || child.exitCode !== null || child.signalCode !== null || new Promise(resolve => { const timer=setTimeout(()=>resolve(false),ms); child.once("exit",()=>{clearTimeout(timer);resolve(true);}); });
 const removeProfile = async profile => { for (let attempt=0;attempt<40;attempt++) { try { await fs.rm(profile,{recursive:true,force:true,maxRetries:0}); return true; } catch (error) { if (!["ENOTEMPTY","EBUSY","EPERM"].includes(error?.code)) return false; await sleep(100); } } return false; };
+const xmlText = value => String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&apos;", '"': "&quot;" }[char]));
 
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-owner-handoff-chromium-"));
-let child; let cdp; let failed=false;
+const downloads = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-owner-handoff-downloads-"));
+let child; let cdp; let browserCDP; let failed=false;
 try {
   child=spawn(chrome(),["--headless=new","--no-sandbox","--remote-debugging-port=0",`--user-data-dir=${profile}`,"--no-first-run","--no-default-browser-check","--disable-background-networking","--disable-component-update","--disable-sync","--ignore-certificate-errors","--allow-insecure-localhost","about:blank"],{stdio:"ignore"});
   const address=await waitForPort(profile);
+  const browserInfo=await (await fetch(`${address}/json/version`)).json();
+  if (!browserInfo.webSocketDebuggerUrl) throw new Error("Chromium browser debugging endpoint is unavailable");
+  browserCDP=await openCDP(browserInfo.webSocketDebuggerUrl);
+  await browserCDP.call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:downloads,eventsEnabled:true});
   const page=await (await fetch(`${address}/json/new?about:blank`,{method:"PUT"})).json();
-  const socket=new WebSocket(page.webSocketDebuggerUrl); await new Promise((resolve,reject)=>{socket.addEventListener("open",resolve,{once:true});socket.addEventListener("error",()=>reject(new Error("CDP connection failed")),{once:true});});
-  cdp=new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
+  cdp=await openCDP(page.webSocketDebuggerUrl); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
   const evaluate=async expression=>{ const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) throw new Error("page evaluation failed"); return result.result?.value; };
   const waitFor=async(expression,message)=>{for(let attempt=0;attempt<160;attempt++){if(await evaluate(expression))return;await sleep(50);}throw new Error(message);};
+  const readDownloadedWorkbook=async (filename, expectedValues) => {
+    const destination=path.join(downloads,filename);
+    let bytes;
+    for (let attempt=0;attempt<160;attempt++) {
+      try {
+        bytes=await fs.readFile(destination);
+        await fs.access(`${destination}.crdownload`);
+      } catch (error) {
+        if (bytes && error?.code === "ENOENT") break;
+        bytes=undefined;
+      }
+      await sleep(50);
+    }
+    if (!bytes || bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error(`downloaded ${filename} was not a readable XLSX file`);
+    let workbook;
+    try { workbook=unzipSync(bytes); } catch (_) { throw new Error(`downloaded ${filename} could not be opened as XLSX`); }
+    const sheet=workbook["xl/worksheets/sheet1.xml"];
+    if (!sheet) throw new Error(`downloaded ${filename} did not contain the result worksheet`);
+    const cells=strFromU8(sheet);
+    for (const value of expectedValues) if (!cells.includes(xmlText(value))) throw new Error(`downloaded ${filename} omitted expected result field`);
+    await fs.rm(destination,{force:true});
+  };
   await cdp.call("Page.navigate",{url:`${baseURL}/login?next=%2Fadmin%2Fowner-migration`});
   await waitFor("Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))","login shell did not render");
   const loginNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId),"login form did not navigate");
@@ -96,14 +129,14 @@ try {
     if (scope === "excel_include") {
       await waitFor(`(() => { const text=document.querySelector("[data-owner-handoff-host] [data-preview-rows]").textContent; return ["browser-external","duplicate","missing_external_userid","invalid_move_flag","skipped_by_file","not_under_source_owner"].every(value => text.includes(value)); })()`, "Excel preview lost donor row states or fields");
       await evaluate(`document.querySelector("[data-owner-handoff-host] [data-download-errors]").click(); true`);
-      await waitFor(`window.__ownerHandoffDownloads.includes("owner_migration_blocked_rows.xlsx")`, "blocked-row Excel export was not created");
+      await readDownloadedWorkbook("owner_migration_blocked_rows.xlsx", ["行号", "external_userid", "状态", "原因", "duplicate", "missing_external_userid", "invalid_move_flag", "not_under_source_owner"]);
     }
     const phrase=await evaluate("document.querySelector('[data-owner-handoff-host] [data-confirm-phrase-display]').textContent");
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const input=root.querySelector('[data-confirm-phrase-input]'); input.value=${JSON.stringify(phrase)}; input.dispatchEvent(new Event('input',{bubbles:true})); root.querySelector('[data-execute]').click(); return true; })()`);
     await waitFor("document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('batch_id=')",`${mode} confirmation was not persisted through actual HTTP API`);
     if (mode === "wecom_then_crm" && readTransfer) { let read = false; for (let attempt = 0; attempt < 80; attempt += 1) { await sleep(100); await evaluate("document.querySelector('[data-owner-handoff-host] [data-read-transfer-result]').click(); true"); if (await evaluate("document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('transfer_status=1')")) { read = true; break; } } if (!read) throw new Error("transfer-result readback did not render final status"); }
     await evaluate(`document.querySelector("[data-owner-handoff-host] [data-download-result]").click(); true`);
-    await waitFor(`window.__ownerHandoffDownloads.includes("owner_migration_result.xlsx")`, ` result Excel export was not created`);
+    await readDownloadedWorkbook("owner_migration_result.xlsx", ["行号", "external_userid", "迁移状态", "企微转接状态", mode === "wecom_then_crm" ? "browser-external" : "本地迁移", mode === "wecom_then_crm" ? "企微转接已完成" : "本地迁移"]);
   };
   if (requestedMode === "local_only") {
     await run("local_only");
@@ -119,6 +152,7 @@ try {
   console.log("owner_handoff_chromium: PASS");
 } catch (error) { failed=true; throw error; } finally {
   if(cdp) cdp.close();
+  if(browserCDP) browserCDP.close();
   if(child&&child.exitCode===null&&child.signalCode===null){child.kill("SIGTERM");if(!await waitForExit(child,3000)&&child.exitCode===null&&child.signalCode===null){child.kill("SIGKILL");await waitForExit(child,1000);}}
-  const removed=await removeProfile(profile); if(!removed&&!failed) throw new Error("Chromium test profile cleanup did not complete");
+  const [removedProfile,removedDownloads]=await Promise.all([removeProfile(profile),removeProfile(downloads)]); if((!removedProfile||!removedDownloads)&&!failed) throw new Error("Chromium test temporary-directory cleanup did not complete");
 }
