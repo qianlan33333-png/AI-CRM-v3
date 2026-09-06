@@ -18,6 +18,8 @@ const TEST_BUNDLES = {
   sidebar: await buildTestBrowserBundle(path.join(ROOT, 'src/sidebar/main.ts')),
   memberGridShare: await buildTestBrowserBundle(path.join(ROOT, 'src/public/main.ts')),
 };
+const OWNER_HANDOFF_DONOR = fs.readFileSync(path.resolve(ROOT, '../internal/webshell/static/admin_console/owner_migration_dd8d60d.html'), 'utf8');
+const OWNER_HANDOFF_HOST = fs.readFileSync(path.resolve(ROOT, '../internal/webshell/static/admin_console/owner_handoff_host.js'), 'utf8');
 
 let pass = 0;
 let fail = 0;
@@ -132,9 +134,17 @@ async function loadQuestionnaireEditor({ q = '', questionnaire } = {}) {
 
 async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false, ownerHandoffHttp = false } = {}) {
   const file = path.join(DIST, rel);
-  let html = fs.readFileSync(file, 'utf8');
+  // ownerMig is served by the Go Webshell Host, not the unrelated historical
+  // web/dist template bearing the same route name. Use its actual stage.
+  let html = ownerHandoffHttp
+    ? '<!doctype html><html><head></head><body><main data-owner-handoff-host></main></body></html>'
+    : fs.readFileSync(file, 'utf8');
   // 用 jsdom 执行内联脚本：把 bundle 内联进去，避免资源加载配置
   html = html.replace(/<script type="module" src="[^"]*assets\/(admin|h5|sidebar)-[^"]+\.js"><\/script>/, (_m, name) => `<script>${productHttp ? TEST_BUNDLES.productHost : TEST_BUNDLES[name]}</script>`);
+  // ownerMig's Host is a separately served V3 adapter. Inline the exact built
+  // adapter here so this regression executes the frozen donor mount rather
+  // than asserting against only the empty Webshell stage.
+  if (ownerHandoffHttp) html = html.replace('</body>', `<script>${OWNER_HANDOFF_HOST}</script></body>`);
   const qs = q || (id != null ? 'id=' + id : '');
   const dom = new JSDOM(html, {
     url: 'http://localhost/' + rel + (qs ? '?' + qs : ''),
@@ -146,16 +156,34 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp || ownerHandoffHttp);
       if (ownerHandoffHttp) {
         window.Headers = Headers;
-        const test = window.__ownerHandoffHttpTest = { calls: [] };
+        const staff = [
+          { ID: 10, UserID: 'inactive-source', DisplayName: '离职原负责人', Active: false },
+          { ID: 20, UserID: 'active-target', DisplayName: '在职目标负责人', Active: true },
+        ];
+        const test = window.__ownerHandoffHttpTest = { calls: [], pickerOpens: [] };
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data });
+        const textResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'text/html' }), text: async () => data, json: async () => JSON.parse(data) });
+        window.OperationMemberPicker = {
+          open: async (options) => {
+            test.pickerOpens.push({ scope: options.scope, includeInactive: options.includeInactive, title: options.title });
+            const selected = staff.find((member) => options.includeInactive ? !member.Active : member.Active);
+            if (selected) options.onSelect({ user_id: selected.UserID });
+          },
+        };
         window.fetch = async (input, init = {}) => {
           const url = new URL(String(input), window.location.origin);
           const method = init.method || 'GET';
           const body = init.body ? JSON.parse(String(init.body)) : undefined;
           test.calls.push({ path: url.pathname, method, body, credentials: init.credentials });
-          if (url.pathname === '/api/admin/customers/owner-handoffs/previews' && method === 'POST') return json({ ID: 'preview-owner-host', Mode: body.mode, SourceStaffID: body.source_staff_id, TargetStaffID: body.target_staff_id, CorpScope: body.corp_scope, Hash: 'preview-hash', ConfirmationPhrase: 'CONFIRM', ExpiresAt: '2026-09-06T12:00:00Z', Rows: body.customer_ids.map((CustomerID, index) => ({ Line: index + 1, CustomerID, State: 'ready' })) });
+          if (url.pathname === '/static/admin_console/owner_migration_dd8d60d.html' && method === 'GET') return textResponse(OWNER_HANDOFF_DONOR);
+          if (url.pathname === '/api/admin/customers/owner-handoffs/context' && method === 'GET') return json({ staff, operator: '管理员 #42' });
+          if (url.pathname === '/api/admin/customers/owner-handoffs/previews' && method === 'POST') {
+            const externalUserIDs = body.scope === 'excel_include' ? body.external_userids : ['external-42'];
+            return json({ ID: 'preview-owner-host', Mode: body.mode, SourceStaffID: body.source_staff_id, TargetStaffID: body.target_staff_id, Hash: 'preview-hash', ConfirmationPhrase: 'CONFIRM', ExpiresAt: '2026-09-06T12:00:00Z', Rows: externalUserIDs.map((ExternalUserID, index) => ({ Line: index + 1, CustomerID: index + 42, ExternalUserID, CustomerDisplayName: `客户 ${index + 42}`, CurrentOwnerUserID: 'inactive-source', State: 'ready' })) });
+          }
           if (url.pathname === '/api/admin/customers/owner-handoffs/confirm' && method === 'POST') return json({ ID: 'batch-owner-host', Mode: 'wecom_then_crm', State: 'accepted', Lines: [{ Line: 1, CustomerID: 42, State: 'queued' }] });
           if (url.pathname === '/api/admin/customers/owner-handoffs/batches/batch-owner-host/transfer-result' && method === 'POST') return json({ ID: 'batch-owner-host', Mode: 'wecom_then_crm', State: 'executing', Lines: [{ Line: 1, CustomerID: 42, State: 'observed', TransferStatus: 1, TakeoverAt: '2026-09-06T12:01:00Z' }] });
+          if (url.pathname === '/api/admin/customers/owner-handoffs/batches/batch-owner-host' && method === 'GET') return json({ ID: 'batch-owner-host', Mode: 'wecom_then_crm', State: 'executing', Lines: [{ Line: 1, CustomerID: 42, State: 'observed', TransferStatus: 1, TakeoverAt: '2026-09-06T12:01:00Z' }] });
           return json({ error: 'unexpected_owner_handoff_request' }, 500);
         };
         return;
@@ -2540,45 +2568,64 @@ console.log('admin/channelForm.html?id=49（HTTP 历史渠道读取失败关闭�
   dom.window.close();
 }
 
-console.log('admin/ownerMig.html（负责人迁移 Host → Preview → Confirm → 回查）');
+console.log('admin/ownerMig.html（冻结负责人迁移页 Host → Picker → Preview → Confirm → 回查）');
 {
   const dom = await loadPage('admin/ownerMig.html', { ownerHandoffHttp: true });
-  await sleep(100);
+  await sleep(160);
   const d = dom.window.document;
   const test = dom.window.__ownerHandoffHttpTest;
   const stage = d.querySelector('[data-owner-handoff-host]');
-  ok('冻结页面由 V3 Host 挂载两种模式和安全 CSV/XLSX 输入', Boolean(stage) && d.querySelector('[data-mode]')?.value === 'wecom_then_crm' && d.querySelector('[data-file]')?.getAttribute('accept')?.includes('.xlsx'));
-  d.querySelector('[data-scope]').value = 'wecom-corp:fixture';
-  d.querySelector('[data-source]').value = '10';
-  d.querySelector('[data-target]').value = '20';
-  d.querySelector('[data-customers]').value = '42';
-  click(dom, d.querySelector('[data-preview]'));
+  const root = stage?.querySelector('[data-owner-migration-page]');
+  const ownerCalls = () => test.calls.filter((call) => call.path.startsWith('/api/admin/customers/owner-handoffs'));
+  ok('冻结页面由 V3 Host 实际挂载，读取可信上下文且不暴露手填 scope/客户 ID', stage?.dataset.ownerHandoffInit === 'ready' && Boolean(root) && !root.querySelector('[data-scope]') && !root.querySelector('[data-customers]') && root.querySelector('[data-import-file]')?.getAttribute('accept')?.includes('.xlsx') && ownerCalls().some((call) => call.path.endsWith('/context') && call.method === 'GET'));
+  click(dom, root.querySelector('[data-owner-picker="source"]'));
+  await sleep(20);
+  click(dom, root.querySelector('[data-owner-picker="target"]'));
+  await sleep(20);
+  ok('原/目标负责人经共享 Picker 分别选择停用源和在职目标', root.querySelector('[data-owner-userid="source"]')?.value === '10' && root.querySelector('[data-owner-userid="target"]')?.value === '20' && JSON.stringify(test.pickerOpens) === JSON.stringify([
+    { scope: 'owner_migration', includeInactive: true, title: '选择原负责人' },
+    { scope: 'owner_migration', includeInactive: false, title: '选择目标负责人' },
+  ]));
+  click(dom, root.querySelector('[data-preview]'));
   await sleep(100);
-  ok('Host 将范围和 wecom_then_crm 原样提交至真实 V3 preview 路由', test.calls.length === 1 && test.calls[0].path === '/api/admin/customers/owner-handoffs/previews' && test.calls[0].method === 'POST' && test.calls[0].body.mode === 'wecom_then_crm' && test.calls[0].body.source_staff_id === 10 && test.calls[0].body.target_staff_id === 20 && test.calls[0].body.customer_ids[0] === 42 && d.querySelector('[data-preview-result]'));
-  click(dom, d.querySelector('[data-confirm]'));
+  const preview = ownerCalls().find((call) => call.path.endsWith('/previews'));
+  ok('Host 将全量范围和 wecom_then_crm 原样提交至真实 V3 preview 路由', preview?.method === 'POST' && preview.body.mode === 'wecom_then_crm' && preview.body.scope === 'all' && preview.body.source_staff_id === 10 && preview.body.target_staff_id === 20 && preview.body.customer_ids.length === 0 && d.querySelector('[data-preview-rows]')?.textContent.includes('external-42'));
+  input(dom, root.querySelector('[data-confirm-phrase-input]'), 'CONFIRM');
+  click(dom, root.querySelector('[data-execute]'));
   await sleep(100);
-  ok('Host 只在冻结 preview hash 和确认语存在时确认，并展示逐行 queued 结果', test.calls.length === 2 && test.calls[1].path === '/api/admin/customers/owner-handoffs/confirm' && test.calls[1].body.preview_id === 'preview-owner-host' && test.calls[1].body.preview_hash === 'preview-hash' && d.querySelector('[data-batch-result]')?.textContent.includes('queued'));
-  click(dom, d.querySelector('[data-refresh]'));
+  const confirm = ownerCalls().find((call) => call.path.endsWith('/confirm'));
+  ok('Host 只在冻结 preview hash 和确认语存在时确认，并展示逐行 queued 结果', confirm?.method === 'POST' && confirm.body.preview_id === 'preview-owner-host' && confirm.body.preview_hash === 'preview-hash' && confirm.body.confirmation_phrase === 'CONFIRM' && root.querySelector('[data-execution-log]')?.textContent.includes('queued'));
+  click(dom, root.querySelector('[data-read-transfer-result]'));
   await sleep(100);
-  ok('企微回查是独立 POST，不从页面直接写 Provider，并回填逐行状态', test.calls.length === 3 && test.calls[2].path === '/api/admin/customers/owner-handoffs/batches/batch-owner-host/transfer-result' && test.calls[2].method === 'POST' && d.querySelector('[data-batch-result]')?.textContent.includes('observed'));
+  const readback = ownerCalls().find((call) => call.path.endsWith('/transfer-result'));
+  ok('企微回查是独立 POST，不从页面直接写 Provider，并回填逐行状态', readback?.method === 'POST' && root.querySelector('[data-execution-log]')?.textContent.includes('observed') && root.querySelector('[data-execution-log]')?.textContent.includes('transfer_status=1'));
   dom.window.__aicrmDownload = null;
   dom.window.URL.createObjectURL = () => 'blob:owner-handoff';
   dom.window.URL.revokeObjectURL = () => {};
   dom.window.HTMLAnchorElement.prototype.click = function () { dom.window.__aicrmDownload = { filename: this.download, href: this.href }; };
-  click(dom, d.querySelector('[data-export-results]'));
-  ok('结果导出仅含本地行/状态投影，不含企微 external_userid', dom.window.__aicrmDownload?.filename === '负责人迁移结果-batch-owner-host.csv');
+  click(dom, root.querySelector('[data-download-result]'));
+  await sleep(100);
+  ok('结果导出重新读取批次，产出旧流程要求的 XLSX 明细', ownerCalls().some((call) => call.path.endsWith('/batches/batch-owner-host') && call.method === 'GET') && dom.window.__aicrmDownload?.filename === 'owner_migration_result.xlsx');
   dom.window.close();
 }
 {
   const dom = await loadPage('admin/ownerMig.html', { ownerHandoffHttp: true });
-  await sleep(100);
+  await sleep(160);
   const d = dom.window.document;
-  const file = new dom.window.File(['customer_id,expected_owner_staff_id,expected_updated_at,target_owner_staff_id\n51,11,2026-09-06T00:00:00Z,21\n'], 'owner-range.csv', { type: 'text/csv' });
-  Object.defineProperty(d.querySelector('[data-file]'), 'files', { configurable: true, value: [file] });
-  click(dom, d.querySelector('[data-preview]'));
+  const root = d.querySelector('[data-owner-handoff-host] [data-owner-migration-page]');
+  click(dom, root.querySelector('[data-owner-picker="source"]'));
+  await sleep(20);
+  click(dom, root.querySelector('[data-owner-picker="target"]'));
+  await sleep(20);
+  click(dom, root.querySelector('[data-scope-segment="excel_include"]'));
+  const file = new dom.window.File(['external_userid,是否迁移,当前负责人userid,客户备注名,备注\nexternal-51,是,inactive-source,客户 51,旧名单\n'], 'owner-range.csv', { type: 'text/csv' });
+  Object.defineProperty(root.querySelector('[data-import-file]'), 'files', { configurable: true, value: [file] });
+  click(dom, root.querySelector('[data-upload-file]'));
   await sleep(100);
-  const call = dom.window.__ownerHandoffHttpTest.calls[0];
-  ok('CSV 范围复用冻结 XLSX/CSV 解析器并拒绝逐行改变源目标前才生成 V3 预览', call?.path === '/api/admin/customers/owner-handoffs/previews' && call.body.customer_ids[0] === 51 && call.body.source_staff_id === 11 && call.body.target_staff_id === 21);
+  click(dom, root.querySelector('[data-preview]'));
+  await sleep(100);
+  const preview = dom.window.__ownerHandoffHttpTest.calls.find((call) => call.path.endsWith('/previews'));
+  ok('CSV 范围复用冻结 XLSX/CSV 解析器，保留旧五列和外部标识解析后才生成 V3 预览', preview?.method === 'POST' && preview.body.scope === 'excel_include' && preview.body.external_userids?.[0] === 'external-51' && preview.body.source_staff_id === 10 && preview.body.target_staff_id === 20 && root.querySelector('[data-preview-rows]')?.textContent.includes('external-51'));
   dom.window.close();
 }
 
