@@ -17,6 +17,8 @@ var (
 	ErrMachineSourceIP        = errors.New("machine source IP denied")
 	ErrMachineReissueRequired = errors.New("machine client requires reissue")
 	ErrMachineIssuerUnready   = errors.New("machine token issuer is not configured")
+	ErrMachineClientActive    = errors.New("machine client must be disabled before update")
+	ErrMachineActivation      = errors.New("machine client activation requires secret self-check")
 )
 
 // MachineClient is Access-owned authentication state. It deliberately has no

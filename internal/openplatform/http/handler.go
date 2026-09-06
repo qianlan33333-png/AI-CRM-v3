@@ -142,7 +142,7 @@ func (handler *Handler) token(response http.ResponseWriter, request *http.Reques
 }
 
 func (handler *Handler) mcpMetadata(response http.ResponseWriter, request *http.Request) {
-	principal, ok := handler.machinePrincipal(response, request, "mcp", "mcp", "mcp_read")
+	principal, ok := handler.machinePrincipal(response, request, "external_integration", "read", "mcp_read")
 	if !ok {
 		return
 	}
@@ -176,8 +176,8 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 		return
 	}
 	bearer := strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "))
-	principal, authErr := handler.machine.AuthenticateBearer(request.Context(), bearer, "mcp", source)
-	if authErr != nil || !principal.HasScope("mcp") || !principal.HasCapability(capability) {
+	principal, authErr := handler.machine.AuthenticateBearer(request.Context(), bearer, "external_integration", source)
+	if authErr != nil || !principal.HasScope("write") || !principal.HasCapability(capability) {
 		writeJSONRPCError(response, id, -32001, "authentication failed")
 		return
 	}
@@ -185,13 +185,13 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 	case "initialize":
 		writeJSONRPCResult(response, id, map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "aicrm-v3", "version": "1"}, "capabilities": map[string]any{"tools": map[string]any{}}})
 	case "tools/list":
-		if !principal.HasScope("mcp") || !principal.HasCapability("mcp_read") {
+		if !principal.HasScope("write") || !principal.HasCapability("mcp_read") {
 			writeJSONRPCError(response, id, -32001, "permission denied")
 			return
 		}
 		writeJSONRPCResult(response, id, map[string]any{"tools": mcpTools(principal)})
 	case "tools/call":
-		if !principal.HasScope("mcp") || !principal.HasCapability("mcp_execute") {
+		if !principal.HasScope("write") || !principal.HasCapability("mcp_execute") {
 			writeJSONRPCError(response, id, -32001, "permission denied")
 			return
 		}
@@ -510,12 +510,7 @@ func routePlaceholders(path string) []string {
 	}
 }
 
-func audienceFor(route Route) string {
-	if route.Path == "/mcp" {
-		return "mcp"
-	}
-	return "external_integration"
-}
+func audienceFor(Route) string { return "external_integration" }
 
 func statusForMachineError(err error) int {
 	switch {

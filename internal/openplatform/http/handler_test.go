@@ -44,6 +44,12 @@ func (handlerManagementStub) List(context.Context, accessdomain.Principal) ([]ac
 func (handlerManagementStub) Rotate(context.Context, accessdomain.Principal, string) (accessport.IssuedMachineClient, error) {
 	return accessport.IssuedMachineClient{}, nil
 }
+func (handlerManagementStub) Update(context.Context, accessdomain.Principal, string, accessport.UpdateMachineClientInput) (accessport.MachineClientSummary, error) {
+	return accessport.MachineClientSummary{}, nil
+}
+func (handlerManagementStub) Activate(context.Context, accessdomain.Principal, string, string, bool) (accessport.MachineClientSummary, error) {
+	return accessport.MachineClientSummary{}, nil
+}
 func (handlerManagementStub) SetEnabled(context.Context, accessdomain.Principal, string, bool) (accessport.MachineClientSummary, error) {
 	return accessport.MachineClientSummary{}, nil
 }
@@ -84,7 +90,7 @@ func TestInventoryRegistersEveryFrozenMachineRoute(t *testing.T) {
 
 func TestMCPRejectsUnknownMethodAsJSONRPC(t *testing.T) {
 	executor := &handlerExecutorStub{}
-	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{ClientID: "mcp", Scopes: []string{"mcp"}, Capabilities: []string{"mcp_read", "mcp_execute"}}}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{ClientID: "mcp", Scopes: []string{"write"}, Capabilities: []string{"mcp_read", "mcp_execute"}}}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +122,7 @@ func TestExternalWriteRequiresWriteScopeEvenWhenClientCapabilityIncludesWrite(t 
 	}
 }
 
-func TestMCPRequiresMCPScopeEvenWhenClientCapabilitiesExist(t *testing.T) {
+func TestMCPPostRequiresWriteScopeEvenWhenClientCapabilitiesExist(t *testing.T) {
 	executor := &handlerExecutorStub{}
 	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{
 		ClientID: "mcp", Scopes: []string{"read"}, Capabilities: []string{"mcp_read", "mcp_execute"},

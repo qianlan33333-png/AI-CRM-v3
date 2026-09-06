@@ -22,13 +22,11 @@ const DirectExternalAPIKeyClientID = "direct_external_api_key"
 
 var machineAudiences = map[string]struct{}{
 	"external_integration": {},
-	"mcp":                  {},
 }
 
 var machineScopes = map[string]struct{}{
 	"read":  {},
 	"write": {},
-	"mcp":   {},
 }
 
 // This vocabulary is the frozen 03a route inventory. A machine can receive a
@@ -73,6 +71,7 @@ type IssuedMachineClient = accessport.IssuedMachineClient
 type MachineClientSummary = accessport.MachineClientSummary
 type ClientCredentialsInput = accessport.ClientCredentialsInput
 type IssuedAccessToken = accessport.IssuedAccessToken
+type UpdateMachineClientInput = accessport.UpdateMachineClientInput
 
 var _ accessport.MachineTokenIssuer = (*MachineService)(nil)
 var _ accessport.MachineManagement = (*MachineService)(nil)
@@ -171,6 +170,7 @@ func (service *MachineService) Rotate(ctx context.Context, actor domain.Principa
 		client.SecretHash = secretHash
 		client.CredentialHint = machineCredentialHint(secret)
 		client.ReissueRequired = false
+		client.Enabled = client.Purpose == "direct_api_key"
 		client.AuthVersion++
 		if replaceErr := service.repository.ReplaceMachineClient(txContext, client); replaceErr != nil {
 			return replaceErr
@@ -198,8 +198,8 @@ func (service *MachineService) SetEnabled(ctx context.Context, actor domain.Prin
 		if lookupErr != nil {
 			return lookupErr
 		}
-		if enabled && client.ReissueRequired {
-			return domain.ErrMachineReissueRequired
+		if enabled && (client.ReissueRequired || client.Purpose != "direct_api_key") {
+			return domain.ErrMachineActivation
 		}
 		if client.Enabled != enabled {
 			client.Enabled = enabled
@@ -210,6 +210,77 @@ func (service *MachineService) SetEnabled(ctx context.Context, actor domain.Prin
 		}
 		updated = client
 		return service.audit(txContext, updated, &actor.InternalID, "machine_client_enabled", map[bool]string{true: "enabled", false: "disabled"}[enabled])
+	})
+	if err != nil {
+		return MachineClientSummary{}, err
+	}
+	return summarizeMachineClient(updated), nil
+}
+
+// Update preserves the frozen API-client permission template. An active
+// client is never edited in place: callers must disable it, update its local
+// boundary, then deliberately activate with the one-time secret self-check.
+func (service *MachineService) Update(ctx context.Context, actor domain.Principal, clientID string, input UpdateMachineClientInput) (MachineClientSummary, error) {
+	if err := requireSuperAdmin(actor); err != nil {
+		return MachineClientSummary{}, err
+	}
+	clientID, err := domain.NormalizeMachineClientID(clientID)
+	if err != nil || strings.TrimSpace(input.DisplayName) == "" || len(strings.TrimSpace(input.DisplayName)) > 160 || input.TokenTTLSeconds < 60 || input.TokenTTLSeconds > 3600 {
+		return MachineClientSummary{}, domain.ErrInvalidInput
+	}
+	cidrs, err := domain.NormalizeCIDRs(input.AllowedCIDRs)
+	if err != nil {
+		return MachineClientSummary{}, err
+	}
+	var updated domain.MachineClient
+	err = service.uow.Within(ctx, func(txContext context.Context) error {
+		client, lookupErr := service.repository.MachineClientByID(txContext, clientID, true)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if client.Purpose == "direct_api_key" || client.Enabled {
+			return domain.ErrMachineClientActive
+		}
+		client.DisplayName, client.TokenTTLSeconds, client.AllowedCIDRs = strings.TrimSpace(input.DisplayName), input.TokenTTLSeconds, cidrs
+		client.AuthVersion++
+		if replaceErr := service.repository.ReplaceMachineClient(txContext, client); replaceErr != nil {
+			return replaceErr
+		}
+		updated = client
+		return service.audit(txContext, updated, &actor.InternalID, "machine_client_updated", "succeeded")
+	})
+	if err != nil {
+		return MachineClientSummary{}, err
+	}
+	return summarizeMachineClient(updated), nil
+}
+
+// Activate verifies the just-copied one-time secret before moving a regular
+// API client from its disabled handoff state to active service.
+func (service *MachineService) Activate(ctx context.Context, actor domain.Principal, clientID, secret string, copiedConfirmed bool) (MachineClientSummary, error) {
+	if err := requireSuperAdmin(actor); err != nil {
+		return MachineClientSummary{}, err
+	}
+	clientID, err := domain.NormalizeMachineClientID(clientID)
+	if err != nil || !copiedConfirmed || strings.TrimSpace(secret) == "" {
+		return MachineClientSummary{}, domain.ErrMachineActivation
+	}
+	var updated domain.MachineClient
+	err = service.uow.Within(ctx, func(txContext context.Context) error {
+		client, lookupErr := service.repository.MachineClientByID(txContext, clientID, true)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if client.Purpose == "direct_api_key" || client.Enabled || client.ReissueRequired || !service.passwords.Verify(secret, client.SecretHash) {
+			return domain.ErrMachineActivation
+		}
+		client.Enabled = true
+		client.AuthVersion++
+		if replaceErr := service.repository.ReplaceMachineClient(txContext, client); replaceErr != nil {
+			return replaceErr
+		}
+		updated = client
+		return service.audit(txContext, updated, &actor.InternalID, "machine_client_activated", "succeeded")
 	})
 	if err != nil {
 		return MachineClientSummary{}, err
@@ -377,12 +448,12 @@ func (service *MachineService) newMachineClient(input CreateMachineClientInput) 
 		return domain.MachineClient{}, domain.ErrInvalidInput
 	}
 	purpose := strings.TrimSpace(input.Purpose)
-	if purpose != "api" && purpose != "mcp" && purpose != "direct_api_key" {
+	if purpose != "external_agent" && purpose != "mcp" && purpose != "direct_api_key" {
 		return domain.MachineClient{}, domain.ErrInvalidInput
 	}
 	client := domain.MachineClient{ClientID: clientID, DisplayName: strings.TrimSpace(input.DisplayName), Purpose: purpose,
 		Audiences: audiences, Scopes: scopes, Capabilities: capabilities, AllowedCIDRs: cidrs,
-		TokenTTLSeconds: input.TokenTTLSeconds, ExpiresAt: input.ExpiresAt, Enabled: true, AuthVersion: 1}
+		TokenTTLSeconds: input.TokenTTLSeconds, ExpiresAt: input.ExpiresAt, Enabled: purpose == "direct_api_key", AuthVersion: 1}
 	if purpose == "direct_api_key" && (clientID != DirectExternalAPIKeyClientID || !equalMachineStrings(audiences, []string{"external_integration"}) || !equalMachineStrings(scopes, []string{"read"}) || !equalMachineStrings(capabilities, []string{"external_read"})) {
 		return domain.MachineClient{}, domain.ErrInvalidInput
 	}

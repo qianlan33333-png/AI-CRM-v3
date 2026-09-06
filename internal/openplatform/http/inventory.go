@@ -14,7 +14,10 @@ type Route struct {
 // parent client also happens to have.
 func scopeFor(route Route) string {
 	if route.Path == "/mcp" {
-		return "mcp"
+		if route.Method == "GET" {
+			return "read"
+		}
+		return "write"
 	}
 	if route.Method == "GET" {
 		return "read"

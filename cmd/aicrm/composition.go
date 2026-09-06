@@ -63,6 +63,7 @@ import (
 	archiveapp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/app"
 	archivehttp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/http"
 	archivestore "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/store"
+	openplatformhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/http"
 	operationcycle "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle"
 	operationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/app"
 	operationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/store"
@@ -171,6 +172,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	management, err := accessapp.NewManagement(accessRepository, uow, passwords, nil)
+	if err != nil {
+		return fail(err)
+	}
+	machineService, err := accessapp.NewMachineService(accessRepository, uow, passwords, accessapp.MachineConfig{SigningKey: []byte(cfg.OpenPlatform.JWTSigningKey)})
 	if err != nil {
 		return fail(err)
 	}
@@ -810,6 +815,22 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	openPlatformExecutor, err := newOpenPlatformExecutor(oneID, orderService, sidebarProfiles, archiveService, cfg.WeCom.CorpID)
+	if err != nil {
+		return fail(err)
+	}
+	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
+		MachineAuthentication: machineService,
+		AdminAuthentication:   authentication,
+		Management:            machineService,
+		Executor:              openPlatformExecutor,
+		SessionCookieName:     accesshttp.SessionCookieName,
+		CSRFCookieName:        accesshttp.CSRFCookieName,
+		TrustedProxyCIDRs:     cfg.OpenPlatform.TrustedProxyCIDRs,
+	})
+	if err != nil {
+		return fail(err)
+	}
 
 	if err = productBindings.ProductHandler.SetServicePeriodMemberReaders(entitlements, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); err != nil {
 		return fail(err)
@@ -1406,6 +1427,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
 	handler = mountMemberGridUI(handler, memberGridUI)
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {

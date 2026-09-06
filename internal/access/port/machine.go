@@ -56,6 +56,15 @@ type MachineClientSummary struct {
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
+// UpdateMachineClientInput is deliberately narrower than creation. Frozen
+// API-client templates keep their purpose, audience, scopes and capabilities;
+// only a disabled caller's presentation, TTL and CIDR boundary are editable.
+type UpdateMachineClientInput struct {
+	DisplayName     string   `json:"display_name"`
+	TokenTTLSeconds int      `json:"token_ttl_seconds"`
+	AllowedCIDRs    []string `json:"allowed_cidrs"`
+}
+
 type ClientCredentialsInput struct {
 	ClientID        string
 	ClientSecret    string
@@ -80,5 +89,7 @@ type MachineManagement interface {
 	Create(context.Context, domain.Principal, CreateMachineClientInput) (IssuedMachineClient, error)
 	List(context.Context, domain.Principal) ([]MachineClientSummary, error)
 	Rotate(context.Context, domain.Principal, string) (IssuedMachineClient, error)
+	Update(context.Context, domain.Principal, string, UpdateMachineClientInput) (MachineClientSummary, error)
+	Activate(context.Context, domain.Principal, string, string, bool) (MachineClientSummary, error)
 	SetEnabled(context.Context, domain.Principal, string, bool) (MachineClientSummary, error)
 }
