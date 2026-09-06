@@ -143,9 +143,9 @@ jobs:
         # Run packages serially so concurrent schema DDL cannot exhaust the
         # service's lock table or race its catalog tuples.
         run: GOFLAGS=-p=1 make check
-      - name: Run customer tag Chromium journey
-        # This is an actual Chrome/CDP journey through Access login, the Host,
-        # PostgreSQL/River and the controlled Provider fixture. It is separate
+      - name: Run required Chromium journeys
+        # These are actual Chrome/CDP journeys through Access login, the Host,
+        # PostgreSQL/River and controlled Provider fixtures. They are separate
         # from make check so developer machines without usable Chrome do not
         # silently substitute JSDOM for the browser contract.
         env:
@@ -153,7 +153,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v google-chrome
-          go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney)$' ./cmd/aicrm
+          go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
       - name: Race-check security and identity boundaries
         run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-v2-commerce-external-push-history ./cmd/migrate-open-platform ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 

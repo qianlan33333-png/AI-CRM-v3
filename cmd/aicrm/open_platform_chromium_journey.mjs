@@ -37,7 +37,18 @@ class CDP {
       for (const listener of this.events.get(message.method) || []) listener(message.params || {});
     });
   }
-  call(method, params = {}) { return new Promise((resolve, reject) => { const id = ++this.nextID; this.pending.set(id, { resolve, reject }); this.socket.send(JSON.stringify({ id, method, params })); }); }
+  call(method, params = {}, timeout = 8000) { return new Promise((resolve, reject) => {
+    const id = ++this.nextID;
+    const timer = setTimeout(() => {
+      if (!this.pending.has(id)) return;
+      this.pending.delete(id);
+      reject(new Error(`CDP ${method} timed out`));
+    }, timeout);
+    const settle = (callback) => (value) => { clearTimeout(timer); callback(value); };
+    this.pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
+    try { this.socket.send(JSON.stringify({ id, method, params })); }
+    catch (_) { clearTimeout(timer); this.pending.delete(id); reject(new Error(`CDP ${method} unavailable`)); }
+  }); }
   on(method, listener) { const listeners = this.events.get(method) || []; listeners.push(listener); this.events.set(method, listeners); return () => this.events.set(method, (this.events.get(method) || []).filter((item) => item !== listener)); }
   nextEvent(method, predicate, timeout, message) { return new Promise((resolve, reject) => { let unsubscribe = () => {}; const timer = setTimeout(() => { unsubscribe(); reject(new Error(message)); }, timeout); unsubscribe = this.on(method, (params) => { if (!predicate(params)) return; clearTimeout(timer); unsubscribe(); resolve(params); }); }); }
   close() { for (const { reject } of this.pending.values()) reject(new Error("CDP browser closed")); this.pending.clear(); this.events.clear(); this.socket.close(); }
@@ -93,7 +104,8 @@ async function removeProfile(profile) {
   return false;
 }
 
-const progress = (phase) => console.log(`open_platform_chromium: phase=${phase}`);
+const journeyStartedAt = Date.now();
+const progress = (phase) => console.log(`open_platform_chromium: phase=${phase} elapsed_ms=${Date.now() - journeyStartedAt}`);
 progress("node_started");
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-open-platform-chromium-"));
 let browser; let cdp; let failed = false;
@@ -147,10 +159,15 @@ try {
   const firstSecret = await evaluate(cdp, "document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret')?.textContent || ''");
   if (!firstSecret) throw new Error("one-time credential was empty");
   progress("issued");
-  const oauth = (secret, scope = "read") => evaluate(cdp, `fetch('/oauth/token',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+btoa('browser-open-agent:'+${JSON.stringify(secret)})},body:new URLSearchParams({grant_type:'client_credentials',audience:'external_integration',scope:${JSON.stringify(scope)}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
-  const restCatalog = (token) => evaluate(cdp, `fetch('/open/v1/capabilities',{headers:{Authorization:'Bearer '+${JSON.stringify(token)}}}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
-  const mcpCatalog = (token) => evaluate(cdp, `fetch('/mcp',{method:'POST',headers:{Authorization:'Bearer '+${JSON.stringify(token)},'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:'browser-catalog',method:'tools/list',params:{}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
-  const clientDetail = () => evaluate(cdp, "fetch('/api/admin/open-platform/clients/browser-open-agent',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
+  const browserJSON = async (operation, expression) => {
+    const result = await evaluate(cdp, `Promise.race([(${expression}),new Promise((resolve)=>setTimeout(()=>resolve({timeout:true,status:0,body:null}),8000))])`);
+    if (result?.timeout) throw new Error(`${operation} request timed out`);
+    return result;
+  };
+  const oauth = (secret, scope = "read") => browserJSON("oauth", `fetch('/oauth/token',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+btoa('browser-open-agent:'+${JSON.stringify(secret)})},body:new URLSearchParams({grant_type:'client_credentials',audience:'external_integration',scope:${JSON.stringify(scope)}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
+  const restCatalog = (token) => browserJSON("rest_catalog", `fetch('/open/v1/capabilities',{headers:{Authorization:'Bearer '+${JSON.stringify(token)}}}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
+  const mcpCatalog = (token) => browserJSON("mcp_catalog", `fetch('/mcp',{method:'POST',headers:{Authorization:'Bearer '+${JSON.stringify(token)},'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:'browser-catalog',method:'tools/list',params:{}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
+  const clientDetail = () => browserJSON("client_detail", "fetch('/api/admin/open-platform/clients/browser-open-agent',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
 
   const firstActivationPath = "/api/admin/open-platform/clients/browser-open-agent/activate";
   resources.delete(firstActivationPath);
@@ -201,9 +218,11 @@ try {
   const secondSecret = await evaluate(cdp, "document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret')?.textContent || ''");
   if (!secondSecret || secondSecret === firstSecret) throw new Error("rotation did not issue a distinct one-time credential");
   progress("rotated");
+  progress("rotation_old_secret_check");
   if ((await oauth(firstSecret))?.status === 200) throw new Error("rotation left the old credential usable");
   progress("rotated_secret_revoked");
-  const rotated = await evaluate(cdp, "fetch('/api/admin/open-platform/clients/browser-open-agent',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
+  progress("rotation_detail_request");
+  const rotated = await clientDetail();
   if (rotated?.status !== 200 || rotated?.body?.client?.enabled !== false) throw new Error("rotation did not return the caller to disabled handoff state");
   progress("rotated_detail");
   const secondActivationPath = "/api/admin/open-platform/clients/browser-open-agent/activate";
@@ -228,7 +247,7 @@ try {
   progress("disabled_detail");
   if ((await restCatalog(secondToken))?.status !== 401) throw new Error("disable did not revoke the current OAuth token");
   progress("disabled_token_revoked");
-  const audit = await evaluate(cdp, "fetch('/api/admin/open-platform/clients/browser-open-agent/audit?limit=20',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
+  const audit = await browserJSON("audit", "fetch('/api/admin/open-platform/clients/browser-open-agent/audit?limit=20',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
   if (audit?.status !== 200 || !Array.isArray(audit?.body?.items) || !audit.body.items.some((item) => item?.action === "machine_client_enabled" && item?.outcome === "disabled")) throw new Error("caller audit did not record final disable outcome");
   progress("disabled");
   console.log("open_platform_chromium: PASS");
