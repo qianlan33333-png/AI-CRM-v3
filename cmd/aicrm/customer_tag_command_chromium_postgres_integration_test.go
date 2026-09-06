@@ -99,16 +99,17 @@ func TestPostgreSQLCustomerTagCommandChromiumJourney(t *testing.T) {
 	if !strings.Contains(string(output), "customer_tag_command_chromium: PASS") {
 		t.Fatalf("customer tag Chromium journey did not report success: %q", output)
 	}
-	var executed, unknown, observed, writes, reads int
+	var executed, unknown, writes, reads int
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE state='executed'),count(*) FILTER (WHERE state='outcome_unknown') FROM customer_tag_command_lines`).Scan(&executed, &unknown); err != nil {
 		t.Fatal(err)
 	}
-	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM wecom_customer_tag_observations WHERE customer_id=1 AND observation_status='active'`).Scan(&observed); err != nil {
+	var providerTagID, observedName, observationStatus string
+	if err = application.pool.Native().QueryRow(ctx, `SELECT provider_tag_id,observed_name,observation_status FROM wecom_customer_tag_observations WHERE customer_id=1 AND observation_status='active'`).Scan(&providerTagID, &observedName, &observationStatus); err != nil {
 		t.Fatal(err)
 	}
 	writes, reads = provider.Counts()
-	if executed != 1 || unknown != 1 || observed < 1 || writes != 2 || reads < 1 {
-		t.Fatalf("durable outcomes executed=%d unknown=%d observed=%d provider_writes=%d provider_reads=%d", executed, unknown, observed, writes, reads)
+	if executed != 1 || unknown != 1 || writes != 2 || reads < 1 || providerTagID != "fixture-provider-add" || observedName != "fixture observed" || observationStatus != "active" {
+		t.Fatalf("durable outcomes executed=%d unknown=%d provider_tag_id=%q observed_name=%q observation_status=%q provider_writes=%d provider_reads=%d", executed, unknown, providerTagID, observedName, observationStatus, writes, reads)
 	}
 }
 

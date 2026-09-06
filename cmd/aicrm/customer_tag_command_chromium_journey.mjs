@@ -55,7 +55,7 @@ try {
     await evaluate(cdp, "document.querySelector('#customer-tag-batch-refresh')?.click(); true");
     await delay(250);
     const rendered = await evaluate(cdp, "document.querySelector('#customer-tag-batch-result')?.textContent || ''");
-    if (rendered.includes('客户 #1：executed') && rendered.includes('客户 #2：outcome_unknown') && rendered.includes('观察标签：fixture observed（active）')) break;
+    if (rendered.includes('客户 #1：executed；观察标签：fixture group / fixture add（active）') && rendered.includes('客户 #2：outcome_unknown；观察标签：暂无已观察标签')) break;
     if (attempt === 19) throw new Error(`explicit result refresh did not render durable outcomes: ${rendered}`);
   }
   console.log("customer_tag_command_chromium: PASS");
