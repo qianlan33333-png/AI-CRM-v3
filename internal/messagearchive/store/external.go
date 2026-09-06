@@ -31,9 +31,7 @@ func (PostgreSQL) ExternalCustomerMessages(ctx context.Context, query archivepor
 		return archiveport.ExternalChatRecordPage{}, err
 	}
 	args := []any{ids, query.ExternalUserID, query.ChatScene, query.StartAt.IsZero(), query.StartAt, query.WithUserID}
-	const visible = `
-		FROM message_archive_messages message
-		WHERE EXISTS (
+	const visibleWhere = `EXISTS (
 			SELECT 1 FROM message_archive_participants external_customer
 			WHERE external_customer.message_id=message.id
 			AND external_customer.actor_type='external_customer'
@@ -48,11 +46,12 @@ func (PostgreSQL) ExternalCustomerMessages(ctx context.Context, query archivepor
 			AND peer.provider_value=$6
 		))`
 	var total int64
-	if err = tx.QueryRow(ctx, `SELECT count(*) `+visible, args...).Scan(&total); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM message_archive_messages message WHERE `+visibleWhere, args...).Scan(&total); err != nil {
 		return archiveport.ExternalChatRecordPage{}, err
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT message.id,message.msgid,message.conversation_type,
+			COALESCE(legacy.historical_unionid,''),
 			COALESCE((SELECT external_customer.provider_value
 				FROM message_archive_participants external_customer
 				WHERE external_customer.message_id=message.id
@@ -72,10 +71,12 @@ func (PostgreSQL) ExternalCustomerMessages(ctx context.Context, query archivepor
 				FROM message_archive_participants receiver
 				WHERE receiver.message_id=message.id AND receiver.participant_role='recipient'
 				ORDER BY receiver.id LIMIT 1),''),
-			message.roomid,message.msgtype,message.content_text,
+			message.roomid,COALESCE(legacy.historical_group_name,''),message.msgtype,message.content_text,
 			COALESCE((SELECT media.provider_file_ref FROM message_archive_media media WHERE media.message_id=message.id ORDER BY media.id LIMIT 1),''),
 			message.occurred_at
-		`+visible+`
+		FROM message_archive_messages message
+		LEFT JOIN message_archive_legacy_projections legacy ON legacy.message_id=message.id
+		WHERE `+visibleWhere+`
 		ORDER BY message.occurred_at ASC,message.id ASC
 		LIMIT $7 OFFSET $8`, append(args, query.Limit, query.Offset)...)
 	if err != nil {
@@ -86,12 +87,11 @@ func (PostgreSQL) ExternalCustomerMessages(ctx context.Context, query archivepor
 	for rows.Next() {
 		var item archiveport.ExternalChatRecord
 		var messageID int64
-		if err = rows.Scan(&messageID, &item.MessageID, &item.ChatScene, &item.ExternalUserID, &item.WithUserID, &item.Sender, &item.Receiver, &item.RoomID, &item.MessageType, &item.Content, &item.MediaID, &item.OccurredAt); err != nil {
+		if err = rows.Scan(&messageID, &item.MessageID, &item.ChatScene, &item.UnionID, &item.ExternalUserID, &item.WithUserID, &item.Sender, &item.Receiver, &item.RoomID, &item.GroupName, &item.MessageType, &item.Content, &item.MediaID, &item.OccurredAt); err != nil {
 			return archiveport.ExternalChatRecordPage{}, err
 		}
 		item.ChatType = item.ChatScene
 		item.ChatID = item.RoomID
-		item.GroupName = ""
 		item.SourceID = strconv.FormatInt(messageID, 10)
 		page.Items = append(page.Items, item)
 	}

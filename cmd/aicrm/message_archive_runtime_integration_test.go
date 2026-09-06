@@ -302,6 +302,9 @@ func TestMessageArchivePostgreSQLExternalChatMachineProjectionJourney(t *testing
 	insertParticipants(privateOther, "external-other", "HuangYouCan")
 	groupTarget := insertMessage(3, "machine-group-target", "group", "room-target", "target group", time.Unix(12, 0).UTC())
 	insertParticipants(groupTarget, "external-target", "other-staff")
+	if _, err = native.Exec(ctx, `INSERT INTO message_archive_legacy_projections(message_id,historical_unionid,historical_group_name,source_projection_digest) VALUES($1,'union-historical','历史体验群',decode(repeat('ab',32),'hex'))`, groupTarget); err != nil {
+		t.Fatal(err)
+	}
 
 	service := archiveapp.Service{ReadEnabled: true, Lineage: archiveJourneyLineage{}, Store: archivestore.NewPostgreSQL(), UOW: uow}
 	private, err := service.ExternalCustomerMessages(ctx, archiveport.ExternalChatRecordQuery{
@@ -317,7 +320,7 @@ func TestMessageArchivePostgreSQLExternalChatMachineProjectionJourney(t *testing
 	group, err := service.ExternalCustomerMessages(ctx, archiveport.ExternalChatRecordQuery{
 		CustomerID: customerdomain.CustomerID(customerID), ExternalUserID: "external-target", ChatScene: "group", StartAt: time.Unix(10, 0).UTC(), Limit: 20,
 	})
-	if err != nil || group.Total != 1 || len(group.Items) != 1 || group.Items[0].MessageID != "machine-group-target" || group.Items[0].RoomID != "room-target" {
+	if err != nil || group.Total != 1 || len(group.Items) != 1 || group.Items[0].MessageID != "machine-group-target" || group.Items[0].RoomID != "room-target" || group.Items[0].UnionID != "union-historical" || group.Items[0].GroupName != "历史体验群" {
 		t.Fatalf("group page=%+v err=%v", group, err)
 	}
 }
@@ -444,7 +447,7 @@ func applyMessageArchiveJourneyMigrations(t *testing.T, ctx context.Context, nat
 		t.Fatal("locate message archive journey")
 	}
 	base := filepath.Join(filepath.Dir(source), "..", "..", "migrations")
-	for _, name := range []string{"0071_message_archive_core.sql", "0072_message_archive_migration_receipts.sql"} {
+	for _, name := range []string{"0071_message_archive_core.sql", "0072_message_archive_migration_receipts.sql", "0098_message_archive_historical_projection.sql"} {
 		sql, err := os.ReadFile(filepath.Join(base, name))
 		if err != nil {
 			t.Fatal(err)

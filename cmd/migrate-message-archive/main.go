@@ -357,6 +357,10 @@ func applyRowTx(ctx context.Context, tx pgx.Tx, runID int64, manifest archivemig
 	if err != nil {
 		return "", "", err
 	}
+	projection, err := manifest.HistoricalProjection(row)
+	if err != nil {
+		return "", "", err
+	}
 	if err = resolver.Resolve(ctx, &message); err != nil {
 		return "", "", err
 	}
@@ -381,6 +385,9 @@ func applyRowTx(ctx context.Context, tx pgx.Tx, runID int64, manifest archivemig
 				return "", "", err
 			}
 		}
+		if err = ensureHistoricalProjection(ctx, tx, existingID, projection); err != nil {
+			return "", "", err
+		}
 		outcome = "inserted"
 		if unresolved(message) {
 			outcome, reason = "unresolved", "historical_reference_unresolved"
@@ -392,7 +399,10 @@ func applyRowTx(ctx context.Context, tx pgx.Tx, runID int64, manifest archivemig
 		// and media fact that reconcile checks agrees. Comparing just normalized
 		// JSON would accept a changed sequence or timestamp, then leave a receipt
 		// that reconciliation can never validate.
-		equivalenceErr := reconcileTarget(ctx, tx, existingID, message)
+		equivalenceErr := reconcileMessageTarget(ctx, tx, existingID, message)
+		if equivalenceErr == nil {
+			equivalenceErr = ensureHistoricalProjection(ctx, tx, existingID, projection)
+		}
 		switch {
 		case equivalenceErr == nil:
 			outcome = "duplicate"
@@ -584,12 +594,16 @@ func reconcileRow(ctx context.Context, tx pgx.Tx, runID int64, manifest archivem
 	if err != nil {
 		return errReconcileDrift
 	}
+	projection, err := manifest.HistoricalProjection(row)
+	if err != nil {
+		return errReconcileDrift
+	}
 	switch value.outcome {
 	case "inserted", "duplicate", "unresolved":
 		if value.targetID == nil || *value.targetID < 1 || !validReceiptReason(value.outcome, value.reason) {
 			return errReconcileDrift
 		}
-		return reconcileTarget(ctx, tx, *value.targetID, message)
+		return reconcileTarget(ctx, tx, *value.targetID, message, projection)
 	case "quarantined":
 		if value.targetID != nil || value.reason != "source_conflicts_existing_message" {
 			return errReconcileDrift
@@ -598,7 +612,7 @@ func reconcileRow(ctx context.Context, tx pgx.Tx, runID int64, manifest archivem
 		if err = tx.QueryRow(ctx, `SELECT id FROM message_archive_messages WHERE corp_scope=$1 AND msgid=$2`, manifest.CorpScope, row.MsgID).Scan(&conflictingMessageID); err != nil {
 			return errReconcileDrift
 		}
-		equivalenceErr := reconcileTarget(ctx, tx, conflictingMessageID, message)
+		equivalenceErr := reconcileTarget(ctx, tx, conflictingMessageID, message, projection)
 		if equivalenceErr == nil {
 			return errReconcileDrift
 		}
@@ -622,7 +636,14 @@ func validReceiptReason(outcome, reason string) bool {
 	}
 }
 
-func reconcileTarget(ctx context.Context, tx pgx.Tx, targetID int64, expected domain.Message) error {
+func reconcileTarget(ctx context.Context, tx pgx.Tx, targetID int64, expected domain.Message, projection archivemigration.HistoricalProjection) error {
+	if err := reconcileMessageTarget(ctx, tx, targetID, expected); err != nil {
+		return err
+	}
+	return reconcileHistoricalProjection(ctx, tx, targetID, projection)
+}
+
+func reconcileMessageTarget(ctx context.Context, tx pgx.Tx, targetID int64, expected domain.Message) error {
 	var scope, msgID, action, messageType, conversation, roomID, contentText, recalledMsgID string
 	var seq, messageTimeMS int64
 	var occurredAt time.Time
@@ -690,6 +711,45 @@ func reconcileTarget(ctx context.Context, tx pgx.Tx, targetID int64, expected do
 		return errReconcileDrift
 	}
 	return nil
+}
+
+func ensureHistoricalProjection(ctx context.Context, tx pgx.Tx, messageID int64, projection archivemigration.HistoricalProjection) error {
+	if projection.UnionID == "" && projection.GroupName == "" {
+		return nil
+	}
+	digest := historicalProjectionDigest(projection)
+	var unionID, groupName string
+	var storedDigest []byte
+	err := tx.QueryRow(ctx, `SELECT historical_unionid,historical_group_name,source_projection_digest FROM message_archive_legacy_projections WHERE message_id=$1 FOR UPDATE`, messageID).Scan(&unionID, &groupName, &storedDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = tx.Exec(ctx, `INSERT INTO message_archive_legacy_projections(message_id,historical_unionid,historical_group_name,source_projection_digest) VALUES($1,$2,$3,$4)`, messageID, projection.UnionID, projection.GroupName, digest[:])
+		return err
+	}
+	if err != nil || len(storedDigest) != sha256.Size || unionID != projection.UnionID || groupName != projection.GroupName || subtle.ConstantTimeCompare(storedDigest, digest[:]) != 1 {
+		return errReconcileDrift
+	}
+	return nil
+}
+
+func reconcileHistoricalProjection(ctx context.Context, tx pgx.Tx, messageID int64, projection archivemigration.HistoricalProjection) error {
+	var unionID, groupName string
+	var storedDigest []byte
+	err := tx.QueryRow(ctx, `SELECT historical_unionid,historical_group_name,source_projection_digest FROM message_archive_legacy_projections WHERE message_id=$1`, messageID).Scan(&unionID, &groupName, &storedDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if projection.UnionID == "" && projection.GroupName == "" {
+			return nil
+		}
+		return errReconcileDrift
+	}
+	digest := historicalProjectionDigest(projection)
+	if err != nil || len(storedDigest) != sha256.Size || unionID != projection.UnionID || groupName != projection.GroupName || subtle.ConstantTimeCompare(storedDigest, digest[:]) != 1 {
+		return errReconcileDrift
+	}
+	return nil
+}
+
+func historicalProjectionDigest(projection archivemigration.HistoricalProjection) [sha256.Size]byte {
+	return sha256.Sum256([]byte(projection.UnionID + "\x00" + projection.GroupName))
 }
 
 func sameCounts(left, right map[string]int) bool {

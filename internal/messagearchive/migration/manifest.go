@@ -23,10 +23,12 @@ const SchemaVersion = "aicrm-message-archive-history-v1"
 var ErrInvalidManifest = errors.New("invalid message archive migration manifest")
 
 type SourceRow struct {
-	SourceRowKey string          `json:"source_row_key"`
-	Seq          uint64          `json:"seq"`
-	MsgID        string          `json:"msgid"`
-	Payload      json.RawMessage `json:"payload"`
+	SourceRowKey        string          `json:"source_row_key"`
+	Seq                 uint64          `json:"seq"`
+	MsgID               string          `json:"msgid"`
+	Payload             json.RawMessage `json:"payload"`
+	HistoricalUnionID   string          `json:"historical_unionid,omitempty"`
+	HistoricalGroupName string          `json:"historical_group_name,omitempty"`
 }
 
 type Manifest struct {
@@ -82,6 +84,9 @@ func (manifest Manifest) Validate() error {
 		if _, found := sequences[row.Seq]; found {
 			return ErrInvalidManifest
 		}
+		if _, err := manifest.HistoricalProjection(row); err != nil {
+			return ErrInvalidManifest
+		}
 		message, err := archiveapp.NormalizeArchiveRecord(manifest.CorpScope, wecomport.PlainArchiveRecord{Seq: row.Seq, MsgID: row.MsgID, Payload: row.Payload})
 		if err != nil || !message.Valid() {
 			return ErrInvalidManifest
@@ -89,6 +94,22 @@ func (manifest Manifest) Validate() error {
 		keys[row.SourceRowKey], messages[row.MsgID], sequences[row.Seq] = struct{}{}, struct{}{}, struct{}{}
 	}
 	return nil
+}
+
+// HistoricalProjection returns the two values that the frozen legacy external
+// archive projection took from each archived row. They stay Archive-owned facts
+// and never become current OneID evidence or a group-directory lookup.
+type HistoricalProjection struct {
+	UnionID   string
+	GroupName string
+}
+
+func (manifest Manifest) HistoricalProjection(row SourceRow) (HistoricalProjection, error) {
+	projection := HistoricalProjection{UnionID: strings.TrimSpace(row.HistoricalUnionID), GroupName: strings.TrimSpace(row.HistoricalGroupName)}
+	if len(projection.UnionID) > 1024 || len(projection.GroupName) > 512 {
+		return HistoricalProjection{}, ErrInvalidManifest
+	}
+	return projection, nil
 }
 
 // Normalized keeps the parser's participant categories but never promotes an

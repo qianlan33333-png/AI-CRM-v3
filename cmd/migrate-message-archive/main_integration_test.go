@@ -46,6 +46,10 @@ func TestMessageArchiveMigrationDryRunApplyReplayResolveAndReconcilePostgreSQL(t
 	if err = native.QueryRow(ctx, `SELECT COALESCE(max(customer_id_at_ingest),0),COALESCE(max(staff_user_id),0) FROM message_archive_participants participant JOIN message_archive_messages message ON message.id=participant.message_id WHERE message.msgid='m-known'`).Scan(&knownCustomer, &knownStaff); err != nil || knownCustomer < 1 || knownStaff < 1 {
 		t.Fatalf("resolved archive participant customer=%d staff=%d err=%v", knownCustomer, knownStaff, err)
 	}
+	var historicalUnionID, historicalGroupName string
+	if err = native.QueryRow(ctx, `SELECT projection.historical_unionid,projection.historical_group_name FROM message_archive_legacy_projections projection JOIN message_archive_messages message ON message.id=projection.message_id WHERE message.msgid='m-known'`).Scan(&historicalUnionID, &historicalGroupName); err != nil || historicalUnionID != "union-known" || historicalGroupName != "Legacy group" {
+		t.Fatalf("historical projection union=%q group=%q err=%v", historicalUnionID, historicalGroupName, err)
+	}
 	if matched, reconcileErr := reconcile(ctx, native, manifest); reconcileErr != nil || !matched {
 		t.Fatalf("initial reconcile matched=%t err=%v", matched, reconcileErr)
 	}
@@ -57,6 +61,14 @@ func TestMessageArchiveMigrationDryRunApplyReplayResolveAndReconcilePostgreSQL(t
 	}
 	if matched, reconcileErr := reconcile(ctx, native, manifest); reconcileErr != nil || !matched {
 		t.Fatalf("duplicate reconcile matched=%t err=%v", matched, reconcileErr)
+	}
+	projectionConflict := archiveMigrationProjectionConflictManifest(t)
+	conflictedProjection, err := apply(ctx, native, projectionConflict, resolver)
+	if err != nil || conflictedProjection.Quarantined != 1 || conflictedProjection.Duplicates != 0 {
+		t.Fatalf("projection conflict=%+v err=%v", conflictedProjection, err)
+	}
+	if matched, reconcileErr := reconcile(ctx, native, projectionConflict); reconcileErr != nil || !matched {
+		t.Fatalf("projection conflict reconcile matched=%t err=%v", matched, reconcileErr)
 	}
 
 	if err = seedArchiveMigrationIdentity(ctx, native, "wm_later"); err != nil {
@@ -89,6 +101,12 @@ func TestMessageArchiveMigrationDryRunApplyReplayResolveAndReconcilePostgreSQL(t
 		t.Fatalf("sequence conflict reconcile matched=%t err=%v", matched, reconcileErr)
 	}
 
+	if _, err = native.Exec(ctx, `UPDATE message_archive_legacy_projections SET historical_group_name='drift' WHERE message_id=(SELECT id FROM message_archive_messages WHERE msgid='m-known')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, reconcileErr := reconcile(ctx, native, manifest); !errors.Is(reconcileErr, errReconcileDrift) {
+		t.Fatalf("historical projection drift reconcile=%v", reconcileErr)
+	}
 	if _, err = native.Exec(ctx, `UPDATE message_archive_messages SET content_text='drift' WHERE msgid='m-known'`); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +122,7 @@ func archiveMigrationManifest(t *testing.T) archivemigration.Manifest {
 		"source_name":    "archive-migration-integration",
 		"corp_scope":     "wecom-corp:wx-archive-integration",
 		"records": []map[string]any{
-			{"source_row_key": "row-known", "seq": 1, "msgid": "m-known", "payload": map[string]any{"msgid": "m-known", "from": "staff-one", "tolist": []string{"wm_known"}, "msgtype": "text", "msgtime": 1788336000, "text": map[string]string{"content": "known"}}},
+			{"source_row_key": "row-known", "seq": 1, "msgid": "m-known", "historical_unionid": "union-known", "historical_group_name": "Legacy group", "payload": map[string]any{"msgid": "m-known", "from": "staff-one", "tolist": []string{"wm_known"}, "roomid": "wr-legacy", "msgtype": "text", "msgtime": 1788336000, "text": map[string]string{"content": "known"}}},
 			{"source_row_key": "row-never-one", "seq": 2, "msgid": "m-never-one", "payload": map[string]any{"msgid": "m-never-one", "from": "staff-one", "tolist": []string{"wm_never_one"}, "msgtype": "text", "msgtime": 1788336060, "text": map[string]string{"content": "never one"}}},
 			{"source_row_key": "row-never-two", "seq": 3, "msgid": "m-never-two", "payload": map[string]any{"msgid": "m-never-two", "from": "staff-one", "tolist": []string{"wm_never_two"}, "msgtype": "text", "msgtime": 1788336120, "text": map[string]string{"content": "never two"}}},
 			{"source_row_key": "row-later", "seq": 4, "msgid": "m-later", "payload": map[string]any{"msgid": "m-later", "from": "staff-one", "tolist": []string{"wm_later"}, "msgtype": "text", "msgtime": 1788336180, "text": map[string]string{"content": "later"}}},
@@ -128,6 +146,26 @@ func archiveMigrationSequenceConflictManifest(t *testing.T) archivemigration.Man
 		"corp_scope":     "wecom-corp:wx-archive-integration",
 		"records": []map[string]any{
 			{"source_row_key": "row-sequence-conflict", "seq": 99, "msgid": "m-known", "payload": map[string]any{"msgid": "m-known", "from": "staff-one", "tolist": []string{"wm_known"}, "msgtype": "text", "msgtime": 1788336000, "text": map[string]string{"content": "known"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := archivemigration.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest
+}
+
+func archiveMigrationProjectionConflictManifest(t *testing.T) archivemigration.Manifest {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"schema_version": archivemigration.SchemaVersion,
+		"source_name":    "archive-migration-projection-conflict",
+		"corp_scope":     "wecom-corp:wx-archive-integration",
+		"records": []map[string]any{
+			{"source_row_key": "row-projection-conflict", "seq": 1, "msgid": "m-known", "historical_unionid": "union-known", "historical_group_name": "Changed legacy group", "payload": map[string]any{"msgid": "m-known", "from": "staff-one", "tolist": []string{"wm_known"}, "roomid": "wr-legacy", "msgtype": "text", "msgtime": 1788336000, "text": map[string]string{"content": "known"}}},
 		},
 	})
 	if err != nil {
@@ -255,5 +293,6 @@ func archiveMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0003_access.sql"),
 		filepath.Join(root, "migrations", "0071_message_archive_core.sql"),
 		filepath.Join(root, "migrations", "0072_message_archive_migration_receipts.sql"),
+		filepath.Join(root, "migrations", "0098_message_archive_historical_projection.sql"),
 	}
 }

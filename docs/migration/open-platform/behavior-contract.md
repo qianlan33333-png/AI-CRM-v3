@@ -25,6 +25,12 @@ External Effects: no new effect writer. Every business command reaches its exist
 
 `internal/openplatform/http/inventory.go` has the authoritative 56 `method + path + capability` records transcribed from the approved `03a-machine-route-inventory.md`. The HTTP mux registers every record explicitly; it does not open a prefix or an admin route by accident. A record is complete only after the composition executor maps it to an existing owner Port and its behavior test passes.
 
+## Archive historical compatibility facts
+
+- Donor chat reads used the archived row's `unionid` and its row/raw-payload `group_name`; neither is reconstructed from current Identity or a group directory.
+- 0098 adds one Archive-owned row per retained message when the imported source contains either fact. It carries no second message stream and is read only by the already authorized external chat projection.
+- `migrate-message-archive` includes those values in the source-row digest, receipt/replay comparison, target equivalence check, and reconcile path. A source conflict is quarantined; a stored projection mutation makes reconcile fail. Source rows without either field intentionally return empty fields.
+
 ## Security invariants
 
 - Secrets are shown only in create/rotate responses, are stored as Argon2id hashes, and do not appear in summaries or audit details.
@@ -35,17 +41,17 @@ External Effects: no new effect writer. Every business command reaches its exist
 
 ## 56-route implementation evidence
 
-This matrix records the current executable state rather than treating a registered mux route as complete. `Not migrated` means the machine executor returns no business success for that route and it remains delivery work in this PR.
+This matrix records the current executable state rather than treating a registered mux route as complete. At this checkpoint, four routes reach an owner Port with a real PostgreSQL journey (the Radar mapping still needs its final authenticated HTTP-combination fixture), four routes are only partially equivalent, and 48 routes remain unmigrated. `Not migrated` means the machine executor returns no business success for that route and it remains delivery work in this PR.
 
 | Route | Capability | Current state | Evidence or remaining work |
 | --- | --- | --- | --- |
 | `GET /mcp` | `mcp_read` | 已真实接通 | Open Platform HTTP 的 JSON-RPC tools/list；冻结三工具 schema。 |
 | `POST /mcp` | `mcp_execute` | 已真实接通 | 三工具调用经 OneID、Customer/Archive/Timeline Port；机器 scope/capability 均验证。 |
 | `GET /api/identity/resolve` | `identity_resolve` | 已真实接通 | 受可信配置 scope 限定的 OneID Resolve；不建客、不合并。 |
-| `GET /api/external/chat-records` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
-| `GET /api/external/questionnaire-submissions` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
-| `GET /api/external/radar-clicks` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
-| `GET /api/external/radar-links` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/external/chat-records` | `external_read` | 部分接通 | Archive owner Port applies canonical customer + trusted external-user scope; 0098 preserves donor historical `unionid`/`group_name` as a protected one-to-one projection and CLI reconcile detects drift. PG journey passes; final frozen machine HTTP request/response fixture remains. |
+| `GET /api/external/questionnaire-submissions` | `external_read` | Not migrated | Survey-owned unmasked external projection Port and its identity-filter journey remain. |
+| `GET /api/external/radar-clicks` | `external_read` | Not migrated | Radar-owned logical-click projection and approved identity response boundary remain. |
+| `GET /api/external/radar-links` | `external_read` | 已真实接通（最终协议组合待测） | Radar owner Port uses donor-compatible descending `radar_id` keyset and includes retained disabled mappings; Composition is bound and PostgreSQL journey passes. Final authenticated machine HTTP combination fixture remains. |
 | `POST /api/external/ai-audience/spec/dry-run` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
 | `POST /api/external/ai-audience/spec/apply` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
 | `POST /api/external/ai-audience/spec/publish` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
