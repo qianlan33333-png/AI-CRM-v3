@@ -42,15 +42,17 @@ CREATE TABLE customer_tag_command_lines (
 CREATE INDEX customer_tag_command_lines_customer_idx ON customer_tag_command_lines(customer_id, created_at DESC, id DESC);
 CREATE INDEX customer_tag_command_lines_effect_idx ON customer_tag_command_lines(effect_ref);
 
--- Owner: internal/wecom. A completed single-contact tag read is a complete
--- observation for that customer/employee, including the valid empty set. The
--- watermark prevents an older full-directory run from replacing or staling it.
+-- Owner: internal/wecom. This shared complete-observation version row covers
+-- both a full-directory page and a single-contact tag refresh for one
+-- customer/employee, including the valid empty set. It serializes replacement
+-- of the active tag set without adding another worker or queue.
 CREATE TABLE wecom_customer_tag_refresh_watermarks (
     customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
     corp_scope TEXT NOT NULL CHECK (left(corp_scope, 11) = 'wecom-corp:'),
     employee_id TEXT NOT NULL CHECK (employee_id = btrim(employee_id) AND char_length(employee_id) BETWEEN 1 AND 1024 AND employee_id !~ '[[:cntrl:]]'),
     last_seen_run_id BIGINT NOT NULL REFERENCES wecom_customer_sync_runs(id) ON DELETE RESTRICT,
     observed_at TIMESTAMPTZ NOT NULL,
+    observation_version BIGINT NOT NULL DEFAULT 1 CHECK (observation_version > 0),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY(customer_id, corp_scope, employee_id)
 );

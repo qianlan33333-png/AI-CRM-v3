@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
@@ -135,10 +136,10 @@ func TestCustomerTagRefreshWinsOverInProgressFullSyncAndIsHiddenFromSyncListPost
 	if err = service.RefreshCustomerTagObservation(ctx, "eer_2", customerID, "staff-1", "external-1"); err != nil {
 		t.Fatal(err)
 	}
-	// This page belongs to the full run but may have been read before the later
-	// single-contact refresh. It must not resurrect old-tag.
+	// This is a delayed commit of a page read before the later single-contact
+	// refresh. Its old Provider-read timestamp must not resurrect old-tag.
 	if err = unit.Within(ctx, func(tx context.Context) error {
-		if applyErr := store.UpsertProfileObservations(tx, full.ID, "wecom-corp:corp-1", customerID, oldPage, refreshAt.Add(time.Minute)); applyErr != nil {
+		if applyErr := store.UpsertProfileObservations(tx, full.ID, "wecom-corp:corp-1", customerID, oldPage, full.StartedAt.Add(2*time.Second)); applyErr != nil {
 			return applyErr
 		}
 		return store.ReconcileProfileObservations(tx, full.ID, refreshAt.Add(2*time.Minute))
@@ -215,5 +216,164 @@ func TestCustomerTagRefreshUsesReadTimeForEmptyAndDelayedObservationsPostgreSQL(
 	}
 	if len(active) != 0 {
 		t.Fatalf("empty complete observation left active tags: %v", active)
+	}
+}
+
+func TestCustomerTagObservationVersionSerializesInterleavedCompleteReadsPostgreSQL(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	store := PostgreSQLCustomerSyncStore{}
+	at := time.Date(2026, 9, 6, 11, 0, 0, 0, time.UTC)
+
+	// An older full page holds the shared row as a newer refresh arrives.
+	// The refresh blocks and then owns the final complete set.
+	fullOlder := newObservationCustomer(t, ctx, pool.Native())
+	fullRun := seedObservationRun(t, ctx, pool.Native(), "full-interleaved-old", "manual", "wecom-corp:corp-1", "staff-1", at)
+	oldTx, err := pool.Native().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCtx := platformpostgres.BindTransaction(ctx, oldTx)
+	if advanced, advanceErr := advanceCustomerTagObservation(oldCtx, oldTx, fullOlder, "wecom-corp:corp-1", "staff-1", fullRun, at.Add(time.Second)); advanceErr != nil || !advanced {
+		t.Fatalf("full advance=%t err=%v", advanced, advanceErr)
+	}
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- unit.Within(ctx, func(tx context.Context) error {
+			return store.RecordCustomerTagRefresh(tx, "wecom-corp:corp-1", fullOlder, "staff-1", []wecomport.ExternalContactTag{{ProviderTagID: "new-refresh", Name: "New", Type: 1}}, at.Add(2*time.Second), "refresh-after-full-read")
+		})
+	}()
+	assertBlocked(t, refreshDone)
+	if err = replaceCustomerTagObservation(oldCtx, oldTx, fullOlder, "wecom-corp:corp-1", "staff-1", []wecomport.ExternalContactTag{{ProviderTagID: "old-full", Name: "Old", Type: 1}}, fullRun, at.Add(time.Second)); err != nil {
+		_ = oldTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err = oldTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	assertActiveTags(t, ctx, pool.Native(), fullOlder, "new-refresh")
+
+	// Reverse the interleave: an older refresh commits after a newer full page
+	// starts waiting on that same row. The newer full set must win.
+	refreshOlder := newObservationCustomer(t, ctx, pool.Native())
+	oldRefreshRun := seedObservationRun(t, ctx, pool.Native(), "refresh-interleaved-old", "tag_refresh", "wecom-corp:corp-1", "staff-1", at)
+	fullNewRun := seedObservationRun(t, ctx, pool.Native(), "full-after-refresh", "manual", "wecom-corp:corp-1", "staff-1", at)
+	refreshTx, err := pool.Native().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshCtx := platformpostgres.BindTransaction(ctx, refreshTx)
+	if advanced, advanceErr := advanceCustomerTagObservation(refreshCtx, refreshTx, refreshOlder, "wecom-corp:corp-1", "staff-1", oldRefreshRun, at.Add(time.Second)); advanceErr != nil || !advanced {
+		t.Fatalf("refresh advance=%t err=%v", advanced, advanceErr)
+	}
+	fullDone := make(chan error, 1)
+	go func() {
+		fullDone <- unit.Within(ctx, func(tx context.Context) error {
+			return store.UpsertProfileObservations(tx, fullNewRun, "wecom-corp:corp-1", refreshOlder, []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1", Tags: []wecomport.ExternalContactTag{{ProviderTagID: "new-full", Name: "New", Type: 1}}}}, at.Add(2*time.Second))
+		})
+	}()
+	assertBlocked(t, fullDone)
+	if err = replaceCustomerTagObservation(refreshCtx, refreshTx, refreshOlder, "wecom-corp:corp-1", "staff-1", []wecomport.ExternalContactTag{{ProviderTagID: "old-refresh", Name: "Old", Type: 1}}, oldRefreshRun, at.Add(time.Second)); err != nil {
+		_ = refreshTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err = refreshTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-fullDone; err != nil {
+		t.Fatal(err)
+	}
+	assertActiveTags(t, ctx, pool.Native(), refreshOlder, "new-full")
+}
+
+func TestCustomerTagObservationFullEmptySetAndReconcileKeepNewerReadPostgreSQL(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	store := PostgreSQLCustomerSyncStore{}
+	at := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	customerID := newObservationCustomer(t, ctx, pool.Native())
+	fullRun := seedObservationRun(t, ctx, pool.Native(), "full-empty", "manual", "wecom-corp:corp-1", "staff-1", at)
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		return store.UpsertProfileObservations(tx, fullRun, "wecom-corp:corp-1", customerID, []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1", Tags: []wecomport.ExternalContactTag{{ProviderTagID: "old", Name: "Old", Type: 1}}}}, at)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		return store.UpsertProfileObservations(tx, fullRun, "wecom-corp:corp-1", customerID, []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1", Tags: nil}}, at.Add(time.Minute))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertActiveTags(t, ctx, pool.Native(), customerID)
+	newer := at.Add(2 * time.Minute)
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		return store.RecordCustomerTagRefresh(tx, "wecom-corp:corp-1", customerID, "staff-1", []wecomport.ExternalContactTag{{ProviderTagID: "newtag", Name: "New", Type: 1}}, newer, "refresh-newtag")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		return store.ReconcileProfileObservations(tx, fullRun, newer.Add(time.Minute))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertActiveTags(t, ctx, pool.Native(), customerID, "newtag")
+}
+
+func newObservationCustomer(t *testing.T, ctx context.Context, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}) customerdomain.CustomerID {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return customerdomain.CustomerID(id)
+}
+func seedObservationRun(t *testing.T, ctx context.Context, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, key, trigger, scope, staff string, at time.Time) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(ctx, `INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,staff_ids,started_at,completed_at) VALUES($1,$2,'succeeded',$3,jsonb_build_array($4::text),$5,$5) RETURNING id`, key, trigger, scope, staff, at).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+func assertBlocked(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("concurrent write did not block: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+}
+func assertActiveTags(t *testing.T, ctx context.Context, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, customerID customerdomain.CustomerID, want ...string) {
+	t.Helper()
+	var got []string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(array_agg(provider_tag_id ORDER BY provider_tag_id),ARRAY[]::text[]) FROM wecom_customer_tag_observations WHERE customer_id=$1 AND observation_status='active'`, customerID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("active tags=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("active tags=%v want=%v", got, want)
+		}
 	}
 }
