@@ -22,15 +22,15 @@ type MachineRepository interface {
 // The following DTOs are the stable Access boundary consumed by the machine
 // HTTP host. They contain no secret hash or administrator role.
 type CreateMachineClientInput struct {
-	ClientID        string
-	DisplayName     string
-	Purpose         string
-	Audiences       []string
-	Scopes          []string
-	Capabilities    []string
-	AllowedCIDRs    []string
-	TokenTTLSeconds int
-	ExpiresAt       *time.Time
+	ClientID        string     `json:"client_id"`
+	DisplayName     string     `json:"display_name"`
+	Purpose         string     `json:"purpose"`
+	Audiences       []string   `json:"audiences"`
+	Scopes          []string   `json:"scopes"`
+	Capabilities    []string   `json:"capabilities"`
+	AllowedCIDRs    []string   `json:"allowed_cidrs"`
+	TokenTTLSeconds int        `json:"token_ttl_seconds"`
+	ExpiresAt       *time.Time `json:"expires_at"`
 }
 
 type IssuedMachineClient struct {

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -150,5 +151,15 @@ func TestTrustedProxyTakesRightmostUntrustedForwardedSource(t *testing.T) {
 	source, err = handler.source(request)
 	if err != nil || source != netip.MustParseAddr("198.51.100.7") {
 		t.Fatalf("trusted intermediary source = %v, %v", source, err)
+	}
+}
+
+func TestCreateMachineClientUsesFrozenSnakeCaseJSONFields(t *testing.T) {
+	var input accessport.CreateMachineClientInput
+	if err := json.Unmarshal([]byte(`{"client_id":"partner.analytics","display_name":"Partner analytics","purpose":"api","audiences":["external_integration"],"scopes":["read"],"capabilities":["external_read"],"allowed_cidrs":["203.0.113.0/24"],"token_ttl_seconds":1800,"expires_at":"2026-10-06T00:00:00Z"}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.ClientID != "partner.analytics" || input.DisplayName != "Partner analytics" || input.TokenTTLSeconds != 1800 || len(input.AllowedCIDRs) != 1 || input.ExpiresAt == nil {
+		t.Fatalf("frozen create DTO decoded as %+v", input)
 	}
 }
