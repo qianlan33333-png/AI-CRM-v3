@@ -15,6 +15,16 @@ if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9
 }
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+// Do not embed a regular expression in a Runtime.evaluate template string:
+// JavaScript string escaping would turn `\s` into a literal `s`. Cookie order
+// is arbitrary, so split exact names instead of relying on a position-specific
+// substring.
+const cookieNamePresent = (cookie, name) => String(cookie || '').split(';').some((part) => part.trim().startsWith(name + '='));
+if (!cookieNamePresent('aicrm_admin_csrf=test; aicrm_csrf=test', 'aicrm_admin_csrf') ||
+  !cookieNamePresent('aicrm_admin_csrf=test; aicrm_csrf=test', 'aicrm_csrf') ||
+  cookieNamePresent('aicrm_admin_csrf=test; aicrm_csrf=test', 'csrf_token')) {
+  throw new Error('cookie name fixture is invalid');
+}
 const browserBinary = () => {
   const candidates = [process.env.AICRM_CHROMIUM_BINARY, process.env.CHROME_BIN].filter(Boolean);
   if (process.platform === "darwin") candidates.push("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
@@ -173,14 +183,14 @@ try {
       const save = document.querySelector('[data-external-push-configuration-save]');
       const toast = document.querySelector('#product-v3-toast');
       const status = panel?.querySelector('span')?.textContent || '';
-      const csrf = document.cookie;
+      const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '='));
       return {
         path: location.pathname,
         status: String(status).replace(/[^A-Za-z0-9_\-\u4e00-\u9fff（）()：:，,。 ]/g, '_').slice(0, 160),
         toast: String(toast?.textContent || '').replace(/[^A-Za-z0-9_\-\u4e00-\u9fff（）()：:，,。 ]/g, '_').slice(0, 160),
         saveDisabled: Boolean(save && save.disabled),
-        adminCSRF: /(?:^|;\s*)aicrm_admin_csrf=/.test(csrf),
-        compatCSRF: /(?:^|;\s*)aicrm_csrf=/.test(csrf),
+        adminCSRF: hasCookie('aicrm_admin_csrf'),
+        compatCSRF: hasCookie('aicrm_csrf'),
       };
     })()`);
     const routes = responses.join(',') || 'none';
@@ -199,7 +209,7 @@ try {
   } catch (_) {
     throw new Error("product Host did not render " + await browserSaveDiagnostic());
   }
-  if (!await evaluate(cdp, `/(?:^|;\s*)aicrm_admin_csrf=/.test(document.cookie) && /(?:^|;\s*)aicrm_csrf=/.test(document.cookie)`)) {
+  if (!await evaluate(cdp, `(() => { const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '=')); return hasCookie('aicrm_admin_csrf') && hasCookie('aicrm_csrf'); })()`)) {
     throw new Error("product Host did not receive CSRF session bridge " + await browserSaveDiagnostic());
   }
   // Host mounting creates the editor before its configuration GET resolves.
