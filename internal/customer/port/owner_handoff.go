@@ -117,7 +117,7 @@ type OwnerHandoffCandidate struct {
 }
 
 type OwnerHandoffCandidateResolver interface {
-	ResolveOwnerHandoffCandidates(context.Context, int64, int64, string, []customerdomain.CustomerID) ([]OwnerHandoffCandidate, error)
+	ResolveOwnerHandoffCandidates(context.Context, OwnerHandoffMode, int64, int64, string, []customerdomain.CustomerID) ([]OwnerHandoffCandidate, error)
 }
 
 type OwnerHandoffPreviewCommand struct {

@@ -33,7 +33,7 @@ type ownerHandoffResolverStub struct {
 	candidates []customerport.OwnerHandoffCandidate
 }
 
-func (s ownerHandoffResolverStub) ResolveOwnerHandoffCandidates(_ context.Context, _, _ int64, _ string, ids []customerdomain.CustomerID) ([]customerport.OwnerHandoffCandidate, error) {
+func (s ownerHandoffResolverStub) ResolveOwnerHandoffCandidates(_ context.Context, _ customerport.OwnerHandoffMode, _, _ int64, _ string, ids []customerdomain.CustomerID) ([]customerport.OwnerHandoffCandidate, error) {
 	if len(ids) != len(s.candidates) {
 		return nil, errors.New("wrong candidate request")
 	}

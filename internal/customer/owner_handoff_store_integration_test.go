@@ -237,8 +237,8 @@ func TestPostgreSQLOwnerHandoffExecutionUsesFrozenCiphertextAndFourDigests(t *te
 		if txErr = tx.QueryRow(txctx, `SELECT count(*) FROM customer_local_owners WHERE customer_id=$1`, customerID).Scan(&localCount); txErr != nil {
 			return txErr
 		}
-		if lineState != "provider_accepted" || localCount != 0 {
-			t.Fatalf("acceptance became local handoff state=%s owners=%d", lineState, localCount)
+		if lineState != "provider_accepted" || localCount != 1 {
+			t.Fatalf("accepted transfer must CAS local owner once state=%s owners=%d", lineState, localCount)
 		}
 		return nil
 	}); err != nil {

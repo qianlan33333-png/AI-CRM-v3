@@ -410,12 +410,31 @@ func (store *PostgreSQLOwnerHandoffStore) CompleteOwnerHandoffEffect(ctx context
 		return err
 	}
 	var batchID string
-	err = tx.QueryRow(ctx, `UPDATE customer_owner_handoff_lines SET state=$2,result_digest=$3,updated_at=clock_timestamp() WHERE effect_id=$1 AND mode='wecom_then_crm' AND state IN ('queued','retryable_failed') RETURNING batch_id`, completion.EffectID, lineState, digest).Scan(&batchID)
+	var customerID customerdomain.CustomerID
+	var targetStaffID, expectedVersion int64
+	// Lock the exact frozen line before local CAS.  A transport acceptance
+	// never grants permission to replace a local owner that changed meanwhile.
+	err = tx.QueryRow(ctx, `SELECT batch_id,customer_id,target_staff_id,COALESCE(expected_local_owner_version,0) FROM customer_owner_handoff_lines WHERE effect_id=$1 AND mode='wecom_then_crm' AND state IN ('queued','retryable_failed') FOR UPDATE`, completion.EffectID).Scan(&batchID, &customerID, &targetStaffID, &expectedVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrOwnerHandoffConflict
 	}
 	if err != nil {
 		return err
+	}
+	if completion.State == string(effectport.StateExecuted) {
+		if _, assignErr := store.AssignLocalOwner(ctx, customerID, targetStaffID, expectedVersion, "owner_handoff_wecom_then_crm", time.Now().UTC()); assignErr != nil {
+			if !errors.Is(assignErr, ErrOwnerHandoffConflict) {
+				return assignErr
+			}
+			lineState, batchState = "cas_conflict", "needs_attention"
+		}
+	}
+	command, err := tx.Exec(ctx, `UPDATE customer_owner_handoff_lines SET state=$2,result_digest=$3,updated_at=clock_timestamp() WHERE effect_id=$1 AND state IN ('queued','retryable_failed')`, completion.EffectID, lineState, digest)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return ErrOwnerHandoffConflict
 	}
 	_, err = tx.Exec(ctx, `UPDATE customer_owner_handoff_batches SET state=$2,updated_at=clock_timestamp() WHERE id=$1 AND state IN ('accepted','executing','needs_attention','failed')`, batchID, batchState)
 	return err

@@ -28,7 +28,7 @@ type ownerHandoffPGResolver struct {
 	candidate customerport.OwnerHandoffCandidate
 }
 
-func (r ownerHandoffPGResolver) ResolveOwnerHandoffCandidates(_ context.Context, _, _ int64, _ string, ids []customerdomain.CustomerID) ([]customerport.OwnerHandoffCandidate, error) {
+func (r ownerHandoffPGResolver) ResolveOwnerHandoffCandidates(_ context.Context, _ customerport.OwnerHandoffMode, _, _ int64, _ string, ids []customerdomain.CustomerID) ([]customerport.OwnerHandoffCandidate, error) {
 	if len(ids) != 1 || ids[0] != r.candidate.CustomerID {
 		return nil, customer.ErrOwnerHandoffConflict
 	}

@@ -96,7 +96,7 @@ func (service *OwnerHandoffService) PreviewOwnerHandoff(ctx context.Context, com
 		if err != nil || !target.Active {
 			return ErrOwnerHandoffForbidden
 		}
-		candidates, err := service.resolver.ResolveOwnerHandoffCandidates(txctx, command.SourceStaffID, command.TargetStaffID, command.CorpScope, command.CustomerIDs)
+		candidates, err := service.resolver.ResolveOwnerHandoffCandidates(txctx, command.Mode, command.SourceStaffID, command.TargetStaffID, command.CorpScope, command.CustomerIDs)
 		if err != nil {
 			return err
 		}
@@ -154,7 +154,7 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 		for _, candidate := range draft.Candidates {
 			customerIDs = append(customerIDs, candidate.CustomerID)
 		}
-		current, resolveErr := service.resolver.ResolveOwnerHandoffCandidates(txctx, draft.Preview.SourceStaffID, draft.Preview.TargetStaffID, draft.Preview.CorpScope, customerIDs)
+		current, resolveErr := service.resolver.ResolveOwnerHandoffCandidates(txctx, draft.Preview.Mode, draft.Preview.SourceStaffID, draft.Preview.TargetStaffID, draft.Preview.CorpScope, customerIDs)
 		if resolveErr != nil || !sameOwnerHandoffCandidates(draft.Candidates, current) {
 			return ErrOwnerHandoffDrift
 		}
