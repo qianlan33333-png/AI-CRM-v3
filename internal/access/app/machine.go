@@ -785,7 +785,7 @@ func summarizeMachineClient(client domain.MachineClient) MachineClientSummary {
 	return MachineClientSummary{ClientID: client.ClientID, DisplayName: client.DisplayName, Purpose: client.Purpose,
 		CredentialHint: client.CredentialHint, Audiences: append([]string(nil), client.Audiences...),
 		Scopes: append([]string(nil), client.Scopes...), Capabilities: append([]string(nil), client.Capabilities...),
-		AllowedCIDRs: append([]string(nil), client.AllowedCIDRs...), TokenTTLSeconds: client.TokenTTLSeconds,
+		AllowedCIDRs: append([]string{}, client.AllowedCIDRs...), TokenTTLSeconds: client.TokenTTLSeconds,
 		CorpID: client.CorpID, OwnerScope: cloneOwnerScope(client.OwnerScope),
 		ExpiresAt: client.ExpiresAt, Enabled: client.Enabled, ReissueRequired: client.ReissueRequired,
 		AuthVersion: client.AuthVersion, LastUsedAt: client.LastUsedAt, CreatedAt: client.CreatedAt}
