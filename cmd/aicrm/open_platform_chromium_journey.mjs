@@ -153,12 +153,18 @@ try {
   const firstActivation = await waitForResource(resources, firstActivationPath, "manual confirmation did not issue an activation request");
   if (firstActivation.status !== 200) throw new Error(`manual confirmation activation status=${firstActivation.status} category=${await activationFailureCategory(cdp, firstActivation)}`);
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "activation succeeded but the caller Host did not refresh as enabled");
+  const catalogCapabilityValues = await evaluate(cdp, "[...document.querySelectorAll('input[name=\"create-capability\"]')].map((input)=>input.value).sort()");
+  const expectedCatalogCapabilities = ["ai.review_plan.create", "customer.activity.read", "customer.read", "customer.resolve", "operation.read", "platform.capabilities.read"];
+  if (!Array.isArray(catalogCapabilityValues) || catalogCapabilityValues.length !== expectedCatalogCapabilities.length || catalogCapabilityValues.some((value, index) => value !== expectedCatalogCapabilities[index])) throw new Error("administrator catalog did not expose the six current V1 capabilities");
+  const operationIDs = (catalog) => Array.isArray(catalog?.body?.data?.operations) ? catalog.body.data.operations.map((item) => item?.operation_id).filter((item) => typeof item === "string").sort() : [];
+  const toolNames = (catalog) => Array.isArray(catalog?.body?.result?.tools) ? catalog.body.result.tools.map((item) => item?.name).filter((item) => typeof item === "string").sort() : [];
+  const sameStrings = (actual, expected) => actual.length === expected.length && actual.every((value, index) => value === expected[index]);
   const firstOAuth = await oauth(firstSecret); const firstToken = firstOAuth?.body?.access_token;
   if (firstOAuth?.status !== 200 || typeof firstToken !== "string" || !firstToken) throw new Error("OAuth did not issue an activated token");
-  const firstCatalog = await restCatalog(firstToken); const firstOperations = firstCatalog?.body?.data?.operations;
-  if (firstCatalog?.status !== 200 || !Array.isArray(firstOperations) || firstOperations.length !== 6 || !firstOperations.some((item) => item?.operation_id === "platform.capabilities.list")) throw new Error("REST V1 catalog did not expose the six current operations");
+  const firstCatalog = await restCatalog(firstToken);
+  if (firstCatalog?.status !== 200 || !sameStrings(operationIDs(firstCatalog), ["platform.capabilities.list"])) throw new Error("REST V1 catalog did not restrict the initial caller to its single granted operation");
   const firstMCP = await mcpCatalog(firstToken);
-  if (firstMCP?.status !== 200 || !Array.isArray(firstMCP?.body?.result?.tools) || !firstMCP.body.result.tools.some((tool) => tool?.name === "list_capabilities")) throw new Error("MCP catalog was not available to the activated caller");
+  if (firstMCP?.status !== 200 || !sameStrings(toolNames(firstMCP), ["list_capabilities"])) throw new Error("MCP catalog did not restrict the initial caller to its single granted tool");
 
   const beforeGrant = await clientDetail();
   const beforeGrantVersion = beforeGrant?.body?.client?.auth_version;
@@ -176,7 +182,10 @@ try {
   if ((await restCatalog(firstToken))?.status !== 401) throw new Error("grant update did not revoke the prior OAuth token");
   const grantedOAuth = await oauth(firstSecret); const grantedToken = grantedOAuth?.body?.access_token;
   if (grantedOAuth?.status !== 200 || typeof grantedToken !== "string") throw new Error("credential did not issue a replacement token after grant update");
-  if (!(await restCatalog(grantedToken))?.body?.data?.operations?.some((item) => item?.operation_id === "customer.resolve")) throw new Error("changed grant did not appear in the REST catalog");
+  const grantedCatalog = await restCatalog(grantedToken);
+  if (grantedCatalog?.status !== 200 || !sameStrings(operationIDs(grantedCatalog), ["customer.resolve", "platform.capabilities.list"])) throw new Error("changed grant did not appear in the restricted REST catalog");
+  const grantedMCP = await mcpCatalog(grantedToken);
+  if (grantedMCP?.status !== 200 || !sameStrings(toolNames(grantedMCP), ["list_capabilities", "resolve_customer"])) throw new Error("changed grant did not appear in the restricted MCP catalog");
 
   if (!await click("轮换密钥")) throw new Error("rotation action was unavailable");
   await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret'))", "rotation did not display its one-time credential");
