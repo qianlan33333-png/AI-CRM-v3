@@ -822,6 +822,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = openPlatformExecutor.BindExternalRadarLinkMappings(radarManager); err != nil {
+		return fail(err)
+	}
 	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
 		MachineAuthentication: machineService,
 		AdminAuthentication:   authentication,

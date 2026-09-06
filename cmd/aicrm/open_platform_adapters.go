@@ -23,6 +23,7 @@ import (
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -57,6 +58,7 @@ type openPlatformExecutor struct {
 	profiles      customerport.SidebarProfileService
 	archive       archiveport.CustomerMessageReader
 	externalChat  archiveport.ExternalChatRecordReader
+	radarLinks    radarport.ExternalLinkMappingReader
 	timeline      customerport.CustomerTimelineReader
 	owners        wecomport.AudiencePrimaryOwnerReader
 	scopes        openPlatformIdentityScopes
@@ -82,6 +84,17 @@ func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Qu
 	scopes.UnionScopes = distinctScopes(scopes.UnionScopes, "wechat-open-platform:")
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
 	return &openPlatformExecutor{identity: identity, externalUsers: externalUsers, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, externalChat: externalChat, timeline: timeline, owners: owners, scopes: scopes}, nil
+}
+
+// BindExternalRadarLinkMappings connects the Radar-owned historical mapping
+// projection after all Radar dependencies are composed. The external route
+// returns an explicit read-model-unavailable response until this Port is bound.
+func (executor *openPlatformExecutor) BindExternalRadarLinkMappings(reader radarport.ExternalLinkMappingReader) error {
+	if executor == nil || reader == nil {
+		return radarport.ErrUnavailable
+	}
+	executor.radarLinks = reader
+	return nil
 }
 
 func configuredOpenPlatformScopes(corpID string, unionScopes, appIDs []string) openPlatformIdentityScopes {
@@ -123,6 +136,8 @@ func (executor *openPlatformExecutor) Execute(ctx context.Context, request openp
 		return executor.resolveExternalUser(ctx, request.Query, request.Principal)
 	case "GET /api/external/chat-records":
 		return executor.listExternalChatRecords(ctx, request.Query, request.Principal)
+	case "GET /api/external/radar-links":
+		return executor.listExternalRadarLinks(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders":
 		return executor.listOrders(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders/{order_no}":
@@ -467,6 +482,140 @@ func externalChatUnavailable() openplatformport.Response {
 		"ok": false, "degraded": true, "messages": []any{}, "items": []any{}, "count": 0,
 		"source_status": "production_unavailable", "read_model_status": "unavailable", "fallback_used": false,
 		"route_owner": "ai_crm_next", "error_code": "message_archive_read_unavailable", "page_error": "message archive read model unavailable",
+	}}
+}
+
+func (executor *openPlatformExecutor) listExternalRadarLinks(ctx context.Context, values url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
+	query, filters, err := externalRadarLinksQuery(values)
+	if err != nil {
+		return externalRadarLinksError(400, "invalid_request"), nil
+	}
+	if !executor.allowsUnboundScope(principal) {
+		return externalRadarLinksError(404, "not_found"), nil
+	}
+	if executor.radarLinks == nil {
+		return externalRadarLinksUnavailable(), nil
+	}
+	page, err := executor.radarLinks.ExternalLinkMappings(ctx, query)
+	if err != nil {
+		return externalRadarLinksUnavailable(), nil
+	}
+	items := make([]map[string]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, map[string]any{
+			"radar_id":   item.RadarID,
+			"radar_code": item.RadarCode,
+			"title":      item.Title,
+		})
+	}
+	nextCursor := ""
+	if page.HasMore && len(page.Items) > 0 {
+		nextCursor = encodeExternalKeysetCursor("radar_id", int64(page.Items[len(page.Items)-1].RadarID))
+	}
+	return responseOK(map[string]any{
+		"ok":            true,
+		"items":         items,
+		"total":         page.Total,
+		"limit":         query.Limit,
+		"next_cursor":   nextCursor,
+		"has_more":      nextCursor != "",
+		"filters":       filters,
+		"route_owner":   "ai_crm_next",
+		"source_status": "external_radar_links",
+		"fallback_used": false,
+	}), nil
+}
+
+// externalRadarLinksQuery follows the donor scalar and cursor rules: every
+// supplied filter is exact and ANDed, unknown query values are ignored, and
+// the opaque keyset token admits only the single expected field.
+func externalRadarLinksQuery(values url.Values) (radarport.ExternalLinkMappingQuery, map[string]any, error) {
+	one := func(key string) string {
+		items := values[key]
+		if len(items) == 0 {
+			return ""
+		}
+		return strings.TrimSpace(items[len(items)-1])
+	}
+	parseOptionalPositive := func(value string) (int64, error) {
+		if value == "" {
+			return 0, nil
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed < 1 {
+			return 0, errors.New("positive integer required")
+		}
+		return parsed, nil
+	}
+	radarRaw := one("radar_id")
+	radarID, err := parseOptionalPositive(radarRaw)
+	if err != nil {
+		return radarport.ExternalLinkMappingQuery{}, nil, err
+	}
+	limitRaw := one("limit")
+	limit := int64(100)
+	if limitRaw != "" {
+		limit, err = parseOptionalPositive(limitRaw)
+		if err != nil || limit > 500 {
+			return radarport.ExternalLinkMappingQuery{}, nil, errors.New("invalid limit")
+		}
+	}
+	before, err := decodeExternalKeysetCursor(one("cursor"), "radar_id")
+	if err != nil {
+		return radarport.ExternalLinkMappingQuery{}, nil, err
+	}
+	radarCode := one("radar_code")
+	filters := map[string]any{}
+	if radarRaw != "" {
+		filters["radar_id"] = radarID
+	}
+	if radarCode != "" {
+		filters["radar_code"] = radarCode
+	}
+	return radarport.ExternalLinkMappingQuery{RadarID: radarport.RadarID(radarID), RadarCode: radarCode, BeforeRadarID: radarport.RadarID(before), Limit: int32(limit)}, filters, nil
+}
+
+func encodeExternalKeysetCursor(key string, value int64) string {
+	payload, err := json.Marshal(map[string]int64{key: value})
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func decodeExternalKeysetCursor(cursor, key string) (int64, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	padded := cursor + strings.Repeat("=", (4-len(cursor)%4)%4)
+	raw, err := base64.URLEncoding.DecodeString(padded)
+	if err != nil {
+		return 0, errors.New("invalid cursor")
+	}
+	var payload map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &payload); err != nil || len(payload) != 1 {
+		return 0, errors.New("invalid cursor")
+	}
+	encoded, ok := payload[key]
+	if !ok {
+		return 0, errors.New("invalid cursor")
+	}
+	var value int64
+	if err = json.Unmarshal(encoded, &value); err != nil || value < 1 {
+		return 0, errors.New("invalid cursor")
+	}
+	return value, nil
+}
+
+func externalRadarLinksError(status int, code string) openplatformport.Response {
+	return openplatformport.Response{Status: status, Body: map[string]any{
+		"ok": false, "error_code": code, "route_owner": "ai_crm_next", "source_status": "external_radar_links", "fallback_used": false,
+	}}
+}
+
+func externalRadarLinksUnavailable() openplatformport.Response {
+	return openplatformport.Response{Status: 503, Body: map[string]any{
+		"ok": false, "error_code": "production_unavailable", "route_owner": "ai_crm_next", "source_status": "production_unavailable", "fallback_used": false,
 	}}
 }
 

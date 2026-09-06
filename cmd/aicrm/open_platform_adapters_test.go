@@ -19,6 +19,7 @@ import (
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
+	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -133,6 +134,19 @@ func (stub *openPlatformArchiveStub) ExternalCustomerMessages(_ context.Context,
 }
 func (*openPlatformArchiveStub) CustomerStaff(context.Context, customerdomain.CustomerID) ([]archiveport.StaffOption, error) {
 	return nil, nil
+}
+
+type openPlatformRadarLinksStub struct {
+	page  radarport.ExternalLinkMappingPage
+	err   error
+	calls int
+	query radarport.ExternalLinkMappingQuery
+}
+
+func (stub *openPlatformRadarLinksStub) ExternalLinkMappings(_ context.Context, query radarport.ExternalLinkMappingQuery) (radarport.ExternalLinkMappingPage, error) {
+	stub.calls++
+	stub.query = query
+	return stub.page, stub.err
 }
 
 func TestOpenPlatformStartsWithoutWeComScopeAndDefersIdentityRejection(t *testing.T) {
@@ -418,5 +432,78 @@ func TestOpenPlatformMCPRejectsContradictoryCustomerReferences(t *testing.T) {
 	_, err = executor.Execute(context.Background(), openplatformport.Request{Method: "POST", Path: "/mcp", Body: body})
 	if !errors.Is(err, errOpenPlatformIdentityConflict) || profiles.calls != 0 || len(identity.calls) != 2 {
 		t.Fatalf("err=%v profile_calls=%d identity_calls=%d", err, profiles.calls, len(identity.calls))
+	}
+}
+
+func TestOpenPlatformExternalRadarLinksRetainsDonorKeysetEnvelope(t *testing.T) {
+	links := &openPlatformRadarLinksStub{page: radarport.ExternalLinkMappingPage{Items: []radarport.ExternalLinkMapping{{RadarID: 12, RadarCode: "rd_1234567890abcdef", Title: "Disabled historical mapping"}}, Total: 3, HasMore: true}}
+	executor, err := newOpenPlatformExecutor(&openPlatformIdentityStub{}, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.BindExternalRadarLinkMappings(links); err != nil {
+		t.Fatal(err)
+	}
+	cursor := base64.URLEncoding.EncodeToString([]byte(`{"radar_id":99}`))
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/radar-links", Query: url.Values{"radar_id": {"12"}, "radar_code": {" rd_1234567890abcdef "}, "limit": {"2"}, "cursor": {cursor}, "donor_ignored": {"1"}}})
+	if err != nil || response.Status != 200 || links.calls != 1 {
+		t.Fatalf("response=%+v calls=%d err=%v", response, links.calls, err)
+	}
+	if links.query.RadarID != 12 || links.query.RadarCode != "rd_1234567890abcdef" || links.query.BeforeRadarID != 99 || links.query.Limit != 2 {
+		t.Fatalf("query=%+v", links.query)
+	}
+	body, ok := response.Body.(map[string]any)
+	if !ok || body["source_status"] != "external_radar_links" || body["route_owner"] != "ai_crm_next" || body["fallback_used"] != false || body["total"] != int64(3) || body["limit"] != int32(2) || body["has_more"] != true {
+		t.Fatalf("body=%#v", response.Body)
+	}
+	items, ok := body["items"].([]map[string]any)
+	if !ok || len(items) != 1 || items[0]["radar_id"] != radarport.RadarID(12) || items[0]["title"] != "Disabled historical mapping" {
+		t.Fatalf("items=%#v", body["items"])
+	}
+	next, ok := body["next_cursor"].(string)
+	if !ok || next == "" {
+		t.Fatalf("next cursor=%#v", body["next_cursor"])
+	}
+	decoded, decodeErr := decodeExternalKeysetCursor(next, "radar_id")
+	if decodeErr != nil || decoded != 12 {
+		t.Fatalf("next cursor=%q decoded=%d err=%v", next, decoded, decodeErr)
+	}
+	filters, ok := body["filters"].(map[string]any)
+	if !ok || filters["radar_id"] != int64(12) || filters["radar_code"] != "rd_1234567890abcdef" {
+		t.Fatalf("filters=%#v", body["filters"])
+	}
+}
+
+func TestOpenPlatformExternalRadarLinksRejectsBadCursorAndBoundOwnerScope(t *testing.T) {
+	links := &openPlatformRadarLinksStub{}
+	executor, err := newOpenPlatformExecutor(&openPlatformIdentityStub{}, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.BindExternalRadarLinkMappings(links); err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/radar-links", Query: url.Values{"cursor": {base64.RawURLEncoding.EncodeToString([]byte(`{"wrong":1}`))}}})
+	if err != nil || response.Status != 400 || links.calls != 0 {
+		t.Fatalf("bad cursor response=%+v calls=%d err=%v", response, links.calls, err)
+	}
+	response, err = executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/radar-links", Principal: accessdomain.MachinePrincipal{CorpID: "corp-main", OwnerScope: accessdomain.OwnerScope{"customer_id": {"42"}, "corp_id": {"corp-main"}}}})
+	if err != nil || response.Status != 404 || links.calls != 0 {
+		t.Fatalf("scope response=%+v calls=%d err=%v", response, links.calls, err)
+	}
+}
+
+func TestOpenPlatformExternalRadarLinksReportsUnboundReadModel(t *testing.T) {
+	executor, err := newOpenPlatformExecutor(&openPlatformIdentityStub{}, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/radar-links"})
+	if err != nil || response.Status != 503 {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	body := response.Body.(map[string]any)
+	if body["error_code"] != "production_unavailable" || body["source_status"] != "production_unavailable" {
+		t.Fatalf("body=%#v", body)
 	}
 }

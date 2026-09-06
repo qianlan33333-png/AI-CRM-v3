@@ -189,3 +189,63 @@ func radarIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(cleanupCtx)
 	}
 }
+
+func TestPostgreSQLExternalLinkMappingsRetainDisabledAndUseDescendingKeyset(t *testing.T) {
+	native, cleanup := radarIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	for _, link := range []struct {
+		code, title, status string
+	}{
+		{"rd_1111111111111111", "Enabled mapping", "enabled"},
+		{"rd_2222222222222222", "Disabled mapping", "disabled"},
+		{"rd_3333333333333333", "Draft mapping", "draft"},
+	} {
+		if _, err := native.Exec(ctx, `INSERT INTO radar_links(public_code,name,title,content_type,destination_url,auth_policy,status,created_by,updated_by,created_at,updated_at) VALUES($1,$2,$3,'link','https://example.test/external','anonymous',$4,1,1,$5,$5)`, link.code, link.title, link.title, link.status, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgres()
+	var first radarport.ExternalLinkMappingPage
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		first, readErr = store.ExternalLinkMappings(tx, radarport.ExternalLinkMappingQuery{Limit: 2})
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if first.Total != 3 || !first.HasMore || len(first.Items) != 2 || first.Items[0].RadarID != 3 || first.Items[0].RadarCode != "rd_3333333333333333" || first.Items[1].RadarID != 2 || first.Items[1].Title != "Disabled mapping" {
+		t.Fatalf("first=%+v", first)
+	}
+	var second radarport.ExternalLinkMappingPage
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		second, readErr = store.ExternalLinkMappings(tx, radarport.ExternalLinkMappingQuery{BeforeRadarID: first.Items[1].RadarID, Limit: 2})
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if second.Total != 3 || second.HasMore || len(second.Items) != 1 || second.Items[0].RadarID != 1 {
+		t.Fatalf("second=%+v", second)
+	}
+	var filtered radarport.ExternalLinkMappingPage
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		filtered, readErr = store.ExternalLinkMappings(tx, radarport.ExternalLinkMappingQuery{RadarID: 2, RadarCode: "rd_2222222222222222", Limit: 100})
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].Title != "Disabled mapping" {
+		t.Fatalf("filtered=%+v", filtered)
+	}
+}
