@@ -31,7 +31,11 @@ import (
 )
 
 const (
-	schemaVersion = "aicrm-v2-commerce-external-push-history-v1"
+	schemaVersion       = "aicrm-v2-commerce-external-push-history-v2"
+	legacySchemaVersion = "aicrm-v2-commerce-external-push-history-v1"
+	// This sentinel is a relationship classification, never a legacy job
+	// terminal state. The full relationship remains inside the sealed snapshot.
+	ambiguousEffectRelationState = "ambiguous_multiple_effect_jobs"
 	// This is the source-system label used by the approved V2 product
 	// definition importer. It lets the composition command read, but never
 	// modify, its append-only Product source maps.
@@ -67,6 +71,12 @@ type configRow struct {
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
+type effectJobRelation struct {
+	ID         int64  `json:"id"`
+	EffectType string `json:"effect_type"`
+	State      string `json:"state"`
+}
+
 type deliveryRow struct {
 	ID             int64           `json:"id"`
 	ConfigID       int64           `json:"config_id"`
@@ -87,8 +97,13 @@ type deliveryRow struct {
 	NextRetryAt    *time.Time      `json:"next_retry_at,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
-	EffectJobID    *int64          `json:"effect_job_id,omitempty"`
-	EffectState    *string         `json:"effect_state,omitempty"`
+	// EffectJobs is the V2 snapshot relation. It records every matching
+	// external_effect_job, including the zero- and multi-job cases.
+	EffectJobs []effectJobRelation `json:"effect_jobs"`
+	// These fields occur only in a sealed v1 snapshot. They keep that immutable
+	// legacy artifact readable without reinterpreting its source digest.
+	EffectJobID *int64  `json:"effect_job_id,omitempty"`
+	EffectState *string `json:"effect_state,omitempty"`
 }
 type outboxRow struct {
 	ID            int64           `json:"id"`
@@ -252,23 +267,41 @@ func extract(ctx context.Context, pool *pgxpool.Pool, revision string) (snapshot
 		return snapshot{}, errors.New("read source external_push_config")
 	}
 	rows.Close()
-	rows, err = tx.Query(ctx, `SELECT d.id,d.config_id,d.event_type,d.delivery_id,d.target_type,d.target_id,d.order_id,d.product_id,d.status,d.attempt_count,d.request_url,d.request_headers,d.request_body,d.response_status,d.response_body,d.error_message,d.next_retry_at,d.created_at,d.updated_at,j.id,j.status FROM external_push_delivery d LEFT JOIN external_effect_job j ON j.target_type='external_push_delivery' AND j.target_id=d.delivery_id AND j.effect_type IN ('webhook.order_paid.push','webhook.generic.push') ORDER BY d.id,j.id`)
+	rows, err = tx.Query(ctx, `SELECT d.id,d.config_id,d.event_type,d.delivery_id,d.target_type,d.target_id,d.order_id,d.product_id,d.status,d.attempt_count,d.request_url,d.request_headers,d.request_body,d.response_status,d.response_body,d.error_message,d.next_retry_at,d.created_at,d.updated_at,j.id,j.effect_type,j.status FROM external_push_delivery d LEFT JOIN external_effect_job j ON j.target_type='external_push_delivery' AND j.target_id=d.delivery_id AND j.effect_type IN ('webhook.order_paid.push','webhook.generic.push') ORDER BY d.id,j.id`)
 	if err != nil {
 		return snapshot{}, errors.New("source external_push_delivery or external_effect_job contract unavailable")
 	}
-	seenDelivery := map[int64]bool{}
+	var current *deliveryRow
 	for rows.Next() {
 		var item deliveryRow
-		if err = rows.Scan(&item.ID, &item.ConfigID, &item.EventType, &item.DeliveryID, &item.TargetType, &item.TargetID, &item.OrderID, &item.ProductID, &item.Status, &item.AttemptCount, &item.RequestURL, &item.RequestHeaders, &item.RequestBody, &item.ResponseStatus, &item.ResponseBody, &item.ErrorMessage, &item.NextRetryAt, &item.CreatedAt, &item.UpdatedAt, &item.EffectJobID, &item.EffectState); err != nil {
+		var effectJobID *int64
+		var effectType, effectState *string
+		if err = rows.Scan(&item.ID, &item.ConfigID, &item.EventType, &item.DeliveryID, &item.TargetType, &item.TargetID, &item.OrderID, &item.ProductID, &item.Status, &item.AttemptCount, &item.RequestURL, &item.RequestHeaders, &item.RequestBody, &item.ResponseStatus, &item.ResponseBody, &item.ErrorMessage, &item.NextRetryAt, &item.CreatedAt, &item.UpdatedAt, &effectJobID, &effectType, &effectState); err != nil {
 			rows.Close()
 			return snapshot{}, errors.New("source external_push_delivery contract drift")
 		}
-		if seenDelivery[item.ID] {
-			rows.Close()
-			return snapshot{}, errors.New("source delivery effect relation ambiguous")
+		if current == nil || current.ID != item.ID {
+			if current != nil {
+				s.Deliveries = append(s.Deliveries, *current)
+			}
+			item.EffectJobs = make([]effectJobRelation, 0)
+			current = &item
 		}
-		seenDelivery[item.ID] = true
-		s.Deliveries = append(s.Deliveries, item)
+		if effectJobID == nil {
+			if effectType != nil || effectState != nil {
+				rows.Close()
+				return snapshot{}, errors.New("source external_effect_job contract drift")
+			}
+			continue
+		}
+		if effectType == nil || effectState == nil {
+			rows.Close()
+			return snapshot{}, errors.New("source external_effect_job contract drift")
+		}
+		current.EffectJobs = append(current.EffectJobs, effectJobRelation{ID: *effectJobID, EffectType: *effectType, State: *effectState})
+	}
+	if current != nil {
+		s.Deliveries = append(s.Deliveries, *current)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
@@ -361,6 +394,7 @@ func normalize(s *snapshot) {
 		}
 		s.Deliveries[i].RequestHeaders = canonicalRaw(s.Deliveries[i].RequestHeaders)
 		s.Deliveries[i].RequestBody = canonicalRaw(s.Deliveries[i].RequestBody)
+		sort.Slice(s.Deliveries[i].EffectJobs, func(a, b int) bool { return s.Deliveries[i].EffectJobs[a].ID < s.Deliveries[i].EffectJobs[b].ID })
 	}
 	for i := range s.Outbox {
 		s.Outbox[i].CreatedAt = s.Outbox[i].CreatedAt.UTC()
@@ -380,7 +414,7 @@ func canonicalRaw(raw json.RawMessage) json.RawMessage {
 	return append(json.RawMessage(nil), out.Bytes()...)
 }
 func validate(s snapshot) error {
-	if s.Manifest.SchemaVersion != schemaVersion || s.Manifest.SourceSystem != sourceSystem || !revisionPattern.MatchString(s.Manifest.SourceRevision) || s.Manifest.SnapshotAt.IsZero() || len(s.Manifest.Counts) != 3 || len(s.Manifest.Digests) != 3 || s.Manifest.Counts["configs"] != len(s.Configs) || s.Manifest.Counts["deliveries"] != len(s.Deliveries) || s.Manifest.Counts["domain_event_outbox"] != len(s.Outbox) {
+	if (s.Manifest.SchemaVersion != schemaVersion && s.Manifest.SchemaVersion != legacySchemaVersion) || s.Manifest.SourceSystem != sourceSystem || !revisionPattern.MatchString(s.Manifest.SourceRevision) || s.Manifest.SnapshotAt.IsZero() || len(s.Manifest.Counts) != 3 || len(s.Manifest.Digests) != 3 || s.Manifest.Counts["configs"] != len(s.Configs) || s.Manifest.Counts["deliveries"] != len(s.Deliveries) || s.Manifest.Counts["domain_event_outbox"] != len(s.Outbox) {
 		return errors.New("invalid source snapshot")
 	}
 	sets := map[string]any{"configs": s.Configs, "deliveries": s.Deliveries, "domain_event_outbox": s.Outbox}
@@ -399,8 +433,24 @@ func validate(s snapshot) error {
 		seen["configs"][x.ID] = true
 	}
 	for _, x := range s.Deliveries {
-		if x.ID < 1 || seen["deliveries"][x.ID] || x.ConfigID < 1 || !validText(x.EventType, 160) || !validText(x.DeliveryID, 200) || !validText(x.TargetType, 120) || !validText(x.TargetID, 240) || !validText(x.Status, 80) || x.AttemptCount < 0 || !validText(x.RequestURL, 4000) || !validText(x.ResponseBody, 16000) || !validText(x.ErrorMessage, 2000) || (x.ResponseStatus != nil && (*x.ResponseStatus < 100 || *x.ResponseStatus > 599)) || x.CreatedAt.IsZero() || x.UpdatedAt.IsZero() || !jsonObject(x.RequestHeaders) || !jsonObject(x.RequestBody) || x.EffectState != nil && !validText(*x.EffectState, 80) {
+		if x.ID < 1 || seen["deliveries"][x.ID] || x.ConfigID < 1 || !validText(x.EventType, 160) || !validText(x.DeliveryID, 200) || !validText(x.TargetType, 120) || !validText(x.TargetID, 240) || !validText(x.Status, 80) || x.AttemptCount < 0 || !validText(x.RequestURL, 4000) || !validText(x.ResponseBody, 16000) || !validText(x.ErrorMessage, 2000) || (x.ResponseStatus != nil && (*x.ResponseStatus < 100 || *x.ResponseStatus > 599)) || x.CreatedAt.IsZero() || x.UpdatedAt.IsZero() || !jsonObject(x.RequestHeaders) || !jsonObject(x.RequestBody) {
 			return errors.New("invalid source snapshot")
+		}
+		if s.Manifest.SchemaVersion == legacySchemaVersion {
+			if x.EffectJobs != nil || (x.EffectJobID == nil) != (x.EffectState == nil) || (x.EffectState != nil && !validText(*x.EffectState, 80)) {
+				return errors.New("invalid source snapshot")
+			}
+		} else {
+			if x.EffectJobs == nil || x.EffectJobID != nil || x.EffectState != nil {
+				return errors.New("invalid source snapshot")
+			}
+			seenJobs := map[int64]bool{}
+			for _, job := range x.EffectJobs {
+				if job.ID < 1 || seenJobs[job.ID] || !validDeliveryEffectType(job.EffectType) || !validText(job.State, 80) {
+					return errors.New("invalid source snapshot")
+				}
+				seenJobs[job.ID] = true
+			}
 		}
 		seen["deliveries"][x.ID] = true
 	}
@@ -418,6 +468,10 @@ func validText(v string, max int) bool {
 func jsonObject(raw json.RawMessage) bool {
 	var x map[string]json.RawMessage
 	return json.Unmarshal(raw, &x) == nil
+}
+
+func validDeliveryEffectType(value string) bool {
+	return value == "webhook.order_paid.push" || value == "webhook.generic.push"
 }
 
 func facts(s snapshot) []historyFact {
@@ -441,13 +495,40 @@ func facts(s snapshot) []historyFact {
 			// source_system/source_key pair through its stable read Port.
 			orderKind, orderScope, orderKey = "wechat_pay_order", "commerce-history", strconv.FormatInt(*orderID, 10)
 		}
-		out = append(out, historyFact{kind: "delivery", id: x.ID, configID: &configID, deliveryID: x.DeliveryID, eventType: x.EventType, targetType: x.TargetType, targetID: x.TargetID, orderKind: orderKind, orderScope: orderScope, orderKey: orderKey, orderID: orderID, productID: productPtr, state: x.Status, attempts: x.AttemptCount, effectID: x.EffectJobID, effectState: x.EffectState, responseStatus: x.ResponseStatus, errorMessage: x.ErrorMessage, responseBodyProtected: x.ResponseBody != "", created: x.CreatedAt, updated: x.UpdatedAt, canonical: x})
+		effectID, effectState := deliveryEffectProjection(x)
+		out = append(out, historyFact{kind: "delivery", id: x.ID, configID: &configID, deliveryID: x.DeliveryID, eventType: x.EventType, targetType: x.TargetType, targetID: x.TargetID, orderKind: orderKind, orderScope: orderScope, orderKey: orderKey, orderID: orderID, productID: productPtr, state: x.Status, attempts: x.AttemptCount, effectID: effectID, effectState: effectState, responseStatus: x.ResponseStatus, errorMessage: x.ErrorMessage, responseBodyProtected: x.ResponseBody != "", created: x.CreatedAt, updated: x.UpdatedAt, canonical: x})
 	}
 	for _, x := range s.Outbox {
 		out = append(out, historyFact{kind: "domain_event_outbox", id: x.ID, eventType: x.EventType, targetType: x.AggregateType, targetID: x.AggregateID, state: x.Status, attempts: x.RetryCount, created: x.CreatedAt, updated: x.UpdatedAt, canonical: x})
 	}
 	return out
 }
+func deliveryEffectProjection(row deliveryRow) (*int64, *string) {
+	if row.EffectJobs == nil {
+		return row.EffectJobID, row.EffectState
+	}
+	switch len(row.EffectJobs) {
+	case 0:
+		return nil, nil
+	case 1:
+		id, state := row.EffectJobs[0].ID, row.EffectJobs[0].State
+		return &id, &state
+	default:
+		state := ambiguousEffectRelationState
+		return nil, &state
+	}
+}
+
+func deliveryEffectRelationCount(row deliveryRow) int {
+	if row.EffectJobs != nil {
+		return len(row.EffectJobs)
+	}
+	if row.EffectJobID != nil {
+		return 1
+	}
+	return 0
+}
+
 func boolState(v bool) string {
 	if v {
 		return "enabled"
@@ -469,7 +550,24 @@ func sourceDigest(f historyFact) ([]byte, error) {
 	return sum[:], nil
 }
 func summarizeWithoutTarget(s snapshot) map[string]int {
-	out := map[string]int{"pending": 0, "excluded": len(s.Outbox), "candidates": len(s.Configs) + len(s.Deliveries)}
+	out := map[string]int{
+		"pending":                           0,
+		"excluded":                          len(s.Outbox),
+		"candidates":                        len(s.Configs) + len(s.Deliveries),
+		"delivery_effect_relation_none":     0,
+		"delivery_effect_relation_single":   0,
+		"delivery_effect_relation_multiple": 0,
+	}
+	for _, row := range s.Deliveries {
+		switch deliveryEffectRelationCount(row) {
+		case 0:
+			out["delivery_effect_relation_none"]++
+		case 1:
+			out["delivery_effect_relation_single"]++
+		default:
+			out["delivery_effect_relation_multiple"]++
+		}
+	}
 	return out
 }
 
@@ -798,7 +896,13 @@ func loadFile(path, keyPath string) (snapshot, [32]byte, error) {
 	if err != nil || len(sealed) < aead.NonceSize() {
 		return snapshot{}, [32]byte{}, errors.New("open protected snapshot")
 	}
-	raw, err := aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], []byte(schemaVersion))
+	var raw []byte
+	for _, version := range []string{schemaVersion, legacySchemaVersion} {
+		raw, err = aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], []byte(version))
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return snapshot{}, [32]byte{}, errors.New("open protected snapshot")
 	}
