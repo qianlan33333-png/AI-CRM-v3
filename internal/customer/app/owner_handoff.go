@@ -314,7 +314,7 @@ func (service *OwnerHandoffService) ProcessOwnerHandoffBatch(ctx context.Context
 					return bindErr
 				}
 				for _, item := range work.Lines {
-					if factErr := service.appendProviderAcceptedFacts(txctx, work.ActorID, work.PreviewID, item.OwnerHandoffLine, service.now().UTC()); factErr != nil {
+					if factErr := service.appendProviderQueuedFacts(txctx, work.ActorID, work.PreviewID, item.OwnerHandoffLine, service.now().UTC()); factErr != nil {
 						return factErr
 					}
 				}
@@ -418,16 +418,16 @@ func (service *OwnerHandoffService) appendTransferResultFacts(ctx context.Contex
 	return err
 }
 
-func (service *OwnerHandoffService) appendProviderAcceptedFacts(ctx context.Context, actorID int64, previewID string, line customerport.OwnerHandoffLine, at time.Time) error {
+func (service *OwnerHandoffService) appendProviderQueuedFacts(ctx context.Context, actorID int64, previewID string, line customerport.OwnerHandoffLine, at time.Time) error {
 	key, err := idempotency.Parse("customer-owner-handoff-provider:" + previewID + ":" + int64String(line.Line))
 	if err != nil {
 		return err
 	}
 	payload, _ := json.Marshal(map[string]any{"mode": "wecom_then_crm", "result": "queued"})
-	if _, err = service.audit.Append(ctx, platformaudit.Event{IdempotencyKey: key, Action: "customer.owner_handoff.wecom_accepted", ActorType: "admin", ActorID: int64String(actorID), ResourceType: "customer", ResourceID: int64String(int64(line.CustomerID)), Payload: payload, OccurredAt: at}); err != nil && !errors.Is(err, platformaudit.ErrDuplicateEvent) {
+	if _, err = service.audit.Append(ctx, platformaudit.Event{IdempotencyKey: key, Action: "customer.owner_handoff.wecom_queued", ActorType: "admin", ActorID: int64String(actorID), ResourceType: "customer", ResourceID: int64String(int64(line.CustomerID)), Payload: payload, OccurredAt: at}); err != nil && !errors.Is(err, platformaudit.ErrDuplicateEvent) {
 		return err
 	}
-	_, err = service.outbox.Append(ctx, platformoutbox.Event{AggregateType: "customer", AggregateID: int64String(int64(line.CustomerID)), Type: "customer.owner_handoff.wecom_accepted.v1", Version: 1, IdempotencyKey: string(key), Payload: payload, OccurredAt: at})
+	_, err = service.outbox.Append(ctx, platformoutbox.Event{AggregateType: "customer", AggregateID: int64String(int64(line.CustomerID)), Type: "customer.owner_handoff.wecom_queued.v1", Version: 1, IdempotencyKey: string(key), Payload: payload, OccurredAt: at})
 	return err
 }
 

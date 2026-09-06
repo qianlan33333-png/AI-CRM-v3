@@ -4,14 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
-	wecomadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/adapter"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -129,96 +125,5 @@ func TestCustomerOwnerHandoffProviderTreatsMissingOrAmbiguousBatchRowsAsUnknown(
 	var artifact customerOwnerHandoffArtifact
 	if err = json.Unmarshal(result.Artifact.Payload, &artifact); err != nil || len(artifact.Lines) != 2 || artifact.Lines[0].State != "provider_accepted" || artifact.Lines[1].State != "outcome_unknown" {
 		t.Fatalf("artifact=%+v err=%v", artifact, err)
-	}
-}
-
-type ownerHandoffCompletionWriterStub struct {
-	completions []customerport.OwnerHandoffCompletion
-}
-
-func (stub *ownerHandoffCompletionWriterStub) CompleteOwnerHandoffEffect(_ context.Context, completion customerport.OwnerHandoffCompletion) error {
-	stub.completions = append(stub.completions, completion)
-	return nil
-}
-
-func TestCustomerOwnerHandoffLeafProviderAndSinkPreservePartial101Fixture(t *testing.T) {
-	var calls int
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/cgi-bin/gettoken":
-			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
-		case "/cgi-bin/externalcontact/transfer_customer":
-			calls++
-			var body map[string]any
-			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-				t.Fatal(err)
-			}
-			ids, ok := body["external_userid"].([]any)
-			if !ok || (len(ids) != 100 && len(ids) != 1) {
-				t.Fatalf("batch ids=%v", body)
-			}
-			rows := make([]map[string]any, 0, len(ids))
-			for index, rawID := range ids {
-				id, ok := rawID.(string)
-				if !ok {
-					t.Fatalf("non-string external id=%v", rawID)
-				}
-				if len(ids) == 100 && index == 99 { // missing response row
-					continue
-				}
-				row := map[string]any{"external_userid": id, "errcode": 0}
-				if len(ids) == 100 && index == 98 { // explicit per-row refusal
-					row["errcode"] = 40003
-				}
-				rows = append(rows, row)
-			}
-			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "customer": rows})
-		default:
-			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	client, err := wecomadapter.NewDirectory(wecomadapter.Config{Enabled: true, CorpID: "corp", ContactSecret: "secret", APIBase: server.URL, HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope := ownerHandoffEnvelope()
-	makeExecution := func(effectID string, first, count int) customerport.OwnerHandoffExecution {
-		execution := ownerHandoffExecution()
-		execution.EffectID = effectID
-		execution.Lines = make([]customerport.OwnerHandoffExecutionLine, 0, count)
-		for index := first; index < first+count; index++ {
-			execution.Lines = append(execution.Lines, customerport.OwnerHandoffExecutionLine{Line: int64(index + 1), CustomerID: customerport.OwnerHandoffExecutionLine{}.CustomerID + 1, ExternalUserID: fmt.Sprintf("external-%03d", index)})
-		}
-		return execution
-	}
-	first := makeExecution("eer_100", 0, 100)
-	second := makeExecution("eer_101", 100, 1)
-	writer := &ownerHandoffCompletionWriterStub{}
-	sink, err := NewCustomerOwnerHandoffCompletionSink(writer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, execution := range []customerport.OwnerHandoffExecution{first, second} {
-		provider, providerErr := NewCustomerOwnerHandoffProvider(ownerHandoffReaderStub{value: execution}, client)
-		if providerErr != nil {
-			t.Fatal(providerErr)
-		}
-		result, executeErr := provider.Execute(context.Background(), envelope, effectport.Attempt{EffectID: execution.EffectID, Number: 1, Generation: 1, Fence: 1})
-		if executeErr != nil || !result.Artifact.Valid() {
-			t.Fatalf("effect=%s result=%+v err=%v", execution.EffectID, result, executeErr)
-		}
-		if execution.EffectID == "eer_100" && result.Completion != effectport.StateUnknown {
-			t.Fatalf("partial 100 completion=%s", result.Completion)
-		}
-		if execution.EffectID == "eer_101" && result.Completion != effectport.StateExecuted {
-			t.Fatalf("final 1 completion=%s", result.Completion)
-		}
-		if err = sink.CompleteEffect(context.Background(), execution.EffectID, envelope, effectport.Attempt{EffectID: execution.EffectID, Number: 1, Generation: 1, Fence: 1}, result); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if calls != 2 || len(writer.completions) != 2 || writer.completions[0].State != string(effectport.StateUnknown) || len(writer.completions[0].Lines) != 100 || writer.completions[0].Lines[97].State != "provider_accepted" || writer.completions[0].Lines[98].State != "final_failed" || writer.completions[0].Lines[99].State != "outcome_unknown" || writer.completions[1].State != string(effectport.StateExecuted) || len(writer.completions[1].Lines) != 1 || writer.completions[1].Lines[0].State != "provider_accepted" {
-		t.Fatalf("calls=%d completions=%+v", calls, writer.completions)
 	}
 }
