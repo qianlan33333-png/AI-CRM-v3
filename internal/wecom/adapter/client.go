@@ -707,22 +707,46 @@ func (client *Client) SendWelcomeMessage(ctx context.Context, welcomeCode, text 
 
 // AddContactTag is the only customer-tag mutation exposed by the WeCom
 // adapter. Every identifier is obtained from trusted local adapters.
+func classifyContactTagWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var responseErr *providerResponseError
+	if errors.As(err, &responseErr) {
+		// The response was parsed, so a business rejection is final and a
+		// 429/5xx response is retry-safe. Neither outcome is uncertain.
+		return wecomport.WrapProviderWriteDisposition(err, true, false, responseErr.retryable)
+	}
+	// A transport error after submit has no trustworthy Provider outcome.
+	return wecomport.WrapProviderWriteDisposition(err, true, true, false)
+}
+
 func (client *Client) AddContactTag(ctx context.Context, employeeID, externalUserID, providerTagID string) error {
-	if !client.DirectoryReady() || invalid(employeeID) || invalid(externalUserID) || invalid(providerTagID) {
+	return client.MarkContactTags(ctx, employeeID, externalUserID, []string{providerTagID}, nil)
+}
+
+// MarkContactTags is the single WeCom mark_tag leaf shared by legacy Channel
+// entry_tag and Customer-owned generic tag commands.
+func (client *Client) MarkContactTags(ctx context.Context, employeeID, externalUserID string, addTagIDs, removeTagIDs []string) error {
+	if !client.DirectoryReady() || invalid(employeeID) || invalid(externalUserID) || (len(addTagIDs) == 0 && len(removeTagIDs) == 0) || len(addTagIDs)+len(removeTagIDs) > 100 {
 		return ErrUnavailable
+	}
+	for _, id := range append(append([]string(nil), addTagIDs...), removeTagIDs...) {
+		if invalid(id) {
+			return ErrUnavailable
+		}
 	}
 	token, err := client.contactAccessToken(ctx)
 	if err != nil {
 		return wecomport.WrapProviderWriteError(err, false)
 	}
-	body, err := json.Marshal(map[string]any{"userid": employeeID, "external_userid": externalUserID, "add_tag": []string{providerTagID}, "remove_tag": []string{}})
+	body, err := json.Marshal(map[string]any{"userid": employeeID, "external_userid": externalUserID, "add_tag": addTagIDs, "remove_tag": removeTagIDs})
 	if err != nil {
 		return ErrResponse
 	}
 	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/mark_tag", url.Values{"access_token": {token}}, body)
-	return wecomport.WrapProviderWriteError(err, true)
+	return classifyContactTagWriteError(err)
 }
-
 func (client *Client) ListManagedAcquisitionLinks(ctx context.Context, cursor string, limit int) (wecomport.CustomerAcquisitionLinkPage, error) {
 	if !client.DirectoryReady() || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
 		return wecomport.CustomerAcquisitionLinkPage{}, ErrUnavailable

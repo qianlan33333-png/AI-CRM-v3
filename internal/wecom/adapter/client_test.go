@@ -713,3 +713,43 @@ func assertSignature(t *testing.T, signature, ticket, nonce string, timestamp in
 }
 
 func strconvFormat(value int64) string { return strconv.FormatInt(value, 10) }
+
+func TestClientMarkContactTagsClassifiesDefiniteRejectionAndDisconnect(t *testing.T) {
+	for _, fixture := range []struct {
+		name               string
+		mark               func(http.ResponseWriter, *http.Request)
+		unknown, retryable bool
+	}{
+		{name: "provider business rejection", mark: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"errcode":40003,"errmsg":"invalid user"}`))
+		}, unknown: false, retryable: false},
+		{name: "disconnect after request", mark: func(w http.ResponseWriter, r *http.Request) {
+			connection, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				_ = connection.Close()
+			}
+		}, unknown: true, retryable: false},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/cgi-bin/gettoken":
+					_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+				case "/cgi-bin/externalcontact/mark_tag":
+					fixture.mark(w, r)
+				default:
+					t.Fatalf("unexpected endpoint=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.MarkContactTags(context.Background(), "staff-1", "external-1", []string{"tag-1"}, nil)
+			if err == nil || !wecomport.ProviderCallAttempted(err) || wecomport.ProviderOutcomeUnknown(err) != fixture.unknown || wecomport.ProviderRetryable(err) != fixture.retryable {
+				t.Fatalf("err=%T %v attempted=%t unknown=%t retryable=%t", err, err, wecomport.ProviderCallAttempted(err), wecomport.ProviderOutcomeUnknown(err), wecomport.ProviderRetryable(err))
+			}
+		})
+	}
+}

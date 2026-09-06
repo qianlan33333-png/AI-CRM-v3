@@ -4,7 +4,7 @@
   const root = document.querySelector("[data-customer-directory-root]");
   if (!root) return;
 
-  const api = { customers: root.dataset.customersUrl, sync: root.dataset.syncUrl };
+  const api = { customers: root.dataset.customersUrl, sync: root.dataset.syncUrl, tagPreview: root.dataset.tagPreviewUrl, tagCommand: root.dataset.tagCommandUrl };
   const byID = (id) => document.getElementById(id);
   const el = {
     alert: byID("customer-page-alert"),
@@ -20,6 +20,10 @@
     body: byID("customer-list-body"),
     previous: byID("customer-prev-page"),
     next: byID("customer-next-page"),
+    batchTags: byID("customer-tag-batch"),
+    batchTagResult: byID("customer-tag-batch-result"),
+    singleTags: byID("customer-tag-single"),
+    singleTagResult: byID("customer-tag-single-result"),
     profileName: byID("customer-profile-name"),
     detailState: byID("customer-detail-state"),
     detailContent: byID("customer-detail-content"),
@@ -37,6 +41,7 @@
   let pageCursors = [""];
   let detailID = "";
   let clearPhoneTimer = 0;
+  const selectedCustomers = new Set();
 
   function csrf() {
     const name = "aicrm_admin_csrf=";
@@ -167,8 +172,64 @@
     el.wrap.hidden = true;
   }
 
+  function tagIDs(value) {
+    const values = String(value || "").split(",").map((item) => Number(item.trim())).filter((id) => Number.isSafeInteger(id) && id > 0);
+    const unique = [...new Set(values)].sort((a, b) => a - b);
+    return unique.length === values.length && unique.length <= 100 ? unique : null;
+  }
+
+  function commandKey() {
+    return "customer-tag-ui-" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(16).slice(2));
+  }
+
+  function commandSummary(preview) {
+    const lines = preview.lines || [];
+    const eligible = lines.filter((line) => line.state === "eligible").length;
+    const rejected = lines.filter((line) => line.state === "rejected").length;
+    return "可执行 " + eligible + " 位客户，拒绝 " + rejected + " 位。确认后会再次核验当前跟进人与标签映射。";
+  }
+
+  async function loadTagHistory(customerID, resultNode) {
+    try {
+      const value = await request("/api/v1/customers/" + encodeURIComponent(customerID) + "/tag-commands?limit=5");
+      const latest = (value.items || [])[0];
+      if (latest && resultNode) resultNode.textContent = "最近命令状态：" + latest.state + "。";
+    } catch (_error) {}
+  }
+
+  async function previewAndConfirm(customerIDs, form, resultNode) {
+    const add = tagIDs(new FormData(form).get("add_tag_ids"));
+    const remove = tagIDs(new FormData(form).get("remove_tag_ids"));
+    if (!customerIDs.length || add === null || remove === null || (!add.length && !remove.length) || add.some((id) => remove.includes(id))) {
+      if (resultNode) resultNode.textContent = "请选择客户，并填写不重复的本地标签编号。";
+      return;
+    }
+    const key = commandKey();
+    const payload = { customer_ids: customerIDs, add_tag_ids: add, remove_tag_ids: remove, idempotency_key: key };
+    try {
+      const headers = { "X-CSRF-Token": csrf(), "Idempotency-Key": key };
+      const preview = await request(api.tagPreview, { method: "POST", headers, body: JSON.stringify(payload) });
+      const summary = commandSummary(preview);
+      if (resultNode) resultNode.textContent = summary;
+      if (!window.confirm(summary)) return;
+      const accepted = await request(api.tagCommand, { method: "POST", headers, body: JSON.stringify(payload) });
+      if (resultNode) resultNode.textContent = "已受理：" + (accepted.lines || []).length + " 条本地命令；等待企微执行观察回读。";
+      if (detailID) await loadTagHistory(detailID, resultNode);
+    } catch (error) {
+      if (resultNode) resultNode.textContent = error && error.message ? "标签命令未受理：" + error.message : "标签命令未受理。";
+    }
+  }
+
   function listRow(item) {
     const row = document.createElement("tr");
+    const select = document.createElement("td");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedCustomers.has(String(item.customer_id));
+    checkbox.setAttribute("aria-label", "选择客户 " + item.customer_id);
+    checkbox.addEventListener("change", () => { if (checkbox.checked) selectedCustomers.add(String(item.customer_id)); else selectedCustomers.delete(String(item.customer_id)); });
+    select.append(checkbox);
+    row.append(select);
     const customer = document.createElement("td");
     const cell = document.createElement("div");
     cell.className = "admin-customer-cell";
@@ -379,6 +440,8 @@
     }
   }
 
+  if (el.batchTags) el.batchTags.addEventListener("submit", function (event) { event.preventDefault(); void previewAndConfirm([...selectedCustomers].map(Number), el.batchTags, el.batchTagResult); });
+  if (el.singleTags) el.singleTags.addEventListener("submit", function (event) { event.preventDefault(); if (detailID) void previewAndConfirm([Number(detailID)], el.singleTags, el.singleTagResult); });
   if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); loadList("", "reset"); });
   if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); loadList("", "reset"); });
   if (el.refresh) el.refresh.addEventListener("click", function () { loadList(pageCursors[pageIndex], "refresh"); });

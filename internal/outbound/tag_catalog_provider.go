@@ -160,6 +160,7 @@ type ProviderRouter struct {
 	automationMessage effect.ProviderAdapter
 	sidebarJSSDK      effect.ProviderAdapter
 	surveyCompletion  effect.ProviderAdapter
+	customerTag       effect.ProviderAdapter
 }
 
 func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {
@@ -192,6 +193,13 @@ func (r *ProviderRouter) WithSidebarJSSDK(provider effect.ProviderAdapter) *Prov
 // WithSurveyCompletion installs the only outbound route for the opaque Survey
 // completion effect. It may be a disabled provider; the router never falls
 // back to a different outbound kind.
+func (r *ProviderRouter) WithCustomerTag(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.customerTag = provider
+	}
+	return r
+}
+
 func (r *ProviderRouter) WithSurveyCompletion(provider effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.surveyCompletion = provider

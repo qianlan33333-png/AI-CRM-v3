@@ -49,6 +49,8 @@ type Config struct {
 	Timeline          customerport.CustomerTimelineReader
 	Chat              customerport.CustomerChatActivityReader
 	Orders            orderport.CustomerOrderSummaryReader
+	TagCommands       customerport.TagCommandSubmitter
+	TagHistory        customerport.TagCommandHistoryReader
 	ProfileSigningKey []byte
 }
 
@@ -67,6 +69,8 @@ type Handler struct {
 	timeline          customerport.CustomerTimelineReader
 	chat              customerport.CustomerChatActivityReader
 	orders            orderport.CustomerOrderSummaryReader
+	tagCommands       customerport.TagCommandSubmitter
+	tagHistory        customerport.TagCommandHistoryReader
 	profileSigningKey []byte
 }
 
@@ -77,7 +81,7 @@ func NewHandler(config Config) (*Handler, error) {
 	}
 	return &Handler{uow: config.UnitOfWork, auth: config.Auth, csrf: config.CSRF, directory: config.Directory,
 		store: config.Store, identities: config.Identities, audit: config.Audit, canonical: config.Canonical,
-		owners: config.Owners, tags: config.Tags, surveys: config.Surveys, timeline: config.Timeline, chat: config.Chat, orders: config.Orders,
+		owners: config.Owners, tags: config.Tags, tagCommands: config.TagCommands, tagHistory: config.TagHistory, surveys: config.Surveys, timeline: config.Timeline, chat: config.Chat, orders: config.Orders,
 		profileSigningKey: append([]byte(nil), config.ProfileSigningKey...)}, nil
 }
 
@@ -669,6 +673,12 @@ func (handler *Handler) writeError(response nethttp.ResponseWriter, err error) {
 		status, code = nethttp.StatusNotFound, "customer_not_found"
 	case errors.Is(err, customerapp.ErrInvalidQuery), errors.Is(err, customerapp.ErrInvalidCursor), errors.Is(err, identitydomain.ErrInvalidReference):
 		status, code = nethttp.StatusBadRequest, "invalid_request"
+	case errors.Is(err, customerport.ErrTagCommandInvalid):
+		status, code = nethttp.StatusBadRequest, "invalid_tag_command"
+	case errors.Is(err, customerport.ErrTagCommandConflict):
+		status, code = nethttp.StatusConflict, "tag_command_conflict"
+	case errors.Is(err, customerport.ErrTagCommandUnavailable):
+		status, code = nethttp.StatusConflict, "tag_command_unavailable"
 	case errors.Is(err, customerport.ErrCapabilityNotReady):
 		status, code = nethttp.StatusServiceUnavailable, "capability_not_ready"
 	case errors.Is(err, customerport.ErrSectionUnavailable):
@@ -682,3 +692,173 @@ func writeJSON(response nethttp.ResponseWriter, status int, payload any) {
 	response.WriteHeader(status)
 	_ = json.NewEncoder(response).Encode(payload)
 }
+
+// TagCommandRoutes exposes the frozen Contact compatibility URLs plus the
+// batch endpoint. They are mounted as exact paths by cmd/aicrm ahead of the
+// broader Survey compatibility subtree.
+func (handler *Handler) TagCommandRoutes() nethttp.Handler {
+	mux := nethttp.NewServeMux()
+	mux.HandleFunc("PUT /api/v1/customers/{customer_id}/tags/{tag_id}", handler.addTag)
+	mux.HandleFunc("DELETE /api/v1/customers/{customer_id}/tags/{tag_id}", handler.removeTag)
+	mux.HandleFunc("POST /api/v1/customer-tag-commands", handler.batchTags)
+	mux.HandleFunc("POST /api/v1/customer-tag-commands/preview", handler.previewTags)
+	mux.HandleFunc("GET /api/v1/customers/{customer_id}/tag-commands", handler.tagCommandHistory)
+	return mux
+}
+
+type tagCommandRequest struct {
+	CustomerIDs    []int64 `json:"customer_ids"`
+	AddTagIDs      []int64 `json:"add_tag_ids"`
+	RemoveTagIDs   []int64 `json:"remove_tag_ids"`
+	IdempotencyKey string  `json:"idempotency_key"`
+}
+
+func (handler *Handler) addTag(w nethttp.ResponseWriter, r *nethttp.Request) {
+	tagID, err := positiveID(r.PathValue("tag_id"))
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	handler.submitTagCommand(w, r, tagCommandRequest{CustomerIDs: []int64{mustPathCustomerID(r.PathValue("customer_id"))}, AddTagIDs: []int64{tagID}, IdempotencyKey: r.Header.Get("Idempotency-Key")})
+}
+func (handler *Handler) removeTag(w nethttp.ResponseWriter, r *nethttp.Request) {
+	tagID, err := positiveID(r.PathValue("tag_id"))
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	handler.submitTagCommand(w, r, tagCommandRequest{CustomerIDs: []int64{mustPathCustomerID(r.PathValue("customer_id"))}, RemoveTagIDs: []int64{tagID}, IdempotencyKey: r.Header.Get("Idempotency-Key")})
+}
+func (handler *Handler) previewTags(w nethttp.ResponseWriter, r *nethttp.Request) {
+	preview, ok := handler.tagCommands.(customerport.TagCommandPreviewer)
+	if !ok {
+		handler.writeError(w, customerport.ErrTagCommandUnavailable)
+		return
+	}
+	var request tagCommandRequest
+	if err := json.NewDecoder(nethttp.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
+		handler.writeError(w, customerapp.ErrInvalidQuery)
+		return
+	}
+	command, err := handler.tagCommandFromRequest(r, request)
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	result, err := preview.PreviewTagCommand(r.Context(), command)
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	writePrivateJSON(w, nethttp.StatusOK, result)
+}
+
+func (handler *Handler) batchTags(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var request tagCommandRequest
+	if err := json.NewDecoder(nethttp.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
+		handler.writeError(w, customerapp.ErrInvalidQuery)
+		return
+	}
+	handler.submitTagCommand(w, r, request)
+}
+func (handler *Handler) submitTagCommand(w nethttp.ResponseWriter, r *nethttp.Request, request tagCommandRequest) {
+	if handler.tagCommands == nil {
+		handler.writeError(w, customerport.ErrTagCommandUnavailable)
+		return
+	}
+	command, err := handler.tagCommandFromRequest(r, request)
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	result, err := handler.tagCommands.SubmitTagCommand(r.Context(), command)
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	writePrivateJSON(w, nethttp.StatusAccepted, result)
+}
+func (handler *Handler) tagCommandFromRequest(r *nethttp.Request, request tagCommandRequest) (customerport.TagCommand, error) {
+	principal, err := handler.csrf.AuthorizeCSRF(r.Context(), r)
+	if err != nil {
+		return customerport.TagCommand{}, err
+	}
+	if !hasRole(principal, accessdomain.RoleAdmin) && !hasRole(principal, accessdomain.RoleSuperAdmin) {
+		return customerport.TagCommand{}, accessdomain.ErrPermissionDenied
+	}
+	if request.IdempotencyKey == "" {
+		request.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	}
+	if _, err = idempotency.Parse(request.IdempotencyKey); err != nil {
+		return customerport.TagCommand{}, customerport.ErrTagCommandInvalid
+	}
+	targets := make([]customerport.TagCommandTarget, 0, len(request.CustomerIDs))
+	for _, raw := range request.CustomerIDs {
+		if raw < 1 {
+			return customerport.TagCommand{}, customerport.ErrTagCommandInvalid
+		}
+		canonical, resolveErr := handler.resolveCanonical(r.Context(), customerdomain.CustomerID(raw))
+		if resolveErr != nil {
+			return customerport.TagCommand{}, resolveErr
+		}
+		targets = append(targets, customerport.TagCommandTarget{CustomerID: canonical, AddTagIDs: append([]int64(nil), request.AddTagIDs...), RemoveTagIDs: append([]int64(nil), request.RemoveTagIDs...)})
+	}
+	return customerport.TagCommand{ActorAdminUserID: principal.InternalID, Source: "admin_customer_ui", SourceRef: request.IdempotencyKey, IdempotencyKey: request.IdempotencyKey, Targets: targets, OccurredAt: time.Now().UTC()}, nil
+}
+
+func (handler *Handler) tagCommandHistory(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if handler.tagHistory == nil {
+		handler.writeError(w, customerport.ErrTagCommandUnavailable)
+		return
+	}
+	principal, err := handler.auth.Authenticate(r.Context(), r)
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	if !hasRole(principal, accessdomain.RoleAdmin) && !hasRole(principal, accessdomain.RoleSuperAdmin) {
+		handler.writeError(w, accessdomain.ErrPermissionDenied)
+		return
+	}
+	id, err := positiveID(r.PathValue("customer_id"))
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	canonical, err := handler.resolveCanonical(r.Context(), customerdomain.CustomerID(id))
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 || parsed > 100 {
+			handler.writeError(w, customerport.ErrTagCommandInvalid)
+			return
+		}
+		limit = parsed
+	}
+	var result []customerport.TagCommandResult
+	err = handler.uow.Within(r.Context(), func(tx context.Context) error {
+		var readErr error
+		result, readErr = handler.tagHistory.ListTagCommands(tx, canonical, limit)
+		return readErr
+	})
+	if err != nil {
+		handler.writeError(w, err)
+		return
+	}
+	writePrivateJSON(w, nethttp.StatusOK, map[string]any{"items": result})
+}
+
+func (handler *Handler) resolveCanonical(ctx context.Context, id customerdomain.CustomerID) (customerdomain.CustomerID, error) {
+	var result customerport.CanonicalCustomer
+	err := handler.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		result, e = handler.canonical.ResolveCanonicalCustomer(tx, id)
+		return e
+	})
+	return result.CustomerID, err
+}
+func mustPathCustomerID(raw string) int64 { value, _ := strconv.ParseInt(raw, 10, 64); return value }

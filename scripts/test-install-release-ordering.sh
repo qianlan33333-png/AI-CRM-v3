@@ -186,6 +186,7 @@ make_release() {
     0088_order_service_entitlement_alliance.sql \
     0090_survey_oauth_state_redirect.sql \
     0091_survey_assessment_business_keys.sql \
+    0093_customer_tag_commands.sql \
     0094_runtime_config_releases.sql; do
     : > "$release/migrations/$migration"
   done

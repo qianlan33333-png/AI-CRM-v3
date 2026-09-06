@@ -29,3 +29,9 @@ type EntrantActionWriter interface {
 	SendWelcomeMessage(context.Context, string, string, []WelcomeAttachment) error
 	AddContactTag(context.Context, string, string, string) error
 }
+
+// CustomerTagWriter is the narrow Provider-write boundary for the generic
+// Customer command. It carries only trusted values from outbound adapters.
+type CustomerTagWriter interface {
+	MarkContactTags(context.Context, string, string, []string, []string) error
+}

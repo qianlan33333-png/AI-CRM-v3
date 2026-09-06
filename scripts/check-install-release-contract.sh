@@ -110,6 +110,7 @@ for migration_contract in \
   '0088_order_service_entitlement_alliance.sql:service-period alliance' \
   '0090_survey_oauth_state_redirect.sql:Survey OAuth redirect repair' \
   '0091_survey_assessment_business_keys.sql:Survey assessment business key repair' \
+  '0093_customer_tag_commands.sql:Customer tag command runtime' \
   '0094_runtime_config_releases.sql:runtime Config releases'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"

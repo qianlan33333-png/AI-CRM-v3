@@ -50,9 +50,13 @@ async function load(url, requests) {
     pretendToBeVisual: true,
     beforeParse(window) {
       window.Headers = Headers;
+      window.confirm = () => true;
       window.fetch = async (input, options = {}) => {
         const requestURL = new URL(String(input), window.location.origin);
         requests.push({ url: requestURL, options });
+        if (requestURL.pathname === '/api/v1/customer-tag-commands/preview') return response({ state: 'preview', lines: [{ customer_id: 42, state: 'eligible' }] });
+        if (requestURL.pathname === '/api/v1/customer-tag-commands') return response({ state: 'queued', lines: [{ customer_id: 42, state: 'queued', effect_ref: 'eer_42' }] }, 202);
+        if (requestURL.pathname === '/api/v1/customers/42/tag-commands') return response({ items: [{ id: 9, state: 'queued', lines: [{ customer_id: 42, state: 'queued' }] }] });
         if (requestURL.pathname === '/api/admin/customer-sync-runs') return syncPage();
         if (requestURL.pathname === '/api/admin/customers/42/phone-reveal') return response({ phone: '+8613812345678' });
         if (requestURL.pathname === '/api/admin/customers/42/360') {
@@ -100,7 +104,7 @@ try {
   if (document.querySelector('[name="activation_status"]')) fail('activation filter is still rendered');
   if (document.querySelector('.customer-avatar') || document.querySelector('#customer-list-body img')) fail('avatar is still rendered');
   if (!document.querySelector('.admin-filter-bar.admin-form-grid--wide-filters')) fail('donor search bar structure is missing');
-  if (document.querySelectorAll('#customer-list-table-wrap thead th').length !== 5) fail('customer table did not remove the activation column');
+  if (document.querySelectorAll('#customer-list-table-wrap thead th').length !== 6) fail('customer table did not retain the Host selection column and remove activation');
   const rowText = document.querySelector('#customer-list-body')?.textContent || '';
   if (!rowText.includes('138****5678') || rowText.includes('+86') || rowText.includes('declared') || rowText.includes('已激活')) fail('customer row did not use the simplified phone/status presentation');
 
@@ -109,7 +113,19 @@ try {
   await sleep(30);
   const search = listRequests.filter((item) => item.url.pathname === '/api/admin/customers').at(-1);
   if (search?.url.searchParams.get('phone') !== '13812345678') fail('phone search did not send the visible local number');
-  console.log('  ✓ customer list uses visible local phone search and omits avatar/activation/assurance');
+  const selector = document.querySelector('input[aria-label="选择客户 42"]');
+  selector.checked = true;
+  selector.dispatchEvent(new list.window.Event('change', { bubbles: true }));
+  const batch = document.querySelector('#customer-tag-batch');
+  batch.querySelector('[name="add_tag_ids"]').value = '7,8';
+  batch.dispatchEvent(new list.window.Event('submit', { bubbles: true, cancelable: true }));
+  await sleep(30);
+  const tagCalls = listRequests.filter((item) => item.url.pathname.startsWith('/api/v1/customer-tag-commands'));
+  if (tagCalls.length !== 2 || tagCalls[0].url.pathname !== '/api/v1/customer-tag-commands/preview' || tagCalls[1].url.pathname !== '/api/v1/customer-tag-commands') fail('actual Host batch tag preview/confirm did not call the controlled HTTP contract');
+  if (tagCalls[1].options.headers?.get('X-CSRF-Token') !== 'test-csrf') fail('batch tag command lost CSRF');
+  const tagPayload = JSON.parse(tagCalls[1].options.body);
+  if (tagPayload.customer_ids[0] !== 42 || tagPayload.add_tag_ids.join(',') !== '7,8') fail('batch tag command changed selected customer or local tag ids');
+  console.log('  ✓ customer list uses visible local phone search and Host batch tag preview/confirm');
 } finally {
   list.window.close();
 }

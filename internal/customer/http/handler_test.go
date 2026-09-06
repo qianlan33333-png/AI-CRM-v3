@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -263,5 +264,70 @@ func TestCustomer360ContainsOnlyApprovedLocalSections(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("forbidden %q: %s", forbidden, body)
 		}
+	}
+}
+
+type testTagCommands struct{ command customerport.TagCommand }
+
+func (t *testTagCommands) SubmitTagCommand(_ context.Context, command customerport.TagCommand) (customerport.TagCommandResult, error) {
+	t.command = command
+	return customerport.TagCommandResult{ID: 7, State: "queued", Lines: []customerport.TagCommandLine{{CustomerID: command.Targets[0].CustomerID, State: "queued", EffectRef: "eer_7"}}}, nil
+}
+func (t *testTagCommands) SubmitTagCommandWithin(context.Context, customerport.TagCommand) (customerport.TagCommandResult, error) {
+	return customerport.TagCommandResult{}, errors.New("unexpected")
+}
+func TestCustomerTagCompatibilityRouteUsesCSRFAndCanonicalCommand(t *testing.T) {
+	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	h, err := NewHandler(testConfig(security, &testCustomerStore{}, &testIdentities{}, &testAudit{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := &testTagCommands{}
+	h.tagCommands = commands
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/customers/42/tags/9", nil)
+	request.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174000")
+	response := httptest.NewRecorder()
+	h.TagCommandRoutes().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if len(commands.command.Targets) != 1 || commands.command.Targets[0].CustomerID != 42 || len(commands.command.Targets[0].AddTagIDs) != 1 || commands.command.Targets[0].AddTagIDs[0] != 9 {
+		t.Fatalf("command=%+v", commands.command)
+	}
+}
+
+func (t *testTagCommands) PreviewTagCommand(_ context.Context, command customerport.TagCommand) (customerport.TagCommandResult, error) {
+	return customerport.TagCommandResult{State: "preview", Lines: []customerport.TagCommandLine{{CustomerID: command.Targets[0].CustomerID, State: "eligible"}}}, nil
+}
+
+type testTagHistory struct {
+	values []customerport.TagCommandResult
+}
+
+func (h testTagHistory) ListTagCommands(_ context.Context, id customerdomain.CustomerID, limit int) ([]customerport.TagCommandResult, error) {
+	if id != 42 || limit != 20 {
+		return nil, errors.New("unexpected history query")
+	}
+	return h.values, nil
+}
+func TestCustomerTagPreviewAndHistoryRoutesKeepProviderIDsOut(t *testing.T) {
+	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	h, err := NewHandler(testConfig(security, &testCustomerStore{}, &testIdentities{}, &testAudit{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.tagCommands = &testTagCommands{}
+	h.tagHistory = testTagHistory{values: []customerport.TagCommandResult{{ID: 8, Source: "admin_customer_ui", State: "partial", Lines: []customerport.TagCommandLine{{CustomerID: 42, AddTagIDs: []int64{9}, State: "executed", EffectRef: "eer_8"}}}}}
+	body := strings.NewReader(`{"customer_ids":[42],"add_tag_ids":[9],"idempotency_key":"123e4567-e89b-12d3-a456-426614174000"}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/customer-tag-commands/preview", body)
+	response := httptest.NewRecorder()
+	h.TagCommandRoutes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"eligible"`) {
+		t.Fatalf("preview=%d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	h.TagCommandRoutes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/customers/42/tag-commands", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"partial"`) || strings.Contains(response.Body.String(), "provider-a") {
+		t.Fatalf("history=%d %s", response.Code, response.Body.String())
 	}
 }

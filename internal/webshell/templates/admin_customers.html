@@ -1,7 +1,9 @@
 {{define "admin_customers"}}
 <div data-customer-directory-root
   data-customers-url="/api/admin/customers"
-  data-sync-url="/api/admin/customer-sync-runs">
+  data-sync-url="/api/admin/customer-sync-runs"
+  data-tag-preview-url="/api/v1/customer-tag-commands/preview"
+  data-tag-command-url="/api/v1/customer-tag-commands">
 {{if eq .RequestPath "/admin/customers"}}
 <section class="admin-card">
   <div class="admin-card-head admin-card-head--tight">
@@ -32,10 +34,16 @@
   <div id="customer-list-state" class="admin-state admin-state--inline admin-state--loading"><strong>正在加载客户</strong><span>读取 v3 客户目录。</span></div>
   <div id="customer-list-table-wrap" class="admin-table-wrap" hidden>
     <table class="admin-table">
-      <thead><tr><th>客户</th><th>OneID</th><th>手机号</th><th>最后同步</th><th>操作</th></tr></thead>
+      <thead><tr><th>选择</th><th>客户</th><th>OneID</th><th>手机号</th><th>最后同步</th><th>操作</th></tr></thead>
       <tbody id="customer-list-body"></tbody>
     </table>
   </div>
+  <form id="customer-tag-batch" class="admin-toolbar" autocomplete="off" style="margin-top:12px">
+    <label>批量加标签 <input name="add_tag_ids" inputmode="numeric" placeholder="如 12,18"></label>
+    <label>批量移除标签 <input name="remove_tag_ids" inputmode="numeric" placeholder="如 23"></label>
+    <button class="admin-button admin-button--secondary" type="submit">预览并确认标签变更</button>
+    <span id="customer-tag-batch-result" role="status" aria-live="polite"></span>
+  </form>
   <div class="admin-toolbar admin-toolbar--pager customer-list-pager">
     <button class="admin-button admin-button--ghost" id="customer-prev-page" type="button" hidden>上一页</button>
     <button class="admin-button admin-button--ghost" id="customer-next-page" type="button" hidden>下一页</button>
@@ -53,6 +61,12 @@
     <div class="admin-profile-grid" id="customer-detail-fields"></div>
     <div class="customer-profile-meta" id="customer-profile-meta"></div>
     <div id="customer-phone-ephemeral" class="admin-alert admin-alert--success customer-phone-ephemeral" role="status" aria-live="polite" hidden></div>
+    <form id="customer-tag-single" class="admin-toolbar" autocomplete="off">
+      <label>加标签 <input name="add_tag_ids" inputmode="numeric" placeholder="本地标签编号"></label>
+      <label>移除标签 <input name="remove_tag_ids" inputmode="numeric" placeholder="本地标签编号"></label>
+      <button class="admin-button admin-button--secondary" type="submit">预览并确认标签变更</button>
+      <span id="customer-tag-single-result" role="status" aria-live="polite"></span>
+    </form>
   </div>
 </section>
 

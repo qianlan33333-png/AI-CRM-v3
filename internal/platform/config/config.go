@@ -69,6 +69,7 @@ type WeCom struct {
 	ChannelMediaPrepProviderEnabled bool
 	ChannelWelcomeProviderEnabled   bool
 	ChannelTagProviderEnabled       bool
+	CustomerTagProviderEnabled      bool
 	StaffDirectoryRefreshInterval   time.Duration
 	MessageArchiveEnabled           bool
 	MessageArchiveSecret            string
@@ -366,6 +367,9 @@ func Load() (Runtime, error) {
 	if cfg.WeCom.ChannelTagProviderEnabled, err = strictBool("AICRM_CHANNEL_TAG_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.WeCom.CustomerTagProviderEnabled, err = strictBool("AICRM_CUSTOMER_TAG_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
 	if raw := os.Getenv("AICRM_CHANNEL_STAFF_REFRESH_INTERVAL"); raw != "" {
 		cfg.WeCom.StaffDirectoryRefreshInterval, err = time.ParseDuration(raw)
 		if err != nil || cfg.WeCom.StaffDirectoryRefreshInterval < 5*time.Minute || cfg.WeCom.StaffDirectoryRefreshInterval > 24*time.Hour {
@@ -481,7 +485,7 @@ func Load() (Runtime, error) {
 			}
 		}
 	}
-	channelProviderEnabled := cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelMediaPrepProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled
+	channelProviderEnabled := cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelMediaPrepProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled || cfg.WeCom.CustomerTagProviderEnabled
 	if channelProviderEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled channel provider capability requires External Effects, WeCom, and contact credentials")
 	}
