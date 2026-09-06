@@ -116,7 +116,8 @@ for migration_contract in \
   '0096_open_platform.sql:Open Platform machine credentials' \
   '0097_segment_audience_mutation_actor.sql:Segment audience mutation actors' \
   '0098_message_archive_historical_projection.sql:Archive historical external projection' \
-  '0099_survey_historical_external_projection.sql:Survey historical external projection'; do
+  '0099_survey_historical_external_projection.sql:Survey historical external projection' \
+  '0100_ai_assistant_machine_actor.sql:AI Assistant machine actor'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
