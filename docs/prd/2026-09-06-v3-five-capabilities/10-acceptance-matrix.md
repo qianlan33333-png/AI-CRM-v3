@@ -152,3 +152,14 @@
 | AI审阅计划和状态 | 现有AI领域审批/任务链 | machine actor、同UoW计划/receipt/audit、同key同结果/漂移拒绝、审批不可绕过、重启后状态读回 |
 | PR164管理页 | 新壳现有开发继续 | client创建/一次secret/grant/轮换停用/audit/V1catalog与真实只读调用；不展示56目录 |
 | 历史与移除旧路径 | 既有停用导入基础保留 | 不恢复旧token/secret，旧路径标准404；真实PG/REST/MCP/Chrome/fullCI |
+
+
+## 2026-09-06 14:45 UTC 原生 V1 独立审核检查点
+
+- ee9f84f5019764610e72e8f3d0dcd18f35ec3e49 的共享 REST/MCP 路由、目录权限、作用域 OneID 和最终 Composition 的旧路径 404 经根 PostgreSQL/race 通过，0 跳过，日志 `aicrm-open-ee9-root-review.log`。四类活动、AI Host、调用审计、管理页尚待完成。
+- AI Owner 075131eaa01af8aa531b5dcf16a6a03d16cfb5c1 + acb45a929f27e2b18b88d85b03f29dbcdabd9ab3 的全部 AI PostgreSQL/race 经根独立验证通过，0 跳过，日志 `aicrm-aiowner-acb-root-review.log`。0100 的 SQL NULL 约束缺口已修复；旧 human 收据字节、机器间隔离、并发重放及同 UoW 回滚已验证。已批准纳入 #173，完整 Open 审计和协议仍待验证。
+- #171 的 8f7bafd 已完成仓库检查和两套 Linux Chromium，但最终 race 被 check job 20 分钟总超时终止。官方 annotation 明确为超时。3dfb96c1b3026ca7a6c774712d994dc87f5511e8 仅将时限调到 30 分钟，保留所有门禁，CI34039811444 待完成。
+- #172 的 7ae65f0a1778d2757cdcd5826513b098fee3d1f7 持久 HTTP 事实专项经根 PostgreSQL/race 通过，覆盖受控 synthetic 效果与加密大整数载荷；CI 已越过普通/周期配置保存重载，历史订单页等待因导航中 document.body 尚未建立而抛异常。38e71c779887780e8df7cbc260d8e4616c6697f0 定点增加空 DOM 就绪保护，最终 CI 尚待通过。
+- #164 继续将冻结供体恢复、最小接线移至 V3 Host；开放平台管理展示原生 V1 capability catalog，不再展示旧 56 接口。
+
+本检查点没有新增合并或部署。负责人历史加密快照已准备，尚未应用；生产标签 Provider 启用沿用先前核实证据。
