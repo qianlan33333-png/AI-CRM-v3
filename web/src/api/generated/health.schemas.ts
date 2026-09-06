@@ -4308,18 +4308,29 @@ export interface SidebarProfile {
   customer_id: number;
   /** @minLength 1 */
   name: string;
-  /** @minimum 1 */
-  owner_staff_id: number;
+  /**
+   * 本地 CRM 客户目录无负责人字段；后端不返回时保持缺省。
+   * @minimum 1
+   */
+  owner_staff_id?: number;
   /** @maxLength 200 */
-  source: string;
+  source?: string;
   /** @maxLength 200 */
-  industry: string;
+  industry?: string;
   /** @maxLength 2000 */
-  description: string;
+  description?: string;
   /** @maxLength 2000 */
-  needs: string;
+  needs?: string;
   /** @maxLength 2000 */
-  pain_points: string;
+  pain_points?: string;
+  avatar_url?: string;
+  phone_masked?: string;
+  status?: string;
+  /** 后端契约为 int16 枚举（0 未知 / 1 男 / 2 女）。 */
+  gender?: number;
+  corp_name?: string;
+  /** 后端乐观锁版本号，画像保存时作为 expected_version 回传。 */
+  version?: number;
   updated_at: string;
 }
 
@@ -4376,15 +4387,27 @@ export interface SidebarSafeChoiceAnswer {
   option_ids: number[];
 }
 
+export interface SidebarQuestionnaireTextAnswer {
+  question: string;
+  answers: string[];
+}
+
 export interface SidebarQuestionnaireItem {
   /** @minimum 1 */
   submission_id: number;
-  /** @minimum 1 */
-  questionnaire_id: number;
+  /**
+   * 本地问卷提交投影不暴露问卷定义 ID；后端无此字段时缺省。
+   * @minimum 1
+   */
+  questionnaire_id?: number;
+  /** 本地投影提供的问卷标题。 */
+  title?: string;
   submitted_at: string;
   score: number;
   /** @maxItems 100 */
   choice_answers: SidebarSafeChoiceAnswer[];
+  /** 本地投影提供的题目文本与作答文本（非选择题安全投影）。 */
+  text_answers?: SidebarQuestionnaireTextAnswer[];
 }
 
 export interface SidebarQuestionnaireResponse {
@@ -4571,8 +4594,11 @@ export interface SidebarShareableProduct {
   price_minor: number;
   /** @pattern ^[A-Z]{3}$ */
   currency: string;
-  /** @minimum 0 */
-  stock_quantity: number;
+  /**
+   * 本地商品选项投影不含库存；后端无此字段时缺省，UI 显示「库存未同步」。
+   * @minimum 0
+   */
+  stock_quantity?: number;
   /**
    * @maxLength 80
    * @pattern ^/p/(ordinary|service_period)/[1-9][0-9]{0,18}$

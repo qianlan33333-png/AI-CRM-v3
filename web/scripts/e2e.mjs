@@ -990,17 +990,17 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         return;
       }
       if (customerListHttp) {
-        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data) });
-        const customers = Array.from({ length: 55 }, (_, index) => ({ id: index + 1, name: index < 10 ? `李思远${index + 1}` : `客户${index + 1}`, owner_staff_id: index < 19 ? 101 : 102, is_deleted: false, extra: {}, created_at: '2026-08-26T00:00:00Z', updated_at: '2026-08-26T00:00:00Z' }));
+        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data });
+        const customers = Array.from({ length: 55 }, (_, index) => ({ customer_id: index + 1, status: 'active', display_name: index < 10 ? `李思远${index + 1}` : `客户${index + 1}`, oneid: `oneid-${index + 1}`, phone_masked: `138****${String(index).padStart(4, '0')}`, activation_status: 'active', updated_at: '2026-08-26T00:00:00Z' }));
+        window.__customerListRequests = [];
         window.fetch = async (input) => {
           const url = new URL(String(input), window.location.origin);
-          if (url.pathname !== '/api/v1/customers') return json({ code: 'unexpected_customer_request' }, 500);
+          window.__customerListRequests.push(url.pathname + url.search);
+          if (url.pathname !== '/api/admin/customers') return json({ code: 'unexpected_customer_request' }, 500);
           let rows = customers;
           if (url.searchParams.get('keyword')) rows = rows.slice(0, 10);
-          if (url.searchParams.get('owner_staff_id') === '101') rows = rows.slice(0, 19);
-          if (url.searchParams.get('tag_id') === '2') rows = rows.slice(0, 18);
           const offset = url.searchParams.get('cursor') === 'customer-page-2' ? 50 : 0;
-          return json({ items: rows.slice(offset, offset + 50), next_cursor: offset === 0 && rows.length > 50 ? 'customer-page-2' : null, total: rows.length, total_is_estimate: false, watermark: 'customer-test-watermark' });
+          return json({ items: rows.slice(offset, offset + 50), next_cursor: offset === 0 && rows.length > 50 ? 'customer-page-2' : undefined, total: rows.length, total_is_estimate: false, watermark: 'customer-test-watermark' });
         };
         return;
       }
@@ -1017,17 +1017,35 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         },
       };
       const safety = { local_only: true, provider_execution_eligible: false, real_external_call_executed: false };
-      const memberRef = 'spm_' + 'A'.repeat(22);
+      // 本地后端真实投影形状（internal/sidebar + 各域 port）。member_ref 由
+      // 前端适配器按 entitlement id 确定性编码（spm_ + 22 位补零数字）。
+      const entitlementID = 5;
+      const memberRef = 'spm_' + String(entitlementID).padStart(22, '0');
       const profile = {
         customer_id: 7,
         name: '侧边栏测试客户',
-        owner_staff_id: 9,
+        avatar_url: '',
+        phone_masked: '',
+        status: 'active',
+        gender: 0,
+        corp_name: '测试公司',
         source: '企微',
-        industry: '教育',
-        description: '测试画像',
-        needs: '测试需求',
-        pain_points: '测试卡点',
+        version: 1,
         updated_at: '2026-08-26T01:00:00Z',
+      };
+      const entitlement = {
+        id: entitlementID,
+        customer_id: 7,
+        service_product_id: 3,
+        title: '周期课程',
+        last_order_id: 88,
+        status: 'active',
+        start_at: '2026-08-01T00:00:00Z',
+        end_at: '2026-09-01T00:00:00Z',
+        remark: '首期备注',
+        alliance: '测试联盟',
+        version: 1,
+        updated_at: '2026-08-01T00:00:00Z',
       };
       const json = (data, status = 200) => ({
         ok: status >= 200 && status < 300,
@@ -1038,7 +1056,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         blob: async () => new window.Blob([JSON.stringify(data)], { type: 'application/json' }),
         clone() { return this; },
       });
-      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, materialQueries: [], temporaryKeys: [], wxMessages: [], wxInvokes: [], requests: [] };
+      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, materialQueries: [], sendIntentKeys: [], sendOutcomeBodies: [], wxMessages: [], wxInvokes: [], requests: [] };
       if (scenario === 'sdk_cache') {
         const pageURL = window.location.href.split('#', 1)[0];
         const config = { signature_type: 'agent_config', corp_id: 'ww-test', agent_id: 1, nonce: 'cached-nonce', timestamp: 1, signature: 'cached-signature', url: pageURL, ticket_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() };
@@ -1047,11 +1065,16 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       window.fetch = async (input, init = {}) => {
         const url = String(input);
         window.__sidebarTest.requests.push(url);
-        if (url.includes('/jssdk/agent-config')) {
-          return json({ signature_type: 'agent_config', corp_id: 'ww-test', agent_id: 1, nonce: 'nonce', timestamp: 1, signature: 'signature', url: window.location.href.split('#', 1)[0], ticket_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() });
+        if (url.includes('/jssdk-config')) {
+          return json({
+            corp_id: 'ww-test',
+            agent_id: '1',
+            config: { timestamp: 1, nonceStr: 'nonce-config', signature: 'sig-config', jsApiList: [] },
+            agent_config: { timestamp: 1, nonceStr: 'nonce', signature: 'signature', jsApiList: ['getContext', 'getCurExternalContact', 'sendChatMessage'] },
+          });
         }
         if (url.includes('/bootstrap')) {
-          return json({ state: 'ready', context_token: 'sidebar-context-token-' + 'x'.repeat(52), expires_at: '2026-08-26T01:05:00Z', customer_id: 7, owner_staff_id: 9, workbench: { profile, questionnaire_count: scenario === 'empty' ? 0 : 1, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
+          return json({ state: 'ready', context_token: 'sidebar-context-token-' + 'x'.repeat(52), customer_id: 7, workbench: { profile, questionnaire_count: scenario === 'empty' ? 0 : 1, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
         }
         if (url.includes('/phone-binding')) {
           window.__sidebarTest.phoneBody = JSON.parse(init.body || '{}');
@@ -1059,82 +1082,67 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           window.__sidebarTest.phoneKeys.push(window.__sidebarTest.phoneKey);
           window.__sidebarTest.phoneAttempts += 1;
           if (scenario === 'phone_flaky' && window.__sidebarTest.phoneAttempts === 1) return json({ code: 'unavailable' }, 503);
-          return json({ status: 'bound', safety });
+          return json({ status: 'attached', phone_masked: '138****8000', phone_assurance: 'declared' });
         }
         if (url.includes('/questionnaires')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
           return json({
-            items: scenario === 'empty' ? [] : [{ submission_id: 11, questionnaire_id: 3, submitted_at: '2026-08-26T01:00:00Z', score: 8.5, choice_answers: [{ question_id: 2, question_type: 'single_choice', sort_order: 0, option_ids: [9] }] }],
-            scan_truncated: false,
-            result_truncated: false,
-            safety,
+            customer_id: 7,
+            items: scenario === 'empty' ? [] : [{ id: 11, title: '满意度回访', submitted_at: '2026-08-26T01:00:00Z', score: 8.5, answers: [{ question: '是否满意', answers: ['满意'] }] }],
+            source_status: 'ready',
+            as_of: '2026-08-26T02:00:00Z',
           });
         }
         if (url.includes('/timeline')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
           return json({
-            items: scenario === 'empty' ? [] : [{ id: 7, event_type: 'survey_submitted', occurred_at: '2026-08-26T00:00:00Z' }],
-            next_cursor: scenario === 'success' ? 'timeline-next' : undefined,
-            safety,
-          });
-        }
-        if (url.includes('/chat-activity')) {
-          if (scenario === 'error') return json({ code: 'unavailable' }, 503);
-          const chatType = url.includes('chat_type=group') ? 'group' : 'private';
-          return json({
-            items: scenario === 'empty' ? [] : [{ chat_type: chatType, message_type: 'text', sent_at: '2026-08-26T00:30:00Z' }],
-            next_cursor: undefined,
-            previous_cursor: undefined,
-            safety,
+            customer_id: 7,
+            items: scenario === 'empty' ? [] : [{ id: 7, event_type: 'survey_submitted', title: '提交问卷', source_domain: 'survey', occurred_at: '2026-08-26T00:00:00Z' }],
+            source_status: 'ready',
+            as_of: '2026-08-26T02:00:00Z',
           });
         }
         if (url.includes('/periodic-orders/') && url.includes('/remark')) {
           if (scenario === 'error') return json({ code: 'conflict' }, 409);
           window.__sidebarTest.remarkBody = JSON.parse(init.body || '{}');
           window.__sidebarTest.idempotencyKey = new Headers(init.headers).get('Idempotency-Key');
-          return json({
-            member: { member_ref: memberRef, service_product_id: 3, customer_id: 7, state: 'active', source: 'paid_order', starts_at: '2026-08-01T00:00:00Z', expires_at: '2026-09-01T00:00:00Z', remark: window.__sidebarTest.remarkBody.remark, alliance: '测试联盟', version: 2, created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-26T02:00:00Z' },
-            safety,
-          });
+          return json({ ...entitlement, remark: window.__sidebarTest.remarkBody.remark, version: 2, updated_at: '2026-08-26T02:00:00Z' });
         }
         if (url.includes('/periodic-orders')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
-          return json({
-            items: scenario === 'empty' ? [] : [{ member_ref: memberRef, service_product_id: 3, customer_id: 7, state: 'active', source: 'paid_order', starts_at: '2026-08-01T00:00:00Z', expires_at: '2026-09-01T00:00:00Z', remark: '首期备注', alliance: '测试联盟', version: 1, created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z' }],
-            limit: 20,
-            offset: 0,
-            has_more: false,
-            safety,
-          });
+          return json({ items: scenario === 'empty' ? [] : [entitlement], total: scenario === 'empty' ? 0 : 1 });
         }
         if (url.includes('/orders')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
           return json({
-            items: scenario === 'empty' ? [] : [{ created_at: '2026-08-26T00:40:00Z', merchant_order_no: 'M20260826001', product_code: 'course-1', product_name: '测试课程', amount_yuan: '99.00', currency: 'CNY', status: 'paid', status_label: '已支付', provider: 'wechat_pay', provider_label: '微信支付' }],
+            items: scenario === 'empty' ? [] : [{ id: 9, provider: 'wechat_pay', source_system: 'aicrm-production', source_key: 'k1', merchant_order_no: 'M20260826001', amount: { amount_minor: 9900, currency: 'CNY' }, refunded_minor: 0, status: 'paid', items: [{ line_no: 1, product_code: 'course-1', product_name: '测试课程', unit_amount_minor: 9900, quantity: 1, line_amount_minor: 9900 }], record_origin: 'native', effect_eligible: false, version: 1, created_at: '2026-08-26T00:40:00Z', updated_at: '2026-08-26T00:40:00Z' }],
+            next_cursor: '',
             total: scenario === 'empty' ? 0 : 1,
-            limit: 20,
-            has_more: false,
-            safety,
           });
         }
-        if (url.includes('/shareable-products')) {
+        if (url.includes('/products')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
           return json({
             items: scenario === 'empty' ? [] : [
-              { kind: 'ordinary', product_id: 41, product_code: 'course-ordinary', name: '普通课程', description: '真实普通商品字段', price_minor: 9900, currency: 'CNY', stock_quantity: 10, public_path: '/p/ordinary/41' },
-              { kind: 'service_period', product_id: 42, product_code: 'course-period', name: '周期课程', description: '真实周期商品字段', price_minor: 19900, currency: 'CNY', stock_quantity: 8, public_path: '/p/service_period/42' },
+              { id: 41, code: 'course-ordinary', product_type: 'standard', name: '普通课程', price_minor: 9900, currency: 'CNY' },
+              { id: 42, code: 'course-period', product_type: 'service_period', name: '周期课程', price_minor: 19900, currency: 'CNY' },
             ],
-            safety,
+            total: 2,
+            limit: 50,
+            offset: 0,
           });
         }
-        if (url.includes('/temporary-media')) {
-          if (scenario === 'error') return json({ code: 'unavailable' }, 503);
-          window.__sidebarTest.temporaryKeys.push(new Headers(init.headers).get('Idempotency-Key'));
-          return json({ image_id: 31, media_id: 'media-real-31', media_expires_at: '2026-08-28T00:00:00Z', upload_state: 'ready', provider_call_dispatched: true, real_external_call_executed: true, client_callback: 'not_called', delivery_state: 'not_sent_yet' });
+        if (url.includes('/send-intents') && url.includes('/outcome')) {
+          window.__sidebarTest.sendOutcomeBodies.push(JSON.parse(init.body || '{}'));
+          return json({ intent_id: 51, effect_id: 'eff-1', state: 'client_executed' });
         }
-        if (url.includes('/materials/image/')) {
+        if (url.includes('/send-intents')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
-          if (url.includes('/image/32/')) return json({ code: 'not_found' }, 404);
+          window.__sidebarTest.sendIntentKeys.push(new Headers(init.headers).get('Idempotency-Key'));
+          return json({ intent_id: 51, effect_id: 'eff-1', state: 'queued', grant: 'grant-token', grant_expires_at: '2026-08-28T00:00:00Z', payload: { msgtype: 'image', image: { mediaid: 'media-real-31' } }, replayed: false }, 202);
+        }
+        if (url.includes('/materials/') && url.includes('/variants/')) {
+          if (url.includes('/materials/32/')) return json({ code: 'not_found' }, 404);
           return {
             ok: true,
             status: 200,
@@ -1148,14 +1156,12 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           window.__sidebarTest.materialQueries.push(url);
           return json({
             items: scenario === 'empty' ? [] : [
-              { id: 31, name: '欢迎海报', file_name: 'welcome.png', mime_type: 'image/png', file_size: 1024, description: '测试素材', tags: ['欢迎语'], category: '海报', width: 800, height: 600, updated_at: '2026-08-26T00:50:00Z', thumbnail_status: 'pending' },
-              { id: 32, name: '课程卡片', file_name: 'course.png', mime_type: 'image/png', file_size: 2048, description: '', tags: ['课程'], category: '课程', width: 600, height: 400, updated_at: '2026-08-26T00:51:00Z', thumbnail_status: 'pending' },
+              { id: 31, name: '欢迎海报', file_name: 'welcome.png', mime_type: 'image/png', file_size: 1024, description: '测试素材', tags: ['欢迎语'], category: '海报', width: 800, height: 600, updated_at: '2026-08-26T00:50:00Z' },
+              { id: 32, name: '课程卡片', file_name: 'course.png', mime_type: 'image/png', file_size: 2048, description: '', tags: ['课程'], category: '课程', width: 600, height: 400, updated_at: '2026-08-26T00:51:00Z' },
             ],
             total: scenario === 'empty' ? 0 : 2,
             limit: 20,
             offset: 0,
-            quick_keywords: ['欢迎语', '课程卡片'],
-            safety,
           });
         }
         return json({ code: 'unexpected_sidebar_request' }, 500);
@@ -1498,17 +1504,19 @@ console.log('admin/customers.html（筛选、opaque cursor 翻页与详情导航
 
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '清空'));
   await sleep(300);
+  const requestsBeforeOwnerFilter = dom.window.__customerListRequests.length;
   input(dom, d.querySelector('#fCustomerOwner'), '101');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
   await sleep(300);
-  ok('负责人 staff_id 查询按 canonical 参数过滤', d.querySelectorAll('tbody tr').length === 19 && d.body.textContent.includes('共 19 位客户'));
+  ok('负责人筛选在后端无谓词时明确报错且不发请求', d.querySelector('[data-customer-error]')?.textContent.includes('暂不支持') === true && dom.window.__customerListRequests.length === requestsBeforeOwnerFilter && d.querySelectorAll('tbody tr').length === 50);
 
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '清空'));
   await sleep(300);
+  const requestsBeforeTagFilter = dom.window.__customerListRequests.length;
   input(dom, d.querySelector('#fCustomerTag'), '2');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
   await sleep(300);
-  ok('标签 tag_id 查询按 canonical 参数过滤', d.querySelectorAll('tbody tr').length === 18 && d.body.textContent.includes('共 18 位客户'));
+  ok('标签筛选在后端无谓词时明确报错且不发请求', d.querySelector('[data-customer-error]')?.textContent.includes('暂不支持') === true && dom.window.__customerListRequests.length === requestsBeforeTagFilter);
 
   input(dom, d.querySelector('#fCustomerMobile'), '138000000000');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
@@ -2776,7 +2784,7 @@ console.log('sidebar/index.html');
     !d.querySelector('style') && sidebarHTML.includes(`href="../${sidebarManifest.entries.sidebarStyles}"`));
   ok('无 external_userid 时保持 agentConfig → getContext → getCurExternalContact → bootstrap 安全顺序',
     dom.window.__sidebarTest.wxInvokes.slice(0, 2).join('|') === 'getContext|getCurExternalContact' &&
-    dom.window.__sidebarTest.requests[0]?.includes('/jssdk/agent-config') &&
+    dom.window.__sidebarTest.requests[0]?.includes('/jssdk-config') &&
     dom.window.__sidebarTest.requests[1]?.includes('/bootstrap'));
   dom.window.close();
 }
@@ -2786,7 +2794,7 @@ console.log('sidebar/index.html（bootstrap 并行、JSSDK 缓存与降级）');
   const parallel = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=success' });
   const requests = parallel.window.__sidebarTest.requests;
   ok('URL 已含 external_userid 时 JSSDK 与 bootstrap 同步启动且不走旧两步接口',
-    requests[0]?.includes('/jssdk/agent-config') && requests[1]?.includes('/bootstrap') &&
+    requests[0]?.includes('/jssdk-config') && requests[1]?.includes('/bootstrap') &&
     requests.filter((url) => url.includes('/bootstrap')).length === 1 &&
     !requests.some((url) => url.includes('/context-token') || url.includes('/workbench')));
   parallel.window.close();
@@ -2794,7 +2802,7 @@ console.log('sidebar/index.html（bootstrap 并行、JSSDK 缓存与降级）');
   const cached = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=sdk_cache' });
   const cachedConfig = cached.window.sessionStorage.getItem('aicrm.sidebar.jssdk.agent-config.v1') || '';
   ok('同一完整页面 URL 的短期 session JSSDK 配置复用且不缓存客户数据',
-    !cached.window.__sidebarTest.requests.some((url) => url.includes('/jssdk/agent-config')) &&
+    !cached.window.__sidebarTest.requests.some((url) => url.includes('/jssdk-config')) &&
     cached.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap')) && !cachedConfig.includes('customer'));
   cached.window.close();
 
@@ -2850,7 +2858,7 @@ console.log('sidebar/index.html（V2 安全活动、订单、素材与周期备�
   await sleep(30);
   ok('手机号只绑定当前 Sidebar 客户并携带幂等键',
     d.querySelector('#sidebar-context-status')?.textContent.includes('本地事实') &&
-    dom.window.__sidebarTest.phoneBody?.mobile === '+8613800138000' &&
+    dom.window.__sidebarTest.phoneBody?.phone === '13800138000' &&
     dom.window.__sidebarTest.phoneKey?.startsWith('sidebar-phone-'));
 
   const flaky = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=phone_flaky' });
@@ -2879,21 +2887,14 @@ console.log('sidebar/index.html（V2 安全活动、订单、素材与周期备�
     !d.querySelector('[data-sidebar-section="timeline"]')?.textContent.includes('payload') &&
     !d.querySelector('[data-sidebar-section="timeline"]')?.textContent.includes('actor'));
   ok('问卷来源事件只导航到已加载问卷板块', !!d.querySelector('[data-sidebar-action="open-related-questionnaires"]'));
-  click(dom, d.querySelector('[data-sidebar-action="timeline-more"]'));
-  await sleep(30);
-  ok('时间线使用 opaque cursor 加载更多', d.querySelectorAll('[data-timeline-event-id]').length === 2);
+  ok('本地时间线投影无游标分页，不显示加载更多', !d.querySelector('[data-sidebar-action="timeline-more"]'));
 
   click(dom, d.querySelector('[data-sidebar-subtab="chat_activity"]'));
   await sleep(30);
-  ok('聊天活动独立标注 V2 补充能力且不展示正文',
-    d.querySelector('[data-sidebar-capability="v2-supplement"]')?.textContent.includes('不计 LEGACY-S05-028 销项') &&
-    d.querySelectorAll('[data-chat-activity-at]').length === 1 &&
+  ok('聊天动态在消息归档未启用时诚实报错且不发请求',
+    d.body.textContent.includes('未启用聊天消息归档') &&
+    !dom.window.__sidebarTest.requests.some((url) => url.includes('/chat-activity')) &&
     !d.body.textContent.includes('消息正文'));
-  const chatFilter = d.querySelector('[data-chat-filter="chat_type"]');
-  chatFilter.value = 'group';
-  chatFilter.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-  await sleep(30);
-  ok('聊天活动支持私聊/群聊筛选', d.body.textContent.includes('群聊 · text'));
 
   click(dom, d.querySelector('[data-sidebar-tab="orders"]'));
   await sleep(30);
@@ -2956,10 +2957,12 @@ console.log('sidebar/index.html（V2 安全活动、订单、素材与周期备�
   click(dom, d.querySelector('[data-sidebar-action="send-material-image"]'));
   await sleep(30);
   const imageMessage = dom.window.__sidebarTest.wxMessages.find((entry) => entry.payload?.msgtype === 'image');
-  ok('图片先取得临时 media_id 再调用 JSSDK，receipt 不宣称外部送达',
-    dom.window.__sidebarTest.temporaryKeys[0]?.startsWith('sidebar-image-temporary-media-') &&
+  ok('图片经服务端 send-intent 封装 media_id 再调用 JSSDK，receipt 不宣称外部送达',
+    dom.window.__sidebarTest.sendIntentKeys[0]?.startsWith('sidebar-send-material-31-') &&
     imageMessage?.method === 'sendChatMessage' &&
     imageMessage?.payload?.image?.mediaid === 'media-real-31' &&
+    dom.window.__sidebarTest.sendOutcomeBodies[0]?.outcome === 'client_executed' &&
+    dom.window.__sidebarTest.sendOutcomeBodies[0]?.grant === 'grant-token' &&
     d.body.textContent.includes('delivery_unknown · 未取得企微外部送达回执'));
   input(dom, d.querySelector('#material-q'), '欢迎');
   input(dom, d.querySelector('#material-category'), '海报');
@@ -2990,7 +2993,7 @@ console.log('sidebar/index.html（新增能力空态与失败态）');
       click(empty, emptyDoc.querySelector(`[data-sidebar-tab="${tab}"]`));
     }
     await sleep(30);
-    ok(`${tab} 空态清晰`, emptyDoc.body.textContent.includes(tab === 'timeline' ? '暂无时间线记录' : tab === 'chat_activity' ? '暂无聊天活动记录' : tab === 'orders' ? '暂无普通订单记录' : tab === 'periodic_orders' ? '暂无周期订单记录' : tab === 'products' ? '暂无可分享的普通商品' : '暂无匹配素材'));
+    ok(`${tab} 空态清晰`, emptyDoc.body.textContent.includes(tab === 'timeline' ? '暂无时间线记录' : tab === 'chat_activity' ? '未启用聊天消息归档' : tab === 'orders' ? '暂无普通订单记录' : tab === 'periodic_orders' ? '暂无周期订单记录' : tab === 'products' ? '暂无可分享的普通商品' : '暂无匹配素材'));
   }
   empty.window.close();
 

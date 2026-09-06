@@ -2,14 +2,11 @@
 import {
   addCustomerTag,
   getCustomer,
-  getCustomerContext,
   removeCustomerTag,
   setCustomerStage,
   updateCustomer,
-  listCustomers,
 } from "./generated/p3-contact/p3-contact";
 import { listCustomerSurveyAnswers } from "./generated/p4-customer-360/p4-customer-360";
-import { listStages } from "./generated/p2-stages/p2-stages";
 import {
   getChannelHistory,
   getLegacyChannel,
@@ -2025,16 +2022,8 @@ export async function readAdminRows(page?: string, customerList?: CustomerListQu
     ...(orderList?.createdFrom ? { created_from: orderList.createdFrom } : {}),
     ...(orderList?.createdTo ? { created_to: orderList.createdTo } : {}),
   };
-  const customerParams = {
-    limit: 50,
-    ...(customerList?.cursor ? { cursor: customerList.cursor } : {}),
-    ...(customerList?.keyword ? { keyword: customerList.keyword } : {}),
-    ...(customerList?.mobile ? { mobile: customerList.mobile } : {}),
-    ...(customerList?.ownerStaffId == null ? {} : { owner_staff_id: customerList.ownerStaffId }),
-    ...(customerList?.tagId == null ? {} : { tag_id: customerList.tagId }),
-  };
   const responses = await Promise.all([
-    needs('customers') ? call(listCustomers(customerParams, opt)) : skip,
+    needs('customers') ? listAdminCustomerDirectory(customerList, opt) : skip,
     needs('questionnaires', 'questionnaireDetail', 'questionnaireOps') ? call(listLegacyQuestionnaires({ limit: 50, offset: 0 }, opt)) : skip,
     needs('channels', 'channelForm', 'questionnaireOps', 'productForm', 'spProductForm') ? call(listLegacyChannels({ limit: 50, include_archived: true }, opt)) : skip,
     needs('orders', 'orderDetail') ? call(listLegacyOrders(orderParams, opt)) : skip,
@@ -2063,6 +2052,131 @@ export async function readAdminRows(page?: string, customerList?: CustomerListQu
   return db;
 }
 
+/**
+ * 客户目录列表走生产 /api/admin/customers（keyword/phone/cursor 分页）。
+ * 生成的 /api/v1/customers 契约在本后端未实现；负责人/标签筛选在后端没有
+ * 对应谓词，填写即明确报错，绝不静默丢弃。
+ */
+async function listAdminCustomerDirectory(
+  query: CustomerListQuery | undefined,
+  opt: RequestInit,
+): Promise<unknown> {
+  if (query?.ownerStaffId != null || query?.tagId != null) {
+    throw new Error("当前后端暂不支持按负责人/标签筛选，请使用关键词或手机号");
+  }
+  const params = new URLSearchParams();
+  params.set("limit", "50");
+  if (query?.cursor) params.set("cursor", query.cursor);
+  if (query?.keyword) params.set("keyword", query.keyword);
+  if (query?.mobile) params.set("phone", query.mobile);
+  const response = await request(`/api/admin/customers?${params.toString()}`, opt);
+  const page = obj(await response.json());
+  return {
+    ...page,
+    items: list(page, "items").map((item) => {
+      const entry = obj(item);
+      const id = Number(entry.customer_id);
+      return {
+        id,
+        name: text(entry.display_name, "") || `客户 ${id}`,
+        owner_staff_id: null,
+        stage_id: null,
+      };
+    }),
+  };
+}
+
+/**
+ * 生产后端的客户档案由已上线端点组合而成：/api/admin/customers/{id}/360 提供
+ * 画像与时间线分区，/tags 与 /chat-activity 提供标签和聊天安全摘要。生成的
+ * /api/v1/customers/{id}​/context 与 /api/v1/stages 契约在本后端不存在，这里把
+ * 真实响应组装成 customerContextPageDto 的输入形状并复用其严格校验；负责人、
+ * 阶段、渠道与 HXC 在本后端没有数据源，一律以空值诚实呈现。/360 的 404 继续
+ * 抛出（驱动 not_found），辅助分区的失败降级为空集合而不是拖垮整页。
+ */
+async function readAdminCustomer360Context(id: number): Promise<unknown> {
+  const aux = async (url: string): Promise<unknown> => {
+    try {
+      return await (await request(url)).json();
+    } catch {
+      return null;
+    }
+  };
+  const raw360 = await (await request(`/api/admin/customers/${id}/360`)).json();
+  const [rawTags, rawChat] = await Promise.all([
+    aux(`/api/admin/customers/${id}/tags`),
+    aux(`/api/admin/customers/${id}/chat-activity?limit=20`),
+  ]);
+  const profileData = obj(obj(obj(raw360).profile).data);
+  const touchpoints = obj(obj(raw360).recent_touchpoints);
+  const timeline = touchpoints.status === "ready" && Array.isArray(touchpoints.data) ? touchpoints.data : [];
+  const chatItems = list(obj(rawChat ?? {}), "items").map((item) => {
+    const entry = obj(item);
+    return { chat_type: entry.chat_type, message_type: entry.message_type, sent_at: entry.occurred_at };
+  });
+  return {
+    customer: {
+      id,
+      name: text(profileData.display_name, "") || `客户 ${id}`,
+      owner_staff_id: null,
+      stage_id: null,
+      channel_id: null,
+      added_at: profileData.last_synced_at ?? null,
+      last_interact_at: profileData.updated_at ?? null,
+    },
+    tags: list(obj(rawTags ?? {}), "items"),
+    timeline,
+    chat: { items: chatItems, total: chatItems.length },
+    hxc: { available: false },
+  };
+}
+
+/**
+ * 问卷安全投影的本地映射：生产端点返回完整提交快照，页面模型只保留提交 ID、
+ * 问卷 ID、分数、提交时间与选择题选项 ID——自由文本、身份值与评测结果绝不
+ * 进入页面模型。
+ */
+function customerSurveyMetadataDto(value: unknown): Customer360SurveyProjection {
+  const page = obj(value);
+  const items = list(page, "items").map((item) => {
+    const submission = obj(item);
+    const score = Number(submission.total_score);
+    if (!Number.isFinite(score)) throw new Error("问卷提交缺少有效分数");
+    const choices = list(submission, "answers")
+      .map((answer) => obj(answer))
+      .filter((answer) => {
+        const questionId = Number(answer.question_id);
+        return (
+          (answer.question_type === "single_choice" || answer.question_type === "multi_choice") &&
+          Number.isSafeInteger(questionId) &&
+          questionId >= 1
+        );
+      })
+      .map((answer) => ({
+        questionId: Number(answer.question_id),
+        questionType: answer.question_type as "single_choice" | "multi_choice",
+        sortOrder: Number.isSafeInteger(Number(answer.sort_order)) ? Number(answer.sort_order) : 0,
+        optionIds: list(answer, "selected_options")
+          .map((option) => Number(obj(option).option_id))
+          .filter((optionId) => Number.isSafeInteger(optionId) && optionId >= 1),
+      }));
+    return {
+      submissionId: requiredContextNumber(submission.id, "提交 ID"),
+      questionnaireId: requiredContextNumber(submission.questionnaire_id, "问卷 ID"),
+      submittedAt: requiredContextText(text(submission.submitted_at, ""), "提交时间"),
+      score,
+      choices,
+    };
+  });
+  const total = Number(page.total);
+  return {
+    items,
+    scanTruncated: false,
+    resultTruncated: Number.isSafeInteger(total) && total >= 0 ? total > items.length : false,
+    nonAtomicSnapshot: true,
+  };
+}
+
 /** Detail page reads are deliberately page-scoped and never synthesize demo records. */
 export async function readAdminPage(context: AdminReadContext = {}): Promise<AdminDbWithMiniProgramList> {
   const db = await readAdminRows(context.page, context.customerList, context.miniProgramList, context.orderList); const id = context.id || ''; const opt = apiRequestOptions(); const numeric = Number(id);
@@ -2072,12 +2186,12 @@ export async function readAdminPage(context: AdminReadContext = {}): Promise<Adm
       return db;
     }
     try {
-      const [rawContext, rawSurvey, stages] = await Promise.all([call(getCustomerContext(numeric, { limit: 20 }, opt)), call(listCustomerSurveyAnswers(numeric, { limit: 30 }, opt)), call(listStages(opt))]);
+      const [rawContext, rawSurvey] = await Promise.all([readAdminCustomer360Context(numeric), call(listCustomerSurveyAnswers(numeric, { limit: 30 }, opt))]);
       const customerContext = customerContextPageDto(rawContext);
       if (customerContext.profile.id !== String(numeric)) throw new Error('客户安全上下文 OneID 不匹配');
-      db.customerDetail = { status: 'ready', context: customerContext, survey: customerSurveyPageDto(rawSurvey, numeric), error: '' };
+      db.customerDetail = { status: 'ready', context: customerContext, survey: customerSurveyMetadataDto(rawSurvey), error: '' };
       db.rows.tags = customerContext.tags;
-      db.rows.orderKv = list(stages, 'items').map((x) => ({ k: text(obj(x).name), v: text(obj(x).id), mono: false }));
+      db.rows.orderKv = [];
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
         db.customerDetail = { status: 'not_found', context: null, survey: null, error: '客户档案不存在或当前账号不可见' };

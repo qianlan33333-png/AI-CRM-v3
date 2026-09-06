@@ -15,7 +15,6 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
-	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
@@ -470,48 +469,37 @@ func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing
 	}
 }
 
-func TestStagedTagsReleaseMountsFrozenWorkspaceInOnlyPR10Shell(t *testing.T) {
-	dist := filepath.Join("..", "..", "release", "web", "dist")
-	if _, err := os.Stat(filepath.Join(dist, "admin", "tags.html")); errors.Is(err, os.ErrNotExist) {
-		t.Skip("real release stage is built by the CI frontend step")
-	} else if err != nil {
-		t.Fatal(err)
-	}
-	renderer, err := webshell.NewRenderer()
-	if err != nil {
-		t.Fatal(err)
-	}
-	tagUI := tag.NewModuleRegistration().UIBinding(dist, func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
-		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
-	})
+func TestTagsPageIsServedByTheShellFromBuiltDocuments(t *testing.T) {
 	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
 	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
-	handler, err := routeApplicationWithMediaTags(marker, marker, marker, marker, marker, marker, marker, marker, marker, tagUI, marker, webshell.MustHandler(), authentication, "https://crm.example")
+	handler, err := routeApplicationWithMediaTags(marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, webshell.MustHandler(), authentication, "https://crm.example")
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// The canonical tags page is a shell page now: it requires a session and
+	// never mounts the frozen donor workspace (which needed a build entry the
+	// current frontend no longer emits).
 	request := httptest.NewRequest(http.MethodGet, "/admin/wecom-tags", nil)
 	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	body := response.Body.String()
-	for _, required := range []string{"新增标签组", "新增标签", "同步企微标签", "搜索标签组 / 标签 / tag_id", `data-page="tags"`} {
-		if !strings.Contains(body, required) {
-			t.Fatalf("staged tags response missing %q", required)
-		}
+	if response.Code != http.StatusOK || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) {
+		t.Fatalf("tags page status=%d body=%q", response.Code, body)
 	}
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) {
-		t.Fatalf("staged tags shell mismatch status=%d body=%q", response.Code, body)
+	if strings.Contains(body, "新增标签组") || strings.Contains(body, `data-page="tags"`) {
+		t.Fatalf("tags page unexpectedly mounted the retired frozen workspace: %q", body)
 	}
 
-	for _, privatePath := range []string{"/admin/tags.html", "/admin/wecom-tags.html"} {
-		request = httptest.NewRequest(http.MethodGet, privatePath, nil)
-		request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
-		response = httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusNotFound {
-			t.Fatalf("private donor input %s became routable: status=%d", privatePath, response.Code)
-		}
+	// The donor staging name stays private; the built document name is an
+	// ordinary shell page (placeholder in this harness, built page in release).
+	request = httptest.NewRequest(http.MethodGet, "/admin/tags.html", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("private donor staging /admin/tags.html became routable: status=%d", response.Code)
 	}
 }
 

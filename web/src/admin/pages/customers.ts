@@ -1,10 +1,3 @@
-import { listCustomers } from "../../api/generated/p3-contact/p3-contact";
-import {
-  type Customer as ApiCustomer,
-  type CustomerListResponse,
-  type ListCustomersParams,
-} from "../../api/generated/health.schemas";
-import { apiRequestOptions, unwrapGenerated } from "../../api/transport";
 import {
   mount,
   PageBase,
@@ -13,6 +6,58 @@ import {
 } from "../../shared/ui/runtime";
 
 const PAGE_SIZE = 50;
+
+// The production backend serves the customer directory at
+// /api/admin/customers (keyword/phone/status + keyset cursor).  The generated
+// /api/v1/customers contract is not implemented by this backend, so this page
+// talks to the live endpoint directly and maps its document onto the view
+// model.  Owner/tag filters stay client-visible but honest: the directory has
+// no owner/tag predicate, so submitting one is a clear error, not a silent
+// drop.
+type DirectoryItem = {
+  customer_id: number;
+  status: string;
+  display_name: string;
+  avatar_url?: string;
+  oneid?: string;
+  phone_masked?: string;
+  activation_status?: string;
+  last_synced_at?: string;
+  updated_at?: string;
+};
+
+type DirectoryPage = {
+  items: DirectoryItem[];
+  next_cursor?: string;
+  total: number;
+  total_is_estimate: boolean;
+  watermark: string;
+};
+
+type ListParams = {
+  limit: number;
+  keyword?: string;
+  phone?: string;
+  cursor?: string;
+};
+
+async function listDirectoryCustomers(
+  params: ListParams,
+  signal: AbortSignal,
+): Promise<DirectoryPage> {
+  const query = new URLSearchParams();
+  query.set("limit", String(params.limit));
+  if (params.keyword) query.set("keyword", params.keyword);
+  if (params.phone) query.set("phone", params.phone);
+  if (params.cursor) query.set("cursor", params.cursor);
+  const response = await fetch(`/api/admin/customers?${query.toString()}`, {
+    signal,
+    headers: { Accept: "application/json" },
+    credentials: "same-origin",
+  });
+  if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
+  return (await response.json()) as DirectoryPage;
+}
 
 type Filters = { keyword: string; owner: string; mobile: string; tag: string };
 type CustomerRow = {
@@ -40,9 +85,8 @@ class CustomersPage extends PageBase {
     error: "",
   };
 
-  private response: CustomerListResponse = {
+  private response: DirectoryPage = {
     items: [],
-    next_cursor: null,
     total: 0,
     total_is_estimate: false,
     watermark: "",
@@ -66,26 +110,17 @@ class CustomersPage extends PageBase {
     };
   }
 
-  private params(filters: Filters, cursor?: string): ListCustomersParams {
-    const params: ListCustomersParams = { limit: PAGE_SIZE };
+  private params(filters: Filters, cursor?: string): ListParams {
+    const params: ListParams = { limit: PAGE_SIZE };
     if (filters.keyword) params.keyword = filters.keyword;
     if (filters.mobile) {
       if (!/^1[3-9][0-9]{9}$/.test(filters.mobile)) {
         throw new Error("请输入11位中国大陆手机号");
       }
-      params.mobile = filters.mobile;
+      params.phone = filters.mobile;
     }
-    if (filters.owner) {
-      const owner = Number(filters.owner);
-      if (!Number.isSafeInteger(owner) || owner < 1)
-        throw new Error("负责人必须填写正整数 staff_id");
-      params.owner_staff_id = owner;
-    }
-    if (filters.tag) {
-      const tag = Number(filters.tag);
-      if (!Number.isSafeInteger(tag) || tag < 1)
-        throw new Error("标签必须填写正整数 tag_id");
-      params.tag_id = tag;
+    if (filters.owner || filters.tag) {
+      throw new Error("当前后端暂不支持按负责人/标签筛选，请使用关键词或手机号");
     }
     if (cursor) params.cursor = cursor;
     return params;
@@ -97,7 +132,7 @@ class CustomersPage extends PageBase {
     cursors: string[],
     filters = this.state.filters,
   ): Promise<void> {
-    let params: ListCustomersParams;
+    let params: ListParams;
     try {
       params = this.params(filters, cursor);
     } catch (error) {
@@ -114,12 +149,10 @@ class CustomersPage extends PageBase {
     this.abortController = abortController;
     this.setState({ filters, loading: true, error: "" });
     try {
-      const response = unwrapGenerated(
-        await listCustomers(
-          params,
-          apiRequestOptions({ signal: abortController.signal }),
-        ),
-      ) as CustomerListResponse;
+      const response = await listDirectoryCustomers(
+        params,
+        abortController.signal,
+      );
       if (sequence !== this.requestSequence) return;
       this.response = response;
       this.setState({ page, cursors, loading: false, error: "" });
@@ -128,7 +161,6 @@ class CustomersPage extends PageBase {
         return;
       this.response = {
         items: [],
-        next_cursor: null,
         total: 0,
         total_is_estimate: false,
         watermark: "",
@@ -173,16 +205,15 @@ class CustomersPage extends PageBase {
 
   override renderVals(): Vals {
     const rows: CustomerRow[] = this.response.items.map(
-      (customer: ApiCustomer) => ({
-        id: String(customer.id),
-        name: customer.name,
-        owner:
-          customer.owner_staff_id == null
-            ? "未分配"
-            : String(customer.owner_staff_id),
-        mobileText: "当前契约未返回",
+      (customer: DirectoryItem) => ({
+        id: String(customer.customer_id),
+        name: customer.display_name || `客户 ${customer.customer_id}`,
+        // The directory contract does not return an owner column; the old
+        // shell had no owner column either, so this stays an honest dash.
+        owner: "—",
+        mobileText: customer.phone_masked || "当前契约未返回",
         view: () => {
-          location.href = `customerDetail.html?id=${encodeURIComponent(String(customer.id))}`;
+          location.href = `customerDetail.html?id=${encodeURIComponent(String(customer.customer_id))}`;
         },
       }),
     );

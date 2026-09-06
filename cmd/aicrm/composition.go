@@ -938,7 +938,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	shellHandler, err := webshell.NewHandler(webshell.HandlerOptions{Renderer: renderer})
+	shellHandler, err := webshell.NewHandler(webshell.HandlerOptions{Renderer: renderer, DistDir: "web/dist"})
 	if err != nil {
 		return fail(err)
 	}
@@ -1121,9 +1121,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	sidebarHandler, err := sidebar.NewHandler(sidebar.Config{
 		Contexts: sidebarContextAdapter{tokens: sidebarContextTokens}, Profiles: sidebarProfiles,
+		Viewer: sidebarViewerBootstrapper{
+			principals: sidebarPrincipalResolver{authentication: authentication, users: accessRepository, uow: uow, corpID: cfg.WeCom.CorpID},
+			identity:   existingWeComIdentityResolver{service: oneID, uow: uow, corpID: cfg.WeCom.CorpID},
+			tokens:     sidebarContextTokens,
+		},
 		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: customerTimelineAdapter{uow: uow, reader: customerStore},
 		Products: productCatalog, ProductByID: productTargets, Orders: orderService, Entitlements: entitlements,
-		Coupons: customerCoupons, Materials: mediaLibrary, MaterialSend: mediaLibrary, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin,
+		Coupons: customerCoupons, Materials: mediaLibrary, MaterialSend: mediaLibrary, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin,
 	})
 	if err != nil {
 		return fail(err)
@@ -1426,18 +1431,16 @@ func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthenticat
 }
 
 func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
+	_ = ui        // frozen donor workspace retired; the shell serves the built ai.html documents
+	_ = uiEnabled // capability gating lives at the API layer
 	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
 			api.ServeHTTP(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/ai-assistant-assets/") || r.URL.Path == "/admin/ai.html" || r.URL.Path == "/admin/aiDetail.html" || r.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(r.URL.Path, "/admin/cloud-orchestrator/plans/") {
-			if !uiEnabled {
-				http.NotFound(w, r)
-				return
-			}
-			requireAdminSession(authentication, ui).ServeHTTP(w, r)
+		if strings.HasPrefix(r.URL.Path, "/admin/cloud-orchestrator/plans/") {
+			requireAdminSession(authentication, legacyIDRedirect("/admin/cloud-orchestrator/plans/", "", "/admin/aiDetail.html", "/admin/ai.html")).ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -1503,15 +1506,14 @@ func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAu
 }
 
 func mountChannelUI(next, adminUI http.Handler, authentication accessAuthentication) http.Handler {
+	_ = adminUI // frozen donor host bundle retired; the shell serves the built channel documents
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimSuffix(r.URL.Path, "/")
-		isCanonicalEdit := strings.HasPrefix(path, "/admin/channels/") && strings.HasSuffix(path, "/edit")
-		switch {
-		case path == "/admin/channels", path == "/admin/channels.html", path == "/admin/channels/new", path == "/admin/channelForm.html", isCanonicalEdit:
-			requireAdminSession(authentication, adminUI).ServeHTTP(w, r)
-		default:
-			next.ServeHTTP(w, r)
+		if strings.HasPrefix(path, "/admin/channels/") && strings.HasSuffix(path, "/edit") {
+			requireAdminSession(authentication, legacyIDRedirect("/admin/channels/", "/edit", "/admin/channelForm.html", "/admin/channels.html")).ServeHTTP(w, r)
+			return
 		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -1703,49 +1705,26 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/groupops-assets/", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/automation-assets/", requireAdminSession(authentication, automationUI))
 	mux.Handle("/config-assets/", requireAdminSession(authentication, configUI))
-	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
-	mux.Handle("/admin/operation-cycles", requireAdminSession(authentication, operationUI))
-	mux.Handle("/admin/operation-cycles/", requireAdminSession(authentication, operationUI))
-	// The staged Tags donor document is a private template carrier. Only the
-	// canonical PR10-mounted route above is public; neither its private staging
-	// name nor the donor document name may fall through to a generic 200 shell.
+	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, shell))
+	mux.Handle(webshell.LoginAccessPath, requireAdminSession(authentication, shell))
+	// Operation-cycle, product, group-ops and tag pages are served by the shell
+	// from the built new-shell documents; the frontend build no longer emits
+	// their frozen donor host bundles.  The module APIs above remain the data
+	// owners.
+	// The tags donor staging name stays private; the canonical page and the
+	// built wecom-tags.html document are served by the shell from dist.
 	mux.Handle("/admin/tags.html", http.NotFoundHandler())
-	mux.Handle("/admin/wecom-tags.html", http.NotFoundHandler())
-	mux.Handle("/admin/cycles.html", http.NotFoundHandler())
-	mux.Handle("/admin/cyclesDetail.html", http.NotFoundHandler())
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/miniprogram-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/attachment-library", requireAdminSession(authentication, mediaUI))
-	// Canonical/nested Product aliases mount the frozen donor fragment through
-	// the existing V3 Host. The member-grid data page receives the same session
-	// and asset boundary as the lifecycle pages.
-	for _, path := range []string{
-		"/admin/wechat-pay/products", "/admin/wechat-pay/products/",
-		"/admin/wechat-pay/products.html", "/admin/products.html",
-		"/admin/wechat-pay/productForm.html", "/admin/productForm.html",
-		"/admin/wechat-pay/spProducts.html", "/admin/spProducts.html",
-		"/admin/wechat-pay/spProductForm.html", "/admin/spProductForm.html",
-		"/admin/service-period-products", "/admin/service-period-products/",
-		"/admin/wechat-pay/products/new", "/admin/service-period-products/new",
-	} {
-		mux.Handle(path, requireAdminSession(authentication, productUI))
-	}
+	// Legacy group-ops plan detail URLs keep working as redirects onto the
+	// built detail document, which reads the plan id from the query string.
+	mux.Handle("/admin/automation-conversion/group-ops/plans/", requireAdminSession(authentication, legacyIDRedirect("/admin/automation-conversion/group-ops/plans/", "", "/admin/groupopsDetail.html", "/admin/groupops.html")))
 	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html", "/admin/couponData.html"} {
 		mux.Handle(path, requireAdminSession(authentication, couponUI))
 	}
-	for _, path := range []string{
-		"/admin/spProductData.html", "/admin/wechat-pay/spProductData.html",
-		"/admin/wechat-pay/products/spProductData.html", "/admin/service-period-products/spProductData.html",
-	} {
-		mux.Handle(path, requireAdminSession(authentication, productUI))
-	}
-	mux.Handle("/admin/automation-conversion/group-ops/ui", requireAdminSession(authentication, groupOpsUI))
-	mux.Handle("/admin/automation-conversion/group-ops/groups/ui", requireAdminSession(authentication, groupOpsUI))
-	mux.Handle("/admin/automation-conversion/group-ops/plans/", requireAdminSession(authentication, groupOpsUI))
-	mux.Handle("/admin/groupops.html", requireAdminSession(authentication, groupOpsUI))
-	mux.Handle("/admin/groupopsDetail.html", requireAdminSession(authentication, groupOpsUI))
 	for _, path := range []string{"/admin/automation-agents", "/admin/automation-agents/", "/admin/agents.html", "/admin/agentEdit.html"} {
 		mux.Handle(path, requireAdminSession(authentication, automationUI))
 	}
@@ -1758,6 +1737,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/auth/wecom/callback", weCom)
 	mux.Handle("/api/sidebar/", weCom)
 	mux.Handle("/static/", shell)
+	mux.Handle("/sidebar-assets/", shell)
 	mux.Handle(webshell.SidebarPagePath, shell)
 	mux.Handle("/admin", requireAdminSession(authentication, shell))
 	mux.Handle("/admin/", requireAdminSession(authentication, shell))
@@ -1769,6 +1749,29 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 		http.Redirect(writer, request, "/admin", http.StatusSeeOther)
 	})
 	return securityHeaders(rejectCrossSiteUnsafeRequests(mux, canonicalOrigin(publicOrigin))), nil
+}
+
+// legacyIDRedirect maps a donor-era detail URL (<prefix><id><suffix>) onto
+// the built new-shell detail document, which reads the id from the query
+// string.  Paths without a usable id land on the built list document.
+func legacyIDRedirect(prefix, suffix, detailTarget, listTarget string) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+			writer.Header().Set("Allow", "GET, HEAD")
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rest := strings.TrimPrefix(request.URL.Path, prefix)
+		id := strings.Trim(strings.TrimSuffix(rest, suffix), "/")
+		target := listTarget
+		if id != "" && !strings.Contains(id, "/") {
+			target = detailTarget + "?id=" + url.QueryEscape(id)
+		}
+		if request.URL.RawQuery != "" && target == listTarget {
+			target += "?" + request.URL.RawQuery
+		}
+		http.Redirect(writer, request, target, http.StatusSeeOther)
+	})
 }
 
 func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.Handler {
@@ -1838,7 +1841,10 @@ func securityHeaders(next http.Handler) http.Handler {
 		configPage := request.URL.Path == "/admin/config" || request.URL.Path == "/admin/config.html" || request.URL.Path == "/admin/configDetail.html" || request.URL.Path == "/admin/api-docs" || request.URL.Path == "/admin/apidocs.html"
 		hxcPage := request.URL.Path == "/admin/hxc-dashboard"
 		aiAssistantPage := request.URL.Path == "/admin/ai.html" || request.URL.Path == "/admin/aiDetail.html" || request.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(request.URL.Path, "/admin/cloud-orchestrator/plans/")
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage {
+		// Built new-shell documents embed presentational inline style attributes
+		// (icon layout) and therefore share the donor pages' style relaxation.
+		_, distAdminPage := webshell.DistAdminPageFile("web/dist", request.URL.Path)
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage || distAdminPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

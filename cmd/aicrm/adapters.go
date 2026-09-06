@@ -17,6 +17,7 @@ import (
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/sidebar"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
 
@@ -139,6 +140,40 @@ func (adapter existingWeComIdentityResolver) ResolveExistingWeComIdentity(ctx co
 		return 0, false, err
 	}
 	return result.CustomerID, result.Status == identityport.ResolveFound, nil
+}
+
+// sidebarViewerBootstrapper combines the WeCom sidebar session, the read-only
+// OneID resolver, and the context-token issuer into the sidebar package's
+// bootstrap port.  It mirrors the retired /api/sidebar/context-token handler's
+// security posture: the viewer principal comes exclusively from the HttpOnly
+// sidebar session cookie, and identity resolution never provisions a customer.
+type sidebarViewerBootstrapper struct {
+	principals sidebarPrincipalResolver
+	identity   existingWeComIdentityResolver
+	tokens     wecom.ContextTokenService
+}
+
+func (adapter sidebarViewerBootstrapper) BootstrapViewer(ctx context.Context, request *http.Request, externalUserID string) (sidebar.Principal, customerdomain.CustomerID, string, error) {
+	cookie, err := request.Cookie("aicrm_sidebar_session")
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return sidebar.Principal{}, 0, "", sidebar.ErrViewerSessionRequired
+	}
+	principal, err := adapter.principals.SidebarPrincipal(ctx, cookie.Value)
+	if err != nil {
+		return sidebar.Principal{}, 0, "", sidebar.ErrViewerSessionRequired
+	}
+	customerID, found, err := adapter.identity.ResolveExistingWeComIdentity(ctx, principal.CorpID, externalUserID)
+	if err != nil {
+		return sidebar.Principal{}, 0, "", err
+	}
+	if !found {
+		return sidebar.Principal{}, 0, "", sidebar.ErrCustomerNotBound
+	}
+	token, err := adapter.tokens.Issue(ctx, principal, customerID)
+	if err != nil {
+		return sidebar.Principal{}, 0, "", err
+	}
+	return sidebar.Principal{CorpID: principal.CorpID, EmployeeID: principal.EmployeeID}, customerID, token, nil
 }
 
 func requireAdminSession(authentication accessAuthentication, next http.Handler) http.Handler {
