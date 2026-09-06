@@ -44,18 +44,19 @@ type openPlatformExecutor struct {
 	orders   orderport.Query
 	profiles customerport.SidebarProfileService
 	archive  archiveport.CustomerMessageReader
+	timeline customerport.CustomerTimelineReader
 	owners   wecomport.AudiencePrimaryOwnerReader
 	scopes   openPlatformIdentityScopes
 }
 
-func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
-	if identity == nil || orders == nil || profiles == nil || archive == nil || owners == nil || strings.TrimSpace(scopes.WeComScope) == "" {
+func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
+	if identity == nil || orders == nil || profiles == nil || archive == nil || timeline == nil || owners == nil || strings.TrimSpace(scopes.WeComScope) == "" {
 		return nil, errors.New("open platform core Port dependencies are required")
 	}
 	scopes.WeComScope = strings.TrimSpace(scopes.WeComScope)
 	scopes.UnionScopes = distinctScopes(scopes.UnionScopes, "wechat-open-platform:")
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
-	return &openPlatformExecutor{identity: identity, orders: orders, profiles: profiles, archive: archive, owners: owners, scopes: scopes}, nil
+	return &openPlatformExecutor{identity: identity, orders: orders, profiles: profiles, archive: archive, timeline: timeline, owners: owners, scopes: scopes}, nil
 }
 
 func configuredOpenPlatformScopes(corpID string, unionScopes, appIDs []string) openPlatformIdentityScopes {
@@ -238,14 +239,14 @@ func (executor *openPlatformExecutor) callMCP(ctx context.Context, body []byte, 
 		if include, valid := optionalBool(call.Params.Arguments, "include_context"); !valid {
 			return openplatformport.Response{}, errors.New("invalid include_context")
 		} else if include {
-			contextValue, contextErr := executor.customerContext(ctx, customerID, limitArgument(call.Params.Arguments, "recent_message_limit", 20))
+			contextValue, contextErr := executor.customerContext(ctx, customerID, limitArgument(call.Params.Arguments, "recent_message_limit", 20), limitArgument(call.Params.Arguments, "timeline_limit", 20))
 			if contextErr != nil {
 				return openplatformport.Response{}, contextErr
 			}
 			content["context"] = contextValue
 		}
 	case "get_customer_context":
-		contextValue, contextErr := executor.customerContext(ctx, customerID, limitArgument(call.Params.Arguments, "recent_message_limit", 20))
+		contextValue, contextErr := executor.customerContext(ctx, customerID, limitArgument(call.Params.Arguments, "recent_message_limit", 20), limitArgument(call.Params.Arguments, "timeline_limit", 20))
 		if contextErr != nil {
 			return openplatformport.Response{}, contextErr
 		}
@@ -266,15 +267,22 @@ func (executor *openPlatformExecutor) callMCP(ctx context.Context, body []byte, 
 	return responseOK(map[string]any{"content": []map[string]any{{"type": "json", "json": content}}, "structuredContent": content}), nil
 }
 
-func (executor *openPlatformExecutor) customerContext(ctx context.Context, customerID customerdomain.CustomerID, limit int) (map[string]any, error) {
-	messages, err := executor.recentMessages(ctx, customerID, limit)
-	if errors.Is(err, archiveport.ErrNotReady) {
-		return map[string]any{"messages": []any{}, "archive_status": "not_ready"}, nil
+func (executor *openPlatformExecutor) customerContext(ctx context.Context, customerID customerdomain.CustomerID, messageLimit, timelineLimit int) (map[string]any, error) {
+	if timelineLimit < 1 || timelineLimit > 100 {
+		return nil, errors.New("invalid timeline limit")
 	}
-	if err != nil {
-		return nil, err
+	timeline, timelineErr := executor.timeline.CustomerTimeline(ctx, customerID, customerport.PageQuery{Limit: timelineLimit, Watermark: time.Now().UTC()})
+	if timelineErr != nil {
+		return nil, timelineErr
 	}
-	return map[string]any{"messages": messages, "timeline_status": "not_available"}, nil
+	messages, messageErr := executor.recentMessages(ctx, customerID, messageLimit)
+	if errors.Is(messageErr, archiveport.ErrNotReady) {
+		return map[string]any{"messages": []any{}, "archive_status": "not_ready", "timeline": timeline.Items, "timeline_status": timeline.Status.State}, nil
+	}
+	if messageErr != nil {
+		return nil, messageErr
+	}
+	return map[string]any{"messages": messages, "timeline": timeline.Items, "timeline_status": timeline.Status.State}, nil
 }
 
 func (executor *openPlatformExecutor) recentMessages(ctx context.Context, customerID customerdomain.CustomerID, limit int) ([]archiveport.MessageItem, error) {

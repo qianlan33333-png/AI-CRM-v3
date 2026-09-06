@@ -175,3 +175,33 @@ func TestMachineClientUpdateAndActivationKeepTheDisabledHandoff(t *testing.T) {
 		t.Fatalf("active client update = %v", err)
 	}
 }
+
+func TestMachineClientCredentialsDefaultScopeMatchesIssuedJWT(t *testing.T) {
+	now := time.Date(2026, 9, 6, 1, 2, 3, 0, time.UTC)
+	repository := &machineRepositoryStub{clients: map[string]domain.MachineClient{}}
+	service, err := NewMachineService(repository, testUOW{}, credential.PasswordHasher{}, MachineConfig{SigningKey: []byte("01234567890123456789012345678901"), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := domain.Principal{Kind: domain.KindAdmin, InternalID: 9, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	created, err := service.Create(context.Background(), admin, CreateMachineClientInput{
+		ClientID: "partner.default.scope", DisplayName: "Partner default scope", Purpose: "external_agent",
+		Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"}, Capabilities: []string{"external_read", "external_write"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Activate(context.Background(), admin, created.Client.ClientID, created.Secret, true); err != nil {
+		t.Fatal(err)
+	}
+	issued, err := service.IssueClientCredentialsToken(context.Background(), ClientCredentialsInput{
+		ClientID: created.Client.ClientID, ClientSecret: created.Secret, Audience: "external_integration", SourceIP: netip.MustParseAddr("203.0.113.9"),
+	})
+	if err != nil || issued.Scope != "read write" {
+		t.Fatalf("issue default scope = %+v, %v", issued, err)
+	}
+	principal, err := service.AuthenticateBearer(context.Background(), issued.AccessToken, "external_integration", netip.MustParseAddr("203.0.113.9"))
+	if err != nil || !principal.HasScope("read") || !principal.HasScope("write") {
+		t.Fatalf("issued JWT scopes=%v err=%v", principal.Scopes, err)
+	}
+}

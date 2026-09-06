@@ -42,20 +42,30 @@ func (*PostgreSQL) ListMachineClients(ctx context.Context) ([]domain.MachineClie
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	clients := make([]domain.MachineClient, 0)
 	for rows.Next() {
 		client, scanErr := scanMachineClient(rows)
 		if scanErr != nil {
-			return nil, scanErr
-		}
-		client.Capabilities, scanErr = machineCapabilities(ctx, database, client.ID)
-		if scanErr != nil {
+			rows.Close()
 			return nil, scanErr
 		}
 		clients = append(clients, client)
 	}
-	return clients, rows.Err()
+	// pgx transactions use one connection. Close the outer result before
+	// loading grants so a multi-row management list never re-enters a busy
+	// connection with an active cursor.
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for index := range clients {
+		capabilities, capabilityErr := machineCapabilities(ctx, database, clients[index].ID)
+		if capabilityErr != nil {
+			return nil, capabilityErr
+		}
+		clients[index].Capabilities = capabilities
+	}
+	return clients, nil
 }
 
 func (*PostgreSQL) CreateMachineClient(ctx context.Context, client domain.MachineClient) (domain.MachineClient, error) {

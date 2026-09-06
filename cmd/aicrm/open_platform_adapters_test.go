@@ -80,6 +80,20 @@ func (stub *openPlatformOwnerStub) AudiencePrimaryOwners(_ context.Context, _ []
 	return stub.items, nil
 }
 
+type openPlatformTimelineStub struct {
+	page  customerport.TimelinePage
+	err   error
+	calls int
+}
+
+func (stub *openPlatformTimelineStub) CapabilityStatus() customerport.SectionStatus {
+	return customerport.SectionStatus{State: customerport.SectionReady}
+}
+func (stub *openPlatformTimelineStub) CustomerTimeline(context.Context, customerdomain.CustomerID, customerport.PageQuery) (customerport.TimelinePage, error) {
+	stub.calls++
+	return stub.page, stub.err
+}
+
 type openPlatformArchiveStub struct {
 	page  archiveport.CustomerPage
 	err   error
@@ -96,7 +110,7 @@ func (*openPlatformArchiveStub) CustomerStaff(context.Context, customerdomain.Cu
 
 func TestOpenPlatformIdentityUsesDeclaredScopedReferenceAndDoesNotProvision(t *testing.T) {
 	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42, IdentityID: 7}}
-	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +125,7 @@ func TestOpenPlatformIdentityUsesDeclaredScopedReferenceAndDoesNotProvision(t *t
 
 func TestOpenPlatformMCPReturnsArchiveNotReadyAsAnExplicitFact(t *testing.T) {
 	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
-	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{err: archiveport.ErrNotReady}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{err: archiveport.ErrNotReady}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +143,7 @@ func TestOpenPlatformMCPReturnsArchiveNotReadyAsAnExplicitFact(t *testing.T) {
 func TestOpenPlatformOrdersMapScopedIdentityBeforeCallingOrderPort(t *testing.T) {
 	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
 	orders := &openPlatformOrderStub{}
-	executor, err := newOpenPlatformExecutor(identity, orders, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	executor, err := newOpenPlatformExecutor(identity, orders, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +157,7 @@ func TestOpenPlatformScopedCustomerQueryChecksTrustedOwnerBeforeOrderPort(t *tes
 	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
 	orders := &openPlatformOrderStub{}
 	owners := &openPlatformOwnerStub{items: []wecomport.AudiencePrimaryOwner{{CustomerID: 42, CorpScope: "wecom-corp:corp-main", OwnerUserID: "owner-a", Status: "known"}}}
-	executor, err := newOpenPlatformExecutor(identity, orders, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, owners, configuredOpenPlatformScopes("corp-main", nil, nil))
+	executor, err := newOpenPlatformExecutor(identity, orders, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, owners, configuredOpenPlatformScopes("corp-main", nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +172,7 @@ func TestOpenPlatformScopedMCPDoesNotReadProfileOrArchiveOutsideOwnerScope(t *te
 	profiles := &openPlatformProfileStub{}
 	archive := &openPlatformArchiveStub{}
 	owners := &openPlatformOwnerStub{items: []wecomport.AudiencePrimaryOwner{{CustomerID: 42, CorpScope: "wecom-corp:corp-main", OwnerUserID: "owner-a", Status: "known"}}}
-	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, profiles, archive, owners, configuredOpenPlatformScopes("corp-main", nil, nil))
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, profiles, archive, &openPlatformTimelineStub{}, owners, configuredOpenPlatformScopes("corp-main", nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +185,7 @@ func TestOpenPlatformScopedMCPDoesNotReadProfileOrArchiveOutsideOwnerScope(t *te
 
 func TestOpenPlatformUnionIDUsesOneConfiguredScopeForLegacyRequest(t *testing.T) {
 	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
-	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:shared"}, nil))
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:shared"}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +197,7 @@ func TestOpenPlatformUnionIDUsesOneConfiguredScopeForLegacyRequest(t *testing.T)
 
 func TestOpenPlatformRejectsUntrustedCallerSuppliedIdentityScope(t *testing.T) {
 	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
-	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:shared"}, nil))
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:shared"}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +213,7 @@ func TestOpenPlatformRejectsContradictoryLegacyIdentityReferences(t *testing.T) 
 		"unionid|wechat-open-platform:shared|union-1":           {Status: identityport.ResolveFound, CustomerID: 43},
 	}}
 	profiles := &openPlatformProfileStub{}
-	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, profiles, &openPlatformArchiveStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:shared"}, nil))
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, profiles, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:shared"}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +229,7 @@ func TestOpenPlatformMCPRejectsContradictoryCustomerReferences(t *testing.T) {
 		"wecom_external_userid|wecom-corp:corp-main|external-b": {Status: identityport.ResolveFound, CustomerID: 43},
 	}}
 	profiles := &openPlatformProfileStub{}
-	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, profiles, &openPlatformArchiveStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, profiles, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

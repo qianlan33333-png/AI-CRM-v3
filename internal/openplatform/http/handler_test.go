@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -85,6 +87,28 @@ func TestInventoryRegistersEveryFrozenMachineRoute(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || executor.request.Path != "/api/external/orders" || executor.request.Principal.ClientID != "test" {
 		t.Fatalf("external route response=%d request=%+v", response.Code, executor.request)
+	}
+}
+
+func TestMCPToolsMatchFrozenDD8D60DCatalogFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/mcp_tools_dd8d60d.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []map[string]any
+	if err = json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	actualRaw, err := json.Marshal(mcpTools(accessdomain.MachinePrincipal{Capabilities: []string{"mcp_execute"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual []map[string]any
+	if err = json.Unmarshal(actualRaw, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(actual, want) {
+		t.Fatalf("MCP tool catalog drift\nactual=%s\nwant=%s", actualRaw, raw)
 	}
 }
 

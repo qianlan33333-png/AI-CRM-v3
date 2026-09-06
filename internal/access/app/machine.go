@@ -305,10 +305,14 @@ func (service *MachineService) IssueClientCredentialsToken(ctx context.Context, 
 		if lookupErr != nil || !service.passwords.Verify(input.ClientSecret, client.SecretHash) {
 			return domain.ErrMachineCredential
 		}
-		if err := service.authorizeClient(client, audience, input.RequestedScopes, input.SourceIP); err != nil {
+		grantedScopes := input.RequestedScopes
+		if len(grantedScopes) == 0 {
+			grantedScopes = client.Scopes
+		}
+		if err := service.authorizeClient(client, audience, grantedScopes, input.SourceIP); err != nil {
 			return err
 		}
-		accessToken, tokenErr := service.sign(client, audience, input.RequestedScopes)
+		accessToken, tokenErr := service.sign(client, audience, grantedScopes)
 		if tokenErr != nil {
 			return tokenErr
 		}
@@ -319,7 +323,7 @@ func (service *MachineService) IssueClientCredentialsToken(ctx context.Context, 
 		if auditErr := service.audit(txContext, client, nil, "machine_token_issued", "succeeded"); auditErr != nil {
 			return auditErr
 		}
-		issued = IssuedAccessToken{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: client.TokenTTLSeconds, Scope: strings.Join(input.RequestedScopes, " ")}
+		issued = IssuedAccessToken{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: client.TokenTTLSeconds, Scope: strings.Join(grantedScopes, " ")}
 		return nil
 	})
 	return issued, err

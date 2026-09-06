@@ -957,7 +957,7 @@ func mcpTools(principal accessdomain.MachinePrincipal) []map[string]any {
 		return []map[string]any{}
 	}
 	return []map[string]any{
-		{"name": "resolve_customer", "description": "Resolve a customer by customer_ref, mobile, or external_userid.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"customer_ref": map[string]string{"type": "string"}, "external_userid": map[string]string{"type": "string"}, "include_context": map[string]string{"type": "boolean"}}}},
+		{"name": "resolve_customer", "description": "Resolve a customer by customer_ref, mobile, or external_userid.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"customer_ref": map[string]string{"type": "string"}, "external_userid": map[string]string{"type": "string"}, "include_context": map[string]string{"type": "boolean"}, "recent_message_limit": map[string]string{"type": "integer"}, "timeline_limit": map[string]string{"type": "integer"}}}},
 		{"name": "get_customer_context", "description": "Return customer detail, recent messages, and timeline context.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"customer_ref": map[string]string{"type": "string"}, "external_userid": map[string]string{"type": "string"}, "recent_message_limit": map[string]string{"type": "integer"}, "timeline_limit": map[string]string{"type": "integer"}}}},
 		{"name": "get_recent_messages", "description": "Return recent single-customer archived messages.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"customer_ref": map[string]string{"type": "string"}, "external_userid": map[string]string{"type": "string"}, "limit": map[string]string{"type": "integer"}}}},
 	}
