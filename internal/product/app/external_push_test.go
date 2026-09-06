@@ -334,3 +334,48 @@ var _ CommerceExternalPushStore = (*commerceExternalPushTestStore)(nil)
 var _ ProductExternalPushEffectAccepter = (*commerceExternalPushTestEffects)(nil)
 var _ productport.ExternalPushTestStatusReader = (*commerceExternalPushTestStore)(nil)
 var _ productport.ExternalPushTestStatusReader = commerceExternalPushTestStatuses{}
+
+func TestCommerceExternalPushReplaysMain8ecBindingReceiptAndRejectsChangedBinding(t *testing.T) {
+	updated := time.Date(2026, 9, 6, 7, 0, 0, 0, time.UTC)
+	command := productport.SaveExternalPushConfigurationCommand{
+		ProductID: 91, ProductKind: productport.ExternalPushWeChatPay,
+		Enabled: true, ConfigurationReference: "legacy-push-91", Actor: 7, IdempotencyKey: "commerce-push-main8ec-0001",
+	}
+	legacySnapshot, err := json.Marshal(struct {
+		ProductID              productport.ID                      `json:"product_id"`
+		ProductKind            productport.ExternalPushProductKind `json:"product_kind"`
+		Enabled                bool                                `json:"enabled"`
+		ConfigurationReference string                              `json:"configuration_reference,omitempty"`
+		UpdatedAt              time.Time                           `json:"updated_at"`
+	}{91, productport.ExternalPushWeChatPay, true, "legacy-push-91", updated})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDigest := commerceExternalPushLegacySaveDigest(command)
+	reservation := commerceExternalPushReservation(commerceExternalPushSaveOperation, command.Actor, command.IdempotencyKey, legacyDigest, updated)
+	store := &commerceExternalPushTestStore{
+		products: map[productport.ID]productport.ExternalPushProductKind{91: productport.ExternalPushWeChatPay},
+		configs:  map[productport.ID]productport.ExternalPushConfiguration{},
+		receipts: map[string]Receipt{commerceExternalPushTestReceiptKey(reservation): {
+			ID: 1, Operation: reservation.Operation, ActorScope: reservation.ActorScope, KeyDigest: reservation.KeyDigest,
+			PayloadDigest: legacyDigest, State: "completed", ResultSnapshot: legacySnapshot,
+		}},
+	}
+	service, _ := newCommerceExternalPushTestService(store, &commerceExternalPushTestEffects{})
+	replayed, err := service.SaveExternalPushConfiguration(context.Background(), command)
+	if err != nil || replayed.Revision != 0 || replayed.ExpiresAtTS != nil || store.saves != 0 {
+		t.Fatalf("main@8ec replay=%#v saves=%d err=%v", replayed, store.saves, err)
+	}
+	changed := command
+	changed.ConfigurationReference = "changed-binding"
+	if _, err = service.SaveExternalPushConfiguration(context.Background(), changed); !errors.Is(err, ErrConflict) || store.saves != 0 {
+		t.Fatalf("changed main@8ec binding replay err=%v saves=%d", err, store.saves)
+	}
+	business := command
+	business.BusinessParametersSet = true
+	business.PushType = "member_open"
+	business.CustomParams = map[string]any{"large": json.Number("9007199254740993")}
+	if _, err = service.SaveExternalPushConfiguration(context.Background(), business); !errors.Is(err, ErrConflict) || store.saves != 0 {
+		t.Fatalf("main@8ec business replay err=%v saves=%d", err, store.saves)
+	}
+}

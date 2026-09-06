@@ -278,6 +278,27 @@ type ExternalPushConfigurationDetails = {
   customParamsText: string;
 };
 
+type ExternalPushConfigurationState = {
+  value?: ExternalPushConfigurationDetails;
+  pending?: Promise<ExternalPushConfigurationDetails>;
+};
+
+// The frozen Product renderer clears and remounts its form after its own
+// asynchronous read. Keep an in-flight configuration response per page so a
+// remounted V3 panel receives the same verified result instead of leaving the
+// visible panel empty because the first panel was detached.
+const externalPushConfigurationStates = new Map<string, ExternalPushConfigurationState>();
+
+function externalPushConfigurationState(page: ExternalPushPage): ExternalPushConfigurationState {
+  const key = `${page.productKind}:${page.productID}`;
+  let state = externalPushConfigurationStates.get(key);
+  if (!state) {
+    state = {};
+    externalPushConfigurationStates.set(key, state);
+  }
+  return state;
+}
+
 function parseExternalPushConfiguration(value: unknown, page: ExternalPushPage): ExternalPushConfigurationDetails {
   const item = object(value);
   const enabled = item.enabled;
@@ -358,7 +379,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
   const pushType = field('类型', 'product-v3-external-push-type');
   const day = field('服务天数', 'product-v3-external-push-day', 'text');
   const frequency = field('频次', 'product-v3-external-push-frequency', 'text');
-  const expiresAtTS = field('到期时间戳', 'product-v3-external-push-expires-at-ts', 'text');
+  const expiresAtTS = field('expires_at_ts', 'product-v3-external-push-expires-at-ts', 'text');
   const remark = field('备注', 'product-v3-external-push-remark');
   const paramsLabel = ownerDocument.createElement('label');
   paramsLabel.style.cssText = 'display:grid;gap:5px;color:#646A73;font-size:12px';
@@ -379,10 +400,25 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
   editor.append(title, note, grid, paramsLabel, actions);
   panel.prepend(editor);
 
+  const state = externalPushConfigurationState(page);
   let configuration: ExternalPushConfigurationDetails | undefined;
   const load = async (): Promise<void> => {
     status.textContent = '正在读取配置…';
-    const value = parseExternalPushConfiguration(await externalPushRequest(page.configurationEndpoint, { method: 'GET', headers: { Accept: 'application/json' } }), page);
+    if (!state.pending && !state.value) {
+      let pending: Promise<ExternalPushConfigurationDetails>;
+      pending = (async () => {
+        try {
+          const response = await externalPushRequest(page.configurationEndpoint, { method: 'GET', headers: { Accept: 'application/json' } });
+          const value = parseExternalPushConfiguration(response, page);
+          state.value = value;
+          return value;
+        } finally {
+          if (state.pending === pending) state.pending = undefined;
+        }
+      })();
+      state.pending = pending;
+    }
+    const value = state.value || await state.pending!;
     if (!panel.isConnected) return;
     configuration = value;
     pushType.value = value.pushType;
@@ -419,6 +455,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
       body: JSON.stringify({ enabled: binding.enabled, configuration_reference: binding.enabled ? binding.reference : '', type: pushType.value, day: configuredDay, frequency: configuredFrequency, expires_at_ts: configuredExpiresAtTS, remark: remark.value, custom_params: customParamsText, expected_revision: configuration.revision }),
     }).then((saved) => {
       configuration = parseExternalPushConfiguration(saved, page);
+      state.value = configuration;
       status.textContent = `配置版本 ${configuration.revision}`;
       showMessage('外推业务参数已保存；未发送外部请求。');
     }).catch((error) => showMessage(error instanceof Error ? error.message : '外推参数保存失败')).finally(() => { save.disabled = false; });

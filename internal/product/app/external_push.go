@@ -131,6 +131,7 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 		return productport.ExternalPushConfiguration{}, ErrUnavailable
 	}
 	payloadDigest := commerceExternalPushSaveDigest(command)
+	legacyPayloadDigest := commerceExternalPushLegacySaveDigest(command)
 	reservation := commerceExternalPushReservation(commerceExternalPushSaveOperation, command.Actor, command.IdempotencyKey, payloadDigest, now)
 	var result productport.ExternalPushConfiguration
 	err := service.uow.Within(ctx, func(tx context.Context) error {
@@ -141,7 +142,8 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 		if !validCommerceExternalPushReceipt(receipt, reservation) {
 			return ErrUnavailable
 		}
-		if subtle.ConstantTimeCompare(receipt.PayloadDigest[:], reservation.PayloadDigest[:]) != 1 {
+		if subtle.ConstantTimeCompare(receipt.PayloadDigest[:], reservation.PayloadDigest[:]) != 1 &&
+			!commerceExternalPushLegacySaveReplay(command, receipt, legacyPayloadDigest) {
 			return ErrConflict
 		}
 		if !owned {
@@ -358,6 +360,27 @@ func commerceExternalPushSaveDigest(command productport.SaveExternalPushConfigur
 	return sha256.Sum256(payload)
 }
 
+// commerceExternalPushLegacySaveDigest preserves the exact main@8ec5072
+// receipt contract. That released Host saved only the opaque binding; the V3
+// business fields were added later and must not change an original-key replay.
+func commerceExternalPushLegacySaveDigest(command productport.SaveExternalPushConfigurationCommand) [32]byte {
+	payload, _ := json.Marshal(struct {
+		ProductID              productport.ID                      `json:"product_id"`
+		ProductKind            productport.ExternalPushProductKind `json:"product_kind"`
+		Enabled                bool                                `json:"enabled"`
+		ConfigurationReference string                              `json:"configuration_reference"`
+	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference})
+	return sha256.Sum256(payload)
+}
+
+func commerceExternalPushLegacySaveReplay(command productport.SaveExternalPushConfigurationCommand, receipt Receipt, legacyDigest [32]byte) bool {
+	// A completed main@8ec receipt represents the old binding-only command. A
+	// post-0095 business save is a different request even if a browser reuses
+	// its key.
+	return !command.BusinessParametersSet && command.ExpiresAtTS == nil &&
+		subtle.ConstantTimeCompare(receipt.PayloadDigest[:], legacyDigest[:]) == 1
+}
+
 func commerceExternalPushTestDigest(command productport.QueueExternalPushTestCommand) [32]byte {
 	payload, _ := json.Marshal(struct {
 		ProductID   productport.ID                      `json:"product_id"`
@@ -531,10 +554,27 @@ func decodeCommerceExternalPushSnapshot(raw json.RawMessage, target *productport
 		return ErrUnavailable
 	}
 	canonical, err := json.Marshal(*target)
-	if err != nil || !jsonEquivalent(canonical, raw) {
+	if err != nil || (!jsonEquivalent(canonical, raw) && !commerceExternalPushLegacySnapshotEquivalent(raw, *target)) {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+// commerceExternalPushLegacySnapshotEquivalent accepts exactly the completed
+// main@8ec5072 configuration shape. It does not normalize damaged snapshots
+// or accept a partial version of a later business-parameter snapshot.
+func commerceExternalPushLegacySnapshotEquivalent(raw json.RawMessage, value productport.ExternalPushConfiguration) bool {
+	if value.Revision != 0 || value.PushType != "" || value.Day != nil || value.Frequency != nil || value.ExpiresAtTS != nil || value.Remark != "" || value.CustomParams != nil {
+		return false
+	}
+	legacy, err := json.Marshal(struct {
+		ProductID              productport.ID                      `json:"product_id"`
+		ProductKind            productport.ExternalPushProductKind `json:"product_kind"`
+		Enabled                bool                                `json:"enabled"`
+		ConfigurationReference string                              `json:"configuration_reference,omitempty"`
+		UpdatedAt              time.Time                           `json:"updated_at"`
+	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference, value.UpdatedAt})
+	return err == nil && jsonEquivalent(legacy, raw)
 }
 
 func decodeCommerceExternalPushTestSnapshot(raw json.RawMessage, target *productport.ExternalPushTest, productID productport.ID, kind productport.ExternalPushProductKind) error {

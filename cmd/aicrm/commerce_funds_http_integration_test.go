@@ -271,6 +271,86 @@ func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) 
 	}
 }
 
+func TestPostgreSQLProductExternalPushReplaysMain8ecBindingReceipt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := productstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var productID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('push-main8ec-replay','主线旧收据商品',1200,'CNY',1,1,'{"schema_version":1,"status":"enabled","enabled":true}'::jsonb) RETURNING id`).Scan(&productID); err != nil {
+		t.Fatal(err)
+	}
+	updated := time.Date(2026, 9, 6, 8, 0, 0, 0, time.UTC)
+	command := productport.SaveExternalPushConfigurationCommand{ProductID: productport.ID(productID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "push-main8ec-target", Actor: 61, IdempotencyKey: "commerce-push-pg-main8ec-0001"}
+	legacyPayload, err := json.Marshal(struct {
+		ProductID              productport.ID                      `json:"product_id"`
+		ProductKind            productport.ExternalPushProductKind `json:"product_kind"`
+		Enabled                bool                                `json:"enabled"`
+		ConfigurationReference string                              `json:"configuration_reference"`
+	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySnapshot, err := json.Marshal(struct {
+		ProductID              productport.ID                      `json:"product_id"`
+		ProductKind            productport.ExternalPushProductKind `json:"product_kind"`
+		Enabled                bool                                `json:"enabled"`
+		ConfigurationReference string                              `json:"configuration_reference,omitempty"`
+		UpdatedAt              time.Time                           `json:"updated_at"`
+	}{productport.ID(productID), productport.ExternalPushWeChatPay, true, command.ConfigurationReference, updated})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadDigest := sha256.Sum256(legacyPayload)
+	keyDigest := sha256.Sum256([]byte(command.IdempotencyKey))
+	if _, err = pool.Exec(ctx, `INSERT INTO product_operation_receipts(operation,actor_scope,idempotency_key_digest,payload_digest,state,result_snapshot,created_at,completed_at) VALUES('external_push_save',$1,$2,$3,'completed',$4::jsonb,$5,$5)`, "admin:61", keyDigest[:], payloadDigest[:], legacySnapshot, updated); err != nil {
+		t.Fatal(err)
+	}
+	events := &commerceFundsProductPushEvents{}
+	service, err := productapp.NewCommerceExternalPushService(uow, repository, nil, commerceFundsProductPushStatuses{}, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.SaveExternalPushConfiguration(ctx, command)
+	if err != nil || replayed.Revision != 0 || replayed.ExpiresAtTS != nil || events.Count() != 0 {
+		t.Fatalf("main@8ec PostgreSQL replay=%#v events=%d err=%v", replayed, events.Count(), err)
+	}
+	changed := command
+	changed.ConfigurationReference = "changed-main8ec-target"
+	if _, err = service.SaveExternalPushConfiguration(ctx, changed); !errors.Is(err, productapp.ErrConflict) {
+		t.Fatalf("changed main@8ec binding replay err=%v", err)
+	}
+	var receipts, configurations int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM product_operation_receipts WHERE operation='external_push_save'`).Scan(&receipts); err != nil || receipts != 1 {
+		t.Fatalf("main@8ec receipt count=%d err=%v", receipts, err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM product_external_push_configurations WHERE product_id=$1`, productID).Scan(&configurations); err != nil || configurations != 0 {
+		t.Fatalf("main@8ec replay wrote configuration count=%d err=%v", configurations, err)
+	}
+}
+
 func TestPostgreSQLProductExternalPushFirstBusinessSaveCAS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
