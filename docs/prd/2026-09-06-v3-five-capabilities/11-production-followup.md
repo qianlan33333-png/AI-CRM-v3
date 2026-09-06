@@ -45,3 +45,14 @@ V3 受保护文件为 `/var/tmp/aicrm-push-history-20260906T150000Z/history.seal
 - 31条旧外推配置中，24条有明确 V3 商品来源映射，7条缺映射。旧库只读核实缺映射中的3条仍有 active 商品且启用外推，另外4条对应商品已不在两张旧商品表中且配置停用。不能按数字ID猜测。先恢复3条真实商品的受控追加映射；预计27条运行配置可恢复，4条仅保留历史并显式记录未恢复原因。现有全量配置定义迁移器强制31条基线且拒绝已存在商品代码，不能直接重复全量导入。
 - V3 Open JWT签名材料及可信代理配置已在 `/var/tmp/aicrm-open-platform-v1-20260906/runtime-prepared.json` 受保护文件准备，尚未应用、未发放机器凭据。可信代理仅127.0.0.1/32，对应只读核实的现有Caddy回源；不得信任任意转发头。密钥不进入文档或代码。
 - 根已用服务器现有受保护 bootstrap 凭据验证正常 HTTPS 登录并退出，未重置管理员。外推业务配置恢复将沿真实认证/CSRF/Product HTTP UoW路径，不能伪造actor或直接写Product表。
+
+
+## 2026-09-06 16:15 UTC 标签与配置历史已应用并核验
+
+使用生产8ec实际发布二进制，对旧revision41f80a11835445c034fdd39f69a6b6712722bb98只读提取：标签305条、配置发布8条。受保护目标目录 `/var/tmp/aicrm-tag-config-history-20260906T161200Z`（0700），tag.json、config.sealed、config.key均0600；旧主机临时文件已移除，本地未落敏感副本。标签文件SHA256 `0127bcc47fa7a8bb1937aed6e47a93f5f74c78a32cdc6b51cd0ce8b1ec945cd3`；配置manifestSHA256 `b70c5265a89e80e43db7a67aaf653fc0988f6b6fdbd2cad9a8c84a6e060a4b99`，配置密封文件SHA256 `8171dc5168dd65793347f3a02c6df42bd62524466074947e9329484d5b748390`。
+
+inspect/dry-run审核后，root以准确摘要apply并verify均通过：标签190条imported，115条pending（106 tag_unmapped、8 follow_user_unresolved、1 staff_unresolved），0conflict/failed；未猜测或自动创建身份。8条配置发布历史均以no_v3_runtime_equivalence保留排除事实，不应用旧值。实际生产回读customer_tag_commands仍0条、published runtime releases仍0条；Provider/effect/River计数全部0。能力上线与历史待映射保持分开报告。
+
+## Open 历史准备（尚未应用）
+
+090889a已审工具从同一旧revision只读提取17个API Client、14条调用方审计。V3 `/var/tmp/aicrm-v3-open-platform-history-090889a/open-platform.snapshot` 与同目录snapshot.key，父目录0700、文件0600。manifest `6d01d492fb6f4fb5bc450cfa9e65d175ddb56fa836a73efa852e2455d791cfcb`，密封文件SHA256 `911da5d065cc4d4ae50f22306bbd0635fb62eda93fc455a42273b8803590e1b4`。extract/inspect/dry-run通过，旧源及本地敏感临时文件已删除。未应用目标数据库，所有旧client仅允许disabled/reissue_required或带原因excluded，不恢复secret/token。

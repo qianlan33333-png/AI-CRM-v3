@@ -184,3 +184,12 @@
 - #164 `2b591d80e9ba88a7ea9d479af2f6b8ff1d581258` 已合入 main65d。81fecb5 用真实 Media Reader 装配修复侧边栏503；根真实 PostgreSQL/race 校验 bootstrap、102条问卷总数和侧边栏完整读取均通过2.63s。原生V1 Host已修复TTL60..3600、时区漂移、凭据复制失败与激活结果未知处理。仍须组合173实际浏览器与最终CI。
 
 实现、专项测试、审核、合并、部署和真实 Provider 业务验收分别记录。本检查点仅172新增合并；生产仍使用先前已核实的8ec版本。
+
+
+## 2026-09-06 16:19 UTC 增量
+
+- #174准确abbfb4b完整CI34043961528成功，已合并main05045c645f95d269b624771ceb215713e3300f59；主线发布run34044888183进行中，尚未确认部署。
+- #171普通merge65d为9d0b75af6d2c82cd20dadc87772885b16d2f36a2，0092/0095、双方历史工具和Provider装配保留，源码冲突审核通过，准确CI待完成。
+- #173090 CI暴露既有自动化导入器漏填0097 actor。用户侧边补丁仅两个导入文件；根独立PG/race四包0跳过通过（3.073/1.770/2.025/1.229s），原失败用例1.59s通过，架构910文件通过。选择复用AdminMutationActor及管理员42的五表dry-run/apply/replay断言版本，替换并行手拼actor重复修复；不增加六Operation以外业务。最终提交及完整CI待核验。
+- #1647cca25da68fe079c50a0e760de4e5cfb7b67dc31修复Chromium测试工作目录导致web/dist回落旧壳，增加外层Host/资产预检；源码审核通过，Linux浏览器仍待证据。
+- 标签305条及配置8条生产历史已apply/verify，具体pending/excluded明细见11；没有新的真实Provider业务操作。
