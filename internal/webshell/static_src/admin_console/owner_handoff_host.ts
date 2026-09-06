@@ -376,7 +376,7 @@ async function boot(): Promise<void> {
     query<HTMLElement>(root, "[data-excel-panel]").hidden = true;
     query<HTMLElement>(root, "[data-mode-pill]").textContent = "模式：全量迁移";
     updateWeComPresentation(); reset();
-    setNotice("冻结旧页已由 V3 Host 挂载；原负责人可含停用员工，目标负责人只列在职员工。");
+    setNotice("原负责人可含停用员工，目标负责人只列在职员工。");
     stage.dataset.ownerHandoffInit = "ready";
   } catch (error) {
     const phase = stage.dataset.ownerHandoffInit || "mounting";

@@ -12725,7 +12725,7 @@
       query(root, "[data-mode-pill]").textContent = "\u6A21\u5F0F\uFF1A\u5168\u91CF\u8FC1\u79FB";
       updateWeComPresentation();
       reset();
-      setNotice("\u51BB\u7ED3\u65E7\u9875\u5DF2\u7531 V3 Host \u6302\u8F7D\uFF1B\u539F\u8D1F\u8D23\u4EBA\u53EF\u542B\u505C\u7528\u5458\u5DE5\uFF0C\u76EE\u6807\u8D1F\u8D23\u4EBA\u53EA\u5217\u5728\u804C\u5458\u5DE5\u3002");
+      setNotice("\u539F\u8D1F\u8D23\u4EBA\u53EF\u542B\u505C\u7528\u5458\u5DE5\uFF0C\u76EE\u6807\u8D1F\u8D23\u4EBA\u53EA\u5217\u5728\u804C\u5458\u5DE5\u3002");
       stage.dataset.ownerHandoffInit = "ready";
     } catch (error) {
       const phase = stage.dataset.ownerHandoffInit || "mounting";
