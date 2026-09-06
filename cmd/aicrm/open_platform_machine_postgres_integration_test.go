@@ -156,6 +156,7 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertAllowedCIDRsJSON(t, v1Client.Client, "create")
 	activateRequest := httptest.NewRequest(http.MethodPost, "https://crm.example.test/api/admin/open-platform/clients/"+v1Client.Client.ClientID+"/activate", strings.NewReader(`{"client_secret":"`+v1Client.Secret+`","copied_confirmed":true}`))
 	activateRequest.Header.Set("Content-Type", "application/json")
 	activateResponse := httptest.NewRecorder()
@@ -163,6 +164,7 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if activateResponse.Code != http.StatusOK || !strings.Contains(activateResponse.Body.String(), `"enabled":true`) {
 		t.Fatalf("V1 management activate status=%d body=%s", activateResponse.Code, activateResponse.Body.String())
 	}
+	assertAllowedCIDRsJSON(t, activateResponse.Body.Bytes(), "activate")
 	v1Bearer, err := service.IssueClientCredentialsToken(ctx, accessapp.ClientCredentialsInput{ClientID: v1Client.Client.ClientID, ClientSecret: v1Client.Secret, Audience: "external_integration", RequestedScopes: []string{"read"}, SourceIP: mustOpenPlatformAddr(t, "203.0.113.5")})
 	if err != nil {
 		t.Fatal(err)
@@ -183,6 +185,7 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if detailResponse.Code != http.StatusOK || strings.Contains(detailResponse.Body.String(), `"owner_scope":{"customer_id"`) || strings.Contains(detailResponse.Body.String(), `"expires_at"`) {
 		t.Fatalf("V1 management detail status=%d body=%s", detailResponse.Code, detailResponse.Body.String())
 	}
+	assertAllowedCIDRsJSON(t, detailResponse.Body.Bytes(), "detail")
 	auditRequest := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/admin/open-platform/clients/"+v1Client.Client.ClientID+"/audit?limit=10", nil)
 	auditResponse := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(auditResponse, auditRequest)
@@ -518,6 +521,32 @@ func (*openPlatformMachineExecutor) Available(context.Context, accessdomain.Mach
 
 func (*openPlatformMachineExecutor) Invoke(context.Context, openplatformport.Invocation) (openplatformport.Result, error) {
 	return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "test operation service is not composed")
+}
+
+func assertAllowedCIDRsJSON(t *testing.T, source any, operation string) {
+	t.Helper()
+	var raw []byte
+	if value, ok := source.([]byte); ok {
+		raw = value
+	} else {
+		var err error
+		raw, err = json.Marshal(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if client, ok := payload["client"]; ok {
+		if err := json.Unmarshal(client, &payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, ok := payload["allowed_cidrs"]; !ok || string(got) != "[]" {
+		t.Fatalf("%s allowed_cidrs=%s want []", operation, got)
+	}
 }
 
 func assertMachineCapabilities(t *testing.T, clients []accessapp.MachineClientSummary, clientID string, want []string) {
