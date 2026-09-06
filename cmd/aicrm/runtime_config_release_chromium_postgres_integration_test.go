@@ -93,7 +93,7 @@ func TestPostgreSQLRuntimeReleaseChromiumJourney(t *testing.T) {
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage`).Scan(&usage); err != nil {
 		t.Fatal(err)
 	}
-	if releases != 2 || published != 1 || superseded != 1 || usage != 0 {
+	if releases != 3 || published != 1 || superseded != 2 || usage != 0 {
 		t.Fatalf("Chromium release facts releases/published/superseded/usage=%d/%d/%d/%d", releases, published, superseded, usage)
 	}
 }
