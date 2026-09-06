@@ -4,11 +4,11 @@
 
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
-| 负责人迁移 | 01 已批准 | 旧流程/真实PG/恢复/协议/历史专项通过，Linux Chrome收口中 | #171 `96b79b8b2182a93b9ce0f52b82d4dbb01f9bef8a` | 9ee88d1实际失败为excel_scope_select动态JS语法；新HEAD加入所有动态表达式编译预检及真实文件导入，待该HEAD完整Linux CI，不标为通过 |
+| 负责人迁移 | 01 已批准 | 旧流程/PG/恢复/协议/历史通过，实际Composition修正后Linux Chrome收口 | #171 `7772d013398c36a92b7cb684a536ea4b34cfb882` | 88b实际失败为provider line retryable_failed，已定位Provider直连需事务的Store；c95改现有Customer UoW Adapter，777新增真实HTTP→River→Provider→Owner更新测试；等待准确HEAD完整CI |
 | 通用客户标签 | 02 已批准 | 根PG/race、历史/101恢复/协议、真实Chromium与全CI通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | main8ec5072于13:01 UTC再次核实线上ready；代码已部署，13:23 UTC通用标签开关已启用并核实API/Worker实际加载；真实业务验收未进行 |
 | 配置中心运行生效 | 05 已批准 | 根PG/race、实际消费者/历史/制品、真实Chrome及CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 已随5494537及后续main8ec上线；生产业务配置发布与真实消费者业务验收另记 |
-| 商品／订单外推 | 04 已批准 | paid完整链路、历史CLI、协议已根PG/race验证，真实Chrome收口中 | #172 `0fd897ea5b84482055338673850134cab21cb377` | 0fd修复缺构建制品导致503；Linux CI34035483933继续发现browser configuration save did not finish，已派定点修复；未批准整板块 |
-| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path，逐个接现有领域Port | #173 远端`ba0155a16d366889573697a12dbd05e50e12d776`，本地`d7e9ba28402191bed1a2d9e5dfb0722d87c10c74` | 4接通/4部分/48待迁移；根发现旧存档raw_payload wrapper与新extract不兼容，已退回修复并要求真实旧样例；Segment机器actor、Survey历史投影及其余路由继续 |
+| 商品／订单外推 | 04 已批准 | paid、expiry、配置CAS、历史与协议根PG/race通过，真实Chrome收口 | #172 `ff8e51a1b19de83d3e78b8986e38ece150e2c8ad` | 普通商品保存/重载/测试投递已推进，当前周期商品Host未呈现；另已发现main旧保存收据摘要升级兼容缺陷，要求真实PG升级重放修复；未批准整板块 |
+| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Segment机器actor已根审核并合入，Survey原生/历史读模型已补 | #173 远端`ba0155a16d366889573697a12dbd05e50e12d776`，本地`19351eceff071b10fadc46b7c16eb6ce64b4024e` | Archive真实wrapper提取已修；Survey/Access分层PG通过但单一完整HTTP旅程未齐；根要求阻断非Survey scope作为历史Union selector，其余Audience/Operations路由继续；未批准整板块 |
 | 新前端壳 | 12 已批准 | 沿用原PR164工作，在独立clone合入main8ec | #164 远端`c8819d7a9b837c00116682e860310717e5f94b20`，本地a96b162 | 现有远端CI在donor manifest失败；待修正确V3适配归属、完整制品、模块Host路由、侧边栏CSP/素材可见性，最终组合浏览器和部署待验收 |
 
 共用验收：完整路由/Composition、冻结供体复用、PG原子性/并发/重启、身份权限、未知结果、历史零新效果。各PR需链接实际日志/测试/浏览器证据，跳过与Mock明确标识。
@@ -20,7 +20,7 @@
 - 共用修复 #167，准确 HEAD `cbac1f6bdb2b868985c577ba0cff11482430a19e`：完整 CI、根独立真实 PostgreSQL race 测试与审核通过。已独立 squash 合并 main：`53c1c62e7db7924b979aa11fd8345d969fadf4ec`，既有自动部署已成功，生产readyz核对到53c1c62；不代表五板块生产业务验收。
 - 配置中心 #170、客户标签 #169 整板块代码验收已完成并独立合并；其余三项仍未完成，单项证据通过不填为整板块完成。
 - 每个板块合并前记录最终准确 HEAD、真实 PG/浏览器/协议/历史证据、CI及 review 结论；合并与既有部署流水线结果另外记录。
-- 配置发布、凭据启用、真实转接/打标/外推、生产历史导入均未执行，不能由合并状态推导。
+- 生产状态分别记录：标签通用Provider开关已于13:23 UTC启用并核实加载；配置发布、真实转接/打标/外推、生产历史导入尚未执行，不能由合并状态推导。
 
 历史导入、真实消费者、浏览器操作、Provider协议及整体CI必须分别验收；局部通过不覆盖待办。
 
@@ -129,3 +129,10 @@
 - #172根在b40c82b真实PG/race通过完整Funds HTTP和历史CLIextract/apply/replay/verify/drift。0fd897e实际构建Host后消除503，当前失败是页面保存未结束；不能以专项PG通过覆盖浏览器失败。
 - #173根在05ffb57真实PG/race通过Archive machine projection与Radar links disabled/keyset行为；d7e9ba2新增历史提取尚未通过根审，旧SDK实际保存{seq,encrypted_record,decrypted_message}，不能用手写顶层SDK fixture代替真实源。0098 Archive历史投影为owner保护的TEXT，并非字段加密；0099 Survey仅保留历史读取字段，不能升级成OneID证据。
 - 生产13:01 UTC只读核实main8ec5072、aicrm与effects-worker active。通用客户标签Provider及商品外推Provider未启用；外推受控目标/载荷密钥和开放平台JWT密钥尚未配置。后续必要配置在验收后按最新上线授权准备，真实写验收使用明确测试对象。
+
+## 当前独立复核与修正（2026-09-06 13:58 UTC）
+
+- #171 df862修复转接结果读取器装配及冻结摘要匹配，根实际HTTP/PG/race通过。88b真实Chrome暴露执行前直连Store缺事务，c95改用既有Customer执行Adapter；777新用例从实际HTTP预览确认进入River/Provider并核对本地Owner。旧失败不继续重复派发，最终以777后续CI实际流程为准。
+- #172 4505根独立真实PG/race通过HTTP disabled完整形状、BusinessParametersRoundTrip、FirstBusinessSaveCAS、ExpiredPaidOrderPlansConfigExpiredCommercePushOnce、CommerceFundsHTTPJourney，0跳过，日志aicrm-push-4505-root-review.log。expires_at_ts沿用旧版，过期paid只保留planned_config_expired事实且不产生EER。ff8e真实Chrome已推进普通商品流程，周期商品Host失败尚未关闭。
+- #173 Segment a2a1da0+d0b2621两提交经根全包真实PG/race审核0跳过，覆盖升级前旧收据重放与两个机器调用方相同key隔离，现由Openlead合入92b4aef/9df5adb。Archive48fe真实旧wrapper的全历史CLI PG/race通过；Survey35f旧Union投影导入PG/race通过；19351ec Survey原生/历史混合读及实际PG Access/JWT→Executor spy测试通过，spy不代表端到端Survey验收。根发现直接请求Union scope未限定Survey来源，退回修正后才能接入历史查询。
+- 生产只读源事实：旧负责人迁移结果34行；商品外推配置31条，其中12启用且均HTTPS、均未到期。源配置历史导入不等于V3运行配置启用，仍需稳定产品映射与受保护target槽位。
