@@ -94,7 +94,10 @@ type SurveyItem struct {
 }
 
 type SurveyPage struct {
-	Items  []SurveyItem
+	Items []SurveyItem
+	// Total is supplied by the Survey Owner. Items is only a bounded window,
+	// and therefore cannot truthfully stand in for the customer's full count.
+	Total  int64
 	Status SectionStatus
 }
 

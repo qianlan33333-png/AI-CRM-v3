@@ -54,9 +54,22 @@ func (names profileTagNames) ProviderTagNames(_ context.Context, ids []string) (
 	return items, nil
 }
 
-type profileSurveyReader struct{ item surveyport.Submission }
+type profileSurveyReader struct {
+	item          surveyport.Submission
+	total         int64
+	historyLimit  int32
+	historyOffset int32
+	windowQuery   surveyport.CustomerHistoryQuery
+}
 
-func (reader profileSurveyReader) CustomerHistoryWindow(context.Context, surveyport.CustomerHistoryQuery) (surveyport.CustomerHistoryWindow, error) {
+func (reader *profileSurveyReader) CustomerHistory(_ context.Context, _ int64, limit, offset int32) (surveyport.SubmissionPage, error) {
+	reader.historyLimit = limit
+	reader.historyOffset = offset
+	return surveyport.SubmissionPage{Items: []surveyport.Submission{reader.item}, Total: reader.total, Limit: limit, Offset: offset}, nil
+}
+
+func (reader *profileSurveyReader) CustomerHistoryWindow(_ context.Context, query surveyport.CustomerHistoryQuery) (surveyport.CustomerHistoryWindow, error) {
+	reader.windowQuery = query
 	return surveyport.CustomerHistoryWindow{Items: []surveyport.Submission{reader.item}}, nil
 }
 
@@ -78,12 +91,16 @@ func TestCustomerOwnerAndTagAdaptersNeverExposeProviderIDs(t *testing.T) {
 
 func TestCustomerSurveyAdapterUsesOnlySurveyMaskedAnswers(t *testing.T) {
 	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
-	adapter := customerSurveyAdapter{reader: profileSurveyReader{item: surveyport.Submission{ID: 8, QuestionnaireTitle: "安全问卷", SubmittedAt: now,
+	reader := &profileSurveyReader{total: 137, item: surveyport.Submission{ID: 8, QuestionnaireTitle: "安全问卷", SubmittedAt: now,
 		Answers: []surveyport.AnswerSnapshot{{QuestionTitle: "手机号", TextValue: "13812345678", TextValueMasked: "138****5678"},
-			{QuestionTitle: "选择", SelectedOptions: []surveyport.SelectedOptionSnapshot{{OptionText: "选项 A"}}}}}}}
+			{QuestionTitle: "选择", SelectedOptions: []surveyport.SelectedOptionSnapshot{{OptionText: "选项 A"}}}}}}
+	adapter := customerSurveyAdapter{reader: reader}
 	page, err := adapter.CustomerSurveys(context.Background(), 42, customerport.PageQuery{Limit: 21, Watermark: now})
-	if err != nil || len(page.Items) != 1 || page.Items[0].Answers[0].Answers[0] != "138****5678" || page.Items[0].Answers[1].Answers[0] != "选项 A" {
+	if err != nil || len(page.Items) != 1 || page.Total != 137 || page.Items[0].Answers[0].Answers[0] != "138****5678" || page.Items[0].Answers[1].Answers[0] != "选项 A" {
 		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if reader.historyLimit != 1 || reader.historyOffset != 0 || reader.windowQuery.Limit != 21 {
+		t.Fatalf("summary limit=%d offset=%d window=%+v", reader.historyLimit, reader.historyOffset, reader.windowQuery)
 	}
 	if page.Items[0].Answers[0].Answers[0] == "13812345678" {
 		t.Fatal("raw survey text leaked")

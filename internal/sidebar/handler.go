@@ -161,9 +161,10 @@ func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 // workbenchProjection assembles the first paint from existing section
-// services.  Counts are bounded honest reads: questionnaires cap at 500 (the
-// sidebar never pages deeper), orders and periodic orders use their store
-// totals, materials count the shared library.  The profile only carries fields
+// services. Counts use each Owner's actual total through bounded reads:
+// questionnaires fetch one item plus their authoritative total, orders and
+// periodic orders use their store totals, and materials count the shared
+// library. The profile only carries fields
 // the directory projection actually stores; there is no owner assignment in
 // this backend, so no owner_staff_id is emitted.
 func (h *Handler) workbenchProjection(ctx context.Context, customerID customerdomain.CustomerID) (map[string]any, error) {
@@ -175,7 +176,7 @@ func (h *Handler) workbenchProjection(ctx context.Context, customerID customerdo
 	if name == "" {
 		name = fmt.Sprintf("客户 %d", int64(customerID))
 	}
-	surveys, err := h.config.Surveys.CustomerSurveys(ctx, customerID, customerport.PageQuery{Limit: 500, Watermark: h.now()})
+	surveys, err := h.config.Surveys.CustomerSurveys(ctx, customerID, customerport.PageQuery{Limit: 1, Watermark: h.now()})
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +205,7 @@ func (h *Handler) workbenchProjection(ctx context.Context, customerID customerdo
 			"version":      profile.Version,
 			"updated_at":   profile.UpdatedAt.UTC().Format(time.RFC3339),
 		},
-		"questionnaire_count":  len(surveys.Items),
+		"questionnaire_count":  surveys.Total,
 		"order_count":          orders.Total,
 		"periodic_order_count": entitlements.Total,
 		"material_count":       materials.Total,

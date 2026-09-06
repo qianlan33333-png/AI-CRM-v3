@@ -121,6 +121,7 @@ import (
 type composedApplication struct {
 	pool                  *platformpostgres.Pool
 	handler               http.Handler
+	authentication        accessAuthentication
 	management            *accessapp.Management
 	weComProcessor        wecom.InboxProcessor
 	weComArchiveProcessor wecom.ArchiveInboxProcessor
@@ -1430,7 +1431,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {

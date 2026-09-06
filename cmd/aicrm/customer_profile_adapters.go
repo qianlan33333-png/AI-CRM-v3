@@ -170,7 +170,10 @@ func (adapter customerTagAdapter) CustomerTags(ctx context.Context, id customerd
 }
 
 type customerSurveyAdapter struct {
-	reader surveyport.CustomerHistoryReader
+	reader interface {
+		surveyport.CustomerHistoryReader
+		CustomerHistory(context.Context, int64, int32, int32) (surveyport.SubmissionPage, error)
+	}
 }
 
 func (customerSurveyAdapter) CapabilityStatus() customerport.SectionStatus {
@@ -178,11 +181,21 @@ func (customerSurveyAdapter) CapabilityStatus() customerport.SectionStatus {
 }
 
 func (adapter customerSurveyAdapter) CustomerSurveys(ctx context.Context, id customerdomain.CustomerID, query customerport.PageQuery) (customerport.SurveyPage, error) {
+	if query.Limit < 1 || query.Limit > 101 {
+		return customerport.SurveyPage{}, customerport.ErrSectionUnavailable
+	}
+	// CustomerHistoryWindow permits at most 101 rows so profile callers can
+	// detect a following page. Read the Owner's actual total separately with a
+	// bounded one-row summary; never expose the page length as a total.
+	summary, err := adapter.reader.CustomerHistory(ctx, int64(id), 1, 0)
+	if err != nil {
+		return customerport.SurveyPage{}, customerport.ErrSectionUnavailable
+	}
 	window, err := adapter.reader.CustomerHistoryWindow(ctx, surveyport.CustomerHistoryQuery{CustomerID: int64(id), Limit: int32(query.Limit), Watermark: query.Watermark, AfterAt: query.AfterAt, AfterID: surveyport.ID(query.AfterID)})
 	if err != nil {
 		return customerport.SurveyPage{}, customerport.ErrSectionUnavailable
 	}
-	page := customerport.SurveyPage{Items: make([]customerport.SurveyItem, 0, len(window.Items)), Status: customerport.SectionStatus{State: customerport.SectionReady}}
+	page := customerport.SurveyPage{Items: make([]customerport.SurveyItem, 0, len(window.Items)), Total: summary.Total, Status: customerport.SectionStatus{State: customerport.SectionReady}}
 	for _, submission := range window.Items {
 		item := customerport.SurveyItem{ID: int64(submission.ID), Title: submission.QuestionnaireTitle, SubmittedAt: submission.SubmittedAt,
 			Score: submission.TotalScore, Answers: []customerport.SurveyAnswer{}}
