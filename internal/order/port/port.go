@@ -103,6 +103,40 @@ type CustomerOrderSummaryReader interface {
 	CustomerOrderSummary(context.Context, int64, int32) (CustomerOrderSummary, error)
 }
 
+// CustomerActivityQuery is the Order-owned, canonical-customer query used by
+// the V1 customer activity stream. The Host supplies an aggregate cursor;
+// Order owns the per-type descending created_at/id keyset and never exposes an
+// unbounded order read to a customer-scoped caller.
+type CustomerActivityQuery struct {
+	CustomerID int64
+	Limit      int32
+	Watermark  time.Time
+	AfterAt    time.Time
+	AfterID    int64
+}
+
+type CustomerActivity struct {
+	OrderID       int64               `json:"order_id"`
+	Relationship  string              `json:"relationship"`
+	Provider      domain.Provider     `json:"provider"`
+	Status        domain.Status       `json:"status"`
+	Amount        domain.Money        `json:"amount"`
+	RefundedMinor int64               `json:"refunded_minor"`
+	RecordOrigin  domain.RecordOrigin `json:"record_origin"`
+	OccurredAt    time.Time           `json:"occurred_at"`
+}
+
+type CustomerActivityPage struct {
+	Items []CustomerActivity `json:"items"`
+}
+
+// CustomerActivityReader publishes the narrow Order projection required by an
+// authorized customer activity feed. It does not return payer/beneficiary IDs
+// or merchant/provider reference strings that belong to another party.
+type CustomerActivityReader interface {
+	CustomerActivities(context.Context, CustomerActivityQuery) (CustomerActivityPage, error)
+}
+
 type ExportPreview struct {
 	Rows      int  `json:"total"`
 	Truncated bool `json:"truncated"`

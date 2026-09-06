@@ -152,6 +152,9 @@ func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, filte
 		if filter.CustomerID > 0 && (snapshot.PayerCustomerID == nil || *snapshot.PayerCustomerID != filter.CustomerID) && (snapshot.BeneficiaryCustomerID == nil || *snapshot.BeneficiaryCustomerID != filter.CustomerID) {
 			continue
 		}
+		if filter.CreatedThrough != nil && snapshot.CreatedAt.After(*filter.CreatedThrough) {
+			continue
+		}
 		order, _ := domain.Restore(snapshot)
 		rows = append(rows, order)
 	}
@@ -526,4 +529,43 @@ func (s *memoryStore) CommercePushDeliveryReference(_ context.Context, provider 
 		return out, nil
 	}
 	return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+}
+
+func TestCustomerActivitiesUseCustomerScopedWatermarkedKeysetAndRelationship(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	watermark := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	create := func(key string, payer, beneficiary int64, occurredAt time.Time) domain.Snapshot {
+		t.Helper()
+		input := orderInput(key)
+		input.PayerCustomerID, input.BeneficiaryCustomerID = &payer, &beneficiary
+		service.now = func() time.Time { return occurredAt }
+		created, err := service.Create(context.Background(), orderport.CreateCommand{Input: input, Actor: 7, IdempotencyKey: "customer-activity-key-" + key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	payerOrder := create("payer", 11, 22, watermark.Add(-2*time.Hour))
+	beneficiaryOrder := create("beneficiary", 33, 11, watermark.Add(-time.Hour))
+	_ = create("future", 11, 44, watermark.Add(time.Hour))
+
+	first, err := service.CustomerActivities(context.Background(), orderport.CustomerActivityQuery{CustomerID: 11, Limit: 1, Watermark: watermark})
+	if err != nil || len(first.Items) != 1 || first.Items[0].OrderID != beneficiaryOrder.ID || first.Items[0].Relationship != "beneficiary" {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	second, err := service.CustomerActivities(context.Background(), orderport.CustomerActivityQuery{CustomerID: 11, Limit: 10, Watermark: watermark, AfterAt: first.Items[0].OccurredAt, AfterID: first.Items[0].OrderID})
+	if err != nil || len(second.Items) != 1 || second.Items[0].OrderID != payerOrder.ID || second.Items[0].Relationship != "payer" {
+		t.Fatalf("second=%+v err=%v", second, err)
+	}
+	for customerID, expectedRelationship := range map[int64]string{22: "beneficiary", 33: "payer"} {
+		page, readErr := service.CustomerActivities(context.Background(), orderport.CustomerActivityQuery{CustomerID: customerID, Limit: 10, Watermark: watermark})
+		if readErr != nil || len(page.Items) != 1 || page.Items[0].Relationship != expectedRelationship {
+			t.Fatalf("customer=%d page=%+v err=%v", customerID, page, readErr)
+		}
+	}
+	missing, err := service.CustomerActivities(context.Background(), orderport.CustomerActivityQuery{CustomerID: 44, Limit: 10, Watermark: watermark})
+	if err != nil || len(missing.Items) != 0 {
+		t.Fatalf("future-only relationship must not leak before watermark page=%+v err=%v", missing, err)
+	}
 }
