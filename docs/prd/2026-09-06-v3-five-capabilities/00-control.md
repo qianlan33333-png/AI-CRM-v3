@@ -12,7 +12,7 @@ V3：50b86c8fbfa4974d3134748ecebbe02ef0d9f9ba；旧 AI-CRM：dd8d60dd8ddb983aca2
 
 客户相关操作只读 canonical customers.id，兼容外部标识通过 scoped Identity Port 解析；本轮不自动建客、合并或升级可信度。配置、机器凭据自身不涉及 OneID。
 
-业务事实、幂等收据、审计、Outbox、需要原子的 EER 接受必须同一个 PG UoW。内部任务用现有 jobqueue/River，Provider 网络在事务外。表单 Owner，跨域只 Port/版本化事件；企微写只有 outbound，观察归 WeCom。无新队列/lease/重试框架。
+业务事实、幂等收据、审计、Outbox、需要原子的 EER 接受必须同一个 PG UoW。内部任务用现有 jobqueue/River，Provider 网络在事务外。每张表唯一 Owner，跨域只 Port/版本化事件；企微写只有 outbound，观察归 WeCom。无新队列/lease/重试框架。
 
 稳定逻辑效果 ID 不随配置变更；四摘要冻结校验。accepted/queued/attempted/executed/outcome_unknown/reconciled 区分，未知结果不换 key 重试。Provider 默认 disabled，密钥/PII 不入日志/文档/EER。
 
@@ -45,3 +45,5 @@ Composition/OpenAPI/生成客户端/权限清单允许提交真实装配的必�
 上述每个 PR 都须包含本板块必要的后端、最小前端适配、迁移、历史导入、真实 PostgreSQL、并发与恢复、浏览器与协议测试及完整运行装配。独立合并不得依赖其他尚未合并板块的迁移或装配。允许分步提交，不能拆成待后续补齐的业务 PR。
 
 #167 等共用基础缺陷修复保持独立小 PR，准确 HEAD 审核通过后独立处理；各板块复用相同提交，避免复制实现。#168 只保留阶段记录并关闭，不再是交付或合并门槛。#166 只承载 PRD 与协调记录。main 的既有自动部署必须单独记录实际结果；PR 合并不等于生产配置已发布或真实 Provider 验收已完成。
+
+独立迁移顺序补充：现有迁移器逐版本查账本，允许0094先上线后补0092/0093。涉及EER约束的0092、0093、0095必须各自保留所有既有kind及本轮冻结的customer_owner_handoff、customer_tag_command、commerce_product_push三个outbound kind，不能由后到的低号迁移收窄已上线约束。各模块须验证逆序应用与既有事实兼容；不依赖其他尚未上线板块的表。
