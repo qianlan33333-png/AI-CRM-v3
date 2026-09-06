@@ -14,6 +14,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
@@ -62,22 +63,25 @@ type openPlatformSurveyIdentityReader interface {
 }
 
 type openPlatformExecutor struct {
-	identity       identityport.Resolver
-	externalUsers  openPlatformExternalUserIDReader
-	orders         orderport.Query
-	scopedOrders   orderport.CustomerScopedQuery
-	profiles       customerport.SidebarProfileService
-	archive        archiveport.CustomerMessageReader
-	externalChat   archiveport.ExternalChatRecordReader
-	radarLinks     radarport.ExternalLinkMappingReader
-	survey         surveyport.ExternalSubmissionReader
-	surveyAliases  openPlatformSurveyIdentityReader
-	timeline       customerport.CustomerTimelineReader
-	owners         wecomport.AudiencePrimaryOwnerReader
-	scopes         openPlatformIdentityScopes
-	activities     *openPlatformActivityReaders
-	activityNow    func() time.Time
-	operationAudit *openPlatformOperationAuditor
+	identity        identityport.Resolver
+	externalUsers   openPlatformExternalUserIDReader
+	orders          orderport.Query
+	scopedOrders    orderport.CustomerScopedQuery
+	profiles        customerport.SidebarProfileService
+	archive         archiveport.CustomerMessageReader
+	externalChat    archiveport.ExternalChatRecordReader
+	radarLinks      radarport.ExternalLinkMappingReader
+	survey          surveyport.ExternalSubmissionReader
+	surveyAliases   openPlatformSurveyIdentityReader
+	timeline        customerport.CustomerTimelineReader
+	owners          wecomport.AudiencePrimaryOwnerReader
+	scopes          openPlatformIdentityScopes
+	activities      *openPlatformActivityReaders
+	activityNow     func() time.Time
+	operationAudit  *openPlatformOperationAuditor
+	aiMachineIntake aiassistantport.MachineTransactionalIntake
+	aiMachineReader aiassistantport.MachineReader
+	aiUOW           platformport.UnitOfWork
 }
 
 func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
@@ -105,6 +109,17 @@ func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Qu
 	scopes.SurveyUnionScopes = distinctScopes(scopes.SurveyUnionScopes, "wechat-open-platform:")
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
 	return &openPlatformExecutor{identity: identity, externalUsers: externalUsers, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, externalChat: externalChat, timeline: timeline, owners: owners, scopes: scopes, activityNow: time.Now}, nil
+}
+
+// BindV1AI installs the AI owner Ports for the two V1 AI operations. The
+// intake is transactional so the plan, its AI facts, and the machine operation
+// audit can commit or roll back together.
+func (executor *openPlatformExecutor) BindV1AI(intake aiassistantport.MachineTransactionalIntake, reader aiassistantport.MachineReader, uow platformport.UnitOfWork) error {
+	if executor == nil || intake == nil || reader == nil || uow == nil {
+		return errOpenPlatformRouteUnavailable
+	}
+	executor.aiMachineIntake, executor.aiMachineReader, executor.aiUOW = intake, reader, uow
+	return nil
 }
 
 // BindV1OperationAudit installs the Access-owned audit writer used for each

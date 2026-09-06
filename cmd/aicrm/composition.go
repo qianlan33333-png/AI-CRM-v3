@@ -839,6 +839,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = openPlatformExecutor.BindV1OperationAudit(accessRepository, uow); err != nil {
 		return fail(err)
 	}
+	if err = openPlatformExecutor.BindV1AI(aiService, aiService, uow); err != nil {
+		return fail(err)
+	}
 	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
 		MachineAuthentication: machineService,
 		AdminAuthentication:   authentication,

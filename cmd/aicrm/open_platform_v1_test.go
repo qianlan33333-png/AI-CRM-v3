@@ -12,7 +12,9 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	archiveport "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/port"
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
@@ -360,5 +362,60 @@ func TestV1CustomerScopeOwnerFailureIsUnavailableBeforeContextOrActivities(t *te
 	_, err = executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCustomerActivities, Principal: principal, Input: json.RawMessage(`{"customer_id":42}`)})
 	if openplatformport.ErrorCodeOf(err) != openplatformport.ErrorDependencyUnavailable || archive.calls != 0 || orders.activityCalls != 0 {
 		t.Fatalf("activities error=%v archive_calls=%d order_calls=%d", err, archive.calls, orders.activityCalls)
+	}
+}
+
+type v1AIMachineStub struct {
+	command aiassistantport.MachineCreatePlanCommand
+	create  aiassistantport.MachineCreatePlanResult
+	status  aiassistantport.MachineOperationStatus
+	err     error
+}
+
+func (stub *v1AIMachineStub) CreateMachinePlanWithin(_ context.Context, command aiassistantport.MachineCreatePlanCommand) (aiassistantport.MachineCreatePlanResult, error) {
+	stub.command = command
+	return stub.create, stub.err
+}
+func (stub *v1AIMachineStub) GetMachinePlan(context.Context, aiassistantport.MachineActor, aiassistantport.PlanID) (aiassistantport.MachinePlan, error) {
+	return aiassistantport.MachinePlan{}, stub.err
+}
+func (stub *v1AIMachineStub) GetMachineOperationStatus(_ context.Context, actor aiassistantport.MachineActor, id aiassistantport.PlanID) (aiassistantport.MachineOperationStatus, error) {
+	if actor.Reference != "machine:client-a" || id != 12 {
+		return aiassistantport.MachineOperationStatus{}, errors.New("wrong machine operation lookup")
+	}
+	return stub.status, stub.err
+}
+
+func TestV1AICreateAndStatusUseMachineActorAndAtomicAudit(t *testing.T) {
+	executor := v1ExecutorForTest(t, &openPlatformIdentityStub{}, &openPlatformProfileStub{})
+	audit := &openPlatformMachineAuditStub{}
+	ai := &v1AIMachineStub{create: aiassistantport.MachineCreatePlanResult{Plan: aiassistantport.MachinePlan{ID: 12, ReviewState: aiassistantport.ReviewPending}}, status: aiassistantport.MachineOperationStatus{PlanID: 12, ReviewState: aiassistantport.ReviewApproved, OperationState: aiassistantport.MachineOperationApproved}}
+	if err := executor.BindV1OperationAudit(audit, directUnitOfWork{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.BindV1AI(ai, ai, directUnitOfWork{}); err != nil {
+		t.Fatal(err)
+	}
+	writePrincipal := accessdomain.MachinePrincipal{ClientID: "client-a", ClientRecord: 7, Scopes: []string{"write"}, Capabilities: []string{string(openplatformport.CapabilityAIReviewPlanCreate)}}
+	sourceDigest := effectport.Hash("v1-ai-test")
+	input, _ := json.Marshal(map[string]any{"name": "review", "source_kind": "open_platform", "source_digest": sourceDigest, "recipients": []any{map[string]any{"customer_id": 42, "staff_id": 8, "content": []any{map[string]any{"kind": "text", "text": "hello"}}}}})
+	created, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationAIReviewPlanCreate, Principal: writePrincipal, RequestID: "request-ai-12", IdempotencyKey: "idempotency-key-12", Input: input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ai.command.Actor.Reference != "machine:client-a" || ai.command.Actor.StaffID != 0 || audit.calls != 1 || audit.audit.Outcome != "succeeded" || !strings.Contains(string(audit.audit.Details), "request_id_digest") {
+		t.Fatalf("command=%+v audit=%+v", ai.command, audit.audit)
+	}
+	if data := created.Data.(map[string]any); data["operation_id"] != "ai_review_plan:12" || data["review_state"] != aiassistantport.ReviewPending {
+		t.Fatalf("create=%#v", data)
+	}
+	readPrincipal := writePrincipal
+	readPrincipal.Scopes, readPrincipal.Capabilities = []string{"read"}, []string{string(openplatformport.CapabilityOperationRead)}
+	status, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationGet, Principal: readPrincipal, Input: json.RawMessage(`{"operation_id":"ai_review_plan:12"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data := status.Data.(map[string]any); data["review_state"] != aiassistantport.ReviewApproved || data["operation_state"] != aiassistantport.MachineOperationApproved {
+		t.Fatalf("status=%#v", data)
 	}
 }

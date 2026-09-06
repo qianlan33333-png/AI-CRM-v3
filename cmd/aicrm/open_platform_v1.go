@@ -49,8 +49,8 @@ func (executor *openPlatformExecutor) Available(_ context.Context, principal acc
 		// Activities and AI are enabled only by their explicit V1 binders. The
 		// legacy compatibility readers are deliberately not a substitute.
 		openplatformport.OperationCustomerActivities: executor.activities != nil,
-		openplatformport.OperationAIReviewPlanCreate: false,
-		openplatformport.OperationGet:                false,
+		openplatformport.OperationAIReviewPlanCreate: executor.aiMachineIntake != nil && executor.aiMachineReader != nil && executor.aiUOW != nil,
+		openplatformport.OperationGet:                executor.aiMachineReader != nil,
 	}
 	return openplatformport.AvailableDescriptors(principal, available), nil
 }
@@ -90,6 +90,16 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 		result, err = executor.v1CustomerContext(ctx, invocation.Principal, invocation.Input)
 	case openplatformport.OperationCustomerActivities:
 		result, err = executor.v1CustomerActivities(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationAIReviewPlanCreate:
+		result, err = executor.v1CreateAIReviewPlan(ctx, invocation.Principal, invocation.Input, invocation.IdempotencyKey, invocation.RequestID)
+		if err != nil {
+			return executor.v1AuditedError(ctx, invocation, err)
+		}
+		// The create path records its success/replay outcome inside the same UoW
+		// as the AI receipt, plan, facts, and event. Do not add a second audit.
+		return result, nil
+	case openplatformport.OperationGet:
+		result, err = executor.v1OperationStatus(ctx, invocation.Principal, invocation.Input)
 	default:
 		err = openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
 	}
@@ -248,4 +258,19 @@ func (auditor *openPlatformOperationAuditor) Record(ctx context.Context, princip
 	return auditor.uow.Within(ctx, func(tx context.Context) error {
 		return auditor.writer.AppendMachineAudit(tx, accessdomain.MachineAudit{MachineClientID: principal.ClientRecord, Action: "open_platform_operation", Outcome: outcome, Details: payload, CreatedAt: time.Now().UTC()})
 	})
+}
+
+// RecordWithin appends to the caller's existing PostgreSQL Unit of Work. It
+// is used by V1 AI creation so a missing audit rolls back the AI receipt and
+// plan instead of reporting a successful write without durable attribution.
+func (auditor *openPlatformOperationAuditor) RecordWithin(ctx context.Context, principal accessdomain.MachinePrincipal, operation openplatformport.OperationID, requestID, outcome string) error {
+	if principal.ClientRecord < 1 {
+		return nil
+	}
+	if auditor == nil || auditor.writer == nil {
+		return errors.New("operation auditor is not composed")
+	}
+	requestDigest := sha256.Sum256([]byte(requestID))
+	payload, _ := json.Marshal(map[string]string{"operation": string(operation), "request_id_digest": hex.EncodeToString(requestDigest[:])})
+	return auditor.writer.AppendMachineAudit(ctx, accessdomain.MachineAudit{MachineClientID: principal.ClientRecord, Action: "open_platform_operation", Outcome: outcome, Details: payload, CreatedAt: time.Now().UTC()})
 }
