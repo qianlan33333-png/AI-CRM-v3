@@ -265,16 +265,22 @@ func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Det
 			delay += time.Duration(node.DelayMinutes) * time.Minute
 			continue
 		}
+		if !nodeRuntimeEnabled(node) {
+			continue
+		}
 		if node.MaterialRef != "" {
 			return nil, ErrStateConflict
 		}
 		contentRaw, err := json.Marshal(struct {
-			SchemaVersion int32  `json:"schema_version"`
-			NodeID        int64  `json:"node_id"`
-			Position      int32  `json:"position"`
-			Kind          string `json:"kind"`
-			MessageText   string `json:"message_text,omitempty"`
-		}{1, node.ID, node.Position, string(node.Kind), node.MessageText})
+			SchemaVersion    int32  `json:"schema_version"`
+			NodeID           int64  `json:"node_id"`
+			Position         int32  `json:"position"`
+			Kind             string `json:"kind"`
+			DayIndex         int32  `json:"day_index,omitempty"`
+			TriggerTimeLabel string `json:"trigger_time_label,omitempty"`
+			ActionTitle      string `json:"action_title,omitempty"`
+			MessageText      string `json:"message_text,omitempty"`
+		}{1, node.ID, node.Position, string(node.Kind), node.DayIndex, node.TriggerTimeLabel, node.ActionTitle, node.MessageText})
 		if err != nil {
 			return nil, ErrRuntimeInvalid
 		}
@@ -282,7 +288,8 @@ func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Det
 		if err != nil {
 			return nil, ErrRuntimeInvalid
 		}
-		materialRaw, _, materialSourceRaw, materialSourceDigest, err := s.resolveMaterialSnapshot(tx, node.MaterialPlan, now.Add(delay))
+		scheduledFor := nodeScheduledFor(now, node, delay)
+		materialRaw, _, materialSourceRaw, materialSourceDigest, err := s.resolveMaterialSnapshot(tx, node.MaterialPlan, scheduledFor)
 		if err != nil {
 			// Material is owned by Media and must be frozen before an EER
 			// intent exists. A missing/changed source is an unavailable
@@ -310,7 +317,7 @@ func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Det
 				return nil, ErrUnavailable
 			}
 			keyDigest := sha256.Sum256([]byte(strings.Join([]string{"group-ops.execution.v1", strconv.FormatInt(run.ID, 10), strconv.FormatInt(node.ID, 10), asset.AssetRef, strconv.FormatInt(run.PlanRevision, 10)}, "\x00")))
-			drafts = append(drafts, groupopsport.ExecutionDraft{RunID: run.ID, PlanID: run.PlanID, PlanRevision: run.PlanRevision, NodeID: node.ID, NodePosition: node.Position, TargetReference: asset.AssetRef, SenderUserID: sender, TargetDigest: string(effectport.Hash("group-ops.target", asset.AssetRef)), ContentSnapshot: contentRaw, ContentDigest: contentDigest, MaterialSnapshot: materialRaw, MaterialDigest: materialDigest, MaterialSourceSnapshot: materialSourceRaw, MaterialSourceDigest: materialSourceDigest, ExecutionKeyDigest: keyDigest, ScheduledFor: now.Add(delay), CreatedAt: now})
+			drafts = append(drafts, groupopsport.ExecutionDraft{RunID: run.ID, PlanID: run.PlanID, PlanRevision: run.PlanRevision, NodeID: node.ID, NodePosition: node.Position, TargetReference: asset.AssetRef, SenderUserID: sender, TargetDigest: string(effectport.Hash("group-ops.target", asset.AssetRef)), ContentSnapshot: contentRaw, ContentDigest: contentDigest, MaterialSnapshot: materialRaw, MaterialDigest: materialDigest, MaterialSourceSnapshot: materialSourceRaw, MaterialSourceDigest: materialSourceDigest, ExecutionKeyDigest: keyDigest, ScheduledFor: scheduledFor, CreatedAt: now})
 		}
 	}
 	if len(drafts) == 0 && len(existing) == 0 {
@@ -365,10 +372,10 @@ func (s *RuntimeService) materialBlockers(ctx context.Context, detail groupopspo
 			delay += time.Duration(node.DelayMinutes) * time.Minute
 			continue
 		}
-		if len(node.MaterialPlan.References) == 0 {
+		if !nodeRuntimeEnabled(node) || len(node.MaterialPlan.References) == 0 {
 			continue
 		}
-		_, _, _, _, err := s.resolveMaterialSnapshot(ctx, node.MaterialPlan, now.Add(delay))
+		_, _, _, _, err := s.resolveMaterialSnapshot(ctx, node.MaterialPlan, nodeScheduledFor(now, node, delay))
 		if err == nil {
 			continue
 		}
@@ -646,7 +653,7 @@ func (s *RuntimeService) RefreshGroups(ctx context.Context, command groupopsport
 	items := append([]groupopsport.GroupDirectoryItem(nil), snapshot.Items...)
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		for _, item := range snapshot.Items {
-			if item.OwnerStaffID != command.OwnerStaffID || !validOpaqueReference(item.ChatReference) || item.MemberCount < 0 {
+			if item.OwnerStaffID != command.OwnerStaffID || !validOpaqueReference(item.ChatReference) || item.MemberCount < 0 || (item.ExternalMemberCount != nil && (*item.ExternalMemberCount < 0 || *item.ExternalMemberCount > item.MemberCount)) {
 				return ErrConflict
 			}
 		}
@@ -675,7 +682,7 @@ func (s *RuntimeService) RefreshGroups(ctx context.Context, command groupopsport
 func countMessageDrafts(detail groupopsport.Detail, existing map[string]struct{}) int {
 	count := 0
 	for _, node := range detail.Nodes {
-		if node.Kind != groupopsport.NodeMessage {
+		if node.Kind != groupopsport.NodeMessage || !nodeRuntimeEnabled(node) {
 			continue
 		}
 		for _, asset := range detail.GroupAssets {
@@ -694,10 +701,32 @@ func nextMessageDue(detail groupopsport.Detail, now time.Time) *time.Time {
 			delay += time.Duration(node.DelayMinutes) * time.Minute
 			continue
 		}
-		value := now.Add(delay)
+		if !nodeRuntimeEnabled(node) {
+			continue
+		}
+		value := nodeScheduledFor(now, node, delay)
 		return &value
 	}
 	return nil
+}
+
+func nodeRuntimeEnabled(node groupopsport.Node) bool {
+	return node.Status == "" || node.Status == "active"
+}
+
+// nodeScheduledFor anchors standard-plan day/time fields to the accepted run.
+// The legacy schema had only relative delay nodes, so a missing schedule keeps
+// that behavior. Group joining time is intentionally not inferred: V3 stores
+// no authoritative join event for an opaque group directory reference.
+func nodeScheduledFor(runAcceptedAt time.Time, node groupopsport.Node, priorDelay time.Duration) time.Time {
+	if node.ScheduleSemantics == "relative_delay" || node.ScheduledTime == "" || node.DayIndex < 1 || !validScheduledTime(node.ScheduledTime) {
+		return runAcceptedAt.Add(priorDelay)
+	}
+	hour := int(node.ScheduledTime[0]-'0')*10 + int(node.ScheduledTime[1]-'0')
+	minute := int(node.ScheduledTime[3]-'0')*10 + int(node.ScheduledTime[4]-'0')
+	china := time.FixedZone("Asia/Shanghai", 8*60*60)
+	local := runAcceptedAt.In(china)
+	return time.Date(local.Year(), local.Month(), local.Day()+int(node.DayIndex)-1, hour, minute, 0, 0, china).UTC().Add(priorDelay)
 }
 
 func executionKeyString(nodeID int64, target string) string {

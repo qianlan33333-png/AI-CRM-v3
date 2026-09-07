@@ -309,3 +309,43 @@ func (s *testStore) Complete(_ context.Context, id int64, snapshot json.RawMessa
 	}
 	return Receipt{}, ErrNotFound
 }
+
+func TestStandardNodeScheduleRequiresExplicitConsistentTuple(t *testing.T) {
+	valid := groupopsport.NodeCreateCommand{
+		PlanID: 1, ExpectedRevision: 1, Position: 1, Kind: groupopsport.NodeMessage,
+		DayIndex: 2, ScheduledTime: "09:30", TriggerTimeLabel: "09:30", ActionTitle: "第二天跟进",
+		Status: "active", MessageText: "欢迎回来", Actor: 7, IdempotencyKey: "group-ops-schedule-valid-001",
+	}
+	if !validNodeCreate(valid) {
+		t.Fatal("explicit standard schedule was rejected")
+	}
+	for _, change := range []func(*groupopsport.NodeCreateCommand){
+		func(value *groupopsport.NodeCreateCommand) { value.TriggerTimeLabel = "10:00" },
+		func(value *groupopsport.NodeCreateCommand) { value.ScheduledTime = "07:30" },
+		func(value *groupopsport.NodeCreateCommand) { value.Status = "sent" },
+		func(value *groupopsport.NodeCreateCommand) { value.DayIndex = 0 },
+	} {
+		candidate := valid
+		change(&candidate)
+		if validNodeCreate(candidate) {
+			t.Fatalf("invalid schedule accepted: %#v", candidate)
+		}
+	}
+}
+
+func TestNodeScheduledForUsesShanghaiRunDateAndDoesNotInventGroupJoinTime(t *testing.T) {
+	runAcceptedAt := time.Date(2026, time.September, 7, 16, 30, 0, 0, time.UTC) // 00:30 CST on Sep 8
+	node := groupopsport.Node{DayIndex: 2, ScheduledTime: "09:30"}
+	got := nodeScheduledFor(runAcceptedAt, node, 0)
+	want := time.Date(2026, time.September, 9, 1, 30, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("scheduled=%s want=%s", got, want)
+	}
+	legacy := nodeScheduledFor(runAcceptedAt, groupopsport.Node{DayIndex: 1, ScheduledTime: "20:00", TriggerTimeLabel: "20:00", Status: "active", ScheduleSemantics: "relative_delay"}, 45*time.Minute)
+	if !legacy.Equal(runAcceptedAt.Add(45 * time.Minute)) {
+		t.Fatalf("legacy scheduled=%s", legacy)
+	}
+	if nodeRuntimeEnabled(groupopsport.Node{Status: "draft"}) || nodeRuntimeEnabled(groupopsport.Node{Status: "disabled"}) || !nodeRuntimeEnabled(groupopsport.Node{Status: "active"}) {
+		t.Fatal("node status execution gate is wrong")
+	}
+}

@@ -22,7 +22,7 @@ const stagedManifest = readJSON(stagedManifestPath);
 const entryKeys = [
   'admin', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
-  'customerHost', 'sidebarHost', 'openPlatformHost', 'sidebarStyles',
+  'customerHost', 'sidebarHost', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {
@@ -45,6 +45,7 @@ const adminPages = fs.readdirSync(sourceAdmin, { withFileTypes: true })
   .map((entry) => `admin/${entry.name}`)
   .sort();
 if (adminPages.length === 0) fail('built admin document set is empty');
+const groupOpsSupport = ['groupops/group_chat_picker.css', 'groupops/group_chat_picker.js', 'groupops/material_picker.css', 'groupops/material_picker.js', 'groupops/send_content_composer.css', 'groupops/send_content_composer.js', 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js'];
 const documents = [...adminPages, 'sidebar/index.html'];
 
 const sourceFile = (relative) => path.join(source, relative);
@@ -68,19 +69,19 @@ const releaseMetadata = (relative) => {
 // so a partial/missing build cannot leave a release candidate that appears
 // usable.  This stages the actual dependency closure, including dynamic
 // imports, rather than relying on a local web/dist directory at runtime.
-for (const relative of [...selected, ...documents]) {
+for (const relative of [...selected, ...groupOpsSupport, ...documents]) {
   const sourcePath = sourceFile(relative);
   if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) fail(`expected source release file is absent: ${relative}`);
   releaseMetadata(relative);
 }
-for (const relative of [...selected].sort()) copyUnchanged(relative);
+for (const relative of [...selected, ...groupOpsSupport].sort()) copyUnchanged(relative);
 for (const relative of documents) copyUnchanged(relative);
 
 stagedManifest.entries ||= {};
 stagedManifest.files ||= {};
 stagedManifest.release_files ||= {};
 for (const key of entryKeys) stagedManifest.entries[key] = sourceManifest.entries[key];
-for (const relative of selected) {
+for (const relative of [...selected, ...groupOpsSupport]) {
   stagedManifest.files[relative] = sourceManifest.files[relative];
   // validate-release treats every staged asset as a release file as well as a
   // fetchable manifest file. Keep both metadata maps from the same source

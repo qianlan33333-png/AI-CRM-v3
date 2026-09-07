@@ -6,7 +6,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,7 +19,13 @@ import (
 // release; this module never edits or recompiles donor business files.
 type GroupOpsPageRenderer func(http.ResponseWriter, *http.Request, string, string, GroupOpsAssets) error
 
-type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string }
+type GroupOpsAssets struct {
+	TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string
+	StandardCSS, HostJS                                  string
+	GroupPickerCSS, GroupPickerJS                        string
+	MaterialPickerCSS, MaterialPickerJS                  string
+	ComposerCSS, ComposerJS                              string
+}
 
 type groupOpsUI struct {
 	dist   string
@@ -53,25 +58,24 @@ func (h *groupOpsUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// The v3 workspace contract is a carrying route. Keep the donor browser
-	// path (including its query-driven history mode) as the single active
-	// runtime entry, and carry dynamic plan IDs into the donor's unchanged
-	// groupopsDetail.html?id=... convention.
-	if r.URL.Path == "/admin/automation-conversion/group-ops/ui" || r.URL.Path == "/admin/automation-conversion/group-ops/groups/ui" {
-		target := "/admin/groupops.html"
-		if r.URL.RawQuery != "" {
-			target += "?" + r.URL.RawQuery
+	// History remains a read-only frozen donor view. The active plan pages use
+	// the standard Group Ops DOM directly and receive only this V3 transport
+	// host; neither path uses request-controlled markup.
+	if r.URL.Query().Get("history") != "1" {
+		assets, err := h.assets(true)
+		if err != nil {
+			http.Error(w, "group ops UI unavailable", http.StatusServiceUnavailable)
+			return
 		}
-		http.Redirect(w, r, target, http.StatusFound)
-		return
-	}
-	const detailPrefix = "/admin/automation-conversion/group-ops/plans/"
-	if strings.HasPrefix(r.URL.Path, detailPrefix) {
-		target := "/admin/groupopsDetail.html?id=" + url.QueryEscape(strings.TrimPrefix(r.URL.Path, detailPrefix))
-		if r.URL.RawQuery != "" {
-			target += "&" + r.URL.RawQuery
+		mode, planID := standardPageMode(r, page)
+		host := `<div id="group-ops-app" class="group-ops" data-group-ops-standard-host="true" data-page-mode="` + mode + `"`
+		if planID != "" {
+			host += ` data-plan-id="` + planID + `"`
 		}
-		http.Redirect(w, r, target, http.StatusFound)
+		host += `></div>`
+		if err = h.render(w, r, page, host, assets); err != nil {
+			http.Error(w, "group ops UI unavailable", http.StatusInternalServerError)
+		}
 		return
 	}
 	filename := page + ".html"
@@ -85,7 +89,7 @@ func (h *groupOpsUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "group ops UI unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	assets, err := h.assets()
+	assets, err := h.assets(false)
 	if err != nil {
 		http.Error(w, "group ops UI unavailable", http.StatusServiceUnavailable)
 		return
@@ -93,6 +97,20 @@ func (h *groupOpsUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err = h.render(w, r, page, templateBody, assets); err != nil {
 		http.Error(w, "group ops UI unavailable", http.StatusInternalServerError)
 	}
+}
+
+func standardPageMode(r *http.Request, page string) (string, string) {
+	if r.URL.Path == "/admin/automation-conversion/group-ops/groups/ui" {
+		return "groups", ""
+	}
+	if page != "groupopsDetail" {
+		return "list", ""
+	}
+	if id := r.URL.Query().Get("id"); id != "" {
+		return "detail", id
+	}
+	const prefix = "/admin/automation-conversion/group-ops/plans/"
+	return "detail", strings.TrimPrefix(r.URL.Path, prefix)
 }
 
 func groupOpsPage(path string) (string, bool) {
@@ -144,7 +162,7 @@ func positiveCanonicalID(value string) bool {
 	return err == nil && number > 0
 }
 
-func (h *groupOpsUI) assets() (GroupOpsAssets, error) {
+func (h *groupOpsUI) assets(standard bool) (GroupOpsAssets, error) {
 	raw, err := os.ReadFile(filepath.Join(h.dist, "asset-manifest.json"))
 	if err != nil {
 		return GroupOpsAssets{}, err
@@ -195,7 +213,26 @@ func (h *groupOpsUI) assets() (GroupOpsAssets, error) {
 	if err != nil {
 		return GroupOpsAssets{}, err
 	}
-	return GroupOpsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin, ReadonlyCSS: readonlyCSS, ReadonlyJS: readonlyJS}, nil
+	assets := GroupOpsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin, ReadonlyCSS: readonlyCSS, ReadonlyJS: readonlyJS}
+	if !standard {
+		return assets, nil
+	}
+	if assets.StandardCSS, err = entry("groupopsStyles"); err != nil {
+		return GroupOpsAssets{}, err
+	}
+	if assets.HostJS, err = entry("groupopsHost"); err != nil {
+		return GroupOpsAssets{}, err
+	}
+	for name, target := range map[string]*string{
+		"groupops/group_chat_picker.css": &assets.GroupPickerCSS, "groupops/group_chat_picker.js": &assets.GroupPickerJS,
+		"groupops/material_picker.css": &assets.MaterialPickerCSS, "groupops/material_picker.js": &assets.MaterialPickerJS,
+		"groupops/send_content_composer.css": &assets.ComposerCSS, "groupops/send_content_composer.js": &assets.ComposerJS,
+	} {
+		if *target, err = get(name); err != nil {
+			return GroupOpsAssets{}, err
+		}
+	}
+	return assets, nil
 }
 
 func (h *groupOpsUI) asset(w http.ResponseWriter, r *http.Request) {

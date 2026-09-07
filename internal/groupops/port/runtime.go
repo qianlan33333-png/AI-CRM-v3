@@ -142,11 +142,12 @@ type ExecutionPage struct {
 }
 
 type GroupDirectoryItem struct {
-	ChatReference string    `json:"chat_reference"`
-	OwnerStaffID  int64     `json:"owner_staff_id"`
-	DisplayName   string    `json:"display_name"`
-	MemberCount   int32     `json:"member_count"`
-	RefreshedAt   time.Time `json:"refreshed_at"`
+	ExternalMemberCount *int32    `json:"external_member_count"`
+	ChatReference       string    `json:"chat_reference"`
+	OwnerStaffID        int64     `json:"owner_staff_id"`
+	DisplayName         string    `json:"display_name"`
+	MemberCount         int32     `json:"member_count"`
+	RefreshedAt         time.Time `json:"refreshed_at"`
 }
 
 type GroupDirectoryPage struct {

@@ -189,7 +189,7 @@ func (adapter *wecomGroupOpsDirectory) ListOwnedGroups(ctx context.Context, owne
 			if detailErr != nil || detail.ChatID != summary.ChatID || detail.OwnerUserID != owner.WeComUserID {
 				return groupopsport.GroupDirectorySnapshot{}, errors.New("WeCom group directory detail is incomplete")
 			}
-			items = append(items, groupopsport.GroupDirectoryItem{ChatReference: detail.ChatID, OwnerStaffID: ownerID, DisplayName: detail.Name, MemberCount: int32(detail.MemberCount), RefreshedAt: now})
+			items = append(items, groupopsport.GroupDirectoryItem{ChatReference: detail.ChatID, OwnerStaffID: ownerID, DisplayName: detail.Name, MemberCount: int32(detail.MemberCount), ExternalMemberCount: detail.ExternalMemberCount, RefreshedAt: now})
 		}
 		if page.NextCursor == "" {
 			break

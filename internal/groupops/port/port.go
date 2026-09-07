@@ -32,6 +32,7 @@ type Safety struct {
 func LocalSafety() Safety { return Safety{} }
 
 type Plan struct {
+	Type      string     `json:"plan_type,omitempty"`
 	ID        int64      `json:"plan_id,string"`
 	Name      string     `json:"name"`
 	Status    PlanStatus `json:"status"`
@@ -57,13 +58,19 @@ type GroupAsset struct {
 }
 
 type Node struct {
-	ID           int64        `json:"node_id,string"`
-	Position     int32        `json:"position"`
-	Kind         NodeKind     `json:"kind"`
-	MessageText  string       `json:"message_text,omitempty"`
-	DelayMinutes int32        `json:"delay_minutes,omitempty"`
-	MaterialRef  string       `json:"material_reference,omitempty"`
-	MaterialPlan MaterialPlan `json:"material_plan"`
+	ID                int64        `json:"node_id,string"`
+	Position          int32        `json:"position"`
+	Kind              NodeKind     `json:"kind"`
+	DayIndex          int32        `json:"day_index,omitempty"`
+	ScheduledTime     string       `json:"scheduled_time,omitempty"`
+	TriggerTimeLabel  string       `json:"trigger_time_label,omitempty"`
+	ActionTitle       string       `json:"action_title,omitempty"`
+	Status            string       `json:"status,omitempty"`
+	ScheduleSemantics string       `json:"schedule_semantics,omitempty"`
+	MessageText       string       `json:"message_text,omitempty"`
+	DelayMinutes      int32        `json:"delay_minutes,omitempty"`
+	MaterialRef       string       `json:"material_reference,omitempty"`
+	MaterialPlan      MaterialPlan `json:"material_plan"`
 }
 
 type MaterialReference struct {
@@ -180,6 +187,7 @@ type CreatePlanCommand struct {
 }
 
 type UpdatePlanCommand struct {
+	PlanType         string
 	PlanID           int64
 	ExpectedRevision int64
 	Name             string
@@ -215,6 +223,11 @@ type NodeCreateCommand struct {
 	ExpectedRevision int64
 	Position         int32
 	Kind             NodeKind
+	DayIndex         int32
+	ScheduledTime    string
+	TriggerTimeLabel string
+	ActionTitle      string
+	Status           string
 	MessageText      string
 	DelayMinutes     int32
 	MaterialRef      string
@@ -229,6 +242,11 @@ type NodeUpdateCommand struct {
 	ExpectedRevision int64
 	Position         int32
 	Kind             NodeKind
+	DayIndex         int32
+	ScheduledTime    string
+	TriggerTimeLabel string
+	ActionTitle      string
+	Status           string
 	MessageText      string
 	DelayMinutes     int32
 	MaterialRef      string

@@ -15,8 +15,9 @@ const stagedManifest = readManifest(stage);
 const entryKeys = [
   'admin', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
-  'customerHost', 'sidebarHost', 'openPlatformHost', 'sidebarStyles',
+  'customerHost', 'sidebarHost', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles',
 ];
+const groupOpsSupport = ['groupops/group_chat_picker.css', 'groupops/group_chat_picker.js', 'groupops/material_picker.css', 'groupops/material_picker.js', 'groupops/send_content_composer.css', 'groupops/send_content_composer.js', 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js'];
 const selected = new Set();
 const includeClosure = (relative) => {
   if (selected.has(relative)) return;
@@ -29,7 +30,7 @@ for (const key of entryKeys) {
   assert.equal(stagedManifest.entries?.[key], sourceManifest.entries?.[key], `staged manifest omits new-shell entry ${key}`);
   includeClosure(sourceManifest.entries[key]);
 }
-for (const relative of selected) {
+for (const relative of [...selected, ...groupOpsSupport]) {
   assert.deepEqual(stagedManifest.files?.[relative], sourceManifest.files?.[relative], `staged manifest metadata drifted for ${relative}`);
   assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged runtime asset drifted for ${relative}`);

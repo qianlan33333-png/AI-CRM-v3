@@ -82,10 +82,21 @@
   {{if .GroupOps}}
   <link rel="stylesheet" href="{{.GroupOpsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.LabsCSS}}">
+  {{if .GroupOpsStandard}}
+  <link rel="stylesheet" href="{{.GroupOpsAssets.StandardCSS}}">
+  <link rel="stylesheet" href="{{.GroupOpsAssets.GroupPickerCSS}}">
+  <link rel="stylesheet" href="{{.GroupOpsAssets.MaterialPickerCSS}}">
+  <link rel="stylesheet" href="{{.GroupOpsAssets.ComposerCSS}}">
+  <script defer src="{{.GroupOpsAssets.GroupPickerJS}}"></script>
+  <script defer src="{{.GroupOpsAssets.MaterialPickerJS}}"></script>
+  <script defer src="{{.GroupOpsAssets.ComposerJS}}"></script>
+  <script type="module" src="{{.GroupOpsAssets.HostJS}}"></script>
+  {{else}}
   <link rel="stylesheet" href="{{.GroupOpsAssets.ReadonlyCSS}}">
   <script defer src="{{.GroupOpsAssets.ReadonlyJS}}"></script>
   <script defer src="/static/admin_console/groupops_history_readonly_bridge.js"></script>
   <script type="module" src="{{.GroupOpsAssets.AdminJS}}"></script>
+  {{end}}
   {{end}}
   {{if .Automation}}
   <link rel="stylesheet" href="{{.AutomationAssets.TokensCSS}}">

@@ -670,6 +670,20 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The pre-0101 node has no calendar fields. PostgreSQL must preserve its
+	// explicit relative-delay provenance, while an equally named Day 1 20:00
+	// V3 action is calendar-scheduled even with an empty optional title.
+	detail, err = service.AddNode(ctx, groupopsport.NodeCreateCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Position: 2, Kind: groupopsport.NodeMessage, DayIndex: 1, ScheduledTime: "20:00", TriggerTimeLabel: "20:00", Status: "active", MessageText: "calendar-20", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-calendar-node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldSemantics, newSemantics, newTime string
+	if err = native.QueryRow(ctx, `SELECT schedule_semantics FROM group_ops_plan_nodes WHERE plan_id=$1 AND position=1`, detail.Plan.ID).Scan(&oldSemantics); err != nil || oldSemantics != "relative_delay" {
+		t.Fatalf("legacy node semantics=%q err=%v", oldSemantics, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT schedule_semantics,scheduled_time FROM group_ops_plan_nodes WHERE plan_id=$1 AND position=2`, detail.Plan.ID).Scan(&newSemantics, &newTime); err != nil || newSemantics != "calendar" || newTime != "20:00" {
+		t.Fatalf("new Day 1 20:00 semantics=%q time=%q err=%v", newSemantics, newTime, err)
+	}
 	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-first"})
 	if err != nil || detail.Plan.Status != groupopsport.PlanActive {
 		t.Fatalf("first activation=%+v err=%v", detail.Plan, err)
@@ -1149,7 +1163,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

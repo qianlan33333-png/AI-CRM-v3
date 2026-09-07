@@ -190,6 +190,24 @@ function createManifest(metafile, entries) {
   };
 }
 
+function copyGroupOpsSupportAssets() {
+  const source = path.join(ROOT, 'donors', 'ai-assistant-production', 'static');
+  const names = ['group_chat_picker.css', 'group_chat_picker.js', 'material_picker.css', 'material_picker.js', 'send_content_composer.css', 'send_content_composer.js'];
+  return names.map((name) => {
+    const relative = `groupops/${name}`;
+    const destination = path.join(DIST, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(source, name), destination);
+    return relative;
+  }).concat(['send_content_readonly_detail.css', 'send_content_readonly_detail.js'].map((name) => {
+    const relative = `aiassistant/${name}`;
+    const destination = path.join(DIST, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(source, name), destination);
+    return relative;
+  }));
+}
+
 function createReleaseFiles() {
   const files = {};
   const walk = (directory) => {
@@ -219,6 +237,8 @@ async function main() {
       questionnaireEditorStyles: path.join(SRC, 'admin/sections/questionnaireEditorStyles.css'),
       tokens: path.join(SRC, 'shared/ui/tokens.css'),
       labs: path.join(SRC, 'admin/sections/labs.css'),
+      groupopsHost: path.join(ROOT, 'v3/groupOpsHostAdapter.ts'),
+      groupopsStyles: path.join(ROOT, 'v3/groupOpsStandard.css'),
     },
     bundle: true,
     format: 'esm',
@@ -243,14 +263,16 @@ async function main() {
       questionnaireEditorStyles: path.join(SRC, 'admin/sections/questionnaireEditorStyles.css'),
       sidebarStyles: path.join(SRC, 'sidebar/sidebar.css'),
       tokens: path.join(SRC, 'shared/ui/tokens.css'), labs: path.join(SRC, 'admin/sections/labs.css'),
+      groupopsHost: path.join(ROOT, 'v3/groupOpsHostAdapter.ts'), groupopsStyles: path.join(ROOT, 'v3/groupOpsStandard.css'),
     }).find(([, entry]) => path.resolve(REPOSITORY, metadata.entryPoint) === entry)?.[0];
     if (name) entries[name] = outputPath(output);
   }
-  for (const required of ['admin', 'h5', 'sidebar', 'sidebarStyles', 'memberGridShare', 'questionnaireEditor', 'questionnaireEditorStyles', 'tokens', 'labs']) {
+  for (const required of ['admin', 'h5', 'sidebar', 'sidebarStyles', 'memberGridShare', 'questionnaireEditor', 'questionnaireEditorStyles', 'tokens', 'labs', 'groupopsHost', 'groupopsStyles']) {
     if (!entries[required]) throw new Error(`missing build entry: ${required}`);
   }
 
   const manifest = createManifest(result.metafile, entries);
+  for (const relative of copyGroupOpsSupportAssets()) manifest.files[relative] = fileMetadata(fs.readFileSync(path.join(DIST, relative)));
 
   for (const screen of registry.screens) {
     const filename = screen.key === 'tags' ? 'wecom-tags.html' : `${screen.key}.html`;

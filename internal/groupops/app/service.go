@@ -132,6 +132,9 @@ func (s *Service) Update(ctx context.Context, command groupopsport.UpdatePlanCom
 	}
 	return s.mutate(ctx, "plan_update", command.PlanID, command.ExpectedRevision, command.Actor, command.IdempotencyKey, command, func(_ context.Context, detail *groupopsport.Detail, now time.Time) error {
 		detail.Plan.Name = strings.TrimSpace(command.Name)
+		if command.PlanType != "" {
+			detail.Plan.Type = command.PlanType
+		}
 		return nil
 	})
 }
@@ -309,7 +312,7 @@ func (s *Service) UpdateNode(ctx context.Context, command groupopsport.NodeUpdat
 	return s.mutate(ctx, "node_update", command.PlanID, command.ExpectedRevision, command.Actor, command.IdempotencyKey, command, func(_ context.Context, detail *groupopsport.Detail, _ time.Time) error {
 		for i := range detail.Nodes {
 			if detail.Nodes[i].ID == command.NodeID {
-				detail.Nodes[i] = groupopsport.Node{ID: command.NodeID, Position: command.Position, Kind: command.Kind, MessageText: strings.TrimSpace(command.MessageText), DelayMinutes: command.DelayMinutes, MaterialRef: command.MaterialRef, MaterialPlan: cloneMaterialPlan(command.MaterialPlan)}
+				detail.Nodes[i] = groupopsport.Node{ID: command.NodeID, Position: command.Position, Kind: command.Kind, DayIndex: command.DayIndex, ScheduledTime: command.ScheduledTime, TriggerTimeLabel: command.TriggerTimeLabel, ActionTitle: strings.TrimSpace(command.ActionTitle), Status: command.Status, ScheduleSemantics: scheduleSemantics(command.DayIndex, command.ScheduledTime, command.TriggerTimeLabel, command.ActionTitle, command.Status), MessageText: strings.TrimSpace(command.MessageText), DelayMinutes: command.DelayMinutes, MaterialRef: command.MaterialRef, MaterialPlan: cloneMaterialPlan(command.MaterialPlan)}
 				return normalizeNodes(detail.Nodes)
 			}
 		}
@@ -568,13 +571,13 @@ func normalizeNodes(nodes []groupopsport.Node) error {
 	return nil
 }
 func nodeFromCreate(c groupopsport.NodeCreateCommand) groupopsport.Node {
-	return groupopsport.Node{Position: c.Position, Kind: c.Kind, MessageText: strings.TrimSpace(c.MessageText), DelayMinutes: c.DelayMinutes, MaterialRef: c.MaterialRef, MaterialPlan: cloneMaterialPlan(c.MaterialPlan)}
+	return groupopsport.Node{Position: c.Position, Kind: c.Kind, DayIndex: c.DayIndex, ScheduledTime: c.ScheduledTime, TriggerTimeLabel: c.TriggerTimeLabel, ActionTitle: strings.TrimSpace(c.ActionTitle), Status: c.Status, ScheduleSemantics: scheduleSemantics(c.DayIndex, c.ScheduledTime, c.TriggerTimeLabel, c.ActionTitle, c.Status), MessageText: strings.TrimSpace(c.MessageText), DelayMinutes: c.DelayMinutes, MaterialRef: c.MaterialRef, MaterialPlan: cloneMaterialPlan(c.MaterialPlan)}
 }
 func validCreate(c groupopsport.CreatePlanCommand) bool {
 	return c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name)
 }
 func validUpdate(c groupopsport.UpdatePlanCommand) bool {
-	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name)
+	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name) && (c.PlanType == "" || c.PlanType == "standard" || c.PlanType == "webhook")
 }
 func validTransition(c groupopsport.TransitionCommand) bool {
 	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey)
@@ -586,10 +589,10 @@ func validAssetCommand(c groupopsport.GroupAssetCommand) bool {
 	return validTransition(groupopsport.TransitionCommand{PlanID: c.PlanID, ExpectedRevision: c.ExpectedRevision, Actor: c.Actor, IdempotencyKey: c.IdempotencyKey}) && opaque(c.AssetRef)
 }
 func validNodeCreate(c groupopsport.NodeCreateCommand) bool {
-	return validTransition(groupopsport.TransitionCommand{PlanID: c.PlanID, ExpectedRevision: c.ExpectedRevision, Actor: c.Actor, IdempotencyKey: c.IdempotencyKey}) && c.Position > 0 && validNode(c.Kind, c.MessageText, c.DelayMinutes, c.MaterialRef, c.MaterialPlan)
+	return validTransition(groupopsport.TransitionCommand{PlanID: c.PlanID, ExpectedRevision: c.ExpectedRevision, Actor: c.Actor, IdempotencyKey: c.IdempotencyKey}) && c.Position > 0 && validNode(c.Kind, c.MessageText, c.DelayMinutes, c.MaterialRef, c.MaterialPlan) && validNodeSchedule(c.DayIndex, c.ScheduledTime, c.TriggerTimeLabel, c.ActionTitle, c.Status)
 }
 func validNodeUpdate(c groupopsport.NodeUpdateCommand) bool {
-	return c.NodeID > 0 && validNodeCreate(groupopsport.NodeCreateCommand{PlanID: c.PlanID, ExpectedRevision: c.ExpectedRevision, Position: c.Position, Kind: c.Kind, MessageText: c.MessageText, DelayMinutes: c.DelayMinutes, MaterialRef: c.MaterialRef, MaterialPlan: c.MaterialPlan, Actor: c.Actor, IdempotencyKey: c.IdempotencyKey})
+	return c.NodeID > 0 && validNodeCreate(groupopsport.NodeCreateCommand{PlanID: c.PlanID, ExpectedRevision: c.ExpectedRevision, Position: c.Position, Kind: c.Kind, DayIndex: c.DayIndex, ScheduledTime: c.ScheduledTime, TriggerTimeLabel: c.TriggerTimeLabel, ActionTitle: c.ActionTitle, Status: c.Status, MessageText: c.MessageText, DelayMinutes: c.DelayMinutes, MaterialRef: c.MaterialRef, MaterialPlan: c.MaterialPlan, Actor: c.Actor, IdempotencyKey: c.IdempotencyKey})
 }
 func validNodeDelete(c groupopsport.NodeDeleteCommand) bool {
 	return c.NodeID > 0 && validTransition(groupopsport.TransitionCommand{PlanID: c.PlanID, ExpectedRevision: c.ExpectedRevision, Actor: c.Actor, IdempotencyKey: c.IdempotencyKey})
@@ -605,6 +608,39 @@ func validNode(kind groupopsport.NodeKind, message string, delay int32, material
 		return delay == 0 && validMaterialPlan(plan) && (message == "" || validMessage(message)) && (message != "" || len(plan.References) != 0)
 	}
 	return kind == groupopsport.NodeDelay && strings.TrimSpace(message) == "" && material == "" && len(plan.References) == 0 && delay >= 1 && delay <= 10080
+}
+
+// validNodeSchedule preserves persisted legacy delay nodes, whose schedule
+// fields were absent before migration 0101, while requiring every V3 standard
+// action to carry an explicit day/time/title/status tuple. The public HTTP
+// adapter only accepts the latter for new standard actions.
+func validNodeSchedule(day int32, scheduled, trigger, title, status string) bool {
+	if day == 0 && scheduled == "" && trigger == "" && title == "" && status == "" {
+		return true
+	}
+	if day < 1 || day > 3650 || !validScheduledTime(scheduled) || trigger != scheduled || !validNodeStatus(status) {
+		return false
+	}
+	return title == "" || validText(title, 200)
+}
+
+func scheduleSemantics(day int32, scheduled, trigger, title, status string) string {
+	if day == 0 && scheduled == "" && trigger == "" && title == "" && status == "" {
+		return "relative_delay"
+	}
+	return "calendar"
+}
+
+func validScheduledTime(value string) bool {
+	if len(value) != 5 || value[2] != ':' || value[0] < '0' || value[0] > '2' || value[1] < '0' || value[1] > '9' || value[3] < '0' || value[3] > '5' || value[4] != '0' && value[4] != '3' {
+		return false
+	}
+	hour := int(value[0]-'0')*10 + int(value[1]-'0')
+	return hour >= 8 && hour <= 23
+}
+
+func validNodeStatus(value string) bool {
+	return value == "active" || value == "draft" || value == "disabled"
 }
 
 func validMaterialPlan(plan groupopsport.MaterialPlan) bool {
@@ -677,7 +713,7 @@ func validAssets(items []groupopsport.GroupAsset) bool {
 }
 func validNodes(items []groupopsport.Node) bool {
 	for i, item := range items {
-		if item.ID < 1 || item.Position != int32(i+1) || !validNode(item.Kind, item.MessageText, item.DelayMinutes, item.MaterialRef, item.MaterialPlan) {
+		if item.ID < 1 || item.Position != int32(i+1) || !validNode(item.Kind, item.MessageText, item.DelayMinutes, item.MaterialRef, item.MaterialPlan) || !validNodeSchedule(item.DayIndex, item.ScheduledTime, item.TriggerTimeLabel, item.ActionTitle, item.Status) {
 			return false
 		}
 	}
@@ -698,12 +734,21 @@ func sameSavedDetail(want, got groupopsport.Detail) bool {
 		}
 	}
 	for index := range want.Nodes {
-		if got.Nodes[index].ID < 1 || want.Nodes[index].ID != 0 && want.Nodes[index].ID != got.Nodes[index].ID || want.Nodes[index].Position != got.Nodes[index].Position || want.Nodes[index].Kind != got.Nodes[index].Kind || want.Nodes[index].MessageText != got.Nodes[index].MessageText || want.Nodes[index].DelayMinutes != got.Nodes[index].DelayMinutes || want.Nodes[index].MaterialRef != got.Nodes[index].MaterialRef || !reflect.DeepEqual(want.Nodes[index].MaterialPlan, got.Nodes[index].MaterialPlan) {
+		if got.Nodes[index].ID < 1 || want.Nodes[index].ID != 0 && want.Nodes[index].ID != got.Nodes[index].ID || want.Nodes[index].Position != got.Nodes[index].Position || want.Nodes[index].Kind != got.Nodes[index].Kind || !sameNodeSchedule(want.Nodes[index], got.Nodes[index]) || want.Nodes[index].MessageText != got.Nodes[index].MessageText || want.Nodes[index].DelayMinutes != got.Nodes[index].DelayMinutes || want.Nodes[index].MaterialRef != got.Nodes[index].MaterialRef || !reflect.DeepEqual(want.Nodes[index].MaterialPlan, got.Nodes[index].MaterialPlan) {
 			return false
 		}
 	}
 	return true
 }
+func sameNodeSchedule(want, got groupopsport.Node) bool {
+	// Migration defaults make old in-memory commands observable as the
+	// documented legacy 1/20:00 active tuple after their first PostgreSQL save.
+	if want.DayIndex == 0 && want.ScheduledTime == "" && want.TriggerTimeLabel == "" && want.ActionTitle == "" && want.Status == "" {
+		return (got.DayIndex == 0 && got.ScheduledTime == "" && got.TriggerTimeLabel == "" && got.ActionTitle == "" && got.Status == "") || (got.DayIndex == 1 && got.ScheduledTime == "20:00" && got.TriggerTimeLabel == "20:00" && got.ActionTitle == "" && got.Status == "active" && got.ScheduleSemantics == "relative_delay")
+	}
+	return want.DayIndex == got.DayIndex && want.ScheduledTime == got.ScheduledTime && want.TriggerTimeLabel == got.TriggerTimeLabel && want.ActionTitle == got.ActionTitle && want.Status == got.Status && want.ScheduleSemantics == got.ScheduleSemantics
+}
+
 func samePlan(want, got groupopsport.Plan) bool {
 	return want.ID == got.ID && want.Name == got.Name && want.Status == got.Status && want.Revision == got.Revision && want.CreatedBy == got.CreatedBy && want.UpdatedBy == got.UpdatedBy && want.CreatedAt.Equal(got.CreatedAt) && want.UpdatedAt.Equal(got.UpdatedAt)
 }

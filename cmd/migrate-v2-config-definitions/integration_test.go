@@ -841,7 +841,7 @@ func configMigrationPaths(t *testing.T) []string {
 		t.Fatal("locate configuration migration integration test source")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
-	files := []string{"0001_platform.sql", "0003_access.sql", "0005_external_effects.sql", "0010_product.sql", "0011_coupon_rules.sql", "0012_group_ops.sql", "0013_automation_agents.sql", "0017_group_ops_history.sql", "0030_config_definition_import.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0082_group_ops_history_import.sql"}
+	files := []string{"0001_platform.sql", "0003_access.sql", "0005_external_effects.sql", "0010_product.sql", "0011_coupon_rules.sql", "0012_group_ops.sql", "0013_automation_agents.sql", "0017_group_ops_history.sql", "0030_config_definition_import.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0082_group_ops_history_import.sql", "0101_group_ops_ui_metadata.sql"}
 	paths := make([]string, 0, len(files))
 	for _, file := range files {
 		paths = append(paths, filepath.Join(root, "migrations", file))
