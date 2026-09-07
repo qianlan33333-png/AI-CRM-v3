@@ -138,6 +138,28 @@ class SourceAuthorityGateTests(unittest.TestCase):
         self.assertEqual(result["approval"]["review_reference"], "PR #999")
         self.assertEqual(result["authority_changes"], changes)
 
+    def test_canonical_removal_requires_and_accepts_the_complete_reviewed_diff(self):
+        self.write_snapshot(b"alpha\n")
+        self.write_approvals([])
+        base = self.commit("base")
+
+        index = json.loads((self.repo / gate.INDEX_PATH).read_text())
+        index["contents"] = []
+        index["bindings"] = []
+        index["views"] = []
+        self.write(gate.INDEX_PATH, (json.dumps(index, sort_keys=True) + "\n").encode())
+        self.write(gate.LOCK_PATH, b'{"entries": [], "schema_version": 1}\n')
+        (self.repo / "web/donor-sources/frozen/payload.ts").unlink()
+        changed = self.commit("remove canonical source")
+        changes = gate.authority_changes(self.repo, base, changed)
+        self.assertEqual(changes[0]["path"], "web/donor-sources/frozen/payload.ts")
+        self.assertIsNotNone(changes[0]["base_sha256"])
+        self.assertIsNone(changes[0]["head_sha256"])
+
+        self.write_approvals([self.approval(base, changes)])
+        approved = self.commit("review source removal")
+        self.assertEqual(gate.check(self.repo, base, approved)["status"], "pass")
+
     def test_partial_or_stale_approval_cannot_cover_a_coordinated_change(self):
         self.write_snapshot(b"alpha\n")
         self.write_approvals([])
