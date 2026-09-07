@@ -73,7 +73,7 @@ try {
   // external-push panel.
   await waitFor(cdp, "Boolean(document.querySelector('[data-survey-push-metadata]')) && !document.querySelector('#opsConfigurationReference')", 'operations readback did not settle with external push disabled');
   await evaluate(cdp, "(() => { const heading=[...document.querySelectorAll('h3')].find((item) => item.textContent.trim()==='外部推送绑定'); const header=heading?.parentElement?.parentElement; const toggle=header?.children?.[1]; if (!heading || !toggle || toggle.tagName !== 'SPAN') throw new Error('external-push toggle is unavailable'); toggle.click(); return true; })()", 'enable external push after operations readback');
-  await waitFor(cdp, "document.querySelector('#opsConfigurationReference')?.tagName === 'SELECT'", 'target selector did not replace frozen input');
+  await waitFor(cdp, `(() => { const select=document.querySelector('#opsConfigurationReference'); return select?.tagName === 'SELECT' && [...select.options].some((item) => item.value===${JSON.stringify(target)}); })()`, 'target selector did not load the configured target');
   await evaluate(cdp, `(() => { const select=document.querySelector('#opsConfigurationReference'); if (![...select.options].some((item) => item.value===${JSON.stringify(target)})) throw new Error('target absent'); select.value=${JSON.stringify(target)}; select.dispatchEvent(new Event('change',{bubbles:true})); [...document.querySelectorAll('button')].find((item) => item.textContent.trim()==='保存外部推送').click(); return true; })()`, 'select and save target');
   await waitFor(cdp, "String(document.querySelector('#fb-toast')?.textContent || '').includes('已保存')", 'configuration save did not finish');
   const reloadMarker = 'survey-journey-reload';

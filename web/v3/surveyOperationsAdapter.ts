@@ -31,33 +31,33 @@ function option(document: Document, value: string, label: string, disabled = fal
 }
 
 function mountTargetSelector(references: readonly string[]): boolean {
-  const input = document.querySelector<HTMLInputElement>('#opsConfigurationReference');
-  if (!input) return false;
-  if (input.tagName === 'SELECT') return true;
-  const selected = input.value.trim();
-  const select = document.createElement('select');
-  select.id = input.id;
-  select.name = input.name;
-  select.style.cssText = input.style.cssText;
+  const field = document.querySelector<HTMLInputElement | HTMLSelectElement>('#opsConfigurationReference');
+  if (!field) return false;
+  const selected = field.value.trim();
+  const catalogVersion = references.join('\n');
+  const existingSelect = field instanceof HTMLSelectElement;
+  if (existingSelect && field.dataset.surveyTargetCatalog === catalogVersion) return true;
+  const select: HTMLSelectElement = existingSelect ? field : document.createElement('select');
+  select.replaceChildren();
+  select.dataset.surveyTargetCatalog = catalogVersion;
+  select.id = field.id;
+  select.name = field.name;
+  select.style.cssText = field.style.cssText;
   select.setAttribute('aria-label', '推送配置引用');
-  select.appendChild(option(document, '', references.length ? '请选择已部署的推送目标' : '当前没有可用的推送目标', true));
+  select.appendChild(option(document, '', references.length ? '请选择已部署的推送目标' : '正在读取已部署的推送目标', true));
   for (const reference of references) select.appendChild(option(document, reference, reference));
   if (selected && !references.includes(selected)) select.appendChild(option(document, selected, '当前绑定的目标已不可用，请重新选择', true));
   select.value = selected;
-  if (!references.length) select.disabled = true;
-  input.replaceWith(select);
+  select.disabled = !references.length;
+  if (existingSelect) return true;
+  field.replaceWith(select);
   return true;
 }
 
 async function loadAndInstall(): Promise<void> {
   const id = questionnaireID();
   if (!id) return;
-  const response = await fetch(`/api/admin/questionnaires/${id}/operations`, {
-    method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' },
-  });
-  if (!response.ok) return;
-  const payload = await response.json() as CatalogResponse;
-  const references = targetReferences(payload);
+  let references: string[] = [];
   let observer: MutationObserver | undefined;
   const install = () => {
     // jsdom and browser teardown can deliver a final queued mutation after
@@ -86,6 +86,13 @@ async function loadAndInstall(): Promise<void> {
     observer = undefined;
     document.removeEventListener('click', afterClick, true);
   }, { once: true });
+  install();
+  const response = await fetch(`/api/admin/questionnaires/${id}/operations`, {
+    method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) return;
+  const payload = await response.json() as CatalogResponse;
+  references = targetReferences(payload);
   install();
 }
 
