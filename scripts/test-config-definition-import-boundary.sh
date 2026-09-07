@@ -15,7 +15,18 @@ git -C "$repository_root" worktree add --detach "$sandbox" HEAD >/dev/null
 # fixture mutation remains isolated in the disposable worktree.
 cp "$repository_root/scripts/check-config-definition-import-boundary.sh" "$sandbox/scripts/check-config-definition-import-boundary.sh"
 chmod +x "$sandbox/scripts/check-config-definition-import-boundary.sh"
+node "$sandbox/scripts/prepare-donor-source-views.mjs" >/dev/null
 "$sandbox/scripts/check-config-definition-import-boundary.sh" >/dev/null
+
+special_donor="$sandbox/web/donors/odd"$'\n'"name.ts"
+printf 'undeclared donor mutation\n' >"$special_donor"
+if "$sandbox/scripts/check-config-definition-import-boundary.sh" >"$temporary_root/donor-special.out" 2>&1; then
+  echo "config boundary accepted an undeclared donor special path" >&2
+  exit 1
+fi
+grep -q 'P4 donor source closure contains an undeclared active donor change' "$temporary_root/donor-special.out"
+grep -q 'odd\\nname.ts' "$temporary_root/donor-special.out"
+rm -f "$special_donor"
 
 runtime_main="$sandbox/cmd/migrate-v2-runtime-config-releases/main.go"
 python3 - "$runtime_main" <<'PY'

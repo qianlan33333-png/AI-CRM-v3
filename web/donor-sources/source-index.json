@@ -796,7 +796,7 @@
       "usage": "go_embed_compatibility_view",
       "freeze_gate": "internal/config/http/handler_test.go",
       "freeze_ledger": "docs/engineering/dedup/pr1-baseline/dedup-decisions.json",
-      "current_path_state": "tracked_pre_p4_removal",
+      "current_path_state": "untracked_post_p4",
       "observed_source": {
         "repository": "https://github.com/qianlan33333-png/AI-CRM-v3.git",
         "commit": "5291366b9742030957f48ebf7464a040a3ab46db",
@@ -816,7 +816,7 @@
       "usage": "webshell_embedded_compatibility_view",
       "freeze_gate": "internal/webshell/handler_test.go",
       "freeze_ledger": "docs/engineering/dedup/pr1-baseline/dedup-decisions.json",
-      "current_path_state": "tracked_pre_p4_removal",
+      "current_path_state": "untracked_post_p4",
       "observed_source": {
         "repository": "https://github.com/qianlan33333-png/AI-CRM-v3.git",
         "commit": "5291366b9742030957f48ebf7464a040a3ab46db",
@@ -836,7 +836,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -850,7 +850,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -864,7 +864,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -878,7 +878,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -892,7 +892,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -906,7 +906,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -920,7 +920,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -934,7 +934,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -948,7 +948,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -962,7 +962,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -976,7 +976,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -990,7 +990,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -1004,7 +1004,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -1018,7 +1018,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -1032,7 +1032,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "admin_operations",
@@ -1046,7 +1046,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "ai_assistant",
@@ -1060,7 +1060,7 @@
       "usage": "frozen_production_asset_compatibility_view",
       "freeze_gate": "scripts/check-ai-assistant-donor-manifest.sh",
       "freeze_ledger": "docs/migration/ai-assistant/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1074,7 +1074,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1088,7 +1088,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1102,7 +1102,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1116,7 +1116,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1130,7 +1130,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1144,7 +1144,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1158,7 +1158,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1172,7 +1172,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1186,7 +1186,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1200,7 +1200,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1214,7 +1214,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1228,7 +1228,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1242,7 +1242,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1256,7 +1256,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1270,7 +1270,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1284,7 +1284,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1298,7 +1298,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1312,7 +1312,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation_operations",
@@ -1326,7 +1326,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
       "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1340,7 +1340,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1354,7 +1354,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1368,7 +1368,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1382,7 +1382,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1396,7 +1396,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1410,7 +1410,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1424,7 +1424,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1438,7 +1438,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1452,7 +1452,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1466,7 +1466,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1480,7 +1480,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1494,7 +1494,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1508,7 +1508,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1522,7 +1522,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1536,7 +1536,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1550,7 +1550,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1564,7 +1564,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1578,7 +1578,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1592,7 +1592,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "automation",
@@ -1606,7 +1606,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
       "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1620,7 +1620,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1634,7 +1634,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1648,7 +1648,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1662,7 +1662,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1676,7 +1676,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1690,7 +1690,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1704,7 +1704,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1718,7 +1718,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1732,7 +1732,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1746,7 +1746,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1760,7 +1760,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1774,7 +1774,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1788,7 +1788,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1802,7 +1802,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1816,7 +1816,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1830,7 +1830,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1844,7 +1844,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1858,7 +1858,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "coupons",
@@ -1872,7 +1872,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr05-closure.sh",
       "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1886,7 +1886,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1900,7 +1900,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1914,7 +1914,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1928,7 +1928,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1942,7 +1942,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1956,7 +1956,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1970,7 +1970,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1984,7 +1984,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -1998,7 +1998,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2012,7 +2012,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2026,7 +2026,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2040,7 +2040,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2054,7 +2054,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2068,7 +2068,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2082,7 +2082,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2096,7 +2096,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2110,7 +2110,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2124,7 +2124,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2138,7 +2138,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2152,7 +2152,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2166,7 +2166,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2180,7 +2180,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2194,7 +2194,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2208,7 +2208,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2222,7 +2222,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2236,7 +2236,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2250,7 +2250,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2264,7 +2264,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2278,7 +2278,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2292,7 +2292,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2306,7 +2306,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2320,7 +2320,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2334,7 +2334,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "group_operations",
@@ -2348,7 +2348,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
       "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2362,7 +2362,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2376,7 +2376,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2390,7 +2390,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2404,7 +2404,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2418,7 +2418,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2432,7 +2432,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2446,7 +2446,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2460,7 +2460,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2474,7 +2474,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2488,7 +2488,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2502,7 +2502,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2516,7 +2516,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2530,7 +2530,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2544,7 +2544,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2558,7 +2558,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2572,7 +2572,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2586,7 +2586,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2600,7 +2600,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2614,7 +2614,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "media",
@@ -2628,7 +2628,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
       "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "operation_cycles",
@@ -2642,7 +2642,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr08-frontend-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr08-operation-cycles.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "operation_cycles",
@@ -2656,7 +2656,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr08-frontend-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr08-operation-cycles.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2670,7 +2670,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2684,7 +2684,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2698,7 +2698,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2712,7 +2712,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2726,7 +2726,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2740,7 +2740,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2754,7 +2754,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2768,7 +2768,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2782,7 +2782,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2796,7 +2796,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2810,7 +2810,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2824,7 +2824,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2838,7 +2838,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2852,7 +2852,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2866,7 +2866,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2880,7 +2880,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2894,7 +2894,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2908,7 +2908,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2922,7 +2922,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2936,7 +2936,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2950,7 +2950,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2964,7 +2964,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2978,7 +2978,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "products",
@@ -2992,7 +2992,7 @@
       "usage": "frozen_donor_compatibility_view",
       "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
       "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3006,7 +3006,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3020,7 +3020,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3034,7 +3034,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3048,7 +3048,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3062,7 +3062,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3076,7 +3076,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3090,7 +3090,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3104,7 +3104,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3118,7 +3118,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3132,7 +3132,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3146,7 +3146,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3160,7 +3160,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3174,7 +3174,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3188,7 +3188,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3202,7 +3202,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3216,7 +3216,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3230,7 +3230,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3244,7 +3244,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3258,7 +3258,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3272,7 +3272,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3286,7 +3286,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3300,7 +3300,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3314,7 +3314,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3328,7 +3328,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3342,7 +3342,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3356,7 +3356,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3370,7 +3370,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3384,7 +3384,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3398,7 +3398,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3412,7 +3412,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3426,7 +3426,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3440,7 +3440,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3454,7 +3454,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3468,7 +3468,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3482,7 +3482,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3496,7 +3496,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3510,7 +3510,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3524,7 +3524,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3538,7 +3538,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3552,7 +3552,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3566,7 +3566,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3580,7 +3580,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3594,7 +3594,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3608,7 +3608,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3622,7 +3622,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3636,7 +3636,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3650,7 +3650,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3664,7 +3664,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3678,7 +3678,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3692,7 +3692,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3706,7 +3706,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3720,7 +3720,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3734,7 +3734,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3748,7 +3748,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3762,7 +3762,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3776,7 +3776,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3790,7 +3790,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3804,7 +3804,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3818,7 +3818,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3832,7 +3832,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3846,7 +3846,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3860,7 +3860,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3874,7 +3874,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3888,7 +3888,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3902,7 +3902,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3916,7 +3916,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3930,7 +3930,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3944,7 +3944,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3958,7 +3958,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3972,7 +3972,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -3986,7 +3986,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     },
     {
       "module": "v3_web_frozen_view",
@@ -4000,7 +4000,7 @@
       "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
       "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
       "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
-      "current_path_state": "tracked_pre_p4_removal"
+      "current_path_state": "untracked_post_p4"
     }
   ],
   "views": [

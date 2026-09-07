@@ -114,6 +114,14 @@ if [[ "${AICRM_DEDUP_DISPOSABLE_WORKTREE:-}" == "1" ]]; then
   AICRM_DEDUP_DISPOSABLE_WORKTREE=1 node "$REPO_ROOT/scripts/verify-disposable-donor-views.mjs" >/dev/null \
     || fail "disposable source-view proof is not the exact declared removal/materialization set"
   pass "PR-3 disposable source views are exactly receipted replacements; no donor drift is staged"
+elif [[ "$(AICRM_DEDUP_REPOSITORY_ROOT="$REPO_ROOT" node -e 'const path=require("path"); const i=require(path.join(process.env.AICRM_DEDUP_REPOSITORY_ROOT, "web/donor-sources/source-index.json")); process.stdout.write(String(i.bindings.filter((b) => b.current_path_state === "untracked_post_p4").length))')" == "229" ]]; then
+  node "$REPO_ROOT/scripts/check-donor-source-view-ignore.mjs" "$REPO_ROOT" >/dev/null \
+    || fail "P4 source-view ignore list is not the exact declared target set"
+  node "$REPO_ROOT/scripts/verify-materialized-donor-source-views.mjs" --root "$REPO_ROOT" >/dev/null \
+    || fail "P4 source views are not exact untracked receipted replacements"
+  node "$REPO_ROOT/scripts/check-p4-donor-view-closure.mjs" --root "$REPO_ROOT" --prefix web/src >/dev/null \
+    || fail "P4 source-view closure contains an undeclared active donor change"
+  pass "P4 source views are exact untracked replacements; no active donor runtime drift is staged"
 elif git -C "$REPO_ROOT" status --short -- web/src | grep -q .; then
   fail "branch modified active donor web/src; Group Ops frontend must remain byte-exact"
 else

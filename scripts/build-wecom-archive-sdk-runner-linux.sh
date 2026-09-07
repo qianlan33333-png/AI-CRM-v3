@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+node scripts/check-donor-source-view-ignore.mjs >/dev/null
 node scripts/prepare-donor-source-views.mjs >/dev/null
 
 # The pinned official archive SDK is Linux x86-64 only. Keep this cgo build
