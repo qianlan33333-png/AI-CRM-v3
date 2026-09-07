@@ -151,12 +151,26 @@ try {
   };
   const captureFailureEvidence = async label => {
     const safeLabel = label.replace(/[^A-Za-z0-9_.-]/g, "_");
-    const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-    await fs.writeFile(path.join(screenshotDirectory, "failure-" + safeLabel + ".png"), Buffer.from(shot.data, "base64"), { mode: 0o600 });
-    const geometry = await evaluate(cdp, `(() => {
-      const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
-      return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
-    })()`);
+    let screenshotCaptured = false;
+    try {
+      const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      await fs.writeFile(path.join(screenshotDirectory, "failure-" + safeLabel + ".png"), Buffer.from(shot.data, "base64"), { mode: 0o600 });
+      screenshotCaptured = true;
+    } catch (_) {}
+    // Geometry and safe route/status diagnostics remain available even if a
+    // browser screenshot command itself fails while handling an earlier page
+    // error. No response body, credential, or customer data is persisted.
+    let geometry = { path: "unavailable", screenshot_captured: screenshotCaptured, responses: responses.slice(-12), runtime_exceptions: runtimeExceptions.slice(-8) };
+    try {
+      const measured = await evaluate(cdp, `(() => {
+        const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
+        const visible = node => { if (!node) return false; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
+        const token = value => String(value || '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
+        const dom = [document.body, ...document.querySelectorAll('.admin-main-wrap,.admin-sidebar,.admin-topbar,#stage,.order-host-layout,[data-runtime-release-host],[data-open-platform-host],.sec-funnel')].filter((node, index, all) => node instanceof Element && all.indexOf(node) === index).slice(0, 20).map(node => ({tag:node.tagName.toLowerCase(),id:token(node.id),classes:Array.from(node.classList).map(token).filter(Boolean).slice(0, 12),visible:visible(node)}));
+        return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,dom};
+      })()`);
+      geometry = { ...measured, screenshot_captured: screenshotCaptured, responses: responses.slice(-12), runtime_exceptions: runtimeExceptions.slice(-8) };
+    } catch (_) {}
     await fs.writeFile(path.join(screenshotDirectory, "failure-" + safeLabel + "-geometry.json"), JSON.stringify(geometry), { mode: 0o600 });
   };
   const waitForFonts = async label => {
@@ -230,6 +244,18 @@ try {
     }
     if (layout.headers !== 0 || !layout.stage || layout.renderedRootCount < 1 || !layout.innerBar || !layout.innerBarText || !layout.title || layout.titleCount > 1 || Math.abs(layout.stage.left - layout.main.left) > 1 || Math.abs(layout.stage.top - layout.main.top) > 1 || Math.abs(layout.innerBar.left - layout.stage.left) > 1 || Math.abs(layout.innerBar.top - layout.stage.top) > 1 || Math.abs(layout.innerBar.right - layout.main.right) > 1 || layout.stage.paddingLeft !== "0px" || layout.stage.paddingTop !== "0px") throw new Error(`${label} embedded workspace/header geometry invalid`);
   };
+  const assertHXCLayout = async label => {
+    await assertLayout("standard", label, ".sec-funnel .page-head");
+    const hxc = await evaluate(cdp, `(() => {
+      const stage=document.querySelector('#stage.labs.sec-funnel');
+      const crumb=stage?.querySelector(':scope > .crumb');
+      const title=stage?.querySelector(':scope > .page-head > :first-child');
+      const refresh=stage?.querySelector('#hxcRefresh');
+      const style=stage ? getComputedStyle(stage) : null;
+      return {stage: Boolean(stage), paddingLeft: style?.paddingLeft || '', paddingTop: style?.paddingTop || '', crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', titleHidden: Boolean(title) && getComputedStyle(title).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none'};
+    })()`);
+    if (!hxc?.stage || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible) throw new Error(label + " HXC title/padding/action layout invalid");
+  };
   const assertInsetRegressionRejected = async (label, titleSelector) => {
     const prepared = await evaluate(cdp, `(() => {
       const target=globalThis.__aicrmAdminLayoutInnerBar;
@@ -258,6 +284,11 @@ try {
     if (!rejected) throw new Error(label + " accepted a 20px inset title bar regression");
     await assertLayout("embedded", label, titleSelector);
   };
+  const recordRouteFailure = async (label, error) => {
+    try { await captureFailureEvidence(label); } catch (_) {}
+    const message = String(error instanceof Error ? error.message : "route assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160);
+    geometryFailures.push(label + ":" + message);
+  };
   const clickNavigation = async (pathname, label) => {
     const destination = new URL(pathname, baseURL);
     const found = await evaluate(cdp, `(() => [...document.querySelectorAll('.admin-nav-link[href]')].some(node => { const target=new URL(node.href, location.href); return target.pathname === ${JSON.stringify(destination.pathname)} && target.search === ${JSON.stringify(destination.search)}; }))()`);
@@ -266,23 +297,39 @@ try {
   };
   const navigate = async (pathname, ready, label, kind, titleSelector, screenshot = false, fromMenu = false, finalPath = pathname) => {
     currentStep = label;
-    if (fromMenu) await clickNavigation(pathname, label);
-    else await cdp.call("Page.navigate", { url: baseURL + pathname });
-    await waitFor(cdp, `location.pathname === ${JSON.stringify(finalPath.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
-    await waitFor(cdp, ready + " && Boolean((() => { const stage=document.querySelector('#stage'); if (!stage) return false; const visible=node => { const rect=node.getBoundingClientRect(), style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; }; return Array.from(stage.querySelectorAll(" + JSON.stringify(titleSelector) + ")).some(node => visible(node) && String(node.textContent || '').trim().length > 0); })())", label + " Host did not render a visible workspace title");
-    await waitForFonts(label);
-    await recordGeometry(label, () => assertLayout(kind, label, titleSelector), screenshot);
+    try {
+      if (fromMenu) await clickNavigation(pathname, label);
+      else await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === ${JSON.stringify(finalPath.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
+      await waitFor(cdp, ready + " && Boolean((() => { const stage=document.querySelector('#stage'); if (!stage) return false; const visible=node => { const rect=node.getBoundingClientRect(), style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; }; return Array.from(stage.querySelectorAll(" + JSON.stringify(titleSelector) + ")).some(node => visible(node) && String(node.textContent || '').trim().length > 0); })())", label + " Host did not render a visible workspace title");
+      await waitForFonts(label);
+      await recordGeometry(label, () => assertLayout(kind, label, titleSelector), screenshot);
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
   };
 
   const embeddedTitle = 'h1,h2,[role="heading"],[class*="toolbar"],[class*="header"],[class*="head"],[class*="title"]';
+  // The frozen questionnaire list uses an inline-styled, classless title. This
+  // exact selector records its source-backed visible title contract without
+  // admitting arbitrary container text as a page header.
+  const questionnaireTitle = '#stage div[style*="font-size:16px"][style*="font-weight:600"][style*="line-height:22px"]';
   const navigateStandard = async (pathname, ready, label, screenshot = false, fromMenu = false) => {
     currentStep = label;
-    if (fromMenu) await clickNavigation(pathname, label);
-    else await cdp.call("Page.navigate", { url: baseURL + pathname });
-    await waitFor(cdp, `location.pathname === ${JSON.stringify(pathname.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
-    await waitFor(cdp, ready, label + " Host did not become ready");
-    await waitForFonts(label);
-    await recordGeometry(label, () => assertLayout("standard", label, embeddedTitle), screenshot);
+    try {
+      if (fromMenu) await clickNavigation(pathname, label);
+      else await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === ${JSON.stringify(pathname.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
+      await waitFor(cdp, ready, label + " Host did not become ready");
+      await waitForFonts(label);
+      await recordGeometry(label, () => assertLayout("standard", label, embeddedTitle), screenshot);
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
   };
   const assertStaticOpenLayout = async label => {
     const layout = await evaluate(cdp, `(() => {
@@ -293,10 +340,17 @@ try {
     if (!layout.side || !layout.stage || !layout.root || !layout.header || !layout.title || !layout.titleText || layout.headers !== 1 || layout.overflow || Math.abs(layout.side.right-layout.stage.left) > 1 || Math.abs(layout.stage.top) > 1 || Math.abs(layout.root.left-layout.stage.left) > 1 || Math.abs(layout.root.top-layout.stage.top) > 1 || Math.abs(layout.header.left-layout.stage.left) > 1 || Math.abs(layout.header.top-layout.stage.top) > 1 || layout.stage.paddingLeft !== "0px" || layout.stage.paddingTop !== "0px" || layout.root.paddingLeft !== "0px" || layout.root.paddingTop !== "0px" || Math.abs(layout.header.right-layout.stage.right) > 1 || layout.header.height < 48) throw new Error(label + " static topbar/sidebar geometry invalid");
   };
   const navigateStaticHost = async (pathname, ready, label) => {
-    await cdp.call("Page.navigate", { url: baseURL + pathname });
-    await waitFor(cdp, `location.pathname === ${JSON.stringify(pathname.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
-    await waitFor(cdp, ready, label + " V3 Host did not become ready");
-    await assertStaticOpenLayout(label);
+    currentStep = label;
+    try {
+      await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === ${JSON.stringify(pathname.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
+      await waitFor(cdp, ready, label + " V3 Host did not become ready");
+      await assertStaticOpenLayout(label);
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
   };
 
   const assertRuntimeConfigLayout = async label => {
@@ -311,11 +365,17 @@ try {
   };
   const navigateRuntimeConfig = async () => {
     currentStep = "runtime-config";
-    await cdp.call("Page.navigate", { url: baseURL + "/admin/config/releases" });
-    await waitFor(cdp, "location.pathname === '/admin/config/releases' && document.readyState !== 'loading'", "runtime config did not navigate");
-    await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-host] .admin-card h2')) && document.body?.textContent?.includes('当前运行时配置')", "runtime config Host did not become ready");
-    await waitForFonts("runtime-config");
-    await recordGeometry("runtime-config", () => assertRuntimeConfigLayout("runtime-config"), true);
+    try {
+      await cdp.call("Page.navigate", { url: baseURL + "/admin/config/releases" });
+      await waitFor(cdp, "location.pathname === '/admin/config/releases' && document.readyState !== 'loading'", "runtime config did not navigate");
+      await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-host] .admin-card h2')) && document.body?.textContent?.includes('当前运行时配置')", "runtime config Host did not become ready");
+      await waitForFonts("runtime-config");
+      await recordGeometry("runtime-config", () => assertRuntimeConfigLayout("runtime-config"), true);
+      return true;
+    } catch (error) {
+      await recordRouteFailure("runtime-config", error);
+      return false;
+    }
   };
 
   const initial = "/admin/automation-conversion";
@@ -337,8 +397,9 @@ try {
   await navigate("/admin/channels", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "channels", "embedded", embeddedTitle, true, true);
   await navigate("/admin/cloud-orchestrator/plans", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "ai", "embedded", embeddedTitle, true, true);
   await navigateStandard("/admin/customers", "Boolean(document.querySelector('[data-customer-directory-root]'))", "customers", true, true);
-  await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel'))", "hxc", "standard", ".sec-funnel .page-head", true, true);
-  await navigate("/admin/questionnaires", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "questionnaires", "embedded", embeddedTitle, true, true);
+  const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel'))", "hxc", "standard", ".sec-funnel .page-head", false, true);
+  if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
+  await navigate("/admin/questionnaires", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "questionnaires", "embedded", questionnaireTitle, true, true);
   await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "radar", "embedded", embeddedTitle, true, true);
   await navigate("/admin/wecom-tags", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "tags", "embedded", embeddedTitle, true, true);
 
@@ -373,8 +434,8 @@ try {
   currentStep = "hxc-refresh";
   await cdp.call("Page.navigate", { url: baseURL + "/admin/hxc-dashboard" });
   await waitFor(cdp, "location.pathname === '/admin/hxc-dashboard' && Boolean(document.querySelector('#hxcRefresh'))", "HXC did not return for refresh");
-  const hxcContent = await evaluate(cdp, `(() => { const heading=document.querySelector('.sec-funnel > .page-head > :first-child'); const refresh=document.querySelector('#hxcRefresh'); const grid=document.querySelector('.sec-funnel .grid-scroll'); return {headingHidden: Boolean(heading) && getComputedStyle(heading).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', scrollable: Boolean(grid) && grid.scrollHeight > grid.clientHeight}; })()`);
-  if (!hxcContent?.headingHidden || !hxcContent?.refreshVisible || !hxcContent?.scrollable) throw new Error("HXC duplicate title/action/scroll layout invalid");
+  const hxcContent = await evaluate(cdp, `(() => { const crumb=document.querySelector('.sec-funnel > .crumb'); const heading=document.querySelector('.sec-funnel > .page-head > :first-child'); const refresh=document.querySelector('#hxcRefresh'); const grid=document.querySelector('.sec-funnel .grid-scroll'); return {crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', headingHidden: Boolean(heading) && getComputedStyle(heading).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', scrollable: Boolean(grid) && grid.scrollHeight > grid.clientHeight}; })()`);
+  if (!hxcContent?.crumbHidden || !hxcContent?.headingHidden || !hxcContent?.refreshVisible || !hxcContent?.scrollable) throw new Error("HXC duplicate title/action/scroll layout invalid");
   await evaluate(cdp, "(() => { const grid=document.querySelector('.sec-funnel .grid-scroll'); grid.scrollTop=grid.scrollHeight; return grid.scrollTop > 0; })()");
   if (!await evaluate(cdp, "document.querySelector('.sec-funnel .grid-scroll')?.scrollTop > 0")) throw new Error("HXC grid did not retain a user scroll");
   await evaluate(cdp, "(() => { document.querySelector('#hxcRefresh').click(); return true; })()");

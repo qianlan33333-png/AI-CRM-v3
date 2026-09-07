@@ -349,7 +349,10 @@ func (renderer *Renderer) RenderOrders(writer http.ResponseWriter, data AdminPag
 	if page == "orders" {
 		panel = `<details class="order-import-panel" data-order-import><summary>生产订单快照迁移（超级管理员）</summary><div class="order-import-panel__body"><input type="file" accept="application/json,.json" data-order-import-file><label><input type="checkbox" data-order-import-confirm> 已核对快照摘要与 SHA-256，确认仅导入历史订单</label><div class="order-import-panel__actions"><button type="button" data-order-import-action="inspect">检查快照</button><button type="button" data-order-import-action="apply" disabled>导入生产</button><button type="button" data-order-import-action="reconcile" disabled>对账</button></div><pre data-order-import-status>请选择订单快照文件。</pre></div></details>`
 	}
-	content := `<div class="order-host-layout">` + panel + `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main></div><template id="tpl">` + donorTemplate + `</template>`
+	// The frozen order workspace owns the first row of the business page. Keep
+	// the V3-only history import control in the same Host, after that workspace,
+	// so it cannot inset or displace the donor toolbar at the shell boundary.
+	content := `<div class="order-host-layout"><main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>` + panel + `</div><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Order: true, OrderPage: page, OrderAssets: assets})
 	if err != nil {
 		return err

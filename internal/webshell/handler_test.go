@@ -606,8 +606,10 @@ func TestRenderOrdersMountsFrozenTransactionPageAndHostImportControl(t *testing.
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="orders">frozen donor orders</section></template>`) || !strings.Contains(body, `data-order-import`) || !strings.Contains(body, `/static/admin_console/order_import.js`) {
-		t.Fatalf("order shell mismatch status=%d body=%q", response.Code, body)
+	stageAt := strings.Index(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`)
+	panelAt := strings.Index(body, `data-order-import`)
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="orders">frozen donor orders</section></template>`) || panelAt < 0 || !strings.Contains(body, `/static/admin_console/order_import.js`) || stageAt < 0 || stageAt > panelAt {
+		t.Fatalf("order shell mismatch status=%d stage_at=%d panel_at=%d body=%q", response.Code, stageAt, panelAt, body)
 	}
 }
 
