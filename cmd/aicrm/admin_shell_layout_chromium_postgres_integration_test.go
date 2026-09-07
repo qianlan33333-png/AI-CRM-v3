@@ -71,7 +71,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		// static fallback. The representative Chromium journey below measures the
 		// three distinct layout types.
 		{path: "/admin/automation-conversion", marker: `class="admin-topbar"`, expectTopbar: true},
-		{path: "/admin/external-effects?view=external-effects", canonicalPath: "/admin/campaigns.html?view=external-effects", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/external-effects?view=external-effects", canonicalPath: "/admin/campaigns.html?view=external-effects", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/operation-cycles", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/automation-conversion/group-ops/ui", canonicalPath: "/admin/groupops.html", canonicalStatus: http.StatusFound, marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/groupops.html", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
@@ -80,7 +80,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/customers", marker: `class="admin-topbar"`, expectTopbar: true},
 		{path: "/admin/hxc-dashboard", marker: `admin-workspace-stage--dynamic`, expectTopbar: true},
 		{path: "/admin/questionnaires", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/radar-links", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/radar-links", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/wecom-tags", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/orders", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/wechat-pay/products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
@@ -90,9 +90,9 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/miniprogram-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/attachment-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/automation-agents", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/owner-migration", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/owner-migration", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/config", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/config/releases", marker: `data-runtime-release-host`, expectTopbar: false},
+		{path: "/admin/config/releases", marker: `data-runtime-release-host`, expectTopbar: true},
 		{path: "/admin/oneid", marker: `class="admin-topbar"`, expectTopbar: true},
 		// Open Platform is an authenticated V3 Host injected into the built
 		// apidocs document. The vanity route must canonicalize before that

@@ -106,8 +106,23 @@ let cdp;
 let failed = false;
 let currentStep = "bootstrap";
 const requests = new Map();
+// Keep only same-origin admin requests and responses. Static assets can be
+// numerous across the route matrix and must not evict a later business action
+// such as the HXC refresh from the diagnostic window.
+const requestEvents = [];
 const responses = [];
 const runtimeExceptions = [];
+const appendBounded = (items, value, limit = 240) => {
+  items.push(value);
+  if (items.length > limit) items.splice(0, items.length - limit);
+};
+const waitForRecorded = async (items, start, predicate, message) => {
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    if (items.slice(start).some(predicate)) return;
+    await delay(50);
+  }
+  throw new Error(message);
+};
 try {
   child = spawn(chromium(), [
     "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
@@ -137,12 +152,15 @@ try {
   cdp.on("Network.requestWillBeSent", params => {
     try {
       const url = new URL(String(params.request?.url || ""));
-      if (url.origin === baseURL) requests.set(params.requestId, { method: String(params.request?.method || "GET"), path: url.pathname });
+      if (url.origin !== baseURL) return;
+      const request = { method: String(params.request?.method || "GET"), path: url.pathname };
+      requests.set(params.requestId, request);
+      if (/^\/(?:admin|api\/admin)\//.test(request.path)) appendBounded(requestEvents, `${request.method} ${request.path}`);
     } catch (_) {}
   });
   cdp.on("Network.responseReceived", params => {
     const request = requests.get(params.requestId);
-    if (request && responses.length < 80) responses.push(`${request.method} ${request.path}:${Number(params.response?.status) || 0}`);
+    if (request && /^\/(?:admin|api\/admin)\//.test(request.path)) appendBounded(responses, `${request.method} ${request.path}:${Number(params.response?.status) || 0}`);
   });
 
   const capture = async name => {
@@ -178,6 +196,7 @@ try {
     if (!settled) throw new Error(label + " document fonts did not settle");
   };
   const geometryFailures = [];
+  const interactionFailures = [];
   const recordGeometry = async (label, assertion, screenshot) => {
     try {
       await assertion();
@@ -256,6 +275,45 @@ try {
     })()`);
     if (!hxc?.stage || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible) throw new Error(label + " HXC title/padding/action layout invalid");
   };
+  const assertRadarLayout = async label => {
+    await assertLayout("standard", label, ".sec-radar .page-head");
+    const radar = await evaluate(cdp, `(() => {
+      const stage=document.querySelector('#stage.labs.sec-radar');
+      const crumb=stage?.querySelector(':scope > .crumb');
+      const title=stage?.querySelector(':scope > .page-head > :first-child');
+      const action=stage?.querySelector('#btnNew');
+      const style=stage ? getComputedStyle(stage) : null;
+      return {stage:Boolean(stage),paddingLeft:style?.paddingLeft || '',paddingTop:style?.paddingTop || '',crumbHidden:Boolean(crumb) && getComputedStyle(crumb).display === 'none',titleHidden:Boolean(title) && getComputedStyle(title).display === 'none',actionVisible:Boolean(action) && getComputedStyle(action).display !== 'none'};
+    })()`);
+    if (!radar?.stage || radar.paddingLeft !== "20px" || radar.paddingTop !== "16px" || !radar.crumbHidden || !radar.titleHidden || !radar.actionVisible) throw new Error(label + " V3 title/action layout invalid");
+  };
+  const assertOwnerHandoffLayout = async label => {
+    await assertLayout("standard", label, "[data-owner-migration-page] .owner-migration-header");
+    const owner = await evaluate(cdp, `(() => {
+      const stage=document.querySelector('#stage[data-owner-handoff-host]');
+      const page=stage?.querySelector('[data-owner-migration-page]');
+      const donorHeader=page?.querySelector(':scope > .owner-migration-header');
+      const donorTitle=donorHeader?.querySelector(':scope > :first-child');
+      const status=donorHeader?.querySelector('.owner-migration-status-bar');
+      const style=stage ? getComputedStyle(stage) : null;
+      return {stage:Boolean(stage),paddingLeft:style?.paddingLeft || '',paddingTop:style?.paddingTop || '',donorTitleHidden:Boolean(donorTitle) && getComputedStyle(donorTitle).display === 'none',statusVisible:Boolean(status) && getComputedStyle(status).display !== 'none',migrationActionVisible:Boolean(page?.querySelector('[data-owner-picker="source"]')) && getComputedStyle(page.querySelector('[data-owner-picker="source"]')).display !== 'none'};
+    })()`);
+    if (!owner?.stage || owner.paddingLeft !== "20px" || owner.paddingTop !== "16px" || !owner.donorTitleHidden || !owner.statusVisible || !owner.migrationActionVisible) throw new Error(label + " V3 title/status/action layout invalid");
+  };
+  const assertExternalEffectsLayout = async label => {
+    await assertLayout("standard", label, "#stage h2");
+    const effects = await evaluate(cdp, `(() => {
+      const stage=document.querySelector('#stage');
+      const shell=stage?.querySelector(':scope > div');
+      const localHeader=shell?.querySelector(':scope > :first-child');
+      const localCrumb=localHeader?.querySelector(':scope > :first-child');
+      const localTitle=localHeader?.querySelector(':scope > h1');
+      const history=shell?.querySelector('a[href*="history=1"]');
+      const refresh=stage?.querySelector('#effects-refresh');
+      return {stage:Boolean(stage),localCrumbHidden:Boolean(localCrumb) && getComputedStyle(localCrumb).display === 'none',localTitleHidden:Boolean(localTitle) && getComputedStyle(localTitle).display === 'none',historyVisible:Boolean(history) && getComputedStyle(history).display !== 'none',refreshVisible:Boolean(refresh) && getComputedStyle(refresh).display !== 'none'};
+    })()`);
+    if (!effects?.stage || !effects.localCrumbHidden || !effects.localTitleHidden || !effects.historyVisible || !effects.refreshVisible) throw new Error(label + " V3 title/history/action layout invalid");
+  };
   const assertInsetRegressionRejected = async (label, titleSelector) => {
     const prepared = await evaluate(cdp, `(() => {
       const target=globalThis.__aicrmAdminLayoutInnerBar;
@@ -316,6 +374,10 @@ try {
   // exact selector records its source-backed visible title contract without
   // admitting arbitrary container text as a page header.
   const questionnaireTitle = '#stage div[style*="font-size:16px"][style*="font-weight:600"][style*="line-height:22px"]';
+  // The frozen product and media list templates use the same source-backed
+  // 52px toolbar but no semantic title class. Keep this narrow shape instead
+  // of accepting arbitrary body text as a workspace heading.
+  const frozenListToolbarTitle = '#stage > div[style*="height:52px"] div[style*="font-size:16px"][style*="font-weight:600"][style*="line-height:22px"]';
   const navigateStandard = async (pathname, ready, label, screenshot = false, fromMenu = false) => {
     currentStep = label;
     try {
@@ -354,14 +416,15 @@ try {
   };
 
   const assertRuntimeConfigLayout = async label => {
+    await assertLayout("standard", label, embeddedTitle);
     const layout = await evaluate(cdp, `(() => {
       const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop}; };
       const root=document.querySelector('[data-runtime-release-host]');
       const card=root?.querySelector('.admin-card');
       const title=card ? [...card.querySelectorAll('h2')].find(node => String(node.textContent || '').trim().length > 0) : null;
-      return {sidebar:box('.admin-sidebar'),main:box('.admin-main-wrap'),root:box('[data-runtime-release-host]'),card:box('[data-runtime-release-host] .admin-card'),title:box('[data-runtime-release-host] .admin-card h2'),headers:document.querySelectorAll('header.admin-topbar').length,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,titleText:String(title?.textContent || '').trim()};
+      return {root:box('[data-runtime-release-host]'),card:box('[data-runtime-release-host] .admin-card'),title:box('[data-runtime-release-host] .admin-card h2'),topbar:box('.admin-topbar'),headers:document.querySelectorAll('header.admin-topbar').length,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,titleText:String(title?.textContent || '').trim()};
     })()`);
-    if (!layout.sidebar || !layout.main || !layout.root || !layout.card || !layout.title || !layout.titleText || layout.headers !== 0 || layout.overflow || Math.abs(layout.sidebar.right-layout.main.left) > 1 || Math.abs(layout.root.left-layout.main.left) > 1 || Math.abs(layout.root.top-layout.main.top) > 1 || Math.abs(layout.root.right-layout.main.right) > 1 || layout.card.top + 1 < layout.root.top || layout.card.left + 1 < layout.root.left) throw new Error(label + " nested Host geometry invalid");
+    if (!layout.root || !layout.card || !layout.title || !layout.titleText || !layout.topbar || layout.headers !== 1 || layout.overflow || layout.root.top + 1 < layout.topbar.bottom || layout.card.top + 1 < layout.root.top || layout.card.left + 1 < layout.root.left) throw new Error(label + " V3 topbar/release-card geometry invalid");
   };
   const navigateRuntimeConfig = async () => {
     currentStep = "runtime-config";
@@ -400,22 +463,24 @@ try {
   const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel'))", "hxc", "standard", ".sec-funnel .page-head", false, true);
   if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
   await navigate("/admin/questionnaires", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "questionnaires", "embedded", questionnaireTitle, true, true);
-  await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "radar", "embedded", embeddedTitle, true, true);
+  const radarMounted = await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#btnNew'))", "radar", "standard", ".sec-radar .page-head", false, true);
+  if (radarMounted) await recordGeometry("radar", () => assertRadarLayout("radar"), true);
   await navigate("/admin/wecom-tags", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "tags", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/orders", "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "orders", "embedded", embeddedTitle, true, true);
-  await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "products", "embedded", embeddedTitle, true, true);
-  await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "service-period-products", "embedded", embeddedTitle, true, true);
+  await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "products", "embedded", frozenListToolbarTitle, true, true);
+  await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "service-period-products", "embedded", frozenListToolbarTitle, true, true);
   await navigate("/admin/productForm.html?id=" + productID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#pfExternalPushEnabled'))", "product", "embedded", embeddedTitle, true);
   await navigate("/admin/spProductForm.html?id=" + serviceProductID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#spfExternalPushEnabled'))", "service-period-product", "embedded", embeddedTitle, true);
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
-  await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "image-library", "embedded", embeddedTitle, true, true);
-  await navigate("/admin/miniprogram-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "miniprogram-library", "embedded", embeddedTitle, true, true);
+  await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "image-library", "embedded", frozenListToolbarTitle, true, true);
+  await navigate("/admin/miniprogram-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "miniprogram-library", "embedded", frozenListToolbarTitle, true, true);
   await navigate("/admin/attachment-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "attachment-library", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/automation-agents", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "automation-agents", "embedded", embeddedTitle, true, true);
-  await navigate("/admin/owner-migration", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('[data-owner-handoff-host]'))", "owner-migration", "embedded", embeddedTitle, true, true);
+  const ownerMounted = await navigate("/admin/owner-migration", "Boolean(document.querySelector('[data-owner-handoff-host][data-owner-handoff-init=\"context_loaded\"]')) && Boolean(document.querySelector('[data-owner-migration-page] .owner-migration-status-bar'))", "owner-migration", "standard", "[data-owner-migration-page] .owner-migration-header", false, true);
+  if (ownerMounted) await recordGeometry("owner-migration", () => assertOwnerHandoffLayout("owner-migration"), true);
   await navigate("/admin/config", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "config", "embedded", embeddedTitle, true, true);
   await navigateRuntimeConfig();
   await navigateStandard("/admin/oneid", "Boolean(document.querySelector('[data-admin-oneid-root]'))", "oneid", true, true);
@@ -429,20 +494,29 @@ try {
   // Detail and frozen aliases remain on their business Host, including the
   // order history panel whose source mapping is independently seeded below.
   await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference), "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.body?.textContent?.includes('外推回执'))", "order-detail-history", "embedded", embeddedTitle, true);
-  await navigate("/admin/campaigns.html?view=external-effects", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "external-effects", "embedded", embeddedTitle, true);
-  const refreshResponsesBefore = responses.length;
+  const effectsMounted = await navigate("/admin/campaigns.html?view=external-effects", "Boolean(document.querySelector('#stage')) && Boolean(document.querySelector('#effects-refresh')) && Boolean(document.querySelector('#stage h2'))", "external-effects", "standard", "#stage h2", false);
+  if (effectsMounted) await recordGeometry("external-effects", () => assertExternalEffectsLayout("external-effects"), true);
+
   currentStep = "hxc-refresh";
-  await cdp.call("Page.navigate", { url: baseURL + "/admin/hxc-dashboard" });
-  await waitFor(cdp, "location.pathname === '/admin/hxc-dashboard' && Boolean(document.querySelector('#hxcRefresh'))", "HXC did not return for refresh");
-  const hxcContent = await evaluate(cdp, `(() => { const crumb=document.querySelector('.sec-funnel > .crumb'); const heading=document.querySelector('.sec-funnel > .page-head > :first-child'); const refresh=document.querySelector('#hxcRefresh'); const grid=document.querySelector('.sec-funnel .grid-scroll'); return {crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', headingHidden: Boolean(heading) && getComputedStyle(heading).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', scrollable: Boolean(grid) && grid.scrollHeight > grid.clientHeight}; })()`);
-  if (!hxcContent?.crumbHidden || !hxcContent?.headingHidden || !hxcContent?.refreshVisible || !hxcContent?.scrollable) throw new Error("HXC duplicate title/action/scroll layout invalid");
-  await evaluate(cdp, "(() => { const grid=document.querySelector('.sec-funnel .grid-scroll'); grid.scrollTop=grid.scrollHeight; return grid.scrollTop > 0; })()");
-  if (!await evaluate(cdp, "document.querySelector('.sec-funnel .grid-scroll')?.scrollTop > 0")) throw new Error("HXC grid did not retain a user scroll");
-  await evaluate(cdp, "(() => { document.querySelector('#hxcRefresh').click(); return true; })()");
-  await waitFor(cdp, "document.querySelector('#hxcRefresh')?.disabled === false && document.querySelector('#hxcRefresh')?.textContent === '立即刷新'", "HXC refresh action did not settle");
-  if (!responses.slice(refreshResponsesBefore).includes("POST /api/admin/hxc-dashboard/refreshes:503")) throw new Error("HXC refresh did not reach the disabled runtime contract");
-  if (runtimeExceptions.length) throw new Error("admin layout runtime exception=" + runtimeExceptions.join(","));
-  if (geometryFailures.length) throw new Error("admin layout geometry failures=" + geometryFailures.join(","));
+  try {
+    await cdp.call("Page.navigate", { url: baseURL + "/admin/hxc-dashboard" });
+    await waitFor(cdp, "location.pathname === '/admin/hxc-dashboard' && Boolean(document.querySelector('#hxcRefresh'))", "HXC did not return for refresh");
+    const hxcContent = await evaluate(cdp, `(() => { const crumb=document.querySelector('.sec-funnel > .crumb'); const heading=document.querySelector('.sec-funnel > .page-head > :first-child'); const refresh=document.querySelector('#hxcRefresh'); const grid=document.querySelector('.sec-funnel .grid-scroll'); return {crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', headingHidden: Boolean(heading) && getComputedStyle(heading).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', scrollable: Boolean(grid) && grid.scrollHeight > grid.clientHeight}; })()`);
+    if (!hxcContent?.crumbHidden || !hxcContent?.headingHidden || !hxcContent?.refreshVisible || !hxcContent?.scrollable) throw new Error("HXC duplicate title/action/scroll layout invalid");
+    await evaluate(cdp, "(() => { const grid=document.querySelector('.sec-funnel .grid-scroll'); grid.scrollTop=grid.scrollHeight; return grid.scrollTop > 0; })()");
+    if (!await evaluate(cdp, "document.querySelector('.sec-funnel .grid-scroll')?.scrollTop > 0")) throw new Error("HXC grid did not retain a user scroll");
+    const requestStart = requestEvents.length;
+    const responseStart = responses.length;
+    await evaluate(cdp, "(() => { document.querySelector('#hxcRefresh').click(); return true; })()");
+    await waitForRecorded(requestEvents, requestStart, value => value === "POST /api/admin/hxc-dashboard/refreshes", "HXC refresh did not issue its configured POST");
+    await waitForRecorded(responses, responseStart, value => value === "POST /api/admin/hxc-dashboard/refreshes:503", "HXC refresh did not reach the disabled runtime contract");
+    await waitFor(cdp, "document.querySelector('#hxcRefresh')?.disabled === false && document.querySelector('#hxcRefresh')?.textContent === '立即刷新'", "HXC refresh action did not settle");
+  } catch (error) {
+    await recordRouteFailure("hxc-refresh", error);
+    interactionFailures.push("hxc-refresh:" + String(error instanceof Error ? error.message : "refresh assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160));
+  }
+  if (runtimeExceptions.length) interactionFailures.push("runtime-exception:" + runtimeExceptions.join(","));
+  if (geometryFailures.length || interactionFailures.length) throw new Error("admin layout failures=" + [...geometryFailures, ...interactionFailures].join(","));
   console.log("admin_shell_layout_chromium: PASS routes=" + responses.filter(value => value.includes("/admin/") || value.includes("/api/admin/hxc-dashboard")).length);
 } catch (error) {
   failed = true;

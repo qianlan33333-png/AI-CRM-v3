@@ -242,7 +242,10 @@ func (renderer *Renderer) RenderExternalEffects(writer http.ResponseWriter, data
 		return errors.New("external effects shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// The External Effects runtime is a V3-owned dynamic workspace. Its
+	// controller renders a local heading for its content, but it does not own
+	// the surrounding shell bar.
+	data.ShowPageHeader = true
 	content, err := executeTemplate(renderer.templates, "admin_external_effects", data)
 	if err != nil {
 		return err
@@ -383,7 +386,9 @@ func (renderer *Renderer) RenderRadar(writer http.ResponseWriter, data AdminPage
 		return errors.New("radar shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// Radar replaces the stage class while it mounts. Keep the V3 shell bar
+	// outside that mutable workspace so the page has one stable topbar.
+	data.ShowPageHeader = true
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Radar: true, RadarPage: page, RadarAssets: assets})
 	if err != nil {
@@ -451,7 +456,9 @@ func (renderer *Renderer) RenderOwnerHandoff(writer http.ResponseWriter, data Ad
 		return errors.New("owner handoff shell is unavailable")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// The frozen donor has a local title/status row. The V3 host keeps its
+	// actions but renders the sole shell topbar around it.
+	data.ShowPageHeader = true
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded" data-owner-handoff-host></main>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), OwnerHandoff: true})
 	if err != nil {
@@ -522,7 +529,9 @@ func (renderer *Renderer) RenderRuntimeConfig(writer http.ResponseWriter, data A
 		return errors.New("runtime config shell is required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// Runtime configuration is a V3 host rather than a donor-toolbar page, so
+	// it must retain the shell's standard topbar above its release cards.
+	data.ShowPageHeader = true
 	content := `<main id="runtime-release-host" class="admin-page" data-runtime-release-host>` + hostTemplate + `</main>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), RuntimeConfig: true, RuntimeConfigPage: page})
 	if err != nil {

@@ -640,7 +640,7 @@ func TestRenderOwnerHandoffUsesV3StaticHostOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || !strings.Contains(body, `data-owner-handoff-host`) || !strings.Contains(body, `data-page="owner-handoff"`) || !strings.Contains(body, `/static/admin_console/owner_handoff_host.js`) || strings.Contains(body, `web/src/admin/`) || strings.Contains(body, `<<<<<<<`) || strings.Contains(body, `=======`) || strings.Contains(body, `>>>>>>>`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<header class="admin-topbar">`) != 1 || strings.Count(body, `<main`) != 1 || strings.Contains(body, `<main class="admin-page">`) || !strings.Contains(body, `data-owner-handoff-host`) || !strings.Contains(body, `data-page="owner-handoff"`) || !strings.Contains(body, `/static/admin_console/owner_handoff_host.js`) || strings.Contains(body, `web/src/admin/`) || strings.Contains(body, `<<<<<<<`) || strings.Contains(body, `=======`) || strings.Contains(body, `>>>>>>>`) {
 		t.Fatalf("owner handoff shell mismatch status=%d body=%q", response.Code, body)
 	}
 }
@@ -818,7 +818,7 @@ func TestRuntimeConfigHostShellJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || !strings.Contains(body, `data-runtime-config-page="runtimeReleaseDetail"`) || !strings.Contains(body, `data-runtime-release-host`) || !strings.Contains(body, `src="/static/admin_console/runtime_config_releases_host.js`) || strings.Contains(body, `config_adminops_bridge.js`) || strings.Contains(body, `type="module" src="/assets/admin.js"`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<header class="admin-topbar">`) != 1 || !strings.Contains(body, `data-runtime-config-page="runtimeReleaseDetail"`) || !strings.Contains(body, `data-runtime-release-host`) || !strings.Contains(body, `src="/static/admin_console/runtime_config_releases_host.js`) || strings.Contains(body, `config_adminops_bridge.js`) || strings.Contains(body, `type="module" src="/assets/admin.js"`) {
 		t.Fatalf("runtime config host shell mismatch status=%d body=%q", response.Code, body)
 	}
 }
