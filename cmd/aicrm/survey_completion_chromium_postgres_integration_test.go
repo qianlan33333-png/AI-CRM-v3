@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,9 +54,20 @@ func TestPostgreSQLSurveyCompletionChromiumJourney(t *testing.T) {
 	if fixture.receiverCalls.Load() != 1 {
 		t.Fatalf("controlled receiver calls=%d", fixture.receiverCalls.Load())
 	}
+	fixture.receiverMu.Lock()
+	receiverFailure := fixture.receiverFailure
+	fixture.receiverMu.Unlock()
+	if receiverFailure != "" {
+		t.Fatalf("controlled receiver protocol=%s", receiverFailure)
+	}
 	var ref string
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT external_push_configuration_ref FROM survey_operation_configurations WHERE questionnaire_id=$1`, fixture.questionnaireID).Scan(&ref); err != nil || ref != "survey.browser.target" {
 		t.Fatalf("saved target ref=%q err=%v", ref, err)
+	}
+	var status string
+	var attempted, realCall, resultReceived bool
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received FROM survey_external_operation_receipts WHERE questionnaire_id=$1 ORDER BY created_at DESC LIMIT 1`, fixture.questionnaireID).Scan(&status, &attempted, &realCall, &resultReceived); err != nil || status != "executed" || !attempted || !realCall || !resultReceived {
+		t.Fatalf("effect receipt status=%q attempted=%t real=%t received=%t err=%v", status, attempted, realCall, resultReceived, err)
 	}
 }
 
@@ -61,6 +77,8 @@ type surveyCompletionChromiumFixture struct {
 	server          *httptest.Server
 	questionnaireID int64
 	receiverCalls   atomic.Int64
+	receiverMu      sync.Mutex
+	receiverFailure string
 	script          string
 }
 
@@ -80,8 +98,31 @@ func newSurveyCompletionChromiumFixture(t *testing.T) *surveyCompletionChromiumF
 	}
 	fixture := &surveyCompletionChromiumFixture{ctx: ctx, script: source}
 	receiver := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Header.Get("X-AICRM-Signature") == "" || r.Header.Get("X-AICRM-Event-Id") == "" {
-			http.Error(w, "invalid", http.StatusBadRequest)
+		raw, readErr := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+		failure := ""
+		if readErr != nil || r.Method != http.MethodPost || r.Header.Get("X-AICRM-Timestamp") == "" || r.Header.Get("X-AICRM-Event-Id") == "" {
+			failure = "request"
+		}
+		mac := hmac.New(sha256.New, key[:])
+		_, _ = mac.Write([]byte(r.Header.Get("X-AICRM-Timestamp") + "\n" + r.Header.Get("X-AICRM-Event-Id") + "\n"))
+		_, _ = mac.Write(raw)
+		if failure == "" && r.Header.Get("X-AICRM-Signature") != "sha256="+hex.EncodeToString(mac.Sum(nil)) {
+			failure = "signature"
+		}
+		var payload struct {
+			UserID      string `json:"user_id"`
+			Day         int64  `json:"day"`
+			Frequency   int64  `json:"frequency"`
+			ExpiresAtTS int64  `json:"expires_at_ts"`
+		}
+		if failure == "" && (json.Unmarshal(raw, &payload) != nil || payload.UserID != "questionnaire_test" || payload.Day != 30 || payload.Frequency != 1 || payload.ExpiresAtTS != 2147483647) {
+			failure = "payload"
+		}
+		fixture.receiverMu.Lock()
+		fixture.receiverFailure = failure
+		fixture.receiverMu.Unlock()
+		if failure != "" {
+			http.Error(w, failure, http.StatusBadRequest)
 			return
 		}
 		fixture.receiverCalls.Add(1)
