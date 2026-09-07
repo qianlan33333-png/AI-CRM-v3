@@ -106,6 +106,21 @@ class SourceAuthorityGateTests(unittest.TestCase):
         head = self.commit("ordinary")
         self.assertEqual(gate.check(self.repo, base, head)["authority_changes"], [])
 
+    def test_gate_reads_pinned_objects_without_touching_or_trusting_dirty_worktree(self):
+        self.write_snapshot(b"alpha\n")
+        self.write_approvals([])
+        base = self.commit("base")
+        self.write("docs/ordinary.md", b"ordinary non-authority change\n")
+        head = self.commit("ordinary")
+
+        # A malformed worktree copy cannot alter the pinned-tree comparison.
+        # This is also a rollback boundary: the gate must not repair, stage or
+        # delete a developer's unrelated change.
+        self.write(gate.INDEX_PATH, b"not JSON\n")
+        before = (self.repo / gate.INDEX_PATH).read_bytes()
+        self.assertEqual(gate.check(self.repo, base, head)["status"], "pass")
+        self.assertEqual((self.repo / gate.INDEX_PATH).read_bytes(), before)
+
     def test_coordinated_index_lock_and_canonical_change_needs_exact_base_bound_approval(self):
         self.write_snapshot(b"alpha\n")
         self.write_approvals([])
