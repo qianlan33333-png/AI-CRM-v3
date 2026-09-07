@@ -66,6 +66,18 @@ func (testProducts) ReadProductTarget(context.Context, productport.ProductOption
 	return productport.ProductOption{}, nil
 }
 
+type fixedProducts struct{ product productport.ProductOption }
+
+func (products fixedProducts) ListProductOptions(context.Context, productport.ProductOptionQuery) (productport.ProductOptionPage, error) {
+	return productport.ProductOptionPage{Items: []productport.ProductOption{products.product}, Total: 1}, nil
+}
+func (products fixedProducts) ReadProductTarget(_ context.Context, kind productport.ProductOptionType, id productport.ID) (productport.ProductOption, error) {
+	if kind != products.product.ProductType || id != products.product.ID {
+		return productport.ProductOption{}, errors.New("product unavailable")
+	}
+	return products.product, nil
+}
+
 type testOrders struct{}
 
 func (testOrders) Get(context.Context, int64) (orderdomain.Snapshot, error) {
@@ -98,8 +110,19 @@ func (testEntitlements) UpdateEntitlementAlliance(context.Context, orderport.All
 
 type testCoupons struct{}
 
-func (testCoupons) ListCustomerCoupons(context.Context, int64, int32) (couponport.CustomerCouponPage, error) {
-	return couponport.CustomerCouponPage{Items: []couponport.CustomerCoupon{}}, nil
+func (testCoupons) ListSidebarClaimable(context.Context, int64, couponport.SidebarClaimableQuery) (couponport.SidebarClaimablePage, error) {
+	return couponport.SidebarClaimablePage{Items: []couponport.SidebarClaimableItem{}}, nil
+}
+
+type recordingCoupons struct {
+	page       couponport.SidebarClaimablePage
+	customerID int64
+	query      couponport.SidebarClaimableQuery
+}
+
+func (catalog *recordingCoupons) ListSidebarClaimable(_ context.Context, customerID int64, query couponport.SidebarClaimableQuery) (couponport.SidebarClaimablePage, error) {
+	catalog.customerID, catalog.query = customerID, query
+	return catalog.page, nil
 }
 
 type testMaterials struct{}
@@ -160,9 +183,13 @@ func (testSends) CompleteSidebarSend(context.Context, outboundport.SidebarSendOu
 }
 
 func testRoutes(t *testing.T) http.Handler {
+	return testRoutesWithCoupons(t, testCoupons{})
+}
+
+func testRoutesWithCoupons(t *testing.T, coupons couponport.SidebarClaimableCatalog) http.Handler {
 	t.Helper()
 	products := testProducts{}
-	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com"})
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: coupons, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,5 +265,76 @@ func TestMaterialVariantUsesEnabledViewerProjection(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"resource_not_available"`) {
 		t.Fatalf("unavailable variant status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCouponsExposeCouponRuleDirectoryWithoutCreatingShares(t *testing.T) {
+	catalog := &recordingCoupons{page: couponport.SidebarClaimablePage{
+		Items: []couponport.SidebarClaimableItem{
+			{CouponID: 7, Name: "目录券", DiscountMinor: 990, Currency: "CNY", Targets: []couponport.SidebarClaimableTarget{{Title: "标准商品", ProductType: productport.ProductOptionStandard}}, ClaimEndsAt: time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), PublicSlug: "coupon-7", AvailabilityStatus: "scheduled"},
+			{CouponID: 8, Name: "无链接目录券", DiscountMinor: 100, Currency: "CNY", ClaimEndsAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), AvailabilityStatus: "sold_out", UserLimitReached: true},
+		}, Total: 2, Limit: 2, Offset: 3,
+	}}
+	request := httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/coupons?limit=2&offset=3", nil)
+	request.Header.Set("Authorization", "Bearer signed")
+	response := httptest.NewRecorder()
+	testRoutesWithCoupons(t, catalog).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if catalog.customerID != 42 || catalog.query != (couponport.SidebarClaimableQuery{Limit: 2, Offset: 3}) {
+		t.Fatalf("catalog scope customer=%d query=%+v", catalog.customerID, catalog.query)
+	}
+	var payload struct {
+		Items []struct {
+			CouponID           int64  `json:"coupon_id"`
+			URL                string `json:"url"`
+			AvailabilityStatus string `json:"availability_status"`
+			UserLimitReached   bool   `json:"user_limit_reached"`
+			Targets            []struct {
+				Title string `json:"title"`
+			} `json:"targets"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 2 || payload.Items[0].CouponID != 7 || payload.Items[0].URL != "https://crm.example.com/c/coupon-7" || payload.Items[0].AvailabilityStatus != "scheduled" || len(payload.Items[0].Targets) != 1 || payload.Items[0].Targets[0].Title != "标准商品" {
+		t.Fatalf("unexpected coupon directory=%s", response.Body.String())
+	}
+	if payload.Items[1].URL != "" || payload.Items[1].AvailabilityStatus != "sold_out" || !payload.Items[1].UserLimitReached {
+		t.Fatalf("missing-slug or availability mapping changed=%s", response.Body.String())
+	}
+	for _, forbidden := range []string{"claim_id", "claimed_at", "public_slug", "eligible"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("coupon directory leaked or inferred %q: %s", forbidden, response.Body.String())
+		}
+	}
+}
+
+func TestProductSendIntentUsesStandardNewsCardPayload(t *testing.T) {
+	products := fixedProducts{product: productport.ProductOption{ID: 9, Code: "course-9", ProductType: productport.ProductOptionStandard, Name: "标准课程", PriceMinor: 19900, Currency: "CNY"}}
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := handler.sendPayload(context.Background(), "product", "9", productport.ProductOptionStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var news struct {
+		MessageType string `json:"msgtype"`
+		News        struct {
+			Link   string `json:"link"`
+			Title  string `json:"title"`
+			Desc   string `json:"desc"`
+			ImgURL string `json:"imgUrl"`
+		} `json:"news"`
+	}
+	if err := json.Unmarshal(payload, &news); err != nil {
+		t.Fatal(err)
+	}
+	if news.MessageType != "news" || news.News.Link != "https://crm.example.com/p/course-9" || news.News.Title != "标准课程" || news.News.Desc != "" || news.News.ImgURL != "https://crm.example.com/static/sidebar_workbench/product-card-cover.png" {
+		t.Fatalf("standard product card payload=%s", payload)
 	}
 }

@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	urlpkg "net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +62,10 @@ type Config struct {
 	ProductByID  productport.ProductTargetReader
 	Orders       orderport.Query
 	Entitlements orderport.EntitlementService
-	Coupons      couponport.CustomerCouponReader
+	// Coupons is the Coupon-owned definition directory. It intentionally is
+	// not CustomerCouponReader: a customer's issued claims are not the set of
+	// public rules that the standard sidebar is allowed to display.
+	Coupons      couponport.SidebarClaimableCatalog
 	Materials    mediaport.ImageLibraryReader
 	MaterialSend mediaport.SidebarImageSendReader
 	// ImageVariants serves bounded enabled-image previews to the scoped sidebar
@@ -81,7 +84,7 @@ func NewHandler(config Config) (*Handler, error) {
 	if config.Contexts == nil || config.Profiles == nil || config.Surveys == nil || config.Timeline == nil || config.Products == nil || config.ProductByID == nil || config.Orders == nil || config.Entitlements == nil || config.Coupons == nil || config.Materials == nil || config.MaterialSend == nil || config.Radar == nil || config.Sends == nil {
 		return nil, errors.New("sidebar dependencies are required")
 	}
-	origin, err := url.Parse(strings.TrimRight(config.PublicOrigin, "/"))
+	origin, err := urlpkg.Parse(strings.TrimRight(config.PublicOrigin, "/"))
 	if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.Path != "" {
 		return nil, errors.New("sidebar public origin must be an https origin")
 	}
@@ -427,12 +430,38 @@ func (h *Handler) coupons(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page, err := h.config.Coupons.ListCustomerCoupons(r.Context(), int64(customerID), int32(limit))
+	offset, ok := boundedOffset(w, r, int(couponport.SidebarClaimableMaximumOffset))
+	if !ok {
+		return
+	}
+	page, err := h.config.Coupons.ListSidebarClaimable(r.Context(), int64(customerID), couponport.SidebarClaimableQuery{Limit: int32(limit), Offset: int32(offset)})
 	if err != nil {
 		h.sectionError(w)
 		return
 	}
-	h.writeJSON(w, http.StatusOK, page)
+	// The Host may compose only a pre-existing, validated slug with its
+	// configured origin. Missing slugs deliberately remain unlinked: rendering
+	// the directory must never create a share or reserve/claim a coupon.
+	type item struct {
+		CouponID           couponport.ID                       `json:"coupon_id"`
+		Name               string                              `json:"name"`
+		DiscountMinor      int64                               `json:"discount_minor"`
+		Currency           string                              `json:"currency"`
+		Targets            []couponport.SidebarClaimableTarget `json:"targets"`
+		ClaimEndsAt        time.Time                           `json:"claim_ends_at"`
+		URL                string                              `json:"url,omitempty"`
+		AvailabilityStatus string                              `json:"availability_status"`
+		UserLimitReached   bool                                `json:"user_limit_reached"`
+	}
+	items := make([]item, 0, len(page.Items))
+	for _, row := range page.Items {
+		url := ""
+		if row.PublicSlug != "" {
+			url = h.config.PublicOrigin + "/c/" + urlpkg.PathEscape(row.PublicSlug)
+		}
+		items = append(items, item{CouponID: row.CouponID, Name: row.Name, DiscountMinor: row.DiscountMinor, Currency: row.Currency, Targets: row.Targets, ClaimEndsAt: row.ClaimEndsAt, URL: url, AvailabilityStatus: row.AvailabilityStatus, UserLimitReached: row.UserLimitReached})
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
 }
 
 func (h *Handler) materials(w http.ResponseWriter, r *http.Request) {
@@ -515,7 +544,7 @@ func (h *Handler) radarLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]item, 0, len(page.Items))
 	for _, row := range page.Items {
-		items = append(items, item{ID: int64(row.Link.ID), Name: row.Link.Name, Title: row.Link.Title, URL: h.config.PublicOrigin + "/r/" + url.PathEscape(string(row.Link.PublicCode)), ContentType: string(row.Link.Content.Type)})
+		items = append(items, item{ID: int64(row.Link.ID), Name: row.Link.Name, Title: row.Link.Title, URL: h.config.PublicOrigin + "/r/" + urlpkg.PathEscape(string(row.Link.PublicCode)), ContentType: string(row.Link.Content.Type)})
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": page.Total})
 }
@@ -589,8 +618,18 @@ func (h *Handler) sendPayload(ctx context.Context, kind, rawID string, productTy
 		if err != nil {
 			return nil, err
 		}
-		content := fmt.Sprintf("%s\n价格：¥%.2f", product.Name, float64(product.PriceMinor)/100)
-		return json.Marshal(map[string]any{"msgtype": "text", "text": map[string]string{"content": content}})
+		prefix := "/p/"
+		if product.ProductType == productport.ProductOptionServicePeriod {
+			prefix = "/s/"
+		}
+		link := h.config.PublicOrigin + prefix + urlpkg.PathEscape(product.Code)
+		return json.Marshal(map[string]any{"msgtype": "news", "news": map[string]string{
+			"link": link, "title": product.Name, "desc": "",
+			// The frozen sidebar's standard product card cover remains the
+			// source-compatible fallback until Product publishes item media via
+			// its stable cross-domain target projection.
+			"imgUrl": h.config.PublicOrigin + "/static/sidebar_workbench/product-card-cover.png",
+		}})
 	case "material":
 		material, err := h.config.MaterialSend.ReadSidebarImageForSend(ctx, id, h.now().Add(6*time.Minute))
 		if err != nil {
@@ -602,7 +641,7 @@ func (h *Handler) sendPayload(ctx context.Context, kind, rawID string, productTy
 		if err != nil || detail.Link.Status != radarport.StatusEnabled {
 			return nil, errors.New("radar unavailable")
 		}
-		link := h.config.PublicOrigin + "/r/" + url.PathEscape(string(detail.Link.PublicCode))
+		link := h.config.PublicOrigin + "/r/" + urlpkg.PathEscape(string(detail.Link.PublicCode))
 		return json.Marshal(map[string]any{"msgtype": "link", "link": map[string]string{"title": detail.Link.Title, "desc": detail.Link.Description, "url": link}})
 	default:
 		return nil, errors.New("unsupported resource")

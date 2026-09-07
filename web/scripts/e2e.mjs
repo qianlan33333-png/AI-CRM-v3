@@ -1115,7 +1115,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             window.setTimeout(() => {
               if (scenario === 'regular_error') {
                 window.__sidebarTest.wxStages.push({ stage: 'config_error' });
-                errorCallback?.({ errMsg: 'config:fail' });
+                errorCallback?.({ err_msg: 'preVerifyJSAPI:fail' });
                 return;
               }
               regularConfigured = true;
@@ -1136,7 +1136,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             window.__sidebarTest.wxStages.push({ stage: 'agentConfig', options });
             window.setTimeout(() => {
               if (scenario === 'agent_error' || scenario === 'sdk_error' || ((scenario === 'agent_retry' || scenario === 'agent_retry_storage_failure') && agentConfigCalls === 1)) {
-                options.fail?.({ errMsg: 'agentConfig:fail' });
+                options.fail?.({ err_msg: 'agentConfig:fail' });
               } else options.success?.({ err_msg: 'agentConfig:ok' });
             }, 0);
           },
@@ -1144,7 +1144,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             window.__sidebarTest.wxMessages.push({ method, payload });
             window.__sidebarTest.wxInvokes.push(method);
             if (scenario === 'contact_error' && method === 'getCurExternalContact') {
-              callback({ errMsg: 'getCurExternalContact:fail' });
+              callback({ err_msg: 'getCurExternalContact:fail' });
               return;
             }
             if (scenario === 'late_contact_retry' && method === 'getCurExternalContact') {
@@ -1295,14 +1295,27 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             offset: 0,
           });
         }
+        if (url.includes('/coupons')) {
+          if (scenario === 'error') return json({ code: 'unavailable' }, 503);
+          return json({
+            items: scenario === 'empty' ? [] : [
+              { coupon_id: 71, name: '可领取目录券', discount_minor: 990, currency: 'CNY', targets: [{ title: '普通课程', product_type: 'standard' }], claim_ends_at: '2026-09-30T00:00:00Z', url: 'http://localhost/c/coupon-71', availability_status: 'active', user_limit_reached: false },
+              { coupon_id: 72, name: '已结束目录券', discount_minor: 100, currency: 'CNY', targets: [], claim_ends_at: '2026-08-01T00:00:00Z', availability_status: 'ended', user_limit_reached: true },
+            ], total: scenario === 'empty' ? 0 : 2, limit: 20, offset: 0,
+          });
+        }
         if (url.includes('/send-intents') && url.includes('/outcome')) {
           window.__sidebarTest.sendOutcomeBodies.push(JSON.parse(init.body || '{}'));
           return json({ intent_id: 51, effect_id: 'eff-1', state: 'client_executed' });
         }
         if (url.includes('/send-intents')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
+          const command = JSON.parse(init.body || '{}');
           window.__sidebarTest.sendIntentKeys.push(new Headers(init.headers).get('Idempotency-Key'));
-          return json({ intent_id: 51, effect_id: 'eff-1', state: 'queued', grant: 'grant-token', grant_expires_at: '2026-08-28T00:00:00Z', payload: { msgtype: 'image', image: { mediaid: 'media-real-31' } }, replayed: false }, 202);
+          const payload = command.resource_kind === 'product'
+            ? { msgtype: 'news', news: { link: 'http://localhost/p/course-ordinary', title: '普通课程', desc: '', imgUrl: 'http://localhost/static/sidebar_workbench/product-card-cover.png' } }
+            : { msgtype: 'image', image: { mediaid: 'media-real-31' } };
+          return json({ intent_id: 51, effect_id: 'eff-1', state: 'queued', grant: 'grant-token', grant_expires_at: '2026-08-28T00:00:00Z', payload, replayed: false }, 202);
         }
         if (url.includes('/materials/') && url.includes('/variants/')) {
           if (url.includes('/materials/32/')) return json({ code: 'not_found' }, 404);
@@ -1331,8 +1344,23 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       };
     },
   });
-  // 等 loadDb（120ms）+ 二级加载（200ms）+ 余量
-  await sleep(700);
+  // The Host dynamically appends the generated dd8 overlay in production.
+  // jsdom does not fetch that appended external script, so execute the same
+  // hashed release asset here after the Host has installed its bridge.
+  if (rel === 'sidebar/index.html') {
+    const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'asset-manifest.json'), 'utf8'));
+    const overlay = manifest.entries?.sidebarStandardOverlay;
+    if (typeof overlay !== 'string') throw new Error('sidebar standard overlay is absent from the release manifest');
+    // jsdom does not execute module tags. Let parsing finish first: otherwise
+    // the test Host registers a DOMContentLoaded callback while the overlay
+    // starts immediately and sees no bridge. Then install the hashed Host and
+    // execute the exact generated overlay.
+    await sleep(0);
+    if (!dom.window.__AICRMSidebarBridge) dom.window.eval(TEST_BUNDLES.sidebar);
+    dom.window.eval(fs.readFileSync(path.join(DIST, overlay), 'utf8'));
+  }
+  // Wait for Host identity/bootstrap plus the standard overlay's first paint.
+  await sleep(rel === 'sidebar/index.html' ? 120 : 700);
   return dom;
 }
 
@@ -3023,321 +3051,99 @@ for (const page of ['done', 'qr']) {
 }
 
 /* ================= 侧边栏 ================= */
-console.log('sidebar/index.html（最终 Host、企微握手与失败关闭）');
+console.log('sidebar/index.html（dd8 标准 Overlay 与可信 Host）');
 {
   const dom = await loadPage('sidebar/index.html');
   const d = dom.window.document;
   const sidebarManifest = JSON.parse(fs.readFileSync(path.join(DIST, 'asset-manifest.json'), 'utf8'));
   const sidebarHTML = fs.readFileSync(path.join(DIST, 'sidebar/index.html'), 'utf8');
   const sidebarHost = sidebarManifest.entries.sidebarHost;
+  const sidebarOverlay = sidebarManifest.entries.sidebarStandardOverlay;
   const scripts = [...sidebarHTML.matchAll(/<script(?: type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
-  ok('最终 Sidebar 文档仅加载企微专用 SDK 后再加载 V3 Host',
+  ok('最终 Sidebar 文档以企微 SDK、V3 Host 和哈希 dd8 Overlay 组成单一运行链',
     sidebarManifest.files[sidebarHost]?.entry_point === 'web/v3/sidebar/main.ts' &&
-    sidebarManifest.files[sidebarHost]?.inputs?.includes('web/v3/sidebarApi.ts') &&
+    sidebarManifest.files[sidebarOverlay]?.entry_point === 'web/dist/sidebar/sidebar_workbench_v3_overlay.js' &&
     JSON.stringify(scripts) === JSON.stringify(['https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js', `../${sidebarHost}`]) &&
-    !sidebarHTML.includes('https://res.wx.qq.com/open/js/jweixin-1.6.0.js'));
-  ok('侧边栏渲染 375px 高密度壳且 CSP 下不依赖内联样式',
-    d.querySelector('#sidebar-workbench-root.sidebar-shell') && d.querySelector('.customer-card') &&
-    !d.querySelector('style') && sidebarHTML.includes(`href="../${sidebarManifest.entries.sidebarStyles}"`));
+    sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`) &&
+    !sidebarHTML.includes('jweixin-1.6.0.js') && !sidebarHTML.includes('sidebar_workbench.js'));
+  ok('标准 Overlay 保留六个业务菜单、统一壳和画像首屏，且不含聊天菜单',
+    d.querySelector('#sidebar-workbench-root.wrap') && d.querySelector('.profile-card') &&
+    [...d.querySelectorAll('#tabs [data-tab]')].map((node) => node.dataset.tab).join('|') === 'profile|questionnaires|products|orders|coupons|materials' &&
+    d.body.textContent.includes('侧边栏测试客户') &&
+    !d.body.textContent.includes('其他客服聊天') && !d.body.textContent.includes('chat_activity'));
   const stages = dom.window.__sidebarTest.wxStages.map((entry) => entry.stage);
-  ok('无 external_userid 时完成 regular config → ready → agentConfig → 可信客户读取 → bootstrap',
+  ok('Host 依次取得 regular config、agentConfig、上下文和当前客户后只 bootstrap 一次',
     stages.indexOf('config') >= 0 && stages.indexOf('ready_callback') > stages.indexOf('config') &&
     stages.indexOf('agentConfig') > stages.indexOf('ready_callback') &&
     dom.window.__sidebarTest.wxInvokes.slice(0, 2).join('|') === 'getContext|getCurExternalContact' &&
-    dom.window.__sidebarTest.requests[0]?.includes('/jssdk-config') &&
-    dom.window.__sidebarTest.requests[1]?.includes('/bootstrap'));
+    dom.window.__sidebarTest.requests.filter((url) => url.includes('/bootstrap')).length === 1 &&
+    !dom.window.__sidebarTest.requests.some((url) => /other-staff-messages|chat-activity|chat_activity/.test(url)));
   dom.window.close();
 }
 
-for (const [scenario, expected, action, detail] of [
-  ['sdk_missing', '企微 SDK 未载入', 'retry-context'],
-  ['regular_error', 'JSSDK regular config 失败', 'reload-sidebar', 'config:fail'],
-  ['agent_error', 'JSSDK agentConfig 失败', 'retry-context', 'agentConfig:fail'],
-  ['contact_error', '企微客户上下文读取失败', 'retry-context', 'getCurExternalContact:fail'],
-]) {
-  const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
-  const text = dom.window.document.body.textContent || '';
-  const matchingErrors = [...dom.window.document.querySelectorAll('.sidebar-status')]
-    .filter((node) => node.textContent.includes(expected));
-  ok(`${scenario} 在可信客户读取前关闭，呈现单一实际恢复入口且不误报 external_userid`,
-    text.includes(expected) && matchingErrors.length === 1 &&
-    (!detail || text.includes(detail)) &&
-    !text.includes('缺少 external_userid') &&
-    dom.window.document.querySelector(`[data-sidebar-action="${action}"]`) &&
-    !dom.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap') || url.includes('/context-token')));
-  dom.window.close();
-}
-{
-  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=jssdk_401' });
-  const text = dom.window.document.body.textContent || '';
-  ok('JSSDK 401 在首访显示 OAuth 员工授权入口，不请求客户 bootstrap',
-    text.includes('通过企微 OAuth 授权') && !text.includes('缺少 external_userid') &&
-    !dom.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap') || url.includes('/context-token')));
-  dom.window.close();
-}
-for (const [scenario, storageReads, label] of [
-  ['agent_retry', null, 'agentConfig 显式失败后重试仅复用同 URL 已确认的 regular 状态'],
-  ['agent_retry_storage_failure', 1, 'agentConfig 失败后即使旧 session 签名无法删除也强制重取'],
+for (const [scenario, expected] of [
+  ['sdk_missing', '未识别到客户'],
+  ['regular_error', 'preVerifyJSAPI:fail'],
+  ['agent_error', 'agentConfig:fail'],
+  ['contact_error', 'getCurExternalContact:fail'],
 ]) {
   const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
   const d = dom.window.document;
-  const retry = d.querySelector('[data-sidebar-action="retry-context"]');
-  retry?.click();
-  await sleep(40);
+  ok(`${scenario} 在可信联系人 bootstrap 前失败关闭并使用标准重试按钮`,
+    d.body.textContent.includes(expected) && !!d.querySelector('[data-retry-boot]') &&
+    dom.window.__sidebarTest.requests.filter((url) => url.includes('/bootstrap')).length === 0);
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=agent_retry' });
+  const d = dom.window.document;
+  click(dom, d.querySelector('[data-retry-boot]'));
+  await sleep(80);
   const stages = dom.window.__sidebarTest.wxStages.map((entry) => entry.stage);
-  ok(label,
-    !!retry &&
+  ok('agentConfig 失败后重试重新建立 Host 上下文并只 bootstrap 一次',
     stages.filter((stage) => stage === 'config').length === 1 &&
     stages.filter((stage) => stage === 'agentConfig').length === 2 &&
     dom.window.__sidebarTest.requests.filter((url) => url.includes('/jssdk-config')).length === 2 &&
-    (storageReads === null || dom.window.__sidebarTest.jssdkStorageReads === storageReads) &&
-    d.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready');
-  dom.window.close();
-}
-{
-  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=session_storage_unavailable' });
-  await sleep(40);
-  ok('sessionStorage SecurityError 仅禁用短期缓存，仍通过正式签名建立上下文',
-    dom.window.__sidebarTest.requests.filter((url) => url.includes('/jssdk-config')).length === 1 &&
     dom.window.__sidebarTest.requests.filter((url) => url.includes('/bootstrap')).length === 1 &&
-    dom.window.document.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready');
+    !!d.querySelector('#tabs button[data-tab="materials"]:not([disabled])'));
   dom.window.close();
 }
 {
-  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=late_contact_retry' });
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=success' });
   const d = dom.window.document;
-  const retry = d.querySelector('[data-sidebar-action="retry-context"]');
-  retry?.click();
-  await sleep(30);
-  dom.window.__sidebarTest.releaseStaleContact?.();
-  await sleep(30);
-  const bootstrapRequests = dom.window.__sidebarTest.requests.filter((url) => url.includes('/bootstrap'));
-  ok('迟到的旧轮外部联系人回调不会覆盖新轮或额外 bootstrap',
-    !!retry && bootstrapRequests.length === 1 &&
-    dom.window.__sidebarTest.bootstrapBodies.length === 1 &&
-    dom.window.__sidebarTest.bootstrapBodies[0]?.external_userid === 'ext-current');
+  click(dom, d.querySelector('#tabs [data-tab="questionnaires"]'));
+  await sleep(40);
+  const questionnaireReads = dom.window.__sidebarTest.requests.filter((url) => url.includes('/questionnaires'));
+  ok('问卷由 Overlay 标准卡片读取，重复菜单切换保持单次 scoped 请求',
+    d.body.textContent.includes('满意度回访') && questionnaireReads.length === 1);
+
+  click(dom, d.querySelector('#tabs [data-tab="coupons"]'));
+  await sleep(40);
+  ok('Coupon 目录显示规则状态而非客户已领券，已结束或个人上限项禁用链接',
+    d.body.textContent.includes('可领取目录券') && d.body.textContent.includes('已结束目录券') &&
+    d.body.textContent.includes('已达到个人领取上限') &&
+    [...d.querySelectorAll('[data-copy-url]')].some((node) => node.disabled) &&
+    !d.body.textContent.includes('claim_id'));
+
+  click(dom, d.querySelector('#tabs [data-tab="products"]'));
+  await sleep(40);
+  click(dom, d.querySelector('[data-product-send]'));
+  await sleep(40);
+  const news = dom.window.__sidebarTest.wxMessages.find((entry) => entry.payload?.msgtype === 'news');
+  ok('商品先被 Outbound 接受，再以完整 news card 调用 JSSDK 并回写同一 grant',
+    news?.method === 'sendChatMessage' && news.payload.news?.link === 'http://localhost/p/course-ordinary' &&
+    news.payload.news?.imgUrl === 'http://localhost/static/sidebar_workbench/product-card-cover.png' &&
+    dom.window.__sidebarTest.sendOutcomeBodies.some((body) => body.grant === 'grant-token' && body.outcome === 'client_executed'));
+
+  click(dom, d.querySelector('#tabs [data-tab="materials"]'));
+  await sleep(40);
+  click(dom, d.querySelector('[data-material-send]'));
+  await sleep(40);
+  const image = dom.window.__sidebarTest.wxMessages.find((entry) => entry.payload?.msgtype === 'image');
+  ok('图片素材经过接受回执后才调用 JSSDK；缩略图保持受 scope 的 blob 加载',
+    image?.method === 'sendChatMessage' && image.payload.image?.mediaid === 'media-real-31' &&
+    !!d.querySelector('img[data-material-preview="ready"]'));
   dom.window.close();
-}
-
-console.log('sidebar/index.html（合法 query 候选、JSSDK 缓存与降级）');
-{
-  const parallel = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=success' });
-  const requests = parallel.window.__sidebarTest.requests;
-  ok('合法 query 候选仍由服务端员工关系校验，JSSDK 与 bootstrap 可并行且不走退休 JSSDK 路由',
-    requests[0]?.includes('/jssdk-config') && requests[1]?.includes('/bootstrap') &&
-    requests.filter((url) => url.includes('/bootstrap')).length === 1 &&
-    !requests.some((url) => url.includes('/sidebar/v2/jssdk/agent-config') || url.includes('/context-token') || url.includes('/workbench')));
-  parallel.window.close();
-
-  const cached = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=sdk_cache' });
-  const cachedConfig = cached.window.sessionStorage.getItem('aicrm.sidebar.jssdk.config.v2') || '';
-  ok('同一完整页面 URL 的双签名短期缓存复用且不缓存客户数据',
-    !cached.window.__sidebarTest.requests.some((url) => url.includes('/jssdk-config')) &&
-    cached.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap')) && !cachedConfig.includes('customer'));
-  cached.window.close();
-
-  const degraded = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=sdk_error' });
-  const degradedDoc = degraded.window.document;
-  ok('有既有 query 候选时 agentConfig 失败仍保留受服务端校验的本地只读降级',
-    degradedDoc.querySelector('#sidebar-context-status')?.textContent.includes('degraded_ready') && degradedDoc.body.textContent.includes('侧边栏测试客户'));
-  click(degraded, degradedDoc.querySelector('[data-sidebar-tab="products"]'));
-  await sleep(30);
-  const degradedSend = degradedDoc.querySelector('[data-sidebar-action="send-product"]');
-  ok('degraded_ready 禁用企微发送但不禁用本地只读标签页',
-    degradedSend?.disabled === true && degradedSend?.title.includes('JSSDK') && degraded.window.__sidebarTest.wxMessages.length === 0);
-  degraded.window.close();
-}
-
-console.log('sidebar/index.html（问卷读取状态）');
-for (const scenario of ['success', 'empty', 'error']) {
-  const dom = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=' + scenario });
-  const d = dom.window.document;
-  const questionnaireTab = d.querySelector('[data-sidebar-tab="questionnaires"]');
-  ok('workbench ready 后问卷 tab 可用', questionnaireTab && !questionnaireTab.disabled);
-  ok('Sidebar 保持 7 个一级 tab，未接入优惠券仍关闭',
-    d.querySelectorAll('[data-sidebar-tab]').length === 7 &&
-    !d.querySelector('[data-sidebar-tab="orders"]').disabled &&
-    !d.querySelector('[data-sidebar-tab="materials"]').disabled &&
-    !d.querySelector('[data-sidebar-tab="products"]').disabled &&
-    !d.querySelector('[data-sidebar-tab="other_staff_messages"]').disabled &&
-    d.querySelector('[data-sidebar-tab="coupons"]').disabled);
-  click(dom, questionnaireTab);
-  ok('问卷切换先显示 loading', d.body.textContent.includes('正在读取问卷答案'));
-  click(dom, d.querySelector('[data-sidebar-tab="questionnaires"]'));
-  await sleep(30);
-  ok('同一客户同一标签页加载保持 single-flight',
-    dom.window.__sidebarTest.requests.filter((url) => url.includes('/questionnaires')).length === 1);
-  if (scenario === 'success') {
-    ok('问卷真实读取并可展开答案', d.body.textContent.includes('展开答案（1）') && !!d.querySelector('.questionnaire-answers'));
-  } else if (scenario === 'empty') {
-    ok('问卷空结果显示 empty', d.body.textContent.includes('暂无问卷回答记录'));
-  } else {
-    ok('问卷失败显示 error 与重试', d.body.textContent.includes('问卷读取失败') && d.body.textContent.includes('重试读取问卷'));
-  }
-  dom.window.close();
-}
-
-console.log('sidebar/index.html（V2 安全活动、订单、素材与周期备注）');
-{
-  const dom = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=success' });
-  const d = dom.window.document;
-
-  click(dom, d.querySelector('#customer-phone-edit'));
-  input(dom, d.querySelector('#sidebar-phone-input'), '13800138000');
-  click(dom, d.querySelector('#phone-modal-save'));
-  await sleep(30);
-  ok('手机号只绑定当前 Sidebar 客户并携带幂等键',
-    d.querySelector('#sidebar-context-status')?.textContent.includes('本地事实') &&
-    dom.window.__sidebarTest.phoneBody?.phone === '13800138000' &&
-    dom.window.__sidebarTest.phoneKey?.startsWith('sidebar-phone-'));
-
-  const flaky = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=phone_flaky' });
-  const fd = flaky.window.document;
-  click(flaky, fd.querySelector('#customer-phone-edit'));
-  input(flaky, fd.querySelector('#sidebar-phone-input'), '13800138000');
-  click(flaky, fd.querySelector('#phone-modal-save'));
-  await sleep(30);
-  ok('手机号绑定未知结果时弹层保留且不伪造成功', fd.querySelector('#sidebar-phone-status')?.textContent.includes('失败') && !fd.querySelector('#phone-modal').hidden);
-  click(flaky, fd.querySelector('#phone-modal-save'));
-  await sleep(30);
-  ok('同一 context+mobile 重试复用同一幂等键', flaky.window.__sidebarTest.phoneKeys.length === 2 && flaky.window.__sidebarTest.phoneKeys[0] === flaky.window.__sidebarTest.phoneKeys[1]);
-  click(flaky, fd.querySelector('#customer-phone-edit'));
-  input(flaky, fd.querySelector('#sidebar-phone-input'), '13900139000');
-  click(flaky, fd.querySelector('#phone-modal-save'));
-  await sleep(30);
-  ok('输入变化后才轮换幂等键', flaky.window.__sidebarTest.phoneKeys.length === 3 && flaky.window.__sidebarTest.phoneKeys[2] !== flaky.window.__sidebarTest.phoneKeys[1]);
-  flaky.window.close();
-
-  click(dom, d.querySelector('[data-sidebar-tab="profile"]'));
-  click(dom, d.querySelector('[data-sidebar-subtab="timeline"]'));
-  await sleep(30);
-  ok('时间线只展示安全事件元数据',
-    d.querySelectorAll('[data-timeline-event-id]').length === 1 &&
-    d.querySelector('[data-sidebar-section="timeline"]')?.textContent.includes('提交问卷') &&
-    !d.querySelector('[data-sidebar-section="timeline"]')?.textContent.includes('payload') &&
-    !d.querySelector('[data-sidebar-section="timeline"]')?.textContent.includes('actor'));
-  ok('问卷来源事件只导航到已加载问卷板块', !!d.querySelector('[data-sidebar-action="open-related-questionnaires"]'));
-  ok('本地时间线投影无游标分页，不显示加载更多', !d.querySelector('[data-sidebar-action="timeline-more"]'));
-
-  click(dom, d.querySelector('[data-sidebar-subtab="chat_activity"]'));
-  await sleep(30);
-  ok('聊天动态在消息归档未启用时诚实报错且不发请求',
-    d.body.textContent.includes('未启用聊天消息归档') &&
-    !dom.window.__sidebarTest.requests.some((url) => url.includes('/chat-activity')) &&
-    !d.body.textContent.includes('消息正文'));
-
-  click(dom, d.querySelector('[data-sidebar-tab="orders"]'));
-  await sleep(30);
-  const orderCard = d.querySelector('[data-order-no="M20260826001"]');
-  ok('普通订单渲染安全订单字段',
-    orderCard?.textContent.includes('测试课程') &&
-    orderCard?.textContent.includes('99.00 CNY') &&
-    !orderCard?.textContent.includes('payer_name'));
-  const orderDetail = d.querySelector('[data-order-detail="local"]');
-  ok('普通订单详情在当前客户范围内本地展开',
-    orderDetail?.tagName === 'DETAILS' &&
-    orderDetail?.textContent.includes('订单号 M20260826001') &&
-    orderDetail?.textContent.includes('商品编码 course-1') &&
-    !orderDetail?.textContent.includes('/api/admin/orders/'));
-
-  click(dom, d.querySelector('[data-sidebar-subtab="periodic_orders"]'));
-  await sleep(30);
-  ok('周期订单卡以中文状态与本地化时间渲染，member_ref 收敛为 data 锚点',
-    d.querySelectorAll('[data-periodic-member-ref]').length === 1 &&
-    d.querySelector('[data-periodic-member-ref]')?.getAttribute('data-periodic-member-ref')?.startsWith('spm_') &&
-    !d.querySelector('[data-sidebar-section="periodic_orders"], .panel')?.textContent?.includes('member_ref spm_') &&
-    (d.body.textContent.includes('生效中') || d.body.textContent.includes('已过期') || d.body.textContent.includes('已移除')));
-  input(dom, d.querySelector('[data-periodic-remark]'), '更新后的备注');
-  click(dom, d.querySelector('[data-sidebar-action="periodic-remark-save"]'));
-  await sleep(30);
-  ok('周期备注写入回执含 accepted 与新 CAS 版本',
-    d.querySelector('[data-periodic-remark-receipt="accepted"]')?.textContent.includes('version 2') &&
-    dom.window.__sidebarTest.remarkBody?.expected_version === 1 &&
-    dom.window.__sidebarTest.remarkBody?.remark === '更新后的备注' &&
-    typeof dom.window.__sidebarTest.idempotencyKey === 'string' &&
-    dom.window.__sidebarTest.idempotencyKey.startsWith('sidebar-periodic-remark-'));
-
-  click(dom, d.querySelector('[data-sidebar-tab="products"]'));
-  await sleep(30);
-  ok('普通商品二级视图渲染普通商品且只显示本地字段',
-    d.querySelectorAll('article[data-product-kind="ordinary"]').length === 1 &&
-    d.body.textContent.includes('普通课程'));
-  click(dom, d.querySelector('[data-sidebar-subtab="products_periodic"]'));
-  await sleep(30);
-  ok('周期商品二级视图渲染周期商品',
-    d.querySelectorAll('article[data-product-kind="service_period"]').length === 1 &&
-    d.body.textContent.includes('周期课程'));
-  click(dom, d.querySelector('[data-sidebar-subtab="products"]'));
-  await sleep(30);
-  click(dom, d.querySelector('[data-sidebar-action="send-product"]'));
-  await sleep(30);
-  const productMessage = dom.window.__sidebarTest.wxMessages.find((entry) => entry.payload?.msgtype === 'news');
-  ok('商品卡片仅以 JSSDK 回调为 receipt，明确 delivery_unknown',
-    productMessage?.method === 'sendChatMessage' &&
-    productMessage?.payload?.news?.link === 'http://localhost/p/ordinary/41' &&
-    d.body.textContent.includes('client_callback · JSSDK 已回调') &&
-    d.body.textContent.includes('delivery_unknown · 未取得企微外部送达回执'));
-
-  click(dom, d.querySelector('[data-sidebar-tab="materials"]'));
-  await sleep(30);
-  ok('素材支持搜索/分类/标签筛选与元数据',
-    !!d.querySelector('#material-q') && !!d.querySelector('#material-category') && !!d.querySelector('#material-tags') &&
-    d.querySelectorAll('article[data-material-id]').length === 2 &&
-    d.body.textContent.includes('welcome.png') && d.body.textContent.includes('800×600'));
-  click(dom, d.querySelector('[data-sidebar-action="send-material-image"]'));
-  await sleep(30);
-  const imageMessage = dom.window.__sidebarTest.wxMessages.find((entry) => entry.payload?.msgtype === 'image');
-  ok('图片经服务端 send-intent 封装 media_id 再调用 JSSDK，receipt 不宣称外部送达',
-    dom.window.__sidebarTest.sendIntentKeys[0]?.startsWith('sidebar-send-material-31-') &&
-    imageMessage?.method === 'sendChatMessage' &&
-    imageMessage?.payload?.image?.mediaid === 'media-real-31' &&
-    dom.window.__sidebarTest.sendOutcomeBodies[0]?.outcome === 'client_executed' &&
-    dom.window.__sidebarTest.sendOutcomeBodies[0]?.grant === 'grant-token' &&
-    d.body.textContent.includes('delivery_unknown · 未取得企微外部送达回执'));
-  input(dom, d.querySelector('#material-q'), '欢迎');
-  input(dom, d.querySelector('#material-category'), '海报');
-  input(dom, d.querySelector('#material-tags'), '欢迎语');
-  click(dom, d.querySelector('[data-sidebar-action="materials-search"]'));
-  await sleep(30);
-  ok('素材筛选请求沿用真实 q/category/tags 参数',
-    dom.window.__sidebarTest.materialQueries.some((url) => url.includes('q=%E6%AC%A2%E8%BF%8E') && url.includes('category=%E6%B5%B7%E6%8A%A5') && url.includes('tags=%E6%AC%A2%E8%BF%8E%E8%AF%AD')));
-  ok('缩略图展示真实本地图片或明确 not_found',
-    d.querySelector('[data-thumbnail-status="ready"]') &&
-    d.querySelector('[data-thumbnail-status="not_found"]') &&
-    d.querySelector('[data-material-preview="ready"]')?.getAttribute('src') === 'blob:sidebar-thumbnail');
-  dom.window.close();
-}
-
-console.log('sidebar/index.html（新增能力空态与失败态）');
-{
-  const empty = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=empty' });
-  const emptyDoc = empty.window.document;
-  for (const tab of ['timeline', 'chat_activity', 'orders', 'periodic_orders', 'products', 'materials']) {
-    if (tab === 'timeline' || tab === 'chat_activity') {
-      click(empty, emptyDoc.querySelector('[data-sidebar-tab="profile"]'));
-      click(empty, emptyDoc.querySelector(`[data-sidebar-subtab="${tab}"]`));
-    } else if (tab === 'periodic_orders') {
-      click(empty, emptyDoc.querySelector('[data-sidebar-tab="orders"]'));
-      click(empty, emptyDoc.querySelector('[data-sidebar-subtab="periodic_orders"]'));
-    } else {
-      click(empty, emptyDoc.querySelector(`[data-sidebar-tab="${tab}"]`));
-    }
-    await sleep(30);
-    ok(`${tab} 空态清晰`, emptyDoc.body.textContent.includes(tab === 'timeline' ? '暂无时间线记录' : tab === 'chat_activity' ? '未启用聊天消息归档' : tab === 'orders' ? '暂无普通订单记录' : tab === 'periodic_orders' ? '暂无周期订单记录' : tab === 'products' ? '暂无可分享的普通商品' : '暂无匹配素材'));
-  }
-  empty.window.close();
-
-  const failed = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=error' });
-  const failedDoc = failed.window.document;
-  click(failed, failedDoc.querySelector('[data-sidebar-tab="profile"]'));
-  click(failed, failedDoc.querySelector('[data-sidebar-subtab="timeline"]'));
-  await sleep(30);
-  ok('时间线失败态提供重试', failedDoc.body.textContent.includes('时间线读取失败') && !!failedDoc.querySelector('[data-sidebar-action="retry-timeline"]'));
-  click(failed, failedDoc.querySelector('[data-sidebar-tab="orders"]'));
-  click(failed, failedDoc.querySelector('[data-sidebar-subtab="periodic_orders"]'));
-  await sleep(30);
-  ok('周期订单失败态提供重试', failedDoc.body.textContent.includes('周期订单读取失败') && !!failedDoc.querySelector('[data-sidebar-action="retry-periodic-orders"]'));
-  failed.window.close();
 }
 
 console.log('admin/campaigns.html?history=1（七个真实GET只读历史）');

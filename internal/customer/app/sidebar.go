@@ -80,9 +80,9 @@ func (service *SidebarProfileApplication) UpdateSidebarProfile(ctx context.Conte
 	command.IndustryDescription = strings.TrimSpace(command.IndustryDescription)
 	command.NeedsBlockersFollowup = strings.TrimSpace(command.NeedsBlockersFollowup)
 	annotationUpdate := command.SourceSet || command.IndustrySet || command.IndustryDescriptionSet || command.NeedsBlockersFollowupSet
-	if command.CustomerID < 1 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 || command.ExpectedVersion < 1 ||
+	if command.CustomerID < 1 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 ||
 		(annotationUpdate && (command.ExpectedProfileVersion < 0 || len(command.ProfileSource) > 200 || len(command.Industry) > 200 || len(command.IndustryDescription) > 2000 || len(command.NeedsBlockersFollowup) > 2000)) ||
-		(!annotationUpdate && (command.DisplayName == "" || len(command.DisplayName) > 200 || len(command.CorpName) > 200 || command.Gender < 0 || command.Gender > 2)) {
+		(!annotationUpdate && (command.ExpectedVersion < 1 || command.DisplayName == "" || len(command.DisplayName) > 200 || len(command.CorpName) > 200 || command.Gender < 0 || command.Gender > 2)) {
 		return customerport.SidebarProfile{}, ErrSidebarProfileInvalid
 	}
 	key, err := idempotency.Parse(command.IdempotencyKey)
@@ -133,7 +133,27 @@ func (service *SidebarProfileApplication) UpdateSidebarProfile(ctx context.Conte
 		if err := service.store.RecordSidebarProfileReceipt(txctx, keyDigest, payloadDigest, command, "updated", result); err != nil {
 			return err
 		}
-		return service.appendFacts(txctx, "profile_updated", command.CustomerID, command.EmployeeID, command.IdempotencyKey, now, map[string]any{"version": result.Version})
+		facts := map[string]any{"version": result.Version}
+		if annotationUpdate {
+			changed := make([]string, 0, 4)
+			if command.SourceSet {
+				changed = append(changed, "profile_source")
+			}
+			if command.IndustrySet {
+				changed = append(changed, "industry")
+			}
+			if command.IndustryDescriptionSet {
+				changed = append(changed, "industry_description")
+			}
+			if command.NeedsBlockersFollowupSet {
+				changed = append(changed, "needs_blockers_followup")
+			}
+			// Directory source_version intentionally stays fixed for operating
+			// annotations. Audit the independent profile revision and safe field
+			// categories so a same-directory-version update remains observable.
+			facts = map[string]any{"change_kind": "sidebar_profile_annotations", "changed_fields": changed, "profile_version": result.ProfileVersion}
+		}
+		return service.appendFacts(txctx, "profile_updated", command.CustomerID, command.EmployeeID, command.IdempotencyKey, now, facts)
 	})
 	if err == nil && conflicted {
 		err = ErrSidebarProfileConflict

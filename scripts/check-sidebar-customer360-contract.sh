@@ -18,14 +18,7 @@ f20515f3192f3a11048929c7c7b375e1ae274165ae173c0d8415735ffa25424d  aicrm_next/app
 SUMS
 
 cd - >/dev/null
-template="internal/webshell/templates/sidebar.html"
-javascript="internal/webshell/static/sidebar_workbench/sidebar_workbench.js"
-[[ "$(grep -Eo 'data-tab="[^"]+"' "$template" | wc -l | tr -d ' ')" == "6" ]]
-for label in 核心画像 问卷 商品 订单 优惠券 素材; do grep -Fq ">$label<" "$template"; done
-for removed in chat-activity other-staff-messages message_summary user_ops_status automation_status; do
-  ! grep -Fq "$removed" "$template" "$javascript"
-done
-grep -Fq 'getCurExternalContact' "$javascript"
-grep -Fq 'sendChatMessage' "$javascript"
-grep -Fq 'Authorization: "Bearer "' "$javascript"
+# The runnable document is generated from the frozen donor plus the V3 Host.
+# Test the generated overlay itself; the old static workbench runtime is not a
+# release dependency and must not become a false green contract target.
 node scripts/sidebar-workbench-host-adapter-e2e.mjs
