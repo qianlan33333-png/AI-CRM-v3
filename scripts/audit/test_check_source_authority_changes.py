@@ -172,6 +172,29 @@ class SourceAuthorityGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.AuthorityGateError, "exactly one approval"):
             gate.check(self.repo, base, head)
 
+    def test_legal_source_version_rewrite_requires_the_authority_diff(self):
+        self.write_snapshot(b"alpha\n")
+        self.write_approvals([])
+        base = self.commit("base")
+
+        index = json.loads((self.repo / gate.INDEX_PATH).read_text())
+        index["libraries"][0]["source_commit"] = "b" * 40
+        index["bindings"][0]["source_commit"] = "b" * 40
+        lock = json.loads((self.repo / gate.LOCK_PATH).read_text())
+        lock["entries"][0]["source_commit"] = "b" * 40
+        self.write(gate.INDEX_PATH, (json.dumps(index, sort_keys=True) + "\n").encode())
+        self.write(gate.LOCK_PATH, (json.dumps(lock, sort_keys=True) + "\n").encode())
+        changed = self.commit("rewrite legal source version")
+
+        with self.assertRaisesRegex(gate.AuthorityGateError, "exactly one approval"):
+            gate.check(self.repo, base, changed)
+        changes = gate.authority_changes(self.repo, base, changed)
+        self.assertEqual([change["path"] for change in changes], [gate.INDEX_PATH, gate.LOCK_PATH])
+
+        self.write_approvals([self.approval(base, changes)])
+        approved = self.commit("review source version")
+        self.assertEqual(gate.check(self.repo, base, approved)["status"], "pass")
+
     def test_index_only_change_requires_review(self):
         self.write_snapshot(b"alpha\n")
         self.write_approvals([])
