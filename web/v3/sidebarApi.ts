@@ -15,7 +15,6 @@ import type {
   ListSidebarShareableProductsParams,
   ListSidebarTimelineParams,
   MintSidebarContextBody,
-  SidebarAgentConfigSignature,
   SidebarBootstrapResponse,
   SidebarChatActivityResponse,
   SidebarContextResponse,
@@ -105,14 +104,44 @@ export interface BindLocalSidebarPhoneBody {
 }
 
 /** 后端 JSSDK 签名响应（internal/wecom JSSDKConfig）。 */
+interface BackendJSSDKSignature {
+  timestamp: number;
+  nonceStr: string;
+  signature: string;
+  jsApiList?: string[];
+}
+
 interface BackendJSSDKConfig {
   corp_id: string;
   agent_id: string;
-  agent_config: {
-    timestamp: number;
-    nonceStr: string;
-    signature: string;
-    jsApiList?: string[];
+  config: BackendJSSDKSignature;
+  agent_config: BackendJSSDKSignature;
+}
+
+// The formal JSSDK endpoint issues two signatures for the exact same
+// no-fragment browser URL. Keep them together so a Host cannot accidentally
+// configure an agent signature without first completing wx.config/wx.ready.
+export interface SidebarJSSDKSignature {
+  timestamp: number;
+  nonce: string;
+  signature: string;
+  jsApiList: string[];
+}
+
+export interface SidebarJSSDKConfig {
+  corpID: string;
+  agentID: string;
+  url: string;
+  config: SidebarJSSDKSignature;
+  agentConfig: SidebarJSSDKSignature;
+}
+
+function mapJSSDKSignature(value: BackendJSSDKSignature | undefined): SidebarJSSDKSignature {
+  return {
+    timestamp: value?.timestamp ?? 0,
+    nonce: value?.nonceStr ?? "",
+    signature: value?.signature ?? "",
+    jsApiList: Array.isArray(value?.jsApiList) ? value.jsApiList : [],
   };
 }
 
@@ -148,24 +177,18 @@ export const sidebarApi = {
     unwrapGenerated(
       await bootstrapSidebar(body, apiRequestOptions({ signal })),
     ) as SidebarBootstrapResponse,
-  agentConfig: async (url: string): Promise<SidebarAgentConfigSignature> => {
+  jssdkConfig: async (url: string): Promise<SidebarJSSDKConfig> => {
     const response = await request(
       `/api/sidebar/jssdk-config?url=${encodeURIComponent(url)}`,
       apiRequestOptions(),
     );
     const config = (await response.json()) as BackendJSSDKConfig;
-    const agentId = Number(config.agent_id);
     return {
-      signature_type: "agent_config",
-      corp_id: config.corp_id,
-      agent_id: Number.isFinite(agentId) ? agentId : 0,
-      nonce: config.agent_config?.nonceStr ?? "",
-      timestamp: config.agent_config?.timestamp ?? 0,
-      signature: config.agent_config?.signature ?? "",
+      corpID: config.corp_id,
+      agentID: config.agent_id,
       url,
-      // 后端不返回 ticket 过期时间；缓存上限本来就取 min(服务端, 5 分钟)，
-      // 这里保守给 4 分钟，避免长期缓存失效签名。
-      ticket_expires_at: new Date(Date.now() + 4 * 60 * 1000).toISOString(),
+      config: mapJSSDKSignature(config.config),
+      agentConfig: mapJSSDKSignature(config.agent_config),
     };
   },
   // 后端 OAuth 路由为 /api/sidebar/oauth/start|callback；start 只消费 next/mode，

@@ -211,7 +211,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"data-profile-url=\"/api/sidebar/v2/profile\"",
 				"data-questionnaires-url=\"/api/sidebar/v2/questionnaires\"",
 				"data-send-intents-url=\"/api/sidebar/v2/send-intents\"",
-				"https://res.wx.qq.com/open/js/jweixin-1.6.0.js",
+				"https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js",
 			},
 			notContain: []string{"/api/v3/sidebar/", "聊天", "标签", "跟进", "运营", "自动化", "XMLHttpRequest", "sendBeacon"},
 		},

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -349,6 +350,108 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 	handler.ServeHTTP(trailing, trailingRequest)
 	if trailing.Code != http.StatusBadRequest {
 		t.Fatalf("trailing body status=%d", trailing.Code)
+	}
+}
+
+func TestSidebarOAuthJSSDKAndContextProtocolJourney(t *testing.T) {
+	// This is the browser-protocol path used by a first sidebar visit. It keeps
+	// employee authentication, JSSDK signing, and external-contact resolution
+	// separate: a frontend must not replace any of them with a URL value or an
+	// admin session.
+	states := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
+	contextTokens := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Now: func() time.Time { return fixedNow }}
+	signer := &fakeJSSDKSigner{}
+	service := OAuthService{
+		Enabled:      true,
+		CorpID:       "wx-corp",
+		StateStore:   states,
+		UOW:          directUOW{},
+		Client:       fakeOAuthClient{},
+		AllowedPaths: map[string]struct{}{"/sidebar/bind-mobile": {}},
+		Now:          func() time.Time { return fixedNow },
+	}
+	handler, err := NewHTTPHandler(HTTPHandlerOptions{
+		OAuth:             service,
+		ContextTokens:     contextTokens,
+		JSSDKSigner:       signer,
+		JSSDKOrigin:       "https://crm.example",
+		PrincipalResolver: fakePrincipal{},
+		ExistingIdentity:  fakeExistingIdentity{},
+		SessionIssuer:     fakeSessionIssuer{},
+		CookieSecure:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A first visit has no trusted sidebar cookie, so the formal signature
+	// endpoint must reject it before a signer is called.
+	unauthenticated := httptest.NewRecorder()
+	handler.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar%2Fbind-mobile", nil))
+	if unauthenticated.Code != http.StatusUnauthorized || signer.calls != 0 {
+		t.Fatalf("first JSSDK status=%d signer=%d", unauthenticated.Code, signer.calls)
+	}
+
+	start := httptest.NewRecorder()
+	handler.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/api/sidebar/oauth/start?next=%2Fsidebar%2Fbind-mobile", nil))
+	if start.Code != http.StatusFound {
+		t.Fatalf("OAuth start status=%d", start.Code)
+	}
+	authorizationURL, err := url.Parse(start.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := authorizationURL.Query().Get("state")
+	if state == "" {
+		t.Fatal("OAuth start did not issue state")
+	}
+
+	callback := httptest.NewRecorder()
+	handler.ServeHTTP(callback, httptest.NewRequest(http.MethodGet, "/api/sidebar/oauth/callback?code=provider-code&state="+url.QueryEscape(state), nil))
+	if callback.Code != http.StatusFound || callback.Header().Get("Location") != "/sidebar/bind-mobile" {
+		t.Fatalf("OAuth callback status=%d location=%q", callback.Code, callback.Header().Get("Location"))
+	}
+	var sidebarSession *http.Cookie
+	for _, cookie := range callback.Result().Cookies() {
+		if cookie.Name == "aicrm_sidebar_session" {
+			sidebarSession = cookie
+		}
+	}
+	if sidebarSession == nil || !sidebarSession.Secure || !sidebarSession.HttpOnly {
+		t.Fatalf("callback did not issue a secure sidebar session: %#v", callback.Result().Cookies())
+	}
+
+	// The same actual no-fragment page URL is used by both signatures. A hash
+	// belongs only to the browser and is rejected at the protocol boundary.
+	signedURL := "https://crm.example/sidebar/bind-mobile?entry=wecom"
+	jssdk := httptest.NewRecorder()
+	jssdkRequest := httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url="+url.QueryEscape(signedURL), nil)
+	jssdkRequest.AddCookie(sidebarSession)
+	handler.ServeHTTP(jssdk, jssdkRequest)
+	if jssdk.Code != http.StatusOK || signer.calls != 1 {
+		t.Fatalf("authenticated JSSDK status=%d signer=%d", jssdk.Code, signer.calls)
+	}
+	var config JSSDKConfig
+	if err = json.Unmarshal(jssdk.Body.Bytes(), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.CorpID != "wx-corp" || config.AgentID == "" || config.Config.NonceStr != signedURL || config.AgentConfig.NonceStr != signedURL || config.Config.Signature == "" || config.AgentConfig.Signature == "" {
+		t.Fatalf("JSSDK regular/agent config=%+v", config)
+	}
+
+	contextIssue := httptest.NewRecorder()
+	contextRequest := httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"}`))
+	contextRequest.AddCookie(sidebarSession)
+	handler.ServeHTTP(contextIssue, contextRequest)
+	if contextIssue.Code != http.StatusOK {
+		t.Fatalf("context issue status=%d", contextIssue.Code)
+	}
+	var issued map[string]string
+	if err = json.Unmarshal(contextIssue.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+	if _, customerID, err := contextTokens.Verify(context.Background(), issued["context_token"]); err != nil || customerID != 42 {
+		t.Fatalf("issued context customer=%d err=%v", customerID, err)
 	}
 }
 
