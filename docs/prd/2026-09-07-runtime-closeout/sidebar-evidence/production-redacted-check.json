@@ -1,0 +1,45 @@
+{
+  "checked_at": "2026-09-07T23:29:47.065306+08:00",
+  "basis": "exact external identity from screenshot 9 matched a unique old canonical identity; V3 scoped verified external identity; exact screenshot order queried separately; read-only SQL; no import or update",
+  "order_fingerprint": "de49fd6d4145537549c8fac8d665a86db85299d7739ace1c78961003fd575317",
+  "legacy": {
+    "mobile_present": true,
+    "mobile_verified": true,
+    "identity_status": "active",
+    "order_status": null,
+    "refund_status": null,
+    "amount_minor": null,
+    "refunded_minor": null,
+    "submissions": 8
+  },
+  "v3": {
+    "exact_verified_customer_count": 1,
+    "identity_kinds": [
+      {
+        "kind": "wecom_external_userid",
+        "assurance": "verified",
+        "status": "active"
+      },
+      {
+        "kind": "phone",
+        "assurance": "declared",
+        "status": "active"
+      },
+      {
+        "kind": "unionid",
+        "assurance": "verified",
+        "status": "active"
+      }
+    ],
+    "profile": {
+      "phone_masked_present": true,
+      "phone_assurance": "declared",
+      "source": "wecom_directory_sync"
+    },
+    "customer_submissions": 0,
+    "same_union_on_customer": 1,
+    "exact_order": [],
+    "all_submissions": 1585,
+    "legacy_same_union_rows": 0
+  }
+}
