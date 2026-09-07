@@ -50,6 +50,11 @@ NODE_FILE_RE = re.compile(
 )
 HTML_ASSET_RE = re.compile(r"\b(?:src|href)\s*=\s*(['\"])([^'\"]+)\1", re.IGNORECASE)
 GO_EMBED_RE = re.compile(r"^\s*//go:embed\s+(.+?)\s*$", re.MULTILINE)
+GO_FILE_RE = re.compile(r"\bos\.(?:ReadFile|Open|Stat)\s*\(\s*(['\"])([^'\"\\]*(?:\\.[^'\"\\]*)*)\1")
+GO_PATH_JOIN_RE = re.compile(r"\bfilepath\.Join\s*\(([^\n)]*)\)")
+NODE_PATH_JOIN_RE = re.compile(r"\bpath\.(?:join|resolve)\s*\(([^\n)]*)\)")
+SHELL_REPO_ROOT_RE = re.compile(r"\$(?:REPO_ROOT|ROOT|repo_root)/([A-Za-z0-9_./-]+)")
+QUOTED_SEGMENT_RE = re.compile(r"(['\"])([^'\"\\]*(?:\\.[^'\"\\]*)*)\1")
 
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
@@ -289,6 +294,23 @@ def make_codeblock_candidates(records: list[dict[str, Any]], contents: dict[str,
     }
 
 
+def annotate_known_near_candidates(near: dict[str, Any]) -> None:
+    known_pair = {
+        "2c9ad56268a570e7668db36a86645fedcde47fc7",
+        "4f01e23fb6d3d4461702a115b7aaf320627e2ab2",
+    }
+    for candidate in near["codeblock"]["candidates"]:
+        if {candidate["left_object_id"], candidate["right_object_id"]} == known_pair:
+            candidate["human_decision"] = "retain_separate_test_contexts_not_safe_to_merge"
+            candidate["review_evidence"] = [
+                "web/src/api/admin.test.ts line ~1112 asserts questionnaire external-push metadata/configuration_version are undefined; the frozen GroupOps copy lacks that newer projection contract.",
+                "web/src/api/admin.test.ts line ~1221 tests the versioned /api/admin/hxc-dashboard/summary full projection, while the frozen GroupOps copy retains the narrower /api/admin/hxc-current?limit=100 contract and matching assertions.",
+                "The two copies therefore share lexical blocks but have distinct test intent and endpoint/DTO coverage. Keep both execution contexts; no extraction or overwrite is approved.",
+            ]
+            return
+    raise RuntimeError("Expected admin.test.ts counterexample was not found by the lexical candidate scan.")
+
+
 def candidate_target_paths(duplicates: list[dict[str, Any]], near: dict[str, Any]) -> set[str]:
     paths = {path for group in duplicates for path in group["paths"]}
     for candidate in near["mechanical"]["candidates"]:
@@ -349,6 +371,23 @@ def extract_static_references(path: str, text: str, all_paths: set[str]) -> list
         for raw in match.group(1).split():
             if not raw.startswith("-"):
                 add("go_embed_reference", raw, match.start(), allow_bare_local=True)
+    for match in GO_FILE_RE.finditer(text):
+        add("go_file_reference", match.group(2), match.start(), allow_bare_local=True)
+    for match in GO_PATH_JOIN_RE.finditer(text):
+        quoted = [item[1] for item in QUOTED_SEGMENT_RE.findall(match.group(1))]
+        if quoted:
+            add("go_filepath_join_reference", "/".join(quoted), match.start(), allow_bare_local=True)
+    for match in NODE_PATH_JOIN_RE.finditer(text):
+        quoted = [item[1] for item in QUOTED_SEGMENT_RE.findall(match.group(1))]
+        if quoted:
+            raw = "/".join(quoted)
+            target = raw if raw in all_paths else None
+            if target and target != path:
+                refs.append({"kind": "node_repository_root_path_join", "target": target, "line": text.count("\n", 0, match.start()) + 1, "raw": raw})
+    for match in SHELL_REPO_ROOT_RE.finditer(text):
+        target = match.group(1)
+        if target in all_paths and target != path:
+            refs.append({"kind": "shell_repository_root_path", "target": target, "line": text.count("\n", 0, match.start()) + 1, "raw": "$REPO_ROOT/" + target})
     return refs
 
 
@@ -410,9 +449,10 @@ def make_dependency_map(records: list[dict[str, Any]], contents: dict[str, bytes
         "scope": "Static Git-tree analysis of every readable UTF-8 blob at the target commit; never an assertion that no dynamic consumer exists.",
         "methods": [
             "relative TypeScript/JavaScript module import, require and dynamic-import literals",
-            "literal Node read/copy/glob calls",
+            "literal Node read/copy/glob calls and repository-root path.join/path.resolve segments",
             "literal HTML src/href attributes",
-            "Go //go:embed literals",
+            "Go //go:embed, os.ReadFile/Open/Stat and filepath.Join literals",
+            "shell $REPO_ROOT literals",
             "full-path and basename lexical references across all readable text blobs",
         ],
         "target_path_count": len(targets),
@@ -748,6 +788,7 @@ def main() -> int:
             "The known same-name but different-blob admin.test.ts pair is retained as a review candidate, never treated as an exact duplicate.",
         ],
     }
+    annotate_known_near_candidates(near)
     targets = candidate_target_paths(target["duplicates"], near)
     dependency = make_dependency_map(target_records, contents, targets)
     seed_validation = validate_seed(seed, baseline, target)
