@@ -441,8 +441,12 @@ func (renderer *Renderer) RenderAIAssistant(writer http.ResponseWriter, data Adm
 		return errors.New("AI Assistant shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
-	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded">` + donorTemplate + `</main>`), AIAssistant: true, AIAssistantAssets: assets})
+	// The native cloud-plan fragment begins with filtering controls rather than
+	// its own page title. It therefore uses the one Webshell topbar and the
+	// dynamic content inset; the business toolbar and review actions remain in
+	// the existing fragment below it.
+	data.ShowPageHeader = true
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--dynamic">` + donorTemplate + `</main>`), AIAssistant: true, AIAssistantAssets: assets})
 	if err != nil {
 		return err
 	}

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	hxcdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/domain"
 	hxcstore "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -30,6 +33,7 @@ type adminShellLayoutFixture struct {
 	*productExternalPushChromiumFixture
 	screenshots string
 	radarID     int64
+	aiPlanID    int64
 }
 
 // TestPostgreSQLAdminShellLayoutCompositionPreflight keeps the real release
@@ -53,6 +57,11 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 	radarDetail := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/radar-links/"+strconv.FormatInt(fixture.radarID, 10))
 	if radarList.Code != http.StatusOK || !strings.Contains(radarList.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)) || radarDetail.Code != http.StatusOK || !strings.Contains(radarDetail.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)) {
 		t.Fatalf("admin layout radar read list_status=%d list_seeded=%t detail_status=%d detail_seeded=%t", radarList.Code, strings.Contains(radarList.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)), radarDetail.Code, strings.Contains(radarDetail.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)))
+	}
+	aiPlan := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/ai-assistant/plans/"+strconv.FormatInt(fixture.aiPlanID, 10))
+	aiRecipients := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/ai-assistant/plans/"+strconv.FormatInt(fixture.aiPlanID, 10)+"/recipients?limit=50")
+	if aiPlan.Code != http.StatusOK || !strings.Contains(aiPlan.Body.String(), `"id":`+strconv.FormatInt(fixture.aiPlanID, 10)) || aiRecipients.Code != http.StatusOK || !strings.Contains(aiRecipients.Body.String(), `"items"`) {
+		t.Fatalf("admin layout native AI read plan_status=%d plan_seeded=%t recipients_status=%d recipients=%t", aiPlan.Code, strings.Contains(aiPlan.Body.String(), `"id":`+strconv.FormatInt(fixture.aiPlanID, 10)), aiRecipients.Code, strings.Contains(aiRecipients.Body.String(), `"items"`))
 	}
 
 	navigation := authenticatedAdminGet(t, fixture.application.handler, session, "/admin/automation-conversion")
@@ -83,7 +92,11 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/automation-conversion/group-ops/ui", canonicalPath: "/admin/groupops.html", canonicalStatus: http.StatusFound, marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/groupops.html", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/channels", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/cloud-orchestrator/plans", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/cloud-orchestrator/plans", marker: `data-cloud-plan-root`, expectTopbar: true},
+		{path: "/admin/cloud-orchestrator/plans/", marker: `data-cloud-plan-root`, expectTopbar: true},
+		{path: "/admin/cloud-orchestrator/plans/" + strconv.FormatInt(fixture.aiPlanID, 10), marker: `data-plan-detail-state`, expectTopbar: true},
+		{path: "/admin/ai.html", canonicalPath: "/admin/cloud-orchestrator/plans", canonicalStatus: http.StatusFound, marker: `data-cloud-plan-root`, expectTopbar: true},
+		{path: "/admin/aiDetail.html?id=" + strconv.FormatInt(fixture.aiPlanID, 10), canonicalPath: "/admin/cloud-orchestrator/plans/" + strconv.FormatInt(fixture.aiPlanID, 10), canonicalStatus: http.StatusFound, marker: `data-plan-detail-state`, expectTopbar: true},
 		{path: "/admin/customers", marker: `class="admin-topbar"`, expectTopbar: true},
 		{path: "/admin/hxc-dashboard", marker: `admin-workspace-stage--dynamic`, expectTopbar: true},
 		{path: "/admin/questionnaires", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
@@ -127,6 +140,23 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		if response.Code != http.StatusOK || !strings.Contains(body, route.marker) || (strings.Count(body, `<header class="admin-topbar">`) == 1) != route.expectTopbar {
 			t.Fatalf("outer admin layout route=%s canonical=%s status=%d marker=%t topbar_count=%d expected_topbar=%t", route.path, route.canonicalPath, response.Code, strings.Contains(body, route.marker), strings.Count(body, `<header class="admin-topbar">`), route.expectTopbar)
 		}
+		if strings.HasPrefix(route.path, "/admin/cloud-orchestrator/plans") || strings.HasPrefix(route.path, "/admin/ai") {
+			if !strings.Contains(body, `admin-workspace-stage--dynamic`) {
+				t.Fatalf("native AI Assistant route=%s must use the standard topbar content inset", route.path)
+			}
+		}
+	}
+	detail := authenticatedAdminGet(t, fixture.application.handler, session, "/admin/cloud-orchestrator/plans/"+strconv.FormatInt(fixture.aiPlanID, 10))
+	for _, marker := range []string{`data-plan-detail-state`, `data-plan-approve`, `data-plan-reject`, `href="/admin/cloud-orchestrator/plans"`} {
+		if !strings.Contains(detail.Body.String(), marker) {
+			t.Fatalf("native AI Assistant detail action marker=%q is absent", marker)
+		}
+	}
+	for _, path := range []string{"/admin/cloud-orchestrator/plans/0", "/admin/cloud-orchestrator/plans/unknown", "/admin/aiDetail.html?id=0"} {
+		response := authenticatedAdminGet(t, fixture.application.handler, session, path)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("native AI Assistant invalid detail route=%s status=%d", path, response.Code)
+		}
 	}
 }
 
@@ -148,6 +178,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		"AICRM_ADMIN_LAYOUT_TEST_SERVICE_PRODUCT_ID="+strconv.FormatInt(fixture.serviceProductID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_ORDER="+fixture.historicalOrderReference,
 		"AICRM_ADMIN_LAYOUT_TEST_RADAR_ID="+strconv.FormatInt(fixture.radarID, 10),
+		"AICRM_ADMIN_LAYOUT_TEST_AI_PLAN_ID="+strconv.FormatInt(fixture.aiPlanID, 10),
 		"AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR="+fixture.screenshots,
 	)
 	output, err := command.CombinedOutput()
@@ -158,7 +189,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		t.Fatalf("admin shell Chromium journey did not report success: %q", output)
 	}
 	for _, name := range []string{
-		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
+		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "oneid.png", "api-docs.png", "order-detail-history.png", "external-effects.png",
 	} {
@@ -192,6 +223,7 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	fixture := &adminShellLayoutFixture{productExternalPushChromiumFixture: newProductExternalPushChromiumFixtureWithTimeout(t, 3*time.Minute), screenshots: screenshots}
 	seedAdminShellLayoutHXC(t, fixture.ctx, fixture.application)
 	fixture.radarID = seedAdminShellLayoutRadar(t, fixture.ctx, fixture.application)
+	fixture.aiPlanID = seedAdminShellLayoutAIAssistantPlan(t, fixture.ctx, fixture.application)
 	return fixture
 }
 
@@ -270,4 +302,74 @@ func seedAdminShellLayoutRadar(t *testing.T, ctx context.Context, application *c
 		t.Fatal(err)
 	}
 	return radarID
+}
+
+// seedAdminShellLayoutAIAssistantPlan uses the composed authenticated admin
+// API to persist a pending-review plan and recipient. The fixture deliberately
+// stops before approval, dispatch, or any Provider invocation; it proves only
+// the native UI's read path against its normal AI Service and Unit of Work.
+func seedAdminShellLayoutAIAssistantPlan(t *testing.T, ctx context.Context, application *composedApplication) int64 {
+	t.Helper()
+	now := time.Date(2026, time.September, 7, 1, 3, 4, 0, time.UTC)
+	var actorID, customerID int64
+	if err := application.pool.Native().QueryRow(ctx, `SELECT id FROM admin_users WHERE username='product-browser-owner'`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,source_version,last_synced_at,updated_at)
+		VALUES($1,'active','AI layout customer','CID-AI-LAYOUT','active','admin-layout-fixture',1,$2,$2)`, customerID, now); err != nil {
+		t.Fatal(err)
+	}
+	input := struct {
+		Name         string            `json:"name"`
+		SourceKind   string            `json:"source_kind"`
+		SourceDigest effectport.Digest `json:"source_digest"`
+		Recipients   []struct {
+			CustomerID int64 `json:"customer_id"`
+			StaffID    int64 `json:"staff_id"`
+			Content    []struct {
+				Kind string `json:"kind"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"recipients"`
+	}{
+		Name: "AI layout detail fixture", SourceKind: "admin_shell_layout.fixture.v1", SourceDigest: effectport.Hash("admin-shell-layout-ai-plan"),
+		Recipients: []struct {
+			CustomerID int64 `json:"customer_id"`
+			StaffID    int64 `json:"staff_id"`
+			Content    []struct {
+				Kind string `json:"kind"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}{{CustomerID: customerID, StaffID: actorID, Content: []struct {
+			Kind string `json:"kind"`
+			Text string `json:"text"`
+		}{{Kind: "text", Text: "AI layout detail fixture"}}}},
+	}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, csrf := adminAccessLogin(t, application.handler, "product-browser-owner", "product-browser-owner-password")
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/ai-assistant/plans", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "admin-shell-layout-ai-plan-0001")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+	response := httptest.NewRecorder()
+	application.handler.ServeHTTP(response, request)
+	var created struct {
+		OK   bool `json:"ok"`
+		Plan struct {
+			ID    int64  `json:"id"`
+			State string `json:"state"`
+		} `json:"plan"`
+	}
+	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &created) != nil || !created.OK || created.Plan.ID < 1 || created.Plan.State != "pending_review" {
+		t.Fatalf("admin layout AI fixture create status=%d response_valid=%t plan_id=%d state=%q", response.Code, json.Unmarshal(response.Body.Bytes(), &created) == nil, created.Plan.ID, created.Plan.State)
+	}
+	return created.Plan.ID
 }

@@ -10,9 +10,10 @@ const productID = process.env.AICRM_ADMIN_LAYOUT_TEST_PRODUCT_ID;
 const serviceProductID = process.env.AICRM_ADMIN_LAYOUT_TEST_SERVICE_PRODUCT_ID;
 const historicalOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_ORDER;
 const radarID = process.env.AICRM_ADMIN_LAYOUT_TEST_RADAR_ID;
+const aiPlanID = process.env.AICRM_ADMIN_LAYOUT_TEST_AI_PLAN_ID;
 const screenshotDirectory = process.env.AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !screenshotDirectory) {
-  throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product ids, and screenshot directory");
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !screenshotDirectory) {
+  throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product ids, native AI plan id, and screenshot directory");
 }
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -397,6 +398,44 @@ try {
       return false;
     }
   };
+  const assertAIAssistantLayout = async (label, detail) => {
+    await assertLayout("standard", label, embeddedTitle);
+    const layout = await evaluate(cdp, `(() => {
+      const box = node => { if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop}; };
+      const visible = node => { if (!node) return false; const rect=node.getBoundingClientRect(), style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
+      const stage=document.querySelector('#stage.admin-workspace-stage--dynamic');
+      const topbar=document.querySelector('.admin-topbar');
+      const title=topbar?.querySelector('.admin-page-title');
+      const root=document.querySelector('[data-cloud-plan-root]');
+      const toolbar=root?.querySelector('.cloud-plan-toolbar');
+      const refresh=toolbar?.querySelector('[data-plan-refresh]');
+      const detailHead=root?.querySelector('.cloud-plan-detail-head');
+      const detailState=root?.querySelector('[data-plan-detail-state]');
+      const approve=root?.querySelector('[data-plan-approve]');
+      const reject=root?.querySelector('[data-plan-reject]');
+      const back=root?.querySelector('a[href="/admin/cloud-orchestrator/plans"]');
+      return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),refreshVisible:visible(refresh),detailHead:box(detailHead),detailStateVisible:visible(detailState),approveVisible:visible(approve),rejectVisible:visible(reject),backVisible:visible(back),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+    })()`);
+    const commonInvalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "AI 助手" || !layout.root || layout.overflow || layout.stage.paddingLeft !== "20px" || layout.stage.paddingTop !== "16px" || layout.root.top + 1 < layout.topbar.bottom;
+    if (commonInvalid) throw new Error(label + " native cloud-plan topbar/content geometry invalid");
+    if (!detail && (!layout.toolbar || !layout.refreshVisible || Math.abs(layout.toolbar.left-layout.root.left) > 1 || Math.abs(layout.toolbar.top-layout.root.top) > 1)) throw new Error(label + " native cloud-plan toolbar is absent or misaligned");
+    if (detail && (!layout.detailHead || !layout.detailStateVisible || !layout.approveVisible || !layout.rejectVisible || !layout.backVisible || Math.abs(layout.detailHead.left-layout.root.left) > 1 || Math.abs(layout.detailHead.top-layout.root.top) > 1)) throw new Error(label + " native cloud-plan detail actions/status are absent or misaligned");
+  };
+  const navigateAIAssistant = async (pathname, label, ready, detail, fromMenu = false) => {
+    currentStep = label;
+    try {
+      if (fromMenu) await clickNavigation(pathname, label);
+      else await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === ${JSON.stringify(pathname)} && document.readyState !== 'loading'`, label + " did not navigate");
+      await waitFor(cdp, ready, label + " native cloud-plan Host did not become ready");
+      await waitForFonts(label);
+      await recordGeometry(label, () => assertAIAssistantLayout(label, detail), true);
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
+  };
   const assertStaticOpenLayout = async label => {
     const layout = await evaluate(cdp, `(() => {
       const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop}; };
@@ -462,7 +501,8 @@ try {
   await recordGeometry("cycles-padding-regression-control", () => assertInsetRegressionRejected("cycles", embeddedTitle), false);
   await navigate("/admin/automation-conversion/group-ops/ui", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "groupops", "embedded", embeddedTitle, true, true, "/admin/groupops.html");
   await navigate("/admin/channels", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "channels", "embedded", embeddedTitle, true, true);
-  await navigate("/admin/cloud-orchestrator/plans", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "ai", "embedded", embeddedTitle, true, true);
+  await navigateAIAssistant("/admin/cloud-orchestrator/plans", "ai", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] .cloud-plan-toolbar [data-plan-refresh]')) && document.querySelector('[data-plan-list]')?.textContent?.includes('AI layout detail fixture')", false, true);
+  await navigateAIAssistant("/admin/cloud-orchestrator/plans/" + aiPlanID, "ai-detail", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] [data-plan-approve]')) && Boolean(document.querySelector('[data-plan-reject]')) && Boolean(document.querySelector('a[href=\"/admin/cloud-orchestrator/plans\"]')) && document.querySelector('[data-plan-detail-state]')?.textContent?.trim().length > 0 && document.querySelector('[data-plan-name]')?.textContent?.includes('AI layout detail fixture')", true);
   await navigateStandard("/admin/customers", "Boolean(document.querySelector('[data-customer-directory-root]'))", "customers", true, true);
   const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel'))", "hxc", "standard", ".sec-funnel .page-head", false, true);
   if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
