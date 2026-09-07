@@ -139,6 +139,9 @@ function validateIndex(index) {
   const libraryByID = new Map();
   for (const library of libraries) {
     if (!isPlainObject(library) || library.immutable !== true) fail('INVALID_INDEX', 'every source library must be an immutable object');
+    if (!['frozen_donor', 'active_v3_contract'].includes(library.authority_kind)) {
+      fail('INVALID_INDEX', 'library authority_kind must be frozen_donor or active_v3_contract');
+    }
     requireString(library.source_repository, 'library.source_repository');
     if (!isHex(library.source_commit, 40)) fail('INVALID_INDEX', 'library.source_commit must be a 40-hex commit');
     library.root = normalizeLogicalPath(library.root, 'library.root');
@@ -177,7 +180,9 @@ function validateIndex(index) {
     requireString(binding.freeze_gate, 'binding.freeze_gate');
     requireString(binding.freeze_ledger, 'binding.freeze_ledger');
     if (binding.observed_source !== undefined) requireObservedSource(binding.observed_source, 'binding.observed_source');
-    if (binding.current_path_state !== 'tracked_pre_p2') fail('INVALID_INDEX', 'PR-2 pilot bindings must remain tracked_pre_p2');
+    if (!['tracked_pre_p4_removal', 'untracked_post_p4'].includes(binding.current_path_state)) {
+      fail('INVALID_INDEX', 'binding current_path_state must describe the PR-3/P4 transition');
+    }
     const content = contentByID.get(binding.content_id);
     const library = libraryByID.get(content.library_id);
     if (
@@ -317,15 +322,56 @@ function writeAtomically(root, absolute, bytes, mode, { replaceOwnedFile = false
   }
 }
 
-function isTracked(root, logicalPath) {
-  if (!fs.existsSync(path.join(root, '.git'))) return false;
-  const result = spawnSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', logicalPath], { encoding: 'utf8' });
-  if (result.error || result.status === null) {
-    fail('GIT_INDEX_UNAVAILABLE', `unable to inspect Git index for ${logicalPath}`);
+const trackedIndexCache = new Map();
+
+function gitDirectory(root) {
+  const dotGit = path.join(root, '.git');
+  if (!fs.existsSync(dotGit)) fail('GIT_INDEX_UNAVAILABLE', 'source-view preparation requires a Git worktree');
+  const stat = fs.lstatSync(dotGit);
+  if (stat.isDirectory()) return dotGit;
+  if (!stat.isFile()) fail('GIT_INDEX_UNAVAILABLE', 'Git metadata is neither a directory nor a gitdir file');
+  const declaration = fs.readFileSync(dotGit, 'utf8').trim();
+  const match = /^gitdir:[ \t]*(.+)$/.exec(declaration);
+  if (!match) fail('GIT_INDEX_UNAVAILABLE', 'Git worktree metadata does not name its gitdir');
+  const gitDirectoryPath = path.resolve(path.dirname(dotGit), match[1]);
+  if (!fs.existsSync(gitDirectoryPath) || !fs.lstatSync(gitDirectoryPath).isDirectory()) {
+    fail('GIT_INDEX_UNAVAILABLE', 'Git worktree gitdir is unavailable');
   }
-  if (result.status === 0) return true;
-  if (result.status === 1) return false;
-  fail('GIT_INDEX_UNAVAILABLE', `Git index inspection failed for ${logicalPath}`);
+  return gitDirectoryPath;
+}
+
+function gitIndexStamp(root) {
+  const gitDirectoryPath = gitDirectory(root);
+  const index = path.join(gitDirectoryPath, 'index');
+  try {
+    const stat = fs.statSync(index);
+    if (!stat.isFile()) fail('GIT_INDEX_UNAVAILABLE', 'Git index is not a regular file');
+    return `${index}\0${stat.dev}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}`;
+  } catch (error) {
+    if (error instanceof DonorViewError) throw error;
+    fail('GIT_INDEX_UNAVAILABLE', 'Git index is unavailable');
+  }
+}
+
+function trackedPaths(root) {
+  const stamp = gitIndexStamp(root);
+  const cached = trackedIndexCache.get(root);
+  if (cached?.stamp === stamp) return cached.paths;
+  const result = spawnSync('git', ['-C', root, 'ls-files', '-z'], { encoding: 'buffer' });
+  if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stdout)) {
+    fail('GIT_INDEX_UNAVAILABLE', 'unable to inspect Git index');
+  }
+  const paths = new Set(result.stdout.toString('utf8').split('\0').filter(Boolean));
+  trackedIndexCache.set(root, { stamp, paths });
+  return paths;
+}
+
+function invalidateTrackedPaths(root) {
+  trackedIndexCache.delete(root);
+}
+
+function isTracked(root, logicalPath) {
+  return trackedPaths(root).has(logicalPath);
 }
 
 function indexDigest(loaded) {
@@ -520,7 +566,17 @@ function checkedContents(loaded, { allowMissingEnabledViewBindings = false } = {
     try {
       checkBinding(loaded.root, binding, byID.get(binding.content_id));
     } catch (error) {
-      if (allowMissingEnabledViewBindings && error instanceof DonorViewError && error.code === 'MISSING_FILE' && enabledTargets.has(binding.logical_path)) {
+      // A missing source-view binding is permissible only after it has left
+      // Git's index (the disposable proof or a reviewed P4 removal). A
+      // tracked-but-missing working-tree file is a developer/worktree error,
+      // not a signal to silently materialize a replacement.
+      if (
+        allowMissingEnabledViewBindings
+        && error instanceof DonorViewError
+        && error.code === 'MISSING_FILE'
+        && enabledTargets.has(binding.logical_path)
+        && !isTracked(loaded.root, binding.logical_path)
+      ) {
         continue;
       }
       throw error;
@@ -557,6 +613,7 @@ function runGit(root, args, label) {
   if (result.error || result.status !== 0) {
     fail('GIT_COMMAND_FAILED', `${label} failed`);
   }
+  if (['rm', 'restore', 'add', 'reset', 'read-tree', 'update-index'].includes(args[0])) invalidateTrackedPaths(root);
   return result.stdout;
 }
 
@@ -648,6 +705,24 @@ export function restoreDisposableMaterialization(root, indexPath, { environment 
     const cleaned = cleanLoadedMaterialization(loaded, checked, byID);
     restoreTrackedTargets(loaded.root, targets);
     return { ...cleaned, action: 'restore-disposable', restored_view_targets: targets };
+  } finally {
+    release();
+  }
+}
+
+// The disposable proof is allowed to have exactly the selected source views
+// staged as deletions. This verifier is intentionally separate from normal
+// prepare: freeze gates can call it to prove that those are the only index
+// changes and that every replacement is receipted and byte-identical.
+export function verifyDisposableMaterialization(root, indexPath, { environment = process.env } = {}) {
+  const { loaded } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
+  assertDisposableWorktree(loaded.root, environment, { requireClean: false });
+  const release = acquireLock(loaded.root);
+  try {
+    const targets = enabledViewTargets(loaded);
+    assertExactStagedRemovals(loaded.root, targets);
+    const verified = verifyMaterialization(loaded.root, indexPath);
+    return { ...verified, action: 'verify-disposable', materialized_view_targets: targets };
   } finally {
     release();
   }
@@ -787,6 +862,53 @@ export function cleanMaterialization(root, indexPath) {
   const release = acquireLock(loaded.root);
   try {
     return cleanLoadedMaterialization(loaded, checked, byID);
+  } finally {
+    release();
+  }
+}
+
+// If a process dies after clean removed some views but before it removes the
+// receipt, this explicit repair recreates only receipt-listed files that are
+// absent. It never overwrites a present file: every present target must still
+// match the receipt exactly before any missing target is restored.
+export function recoverPartialMaterialization(root, indexPath) {
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
+  const release = acquireLock(loaded.root);
+  try {
+    const receiptState = loadReceipt(loaded.root);
+    validateReceipt(loaded, receiptState.receipt);
+    assertReceiptCoversMaterializedViews(loaded, receiptState.receipt);
+    const missing = [];
+    for (const record of receiptState.receipt.targets) {
+      if (isTracked(loaded.root, record.target_path)) {
+        fail('TRACKED_TARGET', `refusing to recover a materialized view that became tracked: ${record.target_path}`);
+      }
+      const content = byID.get(record.content_id);
+      const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
+      if (!fs.existsSync(absolute)) {
+        missing.push({ record, content, absolute });
+        continue;
+      }
+      const actual = readRegularFile(absolute, `receipt:${record.target_path}`);
+      if (actual.bytes.byteLength !== content.bytes || sha256(actual.bytes) !== content.content_sha256 || actual.mode !== content.mode) {
+        fail('DIRTY_TARGET', `refusing to recover over a modified generated view: ${record.target_path}`);
+      }
+    }
+    const restored = [];
+    try {
+      for (const item of missing) {
+        writeAtomically(loaded.root, item.absolute, item.content.file_bytes, item.content.mode);
+        restored.push({ view: { target_path: item.record.target_path }, content: item.content, absolute: item.absolute });
+      }
+    } catch (error) {
+      rollbackCreatedViews(restored);
+      throw error;
+    }
+    return {
+      ...sourceSummary(loaded, checked),
+      action: 'recover-partial',
+      restored: restored.map((item) => item.view.target_path).sort(),
+    };
   } finally {
     release();
   }

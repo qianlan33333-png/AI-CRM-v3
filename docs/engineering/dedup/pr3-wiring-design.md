@@ -1,19 +1,23 @@
 # PR-3 build-time source-view wiring design
 
-Status: PR-3 implementation contract. It activates only disposable transition
-proofs: every derived path remains tracked until PR-4 approves exact removal.
-The index declares 229 derived paths from 74 canonical contents; it does not
-alter installer inputs or create a normal-checkout fallback.
+Status: PR-3 implementation contract. Every derived path remains tracked until
+PR-4 approves exact removal. PR-3 has two deliberately different modes: normal
+safe preparation verifies the tracked bytes without modifying Git, while a
+separate disposable transition proof stages exactly the declared deletions and
+materializes them. The index declares 229 derived paths from 74 canonical
+contents; it does not alter installer inputs.
 
 ## Scope and invariant
 
-Every preparation command will first run the PR-2 index/lock/canonical-byte
-verification, then materialize only the declared untracked targets, and then
-verify the receipt. A build must fail if a selected target is still tracked,
-missing, dirty, stale, outside its whitelist, or has a different source
-identity. The derived files are build inputs only: they do not become a second
-source of authority and are removed by the exact receipt after the disposable
-proof run.
+Every preparation command first runs the PR-2 index/lock/canonical-byte
+verification. Normal preparation verifies a derived target while it remains
+tracked in PR-3, and after an approved PR-4 removal materializes only the
+corresponding declared untracked target before verifying its receipt. It never
+removes or restores a tracked path. A build fails for a missing index-tracked
+target, dirty generated target, stale receipt, path outside the whitelist, or
+different source identity. The dedicated disposable proof alone stages exactly
+the declared targets as deletions, materializes their receipts, and proves no
+consumer can fall back to a tracked copy.
 
 The three P0 consumer closures are separate because their language and source
 contracts differ.
@@ -55,7 +59,7 @@ change a frozen file's bytes.
 The PR-3 implementation will add one explicit preparation command before each
 actual consumer family, not only `npm run build`:
 
-- Module freeze gates and frontend/Host builds prepare the V2 closure first.
+- Module freeze gates and frontend/Host builds first run normal safe preparation for the V2 closure. The early CI proof additionally runs those same gates after exact disposable removal.
 - `make vet`, `make test`, `make build`, `make run`, and `make radar-check`,
   direct CI Go commands, and the release binary build prepare the OpenAPI and
   AI webshell closures before any `go` invocation. A bare `go test` or

@@ -135,7 +135,7 @@ done
 grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/wecom-archive-sdk-runner"' "$installer" || { echo "release must include the WeCom archive SDK runner" >&2; exit 1; }
 grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' "$release_builder" || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
-grep -qF 'bash scripts/run-donor-view-consumers.sh release' "$ci_workflow" || { echo "CI must invoke the reviewed release builder through disposable donor views" >&2; exit 1; }
+grep -qF 'bash scripts/run-donor-view-consumers.sh release' "$ci_workflow" || { echo "CI must invoke the reviewed release builder through safe donor-view preparation" >&2; exit 1; }
 grep -qF 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOWORK=off' scripts/build-wecom-archive-sdk-runner-linux.sh || { echo "archive release runner must be a Linux amd64 cgo build" >&2; exit 1; }
 grep -qF 'scripts/run-go-with-donor-views.sh scripts/build-wecom-archive-sdk-runner-linux.sh "$work/runner"' scripts/check-wecom-message-archive-sdk.sh || { echo "official SDK ABI check must exercise the release runner builder" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-commerce-history"' "$installer" || { echo "release must reject a missing commerce history migration tool" >&2; exit 1; }
