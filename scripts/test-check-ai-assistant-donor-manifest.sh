@@ -32,6 +32,8 @@ if "$checker" >/dev/null 2>&1; then
   echo "AI Assistant donor checker accepted an ordinary script reference" >&2
   exit 1
 fi
+rm -f "$script_fixture"
+"$checker"
 
 printf 'const frozenDonor = "%s/%s"\n' "$donor_prefix" "$donor_name" > "$runtime_fixture/runtime_reference.go"
 git -C "$repo_root" check-ignore -q "$runtime_fixture/runtime_reference.go" && {
