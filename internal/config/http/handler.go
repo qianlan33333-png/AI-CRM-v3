@@ -19,6 +19,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	configcatalog "github.com/qianlan33333-png/AI-CRM-v3/internal/config"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
 	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 )
@@ -90,6 +91,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.releases(w, r)
 	case "runtime-releases":
 		h.runtimeReleases(w, r)
+	case "runtime-catalog":
+		h.runtimeCatalog(w, r)
 	case "diagnostics":
 		h.diagnostics(w, r)
 	case "openapi.yaml":
@@ -450,6 +453,50 @@ func (h *Handler) pushCapabilities(w http.ResponseWriter, r *http.Request) {
 		"real_external_call_executed": false,
 	})
 }
+func referencePresence(runtime configport.RuntimeReleaseApplication, ctx context.Context) map[string]bool {
+	presence := map[string]bool{}
+	statuses, err := runtime.ProtectedReferenceStatuses(ctx)
+	if err != nil {
+		return presence
+	}
+	for _, status := range statuses {
+		presence[status.Reference] = status.Configured
+	}
+	return presence
+}
+
+func (h *Handler) runtimeCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if h.runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_release_unavailable")
+		return
+	}
+	if _, ok := h.read(w, r); !ok {
+		return
+	}
+	page, err := h.runtime.ListRuntimeReleases(r.Context(), 50)
+	if err != nil {
+		writeRuntimeReleaseError(w, err)
+		return
+	}
+	applications, err := h.runtime.ListRuntimeApplications(r.Context(), 100)
+	if err != nil {
+		writeRuntimeReleaseError(w, err)
+		return
+	}
+	// Application facts are presented separately from publication. The client
+	// must compare the active revision with each required role; this endpoint
+	// deliberately has no aggregate runtime_applied boolean.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "categories": configcatalog.RuntimeCatalog(referencePresence(h.runtime, r.Context())),
+		"runtime_releases": page, "effective": page.Effective,
+		"applications": applications,
+	})
+}
+
 func (h *Handler) runtimeReleases(w http.ResponseWriter, r *http.Request) {
 	if h.runtime == nil {
 		writeError(w, http.StatusServiceUnavailable, "runtime_release_unavailable")

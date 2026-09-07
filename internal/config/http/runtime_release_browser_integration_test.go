@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
+	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 	configstore "github.com/qianlan33333-png/AI-CRM-v3/internal/config/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -114,7 +116,7 @@ func runtimeReleaseBrowserPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(ctx)
 		t.Fatal("locate runtime release browser migration")
 	}
-	for _, name := range []string{"0013_automation_agents.sql", "0015_config_adminops.sql", "0043_automation_runtime.sql", "0094_runtime_config_releases.sql"} {
+	for _, name := range []string{"0013_automation_agents.sql", "0015_config_adminops.sql", "0043_automation_runtime.sql", "0094_runtime_config_releases.sql", "0102_config_center_runtime_application.sql"} {
 		payload, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			pool.Close()
@@ -133,5 +135,92 @@ func runtimeReleaseBrowserPool(t *testing.T) (*pgxpool.Pool, func()) {
 		defer cleanupCancel()
 		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
 		admin.Close(cleanupCtx)
+	}
+}
+
+// OneID decision: CorpID and Open Platform scope are identity boundaries, so
+// this PostgreSQL regression proves that Config may retain an existing value
+// but cannot publish an ordinary scope switch. No Provider is constructed.
+func TestRuntimeReleaseRejectsBoundIdentityScopeChangePostgreSQL(t *testing.T) {
+	pool, cleanup := runtimeReleaseBrowserPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := configstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setting := func(key configport.RuntimeSettingKey, value any) configport.RuntimeSetting {
+		raw, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		return configport.RuntimeSetting{Key: key, Value: raw}
+	}
+	service, err := configapp.NewRuntimeReleaseService(uow, repository, repository, 1, configapp.WithRuntimeDefaults([]configport.RuntimeSetting{
+		setting(configport.AutomationOperationsMaxRecipientsPerRun, 1),
+		setting(configport.RuntimeWeComCorpID, "wx-bound-corp"),
+		setting(configport.WeChatPayAppScope, "wechat-app:bound"),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []configport.RuntimeSetting{
+		setting(configport.RuntimeWeComCorpID, "wx-other-corp"),
+		setting(configport.WeChatPayAppScope, "wechat-app:other"),
+	} {
+		draft, createErr := service.CreateRuntimeReleaseDraft(ctx, configport.RuntimeReleaseDraftCommand{ExpectedBaseRevision: 0, Settings: []configport.RuntimeSetting{candidate}, Actor: "admin:7", IdempotencyKey: "scope-bound-create-" + string(candidate.Key)})
+		if createErr != nil {
+			t.Fatalf("create %s: %v", candidate.Key, createErr)
+		}
+		validated, validateErr := service.ValidateRuntimeRelease(ctx, configport.RuntimeReleaseMutationCommand{ReleaseID: draft.ID, Actor: "admin:7", IdempotencyKey: "scope-bound-validate-" + string(candidate.Key)})
+		if validateErr != nil || validated.State != configport.RuntimeReleaseValidationFailed || len(validated.ValidationErrors) == 0 {
+			t.Fatalf("scope %s validation=%#v err=%v", candidate.Key, validated, validateErr)
+		}
+	}
+}
+
+func TestRuntimeApplicationFactRequiresExactSnapshotChecksumPostgreSQL(t *testing.T) {
+	pool, cleanup := runtimeReleaseBrowserPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := configstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := configapp.NewRuntimeReleaseService(uow, repository, repository, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.EffectiveSnapshot(ctx)
+	if err != nil || len(snapshot.Checksum) != 64 {
+		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
+	}
+	if err = service.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: snapshot.Revision, Source: snapshot.Source, Role: "api", ReleaseSHA: "config-test", SnapshotChecksum: snapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	applications, err := service.ListRuntimeApplications(ctx, 10)
+	if err != nil || len(applications) != 1 || applications[0].SnapshotChecksum != snapshot.Checksum {
+		t.Fatalf("applications=%#v err=%v", applications, err)
+	}
+	if err = service.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: snapshot.Revision, Source: snapshot.Source, Role: "api", ReleaseSHA: "config-test", SnapshotChecksum: "bad", AppliedAt: time.Now().UTC()}); err == nil {
+		t.Fatal("expected invalid checksum rejection")
 	}
 }

@@ -421,13 +421,15 @@ func (failingProjections) ListDiagnosticSnapshots(context.Context) ([]configport
 }
 
 type testRuntimeReleases struct {
-	page      configport.RuntimeReleasePage
-	releases  map[int64]configport.RuntimeRelease
-	usage     []configport.RuntimeUsage
-	created   []configport.RuntimeReleaseDraftCommand
-	validated []configport.RuntimeReleaseMutationCommand
-	published []configport.RuntimeReleasePublishCommand
-	rolled    []configport.RuntimeReleaseRollbackCommand
+	page         configport.RuntimeReleasePage
+	releases     map[int64]configport.RuntimeRelease
+	usage        []configport.RuntimeUsage
+	applications []configport.RuntimeApplication
+	protected    []configport.ProtectedReferenceStatus
+	created      []configport.RuntimeReleaseDraftCommand
+	validated    []configport.RuntimeReleaseMutationCommand
+	published    []configport.RuntimeReleasePublishCommand
+	rolled       []configport.RuntimeReleaseRollbackCommand
 }
 
 func (s *testRuntimeReleases) ListRuntimeReleases(context.Context, int) (configport.RuntimeReleasePage, error) {
@@ -480,6 +482,15 @@ func (s *testRuntimeReleases) RollbackRuntimeRelease(_ context.Context, command 
 }
 func (s *testRuntimeReleases) ListRuntimeUsage(context.Context, int64, int) ([]configport.RuntimeUsage, error) {
 	return s.usage, nil
+}
+func (s *testRuntimeReleases) RecordRuntimeApplication(context.Context, configport.RuntimeApplication) error {
+	return nil
+}
+func (s *testRuntimeReleases) ListRuntimeApplications(context.Context, int) ([]configport.RuntimeApplication, error) {
+	return s.applications, nil
+}
+func (s *testRuntimeReleases) ProtectedReferenceStatuses(context.Context) ([]configport.ProtectedReferenceStatus, error) {
+	return s.protected, nil
 }
 
 func TestRuntimeReleaseHTTPJourneyKeepsDraftPublishAndUsageSeparate(t *testing.T) {
@@ -561,5 +572,23 @@ func TestRuntimeReleaseMutationRequiresAdminAndNeverElevatesViewer(t *testing.T)
 	h.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden || len(runtime.created) != 0 {
 		t.Fatalf("viewer mutation=%d created=%#v", response.Code, runtime.created)
+	}
+}
+
+func TestRuntimeCatalogHTTPReturnsTwelveCategoriesAndApplicationFactsSeparately(t *testing.T) {
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	runtime := &testRuntimeReleases{
+		page:         configport.RuntimeReleasePage{ActiveRevision: 9, Effective: configport.EffectiveSnapshot{Revision: 9, Source: configport.RuntimeSourcePublished, AutomationMaxRecipients: 1, Checksum: strings.Repeat("a", 64)}},
+		applications: []configport.RuntimeApplication{{Revision: 9, Source: configport.RuntimeSourcePublished, Role: "api", ReleaseSHA: "test", SnapshotChecksum: strings.Repeat("a", 64), AppliedAt: time.Now().UTC()}},
+		protected:    []configport.ProtectedReferenceStatus{{Reference: "environment://AICRM_WECOM_SECRET", Configured: true}},
+	}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: principal}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, adminSessionRequest(http.MethodGet, "/api/admin/config/runtime-catalog", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"categories"`) || !strings.Contains(response.Body.String(), "企业微信基础") || !strings.Contains(response.Body.String(), `"configured":true`) || strings.Contains(response.Body.String(), "runtime_applied") {
+		t.Fatalf("catalog status=%d body=%s", response.Code, response.Body.String())
 	}
 }

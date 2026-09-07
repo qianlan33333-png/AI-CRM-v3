@@ -181,6 +181,7 @@
     } catch (error) { status(error instanceof Error ? error.message : "配置发布不可用", "error"); }
   };
 
+  if (page === "runtimeConfigCenter" || page === "runtimeConfigCategory") return;
   if (page === "runtimeReleaseNew") void showNew();
   else if (page === "runtimeReleaseDetail") {
     const id = Number(new URL(location.href).pathname.split("/").filter(Boolean).at(-1));

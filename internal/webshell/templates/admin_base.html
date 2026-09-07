@@ -116,7 +116,8 @@
   <script type="module" src="{{.ConfigAssets.AdminJS}}"></script>
   {{end}}
   {{if .RuntimeConfig}}
-  <script defer src="/static/admin_console/runtime_config_releases_host.js?v=runtime-config-releases-v1"></script>
+  <script defer src="/static/admin_console/runtime_config_releases_host.js?v=runtime-config-releases-v2"></script>
+  <script defer src="/static/admin_console/config_center_host.js?v=config-center-v1"></script>
   {{end}}
   {{if .Channel}}
   <link rel="stylesheet" href="{{.ChannelAssets.TokensCSS}}">

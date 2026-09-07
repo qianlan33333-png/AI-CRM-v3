@@ -67,6 +67,7 @@ type WeCom struct {
 	CallbackAESKey                  string
 	ContextSigningKey               string
 	ChannelStateHMACKey             string
+	ContextTokenTTL                 time.Duration
 	ChannelProviderReadEnabled      bool
 	ChannelQRProviderEnabled        bool
 	ChannelMediaPrepProviderEnabled bool
@@ -92,8 +93,9 @@ type WeCom struct {
 // webhook. It is independent from WeCom/customer credentials and is never
 // exposed through a descriptor or structured log.
 type GroupOps struct {
-	WebhookSecret   string
-	ProviderEnabled bool
+	WebhookSecret       string
+	ProviderReadEnabled bool
+	ProviderEnabled     bool
 }
 
 type AutomationProviderMode string
@@ -280,6 +282,7 @@ func Load() (Runtime, error) {
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
 			ChannelStateHMACKey:           os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 			StaffDirectoryRefreshInterval: 15 * time.Minute,
+			ContextTokenTTL:               5 * time.Minute,
 		},
 		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
 		AutomationOperations: AutomationOperations{
@@ -422,6 +425,16 @@ func Load() (Runtime, error) {
 	}
 	if cfg.GroupOps.ProviderEnabled, err = strictBool("AICRM_GROUP_OPS_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
+	}
+	if cfg.GroupOps.ProviderReadEnabled, err = strictBool("AICRM_GROUP_OPS_PROVIDER_READ_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if raw := os.Getenv("AICRM_SIDEBAR_CONTEXT_TOKEN_TTL_SECONDS"); raw != "" {
+		seconds, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || seconds < 60 || seconds > 86400 {
+			return Runtime{}, errors.New("invalid AICRM_SIDEBAR_CONTEXT_TOKEN_TTL_SECONDS")
+		}
+		cfg.WeCom.ContextTokenTTL = time.Duration(seconds) * time.Second
 	}
 	if raw := os.Getenv("AICRM_WORKER_LIMIT"); raw != "" {
 		cfg.WorkerLimit, err = strconv.Atoi(raw)

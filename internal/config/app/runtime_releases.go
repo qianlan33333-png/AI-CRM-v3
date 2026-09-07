@@ -37,6 +37,8 @@ type runtimeReleaseRepository interface {
 	CompleteRuntimeReleaseCommand(context.Context, int64, int64, time.Time) error
 	InsertRuntimeUsage(context.Context, configport.RuntimeUsage) error
 	ListRuntimeUsage(context.Context, int64, int) ([]configport.RuntimeUsage, error)
+	InsertRuntimeApplication(context.Context, configport.RuntimeApplication) error
+	ListRuntimeApplications(context.Context, int) ([]configport.RuntimeApplication, error)
 }
 
 // RuntimeReleaseService owns Config's draft/validation/publish/rollback state.
@@ -47,14 +49,63 @@ type RuntimeReleaseService struct {
 	repo         runtimeReleaseRepository
 	events       configport.EventAppender
 	defaultLimit int
+	defaults     []configport.RuntimeSetting
+	protected    map[string]bool
+	guards       RuntimeActivationGuards
 	now          func() time.Time
 }
 
-func NewRuntimeReleaseService(uow platformport.UnitOfWork, repo runtimeReleaseRepository, events configport.EventAppender, defaultLimit int) (*RuntimeReleaseService, error) {
+type RuntimeActivationGuards struct {
+	WeComEnabled, MessageArchiveEnabled, AutomationProviderEnabled, AIDispatchEnabled bool
+	AIAssistantIntakeEnabled, WeChatPayEnabled, WeChatPayH5OAuthEnabled               bool
+	WeChatShopEnabled, SurveyOAuthEnabled                                             bool
+}
+
+type RuntimeReleaseOption func(*RuntimeReleaseService) error
+
+func WithRuntimeActivationGuards(guards RuntimeActivationGuards) RuntimeReleaseOption {
+	return func(service *RuntimeReleaseService) error { service.guards = guards; return nil }
+}
+
+func WithProtectedReferencePresence(presence map[string]bool) RuntimeReleaseOption {
+	return func(service *RuntimeReleaseService) error {
+		service.protected = make(map[string]bool, len(presence))
+		for reference, configured := range presence {
+			if !strings.HasPrefix(reference, "environment://") {
+				return ErrRuntimeReleaseInvalid
+			}
+			service.protected[reference] = configured
+		}
+		return nil
+	}
+}
+
+// WithRuntimeDefaults supplies the closed environment snapshot used until a
+// version overrides a key. It is intentionally values-only: secrets never
+// enter Config's release tables or its public Port.
+func WithRuntimeDefaults(settings []configport.RuntimeSetting) RuntimeReleaseOption {
+	return func(service *RuntimeReleaseService) error {
+		canonical, issues := config.ValidateRuntimeSettings(settings)
+		if len(issues) != 0 {
+			return ErrRuntimeReleaseInvalid
+		}
+		service.defaults = canonical
+		return nil
+	}
+}
+
+func NewRuntimeReleaseService(uow platformport.UnitOfWork, repo runtimeReleaseRepository, events configport.EventAppender, defaultLimit int, options ...RuntimeReleaseOption) (*RuntimeReleaseService, error) {
 	if uow == nil || repo == nil || events == nil || defaultLimit < 1 || defaultLimit > 5000 {
 		return nil, ErrRuntimeReleaseInvalid
 	}
-	return &RuntimeReleaseService{uow: uow, repo: repo, events: events, defaultLimit: defaultLimit, now: time.Now}, nil
+	value, _ := json.Marshal(defaultLimit)
+	service := &RuntimeReleaseService{uow: uow, repo: repo, events: events, defaultLimit: defaultLimit, defaults: []configport.RuntimeSetting{{Key: configport.AutomationOperationsMaxRecipientsPerRun, Value: value}}, now: time.Now}
+	for _, option := range options {
+		if option == nil || option(service) != nil {
+			return nil, ErrRuntimeReleaseInvalid
+		}
+	}
+	return service, nil
 }
 
 func (s *RuntimeReleaseService) EffectiveSnapshot(ctx context.Context) (out configport.EffectiveSnapshot, err error) {
@@ -81,14 +132,13 @@ func (s *RuntimeReleaseService) effectiveFromActive(ctx context.Context) (config
 		return configport.EffectiveSnapshot{}, err
 	}
 	if !found {
-		return configport.EffectiveSnapshot{Revision: 0, Source: configport.RuntimeSourceEnvironmentDefault, AutomationMaxRecipients: s.defaultLimit}, nil
+		return s.snapshot(0, configport.RuntimeSourceEnvironmentDefault, nil, nil)
 	}
-	limit, err := runtimeLimit(release.Settings)
-	if err != nil || release.State != configport.RuntimeReleasePublished {
+	if release.State != configport.RuntimeReleasePublished {
 		return configport.EffectiveSnapshot{}, ErrRuntimeReleaseConflict
 	}
 	at := release.PublishedAt.UTC()
-	return configport.EffectiveSnapshot{Revision: release.ID, Source: configport.RuntimeSourcePublished, AutomationMaxRecipients: limit, PublishedAt: &at}, nil
+	return s.snapshot(release.ID, configport.RuntimeSourcePublished, release.Settings, &at)
 }
 
 // EffectiveSnapshotWithin reads through the caller's existing UoW. This keeps
@@ -215,6 +265,12 @@ func (s *RuntimeReleaseService) ValidateRuntimeRelease(ctx context.Context, comm
 			return ErrRuntimeReleaseConflict
 		}
 		_, issues := config.ValidateRuntimeSettings(current.Settings)
+		if len(issues) == 0 {
+			issues, e = runtimeReleaseValidationIssues(s.defaults, s.guards, current.Settings)
+			if e != nil {
+				return e
+			}
+		}
 		state, action := configport.RuntimeReleaseValidated, "validated"
 		if len(issues) != 0 {
 			state, action = configport.RuntimeReleaseValidationFailed, "validation_failed"
@@ -259,6 +315,10 @@ func (s *RuntimeReleaseService) PublishRuntimeRelease(ctx context.Context, comma
 			return ErrRuntimeReleaseConflict
 		}
 		if _, issues := config.ValidateRuntimeSettings(current.Settings); len(issues) != 0 {
+			return ErrRuntimeReleaseConflict
+		}
+		issues, validationErr := runtimeReleaseValidationIssues(s.defaults, s.guards, current.Settings)
+		if validationErr != nil || len(issues) != 0 {
 			return ErrRuntimeReleaseConflict
 		}
 		out, e = s.repo.PublishRuntimeRelease(tx, current.ID, active, command.Actor, now)
@@ -320,6 +380,14 @@ func (s *RuntimeReleaseService) RollbackRuntimeRelease(ctx context.Context, comm
 		if len(issues) != 0 {
 			return ErrRuntimeReleaseConflict
 		}
+		issues, validationErr := runtimeReleaseValidationIssues(s.defaults, s.guards, settings)
+		if validationErr != nil || len(issues) != 0 {
+			return ErrRuntimeReleaseConflict
+		}
+		settings, e = mergeRuntimeSettings(s.defaults, settings)
+		if e != nil {
+			return e
+		}
 		rollbackOf := target.ID
 		candidate := configport.RuntimeRelease{State: configport.RuntimeReleaseValidated, BaseRevision: active, RollbackOfReleaseID: &rollbackOf, Settings: settings, Checksum: releaseChecksum(settings), CreatedBy: command.Actor, CreatedAt: now, ValidatedAt: &now}
 		candidate, e = s.repo.InsertRuntimeRelease(tx, candidate)
@@ -364,20 +432,65 @@ func (s *RuntimeReleaseService) ListRuntimeUsage(ctx context.Context, revision i
 	return out, classifyRuntimeRelease(err)
 }
 
+func (s *RuntimeReleaseService) RecordRuntimeApplication(ctx context.Context, application configport.RuntimeApplication) error {
+	if !s.ready() || !validApplication(application) {
+		return ErrRuntimeReleaseInvalid
+	}
+	return classifyRuntimeRelease(s.uow.Within(ctx, func(tx context.Context) error {
+		return s.repo.InsertRuntimeApplication(tx, application)
+	}))
+}
+
+func (s *RuntimeReleaseService) ListRuntimeApplications(ctx context.Context, limit int) (out []configport.RuntimeApplication, err error) {
+	if !s.ready() || limit < 1 || limit > 100 {
+		return nil, ErrRuntimeReleaseInvalid
+	}
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		out, e = s.repo.ListRuntimeApplications(tx, limit)
+		return e
+	})
+	return out, classifyRuntimeRelease(err)
+}
+
+func (s *RuntimeReleaseService) ProtectedReferenceStatuses(_ context.Context) ([]configport.ProtectedReferenceStatus, error) {
+	if !s.ready() {
+		return nil, ErrRuntimeReleaseInvalid
+	}
+	keys := make([]string, 0, len(s.protected))
+	for reference := range s.protected {
+		keys = append(keys, reference)
+	}
+	sort.Strings(keys)
+	out := make([]configport.ProtectedReferenceStatus, 0, len(keys))
+	for _, reference := range keys {
+		out = append(out, configport.ProtectedReferenceStatus{Reference: reference, Configured: s.protected[reference]})
+	}
+	return out, nil
+}
+
 func (s *RuntimeReleaseService) effectiveWithin(ctx context.Context, revision int64) (configport.EffectiveSnapshot, error) {
 	if revision == 0 {
-		return configport.EffectiveSnapshot{Revision: 0, Source: configport.RuntimeSourceEnvironmentDefault, AutomationMaxRecipients: s.defaultLimit}, nil
+		return s.snapshot(0, configport.RuntimeSourceEnvironmentDefault, nil, nil)
 	}
 	release, err := s.repo.GetRuntimeRelease(ctx, revision, false)
 	if err != nil || release.State != configport.RuntimeReleasePublished {
 		return configport.EffectiveSnapshot{}, ErrRuntimeReleaseConflict
 	}
-	limit, err := runtimeLimit(release.Settings)
-	if err != nil {
-		return configport.EffectiveSnapshot{}, ErrRuntimeReleaseConflict
-	}
 	at := release.PublishedAt.UTC()
-	return configport.EffectiveSnapshot{Revision: release.ID, Source: configport.RuntimeSourcePublished, AutomationMaxRecipients: limit, PublishedAt: &at}, nil
+	return s.snapshot(release.ID, configport.RuntimeSourcePublished, release.Settings, &at)
+}
+
+func (s *RuntimeReleaseService) snapshot(revision int64, source configport.RuntimeSource, releaseSettings []configport.RuntimeSetting, publishedAt *time.Time) (configport.EffectiveSnapshot, error) {
+	settings, err := mergeRuntimeSettings(s.defaults, releaseSettings)
+	if err != nil {
+		return configport.EffectiveSnapshot{}, err
+	}
+	limit, err := runtimeLimit(settings)
+	if err != nil {
+		return configport.EffectiveSnapshot{}, err
+	}
+	return configport.EffectiveSnapshot{Revision: revision, Source: source, AutomationMaxRecipients: limit, PublishedAt: publishedAt, Settings: settings, Checksum: releaseChecksum(settings)}, nil
 }
 
 func (s *RuntimeReleaseService) replayRuntimeReceipt(ctx context.Context, receipt configport.RuntimeReleaseReceipt, digest []byte, out *configport.RuntimeRelease) error {
@@ -394,14 +507,92 @@ func (s *RuntimeReleaseService) replayRuntimeReceipt(ctx context.Context, receip
 
 func runtimeLimit(settings []configport.RuntimeSetting) (int, error) {
 	canonical, issues := config.ValidateRuntimeSettings(settings)
-	if len(issues) != 0 || len(canonical) != 1 {
+	if len(issues) != 0 {
 		return 0, ErrRuntimeReleaseInvalid
 	}
-	var value int
-	if err := json.Unmarshal(canonical[0].Value, &value); err != nil || value < 1 || value > 5000 {
-		return 0, ErrRuntimeReleaseInvalid
+	for _, setting := range canonical {
+		if setting.Key == configport.AutomationOperationsMaxRecipientsPerRun {
+			var value int
+			if err := json.Unmarshal(setting.Value, &value); err == nil && value >= 1 && value <= 5000 {
+				return value, nil
+			}
+		}
 	}
-	return value, nil
+	return 0, ErrRuntimeReleaseInvalid
+}
+
+func runtimeReleaseValidationIssues(defaults []configport.RuntimeSetting, guards RuntimeActivationGuards, settings []configport.RuntimeSetting) ([]configport.RuntimeValidationIssue, error) {
+	effective, err := mergeRuntimeSettings(defaults, settings)
+	if err != nil {
+		return nil, err
+	}
+	baseline := make(map[configport.RuntimeSettingKey]json.RawMessage, len(defaults))
+	for _, value := range defaults {
+		baseline[value.Key] = value.Value
+	}
+	issues := config.ValidateRuntimeDependencies(effective)
+	boolAt := func(key configport.RuntimeSettingKey) bool {
+		for _, setting := range effective {
+			if setting.Key == key {
+				var value bool
+				return json.Unmarshal(setting.Value, &value) == nil && value
+			}
+		}
+		return false
+	}
+	stringAt := func(key configport.RuntimeSettingKey) string {
+		for _, setting := range effective {
+			if setting.Key == key {
+				var value string
+				_ = json.Unmarshal(setting.Value, &value)
+				return value
+			}
+		}
+		return ""
+	}
+	guard := func(enabled bool, key configport.RuntimeSettingKey, allowed bool, message string) {
+		if enabled && !allowed {
+			issues = append(issues, configport.RuntimeValidationIssue{Key: key, Error: message})
+		}
+	}
+	guard(boolAt(configport.WeComEnabled), configport.WeComEnabled, guards.WeComEnabled, "requires the existing protected Enterprise WeChat credentials and signing key")
+	guard(boolAt(configport.MessageArchiveEnabled), configport.MessageArchiveEnabled, guards.MessageArchiveEnabled, "requires the existing protected archive deployment contract")
+	guard(stringAt(configport.AutomationOperationsProviderMode) != "" && stringAt(configport.AutomationOperationsProviderMode) != "disabled", configport.AutomationOperationsProviderMode, guards.AutomationProviderEnabled, "requires existing fixed-script-send authorization and protected Provider credentials")
+	guard(boolAt(configport.AIAssistantDispatchEnabled), configport.AIAssistantDispatchEnabled, guards.AIDispatchEnabled, "requires existing private-message authorization and protected contact credentials")
+	guard(boolAt(configport.AIAssistantIntakeEnabled), configport.AIAssistantIntakeEnabled, guards.AIAssistantIntakeEnabled, "requires existing protected AI integration credentials")
+	guard(boolAt(configport.WeChatPayProviderEnabled), configport.WeChatPayProviderEnabled, guards.WeChatPayEnabled, "requires the existing protected payment credential contract")
+	guard(boolAt(configport.WeChatPayH5OAuthEnabled), configport.WeChatPayH5OAuthEnabled, guards.WeChatPayH5OAuthEnabled, "requires the existing protected H5 OAuth credential contract")
+	guard(boolAt(configport.WeChatShopProviderEnabled), configport.WeChatShopProviderEnabled, guards.WeChatShopEnabled, "requires the existing protected WeChat Shop credential contract")
+	guard(boolAt(configport.SurveyOAuthEnabled), configport.SurveyOAuthEnabled, guards.SurveyOAuthEnabled, "requires the existing protected Survey OAuth credential contract")
+	for _, value := range settings {
+		baselineValue := baseline[value.Key]
+		if config.ProtectedRuntimeSetting(value.Key) && !bytes.Equal(value.Value, baselineValue) {
+			issues = append(issues, configport.RuntimeValidationIssue{Key: value.Key, Error: "deployment-controlled identity scope or authorization cannot be changed by a Config release"})
+		}
+		if config.ScopeBoundRuntimeSetting(value.Key) && len(baselineValue) != 0 && !bytes.Equal(value.Value, baselineValue) {
+			issues = append(issues, configport.RuntimeValidationIssue{Key: value.Key, Error: "an existing identity scope requires an explicit identity or integration migration"})
+		}
+	}
+	return issues, nil
+}
+
+func mergeRuntimeSettings(defaults, overrides []configport.RuntimeSetting) ([]configport.RuntimeSetting, error) {
+	merged := make(map[configport.RuntimeSettingKey]json.RawMessage, len(defaults)+len(overrides))
+	for _, set := range defaults {
+		merged[set.Key] = append(json.RawMessage(nil), set.Value...)
+	}
+	for _, set := range overrides {
+		merged[set.Key] = append(json.RawMessage(nil), set.Value...)
+	}
+	settings := make([]configport.RuntimeSetting, 0, len(merged))
+	for key, value := range merged {
+		settings = append(settings, configport.RuntimeSetting{Key: key, Value: value})
+	}
+	canonical, issues := config.ValidateRuntimeSettings(settings)
+	if len(issues) != 0 {
+		return nil, ErrRuntimeReleaseInvalid
+	}
+	return canonical, nil
 }
 func releaseChecksum(settings []configport.RuntimeSetting) string {
 	copySettings := append([]configport.RuntimeSetting(nil), settings...)
@@ -430,6 +621,9 @@ func validChecksum(value string) bool {
 }
 func validUsage(use configport.RuntimeUsage) bool {
 	return (use.Snapshot.Source == configport.RuntimeSourceEnvironmentDefault || use.Snapshot.Source == configport.RuntimeSourcePublished) && use.Snapshot.Revision >= 0 && use.Snapshot.AutomationMaxRecipients >= 1 && use.Snapshot.AutomationMaxRecipients <= 5000 && use.Consumer == string(configport.AutomationOperationsMaxRecipientsPerRun) && (use.Role == "api" || use.Role == "worker" || use.Role == "effects-worker") && (use.Operation == "preview" || use.Operation == "confirm" || use.Operation == "execution") && (use.SubjectKind == "automation_preview" || use.SubjectKind == "automation_run") && use.SubjectID > 0 && !use.UsedAt.IsZero()
+}
+func validApplication(application configport.RuntimeApplication) bool {
+	return application.Revision >= 0 && (application.Source == configport.RuntimeSourceEnvironmentDefault || application.Source == configport.RuntimeSourcePublished) && (application.Role == "api" || application.Role == "worker" || application.Role == "effects-worker") && application.ReleaseSHA != "" && strings.TrimSpace(application.ReleaseSHA) == application.ReleaseSHA && len(application.ReleaseSHA) <= 200 && validChecksum(application.SnapshotChecksum) && !application.AppliedAt.IsZero()
 }
 func (s *RuntimeReleaseService) ready() bool {
 	return s != nil && s.uow != nil && s.repo != nil && s.events != nil && s.defaultLimit >= 1 && s.defaultLimit <= 5000 && s.now != nil
