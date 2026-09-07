@@ -20,9 +20,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Full PostgreSQL/race/browser verification can exceed twenty minutes; keep
-    # every gate and give the final race phase a bounded additional margin.
-    timeout-minutes: 30
+    # Full PostgreSQL/race/browser verification can approach thirty minutes; keep
+    # every gate and give the final race phase a bounded completion margin.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
