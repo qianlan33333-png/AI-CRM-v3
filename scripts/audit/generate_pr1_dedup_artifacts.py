@@ -54,6 +54,7 @@ GO_FILE_RE = re.compile(r"\bos\.(?:ReadFile|Open|Stat)\s*\(\s*(['\"])([^'\"\\]*(
 GO_PATH_JOIN_RE = re.compile(r"\bfilepath\.Join\s*\(([^\n)]*)\)")
 NODE_PATH_JOIN_RE = re.compile(r"\bpath\.(?:join|resolve)\s*\(([^\n)]*)\)")
 SHELL_REPO_ROOT_RE = re.compile(r"\$(?:REPO_ROOT|ROOT|repo_root)/([A-Za-z0-9_./-]+)")
+PUBLIC_STATIC_RE = re.compile(r"(['\"])(/static/[A-Za-z0-9_./-]+)\1")
 QUOTED_SEGMENT_RE = re.compile(r"(['\"])([^'\"\\]*(?:\\.[^'\"\\]*)*)\1")
 
 
@@ -353,6 +354,11 @@ def extract_static_references(path: str, text: str, all_paths: set[str]) -> list
 
     def add(kind: str, raw: str, index: int, *, allow_bare_local: bool = False) -> None:
         target = resolve_local_reference(path, raw, all_paths, allow_bare_local=allow_bare_local)
+        static_path = raw.split("?", 1)[0].split("#", 1)[0]
+        if target is None and static_path.startswith("/static/"):
+            public_target = "internal/webshell/static/" + static_path.removeprefix("/static/")
+            if public_target in all_paths:
+                target = public_target
         if target is None or target == path:
             return
         line = text.count("\n", 0, index) + 1
@@ -360,6 +366,18 @@ def extract_static_references(path: str, text: str, all_paths: set[str]) -> list
         if key not in seen:
             seen.add(key)
             refs.append({"kind": kind, "target": target, "line": line, "raw": raw})
+
+    def add_directory(kind: str, raw: str, index: int) -> None:
+        base = posixpath.normpath(posixpath.join(posixpath.dirname(path), raw))
+        if base.startswith("../") or base == "..":
+            return
+        prefix = base.rstrip("/") + "/"
+        line = text.count("\n", 0, index) + 1
+        for target in sorted(candidate for candidate in all_paths if candidate.startswith(prefix) and candidate != path):
+            key = (kind, target, line)
+            if key not in seen:
+                seen.add(key)
+                refs.append({"kind": kind, "target": target, "line": line, "raw": raw + "/**"})
 
     for match in IMPORT_RE.finditer(text):
         add("static_or_dynamic_module_reference", match.group(2), match.start())
@@ -371,6 +389,7 @@ def extract_static_references(path: str, text: str, all_paths: set[str]) -> list
         for raw in match.group(1).split():
             if not raw.startswith("-"):
                 add("go_embed_reference", raw, match.start(), allow_bare_local=True)
+                add_directory("go_embed_directory_reference", raw, match.start())
     for match in GO_FILE_RE.finditer(text):
         add("go_file_reference", match.group(2), match.start(), allow_bare_local=True)
     for match in GO_PATH_JOIN_RE.finditer(text):
@@ -388,6 +407,8 @@ def extract_static_references(path: str, text: str, all_paths: set[str]) -> list
         target = match.group(1)
         if target in all_paths and target != path:
             refs.append({"kind": "shell_repository_root_path", "target": target, "line": text.count("\n", 0, match.start()) + 1, "raw": "$REPO_ROOT/" + target})
+    for match in PUBLIC_STATIC_RE.finditer(text):
+        add("webshell_public_static_reference", match.group(2), match.start())
     return refs
 
 
@@ -441,8 +462,8 @@ def make_dependency_map(records: list[dict[str, Any]], contents: dict[str, bytes
         normalized[target] = {
             "static_consumers": ordered,
             "static_consumer_count": len(ordered),
-            "dependency_status": "dependency_unresolved",
-            "reason": "Static extraction cannot prove dynamic imports, runtime route selection, generated asset inclusion, CI shell expansion, or release staging closure. No removal is authorized in PR-1.",
+            "dependency_status": "static_inventory_recorded; runtime_and_staging_proof_deferred_to_named_P2_entrypoints",
+            "reason": "This static inventory cannot prove computed imports, shell expansion, runtime route selection, generated asset inclusion or release staging. Each exact group therefore names the P2 entrypoints that must provide the remaining proof; no removal is authorized in PR-1.",
         }
     return {
         "schema_version": SCHEMA_VERSION,
@@ -451,7 +472,7 @@ def make_dependency_map(records: list[dict[str, Any]], contents: dict[str, bytes
             "relative TypeScript/JavaScript module import, require and dynamic-import literals",
             "literal Node read/copy/glob calls and repository-root path.join/path.resolve segments",
             "literal HTML src/href attributes",
-            "Go //go:embed, os.ReadFile/Open/Stat and filepath.Join literals",
+            "Go //go:embed files/directories, os.ReadFile/Open/Stat and filepath.Join literals",
             "shell $REPO_ROOT literals",
             "full-path and basename lexical references across all readable text blobs",
         ],
@@ -462,24 +483,210 @@ def make_dependency_map(records: list[dict[str, Any]], contents: dict[str, bytes
     }
 
 
+V2_FROZEN_COMMIT = "6bfbe5816bb89913c70adaca87d6a486260e016e"
+AI_PRODUCTION_FROZEN_COMMIT = "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f"
+V2_MODULES = {
+    "products-v2": {
+        "module": "products", "manifest": "docs/migration/product/pr04-donor-manifest.yaml",
+        "gate": "scripts/check-pr04-donor-manifest.sh",
+    },
+    "coupons-v2": {
+        "module": "coupons", "manifest": "docs/migration/coupon/pr05-donor-manifest.yaml",
+        "gate": "scripts/check-pr05-closure.sh",
+    },
+    "automation-v2": {
+        "module": "automation", "manifest": "docs/migration/automation/pr07-donor-manifest.yaml",
+        "gate": "scripts/check-pr07-frontend-freeze.sh",
+    },
+    "automation-operations-v2": {
+        "module": "automation_operations", "manifest": "docs/migration/automationops/donor-sha256.txt",
+        "gate": "scripts/check-automationops-donor-manifest.sh",
+    },
+    "media-v2": {
+        "module": "media", "manifest": "docs/migration/media/pr02-donor-manifest.yaml",
+        "gate": "scripts/check-pr02-donor-manifest.sh",
+    },
+    "groupops-v2": {
+        "module": "group_operations", "manifest": "docs/migration/groupops/pr06-donor-manifest.yaml",
+        "gate": "scripts/check-pr06-donor-manifest.sh",
+    },
+    "adminops-v2": {
+        "module": "admin_operations", "manifest": "docs/migration/adminops/pr09-donor-manifest.yaml",
+        "gate": "scripts/check-pr09-frontend-freeze.sh",
+    },
+    "operation-cycles-v2": {
+        "module": "operation_cycles", "manifest": "docs/donor-manifests/pr08-operation-cycles.yaml",
+        "gate": "scripts/check-pr08-frontend-donor-manifest.sh",
+    },
+}
+
+
+def logical_source_path(path: str) -> str | None:
+    if path.startswith("web/src/"):
+        return path
+    match = re.match(r"^web/donors/[^/]+/src/(.+)$", path)
+    if match:
+        return "web/src/" + match.group(1)
+    return None
+
+
+def source_binding_for_path(path: str, record: dict[str, Any], target_commit: str, content_sha256: str) -> dict[str, Any]:
+    binding: dict[str, Any] = {
+        "logical_path": path,
+        "mode": record["mode"],
+        "content_sha256": content_sha256,
+        "bytes": record["bytes"],
+    }
+    if path.startswith("web/donors/"):
+        donor = path.split("/")[2]
+        logical = logical_source_path(path)
+        if donor == "ai-assistant-production":
+            binding.update({
+                "module": "ai_assistant", "source_repository": "AI-CRM production donor",
+                "source_commit": AI_PRODUCTION_FROZEN_COMMIT, "source_path": logical or path,
+                "usage": "frozen_production_asset_compatibility_view",
+                "freeze_gate": "scripts/check-ai-assistant-donor-manifest.sh",
+                "freeze_ledger": "docs/migration/ai-assistant/donor-sha256.txt",
+            })
+            return binding
+        module = V2_MODULES.get(donor)
+        if module is None:
+            binding.update({
+                "module": donor, "source_repository": "AI-CRM-v2",
+                "source_commit": V2_FROZEN_COMMIT, "source_path": logical or path,
+                "usage": "frozen_donor_compatibility_view",
+                "freeze_gate": None, "freeze_ledger": None,
+            })
+            return binding
+        binding.update({
+            "module": module["module"], "source_repository": "AI-CRM-v2",
+            "source_commit": V2_FROZEN_COMMIT, "source_path": logical or path,
+            "usage": "frozen_donor_compatibility_view", "freeze_gate": module["gate"],
+            "freeze_ledger": module["manifest"],
+        })
+        return binding
+    if path.startswith("web/src/"):
+        binding.update({
+            "module": "v3_web_frozen_view", "source_repository": "AI-CRM-v3",
+            "source_commit": target_commit, "source_path": path,
+            "usage": "currently_tracked_exact_copy_to_become_materialized_view_only_if_still_byte_identical",
+            "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
+            "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
+        })
+        return binding
+    if path == "api/openapi.yaml":
+        binding.update({
+            "module": "v3_openapi_contract", "source_repository": "AI-CRM-v3",
+            "source_commit": target_commit, "source_path": path,
+            "usage": "active_canonical_contract_source", "freeze_gate": "scripts/validate-openapi.mjs",
+            "freeze_ledger": None,
+        })
+        return binding
+    if path == "internal/config/http/openapi.yaml":
+        binding.update({
+            "module": "config_http", "source_repository": "AI-CRM-v3",
+            "source_commit": target_commit, "source_path": path,
+            "usage": "go_embed_compatibility_view", "freeze_gate": "internal/config/http/handler_test.go",
+            "freeze_ledger": None,
+        })
+        return binding
+    if path.startswith("internal/webshell/static/"):
+        binding.update({
+            "module": "webshell", "source_repository": "AI-CRM-v3",
+            "source_commit": target_commit, "source_path": path,
+            "usage": "webshell_embedded_compatibility_view", "freeze_gate": "internal/webshell/handler_test.go",
+            "freeze_ledger": None,
+        })
+        return binding
+    binding.update({
+        "module": "repository_source", "source_repository": "AI-CRM-v3",
+        "source_commit": target_commit, "source_path": path,
+        "usage": "tracked_exact_copy", "freeze_gate": None, "freeze_ledger": None,
+    })
+    return binding
+
+
+def canonical_plan(paths: list[str], content_sha256: str) -> dict[str, Any]:
+    if set(paths) == {"api/openapi.yaml", "internal/config/http/openapi.yaml"}:
+        return {
+            "canonical_path": "api/openapi.yaml",
+            "canonical_lifecycle": "active_v3_api_contract_source",
+            "p1_binding": "Declare api/openapi.yaml and its SHA-256 as the sole source; do not move or regenerate it in PR-1.",
+            "p2_materialization": "Materialize internal/config/http/openapi.yaml from api/openapi.yaml atomically before every Go vet/test/race/build/run/release entrypoint. The Go embed package cannot read a parent path, so the materialized package-local view is required.",
+            "p3_removal": "After clean-checkout Go and release evidence proves the view is recreated, remove only the tracked internal/config/http/openapi.yaml copy.",
+        }
+    if (
+        "internal/webshell/static/admin_console/send_content_readonly_detail.css" in paths
+        and "web/donors/ai-assistant-production/static/send_content_readonly_detail.css" in paths
+    ):
+        return {
+            "canonical_path": "web/donor-sources/production-" + AI_PRODUCTION_FROZEN_COMMIT + "/static/send_content_readonly_detail.css",
+            "canonical_lifecycle": "immutable_production_donor_source",
+            "p1_binding": "Store the existing bytes once in the immutable production donor source library and bind both source identities to the same SHA-256.",
+            "p2_materialization": "Materialize the frozen AI donor path and internal/webshell/static/admin_console path before build-v3-host-adapters and every Go entrypoint that embeds webshell/static; preserve the public URL and MIME checks.",
+            "p3_removal": "After clean-checkout Host asset, renderer, MIME and release-stage evidence, remove only the two tracked copies and retain generated untracked views.",
+        }
+    logicals = sorted({logical for path in paths if (logical := logical_source_path(path))})
+    relative = logicals[0].removeprefix("web/src/") if logicals else PurePosixPath(paths[0]).name
+    return {
+        "canonical_path": "web/donor-sources/v2-" + V2_FROZEN_COMMIT + "/web/src/" + relative,
+        "canonical_lifecycle": "immutable_v2_frozen_source",
+        "p1_binding": "Copy this exact SHA-256 once into the immutable v2 source library and record every current source identity and logical path in the source index; no active adapter may edit that file.",
+        "p2_materialization": "Materialize each declared web/src or web/donors compatibility view by whitelist before its named freeze gate, frontend build, Host adapter build, CI artifact stage and release staging. A later active change must be a separate V3 adapter/derived source, never an edit to the view.",
+        "p3_removal": "After declared consumers pass from a clean checkout with only materialized untracked views, remove only the tracked paths in this exact group.",
+    }
+
+
+def shared_web_entrypoints() -> list[dict[str, str]]:
+    return [
+        {"id": "pr01_full_source_set", "path": "scripts/check-pr01-donor-manifest.sh", "phase": "P2", "reason": "Current full web source-set and checksum gate must be changed to verify source bindings and materialized logical views without reducing its set."},
+        {"id": "web_build", "path": "web/scripts/build.mjs", "phase": "P2", "reason": "Reads registry, navigation, templates and web/src entries; materialization must run before npm build."},
+        {"id": "host_adapter_build", "path": "scripts/build-v3-host-adapters.mjs", "phase": "P2", "reason": "Consumes web build manifest plus frozen adapter inputs; it must receive only declared materialized views."},
+        {"id": "ci_release_artifact", "path": ".github/workflows/ci.yml", "phase": "P2", "reason": "The release-artifact job currently runs frontend, Host-adapter, staging and Go steps; it must invoke the single preparation step before all consumers."},
+        {"id": "release_stage", "path": "deploy/install-release.sh", "phase": "P2", "reason": "Release staging must validate declared source/view inputs rather than rely on tracked duplicate files."},
+    ]
+
+
+def cross_build_entrypoints(kind: str) -> list[dict[str, str]]:
+    common = [
+        {"id": "make_direct_go", "path": "Makefile", "phase": "P2", "reason": "make vet/test/build/run/radar-check invoke Go directly; a prerequisite must materialize and verify package-local embed views."},
+        {"id": "ci_direct_go", "path": ".github/workflows/ci.yml", "phase": "P2", "reason": "CI has direct go vet/test/race/build calls; preparation cannot be limited to npm build."},
+        {"id": "release_direct_go", "path": ".github/workflows/ci.yml", "phase": "P2", "reason": "Release artifact builds all Go binaries directly and must prepare views before every build."},
+        {"id": "documented_bare_go", "path": "docs/engineering/dedup/", "phase": "P2", "reason": "Document and test the explicit prepare command for a developer who invokes bare go test/build; go:generate is not implicit in go test."},
+    ]
+    if kind == "openapi":
+        return common + [
+            {"id": "openapi_generator", "path": "scripts/generate-ai-assistant-client.mjs", "phase": "P2", "reason": "Reads api/openapi.yaml, which remains canonical; generated-client checks must not read the package-local embed view as a source."},
+            {"id": "config_http_embed_and_test", "path": "internal/config/http/openapi.go", "phase": "P2", "reason": "//go:embed requires the package-local materialized openapi.yaml; handler_test must retain its byte comparison with api/openapi.yaml."},
+        ]
+    return common + [
+        {"id": "webshell_embed_and_route", "path": "internal/webshell/renderer.go", "phase": "P2", "reason": "The embedded static directory must contain the materialized CSS before Go compilation; renderer/template/MIME contract remains unchanged."},
+        {"id": "ai_adapter_static_copy", "path": "scripts/build-v3-host-adapters.mjs", "phase": "P2", "reason": "The AI frozen donor CSS is copied into Host staging; source index/view materialization must precede that copy."},
+        {"id": "webshell_public_asset_test", "path": "internal/webshell/handler_test.go", "phase": "P2", "reason": "Public static URL and text/css assertions must pass from the materialized view."},
+    ]
+
+
+def relevant_static_consumers(paths: list[str], dependency_map: dict[str, Any]) -> list[dict[str, Any]]:
+    records: dict[tuple[str, str, int, str], dict[str, Any]] = {}
+    for path in paths:
+        for item in dependency_map["targets"][path]["static_consumers"]:
+            consumer = item["consumer_path"]
+            if not (consumer.startswith(("scripts/", ".github/", "deploy/", "internal/", "cmd/", "web/")) or consumer in {"Makefile", "package.json"}):
+                continue
+            key = (consumer, item["method"], item["line"], item["evidence"])
+            records[key] = item
+    return sorted(records.values(), key=lambda item: (item["consumer_path"], item["line"], item["method"], item["evidence"]))
+
+
 def owner_role(paths: list[str]) -> str:
-    if any(path.startswith("migrations/") for path in paths):
-        return "migration-owner"
-    if any(path.startswith("api/") for path in paths):
-        return "api-contract-owner"
-    if any(path.startswith("internal/") for path in paths):
-        return "owning-go-domain"
-    if any(path.startswith("web/donors/") for path in paths):
-        return "frozen-donor-owner"
-    if any(path.startswith("web/src/api/generated/") for path in paths):
-        return "generated-api-contract-owner"
-    if any(path.startswith("web/src/") for path in paths):
-        return "web-shell-owner"
-    if any(path.startswith(("scripts/", ".github/", "deploy/")) for path in paths):
-        return "build-release-owner"
-    if any(path.startswith("docs/") for path in paths):
-        return "documentation-owner"
-    return "repository-owner-confirmation-required"
+    if set(paths) == {"api/openapi.yaml", "internal/config/http/openapi.yaml"}:
+        return "source-governance:openapi-and-config-http"
+    if any(path.startswith("internal/webshell/static/") for path in paths):
+        return "source-governance:webshell-and-ai-frozen-assets"
+    modules = sorted({path.split("/")[2] for path in paths if path.startswith("web/donors/")})
+    if modules:
+        return "source-governance:" + ",".join(modules)
+    return "source-governance:v3-web-source"
 
 
 def classify_exception(paths: list[str]) -> str | None:
@@ -505,7 +712,7 @@ def classify_exception(paths: list[str]) -> str | None:
 
 def acceptance_for_paths(paths: list[str]) -> list[str]:
     common = [
-        "designated human/module owner confirms canonical source and lifecycle",
+        "PR-1 source-governance binding is retained; a future exception requires an explicit named change owner",
         "all static and dynamic/build/release consumers are traced",
         "relevant characterization/build/Host checks are selected and pass",
     ]
@@ -542,31 +749,88 @@ def proposed_canonical(paths: list[str]) -> str:
     return min(paths, key=rank)
 
 
-def make_decisions(duplicates: list[dict[str, Any]], dependency_map: dict[str, Any], seed_blob_ids: set[str]) -> dict[str, Any]:
+def consumer_closure_id(paths: list[str]) -> str:
+    if set(paths) == {"api/openapi.yaml", "internal/config/http/openapi.yaml"}:
+        return "openapi_go_embed_view"
+    if any(path.startswith("internal/webshell/static/") for path in paths):
+        return "ai_webshell_static_view"
+    return "v2_frozen_web_views"
+
+
+def consumer_closures() -> dict[str, dict[str, Any]]:
+    return {
+        "v2_frozen_web_views": {
+            "scope": "Every exact group whose copies are web/src and/or web/donors/<module>-v2/src paths.",
+            "canonical_lifecycle": "immutable v2 source library with source-identity index and whitelist-only untracked views.",
+            "entrypoints": shared_web_entrypoints(),
+            "proof": "P2 clean checkout must run each affected module freeze gate plus web build, Host adapter build, CI artifact stage and release staging without tracked compatibility copies.",
+        },
+        "openapi_go_embed_view": {
+            "scope": "api/openapi.yaml and internal/config/http/openapi.yaml only.",
+            "canonical_lifecycle": "api source plus atomically materialized package-local Go embed view.",
+            "entrypoints": cross_build_entrypoints("openapi"),
+            "proof": "P2 must show byte identity, authenticated download, generator input and all direct Go entrypoints after preparation from a clean checkout.",
+        },
+        "ai_webshell_static_view": {
+            "scope": "The frozen AI CSS and its webshell static/public asset copy only.",
+            "canonical_lifecycle": "immutable production donor source plus materialized AI and Go-embedded webshell views.",
+            "entrypoints": cross_build_entrypoints("webshell_css"),
+            "proof": "P2 must show donor hash, adapter/stage result, Go embed, public URL/MIME and release artifact from a clean checkout.",
+        },
+    }
+
+
+def make_decisions(duplicates: list[dict[str, Any]], dependency_map: dict[str, Any], seed_blob_ids: set[str], path_records: dict[str, dict[str, Any]], target_commit: str) -> dict[str, Any]:
     decisions = []
     for group in duplicates:
         paths = sorted(group["paths"])
         group_id = group["group_id"]
         exception = classify_exception(paths)
         consumers = sum(dependency_map["targets"][path]["static_consumer_count"] for path in paths)
+        bindings = [source_binding_for_path(path, path_records[path], target_commit, group["content_sha256"]) for path in paths]
+        plan = canonical_plan(paths, group["content_sha256"])
+        if set(paths) == {"api/openapi.yaml", "internal/config/http/openapi.yaml"}:
+            entrypoints = cross_build_entrypoints("openapi")
+        elif any(path.startswith("internal/webshell/static/") for path in paths):
+            entrypoints = cross_build_entrypoints("webshell_css")
+        else:
+            entrypoints = shared_web_entrypoints()
+            for binding in bindings:
+                if binding["freeze_gate"]:
+                    entrypoints.append({
+                        "id": "freeze_gate:" + binding["logical_path"], "path": binding["freeze_gate"], "phase": "P2",
+                        "reason": "Preserve this exact source identity, checksum and logical path through the declared compatibility-view binding.",
+                    })
+        static_consumers = relevant_static_consumers(paths, dependency_map)
+        ambiguous = sum(1 for item in static_consumers if item["confidence"] == "ambiguous_needs_owner_review")
         decisions.append({
             "group_id": group_id,
             "content_sha256": group["content_sha256"],
+            "bytes_per_copy": group["bytes_per_copy"],
             "paths": paths,
-            "proposed_canonical_path": proposed_canonical(paths),
-            "canonical_status": "proposed_only_requires_owner_confirmation",
+            "canonical": plan,
             "owner_role": owner_role(paths),
+            "owner_assignment": "PR-1 source-governance owner; module boundaries remain in each binding and gate.",
             "seed_group_05045": group_id.removeprefix("blob:") in seed_blob_ids,
+            "source_version_bindings": bindings,
+            "static_consumer_closure": static_consumers,
+            "consumer_closure_id": consumer_closure_id(paths),
+            "pipeline_entrypoints": entrypoints,
+            "p0_disposition": "concrete_single_source_and_compatibility_view_plan_recorded",
             "action_in_pr1": "retain_all_paths_no_delete_no_symlink_no_import_rewrite",
             "deletion_authorized": False,
-            "exception": exception,
+            "permanent_exception": None,
+            "temporary_transition_constraint": exception,
             "static_consumer_observations": consumers,
-            "dependency_status": "dependency_unresolved",
+            "ambiguous_static_mentions": ambiguous,
+            "dependency_status": "static_consumer_closure_recorded; future materialization gates are enumerated",
+            "remaining_nonstatic_proof": "P2 must prove the exact listed materialization order from a clean checkout; no path is exempt from that proof.",
             "acceptance_before_any_future_change": acceptance_for_paths(paths),
         })
     return {
         "schema_version": SCHEMA_VERSION,
-        "policy": "PR-1 is an audit gate. Every exact group is retained until later approved source, materialization, consumer and test work; no group is a deletion authorization.",
+        "policy": "PR-1 records the concrete source binding and consumer-closure route for every group. Files remain until later materialization and clean-checkout proof; no group is a deletion authorization in this PR.",
+        "consumer_closures": consumer_closures(),
         "decisions": decisions,
     }
 
@@ -723,19 +987,19 @@ def write_coverage(
         "## Consumer and decision closure",
         "",
         f"- Static target paths mapped: **{dependency_map['target_path_count']}**; readable text blobs scanned: **{dependency_map['scanned_text_file_count']}**.",
-        f"- Exact decisions: **{len(decisions['decisions'])}**, all retain every path in PR-1. Every group remains `dependency_unresolved`; no source-of-truth or deletion decision is approved by this report.",
-        "- The map includes only resolvable literals plus ambiguous lexical mentions. Dynamic imports, shell expansion, runtime routing, generated assets and release staging still need owner review before P1/P2.",
+        f"- Exact decisions: **{len(decisions['decisions'])}**, all retain every path in PR-1. Each has an immutable-source or active-contract canonical plan, a source/version/hash binding per current path, a reusable consumer closure and explicit P2 entrypoints; no deletion is approved.",
+        f"- Consumer closures: **{len(decisions['consumer_closures'])}** reusable families. The static map retains both resolved literals and ambiguous lexical evidence; dynamic imports, shell expansion, runtime routing, generated assets and release staging are specifically deferred to the named P2 clean-checkout entrypoints, never treated as absent consumers.",
         "",
         "## Artifacts",
         "",
         "- `inventory.json`: all target tracked entries, including binary, empty files, modes and special-entry status.",
         "- `exact-duplicates.json`: all exact groups and 39-seed verification across both pinned commits.",
         "- `near-duplicate-candidates.json`: B/C candidate methods, results and explicit limits.",
-        "- `dependency-map.json`: per-target static consumer observations and unresolved boundary.",
-        "- `dedup-decisions.json`: every exact group has an owner role, proposed-only canonical path, exception and blocked action.",
+        "- `dependency-map.json`: per-target resolved and ambiguous static consumer observations, plus the bounded scanner boundary.",
+        "- `dedup-decisions.json`: every exact group has a source-governance owner, concrete canonical/source-version binding, reusable consumer closure, P2 entrypoints, temporary transition constraint and retain-only action. No group has a permanent exception in PR-1.",
         "- `provenance.json`: direct GitHub clone, pinned commits/trees, object-scan inputs, tool hashes and pre-output checkout state.",
         "",
-        "**Closure state: PR-1 audit evidence is complete for Layer A and the documented bounded B/C/static-D methods, but no group is safe to delete. P1 is blocked on named owner confirmation and dynamic/build/release consumer closure.**",
+        "**Closure state: PR-1 records a concrete non-destructive source and consumer route for every exact group. It does not materialize a view, rewire a consumer, run a repository build or approve deletion. P1/P2 must prove those declared gates from a clean checkout before P3 can remove any tracked payload.**",
         "",
     ])
     path.write_text("\n".join(lines), encoding="utf8")
@@ -770,6 +1034,16 @@ def verify_artifacts(out: Path) -> None:
         raise ValueError("Every exact group must have one decision.")
     if {group["group_id"] for group in groups} != {entry["group_id"] for entry in decisions["decisions"]}:
         raise ValueError("Decision group IDs differ from exact group IDs.")
+    closures = decisions.get("consumer_closures")
+    if not isinstance(closures, dict) or not closures:
+        raise ValueError("Consumer closures are missing.")
+    for entry in decisions["decisions"]:
+        if not entry.get("source_version_bindings"):
+            raise ValueError(f"Decision lacks source/version bindings: {entry['group_id']}")
+        if entry.get("consumer_closure_id") not in closures:
+            raise ValueError(f"Decision has unknown consumer closure: {entry['group_id']}")
+        if entry.get("deletion_authorized"):
+            raise ValueError(f"PR-1 may not authorize deletion: {entry['group_id']}")
     paths = candidate_target_paths(groups, near)
     if paths != set(dependency["targets"]):
         raise ValueError("Dependency targets do not equal exact and near-candidate paths.")
@@ -830,7 +1104,8 @@ def main() -> int:
     dependency = make_dependency_map(target_records, contents, targets)
     seed_validation = validate_seed(seed, baseline, target)
     seed_blob_ids = {entry["git_blob_sha"] for entry in seed["groups"]}
-    decisions = make_decisions(target["duplicates"], dependency, seed_blob_ids)
+    path_records = {record["path"]: record for record in target_records}
+    decisions = make_decisions(target["duplicates"], dependency, seed_blob_ids, path_records, target["commit"])
     inventory = make_inventory(target, baseline)
     provenance = make_provenance(repo, baseline, target, args.seed, args.baseline_scan, args.target_scan)
     exact = {
