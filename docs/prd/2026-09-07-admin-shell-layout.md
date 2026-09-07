@@ -46,12 +46,12 @@ Persistence: stateless — 只改服务端 HTML 壳层、V3 CSS/Host 适配和�
 | 小程序素材 `/admin/miniprogram-library` | 冻结 Media + V3 Host | embedded 页内栏 | 现有库内详情路由 |
 | 附件素材 `/admin/attachment-library` | 冻结 Media + V3 Host | embedded 页内栏 | 现有库内详情路由 |
 | 自动化话术 `/admin/automation-agents` | 冻结 Automation + V3 Host | embedded 页内栏 | `agents.html`、`agentEdit.html` |
-| 负责人迁移 `/admin/owner-migration` | V3 Owner Handoff Host | embedded Host 标题栏 | `ownerMig.html`; `?contact_history=1` 保持只读历史入口 |
+| 负责人迁移 `/admin/owner-migration` | V3 Owner Handoff Host | 唯一 `admin-topbar`；状态与负责人选择控件在其下 | `ownerMig.html`; `?contact_history=1` 保持只读历史入口 |
 | 配置 `/admin/config` | 冻结 Config + V3 Host | embedded 页内栏 | `config.html`、`configDetail.html`; `/admin/config/releases` 保留 V3 runtime Host，并单独验证实际标题、侧栏连续和无双顶栏 |
 | OneID `/admin/oneid` | Webshell 原生 OneID | 唯一 `admin-topbar` | 既有客户/冲突 detail API，不改身份规则 |
 | API 文档 `/admin/api-docs` | 新壳 Open Platform Host | 303 到 `/admin/apidocs.html` 后加载 V3 Host | 该 Host 由既有 Open Chromium journey 继续验收 |
 
-外部效果 `/admin/external-effects?view=external-effects` 会 canonicalize 到 `campaigns.html?view=external-effects`。它不是侧栏 22 项之一，但与所有冻结页一样使用 embedded 页内栏，且被 Chromium 代表截图和 Composition preflight 覆盖。
+外部效果 `/admin/external-effects?view=external-effects` 会 canonicalize 到 `campaigns.html?view=external-effects`。它不是侧栏 22 项之一，但使用唯一 `admin-topbar`；只隐藏重复的本地 crumb/title，保留历史链接和刷新操作，并由 Chromium 代表截图和 Composition preflight 覆盖。
 
 ## JSSDK 边界
 
@@ -67,6 +67,7 @@ Persistence: stateless — 只改服务端 HTML 壳层、V3 CSS/Host 适配和�
 | 截图 | 每个代表类别写入合成夹具截图，供 CI/审核复看，不含真实客户或凭据。 |
 | 既有业务回归 | 商品、周期商品、运营闭环、群运营、渠道、漏斗刷新等仍调用实际组合 HTTP；权限和 donor manifest 检查不放宽。 |
 | 发布装配 | `npm` build、V3 Host adapter 构建、release 资产闭包与 CI 的强制 Chromium 步骤均覆盖本项。 |
+| 去重后等价门禁 | `run-donor-view-consumers.sh check` 仍依次执行 `npm test`、最终 `npm run build`、Host adapter 和三段 release stage；随后同一最终产物运行合并的 Sidebar + Admin Layout 强制 Chromium。这样不恢复已被主线收敛的重复阶段，也不遗漏前端重建后的最终 Host/制品验证。 |
 
 ## 非目标
 
