@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "policy": "PR-2 pilot only. Canonical content is immutable. Existing logical paths remain tracked until a later P2/P3 approval; no build entrypoint reads this library in PR-2.",
+  "libraries": [
+    {
+      "id": "v2-6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "root": "web/donor-sources/v2-6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "immutable": true
+    }
+  ],
+  "contents": [
+    {
+      "id": "v2-health-schemas",
+      "library_id": "v2-6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "canonical_path": "web/donor-sources/v2-6bfbe5816bb89913c70adaca87d6a486260e016e/web/src/api/generated/health.schemas.ts",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "content_sha256": "7f1bc1d05b3e012de46b1d53ef7b56319c0bc032a1c0389fa3fd138c7218b40d",
+      "bytes": 692834,
+      "mode": "100644"
+    }
+  ],
+  "bindings": [
+    {
+      "module": "admin_operations",
+      "logical_path": "web/donors/adminops-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "mode": "100644",
+      "usage": "frozen_donor_compatibility_view",
+      "freeze_gate": "scripts/check-pr09-frontend-freeze.sh",
+      "freeze_ledger": "docs/migration/adminops/pr09-donor-manifest.yaml",
+      "current_path_state": "tracked_pre_p2"
+    },
+    {
+      "module": "automation_operations",
+      "logical_path": "web/donors/automation-operations-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "mode": "100644",
+      "usage": "frozen_donor_compatibility_view",
+      "freeze_gate": "scripts/check-automationops-donor-manifest.sh",
+      "freeze_ledger": "docs/migration/automationops/donor-sha256.txt",
+      "current_path_state": "tracked_pre_p2"
+    },
+    {
+      "module": "automation",
+      "logical_path": "web/donors/automation-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "mode": "100644",
+      "usage": "frozen_donor_compatibility_view",
+      "freeze_gate": "scripts/check-pr07-frontend-freeze.sh",
+      "freeze_ledger": "docs/migration/automation/pr07-donor-manifest.yaml",
+      "current_path_state": "tracked_pre_p2"
+    },
+    {
+      "module": "coupons",
+      "logical_path": "web/donors/coupons-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "mode": "100644",
+      "usage": "frozen_donor_compatibility_view",
+      "freeze_gate": "scripts/check-pr05-closure.sh",
+      "freeze_ledger": "docs/migration/coupon/pr05-donor-manifest.yaml",
+      "current_path_state": "tracked_pre_p2"
+    },
+    {
+      "module": "group_operations",
+      "logical_path": "web/donors/groupops-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "mode": "100644",
+      "usage": "frozen_donor_compatibility_view",
+      "freeze_gate": "scripts/check-pr06-donor-manifest.sh",
+      "freeze_ledger": "docs/migration/groupops/pr06-donor-manifest.yaml",
+      "current_path_state": "tracked_pre_p2"
+    },
+    {
+      "module": "media",
+      "logical_path": "web/donors/media-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "mode": "100644",
+      "usage": "frozen_donor_compatibility_view",
+      "freeze_gate": "scripts/check-pr02-donor-manifest.sh",
+      "freeze_ledger": "docs/migration/media/pr02-donor-manifest.yaml",
+      "current_path_state": "tracked_pre_p2"
+    },
+    {
+      "module": "products",
+      "logical_path": "web/donors/products-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "mode": "100644",
+      "usage": "frozen_donor_compatibility_view",
+      "freeze_gate": "scripts/check-pr04-donor-manifest.sh",
+      "freeze_ledger": "docs/migration/product/pr04-donor-manifest.yaml",
+      "current_path_state": "tracked_pre_p2"
+    },
+    {
+      "module": "v3_web_frozen_view",
+      "logical_path": "web/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "mode": "100644",
+      "usage": "tracked_v3_compatibility_view_only_while_byte_identical",
+      "freeze_gate": "scripts/check-pr01-donor-manifest.sh",
+      "freeze_ledger": "docs/donor-manifests/pr01-web.sha256",
+      "current_path_state": "tracked_pre_p2",
+      "current_tree_commit": "5291366b9742030957f48ebf7464a040a3ab46db"
+    }
+  ],
+  "views": [],
+  "lock_path": "web/donor-sources/source-lock.json"
+}
