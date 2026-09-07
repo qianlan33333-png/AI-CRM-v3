@@ -127,6 +127,8 @@ V3 config 请求与签名按当前完整 URL 去 hash，CorpID/AgentID 从受保
 | S10 订单/周期 | 精确订单号对照所有原状态、退款、金额、时间、详情、备注 | 真实 PG fixture，不以同商品名配对 |
 | S11 发布 | 干净检出、空缓存、单源冻结、完整dist/manifest/深链、API实际合同；旧 SDK 修复不回退 | 架构/编译/相关专项后完整 CI、发布后只读 Browser |
 
+旧供体三个 Node characterization 测试已执行：14 passed、0 failed、0 skipped（见 sidebar-evidence/donor-test-result.json）。这仅冻结原行为，尚不证明 V3 或真实企微通过。
+
 原断言保留，不关闭门禁。涉及后台语义运行真实 PostgreSQL16/race；纯样式无需无关新机制。执行状态分为实现、测试、审核、合并、部署、配置应用、真实企微验收，不将任何前一步标为全部完成。
 
 ## 9. 调度、依赖与回滚

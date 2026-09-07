@@ -1,0 +1,8 @@
+{
+  "legacy_commit": "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f",
+  "command": "node --test tests/frontend/sidebar_jssdk_send.test.mjs tests/frontend/sidebar_token_scope_recovery.test.mjs tests/frontend/sidebar_material_thumbnails.test.mjs",
+  "passed": 14,
+  "failed": 0,
+  "skipped": 0,
+  "scope": "old frozen JavaScript protocol/thumbnail/token-recovery characterization, not real Chromium or WeCom acceptance"
+}
