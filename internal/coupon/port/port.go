@@ -40,6 +40,25 @@ type Coupon struct {
 	UpdatedAt            time.Time    `json:"updated_at"`
 }
 
+// AvailabilityStatusAt returns Coupon's shared public availability state.
+// It intentionally excludes holder-specific limits: callers that know a
+// canonical customer may separately expose the durable claim-count fact, while
+// every actual claim remains transactionally revalidated by Coupon.
+func AvailabilityStatusAt(c Coupon, at time.Time) string {
+	switch {
+	case c.Status == "published" && c.IssuedCount >= c.TotalIssueLimit:
+		return "sold_out"
+	case c.Status == "published" && at.Before(c.ClaimStartsAt):
+		return "scheduled"
+	case c.Status == "published" && !at.Before(c.ClaimEndsAt):
+		return "ended"
+	case c.Status == "published":
+		return "active"
+	default:
+		return c.Status
+	}
+}
+
 type UpsertCommand struct {
 	Coupon
 	Actor          int64

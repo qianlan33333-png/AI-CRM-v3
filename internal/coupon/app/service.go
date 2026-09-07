@@ -541,18 +541,7 @@ func validStored(c couponport.Coupon) bool {
 	return e == nil
 }
 func withAvailability(c couponport.Coupon, now time.Time) couponport.Coupon {
-	switch {
-	case c.Status == "published" && c.IssuedCount >= c.TotalIssueLimit:
-		c.AvailabilityStatus = "sold_out"
-	case c.Status == "published" && now.Before(c.ClaimStartsAt):
-		c.AvailabilityStatus = "scheduled"
-	case c.Status == "published" && !now.Before(c.ClaimEndsAt):
-		c.AvailabilityStatus = "ended"
-	case c.Status == "published":
-		c.AvailabilityStatus = "active"
-	default:
-		c.AvailabilityStatus = c.Status
-	}
+	c.AvailabilityStatus = couponport.AvailabilityStatusAt(c, now)
 	return c
 }
 func ready(s *Service) bool {

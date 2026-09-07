@@ -91,3 +91,52 @@ func (r *Repository) ImportHistoricalCustomerCoupon(ctx context.Context, input c
 
 var _ couponapp.CustomerCouponStore = (*Repository)(nil)
 var _ couponapp.CouponClaimAdminStore = (*Repository)(nil)
+
+// ListSidebarClaimable reads Coupon definitions for the scoped sidebar
+// customer. It does not filter on availability or the customer's claim count:
+// the caller needs both facts to distinguish a visible directory item from a
+// currently unavailable public claim. Public slugs remain optional because
+// only the explicit Coupon share command may create one.
+func (r *Repository) ListSidebarClaimable(ctx context.Context, customerID int64, limit, offset int32) (couponapp.SidebarClaimableRecordPage, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return couponapp.SidebarClaimableRecordPage{}, err
+	}
+	if customerID < 1 || limit < 1 || limit > couponport.SidebarClaimableMaximumLimit || offset < 0 || offset > couponport.SidebarClaimableMaximumOffset {
+		return couponapp.SidebarClaimableRecordPage{}, couponapp.ErrInvalidCoupon
+	}
+	page := couponapp.SidebarClaimableRecordPage{Items: []couponapp.SidebarClaimableRecord{}, Limit: limit, Offset: offset}
+	rows, err := tx.Query(ctx, `SELECT `+couponColumns+`,COALESCE(rule.public_slug,''),(SELECT count(*) FROM coupon_customer_claims claim WHERE claim.customer_id=$1 AND claim.coupon_id=rule.id)
+		FROM coupon_rules rule
+		WHERE rule.status<>'draft'
+		ORDER BY rule.updated_at DESC,rule.id DESC
+		LIMIT $2 OFFSET $3`, customerID, limit, offset)
+	if err != nil {
+		return page, err
+	}
+	for rows.Next() {
+		var record couponapp.SidebarClaimableRecord
+		var mode string
+		if err = rows.Scan(&record.Coupon.ID, &record.Coupon.Name, &record.Coupon.DiscountAmountTotal, &record.Coupon.Currency, &record.Coupon.Status, &record.Coupon.TotalIssueLimit, &record.Coupon.PerUserIssueLimit, &record.Coupon.IssuedCount, &record.Coupon.ClaimStartsAt, &record.Coupon.ClaimEndsAt, &mode, &record.Coupon.UseStartsAt, &record.Coupon.UseEndsAt, &record.Coupon.RelativeValidityDays, &record.Coupon.Instructions, &record.Coupon.CreatedBy, &record.Coupon.UpdatedBy, &record.Coupon.Version, &record.Coupon.CreatedAt, &record.Coupon.UpdatedAt, &record.PublicSlug, &record.ClaimCount); err != nil {
+			rows.Close()
+			return page, err
+		}
+		record.Coupon.ValidityMode = couponport.ValidityMode(mode)
+		page.Items = append(page.Items, record)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return page, err
+	}
+	rows.Close()
+	for index := range page.Items {
+		page.Items[index].Coupon.TargetRefs, err = r.targets(ctx, tx, page.Items[index].Coupon.ID)
+		if err != nil {
+			return page, err
+		}
+	}
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM coupon_rules WHERE status<>'draft'`).Scan(&page.Total)
+	return page, err
+}
+
+var _ couponapp.SidebarClaimableCatalogStore = (*Repository)(nil)

@@ -270,19 +270,7 @@ func (h *PublicHandler) checkoutProducts(ctx context.Context, refs []string) ([]
 }
 
 func publicCouponDisplayState(coupon couponport.PublicCoupon, now time.Time) string {
-	if coupon.Status != "published" {
-		return coupon.Status
-	}
-	if now.Before(coupon.ClaimStartsAt) {
-		return "scheduled"
-	}
-	if !now.Before(coupon.ClaimEndsAt) {
-		return "ended"
-	}
-	if coupon.IssuedCount >= coupon.TotalIssueLimit {
-		return "sold_out"
-	}
-	return "active"
+	return couponport.AvailabilityStatusAt(coupon.Coupon, now)
 }
 
 func publicCouponValidityText(coupon couponport.PublicCoupon) string {

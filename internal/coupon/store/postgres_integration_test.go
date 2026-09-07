@@ -526,3 +526,113 @@ func couponIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(cleanup)
 	}
 }
+
+func TestPostgreSQLSidebarClaimableCatalogPreservesDirectoryAndClaimFacts(t *testing.T) {
+	native, cleanup := couponIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	products := productFacts{
+		9:  {ID: 9, ProductType: productport.ProductOptionStandard, Name: "普通商品", Currency: "CNY", PriceMinor: 1000},
+		10: {ID: 10, ProductType: productport.ProductOptionServicePeriod, Name: "周期商品", Currency: "CNY", PriceMinor: 1000},
+	}
+	rules := couponapp.NewService(uow, repository, products, repository)
+	createPublished := func(name string, starts, ends time.Time, total, perUser int64, targets []string) couponport.Coupon {
+		t.Helper()
+		days := int32(3)
+		created, createErr := rules.Create(ctx, couponport.UpsertCommand{Coupon: couponport.Coupon{
+			Name: name, DiscountAmountTotal: 100, Currency: "CNY", TotalIssueLimit: total, PerUserIssueLimit: perUser,
+			ClaimStartsAt: starts, ClaimEndsAt: ends, ValidityMode: couponport.ValidityRelativeDays, RelativeValidityDays: &days, TargetRefs: targets,
+		}, Actor: 7, IdempotencyKey: name + "-catalog-create-key"})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		published, publishErr := rules.Publish(ctx, created.ID, 7, name+"-catalog-publish-key")
+		if publishErr != nil {
+			t.Fatal(publishErr)
+		}
+		return published
+	}
+	active := createPublished("catalog-active", now.Add(-time.Hour), now.Add(time.Hour), 2, 1, []string{"standard_product:9", "service_period:10"})
+	scheduled := createPublished("catalog-scheduled", now.Add(time.Hour), now.Add(2*time.Hour), 2, 1, []string{"standard_product:9"})
+	ended := createPublished("catalog-ended", now.Add(-2*time.Hour), now.Add(-time.Hour), 2, 1, []string{"standard_product:9"})
+	soldOut := createPublished("catalog-soldout", now.Add(-time.Hour), now.Add(time.Hour), 1, 1, []string{"standard_product:9"})
+
+	updates := []struct {
+		coupon    couponport.Coupon
+		slug      string
+		issued    int64
+		updatedAt time.Time
+	}{
+		{coupon: active, slug: "cp-active", issued: 0, updatedAt: now.Add(4 * time.Minute)},
+		{coupon: scheduled, slug: "", issued: 0, updatedAt: now.Add(3 * time.Minute)},
+		{coupon: ended, slug: "cp-ended", issued: 0, updatedAt: now.Add(2 * time.Minute)},
+		{coupon: soldOut, slug: "cp-soldout", issued: 1, updatedAt: now.Add(time.Minute)},
+	}
+	for _, update := range updates {
+		if _, err = native.Exec(ctx, `UPDATE coupon_rules SET public_slug=NULLIF($2,''),issued_count=$3,updated_at=$4 WHERE id=$1`, update.coupon.ID, update.slug, update.issued, update.updatedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	customerID := checkoutCustomer(t, native)
+	otherCustomerID := checkoutCustomer(t, native)
+	claimDigest := make([]byte, 32)
+	claimDigest[0] = 1
+	if _, err = native.Exec(ctx, `INSERT INTO coupon_customer_claims(source_system,source_key,customer_id,coupon_id,status,claim_no_masked,claimed_at,source_digest,created_at,updated_at) VALUES('catalog-test','active-current',$1,$2,'claimed','',$3,$4,$3,$3),('catalog-test','scheduled-other',$5,$6,'claimed','',$3,$4,$3,$3)`, customerID, active.ID, now, claimDigest, otherCustomerID, scheduled.ID); err != nil {
+		t.Fatal(err)
+	}
+	countsBefore := couponCatalogCounts(t, ctx, native)
+	catalog, err := couponapp.NewSidebarClaimableCatalog(uow, repository, products)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := catalog.ListSidebarClaimable(ctx, customerID, couponport.SidebarClaimableQuery{Limit: 2, Offset: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Total != 4 || first.Limit != 2 || first.Offset != 0 || len(first.Items) != 2 {
+		t.Fatalf("first page=%+v", first)
+	}
+	activeItem, scheduledItem := first.Items[0], first.Items[1]
+	if activeItem.CouponID != active.ID || activeItem.Name != active.Name || activeItem.DiscountMinor != 100 || activeItem.Currency != "CNY" || activeItem.PublicSlug != "cp-active" || activeItem.AvailabilityStatus != "active" || !activeItem.UserLimitReached || !activeItem.ClaimEndsAt.Equal(active.ClaimEndsAt) {
+		t.Fatalf("active catalog item=%+v", activeItem)
+	}
+	if len(activeItem.Targets) != 2 || activeItem.Targets[0] != (couponport.SidebarClaimableTarget{Title: "普通商品", ProductType: productport.ProductOptionStandard}) || activeItem.Targets[1] != (couponport.SidebarClaimableTarget{Title: "周期商品", ProductType: productport.ProductOptionServicePeriod}) {
+		t.Fatalf("active targets=%+v", activeItem.Targets)
+	}
+	if scheduledItem.CouponID != scheduled.ID || scheduledItem.AvailabilityStatus != "scheduled" || scheduledItem.UserLimitReached || scheduledItem.PublicSlug != "" {
+		t.Fatalf("scheduled catalog item=%+v", scheduledItem)
+	}
+
+	second, err := catalog.ListSidebarClaimable(ctx, customerID, couponport.SidebarClaimableQuery{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Total != 4 || second.Limit != 2 || second.Offset != 2 || len(second.Items) != 2 || second.Items[0].CouponID != ended.ID || second.Items[0].AvailabilityStatus != "ended" || second.Items[1].CouponID != soldOut.ID || second.Items[1].AvailabilityStatus != "sold_out" {
+		t.Fatalf("second page=%+v", second)
+	}
+	if countsAfter := couponCatalogCounts(t, ctx, native); countsAfter != countsBefore {
+		t.Fatalf("catalog read mutated coupon state before=%v after=%v", countsBefore, countsAfter)
+	}
+}
+
+func couponCatalogCounts(t *testing.T, ctx context.Context, pool *pgxpool.Pool) [4]int64 {
+	t.Helper()
+	var counts [4]int64
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM coupon_rules),(SELECT count(*) FROM coupon_customer_claims),(SELECT count(*) FROM coupon_audit_events),(SELECT count(*) FROM coupon_outbox)`).Scan(&counts[0], &counts[1], &counts[2], &counts[3]); err != nil {
+		t.Fatal(err)
+	}
+	return counts
+}
