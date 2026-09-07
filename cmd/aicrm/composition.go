@@ -196,6 +196,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	if err = validateAppliedRuntimeConfig(cfg); err != nil {
+		return fail(err)
+	}
 	auditService, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
 	if err != nil {
 		return fail(err)

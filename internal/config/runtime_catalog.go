@@ -81,45 +81,45 @@ func RuntimeCatalog(statuses ...map[string]bool) []RuntimeCategory {
 			secret("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION", "发送授权确认（只读）", "自动化", "environment://AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
 		}},
 		{Key: "open_api_key", Label: "CRM 开放 API Key", Group: "外部联通能力", ManagedURL: "/admin/api-docs", Fields: []RuntimeField{
-			unsupported("Direct API Key", "V3 只支持 V1 caller/OAuth2 管理；Direct API Key 和旧 56 条机器接口已退休。"),
+			unsupported("Direct API Key", "当前系统仅支持 V1 调用方和 OAuth2 管理；旧 Direct API Key 与旧 56 条机器接口已退休。"),
 		}},
 		{Key: "api_token", Label: "API 接入与 Token", Group: "外部联通能力", ManagedURL: "/admin/api-docs", Fields: []RuntimeField{
-			unsupported("API client / token", "调用方、scope 和令牌签发由 Open Platform/Access Owner 管理，Config 不保存凭据。"),
+			unsupported("API client / token", "调用方、权限范围和令牌签发由开放接口管理页面维护；配置中心不保存凭据。"),
 		}},
 		{Key: "webhooks_push", Label: "Webhook 与外推", Group: "外部联通能力", Fields: []RuntimeField{
-			field(configport.EffectsProviderEnabled, "启用 External Effects Provider", "统一队列", "boolean", "restart"),
+			field(configport.EffectsProviderEnabled, "启用受控外推执行", "统一队列", "boolean", "restart"),
 			field(configport.SurveyCompletionProviderEnabled, "启用问卷完成外推", "问卷提交", "boolean", "restart"),
 			field(configport.CommercePushProviderEnabled, "启用商品/订单外推", "统一队列", "boolean", "restart"),
-			field(configport.GroupOpsDirectoryReadEnabled, "允许群目录 Provider 读取", "群运营", "boolean", "restart"),
-			field(configport.GroupOpsDispatchEnabled, "允许群运营提交执行意图", "群运营", "boolean", "restart"),
+			field(configport.GroupOpsDirectoryReadEnabled, "允许群目录读取", "群运营", "boolean", "restart"),
+			field(configport.GroupOpsDispatchEnabled, "允许群运营提交发送意图", "群运营", "boolean", "restart"),
 		}},
 		{Key: "reliability", Label: "稳定性", Group: "平台治理", Fields: []RuntimeField{
 			field(configport.WorkerLimit, "Inbox 单次 claim 处理条数", "基础设施", "number", "restart"),
 		}},
 		{Key: "wechat_pay", Label: "微信支付", Group: "外部联通能力", Fields: []RuntimeField{
-			field(configport.WeChatPayProviderEnabled, "启用微信支付 Provider", "基础信息", "boolean", "restart"),
-			field(configport.WeChatPayAppID, "AppID", "基础信息", "text", "restart"),
+			field(configport.WeChatPayProviderEnabled, "启用微信支付", "基础信息", "boolean", "restart"),
+			scopeBound(configport.WeChatPayAppID, "AppID（身份作用域）", "基础信息", "restart", "已绑定支付 AppID 只能通过支付接入迁移流程变更；避免沿用旧 App Scope 误绑。"),
 			protected(configport.WeChatPayAppScope, "App Scope（受控）", "基础信息", "restart", "支付 App scope 绑定身份边界，只能由受控部署变更。"),
 			field(configport.WeChatPayH5OAuthEnabled, "启用 H5 OAuth", "公众号授权", "boolean", "restart"),
-			field(configport.WeChatPayH5AppID, "H5 AppID", "公众号授权", "text", "restart"),
+			scopeBound(configport.WeChatPayH5AppID, "H5 AppID（身份作用域）", "公众号授权", "restart", "已绑定 H5 AppID 只能通过支付接入迁移流程变更；避免沿用旧 H5 App Scope 误绑。"),
 			protected(configport.WeChatPayH5AppScope, "H5 App Scope（受控）", "公众号授权", "restart", "H5 scope 绑定身份边界，只能由受控部署变更。"),
-			field(configport.WeChatPayMerchantID, "商户号", "商户", "text", "restart"),
+			scopeBound(configport.WeChatPayMerchantID, "商户号（支付接入绑定）", "商户", "restart", "已绑定商户号只能通过支付接入迁移流程变更；商户证书序列号可按证书轮换更新。"),
 			field(configport.WeChatPayMerchantSerial, "商户证书序列号", "商户", "text", "restart"),
 			secret("WECHAT_PAY_API_V3_KEY", "API v3 Key", "密钥", "environment://AICRM_WECHAT_PAY_API_V3_KEY"),
 			secret("WECHAT_PAY_PRIVATE_KEY_PATH", "商户私钥", "密钥", "environment://AICRM_WECHAT_PAY_PRIVATE_KEY_PATH"),
 			secret("WECHAT_PAY_PLATFORM_CERT_PATH", "平台证书", "密钥", "environment://AICRM_WECHAT_PAY_PLATFORM_CERT_PATH"),
 		}},
-		{Key: "alipay", Label: "支付宝支付", Group: "外部联通能力", Disabled: "V3 未注册支付宝 Provider、路由或支付 Owner。", Fields: []RuntimeField{}},
+		{Key: "alipay", Label: "支付宝支付", Group: "外部联通能力", Disabled: "当前系统没有支付宝支付接入，不能保存、发布或显示已生效。", Fields: []RuntimeField{}},
 		{Key: "wechat_shop", Label: "微信小店", Group: "外部联通能力", Fields: []RuntimeField{
-			field(configport.WeChatShopProviderEnabled, "启用微信小店 Provider", "基础信息", "boolean", "restart"),
-			field(configport.WeChatShopAppID, "AppID", "基础信息", "text", "restart"),
+			field(configport.WeChatShopProviderEnabled, "启用微信小店", "基础信息", "boolean", "restart"),
+			scopeBound(configport.WeChatShopAppID, "AppID（小店接入绑定）", "基础信息", "restart", "已绑定微信小店 AppID 只能通过小店接入迁移流程变更；避免沿用旧回调凭据。"),
 			secret("WECHAT_SHOP_APP_SECRET", "AppSecret", "密钥", "environment://AICRM_WECHAT_SHOP_APP_SECRET"),
 			secret("WECHAT_SHOP_CALLBACK_TOKEN", "Callback Token", "回调", "environment://AICRM_WECHAT_SHOP_CALLBACK_TOKEN"),
 			secret("WECHAT_SHOP_CALLBACK_AES_KEY", "Callback EncodingAESKey", "回调", "environment://AICRM_WECHAT_SHOP_CALLBACK_AES_KEY"),
 		}},
 		{Key: "wechat_oauth", Label: "公众号授权", Group: "外部联通能力", Fields: []RuntimeField{
 			field(configport.SurveyOAuthEnabled, "启用公众号 OAuth", "授权", "boolean", "restart"),
-			field(configport.SurveyOAuthAppID, "AppID", "授权", "text", "restart"),
+			scopeBound(configport.SurveyOAuthAppID, "AppID（身份作用域）", "授权", "restart", "已绑定 OAuth AppID 只能通过身份迁移流程变更；未配置时可按部署契约补齐。"),
 			scopeBound(configport.SurveyOAuthOpenPlatformID, "开放平台 AppID（身份作用域）", "授权", "restart", "已绑定开放平台作用域只能通过身份迁移流程变更；未配置时可按部署契约补齐。"),
 			protected(configport.SurveyOAuthScope, "OAuth Scope（受控）", "授权", "restart", "OAuth scope 绑定 Open Platform 身份边界，只能由受控部署变更。"),
 			secret("WECHAT_MP_APP_SECRET", "AppSecret", "密钥", "environment://AICRM_SURVEY_OAUTH_SECRET"),
@@ -266,19 +266,19 @@ func ValidateRuntimeDependencies(settings []configport.RuntimeSetting) []configp
 		}
 	}
 	providerReady := boolAt(configport.EffectsProviderEnabled) && boolAt(configport.WeComEnabled)
-	require(boolAt(configport.GroupOpsDispatchEnabled), configport.GroupOpsDispatchEnabled, providerReady, "requires enabled External Effects and Enterprise WeChat")
-	require(boolAt(configport.SurveyCompletionProviderEnabled), configport.SurveyCompletionProviderEnabled, boolAt(configport.EffectsProviderEnabled), "requires enabled External Effects")
-	require(boolAt(configport.CommercePushProviderEnabled), configport.CommercePushProviderEnabled, boolAt(configport.EffectsProviderEnabled), "requires enabled External Effects")
-	require(boolAt(configport.MessageArchiveEnabled), configport.MessageArchiveEnabled, boolAt(configport.WeComEnabled), "requires enabled Enterprise WeChat")
+	require(boolAt(configport.GroupOpsDispatchEnabled), configport.GroupOpsDispatchEnabled, providerReady, "需先启用企业微信和受控外推执行")
+	require(boolAt(configport.SurveyCompletionProviderEnabled), configport.SurveyCompletionProviderEnabled, boolAt(configport.EffectsProviderEnabled), "需先启用受控外推执行")
+	require(boolAt(configport.CommercePushProviderEnabled), configport.CommercePushProviderEnabled, boolAt(configport.EffectsProviderEnabled), "需先启用受控外推执行")
+	require(boolAt(configport.MessageArchiveEnabled), configport.MessageArchiveEnabled, boolAt(configport.WeComEnabled), "需先启用企业微信")
 	var automationMode string
 	_ = json.Unmarshal(values[configport.AutomationOperationsProviderMode], &automationMode)
-	require(automationMode != "" && automationMode != "disabled", configport.AutomationOperationsProviderMode, providerReady, "requires enabled External Effects and Enterprise WeChat")
+	require(automationMode != "" && automationMode != "disabled", configport.AutomationOperationsProviderMode, providerReady, "需先启用企业微信和受控外推执行")
 	payReady := textAt(configport.WeChatPayAppID) != "" && textAt(configport.WeChatPayMerchantID) != "" && textAt(configport.WeChatPayMerchantSerial) != ""
-	require(boolAt(configport.WeChatPayProviderEnabled), configport.WeChatPayProviderEnabled, payReady, "requires AppID, merchant ID, and merchant certificate serial")
-	require(boolAt(configport.WeChatPayH5OAuthEnabled), configport.WeChatPayH5OAuthEnabled, textAt(configport.WeChatPayH5AppID) != "" && textAt(configport.WeChatPayH5AppScope) != "", "requires H5 AppID and App Scope")
-	require(boolAt(configport.WeChatShopProviderEnabled), configport.WeChatShopProviderEnabled, textAt(configport.WeChatShopAppID) != "", "requires AppID")
+	require(boolAt(configport.WeChatPayProviderEnabled), configport.WeChatPayProviderEnabled, payReady, "需填写 AppID、商户号和商户证书序列号")
+	require(boolAt(configport.WeChatPayH5OAuthEnabled), configport.WeChatPayH5OAuthEnabled, textAt(configport.WeChatPayH5AppID) != "" && textAt(configport.WeChatPayH5AppScope) != "", "需填写 H5 AppID 和 App Scope")
+	require(boolAt(configport.WeChatShopProviderEnabled), configport.WeChatShopProviderEnabled, textAt(configport.WeChatShopAppID) != "", "需填写 AppID")
 	oauthReady := textAt(configport.SurveyOAuthAppID) != "" && textAt(configport.SurveyOAuthOpenPlatformID) != "" && textAt(configport.SurveyOAuthScope) != ""
-	require(boolAt(configport.SurveyOAuthEnabled), configport.SurveyOAuthEnabled, oauthReady, "requires AppID, Open Platform AppID, and OAuth Scope")
+	require(boolAt(configport.SurveyOAuthEnabled), configport.SurveyOAuthEnabled, oauthReady, "需填写 AppID、开放平台 AppID 和 OAuth Scope")
 	return issues
 }
 
@@ -364,45 +364,45 @@ func legacyCatalogFields(category string) []RuntimeField {
 	switch category {
 	case "wecom_base":
 		return combine(
-			deployment("接口", "由 WeCom Provider 的受保护部署清单管理；V3 固定 Provider origin。", "WECOM_API_BASE"),
-			retired("接口", "旧默认负责人没有 V3 安全 consumer，已退休。", "WECOM_DEFAULT_OWNER_USERID"),
-			deployment("会话存档", "由 Archive Provider 的受保护部署清单管理；只报告引用 presence。", "WECOM_PRIVATE_KEY_PATH", "WECOM_SDK_LIB_PATH", "WECOM_ARCHIVE_TIMEOUT"),
-			retired("限制", "旧企业标签上限没有 V3 Config consumer，已退休。", "WECOM_CORP_TAG_LIMIT"))
+			deployment("接口", "由企业微信接入的受保护部署清单管理；服务地址固定。", "WECOM_API_BASE"),
+			retired("接口", "旧默认负责人没有安全的当前接入点，已退休。", "WECOM_DEFAULT_OWNER_USERID"),
+			deployment("会话存档", "由会话存档接入的受保护部署清单管理；页面只显示引用是否已配置。", "WECOM_PRIVATE_KEY_PATH", "WECOM_SDK_LIB_PATH", "WECOM_ARCHIVE_TIMEOUT"),
+			retired("限制", "旧企业标签上限没有当前安全接入点，已退休。", "WECOM_CORP_TAG_LIMIT"))
 	case "admin_access":
-		return deployment("后台安全", "由 Access Owner 的登录、会话和受信任域部署配置管理。", "ADMIN_AUTH_MODE", "ADMIN_LOGIN_REDIRECT_URI", "ADMIN_WECHAT_TRUSTED_DOMAIN")
+		return deployment("后台安全", "由后台访问管理的登录、会话和受信任域部署配置管理。", "ADMIN_AUTH_MODE", "ADMIN_LOGIN_REDIRECT_URI", "ADMIN_WECHAT_TRUSTED_DOMAIN")
 	case "sidebar_identity":
 		return combine(
-			retired("基础信息", "产品 Context Token 旧路径没有 V3 consumer，已退休。", "SIDEBAR_PRODUCT_CONTEXT_TOKEN_TTL_SECONDS"),
-			deployment("企微 JSSDK", "由 WeCom Provider 受保护部署配置管理。", "AICRM_SIDEBAR_JSSDK_ADAPTER_MODE", "AICRM_SIDEBAR_JSSDK_REAL_ENABLED", "AICRM_SIDEBAR_JSSDK_TIMEOUT_SECONDS"),
-			retired("图片素材", "旧快捷关键词没有 V3 consumer，已退休。", "AICRM_SIDEBAR_IMAGE_QUICK_KEYWORDS"))
+			retired("基础信息", "产品 Context Token 旧路径没有当前安全接入点，已退休。", "SIDEBAR_PRODUCT_CONTEXT_TOKEN_TTL_SECONDS"),
+			deployment("企微 JSSDK", "由企业微信签名接入的受保护部署配置管理。", "AICRM_SIDEBAR_JSSDK_ADAPTER_MODE", "AICRM_SIDEBAR_JSSDK_REAL_ENABLED", "AICRM_SIDEBAR_JSSDK_TIMEOUT_SECONDS"),
+			retired("图片素材", "旧快捷关键词没有当前安全接入点，已退休。", "AICRM_SIDEBAR_IMAGE_QUICK_KEYWORDS"))
 	case "ai_automation":
 		return combine(
-			retired("AI", "DeepSeek 旧 Provider 未注册到 V3，已退休。", "DEEPSEEK_ENABLED", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_ROUTER_MODEL", "DEEPSEEK_EXECUTION_MODEL", "DEEPSEEK_REASONER_MODEL", "DEEPSEEK_TIMEOUT_SECONDS"),
-			deployment("统一授权平台", "由 Access/Open Platform 受保护部署配置管理。", "AICRM_AUTH_ISSUER", "AICRM_AUTH_SESSION_HASH_PEPPER", "AICRM_AUTH_JWT_SIGNING_KEY", "AICRM_AUTH_TRUSTED_PROXY_ADDRESSES", "AICRM_AUTH_CA_FILE"),
+			retired("AI", "DeepSeek 旧接入未迁入当前系统，已退休。", "DEEPSEEK_ENABLED", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_ROUTER_MODEL", "DEEPSEEK_EXECUTION_MODEL", "DEEPSEEK_REASONER_MODEL", "DEEPSEEK_TIMEOUT_SECONDS"),
+			deployment("统一授权平台", "由后台访问和开放接口的受保护部署配置管理。", "AICRM_AUTH_ISSUER", "AICRM_AUTH_SESSION_HASH_PEPPER", "AICRM_AUTH_JWT_SIGNING_KEY", "AICRM_AUTH_TRUSTED_PROXY_ADDRESSES", "AICRM_AUTH_CA_FILE"),
 			retired("机器身份", "旧机器 client 配置由 V1 caller/OAuth2 取代，旧入口已退休。", "AICRM_AUTH_AUTOMATION_WORKER_CLIENT_ID", "AICRM_AUTH_AUTOMATION_WORKER_CLIENT_SECRET_REF", "AICRM_AUTH_ARCHIVE_WORKER_CLIENT_ID", "AICRM_AUTH_ARCHIVE_WORKER_CLIENT_SECRET_REF", "AICRM_AUTH_CALLBACK_WORKER_CLIENT_ID", "AICRM_AUTH_CALLBACK_WORKER_CLIENT_SECRET_REF", "AICRM_AUTH_GROUP_BROADCAST_CLIENT_ID", "AICRM_AUTH_GROUP_BROADCAST_CLIENT_SECRET_REF", "AICRM_AUTH_IDENTITY_CLIENT_ID", "AICRM_AUTH_IDENTITY_CLIENT_SECRET_REF", "AICRM_AUTH_MCP_CLIENT_ID", "AICRM_AUTH_MCP_CLIENT_SECRET_REF", "AICRM_AUTH_EXTERNAL_AGENT_CLIENT_ID", "AICRM_AUTH_EXTERNAL_AGENT_CLIENT_SECRET_REF", "AICRM_AUTH_CAMPAIGN_AGENT_CLIENT_ID", "AICRM_AUTH_CAMPAIGN_AGENT_CLIENT_SECRET_REF", "AICRM_AUTH_OPS_REPORTER_CLIENT_ID", "AICRM_AUTH_OPS_REPORTER_CLIENT_SECRET_REF", "AICRM_AUTH_OPERATION_RUNNER_CLIENT_ID", "AICRM_AUTH_OPERATION_RUNNER_CLIENT_SECRET_REF", "AICRM_AUTH_OUTBOUND_WEBHOOK_CLIENT_ID"))
 	case "webhooks_push":
 		return combine(
 			retired("Webhook", "OpenClaw 旧 URL 写入通道未迁入 V3，已退休。", "OPENCLAW_WEBHOOK_URL", "OPENCLAW_FOCUS_MESSAGE_WEBHOOK_TIMEOUT_SECONDS"),
-			deployment("问卷提交", "问卷 Completion Target 由 Survey Owner 的受保护部署清单管理。", "QUESTIONNAIRE_SUBMIT_WEBHOOK_URL", "QUESTIONNAIRE_SUBMIT_WEBHOOK_TIMEOUT_SECONDS", "QUESTIONNAIRE_EXTERNAL_PUSH_TIMEOUT_SECONDS"),
-			retired("问卷外推", "旧全局推送开关由受控 Survey Completion Provider 取代。", "QUESTIONNAIRE_EXTERNAL_PUSH_GLOBAL_ENABLED"),
-			deployment("统一队列", "由 External Effects Owner 的受保护部署策略管理。", "AICRM_EXTERNAL_EFFECT_ALLOWED_BASE_HOSTS", "AICRM_EXTERNAL_EFFECT_TEST_EXECUTION_ONLY", "AICRM_EXTERNAL_EFFECT_ALLOWED_TYPES", "AICRM_EXTERNAL_EFFECT_REALTIME_ENABLED", "AICRM_EXTERNAL_EFFECT_REALTIME_ALLOWED_TYPES", "AICRM_EXTERNAL_EFFECT_REALTIME_MAX_CONCURRENCY", "AICRM_EXTERNAL_EFFECT_WEBHOOK_TIMEOUT_SECONDS"),
-			retired("Webhook 执行", "旧 Webhook 任意执行开关没有 V3 Config consumer，已退休。", "AICRM_EXTERNAL_EFFECT_WEBHOOK_EXECUTE"),
-			deployment("企微执行", "由 Outbound/WeCom Owner 的受保护部署 allowlist 管理。", "AICRM_EXTERNAL_EFFECT_WECOM_EXECUTE", "AICRM_WECOM_EXECUTION_MODE", "AICRM_WECOM_ENABLED_EFFECT_TYPES", "AICRM_WECOM_DEFAULT_SENDER_USERID", "AICRM_EXTERNAL_EFFECT_ALLOWED_OWNER_USERIDS", "AICRM_EXTERNAL_EFFECT_ALLOWED_TARGET_EXTERNAL_USERIDS", "AICRM_EXTERNAL_EFFECT_ALLOWED_GROUP_OPS_WEBHOOK_KEYS", "AICRM_EXTERNAL_EFFECT_ALLOWED_GROUP_CHAT_IDS", "AICRM_WECOM_PRIVATE_ADAPTER_MODE", "AICRM_ENABLE_REAL_WECOM_PRIVATE_MESSAGE", "AICRM_WECOM_GROUP_ADAPTER_MODE", "AICRM_ENABLE_REAL_WECOM_GROUP_MESSAGE"),
-			retired("预留执行开关", "旧预留写开关没有 V3 Config consumer，已退休。", "AICRM_EXTERNAL_EFFECT_PAYMENT_EXECUTE", "AICRM_EXTERNAL_EFFECT_FEISHU_EXECUTE", "AICRM_EXTERNAL_EFFECT_OPENCLAW_EXECUTE", "AICRM_EXTERNAL_EFFECT_MEDIA_UPLOAD_EXECUTE"),
-			deployment("重试", "由 External Effects/Outbox 可靠性内核管理，页面不能新建第二套重试。", "OUTBOUND_WEBHOOK_RETRY_ENABLED", "OUTBOUND_WEBHOOK_RETRY_MAX_ATTEMPTS", "OUTBOUND_WEBHOOK_RETRY_INTERVAL_SECONDS"))
+			deployment("问卷提交", "问卷提交目标由问卷模块的受保护部署清单管理。", "QUESTIONNAIRE_SUBMIT_WEBHOOK_URL", "QUESTIONNAIRE_SUBMIT_WEBHOOK_TIMEOUT_SECONDS", "QUESTIONNAIRE_EXTERNAL_PUSH_TIMEOUT_SECONDS"),
+			retired("问卷外推", "旧全局推送开关已由受控问卷提交配置取代。", "QUESTIONNAIRE_EXTERNAL_PUSH_GLOBAL_ENABLED"),
+			deployment("统一队列", "由受控外推执行策略的受保护部署清单管理。", "AICRM_EXTERNAL_EFFECT_ALLOWED_BASE_HOSTS", "AICRM_EXTERNAL_EFFECT_TEST_EXECUTION_ONLY", "AICRM_EXTERNAL_EFFECT_ALLOWED_TYPES", "AICRM_EXTERNAL_EFFECT_REALTIME_ENABLED", "AICRM_EXTERNAL_EFFECT_REALTIME_ALLOWED_TYPES", "AICRM_EXTERNAL_EFFECT_REALTIME_MAX_CONCURRENCY", "AICRM_EXTERNAL_EFFECT_WEBHOOK_TIMEOUT_SECONDS"),
+			retired("Webhook 执行", "旧 Webhook 任意执行开关没有当前安全接入点，已退休。", "AICRM_EXTERNAL_EFFECT_WEBHOOK_EXECUTE"),
+			deployment("企微执行", "由企业微信发送权限清单的受保护部署配置管理。", "AICRM_EXTERNAL_EFFECT_WECOM_EXECUTE", "AICRM_WECOM_EXECUTION_MODE", "AICRM_WECOM_ENABLED_EFFECT_TYPES", "AICRM_WECOM_DEFAULT_SENDER_USERID", "AICRM_EXTERNAL_EFFECT_ALLOWED_OWNER_USERIDS", "AICRM_EXTERNAL_EFFECT_ALLOWED_TARGET_EXTERNAL_USERIDS", "AICRM_EXTERNAL_EFFECT_ALLOWED_GROUP_OPS_WEBHOOK_KEYS", "AICRM_EXTERNAL_EFFECT_ALLOWED_GROUP_CHAT_IDS", "AICRM_WECOM_PRIVATE_ADAPTER_MODE", "AICRM_ENABLE_REAL_WECOM_PRIVATE_MESSAGE", "AICRM_WECOM_GROUP_ADAPTER_MODE", "AICRM_ENABLE_REAL_WECOM_GROUP_MESSAGE"),
+			retired("预留执行开关", "旧预留写开关没有当前安全接入点，已退休。", "AICRM_EXTERNAL_EFFECT_PAYMENT_EXECUTE", "AICRM_EXTERNAL_EFFECT_FEISHU_EXECUTE", "AICRM_EXTERNAL_EFFECT_OPENCLAW_EXECUTE", "AICRM_EXTERNAL_EFFECT_MEDIA_UPLOAD_EXECUTE"),
+			deployment("重试", "由受控发送队列和可靠性内核管理，页面不能新建第二套重试。", "OUTBOUND_WEBHOOK_RETRY_ENABLED", "OUTBOUND_WEBHOOK_RETRY_MAX_ATTEMPTS", "OUTBOUND_WEBHOOK_RETRY_INTERVAL_SECONDS"))
 	case "reliability":
 		return combine(
-			deployment("HTTP", "由各 Provider Owner 的受保护部署超时和重试策略管理。", "HTTP_DEFAULT_TIMEOUT", "HTTP_RETRY_MAX", "HTTP_RETRY_BACKOFF_BASE", "CIRCUIT_FAILURE_THRESHOLD", "CIRCUIT_RECOVERY_SECONDS"),
+			deployment("HTTP", "由各接入的受保护部署超时和重试策略管理。", "HTTP_DEFAULT_TIMEOUT", "HTTP_RETRY_MAX", "HTTP_RETRY_BACKOFF_BASE", "CIRCUIT_FAILURE_THRESHOLD", "CIRCUIT_RECOVERY_SECONDS"),
 			deployment("任务", "由 River/Outbox 可靠性内核管理。", "RQ_DEFAULT_TIMEOUT", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_BACKOFF_BASE_SECONDS"),
 			retired("基础设施", "V3 不使用 Redis，REDIS_URL 已退休。", "REDIS_URL"))
 	case "wechat_pay":
 		return combine(
-			deployment("接口", "Payment Owner 固定回调路由和 Provider origin；由受保护部署管理。", "WECHAT_PAY_NOTIFY_URL", "WECHAT_PAY_API_BASE", "WECHAT_PAY_TIMEOUT_SECONDS"),
-			retired("商品", "旧 JSON 商品目录已由 Product Owner 管理，已退休。", "WECHAT_PAY_PRODUCT_CATALOG_JSON"))
+			deployment("接口", "支付模块固定回调路由和服务地址；由受保护部署管理。", "WECHAT_PAY_NOTIFY_URL", "WECHAT_PAY_API_BASE", "WECHAT_PAY_TIMEOUT_SECONDS"),
+			retired("商品", "旧 JSON 商品目录已由商品管理维护，已退休。", "WECHAT_PAY_PRODUCT_CATALOG_JSON"))
 	case "alipay":
-		return retired("支付宝", "V3 未注册支付宝 Provider、路由或支付 Owner；不能保存、发布或显示已生效。", "ALIPAY_ENABLED", "ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY_PATH", "ALIPAY_PUBLIC_KEY_PATH", "ALIPAY_SERVER_URL", "ALIPAY_NOTIFY_URL", "ALIPAY_RETURN_URL", "ALIPAY_SIGN_TYPE", "ALIPAY_TIMEOUT_EXPRESS")
+		return retired("支付宝", "当前系统没有支付宝接入或路由；不能保存、发布或显示已生效。", "ALIPAY_ENABLED", "ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY_PATH", "ALIPAY_PUBLIC_KEY_PATH", "ALIPAY_SERVER_URL", "ALIPAY_NOTIFY_URL", "ALIPAY_RETURN_URL", "ALIPAY_SIGN_TYPE", "ALIPAY_TIMEOUT_EXPRESS")
 	case "wechat_shop":
-		return deployment("接口", "WeChat Shop Provider 使用固定协议；API base 和 timeout 由受保护部署管理。", "WECHAT_SHOP_API_BASE", "WECHAT_SHOP_HTTP_TIMEOUT_SECONDS")
+		return deployment("接口", "微信小店使用固定协议；服务地址和超时由受保护部署管理。", "WECHAT_SHOP_API_BASE", "WECHAT_SHOP_HTTP_TIMEOUT_SECONDS")
 	case "wechat_oauth":
 		return nil
 	default:
@@ -424,12 +424,15 @@ func ProtectedRuntimeSetting(key configport.RuntimeSettingKey) bool {
 	}
 }
 
-// ScopeBoundRuntimeSetting is a one-way initial binding: a blank deployment
-// value may be completed, but an existing identity scope cannot be changed by
-// an ordinary configuration release.
+// ScopeBoundRuntimeSetting is a one-way initial identity or integration
+// binding: a blank deployment value may be completed, but an existing binding
+// cannot be changed by an ordinary configuration release.
 func ScopeBoundRuntimeSetting(key configport.RuntimeSettingKey) bool {
 	switch key {
-	case configport.RuntimeWeComCorpID, configport.SurveyOAuthOpenPlatformID:
+	case configport.RuntimeWeComCorpID, configport.SurveyOAuthAppID,
+		configport.SurveyOAuthOpenPlatformID, configport.WeChatPayAppID,
+		configport.WeChatPayH5AppID, configport.WeChatPayMerchantID,
+		configport.WeChatShopAppID:
 		return true
 	default:
 		return false

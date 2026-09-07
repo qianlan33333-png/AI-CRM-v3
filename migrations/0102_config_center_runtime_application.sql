@@ -3,6 +3,31 @@
 
 ALTER TABLE config_runtime_release_values
     DROP CONSTRAINT config_runtime_release_values_setting_key_check;
+-- The compatibility recovery is a single, audited Config command. It creates
+-- no deployment value and exists only to prepare the prior binary's one-key
+-- runtime catalog before that binary is started.
+ALTER TABLE config_runtime_release_command_receipts
+    DROP CONSTRAINT config_runtime_release_command_receipts_action_check;
+ALTER TABLE config_runtime_release_command_receipts
+    ADD CONSTRAINT config_runtime_release_command_receipts_action_check CHECK (action IN (
+        'runtime_release.create', 'runtime_release.validate', 'runtime_release.publish',
+        'runtime_release.rollback', 'runtime_release.legacy_binary_recovery'
+    ));
+ALTER TABLE config_runtime_release_audits
+    DROP CONSTRAINT config_runtime_release_audits_action_check;
+ALTER TABLE config_runtime_release_audits
+    ADD CONSTRAINT config_runtime_release_audits_action_check CHECK (action IN (
+        'created', 'validated', 'validation_failed', 'published', 'superseded',
+        'rolled_back', 'legacy_binary_recovery_published'
+    ));
+ALTER TABLE config_outbox
+    DROP CONSTRAINT config_outbox_event_type_check;
+ALTER TABLE config_outbox
+    ADD CONSTRAINT config_outbox_event_type_check CHECK (event_type IN (
+        'setting.updated', 'runtime_release.published', 'runtime_release.rolled_back',
+        'runtime_release.legacy_binary_recovery_published'
+    ));
+
 ALTER TABLE config_runtime_release_values
     ADD CONSTRAINT config_runtime_release_values_setting_key_check CHECK (setting_key IN (
         'automation.operations.max_recipients_per_run', 'automation.operations.provider_mode',

@@ -29,6 +29,7 @@
 
 # generated P4 donor-source views; exact paths only (see source-index.json)
 /internal/config/http/openapi.yaml
+/internal/webshell/static/admin_console/config_center.css
 /internal/webshell/static/admin_console/send_content_readonly_detail.css
 /web/donors/adminops-v2/src/admin/sections/setupWizard.ts
 /web/donors/adminops-v2/src/admin/templates/apidocs.html

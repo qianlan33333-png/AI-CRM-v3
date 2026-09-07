@@ -4,12 +4,15 @@ import "testing"
 
 func TestRuntimeCatalogRetainsTwelveLegacyCategoriesAndReferencePresence(t *testing.T) {
 	catalog := RuntimeCatalog(map[string]bool{
-		"environment://AICRM_WECOM_SECRET": true,
+		"environment://AICRM_WECOM_SECRET":                 true,
+		"environment://AICRM_WECHAT_SHOP_APP_SECRET":       true,
+		"environment://AICRM_WECHAT_SHOP_CALLBACK_TOKEN":   true,
+		"environment://AICRM_WECHAT_SHOP_CALLBACK_AES_KEY": false,
 	})
 	if len(catalog) != 12 || catalog[0].Key != "wecom_base" || catalog[11].Key != "wechat_oauth" {
 		t.Fatalf("catalog categories=%#v", catalog)
 	}
-	var secretConfigured, apiBase, workerLimit, scopeBound bool
+	var secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES bool
 	for _, category := range catalog {
 		for _, field := range category.Fields {
 			switch field.Key {
@@ -21,10 +24,16 @@ func TestRuntimeCatalogRetainsTwelveLegacyCategoriesAndReferencePresence(t *test
 				workerLimit = field.Label == "Inbox 单次 claim 处理条数"
 			case "wecom.corp_id":
 				scopeBound = field.Input == "scope-bound"
+			case "WECHAT_SHOP_APP_SECRET":
+				shopAppSecret = field.Configured != nil && *field.Configured
+			case "WECHAT_SHOP_CALLBACK_TOKEN":
+				shopToken = field.Configured != nil && *field.Configured
+			case "WECHAT_SHOP_CALLBACK_AES_KEY":
+				shopAES = field.Configured != nil && *field.Configured
 			}
 		}
 	}
-	if !secretConfigured || !apiBase || !workerLimit || !scopeBound {
-		t.Fatalf("catalog presence/field mapping secret=%t apiBase=%t worker=%t scope=%t", secretConfigured, apiBase, workerLimit, scopeBound)
+	if !secretConfigured || !apiBase || !workerLimit || !scopeBound || !shopAppSecret || !shopToken || shopAES {
+		t.Fatalf("catalog presence/field mapping secret=%t apiBase=%t worker=%t scope=%t shop app/token/aes=%t/%t/%t", secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES)
 	}
 }

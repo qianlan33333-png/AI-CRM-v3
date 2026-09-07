@@ -28,6 +28,9 @@ import (
 // Persistence decision: local PostgreSQL transactions only. No Provider is
 // configured or called by this journey.
 func TestPostgreSQLRuntimeReleaseChromiumJourney(t *testing.T) {
+	if !platformconfig.ChromiumJourneyRequired() {
+		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -48,6 +51,13 @@ func TestPostgreSQLRuntimeReleaseChromiumJourney(t *testing.T) {
 		WorkerOwner:  "runtime-config-chromium-journey",
 		WorkerLimit:  1,
 		GroupOps:     platformconfig.GroupOps{WebhookSecret: "runtime-config-chromium-journey-webhook-secret"},
+		AutomationOperations: platformconfig.AutomationOperations{
+			ProviderMode: platformconfig.AutomationProviderDisabled, MaxRecipientsPerRun: 1,
+		},
+		WeCom: platformconfig.WeCom{
+			AgentID: "agent-preserved", ContextTokenTTL: time.Minute,
+			MessageArchivePageLimit: 1, MessageArchivePageBudget: 1,
+		},
 		Survey: platformconfig.Survey{
 			DataKey:              base64.RawStdEncoding.EncodeToString(dataKey),
 			IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(dataKey),
@@ -93,7 +103,7 @@ func TestPostgreSQLRuntimeReleaseChromiumJourney(t *testing.T) {
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage`).Scan(&usage); err != nil {
 		t.Fatal(err)
 	}
-	if releases != 3 || published != 1 || superseded != 2 || usage != 0 {
+	if releases != 4 || published != 1 || superseded != 2 || usage != 0 {
 		t.Fatalf("Chromium release facts releases/published/superseded/usage=%d/%d/%d/%d", releases, published, superseded, usage)
 	}
 }

@@ -46,6 +46,12 @@ External Effects：不涉及。开启配置只改变受控本地运行配置；�
 
 运行时的密钥/授权读取来源是 V3 的闭集受保护部署引用。旧服务的一次性导出只可作为迁移输入，由部署 Owner 转入 V3 受保护配置；运行中的 V3 不读取旧数据库、旧文件或旧服务。页面只回读当前启动角色报告的 `configured` 布尔值，绝不返回值、散列或可枚举环境变量名。
 
-`wecom.corp_id` 与 `survey.oauth_open_platform_id` 是已绑定身份作用域：已有非空部署值时，普通 Config 发布只能保存相同值，任何改变都必须被拒绝并走显式身份/接入迁移。未配置的部署值由受控部署契约补齐。`wechat_pay.app_scope`、`wechat_pay.h5_app_scope` 与 `survey.oauth_scope` 是部署受控 scope，普通 Config 发布不得修改。自动化 mode 和 AI dispatch 允许按草稿/校验/发布流程开关，但只有既有固定授权、全局依赖和受保护凭据都存在时才会校验通过；关闭不要求这些前置条件。
+`wecom.corp_id`、`survey.oauth_app_id`、`survey.oauth_open_platform_id`、`wechat_pay.app_id`、`wechat_pay.h5_app_id`、`wechat_pay.merchant_id` 与 `wechat_shop.app_id` 都是已绑定身份或接入标识：已有非空部署值时，普通 Config 发布只能保存相同值，任何改变都必须被拒绝并走显式身份/接入迁移。这样不能把新 AppID 或商户号与旧支付、小店回调或 OAuth scope 静默组合。未配置的部署值由受控部署契约补齐。`wechat_pay.merchant_serial` 是证书轮换值，仍可按正常发布流程更新。`wechat_pay.app_scope`、`wechat_pay.h5_app_scope` 与 `survey.oauth_scope` 是部署受控 scope，普通 Config 发布不得修改。自动化 mode 和 AI dispatch 允许按草稿/校验/发布流程开关，但只有既有固定授权、全局依赖和受保护凭据都存在时才会校验通过；关闭不要求这些前置条件。
+
+## 旧二进制回退
+
+0102 扩大了运行时目录；0102 之前的程序只认识 `automation.operations.max_recipients_per_run`。因此普通“用此版本回滚”只用于仍运行新版程序，不能当作旧二进制回退的前置条件。
+
+在切换程序前，管理员必须在新版的发布记录页面执行“准备旧程序恢复配置”。它通过带操作凭证、幂等键和 active revision CAS 的 `POST /api/admin/config/runtime-releases/legacy-binary-recovery` 原子发布一个只含上述旧字段的恢复版本；人数沿用当前生效值。服务同时把当前快照逐项与受保护部署默认值比较：支付、企业身份、OAuth、自动化、AI、群运营或其他新字段只要有差异便返回冲突，绝不发布恢复版本。冲突时先由受控部署把所需值落实为受保护默认值，在新版完成启动校验和应用回读后再重试。成功后核对返回版本仅含旧字段，才可以按独立部署流程回退程序。该动作不写环境、不会发送业务请求，也不会把程序回退本身标记成已完成。
 
 启动应用事实的身份是 `(revision, source, role, release_sha, snapshot_checksum)`。`snapshot_checksum` 覆盖闭集 effective settings，所以 revision `0` 的环境默认发生变化时，旧应用记录不会证明当前快照已经读取。Composition 只在全部配置相关 Adapter、路由和启动校验成功后写入该事实；失败启动不会留下“已应用”记录。

@@ -67,6 +67,11 @@
     const setting = Array.isArray(release?.settings) ? release.settings.find((item) => item?.key === "automation.operations.max_recipients_per_run") : null;
     return setting?.value;
   };
+  const serviceLabel = (role) => ({
+    api: "管理接口服务",
+    worker: "后台任务服务",
+    "effects-worker": "受控执行服务",
+  }[role] || "相应服务");
   const formatDate = (value) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "-";
   const runtimeList = async () => request(API);
   const runtimeDetail = async (id) => request(`${API}/${encodeURIComponent(String(id))}`);
@@ -97,6 +102,22 @@
       add("生效值", `${text(model.effective?.automation_max_recipients_per_run)} 位收件人 / 每次运行`);
       add("来源", model.effective?.source === "published" ? "已发布配置" : "环境启动值或默认值");
       summary.append(element("div", "admin-card-head", "当前运行时配置"), details);
+      const legacyRecovery = button("准备旧程序恢复配置", "danger");
+      legacyRecovery.dataset.runtimeReleaseLegacyRecovery = "";
+      legacyRecovery.addEventListener("click", () => {
+        if (!globalThis.confirm("这会先发布只含旧程序可识别字段的恢复配置。只有当前配置与受保护部署默认值一致时才会成功；确认后再由部署流程回退程序。继续吗？")) return;
+        void (async () => {
+          legacyRecovery.disabled = true;
+          try {
+            const current = await runtimeList();
+            const token = current.legacy_binary_recovery_action;
+            if (!token) throw new Error("后端未返回旧程序恢复操作凭证");
+            const result = await request(`${API}/legacy-binary-recovery`, { method: "POST", headers: writeHeaders(), body: JSON.stringify({ expected_base_revision: current.runtime_releases?.active_revision || 0, admin_action_token: token }) });
+            await showDetail(result.runtime_release.id, "已发布旧程序恢复配置；请确认该版本只有旧字段后，再按部署流程回退程序。");
+          } catch (error) { status(error instanceof Error ? error.message : "旧程序恢复配置未能发布", "error"); legacyRecovery.disabled = false; }
+        })();
+      });
+      summary.append(legacyRecovery);
       root.append(summary);
       for (const release of model.releases || []) {
         const row = document.createElement("tr");
@@ -176,8 +197,8 @@
       if (["draft", "validated", "validation_failed"].includes(release.state)) { const validate = button("运行跨模块校验"); validate.dataset.runtimeReleaseValidate = String(id); validate.addEventListener("click", () => void postAction("validate").catch((error) => status(error.message, "error"))); actions.append(validate); }
       if (release.state === "validated") { const publish = button("发布配置", "primary"); publish.dataset.runtimeReleasePublish = String(id); publish.addEventListener("click", () => void postAction("publish").catch((error) => status(error.message, "error"))); actions.append(publish); }
       if (["published", "superseded"].includes(release.state)) { const rollback = button("用此版本回滚", "danger"); rollback.dataset.runtimeReleaseRollback = String(id); rollback.addEventListener("click", () => void postAction("rollback").catch((error) => status(error.message, "error"))); actions.append(rollback); }
-      const usage = element("section", "admin-card"); usage.append(element("h2", "", "实际使用回读")); const usageRows = element("div", "admin-muted", "正在读取已发生的 API/Worker 使用事实…"); usage.append(usageRows); root.append(usage);
-      request(`${API}/${id}/usage`).then((body) => { const items = body.usage || []; usageRows.textContent = items.length ? items.map((item) => `${text(item.consumer)} · ${text(item.role)} · ${text(item.operation)}`).join("；") : "尚无实际使用记录。"; }).catch(() => { usageRows.textContent = "使用回读暂不可用。"; });
+      const usage = element("section", "admin-card"); usage.append(element("h2", "", "实际使用回读")); const usageRows = element("div", "admin-muted", "正在读取已发生的服务使用事实…"); usage.append(usageRows); root.append(usage);
+      request(`${API}/${id}/usage`).then((body) => { const items = body.usage || []; usageRows.textContent = items.length ? items.map((item) => `${serviceLabel(item.role)}已记录${text(item.operation, "运行配置")}`).join("；") : "尚无实际使用记录。"; }).catch(() => { usageRows.textContent = "使用回读暂不可用。"; });
     } catch (error) { status(error instanceof Error ? error.message : "配置发布不可用", "error"); }
   };
 

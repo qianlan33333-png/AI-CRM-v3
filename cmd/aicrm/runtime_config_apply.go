@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -51,9 +52,25 @@ func applyRuntimeConfig(cfg platformconfig.Runtime, snapshot configport.Effectiv
 		baseline[setting.Key] = setting.Value
 	}
 	for _, setting := range snapshot.Settings {
-		if configport.RuntimeSettingKey(setting.Key) == configport.AutomationOperationsProviderMode || configport.RuntimeSettingKey(setting.Key) == configport.AIAssistantDispatchEnabled || configport.RuntimeSettingKey(setting.Key) == configport.WeChatPayAppScope || configport.RuntimeSettingKey(setting.Key) == configport.WeChatPayH5AppScope || configport.RuntimeSettingKey(setting.Key) == configport.SurveyOAuthScope {
-			if string(setting.Value) != string(baseline[setting.Key]) {
+		baselineValue, found := baseline[setting.Key]
+		if !found {
+			return cfg, fmt.Errorf("runtime config %s is outside the closed catalog", setting.Key)
+		}
+		switch setting.Key {
+		case configport.AIAssistantIntakeEnabled, configport.WeChatPayAppScope, configport.WeChatPayH5AppScope, configport.SurveyOAuthScope:
+			// The old signed AI intake and payment/OAuth scopes stay deployment-
+			// controlled. Automation mode and AI dispatch intentionally do not
+			// appear here: a validated Config release may change those switches.
+			if !bytes.Equal(setting.Value, baselineValue) {
 				return cfg, fmt.Errorf("runtime config %s is deployment-controlled", setting.Key)
+			}
+		case configport.RuntimeWeComCorpID, configport.SurveyOAuthAppID, configport.SurveyOAuthOpenPlatformID, configport.WeChatPayAppID, configport.WeChatPayH5AppID, configport.WeChatPayMerchantID, configport.WeChatShopAppID:
+			var bound string
+			if err := json.Unmarshal(baselineValue, &bound); err != nil {
+				return cfg, fmt.Errorf("runtime config %s has invalid deployment baseline: %w", setting.Key, err)
+			}
+			if bound != "" && !bytes.Equal(setting.Value, baselineValue) {
+				return cfg, fmt.Errorf("runtime config %s requires an explicit identity or integration migration", setting.Key)
 			}
 		}
 	}
@@ -196,6 +213,19 @@ func applyRuntimeConfig(cfg platformconfig.Runtime, snapshot configport.Effectiv
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// validateAppliedRuntimeConfig repeats release validation against the exact
+// deployment snapshot after Config has been projected but before adapters are
+// constructed. A release validated under an earlier deployment cannot leave a
+// misleading application fact if a required protected authorization or
+// credential is absent at this startup.
+func validateAppliedRuntimeConfig(cfg platformconfig.Runtime) error {
+	settings, err := runtimeConfigDefaults(cfg)
+	if err != nil {
+		return err
+	}
+	return configapp.ValidateEffectiveRuntimeSettings(settings, runtimeConfigActivationGuards(cfg))
 }
 
 // runtimeConfigProtectedReferencePresence is deliberately a closed map. It

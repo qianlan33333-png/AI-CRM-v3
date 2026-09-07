@@ -186,6 +186,15 @@ type RuntimeReleaseRollbackCommand struct {
 	IdempotencyKey       string
 }
 
+// RuntimeReleaseLegacyRecoveryCommand prepares the one-setting snapshot read
+// by the binary that predates the expanded Config catalog. It never writes a
+// deployment value or arbitrary environment variable.
+type RuntimeReleaseLegacyRecoveryCommand struct {
+	ExpectedBaseRevision int64
+	Actor                string
+	IdempotencyKey       string
+}
+
 type RuntimeReleasePage struct {
 	ActiveRevision int64             `json:"active_revision"`
 	Effective      EffectiveSnapshot `json:"effective"`
@@ -199,6 +208,7 @@ type RuntimeReleaseApplication interface {
 	ValidateRuntimeRelease(context.Context, RuntimeReleaseMutationCommand) (RuntimeRelease, error)
 	PublishRuntimeRelease(context.Context, RuntimeReleasePublishCommand) (RuntimeRelease, error)
 	RollbackRuntimeRelease(context.Context, RuntimeReleaseRollbackCommand) (RuntimeRelease, error)
+	PrepareLegacyRuntimeRecovery(context.Context, RuntimeReleaseLegacyRecoveryCommand) (RuntimeRelease, error)
 	ListRuntimeUsage(context.Context, int64, int) ([]RuntimeUsage, error)
 	RecordRuntimeApplication(context.Context, RuntimeApplication) error
 	ListRuntimeApplications(context.Context, int) ([]RuntimeApplication, error)

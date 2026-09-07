@@ -242,6 +242,16 @@ try {
   await waitFor(cdp, "document.body.textContent.includes('已创建并发布回滚记录') && document.body.textContent.includes('实际使用回读')", "rollback and actual-use readback were not rendered");
   const restored = await snapshot();
   if (restored.limit !== 2 || restored.revision === firstReleaseID || restored.revision === secondReleaseID) throw new Error("rollback did not publish a new revision with the older runtime value");
+
+  // Config Center receives native JSON strings from the runtime-catalog API.
+  // Opening this legacy-layout category and saving without a change must retain
+  // both the existing AgentID and a mode from another category in the draft.
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin/configDetail.html?cat=wecom_base` });
+  await waitFor(cdp, "location.pathname === '/admin/configDetail.html' && document.querySelector('[data-runtime-setting=\"wecom.agent_id\"]')?.value === 'agent-preserved'", "Config Center did not render the effective AgentID");
+  await evaluate(cdp, "document.querySelector('form')?.requestSubmit(); true");
+  await waitFor(cdp, "location.pathname.startsWith('/admin/config/releases/') && Number.isSafeInteger(Number(location.pathname.split('/').pop()))", "Config Center did not create the preservation draft");
+  const preservation = await evaluate(cdp, "fetch('/api/admin/config/runtime-releases/' + location.pathname.split('/').pop(), {credentials:'same-origin'}).then((response) => response.ok ? response.json() : null).then((body) => { const values = new Map((body?.runtime_release?.settings || []).map((item) => [item.key, item.value])); return { agentID: values.get('wecom.agent_id'), mode: values.get('automation.operations.provider_mode') }; })");
+  if (preservation?.agentID !== "agent-preserved" || preservation?.mode !== "disabled") throw new Error("Config Center draft did not retain native string settings");
   console.log("runtime_config_releases_chromium: PASS");
 } catch (error) {
   journeyFailed = true;

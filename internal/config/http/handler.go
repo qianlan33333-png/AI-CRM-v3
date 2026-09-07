@@ -91,6 +91,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.releases(w, r)
 	case "runtime-releases":
 		h.runtimeReleases(w, r)
+	case "runtime-releases/legacy-binary-recovery":
+		h.runtimeLegacyBinaryRecovery(w, r)
 	case "runtime-catalog":
 		h.runtimeCatalog(w, r)
 	case "diagnostics":
@@ -453,16 +455,16 @@ func (h *Handler) pushCapabilities(w http.ResponseWriter, r *http.Request) {
 		"real_external_call_executed": false,
 	})
 }
-func referencePresence(runtime configport.RuntimeReleaseApplication, ctx context.Context) map[string]bool {
+func referencePresence(runtime configport.RuntimeReleaseApplication, ctx context.Context) (map[string]bool, error) {
 	presence := map[string]bool{}
 	statuses, err := runtime.ProtectedReferenceStatuses(ctx)
 	if err != nil {
-		return presence
+		return nil, err
 	}
 	for _, status := range statuses {
 		presence[status.Reference] = status.Configured
 	}
-	return presence
+	return presence, nil
 }
 
 func (h *Handler) runtimeCatalog(w http.ResponseWriter, r *http.Request) {
@@ -487,11 +489,16 @@ func (h *Handler) runtimeCatalog(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeReleaseError(w, err)
 		return
 	}
+	presence, err := referencePresence(h.runtime, r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_reference_status_unavailable")
+		return
+	}
 	// Application facts are presented separately from publication. The client
 	// must compare the active revision with each required role; this endpoint
 	// deliberately has no aggregate runtime_applied boolean.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "categories": configcatalog.RuntimeCatalog(referencePresence(h.runtime, r.Context())),
+		"ok": true, "categories": configcatalog.RuntimeCatalog(presence),
 		"runtime_releases": page, "effective": page.Effective,
 		"applications": applications,
 	})
@@ -517,7 +524,8 @@ func (h *Handler) runtimeReleases(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "runtime_releases": page, "saved": false,
 			"published_revision": page.ActiveRevision, "effective": page.Effective,
-			"admin_action_token": h.actionToken(r, p, "runtime-release:create", r.URL.Path),
+			"admin_action_token":            h.actionToken(r, p, "runtime-release:create", r.URL.Path),
+			"legacy_binary_recovery_action": h.actionToken(r, p, "runtime-release:legacy-binary-recovery", "/api/admin/config/runtime-releases/legacy-binary-recovery"),
 		})
 	case http.MethodPost:
 		p, ok := h.mutate(w, r)
@@ -547,6 +555,44 @@ func (h *Handler) runtimeReleases(w http.ResponseWriter, r *http.Request) {
 	default:
 		method(w, "GET, POST")
 	}
+}
+
+// runtimeLegacyBinaryRecovery is a deliberately narrow compatibility action.
+// It publishes no arbitrary input: the application derives the previous
+// catalog's sole setting from the active snapshot and rejects divergent newer
+// settings before an operator can roll the binary back.
+func (h *Handler) runtimeLegacyBinaryRecovery(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_release_unavailable")
+		return
+	}
+	if r.Method != http.MethodPost {
+		method(w, "POST")
+		return
+	}
+	p, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		ExpectedBaseRevision int64  `json:"expected_base_revision"`
+		Action               string `json:"admin_action_token"`
+	}
+	if err := decode(r, &body); err != nil || body.ExpectedBaseRevision < 0 || !h.validActionToken(r, p, "runtime-release:legacy-binary-recovery", r.URL.Path, actionFrom(r, body.Action)) {
+		writeError(w, http.StatusBadRequest, "invalid_runtime_release_request")
+		return
+	}
+	key := idempotency(r)
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "invalid_idempotency_key")
+		return
+	}
+	out, err := h.runtime.PrepareLegacyRuntimeRecovery(r.Context(), configport.RuntimeReleaseLegacyRecoveryCommand{ExpectedBaseRevision: body.ExpectedBaseRevision, Actor: strconv.FormatInt(p.InternalID, 10), IdempotencyKey: key})
+	if err != nil {
+		writeRuntimeReleaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "runtime_release": out, "legacy_binary_recovery_published": true, "published_revision": out.ID})
 }
 
 func (h *Handler) runtimeRelease(w http.ResponseWriter, r *http.Request, rest string) {
