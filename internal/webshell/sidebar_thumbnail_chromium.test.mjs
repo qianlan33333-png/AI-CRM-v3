@@ -62,14 +62,20 @@ async function port(profile, browser, stderr) {
   }
   throw new Error(`Chromium DevTools startup timed out after 30s: ${startupDiagnostic(browser, stderr())}`);
 }
-async function evaluate(cdp, expression) {
+function evaluationFailure(stage, details) {
+  const kind = String(details?.exception?.className || details?.text || "runtime_exception")
+    .replace(/[^a-zA-Z0-9_.-]/g, "_")
+    .slice(0, 96);
+  return new Error(`${stage} page evaluation failed: ${kind || "runtime_exception"}`);
+}
+async function evaluate(cdp, expression, stage = "page") {
   const result = await cdp.call("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
-  if (result.exceptionDetails) throw new Error("page evaluation failed");
+  if (result.exceptionDetails) throw evaluationFailure(stage, result.exceptionDetails);
   return result.result?.value;
 }
-async function waitFor(cdp, expression, message) {
+async function waitFor(cdp, expression, message, stage = "wait") {
   for (let attempt = 0; attempt < 180; attempt += 1) {
-    if (await evaluate(cdp, expression)) return;
+    if (await evaluate(cdp, expression, stage)) return;
     await delay(50);
   }
   throw new Error(message);
@@ -181,9 +187,10 @@ try {
     ["contact_error", "企微客户上下文读取失败", "retry-context", "serve"],
   ]) {
     const start = await openSidebar(scenario, resourceMode);
-    await waitFor(cdp, `document.body.textContent.includes(${JSON.stringify(message)}) && Boolean(document.querySelector('[data-sidebar-action="${action}"]'))`, `${scenario} did not render its real recovery action`);
+    const expectedScenario = JSON.stringify(scenario);
+    await waitFor(cdp, `(() => { const body = document.body; return location.pathname === "/sidebar/bind-mobile" && new URL(location.href).searchParams.get("sidebar_case") === ${expectedScenario} && document.readyState !== "loading" && Boolean(body && body.textContent?.includes(${JSON.stringify(message)}) && document.querySelector('[data-sidebar-action="${action}"]')); })()`, `${scenario} did not render its real recovery action`, `${scenario}_recovery`);
     const normalizedReason = scenario === "regular_error" ? "config:fail" : scenario === "agent_error" ? "agentConfig:fail" : scenario === "contact_error" ? "getCurExternalContact:fail" : "";
-    if (normalizedReason && !await evaluate(cdp, `document.body.textContent.includes(${JSON.stringify(normalizedReason)})`)) throw new Error(`${scenario} did not render the official SDK normalized failure reason`);
+    if (normalizedReason && !await evaluate(cdp, `Boolean(document.body?.textContent?.includes(${JSON.stringify(normalizedReason)}))`, `${scenario}_reason`)) throw new Error(`${scenario} did not render the official SDK normalized failure reason`);
     if (bootstrapCountSince(start) !== 0) throw new Error(`${scenario} requested sidebar bootstrap before a trusted contact`);
   }
 
