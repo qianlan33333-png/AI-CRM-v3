@@ -92,8 +92,9 @@ type WeCom struct {
 // webhook. It is independent from WeCom/customer credentials and is never
 // exposed through a descriptor or structured log.
 type GroupOps struct {
-	WebhookSecret   string
-	ProviderEnabled bool
+	WebhookSecret       string
+	ProviderEnabled     bool
+	ProviderReadEnabled bool
 }
 
 type AutomationProviderMode string
@@ -423,6 +424,9 @@ func Load() (Runtime, error) {
 	if cfg.GroupOps.ProviderEnabled, err = strictBool("AICRM_GROUP_OPS_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.GroupOps.ProviderReadEnabled, err = strictBool("AICRM_GROUP_OPS_PROVIDER_READ_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
 	if raw := os.Getenv("AICRM_WORKER_LIMIT"); raw != "" {
 		cfg.WorkerLimit, err = strconv.Atoi(raw)
 		if err != nil || cfg.WorkerLimit < 1 || cfg.WorkerLimit > 100 {
@@ -532,6 +536,9 @@ func Load() (Runtime, error) {
 	channelProviderEnabled := cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelMediaPrepProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled || cfg.WeCom.CustomerTagProviderEnabled
 	if channelProviderEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled channel provider capability requires External Effects, WeCom, and contact credentials")
+	}
+	if cfg.GroupOps.ProviderReadEnabled && (!cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
+		return Runtime{}, errors.New("enabled Group Ops provider read requires WeCom and contact credentials")
 	}
 	if cfg.GroupOps.ProviderEnabled && !cfg.Effects.ProviderEnabled {
 		return Runtime{}, errors.New("enabled Group Ops provider requires External Effects")

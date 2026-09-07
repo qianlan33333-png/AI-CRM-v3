@@ -196,6 +196,7 @@ func TestChannelProviderCapabilitiesAreIndependentAndFailClosed(t *testing.T) {
 	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
 	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
 	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
 	cfg, err := Load()
 	if err != nil || !cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.GroupOps.ProviderEnabled || cfg.WeCom.StaffDirectoryRefreshInterval != 15*time.Minute {
 		t.Fatalf("config=%+v err=%v", cfg, err)
@@ -363,6 +364,7 @@ func TestAIAssistantIntakeAndDispatchFailClosed(t *testing.T) {
 	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
 	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
 	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
 	t.Setenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION", "private-message-authorized")
 	cfg, err = Load()
 	if err != nil || !cfg.AIAssistant.DispatchEnabled || !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled {
@@ -436,6 +438,7 @@ func TestLoadChannelHistoryMigrationOwnsReadbackConfiguration(t *testing.T) {
 	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
 	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
 	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
 	t.Setenv("AICRM_CHANNEL_STATE_HMAC_KEY", strings.Repeat("h", 32))
 	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
 	t.Setenv("AICRM_CHANNEL_PROVIDER_READ_ENABLED", "true")
@@ -475,5 +478,32 @@ func TestCommercePushProviderDefaultsDisabledAndFailsClosed(t *testing.T) {
 	cfg, err = Load()
 	if err != nil || !cfg.CommercePush.ProviderEnabled || cfg.CommercePush.PayloadDataKey != key {
 		t.Fatalf("commerce push runtime=%+v err=%v", cfg.CommercePush, err)
+	}
+}
+
+func TestGroupOpsDirectoryReadDoesNotEnableDispatch(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_GROUP_OPS_PROVIDER_ENABLED", "false")
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "false")
+	t.Setenv("AICRM_GROUP_OPS_PROVIDER_READ_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("accepted reads without contact credentials")
+	}
+	t.Setenv("AICRM_WECOM_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CORP_ID", "corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000001")
+	t.Setenv("AICRM_WECOM_SECRET", "app-secret")
+	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.GroupOps.ProviderReadEnabled || cfg.GroupOps.ProviderEnabled || cfg.Effects.ProviderEnabled {
+		t.Fatal("directory read changed dispatch eligibility")
+	}
+	t.Setenv("AICRM_GROUP_OPS_PROVIDER_READ_ENABLED", "invalid")
+	if _, err := Load(); err == nil {
+		t.Fatal("accepted invalid read gate")
 	}
 }

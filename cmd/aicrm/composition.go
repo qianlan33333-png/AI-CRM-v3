@@ -523,7 +523,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return fail(err)
 	}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
-	groupOpsDirectory := &wecomGroupOpsDirectory{enabled: cfg.GroupOps.ProviderEnabled, staff: groupOpsStaff}
+	groupOpsDirectory := &wecomGroupOpsDirectory{enabled: cfg.GroupOps.ProviderReadEnabled || cfg.GroupOps.ProviderEnabled, staff: groupOpsStaff}
 	groupOpsEvidence := groupopsport.ReconciliationEvidenceVerifier(providerDisabledGroupOpsEvidence{})
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
