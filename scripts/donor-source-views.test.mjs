@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   DonorViewError,
@@ -14,7 +15,7 @@ import {
   verifySourceIndex,
 } from './donor-source-views.mjs';
 
-const REPOSITORY = path.dirname(path.dirname(new URL(import.meta.url).pathname));
+const REPOSITORY = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const SOURCE = Buffer.from('frozen canonical donor payload\n');
 const SOURCE_SHA256 = crypto.createHash('sha256').update(SOURCE).digest('hex');
 const SOURCE_BLOB = crypto.createHash('sha1').update(`blob ${SOURCE.byteLength}\0`).update(SOURCE).digest('hex');
