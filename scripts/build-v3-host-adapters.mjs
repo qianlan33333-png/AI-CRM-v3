@@ -23,6 +23,7 @@ const entryPoints = {
   // protocol adapter is V3-owned because the current Sidebar Owner exposes
   // narrower trusted DTOs than the donor-generated client.
   sidebarHost: path.join(repository, 'web', 'v3', 'sidebar', 'main.ts'),
+  sidebarStandardStyles: path.join(repository, 'internal', 'webshell', 'static', 'sidebar_workbench', 'sidebar_workbench.css'),
   // The Open Platform catalog and caller lifecycle are V3-owned. The frozen
   // document only provides the authenticated admin shell around this Host.
   openPlatformHost: path.join(repository, 'web', 'v3', 'openPlatformAdapter.ts'),
@@ -81,7 +82,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'customerHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles') continue;
+  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
@@ -134,22 +135,24 @@ for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.end
 }
 
 const sidebarHost = manifest.entries.sidebarHost;
-const frozenSidebar = manifest.entries.sidebar;
+const sidebarStyles = manifest.entries.sidebarStandardStyles;
 const weComJSSDK = 'https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js';
-if (typeof sidebarHost !== 'string' || typeof frozenSidebar !== 'string') throw new Error('sidebar Host or frozen entry is absent from manifest');
+if (typeof sidebarHost !== 'string' || typeof sidebarStyles !== 'string') throw new Error('sidebar Host or standard stylesheet is absent from manifest');
 if (manifest.files[sidebarHost]?.entry_point !== 'web/v3/sidebar/main.ts' || !manifest.files[sidebarHost]?.inputs?.includes('web/v3/sidebarApi.ts')) throw new Error('sidebar Host must be the V3 sidebar entry and adapter closure');
-const sidebarDocument = path.join(dist, 'sidebar', 'index.html');
-let sidebarHTML = fs.readFileSync(sidebarDocument, 'utf8');
-const frozenSidebarReference = `../${frozenSidebar}`;
-const frozenSidebarScript = `<script type="module" src="${frozenSidebarReference}"></script>`;
 const sidebarHostScript = `<script type="module" src="../${sidebarHost}"></script>`;
-if (!sidebarHTML.includes(frozenSidebarScript)) throw new Error('frozen sidebar document does not reference its declared entry');
-if (sidebarHTML.includes('https://res.wx.qq.com/open/js/jweixin-1.6.0.js')) throw new Error('sidebar Host must not load the generic JSSDK before the WeCom JSSDK');
-sidebarHTML = sidebarHTML.replace(frozenSidebarScript, `<script src="${weComJSSDK}"></script>\n${sidebarHostScript}`);
-if (!sidebarHTML.includes(weComJSSDK) || !sidebarHTML.includes(sidebarHostScript) || sidebarHTML.indexOf(weComJSSDK) > sidebarHTML.indexOf(sidebarHostScript)) throw new Error('sidebar document did not load the WeCom JSSDK before the V3 Host');
+const sidebarStylesheet = `<link rel="stylesheet" href="../${sidebarStyles}">`;
+const sidebarTemplate = fs.readFileSync(path.join(repository, 'internal', 'webshell', 'static', 'sidebar_workbench', 'sidebar_customer_workbench_dd8d60d.html'), 'utf8');
+let sidebarHTML = sidebarTemplate
+  .replace(`{{ 'true' if debug_enabled else 'false' }}`, 'false')
+  .replace('<link rel="stylesheet" href="/static/sidebar_workbench/sidebar_workbench.css?v=20260730-sidebar-material-search">', sidebarStylesheet)
+  .replace('    data-other-staff-messages-url="/api/sidebar/v2/other-staff-messages"\n', '')
+  .replace('            <div class="meta" id="customer-external-userid"></div>\n', '')
+  .replace('  <script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>\n  <script src="/static/admin_console/image_resource_loader.js?v=resource-governance-v2-pending-retry"></script>\n  <script src="/static/sidebar_workbench/sidebar_workbench.js?v=20260805-context-bootstrap"></script>', `  <script src="${weComJSSDK}"></script>\n  ${sidebarHostScript}`);
+if (sidebarHTML.includes('other-staff-messages') || sidebarHTML.includes('jweixin-1.6.0.js') || sidebarHTML.includes('sidebar_workbench.js')) throw new Error('standard sidebar overlay retained removed chat or retired runtime');
+if (!sidebarHTML.includes(weComJSSDK) || !sidebarHTML.includes(sidebarHostScript) || !sidebarHTML.includes(sidebarStylesheet)) throw new Error('standard sidebar overlay did not retain V3 SDK Host and stylesheet closure');
+const sidebarDocument = path.join(dist, 'sidebar', 'index.html');
 fs.writeFileSync(sidebarDocument, sidebarHTML);
-const sidebarBytes = Buffer.from(sidebarHTML);
-manifest.release_files['sidebar/index.html'] = metadataFor(sidebarBytes);
+manifest.release_files['sidebar/index.html'] = metadataFor(Buffer.from(sidebarHTML));
 
 const donor = path.join(repository, 'web', 'donors', 'ai-assistant-production');
 const donorOut = path.join(dist, 'aiassistant');

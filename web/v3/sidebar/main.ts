@@ -13,8 +13,6 @@ import {
 } from "../sidebarApi";
 import type {
   SidebarBootstrapResponse,
-  SidebarChatActivityResponse,
-  SidebarOtherStaffChatResponse,
   SidebarMaterialResponse,
   SidebarOrderResponse,
   SidebarPeriodicOrderResponse,
@@ -63,8 +61,6 @@ type BoundSidebarApi = Pick<
   | "oauthCallbackUrl"
   | "workbench"
   | "timeline"
-  | "chatActivity"
-  | "otherStaffChats"
   | "profile"
   | "bindPhone"
   | "questionnaires"
@@ -122,8 +118,6 @@ type SidebarTab =
   | "profile"
   | "questionnaires"
   | "timeline"
-  | "chat_activity"
-  | "other_staff_messages"
   | "orders"
   | "periodic_orders"
   | "products"
@@ -172,8 +166,6 @@ function isSidebarTab(value: string | undefined): value is SidebarTab {
     value === "profile" ||
     value === "questionnaires" ||
     value === "timeline" ||
-    value === "chat_activity" ||
-    value === "other_staff_messages" ||
     value === "orders" ||
     value === "periodic_orders" ||
     value === "products" ||
@@ -252,7 +244,6 @@ function firstString(
   return "";
 }
 
-type ChatType = "all" | "private" | "group";
 type MaterialFilter = "q" | "category" | "tags";
 type ThumbnailStatus = "pending" | "ready" | "not_found" | "error";
 
@@ -426,15 +417,6 @@ export class SidebarController {
   private timelineLoading = false;
   private timelineError: unknown = null;
   private timelineRequestVersion = 0;
-  private chatActivity: SidebarChatActivityResponse | null = null;
-  private chatActivityType: ChatType = "all";
-  private chatActivityLoading = false;
-  private chatActivityError: unknown = null;
-  private chatActivityRequestVersion = 0;
-  private otherStaffChats: SidebarOtherStaffChatResponse | null = null;
-  private otherStaffChatsLoading = false;
-  private otherStaffChatsError: unknown = null;
-  private otherStaffChatsRequestVersion = 0;
   private orders: SidebarOrderResponse | null = null;
   private ordersLoading = false;
   private ordersError: unknown = null;
@@ -510,17 +492,11 @@ export class SidebarController {
     this.customerName = doc.getElementById("customer-name");
     this.customerMeta = doc.getElementById("customer-mobile");
     this.bindingState = doc.getElementById("binding-state");
-    this.phoneEditButton = doc.getElementById(
-      "customer-phone-edit",
-    ) as HTMLButtonElement | null;
-    this.phoneModal = doc.getElementById("phone-modal");
-    this.phoneInput = doc.getElementById(
-      "sidebar-phone-input",
-    ) as HTMLInputElement | null;
-    this.phoneModalStatus = doc.getElementById("sidebar-phone-status");
-    this.phoneModalSave = doc.getElementById(
-      "phone-modal-save",
-    ) as HTMLButtonElement | null;
+    this.phoneEditButton = (doc.getElementById("customer-phone-edit") || doc.getElementById("change-mobile-button")) as HTMLButtonElement | null;
+    this.phoneModal = doc.getElementById("phone-modal") || doc.getElementById("mobile-modal");
+    this.phoneInput = (doc.getElementById("sidebar-phone-input") || doc.getElementById("mobile-input")) as HTMLInputElement | null;
+    this.phoneModalStatus = doc.getElementById("sidebar-phone-status") || doc.getElementById("mobile-status");
+    this.phoneModalSave = (doc.getElementById("phone-modal-save") || doc.getElementById("confirm-mobile-button")) as HTMLButtonElement | null;
   }
 
   async boot(): Promise<void> {
@@ -538,10 +514,10 @@ export class SidebarController {
       this.openPhoneModal(),
     );
     this.doc
-      .getElementById("phone-modal-close")
+      .getElementById("phone-modal-close") || this.doc.getElementById("close-mobile-modal")
       ?.addEventListener("click", () => this.closePhoneModal());
     this.doc
-      .getElementById("phone-modal-cancel")
+      .getElementById("phone-modal-cancel") || this.doc.getElementById("cancel-mobile-button")
       ?.addEventListener("click", () => this.closePhoneModal());
     this.phoneModalSave?.addEventListener("click", () => void this.bindPhone());
     this.phoneModal?.addEventListener("click", (event) => {
@@ -587,17 +563,6 @@ export class SidebarController {
       const memberRef = target.dataset.periodicRemark;
       if (memberRef) this.periodicRemarkDrafts.set(memberRef, target.value);
     });
-    this.content.addEventListener("change", (event) => {
-      const target = event.target as HTMLSelectElement;
-      if (target.dataset.chatFilter !== "chat_type") return;
-      const value = target.value;
-      this.chatActivityType =
-        value === "private" || value === "group" ? value : "all";
-      this.chatActivity = null;
-      this.chatActivityError = null;
-      this.renderActiveContent();
-      void this.loadChatActivity();
-    });
     this.content.addEventListener("click", (event) => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
         "[data-sidebar-action], [data-material-keyword]",
@@ -628,14 +593,6 @@ export class SidebarController {
         void this.loadTimeline();
       } else if (action === "timeline-more") {
         void this.loadTimeline(this.timeline?.next_cursor);
-      } else if (action === "retry-chat-activity") {
-        button.disabled = true;
-        void this.loadChatActivity();
-      } else if (action === "chat-activity-more") {
-        void this.loadChatActivity(this.chatActivity?.next_cursor);
-      } else if (action === "retry-other-staff-chats") {
-        button.disabled = true;
-        void this.loadOtherStaffChats();
       } else if (action === "retry-orders") {
         button.disabled = true;
         void this.loadOrders(this.orders?.items.length || 0);
@@ -799,8 +756,6 @@ export class SidebarController {
     this.tabRequestController = new AbortController();
     this.questionnaireRequestVersion += 1;
     this.timelineRequestVersion += 1;
-    this.chatActivityRequestVersion += 1;
-    this.otherStaffChatsRequestVersion += 1;
     this.ordersRequestVersion += 1;
     this.periodicOrdersRequestVersion += 1;
     this.productsRequestVersion += 1;
@@ -1271,15 +1226,6 @@ export class SidebarController {
     this.timelineError = null;
     this.timelineLoading = false;
     this.timelineRequestVersion += 1;
-    this.chatActivity = null;
-    this.chatActivityType = "all";
-    this.chatActivityError = null;
-    this.chatActivityLoading = false;
-    this.chatActivityRequestVersion += 1;
-    this.otherStaffChats = null;
-    this.otherStaffChatsError = null;
-    this.otherStaffChatsLoading = false;
-    this.otherStaffChatsRequestVersion += 1;
     this.orders = null;
     this.ordersError = null;
     this.ordersLoading = false;
@@ -1376,7 +1322,6 @@ export class SidebarController {
       ["orders", `订单 ${wb?.order_count ?? ""}`],
       ["coupons", "优惠券"],
       ["materials", `素材 ${wb?.material_count ?? ""}`],
-      ["other_staff_messages", "其他客服聊天"],
     ] as const;
     this.tabs.replaceChildren(
       ...definitions.map(([key, label]) => {
@@ -1409,18 +1354,6 @@ export class SidebarController {
       void this.loadQuestionnaires();
     else if (tab === "timeline" && !this.timeline && !this.timelineLoading)
       void this.loadTimeline();
-    else if (
-      tab === "chat_activity" &&
-      !this.chatActivity &&
-      !this.chatActivityLoading
-    )
-      void this.loadChatActivity();
-    else if (
-      tab === "other_staff_messages" &&
-      !this.otherStaffChats &&
-      !this.otherStaffChatsLoading
-    )
-      void this.loadOtherStaffChats();
     else if (tab === "orders" && !this.orders && !this.ordersLoading)
       void this.loadOrders();
     else if (
@@ -1449,11 +1382,7 @@ export class SidebarController {
           ? this.renderQuestionnairesPanel()
           : this.activeTab === "timeline"
             ? this.renderTimelinePanel()
-            : this.activeTab === "chat_activity"
-              ? this.renderChatActivityPanel()
-              : this.activeTab === "other_staff_messages"
-                ? this.renderOtherStaffChatsPanel()
-                : this.activeTab === "orders"
+            : this.activeTab === "orders"
                   ? this.renderOrdersPanel()
                   : this.activeTab === "periodic_orders"
                     ? this.renderPeriodicOrdersPanel()
@@ -1478,7 +1407,7 @@ export class SidebarController {
   }
 
   private topLevelTab(tab: SidebarTab): SidebarTab {
-    if (tab === "timeline" || tab === "chat_activity") return "profile";
+    if (tab === "timeline") return "profile";
     if (tab === "periodic_orders") return "orders";
     if (tab === "products_periodic") return "products";
     if (tab === "radar_links") return "materials";
@@ -1504,7 +1433,6 @@ export class SidebarController {
         ? ([
             ["profile", "基础信息"],
             ["timeline", "用户时间线"],
-            ["chat_activity", "聊天活动"],
           ] as const)
         : top === "orders"
           ? ([
@@ -1607,12 +1535,12 @@ export class SidebarController {
     this.setPhoneModalStatus(
       "仅绑定当前客户；不支持从其他客户强制抢占手机号。",
     );
-    if (this.phoneModal) this.phoneModal.hidden = false;
+    if (this.phoneModal) { this.phoneModal.hidden = false; this.phoneModal.classList.remove("hidden"); }
     this.phoneInput?.focus();
   }
 
   private closePhoneModal(): void {
-    if (this.phoneModal) this.phoneModal.hidden = true;
+    if (this.phoneModal) { this.phoneModal.hidden = true; this.phoneModal.classList.add("hidden"); }
   }
 
   private setPhoneModalStatus(message: string, failed = false): void {
@@ -2077,275 +2005,6 @@ export class SidebarController {
       markBound(more);
       controls.append(more);
       panel.append(controls);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private validateChatActivity(response: SidebarChatActivityResponse): void {
-    if (!response || !Array.isArray(response.items))
-      throw new Error("聊天活动响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "聊天活动");
-    for (const cursor of [response.next_cursor, response.previous_cursor]) {
-      if (cursor !== undefined && !cursor)
-        throw new Error("聊天活动游标响应不完整，已停止渲染。");
-    }
-    for (const item of response.items) {
-      if (
-        (item.chat_type !== "private" && item.chat_type !== "group") ||
-        typeof item.message_type !== "string" ||
-        !item.message_type ||
-        typeof item.sent_at !== "string" ||
-        !item.sent_at
-      )
-        throw new Error("聊天活动安全元数据响应不完整，已停止渲染。");
-    }
-  }
-
-  private async loadChatActivity(cursor?: string): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const append = Boolean(cursor && this.chatActivity);
-    const requestVersion = ++this.chatActivityRequestVersion;
-    this.chatActivityLoading = true;
-    this.chatActivityError = null;
-    if (!append) this.chatActivity = null;
-    if (this.activeTab === "chat_activity") this.renderActiveContent();
-    try {
-      const response = await this.api.chatActivity(
-        this.contextToken,
-        {
-          chat_type:
-            this.chatActivityType === "all" ? undefined : this.chatActivityType,
-          cursor,
-          limit: 50,
-        },
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.chatActivityRequestVersion) return;
-      this.validateChatActivity(response);
-      this.chatActivity =
-        append && this.chatActivity
-          ? {
-              ...response,
-              items: [...this.chatActivity.items, ...response.items],
-            }
-          : response;
-    } catch (error) {
-      if (requestVersion !== this.chatActivityRequestVersion) return;
-      this.chatActivityError = error;
-    } finally {
-      if (requestVersion === this.chatActivityRequestVersion) {
-        this.chatActivityLoading = false;
-        if (this.activeTab === "chat_activity") this.renderActiveContent();
-      }
-    }
-  }
-
-  private renderChatActivityPanel(): HTMLElement {
-    const response = this.chatActivity;
-    const panel = this.panelShell(
-      "chat-activity",
-      "聊天活动",
-      response ? `${response.items.length} 条 · V2 补充能力` : "V2 补充能力",
-    );
-    panel.dataset.sidebarCapability = "v2-supplement";
-    panel.append(
-      createElement(
-        this.doc,
-        "div",
-        "sidebar-status warn",
-        "V2 补充能力 · 不计 LEGACY-S05-028 销项；仅展示聊天类型和时间，不展示正文、参与者或外部回执。",
-      ),
-    );
-    const controls = createElement(this.doc, "div", "filter-row");
-    const label = createElement(this.doc, "label", "filter-control");
-    label.append(createElement(this.doc, "span", undefined, "会话类型"));
-    const select = createElement(this.doc, "select");
-    select.dataset.chatFilter = "chat_type";
-    select.setAttribute("aria-label", "聊天活动会话类型");
-    for (const [value, text] of [
-      ["all", "全部"],
-      ["private", "私聊"],
-      ["group", "群聊"],
-    ] as const) {
-      const option = createElement(this.doc, "option", undefined, text);
-      option.value = value;
-      option.selected = this.chatActivityType === value;
-      select.append(option);
-    }
-    label.append(select);
-    controls.append(label);
-    panel.append(controls);
-    if (!response) {
-      if (this.chatActivityError)
-        this.appendRetry(
-          panel,
-          `聊天活动读取失败：${errorMessage(this.chatActivityError, "请稍后重试。")}`,
-          "retry-chat-activity",
-          "重试读取聊天活动",
-        );
-      else this.appendLoading(panel, "正在读取聊天活动元数据…");
-      return panel;
-    }
-    if (this.chatActivityError)
-      panel.append(
-        createElement(
-          this.doc,
-          "div",
-          "sidebar-status error",
-          `加载更多失败：${errorMessage(this.chatActivityError, "请稍后重试。")}`,
-        ),
-      );
-    if (!response.items.length)
-      panel.append(createElement(this.doc, "div", "empty", "暂无聊天活动记录"));
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const item of response.items) {
-        const card = createElement(this.doc, "article", "list-item");
-        card.dataset.chatActivityAt = item.sent_at;
-        card.append(
-          createElement(
-            this.doc,
-            "div",
-            "item-title",
-            `${item.chat_type === "private" ? "私聊" : "群聊"} · ${item.message_type}`,
-          ),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `发送时间 ${formatDateTime(item.sent_at)}`,
-          ),
-        );
-        list.append(card);
-      }
-      panel.append(list);
-    }
-    if (response.next_cursor) {
-      const controlsMore = createElement(this.doc, "div", "context-actions");
-      const more = createElement(
-        this.doc,
-        "button",
-        "btn ghost",
-        this.chatActivityLoading ? "正在加载…" : "加载更多聊天活动",
-      );
-      more.type = "button";
-      more.disabled = this.chatActivityLoading;
-      more.dataset.sidebarAction = "chat-activity-more";
-      markBound(more);
-      controlsMore.append(more);
-      panel.append(controlsMore);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private validateOtherStaffChats(
-    response: SidebarOtherStaffChatResponse,
-  ): void {
-    if (
-      !response ||
-      !Array.isArray(response.items) ||
-      response.items.length > 20
-    )
-      throw new Error("其他客服聊天响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "其他客服聊天");
-    for (const item of response.items) {
-      if (
-        typeof item.staff_userid !== "string" ||
-        !item.staff_userid ||
-        (item.message_type !== "text" && item.message_type !== "image") ||
-        typeof item.content_masked !== "string" ||
-        !item.content_masked ||
-        typeof item.sent_at !== "string" ||
-        !item.sent_at
-      )
-        throw new Error("其他客服聊天安全字段不完整，已停止渲染。");
-    }
-  }
-
-  private async loadOtherStaffChats(): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const requestVersion = ++this.otherStaffChatsRequestVersion;
-    this.otherStaffChatsLoading = true;
-    this.otherStaffChatsError = null;
-    this.otherStaffChats = null;
-    if (this.activeTab === "other_staff_messages") this.renderActiveContent();
-    try {
-      const response = await this.api.otherStaffChats(
-        this.contextToken,
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.otherStaffChatsRequestVersion) return;
-      this.validateOtherStaffChats(response);
-      this.otherStaffChats = response;
-    } catch (error) {
-      if (requestVersion !== this.otherStaffChatsRequestVersion) return;
-      this.otherStaffChatsError = error;
-    } finally {
-      if (requestVersion === this.otherStaffChatsRequestVersion) {
-        this.otherStaffChatsLoading = false;
-        if (this.activeTab === "other_staff_messages")
-          this.renderActiveContent();
-      }
-    }
-  }
-
-  private renderOtherStaffChatsPanel(): HTMLElement {
-    const response = this.otherStaffChats;
-    const panel = this.panelShell(
-      "other-staff-chats",
-      "其他客服聊天",
-      response ? `${response.items.length} 条 · 最近 20 条` : "最近 20 条",
-    );
-    panel.dataset.sidebarCapability = "local-archive";
-    panel.append(
-      createElement(
-        this.doc,
-        "div",
-        "sidebar-status warn",
-        "仅展示本地归档的脱敏 text/image；当前负责人身份无法确认时会安全关闭，不调用企微，也不表示外部效果成功。",
-      ),
-    );
-    if (!response) {
-      if (this.otherStaffChatsError)
-        this.appendRetry(
-          panel,
-          `其他客服聊天读取失败：${errorMessage(this.otherStaffChatsError, "请稍后重试。")}`,
-          "retry-other-staff-chats",
-          "重试读取其他客服聊天",
-        );
-      else this.appendLoading(panel, "正在读取本地脱敏聊天归档…");
-      return panel;
-    }
-    if (!response.items.length)
-      panel.append(
-        createElement(this.doc, "div", "empty", "暂无其他客服聊天记录"),
-      );
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const item of response.items) {
-        const card = createElement(this.doc, "article", "list-item");
-        card.dataset.otherStaffChatAt = item.sent_at;
-        // 契约不含员工姓名与会话类型字段，员工仅以 ID 语义标注，不猜姓名。
-        card.append(
-          createElement(
-            this.doc,
-            "div",
-            "item-title",
-            `员工 ID ${item.staff_userid} · ${item.message_type === "image" ? "图片" : "文本"}`,
-          ),
-          createElement(this.doc, "div", "item-body", item.content_masked),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `发送时间 ${formatDateTime(item.sent_at)}`,
-          ),
-        );
-        list.append(card);
-      }
-      panel.append(list);
     }
     this.appendSafety(panel, response.safety);
     return panel;
