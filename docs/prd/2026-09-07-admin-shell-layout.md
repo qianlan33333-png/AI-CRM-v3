@@ -47,7 +47,7 @@ Persistence: stateless — 只改服务端 HTML 壳层、V3 CSS/Host 适配和�
 | 附件素材 `/admin/attachment-library` | 冻结 Media + V3 Host | embedded 页内栏 | 现有库内详情路由 |
 | 自动化话术 `/admin/automation-agents` | 冻结 Automation + V3 Host | embedded 页内栏 | `agents.html`、`agentEdit.html` |
 | 负责人迁移 `/admin/owner-migration` | V3 Owner Handoff Host | embedded Host 标题栏 | `ownerMig.html`; `?contact_history=1` 保持只读历史入口 |
-| 配置 `/admin/config` | 冻结 Config + V3 Host | embedded 页内栏 | `config.html`、`configDetail.html`; runtime releases 继续自身 Host |
+| 配置 `/admin/config` | 冻结 Config + V3 Host | embedded 页内栏 | `config.html`、`configDetail.html`; `/admin/config/releases` 保留 V3 runtime Host，并单独验证实际标题、侧栏连续和无双顶栏 |
 | OneID `/admin/oneid` | Webshell 原生 OneID | 唯一 `admin-topbar` | 既有客户/冲突 detail API，不改身份规则 |
 | API 文档 `/admin/api-docs` | 新壳 Open Platform Host | 303 到 `/admin/apidocs.html` 后加载 V3 Host | 该 Host 由既有 Open Chromium journey 继续验收 |
 

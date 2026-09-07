@@ -92,6 +92,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/automation-agents", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/owner-migration", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/config", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/config/releases", marker: `data-runtime-release-host`, expectTopbar: false},
 		{path: "/admin/oneid", marker: `class="admin-topbar"`, expectTopbar: true},
 		// Open Platform is an authenticated V3 Host injected into the built
 		// apidocs document. The vanity route must canonicalize before that
@@ -145,7 +146,11 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	if !strings.Contains(string(output), "admin_shell_layout_chromium: PASS") {
 		t.Fatalf("admin shell Chromium journey did not report success: %q", output)
 	}
-	for _, name := range []string{"automation.png", "cycles.png", "groupops.png", "channels.png", "product.png", "service-period-product.png", "hxc.png", "external-effects.png"} {
+	for _, name := range []string{
+		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "tags.png",
+		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
+		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "oneid.png", "api-docs.png", "order-detail-history.png", "external-effects.png",
+	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
 		if statErr != nil || info.Size() < 512 {
 			t.Fatalf("admin shell Chromium screenshot=%s exists=%t size=%d", name, statErr == nil, func() int64 {
