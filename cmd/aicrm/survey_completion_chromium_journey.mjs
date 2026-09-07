@@ -24,8 +24,24 @@ const evaluate = async (cdp, expression) => { const result = await cdp.call('Run
 const waitFor = async (cdp, expression, message) => { for (let i = 0; i < 180; i += 1) { if (await evaluate(cdp, expression)) return; await delay(50); } throw new Error(message); };
 const portURL = async (profile) => { for (let i = 0; i < 160; i += 1) { try { const port = String(await fs.readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]; if (/^\d+$/.test(port)) return 'http://127.0.0.1:' + port; } catch (_) {} await delay(50); } throw new Error('Chromium DevTools did not start'); };
 
+const waitForBrowserExit = async (child, timeoutMilliseconds) => {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMilliseconds);
+    child.once('exit', () => { clearTimeout(timer); resolve(true); });
+  });
+};
+const removeProfile = async (profile) => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 }); return true; }
+    catch (error) { if (!error || !['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(error.code)) return false; await delay(100); }
+  }
+  return false;
+};
+
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'aicrm-survey-chromium-'));
 let browser;
+let journeyFailed = false;
 try {
   browser = spawn(chrome(), ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', '--user-data-dir=' + profile, '--no-first-run', '--ignore-certificate-errors', '--allow-insecure-localhost', 'about:blank'], { stdio: 'ignore' });
   let address;
@@ -52,7 +68,17 @@ try {
   await waitFor(cdp, "String(document.querySelector('#fb-toast')?.textContent || '').includes('本地测试记录')", 'test receipt did not render');
   console.log('survey_completion_chromium: PASS');
   socket.close();
+} catch (error) {
+  journeyFailed = true;
+  throw error;
 } finally {
-  if (browser && browser.exitCode === null) browser.kill('SIGTERM');
-  await fs.rm(profile, { recursive: true, force: true });
+  if (browser && browser.exitCode === null && browser.signalCode === null) {
+    browser.kill('SIGTERM');
+    if (!await waitForBrowserExit(browser, 3000)) {
+      browser.kill('SIGKILL');
+      await waitForBrowserExit(browser, 1000);
+    }
+  }
+  const removed = await removeProfile(profile);
+  if (!removed && !journeyFailed) throw new Error('Chromium test profile cleanup did not complete');
 }
