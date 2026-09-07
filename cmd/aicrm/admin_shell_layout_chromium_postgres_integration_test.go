@@ -49,6 +49,12 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		t.Fatalf("HXC refresh binding status=%d disabled=%t", refreshResponse.Code, strings.Contains(refreshResponse.Body.String(), `"hxc_sync_disabled"`))
 	}
 
+	radarList := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/radar-links")
+	radarDetail := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/radar-links/"+strconv.FormatInt(fixture.radarID, 10))
+	if radarList.Code != http.StatusOK || !strings.Contains(radarList.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)) || radarDetail.Code != http.StatusOK || !strings.Contains(radarDetail.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)) {
+		t.Fatalf("admin layout radar read list_status=%d list_seeded=%t detail_status=%d detail_seeded=%t", radarList.Code, strings.Contains(radarList.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)), radarDetail.Code, strings.Contains(radarDetail.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)))
+	}
+
 	navigation := authenticatedAdminGet(t, fixture.application.handler, session, "/admin/automation-conversion")
 	if navigation.Code != http.StatusOK {
 		t.Fatalf("admin layout navigation status=%d", navigation.Code)
@@ -141,6 +147,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		"AICRM_ADMIN_LAYOUT_TEST_PRODUCT_ID="+strconv.FormatInt(fixture.productID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_SERVICE_PRODUCT_ID="+strconv.FormatInt(fixture.serviceProductID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_ORDER="+fixture.historicalOrderReference,
+		"AICRM_ADMIN_LAYOUT_TEST_RADAR_ID="+strconv.FormatInt(fixture.radarID, 10),
 		"AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR="+fixture.screenshots,
 	)
 	output, err := command.CombinedOutput()
@@ -179,7 +186,10 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 		}
 		screenshots = configured
 	}
-	fixture := &adminShellLayoutFixture{productExternalPushChromiumFixture: newProductExternalPushChromiumFixture(t), screenshots: screenshots}
+	// The layout journey deliberately aggregates independent failures from the
+	// full navigation matrix. Its bounded three-minute context includes release
+	// staging and browser startup; individual browser waits remain unchanged.
+	fixture := &adminShellLayoutFixture{productExternalPushChromiumFixture: newProductExternalPushChromiumFixtureWithTimeout(t, 3*time.Minute), screenshots: screenshots}
 	seedAdminShellLayoutHXC(t, fixture.ctx, fixture.application)
 	fixture.radarID = seedAdminShellLayoutRadar(t, fixture.ctx, fixture.application)
 	return fixture
@@ -249,7 +259,7 @@ func seedAdminShellLayoutRadar(t *testing.T, ctx context.Context, application *c
 			auth_policy,status,created_by,updated_by,created_at,updated_at
 		) VALUES(
 			'rd_adminlayoutradar','Admin layout radar','Admin layout radar','layout fixture',
-			'link','https://example.test/admin-layout-radar','unionid_required','enabled',1,1,$1,$1
+			'link','https://example.com/admin-layout-radar','unionid_required','enabled',1,1,$1,$1
 		) RETURNING id`, now).Scan(&radarID)
 	if err != nil {
 		t.Fatal(err)

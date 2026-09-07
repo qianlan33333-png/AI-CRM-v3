@@ -103,7 +103,17 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 }
 
 func newProductExternalPushChromiumFixture(t *testing.T) *productExternalPushChromiumFixture {
+	return newProductExternalPushChromiumFixtureWithTimeout(t, 90*time.Second)
+}
+
+// newProductExternalPushChromiumFixtureWithTimeout keeps single-Host browser
+// journeys bounded while allowing a composed caller to budget for its own
+// larger route matrix. It does not change any per-page browser waits.
+func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time.Duration) *productExternalPushChromiumFixture {
 	t.Helper()
+	if timeout < time.Second {
+		t.Fatal("Chromium fixture timeout must be positive")
+	}
 	// Go executes this package with cmd/aicrm as its working directory, while
 	// composition deliberately resolves the release artifact at web/dist. Use
 	// the repository root just as the release binary does, so this fixture
@@ -117,7 +127,7 @@ func newProductExternalPushChromiumFixture(t *testing.T) *productExternalPushChr
 	t.Chdir(repository)
 	prepareProductExternalPushChromiumArtifacts(t, repository)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
 	t.Cleanup(cleanup)
