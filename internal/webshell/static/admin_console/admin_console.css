@@ -3469,14 +3469,17 @@ body.admin-shell {
  * first 52px toolbar.  The shell may not inset that toolbar a second time.
  * These marker classes are emitted only by V3 renderers; donor source stays
  * byte-frozen. */
-.admin-main-wrap > .admin-workspace-stage--embedded,
-.admin-main-wrap > .order-host-layout > .admin-workspace-stage--embedded {
+/* labs.css is loaded after this sheet in the final artifact.  These V3-only
+ * markers deliberately outrank its donor .stage.rich padding without touching
+ * the frozen donor CSS. */
+.admin-shell .admin-main-wrap > main.stage.rich.admin-workspace-stage--embedded,
+.admin-shell .admin-main-wrap > .order-host-layout > main.stage.rich.admin-workspace-stage--embedded {
   align-self: stretch;
   min-width: 0;
   padding: 0;
 }
 
-.admin-main-wrap > .admin-workspace-stage--dynamic {
+.admin-shell .admin-main-wrap > main.stage.rich.admin-workspace-stage--dynamic {
   min-width: 0;
   padding: 16px 20px 36px;
 }

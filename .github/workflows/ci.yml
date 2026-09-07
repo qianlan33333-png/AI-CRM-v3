@@ -151,6 +151,28 @@ jobs:
           set -euo pipefail
           make radar-check
           npm test
+      - name: Restore final release artifact after frontend tests
+        # npm test rebuilds web/dist as part of its donor checks. Re-run the
+        # approved V3 adapter and all three release stages so later browser,
+        # Host and package checks read the same final artifact that ships.
+        run: |
+          set -euo pipefail
+          restore_backup="$RUNNER_TEMP/aicrm-release-before-frontend-tests-${GITHUB_RUN_ID}"
+          if [ -e "$restore_backup" ]; then
+            echo "release artifact backup path is unexpectedly occupied" >&2
+            exit 1
+          fi
+          mv release/web/dist "$restore_backup"
+          npm run build
+          node scripts/build-v3-host-adapters.mjs
+          node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
+          node scripts/test-stage-pr01-effects-ui.mjs
+          node scripts/test-groupops-history-release.mjs web/dist release/web/dist
+          node scripts/stage-survey-ui.mjs web/dist release/web/dist
+          node scripts/test-stage-survey-ui.mjs web/dist release/web/dist
+          node scripts/stage-new-shell-ui.mjs web/dist release/web/dist
+          node scripts/test-stage-new-shell-ui.mjs web/dist release/web/dist
+          scripts/check-install-release-contract.sh
       - name: Upload admin shell layout Chromium evidence
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
