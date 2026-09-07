@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+[[ "${AICRM_DEDUP_SOURCE_VIEWS_ACTIVE:-}" == "1" ]] || {
+  echo "direct Go builds require scripts/run-go-with-donor-views.sh (or the disposable source-view runner)" >&2
+  exit 2
+}
+
 # The pinned official archive SDK is Linux x86-64 only. Keep this cgo build
 # separate from build-linux.sh so macOS can continue cross-building the
 # CGO-disabled application without requiring a Linux C cross-compiler.

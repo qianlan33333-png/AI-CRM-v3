@@ -2,6 +2,8 @@
 set -euo pipefail
 
 installer="deploy/install-release.sh"
+ci_workflow=".github/workflows/ci.yml"
+release_builder="scripts/run-donor-view-consumers.sh"
 start_line="$(grep -nE '^if ! systemctl enable aicrm-effects-worker\.service \|\| ! systemctl restart aicrm-effects-worker\.service; then$' "$installer" | cut -d: -f1)"
 test -n "$start_line" || { echo "effects worker enable and restart must be rollback guarded" >&2; exit 1; }
 exit_line="$(grep -nE '^  exit 8$' "$installer" | cut -d: -f1)"
@@ -132,16 +134,17 @@ for migration_contract in \
 done
 grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/wecom-archive-sdk-runner"' "$installer" || { echo "release must include the WeCom archive SDK runner" >&2; exit 1; }
-grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' .github/workflows/ci.yml || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
+grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' "$release_builder" || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
+grep -qF 'node scripts/run-with-donor-views.mjs -- bash scripts/run-donor-view-consumers.sh release' "$ci_workflow" || { echo "CI must invoke the reviewed release builder through disposable donor views" >&2; exit 1; }
 grep -qF 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOWORK=off' scripts/build-wecom-archive-sdk-runner-linux.sh || { echo "archive release runner must be a Linux amd64 cgo build" >&2; exit 1; }
-grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh "$work/runner"' scripts/check-wecom-message-archive-sdk.sh || { echo "official SDK ABI check must exercise the release runner builder" >&2; exit 1; }
+grep -qF 'scripts/run-go-with-donor-views.sh scripts/build-wecom-archive-sdk-runner-linux.sh "$work/runner"' scripts/check-wecom-message-archive-sdk.sh || { echo "official SDK ABI check must exercise the release runner builder" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-commerce-history"' "$installer" || { echo "release must reject a missing commerce history migration tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history' .github/workflows/ci.yml || { echo "CI must build the commerce history migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history' "$release_builder" || { echo "CI must build the commerce history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-message-archive"' "$installer" || { echo "release must reject a missing message archive migration tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-message-archive ./cmd/migrate-message-archive' .github/workflows/ci.yml || { echo "CI must build the message archive migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-message-archive ./cmd/migrate-message-archive' "$release_builder" || { echo "CI must build the message archive migration tool" >&2; exit 1; }
 grep -qF './cmd/migrate-message-archive' .github/workflows/ci.yml || { echo "CI must test the message archive migration command" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-order-attribution"' "$installer" || { echo "release must include order history attribution tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution' .github/workflows/ci.yml || { echo "CI must build the order history attribution tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution' "$release_builder" || { echo "CI must build the order history attribution tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0047_automation_operations_migration.sql"' "$installer" || { echo "release must require Automation Operations migration schema" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0048_segment_audience_schedule_state.sql"' "$installer" || { echo "release must require Automation Operations schedule state" >&2; exit 1; }
 config_migration="migrations/0015_config_adminops.sql"
@@ -153,31 +156,31 @@ for table in config_settings config_audits config_outbox adminops_release_projec
 done
 grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-config-definitions"' "$installer" || { echo "release must include configuration definition migration tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' .github/workflows/ci.yml || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' "$release_builder" || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-runtime-config-releases"' "$installer" || { echo "release must include runtime configuration history tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-runtime-config-releases ./cmd/migrate-v2-runtime-config-releases' .github/workflows/ci.yml || { echo "CI must build the runtime configuration history tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-runtime-config-releases ./cmd/migrate-v2-runtime-config-releases' "$release_builder" || { echo "CI must build the runtime configuration history tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-commerce-external-push-history"' "$installer" || { echo "release must include commerce external-push history tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-commerce-external-push-history ./cmd/migrate-v2-commerce-external-push-history' .github/workflows/ci.yml || { echo "CI must build commerce external-push history tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-commerce-external-push-history ./cmd/migrate-v2-commerce-external-push-history' "$release_builder" || { echo "CI must build commerce external-push history tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-open-platform"' "$installer" || { echo "release must include Open Platform history tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-open-platform ./cmd/migrate-open-platform' .github/workflows/ci.yml || { echo "CI must build the Open Platform history tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-open-platform ./cmd/migrate-open-platform' "$release_builder" || { echo "CI must build the Open Platform history tool" >&2; exit 1; }
 grep -qF './cmd/migrate-open-platform' .github/workflows/ci.yml || { echo "CI must test the Open Platform history tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-media-legacy-materials"' "$installer" || { echo "release must include legacy Media mapping migration tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials' .github/workflows/ci.yml || { echo "CI must build the legacy Media mapping migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials' "$release_builder" || { echo "CI must build the legacy Media mapping migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-customer-tag-history"' "$installer" || { echo "release must include customer tag history migration tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-customer-tag-history ./cmd/migrate-v2-customer-tag-history' .github/workflows/ci.yml || { echo "release workflow must build customer tag history migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-customer-tag-history ./cmd/migrate-v2-customer-tag-history' "$release_builder" || { echo "release workflow must build customer tag history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-radar-v2"' "$installer" || { echo "release must include Radar migration tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2' .github/workflows/ci.yml || { echo "release workflow must build Radar migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2' "$release_builder" || { echo "release workflow must build Radar migration tool" >&2; exit 1; }
 for page in radar radarDetail radarForm; do
   grep -qx "test -f \"\$release_dir/web/dist/admin/$page.html\"" "$installer" || { echo "release must include Radar UI page $page" >&2; exit 1; }
 done
 grep -qx 'test -x "$release_dir/bin/migrate-sidebar-history"' "$installer" || { echo "release must include sidebar history migration tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-history ./cmd/migrate-sidebar-history' .github/workflows/ci.yml || { echo "release workflow must build sidebar history migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-history ./cmd/migrate-sidebar-history' "$release_builder" || { echo "release workflow must build sidebar history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-owner-handoff-history"' "$installer" || { echo "release must include owner handoff history migration tool" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-owner-handoff-history ./cmd/migrate-owner-handoff-history' .github/workflows/ci.yml || { echo "release workflow must build owner handoff history migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-owner-handoff-history ./cmd/migrate-owner-handoff-history' "$release_builder" || { echo "release workflow must build owner handoff history migration tool" >&2; exit 1; }
 grep -qF './cmd/migrate-owner-handoff-history' .github/workflows/ci.yml || { echo "CI must test owner handoff history migration command" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/bootstrap-automation-operations"' "$installer" || { echo "release must include Automation Operations semantic bootstrap" >&2; exit 1; }
-grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations' .github/workflows/ci.yml || { echo "CI must build Automation Operations semantic bootstrap" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations' "$release_builder" || { echo "CI must build Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qxF 'ExecStart=/opt/aicrm/current/bin/bootstrap-automation-operations' deploy/aicrm-automation-bootstrap.service || { echo "Automation Operations bootstrap unit must execute the release binary" >&2; exit 1; }
 grep -qxF '  systemctl kill --kill-whom=all --signal=KILL aicrm-automation-bootstrap.service 2>/dev/null || true' "$installer" || { echo "deployment must terminate a stale Automation Operations bootstrap before waiting for the host lock" >&2; exit 1; }
 grep -qxF '  if ! timeout 15s systemctl stop aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must bound stale bootstrap stop confirmation" >&2; exit 1; }
@@ -216,7 +219,7 @@ for ai_assistant_asset in \
 done
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
 grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }
-grep -qF 'sha256sum --strict --check release-files.sha256' .github/workflows/ci.yml || { echo "CI must generate and verify the immutable release manifest" >&2; exit 1; }
+grep -qF 'sha256sum --strict --check release-files.sha256' "$release_builder" || { echo "CI must generate and verify the immutable release manifest" >&2; exit 1; }
 grep -qx 'exec 9>"$release_lock"' "$installer" || { echo "installer must hold a host-side release lock" >&2; exit 1; }
 grep -qx 'flock 9' "$installer" || { echo "installer must serialize the release critical section with flock" >&2; exit 1; }
 grep -qx 'release_run_number="${3:-}"' "$installer" || { echo "installer must accept the CI run number" >&2; exit 1; }

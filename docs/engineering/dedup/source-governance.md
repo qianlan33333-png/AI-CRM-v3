@@ -24,7 +24,7 @@ changes must preserve.
 7. Writes use a same-directory temporary file and atomic publication. A view is published exclusively without overwriting a target that appeared after validation; the tool-owned receipt is atomically renamed while the lock is held. If the receipt write fails, the tool removes only views created in that invocation after rechecking their bytes and mode; it preserves any target that changed concurrently and reports rollback failure rather than deleting it. The prior receipt remains unchanged.
 8. The lock directory contains a private owner record with host, PID, random lock ID, and creation time. Normal `apply` and `clean` never remove a pre-existing lock. `recover-lock` is an explicit operator action: it only removes a lock whose well-formed owner record is on this host and whose PID returns `ESRCH`; active, permission-denied, remote-host, missing, malformed, or changed owner records require manual inspection. It never performs automatic stale-lock cleanup.
 
-`health.schemas.ts` is the PR-2 pilot. Its eight existing logical paths remain tracked and byte-exact in PR-2. The production index declares no enabled view targets, so `apply` is a no-op until PR-3 has wired a reviewed target list and removed the corresponding tracked paths. This is intentional: PR-2 proves the mechanism without giving a build an untracked-file fallback.
+PR-2 used `health.schemas.ts` as its mechanism pilot. PR-3 declares every P0-derived build view: 229 paths backed by 74 canonical contents. The sole active authority, `api/openapi.yaml`, remains tracked and is never a view; its package-local Go-embed copy is a declared derived view. All 229 derived paths remain tracked and byte-exact until PR-4 approves their exact removal. PR-3 only proves the transition in a clean disposable worktree by staging those exact deletions and materializing untracked replacements.
 
 ## Commands and phase rules
 
@@ -36,13 +36,33 @@ node scripts/materialize-donor-views.mjs --mode plan
 node scripts/materialize-donor-views.mjs --mode recover-lock  # only after local dead-PID proof
 ```
 
-The materializer has `plan`, `apply`, `verify`, `clean`, and explicit
-`recover-lock` modes. PR-3 adds `prepare-disposable` and `restore-disposable`,
-which require `AICRM_DEDUP_DISPOSABLE_WORKTREE=1`; the command runner uses them
-to remove exactly the selected tracked paths in a disposable build worktree,
-materialize the views, run the selected consumers, clean the receipt, and
-restore the tracked paths. This is the only permitted PR-3 transition proof.
-It is not a normal developer checkout mutation or a package-script hook.
+The materializer has `plan`, `apply`, `verify`, `clean`, `clean-stale`, and
+explicit `recover-lock` modes. PR-3 adds `prepare-disposable` and
+`restore-disposable`, which require `AICRM_DEDUP_DISPOSABLE_WORKTREE=1`; the
+command runner uses them to remove exactly the selected tracked paths in a
+disposable build worktree, materialize the views, run the selected consumers,
+clean the receipt, and restore the tracked paths. This is the only permitted
+PR-3 transition proof. It is not a normal developer checkout mutation or a
+package-script hook.
+
+All Go consumers that can reach the OpenAPI or webshell embed use the explicit
+process boundary below; `Makefile` and direct build scripts reject an unprepared
+invocation. The wrapper requires a clean tracked worktree and restores the
+tracked paths on exit:
+
+```sh
+scripts/run-go-with-donor-views.sh make check
+scripts/run-go-with-donor-views.sh scripts/build-linux.sh amd64
+scripts/run-go-with-donor-views.sh go test ./cmd/aicrm
+```
+
+For an approved canonical-source update after PR-4, ordinary `clean` correctly
+rejects the stale receipt. Run `clean-stale` only when the current index still
+declares every old target and each target still exactly matches the old receipt;
+it removes no user edit or tracked file. Then run `apply` with the reviewed new
+source identity. Before switching branches, restore a disposable worktree. If a
+normal worktree contains a stale receipt, use `clean-stale` only under those
+same exact-byte conditions; otherwise preserve the files and recover manually.
 
 The installer continues to consume only validated built binaries, `web/dist`,
 and the release manifest; it must not require Node, Git, a donor checkout, or

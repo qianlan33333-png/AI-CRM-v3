@@ -115,6 +115,15 @@ function requireMode(value, label) {
   return value;
 }
 
+function requireObservedSource(value, label) {
+  if (!isPlainObject(value)) fail('INVALID_INDEX', `${label} must be an object`);
+  requireString(value.repository, `${label}.repository`);
+  if (!isHex(value.commit, 40)) fail('INVALID_INDEX', `${label}.commit must be a 40-hex commit`);
+  value.path = normalizeLogicalPath(value.path, `${label}.path`);
+  if (!isHex(value.git_blob_sha, 40)) fail('INVALID_INDEX', `${label}.git_blob_sha must be a 40-hex Git blob`);
+  return value;
+}
+
 function validateIndex(index) {
   if (index.schema_version !== INDEX_SCHEMA_VERSION) fail('INVALID_INDEX', 'unsupported source-index schema_version');
   index.lock_path = normalizeLogicalPath(index.lock_path, 'lock_path');
@@ -167,6 +176,7 @@ function validateIndex(index) {
     requireString(binding.usage, 'binding.usage');
     requireString(binding.freeze_gate, 'binding.freeze_gate');
     requireString(binding.freeze_ledger, 'binding.freeze_ledger');
+    if (binding.observed_source !== undefined) requireObservedSource(binding.observed_source, 'binding.observed_source');
     if (binding.current_path_state !== 'tracked_pre_p2') fail('INVALID_INDEX', 'PR-2 pilot bindings must remain tracked_pre_p2');
     const content = contentByID.get(binding.content_id);
     const library = libraryByID.get(content.library_id);
@@ -359,6 +369,29 @@ function validateReceipt(loaded, receipt) {
   }
 }
 
+function validateStaleReceiptForCleanup(loaded, receipt) {
+  if (receipt.targets.length === 0) return [];
+  if (!isHex(receipt.index_sha256, 64)) {
+    fail('INVALID_RECEIPT', 'stale materialization receipt lacks an index SHA-256');
+  }
+  const currentViews = new Map(loaded.index.views.map((view) => [view.target_path, view]));
+  return receipt.targets.map((record) => {
+    if (!isPlainObject(record)) fail('INVALID_RECEIPT', 'stale materialization receipt target must be an object');
+    const targetPath = normalizeLogicalPath(record.target_path, 'receipt.target_path');
+    const current = currentViews.get(targetPath);
+    if (!current || !current.enabled) {
+      fail('STALE_RECEIPT_RECOVERY_REQUIRED', `current source index no longer declares the stale receipt target: ${targetPath}`);
+    }
+    requireString(record.content_id, `receipt:${targetPath}.content_id`);
+    normalizeLogicalPath(record.canonical_path, `receipt:${targetPath}.canonical_path`);
+    if (!isHex(record.content_sha256, 64) || !Number.isSafeInteger(record.bytes) || record.bytes < 0) {
+      fail('INVALID_RECEIPT', `stale materialization receipt has an invalid content identity: ${targetPath}`);
+    }
+    requireMode(record.mode, `receipt:${targetPath}.mode`);
+    return { ...record, target_path: targetPath };
+  });
+}
+
 function assertReceiptCoversEnabledViews(loaded, receipt, { allowEmpty = false } = {}) {
   const expected = loaded.index.views
     .filter((view) => view.enabled)
@@ -487,6 +520,13 @@ function loadValidated(root, indexPath, options = {}) {
   return { loaded, checked, byID };
 }
 
+function loadCanonicalIndex(root, indexPath) {
+  const loaded = loadSourceIndex(root, indexPath);
+  verifySourceLock(loaded);
+  const checked = [...loaded.contentByID.values()].map((content) => checkContent(loaded.root, content));
+  return { loaded, checked };
+}
+
 export function planMaterialization(root, indexPath) {
   const { loaded, checked } = loadValidated(root, indexPath);
   return {
@@ -542,8 +582,24 @@ function restoreTrackedTargets(root, targets) {
   runGit(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', ...targets], 'restore declared tracked view targets');
 }
 
+function restoreAfterSafePrepareFailure(root, targets, originalError) {
+  try {
+    assertExactStagedRemovals(root, targets);
+    for (const target of targets) {
+      const absolute = resolveLogicalPath(root, target, `prepare rollback:${target}`);
+      if (fs.existsSync(absolute)) {
+        fail('PREPARE_RECOVERY_REQUIRED', `preparation left an untracked target at ${target}; preserve it and restore manually`);
+      }
+    }
+    restoreTrackedTargets(root, targets);
+  } catch (rollbackError) {
+    const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+    fail('PREPARE_RECOVERY_REQUIRED', `preparation failed (${originalError.message}); no tracked target was restored because safe rollback could not be proven: ${detail}`);
+  }
+}
+
 export function prepareDisposableMaterialization(root, indexPath, { environment = process.env, faults = {} } = {}) {
-  const { loaded, checked } = loadValidated(root, indexPath);
+  const { loaded } = loadValidated(root, indexPath);
   const targets = enabledViewTargets(loaded);
   if (targets.length === 0) fail('NO_ENABLED_VIEWS', 'disposable preparation requires at least one enabled view');
   assertDisposableWorktree(loaded.root, environment);
@@ -555,11 +611,7 @@ export function prepareDisposableMaterialization(root, indexPath, { environment 
     const applied = applyMaterialization(loaded.root, loaded.indexPath, faults);
     return { ...applied, action: 'prepare-disposable', materialized_view_targets: targets };
   } catch (error) {
-    try {
-      restoreTrackedTargets(loaded.root, targets);
-    } catch (rollbackError) {
-      fail('PREPARE_ROLLBACK_FAILED', `preparation failed and tracked targets could not be restored: ${rollbackError.message}`);
-    }
+    restoreAfterSafePrepareFailure(loaded.root, targets, error);
     throw error;
   }
 }
@@ -693,6 +745,40 @@ export function cleanMaterialization(root, indexPath) {
     }
     if (fs.existsSync(receiptState.absolute)) fs.rmSync(receiptState.absolute);
     return { ...sourceSummary(loaded, checked), action: 'clean', removed: removed.sort() };
+  } finally {
+    release();
+  }
+}
+
+// A reviewed source update can replace a canonical content identity while its
+// declared logical targets remain the same. Normal clean rejects that receipt.
+// This explicit recovery validates the current index/library and deletes only
+// exact old receipt bytes; user changes and later-tracked paths remain intact.
+export function cleanStaleMaterialization(root, indexPath) {
+  const { loaded, checked } = loadCanonicalIndex(root, indexPath);
+  const release = acquireLock(loaded.root);
+  try {
+    const receiptState = loadReceipt(loaded.root);
+    const staleTargets = validateStaleReceiptForCleanup(loaded, receiptState.receipt);
+    const prepared = staleTargets.map((record) => {
+      if (isTracked(loaded.root, record.target_path)) {
+        fail('TRACKED_TARGET', `refusing to clean a stale materialized view that became tracked: ${record.target_path}`);
+      }
+      const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
+      const actual = readRegularFile(absolute, `receipt:${record.target_path}`);
+      if (actual.bytes.byteLength !== record.bytes || sha256(actual.bytes) !== record.content_sha256 || actual.mode !== record.mode) {
+        fail('DIRTY_TARGET', `refusing to clean a modified stale generated view: ${record.target_path}`);
+      }
+      return { record, absolute };
+    });
+    for (const item of prepared) fs.rmSync(item.absolute);
+    if (fs.existsSync(receiptState.absolute)) fs.rmSync(receiptState.absolute);
+    return {
+      ...sourceSummary(loaded, checked),
+      action: 'clean-stale',
+      prior_index_sha256: receiptState.receipt.index_sha256 ?? null,
+      removed: prepared.map((item) => item.record.target_path).sort(),
+    };
   } finally {
     release();
   }

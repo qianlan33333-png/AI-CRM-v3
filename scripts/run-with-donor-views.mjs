@@ -36,7 +36,11 @@ try {
   const root = path.resolve(args.root);
   prepareDisposableMaterialization(root, args.index);
   prepared = true;
-  const child = spawnSync(args.command[0], args.command.slice(1), { cwd: root, env: process.env, stdio: 'inherit' });
+  const child = spawnSync(args.command[0], args.command.slice(1), {
+    cwd: root,
+    env: { ...process.env, AICRM_DEDUP_SOURCE_VIEWS_ACTIVE: '1' },
+    stdio: 'inherit',
+  });
   if (child.error) throw child.error;
   if (child.status !== 0) commandFailed = true;
 } catch (error) {

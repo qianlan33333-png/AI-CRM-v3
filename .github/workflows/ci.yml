@@ -91,7 +91,7 @@ jobs:
           node scripts/verify-donor-sources.mjs
           node --test scripts/donor-source-views.test.mjs
           AICRM_DEDUP_DISPOSABLE_WORKTREE=1 AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
-            node scripts/run-with-donor-views.mjs -- bash scripts/run-v2-health-view-consumers.sh check
+            node scripts/run-with-donor-views.mjs -- bash scripts/run-donor-view-consumers.sh check
       - name: Verify Media shell donor interactions
         run: node scripts/media-shell-interactions-e2e.mjs
       - name: Verify Tags shell donor interactions
@@ -101,8 +101,9 @@ jobs:
       - name: Check repository
         # PostgreSQL integration packages share this job's service database.
         # Run packages serially so concurrent schema DDL cannot exhaust the
-        # service's lock table or race its catalog tuples.
-        run: GOFLAGS=-p=1 make check
+        # service's lock table or race its catalog tuples. Go embed inputs are
+        # materialized only in this disposable compatibility-view workspace.
+        run: AICRM_DEDUP_DISPOSABLE_WORKTREE=1 node scripts/run-with-donor-views.mjs -- env GOFLAGS=-p=1 make check
       - name: Run required Chromium journeys
         # These actual Chrome/CDP journeys cover Access login, their V3 Hosts,
         # PostgreSQL/River and controlled Provider fixtures. They stay separate
@@ -112,7 +113,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v google-chrome
-          go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
+          AICRM_DEDUP_DISPOSABLE_WORKTREE=1 node scripts/run-with-donor-views.mjs -- go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
       - name: Run owner handoff Chromium journey
         # This journey covers the frozen legacy page through the v3 Host, CSRF,
         # PostgreSQL/River, and both local and WeCom transfer modes.
@@ -121,9 +122,9 @@ jobs:
         run: |
           set -euo pipefail
           command -v google-chrome
-          go test -p 1 -count=1 -run '^TestPostgreSQLOwnerHandoffChromiumJourney$' ./cmd/aicrm
+          AICRM_DEDUP_DISPOSABLE_WORKTREE=1 node scripts/run-with-donor-views.mjs -- go test -p 1 -count=1 -run '^TestPostgreSQLOwnerHandoffChromiumJourney$' ./cmd/aicrm
       - name: Race-check security and identity boundaries
-        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-v2-commerce-external-push-history ./cmd/migrate-open-platform ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-owner-handoff-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+        run: AICRM_DEDUP_DISPOSABLE_WORKTREE=1 node scripts/run-with-donor-views.mjs -- go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-v2-commerce-external-push-history ./cmd/migrate-open-platform ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-owner-handoff-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
@@ -182,36 +183,13 @@ jobs:
           PR08_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
         run: |
           set -euo pipefail
-          mkdir -p release/bin
-          go build -trimpath -ldflags "-s -w" -o release/bin/aicrm ./cmd/aicrm
-          scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-phone-identities ./cmd/migrate-phone-identities
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-identity-phone-vault ./cmd/migrate-identity-phone-vault
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-survey-v2 ./cmd/migrate-survey-v2
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-message-archive ./cmd/migrate-message-archive
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-automation-operations ./cmd/migrate-automation-operations
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-runtime-config-releases ./cmd/migrate-v2-runtime-config-releases
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-commerce-external-push-history ./cmd/migrate-v2-commerce-external-push-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-open-platform ./cmd/migrate-open-platform
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-customer-tag-history ./cmd/migrate-v2-customer-tag-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-owner-handoff-history ./cmd/migrate-owner-handoff-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-history ./cmd/migrate-sidebar-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations
           npm ci
           npm run version:check
           node scripts/validate-openapi.mjs
           node scripts/verify-donor-sources.mjs
           node --test scripts/donor-source-views.test.mjs
           AICRM_DEDUP_DISPOSABLE_WORKTREE=1 AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
-            node scripts/run-with-donor-views.mjs -- bash scripts/run-v2-health-view-consumers.sh release
+            node scripts/run-with-donor-views.mjs -- bash scripts/run-donor-view-consumers.sh release
       - name: Configure pinned SSH host
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}

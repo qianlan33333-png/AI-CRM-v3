@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+[[ "${AICRM_DEDUP_SOURCE_VIEWS_ACTIVE:-}" == "1" ]] || {
+  echo "direct Go builds require scripts/run-go-with-donor-views.sh (or the disposable source-view runner)" >&2
+  exit 2
+}
+
 arch="${1:-amd64}"
 case "$arch" in
   amd64|arm64) ;;

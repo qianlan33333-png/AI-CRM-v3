@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: fmt fmt-check vet test arch build check run generate-orval orval-check radar-donor-check radar-check hxc-identity-boundaries
+.PHONY: fmt fmt-check vet test arch build check run generate-orval orval-check radar-donor-check radar-check hxc-identity-boundaries require-donor-views
 
 generate-orval:
 	npx orval --config ./orval.config.mjs
@@ -19,16 +19,19 @@ fmt:
 fmt-check:
 	@test -z "$$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
 
-vet:
+require-donor-views:
+	@test "$${AICRM_DEDUP_SOURCE_VIEWS_ACTIVE:-}" = 1 || { echo "Go consumers require scripts/run-go-with-donor-views.sh (or scripts/run-with-donor-views.mjs in a clean disposable worktree)" >&2; exit 2; }
+
+vet: require-donor-views
 	GOWORK=off go vet ./...
 
-test:
+test: require-donor-views
 	GOWORK=off go test ./...
 
 arch:
 	python3 scripts/check-architecture.py
 
-build:
+build: require-donor-views
 	mkdir -p bin
 	GOWORK=off go build -o bin/aicrm ./cmd/aicrm
 
@@ -41,10 +44,10 @@ radar-donor-check:
 	bash scripts/check-radar-donor-manifest.sh
 	bash scripts/test-check-radar-donor-manifest.sh
 
-radar-check: radar-donor-check
+radar-check: require-donor-views radar-donor-check
 	bash scripts/check-radar-boundaries.sh
 	node scripts/validate-openapi.mjs
 	GOWORK=off go test ./internal/radar/... ./cmd/migrate-radar-v2 ./cmd/aicrm
 
-run:
+run: require-donor-views
 	GOWORK=off go run ./cmd/aicrm

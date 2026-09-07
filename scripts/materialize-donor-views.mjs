@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DonorViewError, applyMaterialization, cleanMaterialization, planMaterialization, prepareDisposableMaterialization, recoverMaterializationLock, restoreDisposableMaterialization, verifyMaterialization } from './donor-source-views.mjs';
+import { DonorViewError, applyMaterialization, cleanMaterialization, cleanStaleMaterialization, planMaterialization, prepareDisposableMaterialization, recoverMaterializationLock, restoreDisposableMaterialization, verifyMaterialization } from './donor-source-views.mjs';
 
 const repository = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const usage = 'usage: node scripts/materialize-donor-views.mjs --mode plan|apply|verify|clean|recover-lock|prepare-disposable|restore-disposable [--root DIRECTORY] [--index REPOSITORY_RELATIVE_PATH]';
+const usage = 'usage: node scripts/materialize-donor-views.mjs --mode plan|apply|verify|clean|clean-stale|recover-lock|prepare-disposable|restore-disposable [--root DIRECTORY] [--index REPOSITORY_RELATIVE_PATH]';
 
 function parseArgs(args) {
   const result = { root: repository, index: 'web/donor-sources/source-index.json', mode: null };
@@ -15,7 +15,7 @@ function parseArgs(args) {
     result[flag.slice(2)] = args[index + 1];
     index += 1;
   }
-  if (!['plan', 'apply', 'verify', 'clean', 'recover-lock', 'prepare-disposable', 'restore-disposable'].includes(result.mode)) throw new Error(usage);
+  if (!['plan', 'apply', 'verify', 'clean', 'clean-stale', 'recover-lock', 'prepare-disposable', 'restore-disposable'].includes(result.mode)) throw new Error(usage);
   return result;
 }
 
@@ -25,7 +25,7 @@ try {
     console.log(usage);
   } else {
     const root = path.resolve(args.root);
-    const action = { plan: planMaterialization, apply: applyMaterialization, verify: verifyMaterialization, clean: cleanMaterialization, 'recover-lock': recoverMaterializationLock, 'prepare-disposable': prepareDisposableMaterialization, 'restore-disposable': restoreDisposableMaterialization }[args.mode];
+    const action = { plan: planMaterialization, apply: applyMaterialization, verify: verifyMaterialization, clean: cleanMaterialization, 'clean-stale': cleanStaleMaterialization, 'recover-lock': recoverMaterializationLock, 'prepare-disposable': prepareDisposableMaterialization, 'restore-disposable': restoreDisposableMaterialization }[args.mode];
     console.log(JSON.stringify(action(root, args.index), null, 2));
   }
 } catch (error) {

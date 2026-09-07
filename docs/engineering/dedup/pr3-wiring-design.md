@@ -1,9 +1,9 @@
 # PR-3 build-time source-view wiring design
 
-Status: design only. PR-2 has no enabled views and does not alter build, test,
-staging, release, or installer behavior. This document fixes the intended
-consumer closure before that wiring is implemented and before any tracked
-payload is removed.
+Status: PR-3 implementation contract. It activates only disposable transition
+proofs: every derived path remains tracked until PR-4 approves exact removal.
+The index declares 229 derived paths from 74 canonical contents; it does not
+alter installer inputs or create a normal-checkout fallback.
 
 ## Scope and invariant
 
@@ -20,7 +20,7 @@ contracts differ.
 
 | Closure | Canonical authority | Derived build-time views | Required consumers and proof |
 | --- | --- | --- | --- |
-| `v2_frozen_web_views` | Exact paths under `web/donor-sources/v2-6bfbe5816bb89913c70adaca87d6a486260e016e/` are bound to frozen V2 commit `6bfbe5816bb89913c70adaca87d6a486260e016e`. | Only declared `web/src/**` and `web/donors/<module>-v2/src/**` logical paths. The initial pilot has eight `health.schemas.ts` paths. | The seven module freeze gates, PR01 full source-set gate, `web/scripts/build.mjs`, `scripts/build-v3-host-adapters.mjs`, CI release staging, and their current behavior/Host checks. |
+| `v2_frozen_web_views` | Exact paths under `web/donor-sources/v2-6bfbe5816bb89913c70adaca87d6a486260e016e/` are bound to frozen V2 commit `6bfbe5816bb89913c70adaca87d6a486260e016e`. | All 226 P0-audited V2 logical paths under `web/src/**` and `web/donors/<module>-v2/src/**`. | The seven module freeze gates, PR01 full source-set gate, `web/scripts/build.mjs`, `scripts/build-v3-host-adapters.mjs`, CI release staging, and their current behavior/Host checks. |
 | `openapi_go_embed_view` | `api/openapi.yaml` remains the active V3 contract source. | `internal/config/http/openapi.yaml`, strictly package-local for `//go:embed`. | Generator keeps reading `api/openapi.yaml`; `Makefile`, direct CI/release Go commands, the config HTTP byte-comparison test, authenticated download, and the documented bare-Go preparation command. |
 | `ai_webshell_static_view` | The frozen DD8 CSS in `web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/send_content_readonly_detail.css`. | The declared AI donor view and `internal/webshell/static/admin_console/send_content_readonly_detail.css`. | Direct Go embed paths, `internal/webshell/renderer.go`, public URL/MIME test, `scripts/build-v3-host-adapters.mjs`, and release staging. |
 
