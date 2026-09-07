@@ -314,7 +314,7 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 			// Production pages with 100 contacts can legitimately exceed the old
 			// 64 KiB OAuth-oriented limit. Unknown Provider fields must remain
 			// safely ignored without making the response unbounded.
-			payload := `{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"},"follow_info":[{"userid":"staff-1","tags":[{"tag_id":"tag-1","tag_name":"重点客户","type":1}]}]}],"provider_padding":"` + strings.Repeat("x", 70<<10) + `"}`
+			payload := `{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"},"follow_info":{"userid":"staff-1","tags":[{"tag_id":"tag-1","tag_name":"重点客户","type":1}]}}],"provider_padding":"` + strings.Repeat("x", 70<<10) + `"}`
 			_, _ = writer.Write([]byte(payload))
 		default:
 			t.Fatalf("unexpected path=%s", request.URL.Path)
@@ -333,6 +333,27 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 	}
 	if len(page.Contacts[0].FollowInfo) != 1 || page.Contacts[0].FollowInfo[0].EmployeeID != "staff-1" || len(page.Contacts[0].FollowInfo[0].Tags) != 1 || page.Contacts[0].FollowInfo[0].Tags[0].ProviderTagID != "tag-1" {
 		t.Fatalf("follow info=%+v", page.Contacts[0].FollowInfo)
+	}
+}
+
+func TestCustomerDirectoryProviderRejectsArrayFollowInfo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+		case "/cgi-bin/externalcontact/batch/get_by_user":
+			_, _ = writer.Write([]byte(`{"errcode":0,"external_contact_list":[{"external_contact":{"external_userid":"ext-1","type":1,"gender":2},"follow_info":[{"userid":"staff-1","tags":[]}]}]}`))
+		default:
+			t.Fatalf("unexpected path=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	_, err := client.BatchExternalContacts(context.Background(), "staff-1", "", 100)
+	var failure wecomport.DirectoryFailure
+	if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != "provider_response_invalid" || failure.DirectoryFailureRetryable() {
+		t.Fatalf("err=%v failure=%v", err, failure)
 	}
 }
 
