@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export const INDEX_SCHEMA_VERSION = 1;
@@ -353,6 +354,50 @@ function validateReceipt(loaded, receipt) {
   }
 }
 
+function assertReceiptCoversEnabledViews(loaded, receipt, { allowEmpty = false } = {}) {
+  const expected = loaded.index.views
+    .filter((view) => view.enabled)
+    .map((view) => view.target_path)
+    .sort();
+  const actual = receipt.targets.map((record) => record.target_path).sort();
+  if (allowEmpty && actual.length === 0) return;
+  if (stableJSON(actual) !== stableJSON(expected)) {
+    fail('RECEIPT_INCOMPLETE', 'materialization receipt does not cover exactly the enabled view targets');
+  }
+}
+
+function lockOwnerAbsolute(root) {
+  return resolveLogicalPath(root, `${LOCK_PATH}/owner.json`, 'lock_owner_path');
+}
+
+function readLockOwner(root) {
+  const absolute = lockOwnerAbsolute(root);
+  let owner;
+  try {
+    owner = JSON.parse(readRegularFile(absolute, 'materialization lock owner').bytes.toString('utf8'));
+  } catch (error) {
+    if (error instanceof DonorViewError) {
+      fail('LOCK_RECOVERY_REQUIRED', 'materialization lock has no readable owner metadata; inspect it manually');
+    }
+    fail('LOCK_RECOVERY_REQUIRED', `materialization lock owner metadata is invalid: ${error.message}`);
+  }
+  if (
+    !isPlainObject(owner)
+    || owner.schema_version !== 1
+    || typeof owner.host !== 'string'
+    || owner.host.length === 0
+    || !Number.isSafeInteger(owner.pid)
+    || owner.pid <= 0
+    || typeof owner.lock_id !== 'string'
+    || owner.lock_id.length === 0
+    || typeof owner.created_at !== 'string'
+    || Number.isNaN(Date.parse(owner.created_at))
+  ) {
+    fail('LOCK_RECOVERY_REQUIRED', 'materialization lock owner metadata is malformed; inspect it manually');
+  }
+  return owner;
+}
+
 function acquireLock(root) {
   const absolute = resolveLogicalPath(root, LOCK_PATH, 'lock_path');
   fs.mkdirSync(path.dirname(absolute), { recursive: true, mode: 0o755 });
@@ -360,10 +405,57 @@ function acquireLock(root) {
   try {
     fs.mkdirSync(absolute, { mode: 0o700 });
   } catch (error) {
-    if (error?.code === 'EEXIST') fail('CONCURRENT_MATERIALIZATION', 'another donor-view materialization or cleanup holds the lock');
+    if (error?.code === 'EEXIST') {
+      fail('CONCURRENT_MATERIALIZATION', 'another donor-view materialization or cleanup holds the lock; use explicit recover-lock only after confirming its owner is dead');
+    }
     throw error;
   }
-  return () => fs.rmSync(absolute, { recursive: true, force: true });
+  const owner = {
+    schema_version: 1,
+    host: os.hostname(),
+    pid: process.pid,
+    lock_id: crypto.randomUUID(),
+    created_at: new Date().toISOString(),
+  };
+  try {
+    const ownerAbsolute = lockOwnerAbsolute(root);
+    fs.writeFileSync(ownerAbsolute, `${JSON.stringify(owner)}\n`, { mode: 0o600, flag: 'wx' });
+  } catch (error) {
+    fs.rmSync(absolute, { recursive: true, force: true });
+    throw error;
+  }
+  return () => {
+    const current = readLockOwner(root);
+    if (current.lock_id !== owner.lock_id) {
+      fail('LOCK_OWNER_MISMATCH', 'materialization lock ownership changed; leave it for manual inspection');
+    }
+    fs.rmSync(absolute, { recursive: true, force: false });
+  };
+}
+
+export function recoverMaterializationLock(root) {
+  const normalizedRoot = path.resolve(root);
+  const absolute = resolveLogicalPath(normalizedRoot, LOCK_PATH, 'lock_path');
+  if (!fs.existsSync(absolute)) return { action: 'recover-lock', recovered: false, reason: 'lock_absent' };
+  if (!fs.lstatSync(absolute).isDirectory()) fail('LOCK_RECOVERY_REQUIRED', 'materialization lock is not a directory; inspect it manually');
+  const owner = readLockOwner(normalizedRoot);
+  if (owner.host !== os.hostname()) {
+    fail('LOCK_RECOVERY_REQUIRED', 'materialization lock belongs to another host; inspect it manually');
+  }
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    if (error?.code !== 'ESRCH') {
+      fail('LOCK_RECOVERY_REQUIRED', 'materialization lock owner cannot be proven dead; inspect it manually');
+    }
+    const rechecked = readLockOwner(normalizedRoot);
+    if (stableJSON(rechecked) !== stableJSON(owner)) {
+      fail('LOCK_RECOVERY_REQUIRED', 'materialization lock owner changed during recovery; inspect it manually');
+    }
+    fs.rmSync(absolute, { recursive: true, force: false });
+    return { action: 'recover-lock', recovered: true, lock_id: owner.lock_id };
+  }
+  fail('LOCK_RECOVERY_REQUIRED', 'materialization lock owner is still active; inspect it manually');
 }
 
 function checkedContents(loaded) {
@@ -414,7 +506,25 @@ function writeReceipt(root, loaded, absolute, targets) {
   writeAtomically(root, absolute, Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`), '100644', { replaceOwnedFile: true });
 }
 
-export function applyMaterialization(root, indexPath) {
+function rollbackCreatedViews(created) {
+  const failures = [];
+  for (const item of [...created].reverse()) {
+    try {
+      const actual = readRegularFile(item.absolute, `rollback:${item.view.target_path}`);
+      if (actual.bytes.byteLength !== item.content.bytes || sha256(actual.bytes) !== item.content.content_sha256 || actual.mode !== item.content.mode) {
+        throw new Error('target changed after materialization');
+      }
+      fs.rmSync(item.absolute);
+    } catch (error) {
+      failures.push(`${item.view.target_path}: ${error.message}`);
+    }
+  }
+  if (failures.length > 0) {
+    fail('ROLLBACK_FAILED', `unable to remove every view created by the failed materialization: ${failures.join('; ')}`);
+  }
+}
+
+export function applyMaterialization(root, indexPath, faults = {}) {
   const { loaded, checked, byID } = loadValidated(root, indexPath);
   const enabled = loaded.index.views.filter((view) => view.enabled);
   if (enabled.length === 0) return { ...sourceSummary(loaded, checked), action: 'apply', created: [], reused: [], no_enabled_views: true };
@@ -423,20 +533,21 @@ export function applyMaterialization(root, indexPath) {
   try {
     const receiptState = loadReceipt(loaded.root);
     validateReceipt(loaded, receiptState.receipt);
+    assertReceiptCoversEnabledViews(loaded, receiptState.receipt, { allowEmpty: true });
     const prepared = enabled.map((view) => ({ view, content: byID.get(view.content_id), ...assertWritableTarget(loaded.root, loaded, receiptState.receipt, view, byID.get(view.content_id)) }));
-    for (const item of prepared) {
-      if (item.existing) continue;
-      try {
+    try {
+      for (const item of prepared) {
+        if (item.existing) continue;
         writeAtomically(loaded.root, item.absolute, item.content.file_bytes, item.content.mode);
         created.push(item);
-      } catch (error) {
-        for (const written of created) fs.rmSync(written.absolute, { force: true });
-        throw error;
       }
+      if (typeof faults.beforeReceiptWrite === 'function') faults.beforeReceiptWrite();
+      const receiptWriter = faults.writeReceipt ?? writeReceipt;
+      receiptWriter(loaded.root, loaded, receiptState.absolute, enabled.map((view) => receiptRecord(view, byID.get(view.content_id))));
+    } catch (error) {
+      rollbackCreatedViews(created);
+      throw error;
     }
-    const retained = receiptState.receipt.targets.filter((record) => !enabled.some((view) => view.target_path === record.target_path));
-    const records = [...retained, ...enabled.map((view) => receiptRecord(view, byID.get(view.content_id)))];
-    writeReceipt(loaded.root, loaded, receiptState.absolute, records);
     return {
       ...sourceSummary(loaded, checked), action: 'apply',
       created: created.map((item) => item.view.target_path).sort(),
@@ -451,7 +562,9 @@ export function verifyMaterialization(root, indexPath) {
   const { loaded, checked, byID } = loadValidated(root, indexPath);
   const receiptState = loadReceipt(loaded.root);
   validateReceipt(loaded, receiptState.receipt);
+  assertReceiptCoversEnabledViews(loaded, receiptState.receipt);
   for (const record of receiptState.receipt.targets) {
+    if (isTracked(loaded.root, record.target_path)) fail('TRACKED_TARGET', `materialized view became tracked: ${record.target_path}`);
     const content = byID.get(record.content_id);
     const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
     const actual = readRegularFile(absolute, `receipt:${record.target_path}`);
@@ -468,7 +581,9 @@ export function cleanMaterialization(root, indexPath) {
   try {
     const receiptState = loadReceipt(loaded.root);
     validateReceipt(loaded, receiptState.receipt);
+    assertReceiptCoversEnabledViews(loaded, receiptState.receipt);
     for (const record of receiptState.receipt.targets) {
+      if (isTracked(loaded.root, record.target_path)) fail('TRACKED_TARGET', `refusing to clean a materialized view that became tracked: ${record.target_path}`);
       const content = byID.get(record.content_id);
       const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
       const actual = readRegularFile(absolute, `receipt:${record.target_path}`);

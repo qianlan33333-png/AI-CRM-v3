@@ -8,9 +8,11 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   DonorViewError,
+  LOCK_PATH,
   applyMaterialization,
   cleanMaterialization,
   planMaterialization,
+  recoverMaterializationLock,
   verifyMaterialization,
   verifySourceIndex,
 } from './donor-source-views.mjs';
@@ -196,12 +198,63 @@ test('rejects dirty output, held lock and a partial plan before any write', () =
   });
 });
 
-test('refuses to verify or clean a modified generated view', () => {
+test('fails verification and cleanup when an enabled view is absent from the receipt', () => {
+  withFixture({}, ({ root }) => {
+    applyMaterialization(root, 'source-index.json');
+    writeJSON(path.join(root, '.aicrm-dedup', 'donor-views-receipt.json'), { schema_version: 1, targets: [] });
+    expectCode('RECEIPT_INCOMPLETE', () => verifyMaterialization(root, 'source-index.json'));
+    expectCode('RECEIPT_INCOMPLETE', () => cleanMaterialization(root, 'source-index.json'));
+    assert.equal(fs.existsSync(path.join(root, 'views', 'health.schemas.ts')), true);
+  });
+});
+
+test("rolls back only this invocation's generated views when receipt publication fails", () => {
+  withFixture({}, ({ root }) => {
+    assert.throws(
+      () => applyMaterialization(root, 'source-index.json', { writeReceipt: () => { throw new Error('injected receipt write failure'); } }),
+      /injected receipt write failure/,
+    );
+    assert.equal(fs.existsSync(path.join(root, 'views', 'health.schemas.ts')), false);
+    assert.equal(fs.existsSync(path.join(root, '.aicrm-dedup', 'donor-views-receipt.json')), false);
+    assert.deepEqual(applyMaterialization(root, 'source-index.json').created, ['views/health.schemas.ts']);
+  });
+});
+
+test('refuses to verify or clean a modified or later-tracked generated view', () => {
   withFixture({}, ({ root }) => {
     applyMaterialization(root, 'source-index.json');
     fs.appendFileSync(path.join(root, 'views', 'health.schemas.ts'), 'developer change');
     expectCode('DIRTY_TARGET', () => verifyMaterialization(root, 'source-index.json'));
     expectCode('DIRTY_TARGET', () => cleanMaterialization(root, 'source-index.json'));
     assert.equal(fs.existsSync(path.join(root, 'views', 'health.schemas.ts')), true);
+  });
+  withFixture({}, ({ root }) => {
+    applyMaterialization(root, 'source-index.json');
+    execFileSync('git', ['init', '--quiet', root]);
+    execFileSync('git', ['-C', root, 'add', 'views/health.schemas.ts']);
+    expectCode('TRACKED_TARGET', () => verifyMaterialization(root, 'source-index.json'));
+    expectCode('TRACKED_TARGET', () => cleanMaterialization(root, 'source-index.json'));
+    assert.equal(fs.existsSync(path.join(root, 'views', 'health.schemas.ts')), true);
+  });
+});
+
+test('requires explicit and provably-safe lock recovery', () => {
+  withFixture({}, ({ root }) => {
+    const lock = path.join(root, ...LOCK_PATH.split('/'));
+    const owner = path.join(lock, 'owner.json');
+    fs.mkdirSync(lock, { recursive: true, mode: 0o700 });
+    expectCode('CONCURRENT_MATERIALIZATION', () => applyMaterialization(root, 'source-index.json'));
+    expectCode('LOCK_RECOVERY_REQUIRED', () => recoverMaterializationLock(root));
+
+    writeJSON(owner, { schema_version: 1, host: os.hostname(), pid: process.pid, lock_id: 'active-lock', created_at: new Date().toISOString() });
+    expectCode('LOCK_RECOVERY_REQUIRED', () => recoverMaterializationLock(root));
+
+    writeJSON(owner, { schema_version: 1, host: 'another-host', pid: 2147483647, lock_id: 'remote-lock', created_at: new Date().toISOString() });
+    expectCode('LOCK_RECOVERY_REQUIRED', () => recoverMaterializationLock(root));
+
+    writeJSON(owner, { schema_version: 1, host: os.hostname(), pid: 2147483647, lock_id: 'dead-lock', created_at: new Date().toISOString() });
+    assert.deepEqual(recoverMaterializationLock(root), { action: 'recover-lock', recovered: true, lock_id: 'dead-lock' });
+    assert.equal(fs.existsSync(lock), false);
+    assert.deepEqual(recoverMaterializationLock(root), { action: 'recover-lock', recovered: false, reason: 'lock_absent' });
   });
 });

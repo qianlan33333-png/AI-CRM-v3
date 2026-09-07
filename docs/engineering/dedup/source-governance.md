@@ -21,7 +21,8 @@ changes must preserve.
 4. Frozen consumers may never depend on mutable `web/src` content as their authority. If an active V3 behavior diverges, it must become an explicit V3 adapter or derived source with its own Owner and tests; it cannot edit a generated compatibility view.
 5. Compatibility views are normal untracked files, copied only from a whitelist in the index. They are never symlinks or hard links. The materializer rejects `..`, absolute/backslash paths, symlink ancestors, duplicate targets, canonical targets, tracked targets, unknown targets, dirty targets, missing sources, stale receipts, and a held lock.
 6. A receipt at `.aicrm-dedup/donor-views-receipt.json` records only files created by this tool. It is keyed by the source-index digest and canonical payload hashes. Cleanup verifies every recorded target before deleting only those paths; it never traverses a directory or cleans an unlisted file.
-7. Writes use a same-directory temporary file and atomic publication. A view is published exclusively without overwriting a target that appeared after validation; the tool-owned receipt is atomically renamed while the lock is held. The lock directory prevents concurrent apply/clean runs. If validation fails, no view is written; if a write fails, newly written files from that invocation are removed and the prior receipt remains unchanged.
+7. Writes use a same-directory temporary file and atomic publication. A view is published exclusively without overwriting a target that appeared after validation; the tool-owned receipt is atomically renamed while the lock is held. If the receipt write fails, the tool removes only views created in that invocation after rechecking their bytes and mode; it preserves any target that changed concurrently and reports rollback failure rather than deleting it. The prior receipt remains unchanged.
+8. The lock directory contains a private owner record with host, PID, random lock ID, and creation time. Normal `apply` and `clean` never remove a pre-existing lock. `recover-lock` is an explicit operator action: it only removes a lock whose well-formed owner record is on this host and whose PID returns `ESRCH`; active, permission-denied, remote-host, missing, malformed, or changed owner records require manual inspection. It never performs automatic stale-lock cleanup.
 
 `health.schemas.ts` is the PR-2 pilot. Its eight existing logical paths remain tracked and byte-exact in PR-2. The production index declares no enabled view targets, so `apply` is a no-op until PR-3 has wired a reviewed target list and removed the corresponding tracked paths. This is intentional: PR-2 proves the mechanism without giving a build an untracked-file fallback.
 
@@ -32,12 +33,16 @@ Read-only source validation:
 ```sh
 node scripts/verify-donor-sources.mjs
 node scripts/materialize-donor-views.mjs --mode plan
+node scripts/materialize-donor-views.mjs --mode recover-lock  # only after local dead-PID proof
 ```
 
-The four materializer modes are `plan`, `apply`, `verify`, and `clean`. They are
-not build hooks in PR-2. Do not add them to a build, Go test, CI artifact, or
-release command until PR-3 updates every declared consumer in one reviewed
-change.
+The materializer has `plan`, `apply`, `verify`, `clean`, and explicit
+`recover-lock` modes. They are not build hooks in PR-2. Do not add them to a
+build, Go test, CI artifact, release command, or production installer until
+PR-3 updates every declared consumer in one reviewed change. The installer
+continues to consume only validated built binaries, `web/dist`, and the release
+manifest; it must not require Node, Git, a donor checkout, or source-view
+materialization.
 
 | Phase | Permitted result | Required proof before advancing |
 |---|---|---|
