@@ -53,6 +53,17 @@ func (h *groupOpsUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// The admin menu keeps this historical canonical target. Serve the V3
+	// standard Host only from that single document route so the legacy alias
+	// cannot create a second independently mounted workspace.
+	if r.URL.Path == "/admin/automation-conversion/group-ops/ui" {
+		target := "/admin/groupops.html"
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
 	page, ok := groupOpsPage(r.URL.Path)
 	if !ok || !validGroupOpsQuery(r, page) {
 		http.NotFound(w, r)

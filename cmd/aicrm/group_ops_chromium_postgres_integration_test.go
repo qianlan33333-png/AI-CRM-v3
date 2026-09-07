@@ -24,18 +24,19 @@ import (
 // saves the node through the normal Group Ops PostgreSQL UoW; dispatch remains
 // disabled and the journey submits no Provider write.
 type groupOpsChromiumFixture struct {
-	ctx         context.Context
-	application *composedApplication
-	server      *httptest.Server
-	script      string
-	planID      int64
+	ctx                context.Context
+	application        *composedApplication
+	server             *httptest.Server
+	script             string
+	planID             int64
+	replacementStaffID int64
 }
 
 func TestPostgreSQLGroupOpsStandardHostCompositionPreflight(t *testing.T) {
 	fixture := newGroupOpsChromiumFixture(t)
 	session, _ := adminAccessLogin(t, fixture.application.handler, "groupops-browser-owner", "groupops-browser-owner-password")
 	page := authenticatedAdminGet(t, fixture.application.handler, session, "/admin/automation-conversion/group-ops/plans/"+strconv.FormatInt(fixture.planID, 10))
-	if page.Code != http.StatusOK || !bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-host="true"`)) || !bytes.Contains(page.Body.Bytes(), []byte(`/groupops-assets/`)) {
+	if page.Code != http.StatusOK || !bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-host="true"`)) || !bytes.Contains(page.Body.Bytes(), []byte(`/groupops-assets/`)) || !bytes.Contains(page.Body.Bytes(), []byte(`/static/admin_console/operation_member_picker_dd8d60d.js`)) {
 		t.Fatalf("standard Group Ops page status=%d host=%t assets=%t", page.Code, bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-host="true"`)), bytes.Contains(page.Body.Bytes(), []byte(`/groupops-assets/`)))
 	}
 	detail := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/automation-conversion/group-ops/plans/"+strconv.FormatInt(fixture.planID, 10))
@@ -45,9 +46,6 @@ func TestPostgreSQLGroupOpsStandardHostCompositionPreflight(t *testing.T) {
 }
 
 func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
-	if goruntime.GOOS == "darwin" && os.Getenv("AICRM_ALLOW_LOCAL_CHROMIUM_JOURNEY") != "1" {
-		t.Skip("Chromium CDP journey requires Linux CI; set AICRM_ALLOW_LOCAL_CHROMIUM_JOURNEY=1 for an explicit local run")
-	}
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
@@ -65,6 +63,10 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM group_ops_plan_nodes WHERE plan_id=$1 AND day_index=2 AND scheduled_time='09:30' AND trigger_time_label='09:30' AND action_title='Chromium 日程动作' AND node_status='active'`, fixture.planID).Scan(&matched); err != nil || matched != 1 {
 		t.Fatalf("browser node persistence count=%d err=%v", matched, err)
 	}
+	var ownerCount, ownerID int64
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*),coalesce(min(staff_id),0) FROM group_ops_plan_members WHERE plan_id=$1`, fixture.planID).Scan(&ownerCount, &ownerID); err != nil || ownerCount != 1 || ownerID != fixture.replacementStaffID {
+		t.Fatalf("browser owner persistence count=%d owner=%d err=%v", ownerCount, ownerID, err)
+	}
 }
 
 func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
@@ -79,16 +81,7 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	t.Cleanup(cancel)
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
 	t.Cleanup(cleanup)
-	prepareProductExternalPushChromiumArtifacts(t, repository)
-	t.Cleanup(func() {
-		for _, invocation := range [][]string{{"npm", "run", "build", "--silent"}, {"node", "scripts/build-v3-host-adapters.mjs"}} {
-			command := exec.Command(invocation[0], invocation[1:]...)
-			command.Dir = repository
-			if output, rebuildErr := command.CombinedOutput(); rebuildErr != nil {
-				t.Errorf("restore Group Ops browser build %s: %v output=%s", strings.Join(invocation, " "), rebuildErr, strings.TrimSpace(string(output)))
-			}
-		}
-	})
+	prepareGroupOpsChromiumArtifacts(t, repository)
 	dataKey := make([]byte, 32)
 	if _, err := rand.Read(dataKey); err != nil {
 		t.Fatal(err)
@@ -110,8 +103,11 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	if err = application.bootstrap(ctx, bootstrap); err != nil {
 		t.Fatal(err)
 	}
-	var actorID, planID int64
+	var actorID, replacementStaffID, planID int64
 	if err = application.pool.Native().QueryRow(ctx, `SELECT id FROM admin_users WHERE username='groupops-browser-owner'`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, "INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES($1,$2,$3,$4,true) RETURNING id", "groupops-browser-replacement", "$argon2id$browser-replacement", "Chromium Replacement", "chromium-replacement").Scan(&replacementStaffID); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -123,5 +119,21 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	}
 	server.Config.Handler = application.handler
 	server.StartTLS()
-	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID}
+	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, replacementStaffID: replacementStaffID}
+}
+
+// Group Ops runs against the same already-staged release closure as CI. The
+// fixture must not rebuild or replace shared web/dist: packages run in
+// parallel and other browser tests read the private PR01 documents there.
+func prepareGroupOpsChromiumArtifacts(t *testing.T, repository string) {
+	t.Helper()
+	for _, relative := range []string{"asset-manifest.json"} {
+		if _, err := os.Stat(filepath.Join(repository, "web", "dist", relative)); err != nil {
+			t.Fatalf("Group Ops Chromium requires staged release artifact %s: %v", relative, err)
+		}
+	}
+	manifest, err := os.ReadFile(filepath.Join(repository, "web", "dist", "asset-manifest.json"))
+	if err != nil || !bytes.Contains(manifest, []byte("\"groupopsHost\"")) || !bytes.Contains(manifest, []byte("\"groupopsStyles\"")) {
+		t.Fatalf("Group Ops Chromium release manifest lacks Host closure: %v", err)
+	}
 }

@@ -10,7 +10,7 @@ External Effects: 沿用既有群运营 Provider write 意图、`outbound` 与 E
 
 ## 行为合同
 
-以用户图一图二和冻结 AI-CRM 供体 `dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f` 的 `group_ops.css`（SHA-256 `4231be50170c77c063d31552dc09aec1586d5cc94df86a3bed30643dc2037c10`）及 `group_ops.js`（SHA-256 `3733af636a0f8c13b3a9dd42aff2eef804d18649e957aa894b2bfb296852beac`）为视觉和交互来源；保留四个列表统计、七列计划表、四个详情统计及基础配置/绑定群/Webhook/标准编排四个切换维度。业务值来自 V3，不硬编码标准版截图中的历史数值。冻结供体不修改，使用 V3 Host。
+以用户图一图二和冻结 AI-CRM 供体 `dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f` 的 `group_ops.css`（SHA-256 `4231be50170c77c063d31552dc09aec1586d5cc94df86a3bed30643dc2037c10`）、`group_ops.js`（SHA-256 `3733af636a0f8c13b3a9dd42aff2eef804d18649e957aa894b2bfb296852beac`）和 `operation_member_picker.js`（SHA-256 `bd84ce78ccb834f170548dea76cb99f6434978bc21211a9ec843dd2bf7ebabea`）为视觉和交互来源；保留四个列表统计、七列计划表、四个详情统计及基础配置/绑定群/Webhook/标准编排四个切换维度。业务值来自 V3，不硬编码标准版截图中的历史数值。冻结供体不修改，使用 V3 Host。
 
 读取开关默认关闭，可独立开启；错误分页不替换旧目录；用户点击刷新后必须报告真实同步结果；不以本地重读作为云端读取成功。
 
@@ -27,3 +27,9 @@ External Effects: 沿用既有群运营 Provider write 意图、`outbound` 与 E
 | `day_index`、`scheduled_time`、`trigger_time_label` | `group_ops_plan_nodes` 持久字段和显式 `schedule_semantics`；新建节点为 `calendar`，运行以接受 run 的上海日期为 Day 1 锚点生成 `scheduled_for`。迁移前的每行明确标为 `relative_delay` 并保持原有 delay；不按 Day 1/20:00/空标题等业务字段猜来源。V3 未保存群入群事件，绝不猜测该锚点。 |
 | `action_title`、`status` | `action_title`、`node_status`；`draft` 与 `disabled` 不生成执行草稿。 |
 | `queue_count` | 只数现存 `accepted`、`provider_accepted`、`outcome_unknown` 执行事实，不等同实际送达。 |
+
+## 部署与回滚顺序
+
+0101 引入的日历字段只由本版本运行时解释；旧二进制不会读取 schedule_semantics，不能把直接回退旧二进制视为语义兼容。回滚前先在 Runtime Settings 关闭 groupops.dispatch_enabled，并停用本板块新运行受理；保持目录读取关闭或按故障范围单独关闭 groupops.directory_read_enabled。确认没有本版本新接受的待执行 Provider 写后，再切换二进制。已冻结的执行、效果、回执和 outcome_unknown 事实保留，不删除、不重建幂等键；恢复时只按原键查询、回调或既有对账流程继续。恢复到本版本后，先核对版本与两个开关，再按计划重开受理；本轮上线前两项 Provider 写均保持关闭。
+
+供体 JS 仅有两处事实投影修正：没有可信今日触达来源时，列表总计也显示 `—`；成员统计只在总人数与外部联系人数均可信时派生内部人数。其余标准 DOM、样式和交互代码按记录的冻结来源携带。

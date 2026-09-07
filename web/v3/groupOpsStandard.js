@@ -732,7 +732,8 @@
 
   function renderList(total, queueCount) {
     const boundCount = state.plans.reduce((sum, plan) => sum + Number(plan.bound_group_count || 0), 0);
-    const reach = state.plans.reduce((sum, plan) => sum + Number(plan.today_estimated_reach || 0), 0);
+    const reachKnown = state.plans.length > 0 && state.plans.every((plan) => plan.today_estimated_reach !== null && plan.today_estimated_reach !== undefined && Number.isFinite(Number(plan.today_estimated_reach)));
+    const reach = reachKnown ? state.plans.reduce((sum, plan) => sum + Number(plan.today_estimated_reach), 0) : null;
     const rows = state.plans
       .map(
         (plan) => `
@@ -758,6 +759,7 @@
       )
       .join("");
     renderShell(`
+      ${renderWorkspaceHeading("群运营计划", "群运营 / 计划列表")}
       <div class="group-ops__bar">
         ${pageButton("查看所有群", routes.groups)}
         ${actionButton("创建计划", "show-create-plan", "group-ops__button--primary")}
@@ -1181,8 +1183,13 @@
     `;
   }
 
+  function renderWorkspaceHeading(title, crumb) {
+    return `<section class="group-ops__summary-card group-ops__page-heading" style="margin:0 0 18px;padding:22px 28px 18px;border-radius:0;border-left:0;border-right:0"><div class="group-ops__summary-head"><div><div class="group-ops__muted">${escapeHtml(crumb)}</div><h2 style="margin:6px 0 0">${escapeHtml(title)}</h2></div></div></section>`;
+  }
+
   function renderDetailShell(summary) {
     return `
+      ${renderWorkspaceHeading("群运营计划", "群运营 / 计划详情")}
       <div class="group-ops__notice" ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}</div>
       <section class="group-ops__detail-shell">
         <section class="group-ops__summary-card">
@@ -1267,6 +1274,7 @@
       )
       .join("");
     renderShell(`
+      ${renderWorkspaceHeading("群目录", "群运营 / 群目录")}
       <div class="group-ops__bar">${pageButton("返回列表", routes.list)}</div>
       <section class="group-ops__card">
         <div class="group-ops__filters">

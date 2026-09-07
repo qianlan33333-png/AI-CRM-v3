@@ -130,7 +130,23 @@ func (s *Service) Update(ctx context.Context, command groupopsport.UpdatePlanCom
 	if !ready(s) || !validUpdate(command) {
 		return groupopsport.Detail{}, invalidOrUnavailable(s)
 	}
-	return s.mutate(ctx, "plan_update", command.PlanID, command.ExpectedRevision, command.Actor, command.IdempotencyKey, command, func(_ context.Context, detail *groupopsport.Detail, now time.Time) error {
+	if command.OwnerStaffIDSet && s.staff == nil {
+		return groupopsport.Detail{}, ErrUnavailable
+	}
+	return s.mutate(ctx, "plan_update", command.PlanID, command.ExpectedRevision, command.Actor, command.IdempotencyKey, command, func(tx context.Context, detail *groupopsport.Detail, now time.Time) error {
+		if command.OwnerStaffIDSet {
+			active, err := s.staff.IsActiveStaff(tx, command.OwnerStaffID)
+			if err != nil {
+				return ErrUnavailable
+			}
+			if !active {
+				return ErrInvalid
+			}
+			// The frozen standard form has one responsible operator. Save replaces
+			// the owned member set together with the plan, receipt, and audit event
+			// in this one Unit of Work; it never exposes an add/delete half-state.
+			detail.Members = []groupopsport.Member{{StaffID: command.OwnerStaffID}}
+		}
 		detail.Plan.Name = strings.TrimSpace(command.Name)
 		if command.PlanType != "" {
 			detail.Plan.Type = command.PlanType
@@ -577,7 +593,7 @@ func validCreate(c groupopsport.CreatePlanCommand) bool {
 	return c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name)
 }
 func validUpdate(c groupopsport.UpdatePlanCommand) bool {
-	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name) && (c.PlanType == "" || c.PlanType == "standard" || c.PlanType == "webhook")
+	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name) && (!c.OwnerStaffIDSet || c.OwnerStaffID > 0) && (c.PlanType == "" || c.PlanType == "standard" || c.PlanType == "webhook")
 }
 func validTransition(c groupopsport.TransitionCommand) bool {
 	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey)
@@ -632,7 +648,7 @@ func scheduleSemantics(day int32, scheduled, trigger, title, status string) stri
 }
 
 func validScheduledTime(value string) bool {
-	if len(value) != 5 || value[2] != ':' || value[0] < '0' || value[0] > '2' || value[1] < '0' || value[1] > '9' || value[3] < '0' || value[3] > '5' || value[4] != '0' && value[4] != '3' {
+	if len(value) != 5 || value[2] != ':' || value[0] < '0' || value[0] > '2' || value[1] < '0' || value[1] > '9' || (value[3] != '0' && value[3] != '3') || value[4] != '0' {
 		return false
 	}
 	hour := int(value[0]-'0')*10 + int(value[1]-'0')

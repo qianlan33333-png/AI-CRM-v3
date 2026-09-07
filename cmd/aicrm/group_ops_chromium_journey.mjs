@@ -53,6 +53,15 @@ try {
   await waitFor(cdp, "document.body.textContent.includes('Chromium 日程动作') && document.body.textContent.includes('第 2 天') && document.body.textContent.includes('09:30')", "browser node save did not return persisted schedule");
   const persisted = await evaluate(cdp, `fetch('/api/admin/automation-conversion/group-ops/plans/${planID}/nodes',{credentials:'same-origin'}).then((response)=>response.json()).then((body)=>body.items?.some((node)=>node.day_index===2&&node.scheduled_time==='09:30'&&node.trigger_time_label==='09:30'&&node.action_title==='Chromium 日程动作'&&node.status==='active'))`);
   if (!persisted) throw new Error("Group Ops node API did not return browser-persisted schedule");
+  await evaluate(cdp, "document.querySelector('[data-action=\"switch-detail-panel\"][data-panel=\"basic\"]').click(); document.querySelector('[data-action=\"pick-plan-owner\"]').click(); true");
+  await waitFor(cdp, "document.querySelectorAll('[data-operation-member-picker]:not([hidden]) [data-operation-member-row]').length >= 2", "standard owner picker did not load local employees");
+  const ownerChanged = await evaluate(cdp, "(() => { const owner=document.querySelector('[name=\"owner_userid\"]').value; const row=Array.from(document.querySelectorAll('[data-operation-member-picker] [data-operation-member-row]')).find((item)=>item.dataset.userId!==owner); if(!row)return false; row.querySelector('[data-operation-member-row-select]').click(); document.querySelector('[data-operation-member-picker] [data-operation-member-confirm]').click(); return true; })()");
+  if (!ownerChanged) throw new Error("standard owner picker had no replacement employee");
+  await waitFor(cdp, "document.querySelector('[name=\"owner_userid\"]').value !== ''", "standard owner picker did not set an owner");
+  await evaluate(cdp, "document.querySelector('[data-action=\"save-plan\"]').click(); true");
+  await waitFor(cdp, "document.body.textContent.includes('saved') || document.body.textContent.includes('已保存')", "browser owner save did not return persisted detail");
+  const ownerPersisted = await evaluate(cdp, `fetch("/api/admin/automation-conversion/group-ops/plans/${planID}",{credentials:"same-origin"}).then((response)=>response.json()).then((body)=>body.members?.length===1)`);
+  if (!ownerPersisted) throw new Error("Group Ops plan API did not return browser-persisted owner replacement");
   console.log("group_ops_chromium: PASS");
 } catch (error) {
   if (error instanceof DevToolsUnavailable) console.log("group_ops_chromium: SKIP_DEVTOOLS");

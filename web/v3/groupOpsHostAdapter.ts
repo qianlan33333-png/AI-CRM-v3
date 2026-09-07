@@ -209,28 +209,21 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
       body: { name: String(body.plan_name || "").trim() || "新建群运营计划" },
     });
     let value = created.plan || created;
-    if (body.plan_type || body.owner_userid) {
-      const current = plan(value);
-      let expected = await revision(current.id);
-      if (body.plan_type) {
-        value = await nativeRequest(`${base}/plans/${current.id}`, {
-          method: "PUT",
-          body: {
-            expected_revision: expected,
-            name: current.plan_name,
-            plan_type: body.plan_type,
-          },
-        });
-        expected = Number((value.plan || value).revision);
-      }
-      if (Number(body.owner_userid) > 0)
-        value = await nativeRequest(`${base}/plans/${current.id}/members`, {
-          method: "POST",
-          body: {
-            expected_revision: expected,
-            staff_id: Number(body.owner_userid),
-          },
-        });
+    const current = plan(value);
+    const owner = Number(body.owner_userid);
+    // Creation has no member yet. The optional owner command below is one
+    // atomic plan mutation, rather than a separate member add operation.
+    if (body.plan_type || owner > 0) {
+      const payload: Json = {
+        expected_revision: await revision(current.id),
+        name: current.plan_name,
+        plan_type: body.plan_type,
+      };
+      if (owner > 0) payload.owner_staff_id = owner;
+      value = await nativeRequest(`${base}/plans/${current.id}`, {
+        method: "PUT",
+        body: payload,
+      });
     }
     return { item: plan((value.plan || value).plan || value.plan || value) };
   }
@@ -316,39 +309,19 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     url === `${base}/plans/${id}` &&
     (method === "PUT" || method === "PATCH")
   ) {
-    let value = await nativeRequest(url, {
-      method: "PUT",
-      body: {
-        expected_revision: await revision(id),
-        name: body.plan_name,
-        plan_type: body.plan_type,
-      },
-    });
+    const current = await detail(id);
     const wantedOwner = Number(body.owner_userid);
-    if (wantedOwner > 0) {
-      const current = await detail(id);
-      const currentOwner = Number((current.members || [])[0]?.staff_id || 0);
-      if (currentOwner !== wantedOwner) {
-        let expected = Number((value.plan || value).revision);
-        value = await nativeRequest(`${base}/plans/${id}/members`, {
-          method: "POST",
-          body: { expected_revision: expected, staff_id: wantedOwner },
-        });
-        expected = Number((value.plan || value).revision);
-        // The standard UI has one responsible operator. Keep its projection
-        // exact by removing every previous member under successive CAS values.
-        for (const member of current.members || []) {
-          const staffID = Number(member.staff_id);
-          if (staffID > 0 && staffID !== wantedOwner) {
-            value = await nativeRequest(`${base}/plans/${id}/members/${staffID}`, {
-              method: "DELETE",
-              body: { expected_revision: expected },
-            });
-            expected = Number((value.plan || value).revision);
-          }
-        }
-      }
-    }
+    const currentOwner = Number((current.members || [])[0]?.staff_id || 0);
+    const payload: Json = {
+      expected_revision: await revision(id),
+      name: body.plan_name,
+      plan_type: body.plan_type,
+    };
+    // The donor submits its visible value on every save. Preserve legacy
+    // multi-member plans unless the responsible employee actually changed.
+    if (wantedOwner > 0 && wantedOwner !== currentOwner)
+      payload.owner_staff_id = wantedOwner;
+    let value = await nativeRequest(url, { method: "PUT", body: payload });
     const wanted = body.status;
     const mapped = (value.plan || value).status;
     if (wanted === "active" && mapped !== "active")
@@ -369,13 +342,19 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     );
     return {
       ...data,
-      items: (data.items || []).map((item: Json) => ({
-        chat_id: item.chat_reference,
-        group_name: item.display_name,
-        owner_userid: String(item.owner_staff_id || ""),
-        internal_member_count_snapshot: item.member_count,
-        external_member_count_snapshot: item.external_member_count,
-      })),
+      items: (data.items || []).map((item: Json) => {
+        const total = item.member_count;
+        const external = item.external_member_count;
+        const knownTotal = total !== null && total !== undefined && Number.isFinite(Number(total));
+        const knownExternal = external !== null && external !== undefined && Number.isFinite(Number(external));
+        return {
+          chat_id: item.chat_reference,
+          group_name: item.display_name,
+          owner_userid: String(item.owner_staff_id || ""),
+          internal_member_count_snapshot: knownTotal && knownExternal ? Number(total) - Number(external) : null,
+          external_member_count_snapshot: knownExternal ? Number(external) : null,
+        };
+      }),
     };
   }
   if (url === `${base}/groups/sync`)

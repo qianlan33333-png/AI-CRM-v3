@@ -191,8 +191,13 @@ type UpdatePlanCommand struct {
 	PlanID           int64
 	ExpectedRevision int64
 	Name             string
-	Actor            int64
-	IdempotencyKey   string
+	// OwnerStaffIDSet preserves the update contract for legacy multi-member
+	// plans: absent means retain their complete member set. Present replaces it
+	// atomically with the standard UI's single responsible employee.
+	OwnerStaffID    int64
+	OwnerStaffIDSet bool
+	Actor           int64
+	IdempotencyKey  string
 }
 
 type TransitionCommand struct {

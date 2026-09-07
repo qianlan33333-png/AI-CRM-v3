@@ -645,15 +645,21 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var actorID int64
+	var actorID, replacementID, inactiveID int64
 	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-reactivate','$argon2id$reactivate','Group Ops Reactivate','journey-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-replacement','$argon2id$replacement','Group Ops Replacement','replacement-sender',true) RETURNING id`).Scan(&replacementID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-inactive','$argon2id$inactive','Group Ops Inactive','inactive-sender',false) RETURNING id`).Scan(&inactiveID); err != nil {
 		t.Fatal(err)
 	}
 	store, err := groupopsstore.NewPostgreSQL(native, uow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := groupopsapp.NewService(uow, store, journeyStaff{}, store)
+	service := groupopsapp.NewService(uow, store, groupOpsStaffAdapter{access: accessstore.NewPostgreSQL(), owners: store}, store)
 	detail, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "PG paused reactivation", Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-create"})
 	if err != nil {
 		t.Fatal(err)
@@ -661,6 +667,44 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 	detail, err = service.AddMember(ctx, groupopsport.MemberCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, StaffID: actorID, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-member"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Existing v3 plans may contain several members. A metadata-only update
+	// leaves that set untouched; an explicit standard owner command replaces it
+	// together with the plan revision and receipt in this PostgreSQL UoW.
+	detail, err = service.AddMember(ctx, groupopsport.MemberCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, StaffID: replacementID, Actor: actorID, IdempotencyKey: "groupops-pg-owner-legacy-member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Name: "PG paused reactivation metadata", Actor: actorID, IdempotencyKey: "groupops-pg-owner-preserve"})
+	if err != nil || len(detail.Members) != 2 {
+		t.Fatalf("metadata-only members=%+v err=%v", detail.Members, err)
+	}
+	ownerRevision := detail.Plan.Revision
+	ownerCommand := groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: ownerRevision, Name: "PG owner replaced", OwnerStaffID: replacementID, OwnerStaffIDSet: true, Actor: actorID, IdempotencyKey: "groupops-pg-owner-replace"}
+	detail, err = service.Update(ctx, ownerCommand)
+	if err != nil || len(detail.Members) != 1 || detail.Members[0].StaffID != replacementID {
+		t.Fatalf("owner replacement members=%+v err=%v", detail.Members, err)
+	}
+	var persistedOwnerCount, persistedOwner int64
+	if err = native.QueryRow(ctx, `SELECT count(*),coalesce(min(staff_id),0) FROM group_ops_plan_members WHERE plan_id=$1`, detail.Plan.ID).Scan(&persistedOwnerCount, &persistedOwner); err != nil || persistedOwnerCount != 1 || persistedOwner != replacementID {
+		t.Fatalf("persisted owner count=%d owner=%d err=%v", persistedOwnerCount, persistedOwner, err)
+	}
+	replayedOwner, err := service.Update(ctx, ownerCommand)
+	if err != nil || replayedOwner.Plan.Revision != detail.Plan.Revision || len(replayedOwner.Members) != 1 || replayedOwner.Members[0].StaffID != replacementID {
+		t.Fatalf("owner replay=%+v err=%v", replayedOwner, err)
+	}
+	_, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: ownerRevision, Name: "stale replacement", OwnerStaffID: actorID, OwnerStaffIDSet: true, Actor: actorID, IdempotencyKey: "groupops-pg-owner-stale"})
+	if !errors.Is(err, groupopsapp.ErrConflict) {
+		t.Fatalf("stale owner replacement err=%v", err)
+	}
+	beforeInactive := detail.Plan.Revision
+	_, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: beforeInactive, Name: "inactive replacement", OwnerStaffID: inactiveID, OwnerStaffIDSet: true, Actor: actorID, IdempotencyKey: "groupops-pg-owner-inactive"})
+	if !errors.Is(err, groupopsapp.ErrInvalid) {
+		t.Fatalf("inactive owner replacement err=%v", err)
+	}
+	readbackOwner, err := service.Detail(ctx, detail.Plan.ID)
+	if err != nil || readbackOwner.Plan.Revision != beforeInactive || len(readbackOwner.Members) != 1 || readbackOwner.Members[0].StaffID != replacementID {
+		t.Fatalf("failed replacement changed persisted owner=%+v err=%v", readbackOwner, err)
 	}
 	detail, err = service.AddGroupAsset(ctx, groupopsport.GroupAssetCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, AssetRef: "reactivate-group", Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-group"})
 	if err != nil {

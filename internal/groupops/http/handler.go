@@ -675,7 +675,12 @@ func (h *Handler) planRoot(w stdhttp.ResponseWriter, r *stdhttp.Request, planID 
 		return
 	}
 	revision = body.ExpectedRevision
-	value, err := h.application.Update(r.Context(), groupopsport.UpdatePlanCommand{PlanID: planID, ExpectedRevision: revision, Name: body.Name, PlanType: body.PlanType, Actor: actor.InternalID, IdempotencyKey: key})
+	command := groupopsport.UpdatePlanCommand{PlanID: planID, ExpectedRevision: revision, Name: body.Name, PlanType: body.PlanType, Actor: actor.InternalID, IdempotencyKey: key}
+	if body.OwnerStaffID != nil {
+		command.OwnerStaffIDSet = true
+		command.OwnerStaffID = *body.OwnerStaffID
+	}
+	value, err := h.application.Update(r.Context(), command)
 	h.respond(w, value, err)
 }
 
@@ -1328,6 +1333,7 @@ type updatePlanRequest struct {
 	PlanType         string `json:"plan_type"`
 	ExpectedRevision int64  `json:"expected_revision"`
 	Name             string `json:"name"`
+	OwnerStaffID     *int64 `json:"owner_staff_id"`
 }
 type memberRequest struct {
 	ExpectedRevision int64 `json:"expected_revision"`
