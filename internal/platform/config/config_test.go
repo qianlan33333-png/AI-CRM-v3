@@ -27,6 +27,35 @@ func TestLoadDefaultsAndRejectsInvalidRole(t *testing.T) {
 	}
 }
 
+func TestNormalizeRuntimePolicyDefaultsOnlyFillsOmittedValues(t *testing.T) {
+	defaults := NormalizeRuntimePolicyDefaults(Runtime{})
+	if defaults.WorkerLimit != DefaultWorkerLimit ||
+		defaults.WeCom.MessageArchivePageLimit != DefaultMessageArchivePageLimit ||
+		defaults.WeCom.MessageArchivePageBudget != DefaultMessageArchivePageBudget ||
+		defaults.WeCom.ContextTokenTTL != DefaultContextTokenTTL ||
+		defaults.AutomationOperations.ProviderMode != AutomationProviderDisabled ||
+		defaults.AutomationOperations.MaxRecipientsPerRun != DefaultAutomationMaxRecipientsPerRun {
+		t.Fatalf("defaults=%+v", defaults)
+	}
+
+	explicit := Runtime{
+		WorkerLimit: -1,
+		WeCom: WeCom{
+			MessageArchivePageLimit:  9,
+			MessageArchivePageBudget: -1,
+			ContextTokenTTL:          time.Second,
+		},
+		AutomationOperations: AutomationOperations{
+			ProviderMode:        AutomationProviderLimited,
+			MaxRecipientsPerRun: -1,
+		},
+	}
+	got := NormalizeRuntimePolicyDefaults(explicit)
+	if got.WorkerLimit != -1 || got.WeCom.MessageArchivePageLimit != 9 || got.WeCom.MessageArchivePageBudget != -1 || got.WeCom.ContextTokenTTL != time.Second || got.AutomationOperations.ProviderMode != AutomationProviderLimited || got.AutomationOperations.MaxRecipientsPerRun != -1 {
+		t.Fatalf("normalization changed explicit values: %+v", got)
+	}
+}
+
 func TestSourceDatabaseURLIsExplicitAndTrimmed(t *testing.T) {
 	t.Setenv("AICRM_SOURCE_DATABASE_URL", "postgres:///legacy")
 	if value, err := SourceDatabaseURL(); err != nil || value != "postgres:///legacy" {

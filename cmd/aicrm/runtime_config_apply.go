@@ -16,6 +16,7 @@ import (
 // secret and arbitrary environment name: those remain protected deployment
 // inputs and Config shows only their fixed safe reference.
 func runtimeConfigDefaults(cfg platformconfig.Runtime) ([]configport.RuntimeSetting, error) {
+	cfg = platformconfig.NormalizeRuntimePolicyDefaults(cfg)
 	values := []struct {
 		key   configport.RuntimeSettingKey
 		value any

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
 	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 )
@@ -21,6 +22,39 @@ func runtimeApplySetting(t *testing.T, key configport.RuntimeSettingKey, value a
 // OneID decision: the test covers configuration guards around already-bound
 // identity scopes; it neither resolves nor writes identities. Persistence and
 // external-effects decisions: neither applies; this is pure startup projection.
+func TestRuntimeConfigDefaultsNormalizesOmittedCompositionPolicy(t *testing.T) {
+	settings, err := runtimeConfigDefaults(platformconfig.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configapp.ValidateEffectiveRuntimeSettings(settings, configapp.RuntimeActivationGuards{}); err != nil {
+		t.Fatalf("normalized defaults must satisfy the closed catalog: %v", err)
+	}
+	values := map[configport.RuntimeSettingKey]json.RawMessage{}
+	for _, setting := range settings {
+		values[setting.Key] = setting.Value
+	}
+	for _, expected := range []struct {
+		key   configport.RuntimeSettingKey
+		value any
+	}{
+		{configport.AutomationOperationsProviderMode, "disabled"},
+		{configport.AutomationOperationsMaxRecipientsPerRun, 1},
+		{configport.MessageArchivePageLimit, 100},
+		{configport.MessageArchivePageBudget, 10},
+		{configport.SidebarContextTokenTTLSeconds, 300},
+		{configport.WorkerLimit, 25},
+	} {
+		want, marshalErr := json.Marshal(expected.value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if got := values[expected.key]; string(got) != string(want) {
+			t.Fatalf("%s=%s, want %s", expected.key, got, want)
+		}
+	}
+}
+
 func TestApplyRuntimeConfigAllowsValidatedAutomationAndAIDispatchSwitches(t *testing.T) {
 	cfg := platformconfig.Runtime{
 		AutomationOperations: platformconfig.AutomationOperations{ProviderMode: platformconfig.AutomationProviderDisabled, MaxRecipientsPerRun: 1},

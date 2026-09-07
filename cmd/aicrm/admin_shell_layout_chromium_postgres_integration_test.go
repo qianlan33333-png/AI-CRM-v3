@@ -114,7 +114,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/attachment-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/automation-agents", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/owner-migration", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
-		{path: "/admin/config", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/config", marker: `data-runtime-release-host`, expectTopbar: true},
 		{path: "/admin/config/releases", marker: `data-runtime-release-host`, expectTopbar: true},
 		{path: "/admin/oneid", marker: `class="admin-topbar"`, expectTopbar: true},
 		// Open Platform is an authenticated V3 Host injected into the built

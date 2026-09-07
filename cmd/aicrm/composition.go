@@ -153,6 +153,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if providerFactory == nil {
 		return nil, errors.New("WeCom client factory is required")
 	}
+	// Direct composition fixtures omit policy values that Load supplies. Apply
+	// the same documented defaults before the closed Config baseline is built.
+	cfg = platformconfig.NormalizeRuntimePolicyDefaults(cfg)
 	var hxcSource *hxcprovider.MySQL
 	pool, err := platformpostgres.Open(ctx, platformpostgres.Config{URL: cfg.DatabaseURL, MaxConnections: 20, MinConnections: 1})
 	if err != nil {

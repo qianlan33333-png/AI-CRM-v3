@@ -243,6 +243,20 @@ try {
   const restored = await snapshot();
   if (restored.limit !== 2 || restored.revision === firstReleaseID || restored.revision === secondReleaseID) throw new Error("rollback did not publish a new revision with the older runtime value");
 
+  // The Config Center keeps the donor's four-column category table. Only
+  // categories with one explicit V3 primary enable owner render a switch;
+  // other categories must not gain a fabricated aggregate provider command.
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin/config` });
+  await waitFor(cdp, "document.querySelectorAll('[data-category-row]').length === 12 && Boolean(document.querySelector('[data-category-row=\"wecom_base\"] .cc-switch input'))", "Config Center did not render its legacy category list");
+  const centerLayout = await evaluate(cdp, `(() => ({
+    headers: [...document.querySelectorAll('.cc-category-table thead th')].map((cell) => cell.textContent.trim()),
+    sidebarHasAggregateSwitch: Boolean(document.querySelector('[data-category-row="sidebar_identity"] .cc-switch')),
+    hasTechnicalHomepageColumn: document.body.textContent.includes('发布/应用状态')
+  }))()`);
+  if (JSON.stringify(centerLayout?.headers) !== JSON.stringify(["类目", "是否生效", "生效开关", "配置"]) || centerLayout?.sidebarHasAggregateSwitch || centerLayout?.hasTechnicalHomepageColumn) {
+    throw new Error("Config Center no longer preserves the donor category-table contract");
+  }
+
   // Config Center receives native JSON strings from the runtime-catalog API.
   // Opening this legacy-layout category and saving without a change must retain
   // both the existing AgentID and a mode from another category in the draft.

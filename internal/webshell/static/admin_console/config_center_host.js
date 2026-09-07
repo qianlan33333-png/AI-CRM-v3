@@ -43,159 +43,266 @@
   };
   const writeHeaders = () => ({ Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": csrf(), "Idempotency-Key": requestID() });
   const clear = () => root.replaceChildren();
-  const addStatus = (parent) => {
-    const node = element("section", "cc-alert admin-muted");
-    node.dataset.configCenterStatus = "";
-    parent.append(node);
-    return node;
-  };
-  const status = (message, kind = "") => {
-    const node = root.querySelector("[data-config-center-status]");
-    if (!node) return;
-    node.textContent = message;
-    node.className = kind ? `cc-alert is-${kind} admin-alert admin-alert--${kind}` : "cc-alert admin-muted";
-  };
   // json.RawMessage is serialized by Go as its native JSON primitive. Parsing a
   // string a second time turns values such as "limited" or an AppID into
   // undefined, and a later save would overwrite the real effective value.
   const decode = (raw) => raw;
-  const categoryURL = (key) => `/admin/configDetail.html?cat=${encodeURIComponent(key)}`;
-  const releaseURL = (id) => `/admin/config/releases/${encodeURIComponent(String(id))}`;
-  const categoryKey = () => new URL(location.href).searchParams.get("cat") || "";
-  const catalog = () => request(catalogAPI);
-  const releases = () => request(releaseAPI);
   const rolesFor = (field) => Array.isArray(field?.required_roles) ? field.required_roles : [];
   const roleLabel = (role) => ({
     api: "管理接口服务",
     worker: "后台任务服务",
     "effects-worker": "受控执行服务",
   }[role] || "相应服务");
-  const categoryState = (category, model) => {
-    if (category.disabled) return { label: "不支持", detail: category.disabled };
-    if (category.managed_url) return { label: "请在对应管理页维护", detail: "此分类由专门的管理页面维护。" };
+  // A category switch exists only where the legacy category has one direct V3
+  // owner for its primary enabled state. Categories with multiple independent
+  // fields deliberately retain the donor's em dash and configuration action.
+  const primaryEnabledSetting = Object.freeze({
+    wecom_base: "wecom.enabled",
+    wechat_pay: "wechat_pay.provider_enabled",
+    wechat_shop: "wechat_shop.provider_enabled",
+    wechat_oauth: "survey.oauth.enabled",
+  });
+  const effectiveValues = (model) => new Map((model.effective?.settings || []).map((item) => [item.key, decode(item.value)]));
+  const categoryToggle = (category, model) => {
+    const key = primaryEnabledSetting[category?.key];
+    const field = (category?.fields || []).find((item) => item?.key === key);
+    if (!key || field?.input !== "boolean") return null;
+    return { key, enabled: effectiveValues(model).get(key) === true };
+  };
+  const applicationState = (category, model) => {
     const effective = model.effective || {};
     if (effective.source !== "published" || !Number.isInteger(effective.revision) || effective.revision < 1) {
-      return { label: "受保护环境默认", detail: "尚未发布版本；不能显示为已生效。" };
+      return { label: "已启用，待发布", detail: "当前值来自受保护启动配置，尚未形成已发布版本。", applied: false };
     }
     const required = new Set();
     for (const field of category.fields || []) for (const role of rolesFor(field)) required.add(role);
-    if (!required.size) return { label: "没有可发布字段", detail: "当前没有可以在此发布的运行时字段。" };
     const seen = new Set((model.applications || []).filter((item) => item?.revision === effective.revision && item?.source === "published" && item?.snapshot_checksum === effective.checksum).map((item) => item.role));
     const missing = [...required].filter((role) => !seen.has(role));
-    if (missing.length) return { label: "已发布，等待服务读取", detail: `版本 #${effective.revision} 尚未由 ${missing.map(roleLabel).join("、")} 启动读取。` };
-    return { label: "已发布并已读取", detail: `版本 #${effective.revision} 已由所需服务读取。` };
+    if (missing.length) return { label: "已发布，待读取", detail: `当前版本尚未由 ${missing.map(roleLabel).join("、")} 读取。`, applied: false };
+    return { label: "已发布并已读取", detail: "当前版本已由所需服务读取。", applied: true };
   };
-  const card = (heading, copy) => {
-    const section = element("section", "admin-card cc-card");
-    const header = element("div", "cc-card-h");
-    header.append(element("h2", "", heading));
-    section.append(header, element("p", "admin-muted", copy));
-    return section;
+  const categoryState = (category, model, toggle = categoryToggle(category, model)) => {
+    if (category.disabled) return { label: "不支持", detail: category.disabled, applied: false };
+    if (category.managed_url || !toggle) return { label: "—", detail: "请在配置详情或对应管理页面查看。", applied: false };
+    if (!toggle.enabled) return { label: "已关闭", detail: "当前启用开关处于关闭状态。", applied: false };
+    return applicationState(category, model);
   };
+  const makeSwitch = (toggle) => {
+    const label = element("label", "cc-switch");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = toggle.enabled;
+    input.setAttribute("aria-label", "生效开关");
+    label.append(input, element("span", "cc-slider"));
+    return { label, input };
+  };
+  const addStatus = (parent) => {
+    const node = element("div", "cc-alert");
+    node.dataset.configCenterStatus = "";
+    node.hidden = true;
+    parent.append(node);
+    return node;
+  };
+  const status = (message, kind = "") => {
+    const node = root.querySelector("[data-config-center-status]");
+    if (!node) return;
+    node.hidden = !message;
+    node.textContent = message || "";
+    node.className = kind ? `cc-alert is-${kind}` : "cc-alert";
+  };
+  const fullDraftSettings = (model, changes = new Map()) => {
+    const values = new Map((model.effective?.settings || []).map((item) => [item.key, item.value]));
+    for (const [key, value] of changes) values.set(key, value);
+    return [...values.entries()].map(([key, value]) => ({ key, value }));
+  };
+  const createDraft = (model, releaseModel, changes) => request(releaseAPI, {
+    method: "POST",
+    headers: writeHeaders(),
+    body: JSON.stringify({
+      expected_base_revision: releaseModel.runtime_releases?.active_revision || 0,
+      settings: fullDraftSettings(model, changes),
+      admin_action_token: releaseModel.admin_action_token,
+    }),
+  });
+  const renderState = (state) => element("span", `cc-state${state.applied ? " is-on" : ""}`, state.label);
+  const categoryURL = (key) => `/admin/configDetail.html?cat=${encodeURIComponent(key)}`;
+  const releaseURL = (id) => `/admin/config/releases/${encodeURIComponent(String(id))}`;
+  const categoryKey = () => new URL(location.href).searchParams.get("cat") || "";
+  const catalog = () => request(catalogAPI);
+  const releases = () => request(releaseAPI);
 
   const showCenter = async () => {
     clear();
-    const intro = card("配置中心", "沿用旧版分类和操作顺序：先保存草稿、校验、再发布。密钥只显示受保护引用；发布不会直接改环境、重启服务或发送业务请求。");
-    const history = button("查看发布记录", "ghost");
-    history.addEventListener("click", () => location.assign("/admin/config/releases"));
-    intro.append(history, addStatus(intro)); root.append(intro);
-    const table = element("table", "admin-table cc-table cc-category-table");
-    table.innerHTML = "<thead><tr><th>分类</th><th>说明</th><th>字段</th><th>发布/应用状态</th><th>操作</th></tr></thead>";
-    const rows = document.createElement("tbody"); table.append(rows);
-    const wrap = element("div", "admin-table-wrap cc-table-wrap"); wrap.append(table); root.append(wrap);
+    root.classList.add("cc-page");
+    root.classList.remove("cc-detail");
+    root.dataset.configCenter = "";
+    addStatus(root);
+    const card = element("section", "cc-card");
+    card.append(element("div", "cc-card-h"));
+    card.querySelector(".cc-card-h").append(element("h2", "", "配置类目"));
+    const wrap = element("div", "cc-table-wrap");
+    const table = element("table", "cc-table cc-category-table");
+    table.innerHTML = "<thead><tr><th>类目</th><th style=\"width:120px\">是否生效</th><th style=\"width:110px\">生效开关</th><th style=\"width:96px\">配置</th></tr></thead>";
+    const rows = document.createElement("tbody");
+    table.append(rows); wrap.append(table); card.append(wrap); root.append(card);
     try {
-      const model = await catalog();
+      const [model, releaseModel] = await Promise.all([catalog(), releases()]);
       for (const category of model.categories || []) {
-        const state = categoryState(category, model);
+        const toggle = categoryToggle(category, model);
+        const state = categoryState(category, model, toggle);
         const row = document.createElement("tr");
-        row.append(element("td", "", category.label), element("td", "", category.group), element("td", "", String((category.fields || []).length)));
-        const stateCell = document.createElement("td");
-        stateCell.append(element("strong", "", state.label), element("div", "admin-muted", state.detail)); row.append(stateCell);
-        const action = document.createElement("td");
-        if (category.managed_url) {
-          const link = document.createElement("a"); link.className = "admin-button admin-button--ghost"; link.href = category.managed_url; link.textContent = "打开管理页面"; action.append(link);
-        } else if (category.disabled) {
-          action.append(element("span", "admin-muted", "不可配置"));
+        row.dataset.categoryRow = category.key;
+        const name = document.createElement("td"); name.append(element("span", "cc-cat-name", category.label)); row.append(name);
+        const stateCell = document.createElement("td"); stateCell.append(renderState(state)); row.append(stateCell);
+        const switchCell = document.createElement("td");
+        if (toggle) {
+          const control = makeSwitch(toggle);
+          control.input.addEventListener("change", () => {
+            void (async () => {
+              control.input.disabled = true;
+              try {
+                const draft = await createDraft(model, releaseModel, new Map([[toggle.key, control.input.checked]]));
+                location.assign(releaseURL(draft.runtime_release.id));
+              } catch (error) {
+                control.input.checked = toggle.enabled;
+                control.input.disabled = false;
+                status(error instanceof Error ? error.message : "未能创建配置草稿", "error");
+              }
+            })();
+          });
+          switchCell.append(control.label);
         } else {
-          const edit = button("查看与配置", "ghost"); edit.addEventListener("click", () => location.assign(categoryURL(category.key))); action.append(edit);
+          switchCell.append(element("span", "admin-muted", "—"));
+        }
+        row.append(switchCell);
+        const action = document.createElement("td");
+        if (category.disabled) {
+          action.append(element("span", "admin-muted", "—"));
+        } else {
+          const link = document.createElement("a");
+          link.className = "cc-btn";
+          link.href = category.managed_url || categoryURL(category.key);
+          link.textContent = "配置";
+          action.append(link);
         }
         row.append(action); rows.append(row);
+      }
+      if (!rows.children.length) {
+        const row = document.createElement("tr");
+        const cell = element("td", "admin-muted", "暂无配置类目"); cell.colSpan = 4; row.append(cell); rows.append(row);
       }
     } catch (error) { status(error instanceof Error ? error.message : "配置中心不可用", "error"); }
   };
 
   const inputFor = (field, value) => {
+    const row = document.createElement("tr");
+    row.append(element("th", "", field.label));
+    const cell = document.createElement("td");
     if (field.input === "secret-reference") {
-      const row = element("div", "admin-form-field");
-      row.append(element("strong", "", field.label), element("code", "", field.secret_reference), element("p", "admin-muted", field.configured === true ? "已配置：受保护引用只在受控部署应用时解析；页面不读取或保存密钥。" : "缺失：该受保护引用在当前启动快照中未配置。页面不读取或保存密钥。"));
-      return row;
-    }
-    if (field.input === "protected") {
-      const row = element("div", "admin-form-field"); row.append(element("strong", "", field.label), element("p", "admin-muted", field.unsupported)); return row;
-    }
-    if (field.input === "deployment") {
-      const row = element("div", "admin-form-field"); row.append(element("strong", "", field.label), element("p", "admin-muted", field.unsupported)); return row;
-    }
-    if (field.input === "unsupported") {
-      const row = element("div", "admin-form-field"); row.append(element("strong", "", field.label), element("p", "admin-muted", field.unsupported)); return row;
-    }
-    const row = element("label", "admin-form-field"); row.append(element("span", "", field.label));
-    let input;
-    if (field.input === "boolean") {
-      input = document.createElement("input"); input.type = "checkbox"; input.checked = value === true;
-    } else if (field.input === "number") {
-      input = document.createElement("input"); input.type = "number"; input.value = Number.isFinite(value) ? String(value) : ""; input.required = true;
-    } else if (String(field.input || "").startsWith("select:")) {
-      input = document.createElement("select");
-      for (const optionValue of field.input.slice("select:".length).split(",")) {
-        const option = document.createElement("option"); option.value = optionValue; option.textContent = optionValue; option.selected = optionValue === value; input.append(option);
-      }
+      cell.append(element("code", "", field.secret_reference), element("small", "admin-muted", field.configured === true ? "已配置" : "未配置"));
+    } else if (["protected", "deployment", "unsupported"].includes(field.input)) {
+      cell.append(element("span", "admin-muted", field.unsupported || "由对应管理页面维护。"));
     } else {
-      input = document.createElement("input"); input.type = "text"; input.value = typeof value === "string" ? value : ""; input.maxLength = 256;
+      let input;
+      if (field.input === "boolean") {
+        const control = makeSwitch({ enabled: value === true });
+        input = control.input;
+        cell.append(control.label);
+      } else if (field.input === "number") {
+        input = document.createElement("input"); input.type = "number"; input.className = "cc-input"; input.value = Number.isFinite(value) ? String(value) : ""; input.required = true;
+        cell.append(input);
+      } else if (String(field.input || "").startsWith("select:")) {
+        input = document.createElement("select"); input.className = "cc-select cc-input";
+        for (const optionValue of field.input.slice("select:".length).split(",")) {
+          const option = document.createElement("option"); option.value = optionValue; option.textContent = optionValue; option.selected = optionValue === value; input.append(option);
+        }
+        cell.append(input);
+      } else {
+        input = document.createElement("input"); input.type = "text"; input.className = "cc-input"; input.value = typeof value === "string" ? value : ""; input.maxLength = 256;
+        cell.append(input);
+      }
+      input.dataset.runtimeSetting = field.key;
+      if (field.input === "scope-bound" && typeof value === "string" && value !== "") {
+        input.readOnly = true;
+        input.classList.add("is-readonly");
+        input.setAttribute("aria-readonly", "true");
+      }
+      if (field.input === "scope-bound") cell.append(element("small", "admin-muted", field.unsupported));
+      else cell.append(element("small", "admin-muted", field.application === "immediate" ? "保存草稿后由受控服务读取。" : "保存草稿后等待受控服务读取。"));
     }
-    if (field.input === "scope-bound" && typeof value === "string" && value !== "") {
-      input.readOnly = true;
-      input.setAttribute("aria-readonly", "true");
-    }
-    input.dataset.runtimeSetting = field.key; row.append(input);
-    if (field.input === "scope-bound") row.append(element("small", "admin-muted", field.unsupported));
-    row.append(element("small", "admin-muted", field.application === "immediate" ? "发布后由相应服务读取；仍保留发布记录。" : "发布后需重启相应服务读取此版本。"));
+    row.append(cell);
     return row;
   };
 
   const showCategory = async () => {
     clear();
-    const intro = card("配置详情", "正在读取当前配置。");
-    const back = button("返回配置中心", "ghost"); back.addEventListener("click", () => location.assign("/admin/config")); intro.append(back, addStatus(intro)); root.append(intro);
+    root.classList.add("cc-page", "cc-detail");
+    delete root.dataset.configCenter;
+    addStatus(root);
     try {
       const [model, releaseModel] = await Promise.all([catalog(), releases()]);
       const category = (model.categories || []).find((item) => item?.key === categoryKey());
       if (!category) throw new Error("配置分类不存在");
-      intro.querySelector("h2").textContent = category.label;
-      intro.querySelector("p").textContent = category.disabled || category.managed_url ? (category.disabled || "此分类由对应管理页面维护。") : categoryState(category, model).detail;
-      if (category.managed_url) {
-        const link = document.createElement("a"); link.href = category.managed_url; link.className = "admin-button admin-button--primary"; link.textContent = "打开管理页面"; intro.append(link); return;
+      const toggle = categoryToggle(category, model);
+      const state = categoryState(category, model, toggle);
+      const top = element("div", "cc-detail-top");
+      top.append(element("div", "cc-detail-title", category.label));
+      const stateArea = element("div", "cc-detail-state"); stateArea.append(renderState(state));
+      let form;
+      if (toggle) {
+        const control = makeSwitch(toggle);
+        control.input.addEventListener("change", () => {
+          const field = form?.querySelector(`[data-runtime-setting="${toggle.key}"]`);
+          if (field) field.checked = control.input.checked;
+          status("已修改，请保存草稿并在发布记录完成校验和发布。");
+        });
+        stateArea.append(control.label);
       }
-      if (category.disabled) return;
-      const effective = new Map((model.effective?.settings || []).map((item) => [item.key, decode(item.value)]));
-      const form = element("form", "admin-form-grid admin-form-grid--stacked cc-form");
-      for (const field of category.fields || []) form.append(inputFor(field, effective.get(field.key)));
-      form.append(element("p", "admin-muted", "保存只创建草稿；请在发布详情完成校验和发布。未列入此页面的字段、密钥引用和不支持字段都会被拒绝。"));
-      const actions = element("div", "admin-form-actions"); const save = button("保存草稿", "primary"); save.type = "submit"; actions.append(save); form.append(actions); root.append(form);
+      top.append(stateArea);
+      const back = document.createElement("a"); back.className = "cc-btn"; back.href = "/admin/config"; back.textContent = "返回"; top.append(back);
+      root.append(top);
+      if (category.managed_url) {
+        const card = element("section", "cc-card cc-block");
+        const body = element("div", "cc-empty-state"); body.append(element("strong", "", "请在对应管理页面维护"));
+        const link = document.createElement("a"); link.className = "cc-btn"; link.href = category.managed_url; link.textContent = "配置"; body.append(link); card.append(body); root.append(card);
+        return;
+      }
+      if (category.disabled) {
+        const card = element("section", "cc-card cc-block"); const body = element("div", "cc-empty-state"); body.append(element("strong", "", "当前不支持"), element("span", "", category.disabled)); card.append(body); root.append(card);
+        return;
+      }
+      const values = effectiveValues(model);
+      form = element("form", "cc-form"); form.dataset.configSettingsForm = "";
+      const blocks = new Map();
+      for (const field of category.fields || []) {
+        const group = field.group || "配置";
+        const rows = blocks.get(group) || [];
+        rows.push(field); blocks.set(group, rows);
+      }
+      for (const [group, fields] of blocks) {
+        const block = element("section", "cc-card cc-block"); block.dataset.configDetailBlock = "";
+        const head = element("div", "cc-card-h"); head.append(element("h2", "", group)); block.append(head);
+        const wrap = element("div", "cc-table-wrap"); const table = element("table", "cc-table cc-field-table"); const body = document.createElement("tbody");
+        for (const field of fields) body.append(inputFor(field, values.get(field.key)));
+        table.append(body); wrap.append(table); block.append(wrap); form.append(block);
+      }
+      const actions = element("div", "cc-bottom-actions");
+      const cancel = document.createElement("a"); cancel.className = "cc-btn"; cancel.href = "/admin/config"; cancel.textContent = "取消";
+      const save = button("保存草稿", "primary"); save.type = "submit"; actions.append(cancel, save); form.append(actions); root.append(form);
       form.addEventListener("submit", async (event) => {
         event.preventDefault(); if (!form.reportValidity()) return;
-        const values = new Map((model.effective?.settings || []).map((item) => [item.key, item.value]));
+        const changes = new Map();
         for (const input of form.querySelectorAll("[data-runtime-setting]")) {
           const field = (category.fields || []).find((item) => item.key === input.dataset.runtimeSetting);
           if (!field) continue;
           let value = input.value;
           if (field.input === "boolean") value = input.checked;
           if (field.input === "number") value = Number(input.value);
-          values.set(field.key, value);
+          changes.set(field.key, value);
         }
         save.disabled = true;
         try {
-          const draft = await request(releaseAPI, { method: "POST", headers: writeHeaders(), body: JSON.stringify({ expected_base_revision: releaseModel.runtime_releases?.active_revision || 0, settings: [...values.entries()].map(([key, value]) => ({ key, value })), admin_action_token: releaseModel.admin_action_token }) });
+          const draft = await createDraft(model, releaseModel, changes);
           location.assign(releaseURL(draft.runtime_release.id));
         } catch (error) { status(error instanceof Error ? error.message : "保存草稿失败", "error"); save.disabled = false; }
       });

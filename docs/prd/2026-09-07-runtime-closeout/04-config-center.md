@@ -13,6 +13,7 @@ External Effects：不涉及。开启配置只改变受控本地运行配置；�
 * 只读供体：`AI-CRM@dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`，`aicrm_next/platform/admin_config/{category_registry.py,api.py,application.py,application_support.py}`。
 * 原样界面结构：`aicrm_next/app/admin_console/templates/admin_console/config_center.html`，blob `70a4f93c680ac0f3719194e7e9283ef5565c99a9`；详情表单：`config_category_detail.html`，blob `6c79959f0e81e047ca6e70488a11029087fccf6d`；样式：`static/admin_console/config_center.css`，blob `0881be6631204c46b258137fd12138b1a8bbb37f`。
 * 供体 registry 固定十个普通类别。旧版的 `config_api_key.html` 与 `config_api_clients.html` 是另外两行，因此 V3 以十二项表格展示。V3 的唯一壳仍是 `internal/webshell/templates/admin_base.html`；Host/Adapter 负责接口适配，不挂第二侧栏，也不公开供体页面。
+* 首页严格保留供体的四列与顺序：`类目`、`是否生效`、`生效开关`、`配置`。只有企业微信基础、微信支付、微信小店和公众号授权具有一个明确的 V3 主启用字段，才显示开关；点击开关只创建完整快照草稿并跳转校验/发布，绝不直接改环境或调用 Provider。没有单一主开关的类别显示 `—` 和配置入口；专用 Owner 或不支持类别保持正确的管理入口或禁用标记。首页不堆放进程、revision 或消费者说明，这些事实留在详情和发布记录。
 
 ## 字段、命令与消费者映射
 
