@@ -275,17 +275,20 @@ try {
     })()`);
     if (!hxc?.stage || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible) throw new Error(label + " HXC title/padding/action layout invalid");
   };
-  const assertRadarLayout = async (label, actionSelector) => {
-    await assertLayout("standard", label, ".sec-radar .page-head");
+  const assertRadarLayout = async (label, actionSelector, contentSelector = ".sec-radar .page-head") => {
+    await assertLayout("standard", label, contentSelector);
     const radar = await evaluate(cdp, `(() => {
       const stage=document.querySelector('#stage.labs.sec-radar');
       const crumb=stage?.querySelector(':scope > .crumb');
       const title=stage?.querySelector(':scope > .page-head > :first-child');
       const action=stage?.querySelector(${JSON.stringify(actionSelector)});
       const style=stage ? getComputedStyle(stage) : null;
-      return {stage:Boolean(stage),paddingLeft:style?.paddingLeft || '',paddingTop:style?.paddingTop || '',crumbHidden:Boolean(crumb) && getComputedStyle(crumb).display === 'none',titleHidden:Boolean(title) && getComputedStyle(title).display === 'none',actionVisible:Boolean(action) && getComputedStyle(action).display !== 'none'};
+      const page=String(document.body?.dataset.page || '');
+      const pageHead=stage?.querySelector(':scope > .page-head');
+      const hidden=node => { const rect=node?.getBoundingClientRect(); return !node || getComputedStyle(node).display === 'none' || !rect || rect.width < 1 || rect.height < 1; };
+      return {stage:Boolean(stage),paddingLeft:style?.paddingLeft || '',paddingTop:style?.paddingTop || '',crumbHidden:Boolean(crumb) && hidden(crumb),titleHidden:Boolean(title) && hidden(title),emptyPageHeadHidden:!(page === 'radarDetail' || page === 'radarForm') || hidden(pageHead),actionVisible:Boolean(action) && getComputedStyle(action).display !== 'none'};
     })()`);
-    if (!radar?.stage || radar.paddingLeft !== "20px" || radar.paddingTop !== "16px" || !radar.crumbHidden || !radar.titleHidden || !radar.actionVisible) throw new Error(label + " V3 title/action layout invalid");
+    if (!radar?.stage || radar.paddingLeft !== "20px" || radar.paddingTop !== "16px" || !radar.crumbHidden || !radar.titleHidden || !radar.emptyPageHeadHidden || !radar.actionVisible) throw new Error(label + " V3 title/action layout invalid");
   };
   const assertOwnerHandoffLayout = async label => {
     await assertLayout("standard", label, "[data-owner-migration-page] .owner-migration-header");
@@ -466,10 +469,10 @@ try {
   const radarMounted = await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#btnNew'))", "radar", "standard", ".sec-radar .page-head", false, true);
   if (radarMounted) await recordGeometry("radar", () => assertRadarLayout("radar", "#btnNew"), true);
   const radarID = Number(process.env.AICRM_ADMIN_LAYOUT_TEST_RADAR_ID || "0");
-  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit'))", "radar-detail", "standard", ".sec-radar .page-head", false);
-  if (radarDetailMounted) await recordGeometry("radar-detail", () => assertRadarLayout("radar-detail", "#dEdit"), true);
-  const radarFormMounted = await navigate("/admin/radarForm.html", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#fSave'))", "radar-form", "standard", ".sec-radar .page-head", false);
-  if (radarFormMounted) await recordGeometry("radar-form", () => assertRadarLayout("radar-form", "#fSave"), true);
+  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit'))", "radar-detail", "standard", "#dEdit", false);
+  if (radarDetailMounted) await recordGeometry("radar-detail", () => assertRadarLayout("radar-detail", "#dEdit", "#dEdit"), true);
+  const radarFormMounted = await navigate("/admin/radarForm.html", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#fSave'))", "radar-form", "standard", "#fSave", false);
+  if (radarFormMounted) await recordGeometry("radar-form", () => assertRadarLayout("radar-form", "#fSave", "#fSave"), true);
   await navigate("/admin/wecom-tags", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "tags", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/orders", "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "orders", "embedded", embeddedTitle, true, true);

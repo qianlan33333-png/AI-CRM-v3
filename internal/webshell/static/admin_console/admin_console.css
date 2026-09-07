@@ -3525,11 +3525,17 @@ body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stag
   display: none;
 }
 
-body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head,
-body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head,
-body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head {
+body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head {
   min-height: 30px;
   justify-content: flex-end;
+}
+
+/* Detail and form pages have no local page-head actions. Remove the now-empty
+ * donor heading row entirely; their real edit/save controls remain below the
+ * shell title and are checked by the Chromium journey. */
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head {
+  display: none;
 }
 
 /* Campaign's V3 controller retains its two read-only history links while the
