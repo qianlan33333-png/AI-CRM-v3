@@ -320,7 +320,7 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 			close(firstInterrupt)
 		})
 	}
-	t.Cleanup(releaseFirstRuntime)
+	defer releaseFirstRuntime()
 	select {
 	case <-firstSegmentCommitted:
 	case <-time.After(5 * time.Second):
@@ -532,7 +532,7 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 			close(firstInterrupt)
 		})
 	}
-	t.Cleanup(releaseFirstRuntime)
+	defer releaseFirstRuntime()
 	select {
 	case <-firstSegmentCommitted:
 		// The explicit boundary above distinguishes a slow River claim from a
