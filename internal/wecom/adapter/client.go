@@ -225,8 +225,9 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 		if contact.ExternalUserID == "" || contact.Gender < 0 || contact.Gender > 2 || contact.Type < 0 || contact.Type > 3 {
 			return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
 		}
-		followInfo := make([]wecomport.ExternalContactFollowInfo, 0, len(item.FollowInfo))
-		for _, follow := range item.FollowInfo {
+		followInfo := make([]wecomport.ExternalContactFollowInfo, 0, 1)
+		if item.FollowInfo != nil {
+			follow := *item.FollowInfo
 			follow.UserID = strings.TrimSpace(follow.UserID)
 			if follow.UserID == "" || invalid(follow.UserID) {
 				return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
@@ -557,7 +558,9 @@ type response struct {
 			UnionID        string `json:"unionid"`
 			CorpName       string `json:"corp_name"`
 		} `json:"external_contact"`
-		FollowInfo []struct {
+		// batch/get_by_user is called with one staff ID, and WeCom returns the
+		// corresponding relationship as one object rather than an array.
+		FollowInfo *struct {
 			UserID string `json:"userid"`
 			Tags   []struct {
 				ID   string `json:"tag_id"`
