@@ -2,6 +2,7 @@
  * 端到端 DOM 渲染验证（jsdom）：
  * 加载 dist/ 生成页，执行真实 bundle，断言渲染结果与关键交互。
  */
+import { execFileSync } from 'node:child_process';
 import { JSDOM } from 'jsdom';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,6 +11,10 @@ import { buildTestBrowserBundle } from './test-browser-bundle.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
+// build.mjs creates the frozen sidebar document first. Replace that entry here
+// so every existing e2e invocation executes the final staged V3 Host instead
+// of accidentally asserting the pre-Host sidebar artifact.
+execFileSync(process.execPath, [path.join(ROOT, '..', 'scripts', 'build-v3-host-adapters.mjs')], { stdio: 'inherit' });
 const TEST_BUNDLES = {
   admin: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/main.ts')),
   customerHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/customerAdapter.ts')),
@@ -1098,14 +1103,63 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       window.URL.createObjectURL = () => 'blob:sidebar-thumbnail';
       window.URL.revokeObjectURL = () => {};
       const scenario = new URL(window.location.href).searchParams.get('sidebar_case') || 'success';
-      window.wx = {
-        agentConfig(options) { if (scenario === 'sdk_error') options.fail?.({ err_msg: 'agentConfig:fail' }); else options.success?.({ err_msg: 'agentConfig:ok' }); },
-        invoke(method, payload, callback) {
-          window.__sidebarTest.wxMessages.push({ method, payload });
-          window.__sidebarTest.wxInvokes.push(method);
-          callback({ err_msg: method + ':ok', ...(method === 'getCurExternalContact' ? { external_userid: 'ext-7' } : {}) });
-        },
-      };
+      let readyCallback;
+      let errorCallback;
+      let regularConfigured = false;
+      let agentConfigCalls = 0;
+      let externalContactCalls = 0;
+      if (scenario !== 'sdk_missing') {
+        window.wx = {
+          config(options) {
+            window.__sidebarTest.wxStages.push({ stage: 'config', options });
+            window.setTimeout(() => {
+              if (scenario === 'regular_error') {
+                window.__sidebarTest.wxStages.push({ stage: 'config_error' });
+                errorCallback?.({ errMsg: 'config:fail' });
+                return;
+              }
+              regularConfigured = true;
+              window.__sidebarTest.wxStages.push({ stage: 'ready_callback' });
+              readyCallback?.();
+            }, 0);
+          },
+          ready(callback) {
+            window.__sidebarTest.wxStages.push({ stage: 'ready' });
+            readyCallback = callback;
+            // The official dedicated SDK keeps regular readiness after a
+            // successful wx.config. This exposes accidental re-config retries.
+            if (regularConfigured) window.setTimeout(callback, 0);
+          },
+          error(callback) { window.__sidebarTest.wxStages.push({ stage: 'error' }); errorCallback = callback; },
+          agentConfig(options) {
+            agentConfigCalls += 1;
+            window.__sidebarTest.wxStages.push({ stage: 'agentConfig', options });
+            window.setTimeout(() => {
+              if (scenario === 'agent_error' || scenario === 'sdk_error' || ((scenario === 'agent_retry' || scenario === 'agent_retry_storage_failure') && agentConfigCalls === 1)) {
+                options.fail?.({ errMsg: 'agentConfig:fail' });
+              } else options.success?.({ err_msg: 'agentConfig:ok' });
+            }, 0);
+          },
+          invoke(method, payload, callback) {
+            window.__sidebarTest.wxMessages.push({ method, payload });
+            window.__sidebarTest.wxInvokes.push(method);
+            if (scenario === 'contact_error' && method === 'getCurExternalContact') {
+              callback({ errMsg: 'getCurExternalContact:fail' });
+              return;
+            }
+            if (scenario === 'late_contact_retry' && method === 'getCurExternalContact') {
+              externalContactCalls += 1;
+              if (externalContactCalls === 1) {
+                window.__sidebarTest.releaseStaleContact = () => callback({ err_msg: 'getCurExternalContact:ok', external_userid: 'ext-stale' });
+                return;
+              }
+              callback({ err_msg: 'getCurExternalContact:ok', external_userid: 'ext-current' });
+              return;
+            }
+            callback({ err_msg: method + ':ok', ...(method === 'getCurExternalContact' ? { external_userid: 'ext-7' } : {}) });
+          },
+        };
+      }
       const safety = { local_only: true, provider_execution_eligible: false, real_external_call_executed: false };
       // 本地后端真实投影形状（internal/sidebar + 各域 port）。member_ref 由
       // 前端适配器按 entitlement id 确定性编码（spm_ + 22 位补零数字）。
@@ -1146,16 +1200,34 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         blob: async () => new window.Blob([JSON.stringify(data)], { type: 'application/json' }),
         clone() { return this; },
       });
-      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, materialQueries: [], sendIntentKeys: [], sendOutcomeBodies: [], wxMessages: [], wxInvokes: [], requests: [] };
+      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, materialQueries: [], sendIntentKeys: [], sendOutcomeBodies: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null, jssdkStorageReads: 0 };
+      if (scenario === 'agent_retry_storage_failure') {
+        const values = new Map();
+        Object.defineProperty(window, 'sessionStorage', {
+          configurable: true,
+          value: {
+            getItem(key) { window.__sidebarTest.jssdkStorageReads += 1; return values.get(key) || null; },
+            setItem(key, value) { values.set(key, String(value)); },
+            removeItem() { throw new window.DOMException('cache removal blocked', 'SecurityError'); },
+          },
+        });
+      }
+      if (scenario === 'session_storage_unavailable') {
+        Object.defineProperty(window, 'sessionStorage', {
+          configurable: true,
+          get() { throw new window.DOMException('storage disabled', 'SecurityError'); },
+        });
+      }
       if (scenario === 'sdk_cache') {
         const pageURL = window.location.href.split('#', 1)[0];
-        const config = { signature_type: 'agent_config', corp_id: 'ww-test', agent_id: 1, nonce: 'cached-nonce', timestamp: 1, signature: 'cached-signature', url: pageURL, ticket_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() };
-        window.sessionStorage.setItem('aicrm.sidebar.jssdk.agent-config.v1', JSON.stringify({ url: pageURL, usable_until: Date.now() + 2 * 60 * 1000, config }));
+        const config = { corpID: 'ww-test', agentID: '1', url: pageURL, config: { nonce: 'cached-config-nonce', timestamp: 1, signature: 'cached-config-signature', jsApiList: [] }, agentConfig: { nonce: 'cached-agent-nonce', timestamp: 1, signature: 'cached-agent-signature', jsApiList: ['getContext', 'getCurExternalContact', 'sendChatMessage'] } };
+        window.sessionStorage.setItem('aicrm.sidebar.jssdk.config.v2', JSON.stringify({ url: pageURL, usable_until: Date.now() + 2 * 60 * 1000, config }));
       }
       window.fetch = async (input, init = {}) => {
         const url = String(input);
         window.__sidebarTest.requests.push(url);
         if (url.includes('/jssdk-config')) {
+          if (scenario === 'jssdk_401') return json({ code: 'authentication_required' }, 401);
           return json({
             corp_id: 'ww-test',
             agent_id: '1',
@@ -1164,6 +1236,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           });
         }
         if (url.includes('/bootstrap')) {
+          window.__sidebarTest.bootstrapBodies.push(JSON.parse(init.body || '{}'));
           return json({ state: 'ready', context_token: 'sidebar-context-token-' + 'x'.repeat(52), customer_id: 7, workbench: { profile, questionnaire_count: scenario === 'empty' ? 0 : 1, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
         }
         if (url.includes('/phone-binding')) {
@@ -2950,42 +3023,122 @@ for (const page of ['done', 'qr']) {
 }
 
 /* ================= 侧边栏 ================= */
-console.log('sidebar/index.html');
+console.log('sidebar/index.html（最终 Host、企微握手与失败关闭）');
 {
   const dom = await loadPage('sidebar/index.html');
   const d = dom.window.document;
   const sidebarManifest = JSON.parse(fs.readFileSync(path.join(DIST, 'asset-manifest.json'), 'utf8'));
   const sidebarHTML = fs.readFileSync(path.join(DIST, 'sidebar/index.html'), 'utf8');
+  const sidebarHost = sidebarManifest.entries.sidebarHost;
+  const scripts = [...sidebarHTML.matchAll(/<script(?: type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
+  ok('最终 Sidebar 文档仅加载企微专用 SDK 后再加载 V3 Host',
+    sidebarManifest.files[sidebarHost]?.entry_point === 'web/v3/sidebar/main.ts' &&
+    sidebarManifest.files[sidebarHost]?.inputs?.includes('web/v3/sidebarApi.ts') &&
+    JSON.stringify(scripts) === JSON.stringify(['https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js', `../${sidebarHost}`]) &&
+    !sidebarHTML.includes('https://res.wx.qq.com/open/js/jweixin-1.6.0.js'));
   ok('侧边栏渲染 375px 高密度壳且 CSP 下不依赖内联样式',
     d.querySelector('#sidebar-workbench-root.sidebar-shell') && d.querySelector('.customer-card') &&
     !d.querySelector('style') && sidebarHTML.includes(`href="../${sidebarManifest.entries.sidebarStyles}"`));
-  ok('无 external_userid 时保持 agentConfig → getContext → getCurExternalContact → bootstrap 安全顺序',
+  const stages = dom.window.__sidebarTest.wxStages.map((entry) => entry.stage);
+  ok('无 external_userid 时完成 regular config → ready → agentConfig → 可信客户读取 → bootstrap',
+    stages.indexOf('config') >= 0 && stages.indexOf('ready_callback') > stages.indexOf('config') &&
+    stages.indexOf('agentConfig') > stages.indexOf('ready_callback') &&
     dom.window.__sidebarTest.wxInvokes.slice(0, 2).join('|') === 'getContext|getCurExternalContact' &&
     dom.window.__sidebarTest.requests[0]?.includes('/jssdk-config') &&
     dom.window.__sidebarTest.requests[1]?.includes('/bootstrap'));
   dom.window.close();
 }
 
-console.log('sidebar/index.html（bootstrap 并行、JSSDK 缓存与降级）');
+for (const [scenario, expected, action, detail] of [
+  ['sdk_missing', '企微 SDK 未载入', 'retry-context'],
+  ['regular_error', 'JSSDK regular config 失败', 'reload-sidebar', 'config:fail'],
+  ['agent_error', 'JSSDK agentConfig 失败', 'retry-context', 'agentConfig:fail'],
+  ['contact_error', '企微客户上下文读取失败', 'retry-context', 'getCurExternalContact:fail'],
+]) {
+  const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
+  const text = dom.window.document.body.textContent || '';
+  const matchingErrors = [...dom.window.document.querySelectorAll('.sidebar-status')]
+    .filter((node) => node.textContent.includes(expected));
+  ok(`${scenario} 在可信客户读取前关闭，呈现单一实际恢复入口且不误报 external_userid`,
+    text.includes(expected) && matchingErrors.length === 1 &&
+    (!detail || text.includes(detail)) &&
+    !text.includes('缺少 external_userid') &&
+    dom.window.document.querySelector(`[data-sidebar-action="${action}"]`) &&
+    !dom.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap') || url.includes('/context-token')));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=jssdk_401' });
+  const text = dom.window.document.body.textContent || '';
+  ok('JSSDK 401 在首访显示 OAuth 员工授权入口，不请求客户 bootstrap',
+    text.includes('通过企微 OAuth 授权') && !text.includes('缺少 external_userid') &&
+    !dom.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap') || url.includes('/context-token')));
+  dom.window.close();
+}
+for (const [scenario, storageReads, label] of [
+  ['agent_retry', null, 'agentConfig 显式失败后重试仅复用同 URL 已确认的 regular 状态'],
+  ['agent_retry_storage_failure', 1, 'agentConfig 失败后即使旧 session 签名无法删除也强制重取'],
+]) {
+  const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
+  const d = dom.window.document;
+  const retry = d.querySelector('[data-sidebar-action="retry-context"]');
+  retry?.click();
+  await sleep(40);
+  const stages = dom.window.__sidebarTest.wxStages.map((entry) => entry.stage);
+  ok(label,
+    !!retry &&
+    stages.filter((stage) => stage === 'config').length === 1 &&
+    stages.filter((stage) => stage === 'agentConfig').length === 2 &&
+    dom.window.__sidebarTest.requests.filter((url) => url.includes('/jssdk-config')).length === 2 &&
+    (storageReads === null || dom.window.__sidebarTest.jssdkStorageReads === storageReads) &&
+    d.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready');
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=session_storage_unavailable' });
+  await sleep(40);
+  ok('sessionStorage SecurityError 仅禁用短期缓存，仍通过正式签名建立上下文',
+    dom.window.__sidebarTest.requests.filter((url) => url.includes('/jssdk-config')).length === 1 &&
+    dom.window.__sidebarTest.requests.filter((url) => url.includes('/bootstrap')).length === 1 &&
+    dom.window.document.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready');
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=late_contact_retry' });
+  const d = dom.window.document;
+  const retry = d.querySelector('[data-sidebar-action="retry-context"]');
+  retry?.click();
+  await sleep(30);
+  dom.window.__sidebarTest.releaseStaleContact?.();
+  await sleep(30);
+  const bootstrapRequests = dom.window.__sidebarTest.requests.filter((url) => url.includes('/bootstrap'));
+  ok('迟到的旧轮外部联系人回调不会覆盖新轮或额外 bootstrap',
+    !!retry && bootstrapRequests.length === 1 &&
+    dom.window.__sidebarTest.bootstrapBodies.length === 1 &&
+    dom.window.__sidebarTest.bootstrapBodies[0]?.external_userid === 'ext-current');
+  dom.window.close();
+}
+
+console.log('sidebar/index.html（合法 query 候选、JSSDK 缓存与降级）');
 {
   const parallel = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=success' });
   const requests = parallel.window.__sidebarTest.requests;
-  ok('URL 已含 external_userid 时 JSSDK 与 bootstrap 同步启动且不走旧两步接口',
+  ok('合法 query 候选仍由服务端员工关系校验，JSSDK 与 bootstrap 可并行且不走退休 JSSDK 路由',
     requests[0]?.includes('/jssdk-config') && requests[1]?.includes('/bootstrap') &&
     requests.filter((url) => url.includes('/bootstrap')).length === 1 &&
-    !requests.some((url) => url.includes('/context-token') || url.includes('/workbench')));
+    !requests.some((url) => url.includes('/sidebar/v2/jssdk/agent-config') || url.includes('/context-token') || url.includes('/workbench')));
   parallel.window.close();
 
   const cached = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=sdk_cache' });
-  const cachedConfig = cached.window.sessionStorage.getItem('aicrm.sidebar.jssdk.agent-config.v1') || '';
-  ok('同一完整页面 URL 的短期 session JSSDK 配置复用且不缓存客户数据',
+  const cachedConfig = cached.window.sessionStorage.getItem('aicrm.sidebar.jssdk.config.v2') || '';
+  ok('同一完整页面 URL 的双签名短期缓存复用且不缓存客户数据',
     !cached.window.__sidebarTest.requests.some((url) => url.includes('/jssdk-config')) &&
     cached.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap')) && !cachedConfig.includes('customer'));
   cached.window.close();
 
   const degraded = await loadPage('sidebar/index.html', { q: 'external_userid=ext-7&sidebar_case=sdk_error' });
   const degradedDoc = degraded.window.document;
-  ok('JSSDK 失败而 bootstrap 成功时进入 degraded_ready 并保留本地画像',
+  ok('有既有 query 候选时 agentConfig 失败仍保留受服务端校验的本地只读降级',
     degradedDoc.querySelector('#sidebar-context-status')?.textContent.includes('degraded_ready') && degradedDoc.body.textContent.includes('侧边栏测试客户'));
   click(degraded, degradedDoc.querySelector('[data-sidebar-tab="products"]'));
   await sleep(30);

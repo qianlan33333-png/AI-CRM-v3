@@ -8,10 +8,10 @@
 import {
   newSidebarIdempotencyKey,
   sidebarApi,
+  type SidebarJSSDKConfig,
   type SidebarSendIntentAcceptance,
 } from "../sidebarApi";
 import type {
-  SidebarAgentConfigSignature,
   SidebarBootstrapResponse,
   SidebarChatActivityResponse,
   SidebarOtherStaffChatResponse,
@@ -35,8 +35,10 @@ import { initFeedback } from "../../src/shared/ui/feedback";
 const SDK_TIMEOUT_MS = 5000;
 const SDK_CACHE_MAX_MS = 5 * 60 * 1000;
 const SDK_CACHE_SAFETY_MS = 30 * 1000;
-const SDK_CACHE_KEY = "aicrm.sidebar.jssdk.agent-config.v1";
+const SDK_CACHE_KEY = "aicrm.sidebar.jssdk.config.v2";
 const PROFILE_SAVE_DEBOUNCE_MS = 520;
+const REGULAR_JS_API_LIST = ["getCurExternalContact", "sendChatMessage"];
+const AGENT_JS_API_LIST = ["getContext", "getCurExternalContact", "sendChatMessage"];
 
 /**
  * 可编辑画像字段：对齐后端 PUT /api/sidebar/v2/profile 契约
@@ -77,6 +79,17 @@ type BoundSidebarApi = Pick<
 >;
 
 interface SidebarWx {
+  config(options: {
+    beta: boolean;
+    debug: boolean;
+    appId: string;
+    timestamp: number;
+    nonceStr: string;
+    signature: string;
+    jsApiList: string[];
+  }): void;
+  ready(callback: () => void): void;
+  error(callback: (result?: Record<string, unknown>) => void): void;
   agentConfig(options: {
     corpid: string;
     agentid: string;
@@ -350,6 +363,39 @@ function withTimeout<T>(
   });
 }
 
+class JSSDKTimeoutError extends Error {
+  constructor(readonly stage: "config" | "regular" | "agent") {
+    super(`企微 ${stage} 初始化超时。`);
+    this.name = "JSSDKTimeoutError";
+  }
+}
+
+// wx.config/wx.ready are global SDK state. A timed-out callback can still arrive,
+// so callers must treat the document as indeterminate instead of starting another
+// regular-config round in the same WebView.
+function withJSSDKTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  stage: "config" | "regular" | "agent",
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new JSSDKTimeoutError(stage)),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 export class SidebarController {
   private readonly content: HTMLElement;
   private readonly tabs: HTMLElement;
@@ -426,6 +472,16 @@ export class SidebarController {
   >();
   private readonly imageSendPreparing = new Set<number>();
   private jssdkReady = false;
+  private jssdkAuthenticationRequired = false;
+  private jssdkFlight: Promise<boolean> | null = null;
+  private regularJSSDKState: "idle" | "initializing" | "ready" | "indeterminate" =
+    "idle";
+  private regularJSSDKURL = "";
+  private regularJSSDKConfig: SidebarJSSDKConfig | null = null;
+  private regularJSSDKIdentity: { corpID: string; agentID: string; url: string } | null =
+    null;
+  private agentJSSDKState: "idle" | "initializing" | "failed" | "ready" | "indeterminate" =
+    "idle";
   private degradedReady = false;
   private initializationVersion = 0;
   private tabRequestController = new AbortController();
@@ -558,6 +614,9 @@ export class SidebarController {
       if (action === "retry-context") {
         button.disabled = true;
         void this.initialize();
+      } else if (action === "reload-sidebar") {
+        button.disabled = true;
+        this.reloadSidebar();
       } else if (action === "oauth") {
         button.disabled = true;
         void this.startOAuth(button);
@@ -631,6 +690,7 @@ export class SidebarController {
     this.cancelTabRequests();
     this.setContextStatus("正在识别当前客户并准备本地上下文…");
     this.renderTabs(false);
+    this.renderContextPending();
     const query = new URLSearchParams(
       this.doc.defaultView?.location.search || "",
     );
@@ -638,31 +698,38 @@ export class SidebarController {
 
     let sdkPromise: Promise<boolean>;
     if (externalUserid) {
+      // A legacy query candidate remains a read-only compatibility input. The
+      // server still derives the employee from the HttpOnly sidebar session and
+      // verifies the corp/employee/customer relationship before minting a
+      // context token; the browser never upgrades this value into identity.
       this.externalUserId = externalUserid;
-      // The query already identifies the customer. Local bootstrap and JSSDK
-      // preparation are independent and start together.
       sdkPromise = this.prepareJssdk();
     } else {
       const sdkReady = await this.prepareJssdk();
       if (initializationVersion !== this.initializationVersion) return;
-      if (sdkReady) {
-        try {
-          externalUserid = await this.resolveExternalUseridFromWx();
-        } catch (error) {
-          this.renderContextError(
-            "企微未返回当前客户 external_userid，请从企微客户侧边栏重新打开。",
-            errorMessage(error, "企微上下文读取失败"),
-          );
-          return;
-        }
+      if (!sdkReady) {
+        if (this.jssdkAuthenticationRequired) this.renderViewerSessionRequired();
+        else this.renderJSSDKInitializationFailure();
+        return;
       }
-      sdkPromise = Promise.resolve(sdkReady);
+      try {
+        externalUserid = await this.resolveExternalUseridFromWx();
+        // A prior WebView/native callback may complete after the user chose
+        // “retry”. Do not let that older contact candidate mint a context.
+        if (initializationVersion !== this.initializationVersion) return;
+      } catch (error) {
+        if (initializationVersion !== this.initializationVersion) return;
+        this.renderContextError(
+          "企微客户上下文读取失败，请从企微客户侧边栏重新打开。",
+          errorMessage(error, "企微上下文读取失败"),
+        );
+        return;
+      }
+      sdkPromise = Promise.resolve(true);
     }
 
     if (!externalUserid) {
-      this.renderContextError(
-        "缺少 external_userid，不能创建 Sidebar 上下文。请从企微侧边栏打开，或补充有效客户上下文。",
-      );
+      this.renderContextError("未取得可信的企微客户上下文，未创建 Sidebar 上下文。");
       return;
     }
 
@@ -764,16 +831,29 @@ export class SidebarController {
     return url.pathname + (query ? `?${query}` : "");
   }
 
-  private async prepareJssdk(): Promise<boolean> {
-    this.jssdkReady = false;
+  private prepareJssdk(): Promise<boolean> {
+    if (this.jssdkReady) return Promise.resolve(true);
+    if (this.jssdkFlight) return this.jssdkFlight;
+    const flight = this.prepareJssdkAttempt();
+    this.jssdkFlight = flight;
+    void flight.then(
+      () => {
+        if (this.jssdkFlight === flight) this.jssdkFlight = null;
+      },
+      () => {
+        if (this.jssdkFlight === flight) this.jssdkFlight = null;
+      },
+    );
+    return flight;
+  }
+
+  private async prepareJssdkAttempt(): Promise<boolean> {
+    this.jssdkAuthenticationRequired = false;
     const view = this.doc.defaultView;
     const wx = view?.wx;
     if (!wx) {
-      this.setSdkStatus("unavailable", "企微 SDK 不可用");
-      this.setContextStatus(
-        "企微 SDK 不可用：请从企微侧边栏打开；已有 external_userid 时仍会尝试读取本地工作台。",
-        "warn",
-      );
+      this.setSdkStatus("unavailable", "企微 SDK 未载入");
+      this.setContextStatus("企微 SDK 未载入：请从企微客户侧边栏打开。", "warn");
       return false;
     }
     const url = this.currentPageUrl();
@@ -782,28 +862,60 @@ export class SidebarController {
       this.setContextStatus("JSSDK 配置读取失败：当前页面 URL 无效。", "error");
       return false;
     }
-    this.setSdkStatus("loading", "读取 JSSDK…");
-    try {
-      let config = this.cachedAgentConfig(url);
-      if (!config) {
-        config = await withTimeout(
-          this.api.agentConfig(url),
-          SDK_TIMEOUT_MS,
-          "JSSDK 配置读取超时，请重试。",
-        );
-        this.cacheAgentConfig(config);
-      }
-      this.validateAgentConfig(config);
-      await withTimeout(
-        this.configureAgent(wx, config),
-        SDK_TIMEOUT_MS,
-        "企微 JSSDK 初始化超时，请从企微侧边栏重试。",
+    if (
+      this.regularJSSDKState === "indeterminate" ||
+      this.agentJSSDKState === "indeterminate"
+    ) {
+      this.setSdkStatus("error", "JSSDK 初始化状态未确认");
+      this.setContextStatus(
+        "企微 JSSDK 上一次初始化未确认；请关闭并重新打开侧边栏后再试。",
+        "error",
       );
-      this.setSdkStatus("ready", "JSSDK 就绪");
-      this.jssdkReady = true;
-      return true;
+      return false;
+    }
+    if (
+      this.regularJSSDKState === "ready" &&
+      this.regularJSSDKURL !== url
+    ) {
+      this.regularJSSDKState = "indeterminate";
+      this.setSdkStatus("error", "JSSDK 页面 URL 已变化");
+      this.setContextStatus(
+        "企微 JSSDK 已按另一页面地址初始化；请关闭并重新打开侧边栏后再试。",
+        "error",
+      );
+      return false;
+    }
+
+    this.setSdkStatus("loading", "读取 JSSDK…");
+    // An explicit agentConfig failure retains only the confirmed regular SDK
+    // state. It must fetch a fresh regular/agent signature pair: cache removal
+    // is best-effort and a stale session value must never survive that retry.
+    const refreshAgentSignature = this.agentJSSDKState === "failed";
+    let config = refreshAgentSignature ? null : this.regularJSSDKConfig;
+    try {
+      if (!config && !refreshAgentSignature) {
+        config = this.cachedJSSDKConfig(url);
+      }
+      if (!config) {
+        config = await withJSSDKTimeout(
+          this.api.jssdkConfig(url),
+          SDK_TIMEOUT_MS,
+          "config",
+        );
+        // Never retain malformed or stale server data for a later document.
+        this.validateJSSDKConfig(config);
+        this.cacheJSSDKConfig(config);
+      }
+      this.validateJSSDKConfig(config);
+      this.validateRegularJSSDKIdentity(config);
     } catch (error) {
       this.jssdkReady = false;
+      this.clearCachedJSSDKConfig();
+      if (errorStatus(error) === 401) {
+        this.jssdkAuthenticationRequired = true;
+        this.setSdkStatus("error", "需要企微 OAuth 授权");
+        return false;
+      }
       this.setSdkStatus("error", "JSSDK 配置失败");
       this.setContextStatus(
         `JSSDK 配置读取失败：${errorMessage(error, "请确认企微配置后重试。")}`,
@@ -811,18 +923,75 @@ export class SidebarController {
       );
       return false;
     }
+
+    if (this.regularJSSDKState !== "ready") {
+      this.regularJSSDKState = "initializing";
+      try {
+        await withJSSDKTimeout(
+          this.configureRegular(wx, config),
+          SDK_TIMEOUT_MS,
+          "regular",
+        );
+        this.regularJSSDKState = "ready";
+        this.regularJSSDKURL = url;
+        this.regularJSSDKConfig = config;
+        this.regularJSSDKIdentity = {
+          corpID: config.corpID,
+          agentID: config.agentID,
+          url: config.url,
+        };
+      } catch (error) {
+        this.jssdkReady = false;
+        this.regularJSSDKState = "indeterminate";
+        this.clearCachedJSSDKConfig();
+        this.setSdkStatus("error", "JSSDK regular config 失败");
+        this.setContextStatus(
+          error instanceof JSSDKTimeoutError
+            ? "企微 regular config 初始化超时；请关闭并重新打开侧边栏后再试。"
+            : `JSSDK regular config 失败：${errorMessage(error, "请确认企微配置后重试。")}`,
+          "error",
+        );
+        return false;
+      }
+    }
+
+    this.agentJSSDKState = "initializing";
+    try {
+      await withJSSDKTimeout(
+        this.configureAgent(wx, config),
+        SDK_TIMEOUT_MS,
+        "agent",
+      );
+      this.agentJSSDKState = "ready";
+      this.setSdkStatus("ready", "JSSDK 就绪");
+      this.jssdkReady = true;
+      return true;
+    } catch (error) {
+      this.jssdkReady = false;
+      this.clearCachedJSSDKConfig();
+      this.agentJSSDKState =
+        error instanceof JSSDKTimeoutError ? "indeterminate" : "failed";
+      this.setSdkStatus("error", "JSSDK agentConfig 失败");
+      this.setContextStatus(
+        error instanceof JSSDKTimeoutError
+          ? "企微 agentConfig 初始化超时；请关闭并重新打开侧边栏后再试。"
+          : `JSSDK agentConfig 失败：${errorMessage(error, "请确认企微配置后重试。")}`,
+        "error",
+      );
+      return false;
+    }
   }
 
-  private cachedAgentConfig(url: string): SidebarAgentConfigSignature | null {
-    const storage = this.doc.defaultView?.sessionStorage;
-    if (!storage) return null;
+  private cachedJSSDKConfig(url: string): SidebarJSSDKConfig | null {
     try {
+      const storage = this.doc.defaultView?.sessionStorage;
+      if (!storage) return null;
       const raw = storage.getItem(SDK_CACHE_KEY);
       if (!raw) return null;
       const cached = JSON.parse(raw) as {
         url?: unknown;
         usable_until?: unknown;
-        config?: SidebarAgentConfigSignature;
+        config?: SidebarJSSDKConfig;
       };
       if (
         cached.url !== url ||
@@ -831,26 +1000,30 @@ export class SidebarController {
         !cached.config ||
         cached.config.url !== url
       ) {
-        storage.removeItem(SDK_CACHE_KEY);
+        this.clearCachedJSSDKConfig();
         return null;
       }
-      this.validateAgentConfig(cached.config);
+      this.validateJSSDKConfig(cached.config);
       return cached.config;
     } catch {
-      storage.removeItem(SDK_CACHE_KEY);
+      this.clearCachedJSSDKConfig();
       return null;
     }
   }
 
-  private cacheAgentConfig(config: SidebarAgentConfigSignature): void {
-    const storage = this.doc.defaultView?.sessionStorage;
-    if (!storage || config.url !== this.currentPageUrl()) return;
-    const providerExpiry = Date.parse(config.ticket_expires_at);
-    const usableUntil =
-      Math.min(providerExpiry, Date.now() + SDK_CACHE_MAX_MS) -
-      SDK_CACHE_SAFETY_MS;
-    if (!Number.isFinite(providerExpiry) || usableUntil <= Date.now()) return;
+  private clearCachedJSSDKConfig(): void {
     try {
+      this.doc.defaultView?.sessionStorage?.removeItem(SDK_CACHE_KEY);
+    } catch {
+      // Storage may be disabled; the in-document state remains authoritative.
+    }
+  }
+
+  private cacheJSSDKConfig(config: SidebarJSSDKConfig): void {
+    try {
+      const storage = this.doc.defaultView?.sessionStorage;
+      if (!storage || config.url !== this.currentPageUrl()) return;
+      const usableUntil = Date.now() + SDK_CACHE_MAX_MS - SDK_CACHE_SAFETY_MS;
       storage.setItem(
         SDK_CACHE_KEY,
         JSON.stringify({ url: config.url, usable_until: usableUntil, config }),
@@ -860,25 +1033,86 @@ export class SidebarController {
     }
   }
 
-  private validateAgentConfig(config: SidebarAgentConfigSignature): void {
+  private validateJSSDKConfig(config: SidebarJSSDKConfig): void {
+    const validSignature = (signature: SidebarJSSDKConfig["config"]) =>
+      Number.isSafeInteger(signature?.timestamp) &&
+      signature.timestamp > 0 &&
+      Boolean(signature.nonce) &&
+      Boolean(signature.signature);
     if (
       !config ||
-      config.signature_type !== "agent_config" ||
-      !config.corp_id ||
-      !Number.isFinite(config.agent_id) ||
-      !config.nonce ||
-      !Number.isFinite(config.timestamp) ||
-      !config.signature ||
-      !config.url
+      !config.corpID ||
+      !config.agentID ||
+      !config.url ||
+      !validSignature(config.config) ||
+      !validSignature(config.agentConfig)
     ) {
-      throw new Error("JSSDK agent_config 签名不完整。");
+      throw new Error("JSSDK regular 或 agent_config 签名不完整。");
     }
   }
 
-  private configureAgent(
-    wx: SidebarWx,
-    config: SidebarAgentConfigSignature,
-  ): Promise<void> {
+
+  private validateRegularJSSDKIdentity(config: SidebarJSSDKConfig): void {
+    const identity = this.regularJSSDKIdentity;
+    if (
+      this.regularJSSDKState === "ready" &&
+      (!identity ||
+        identity.corpID !== config.corpID ||
+        identity.agentID !== config.agentID ||
+        identity.url !== config.url)
+    ) {
+      throw new Error("JSSDK 重试返回了与已确认 regular 状态不一致的身份。");
+    }
+  }
+
+  private configuredAPIs(declared: string[], fallback: string[]): string[] {
+    const valid = Array.isArray(declared)
+      ? declared.filter((value) => typeof value === "string" && value.trim() !== "")
+      : [];
+    return valid.length > 0 ? valid : fallback;
+  }
+
+  private configureRegular(wx: SidebarWx, config: SidebarJSSDKConfig): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (typeof wx.config !== "function" || typeof wx.ready !== "function" || typeof wx.error !== "function") {
+        reject(new Error("当前企微 SDK 不支持 regular config。"));
+        return;
+      }
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (error) reject(error);
+        else resolve();
+      };
+      try {
+        // The dedicated WeCom SDK stores regular readiness globally. This promise
+        // is local and idempotent; controller state prevents another regular round
+        // after a timeout, while an explicit agentConfig failure may retry agent only.
+        wx.error((result) =>
+          finish(
+            new Error(
+              `企微 config 失败：${firstString(result, ["errMsg", "errmsg", "err_msg", "message"]) || "未知错误"}`,
+            ),
+          ),
+        );
+        wx.ready(() => finish());
+        wx.config({
+          beta: true,
+          debug: false,
+          appId: config.corpID,
+          timestamp: config.config.timestamp,
+          nonceStr: config.config.nonce,
+          signature: config.config.signature,
+          jsApiList: this.configuredAPIs(config.config.jsApiList, REGULAR_JS_API_LIST),
+        });
+      } catch (error) {
+        finish(new Error(`企微 config 失败：${errorMessage(error, "未知错误")}`));
+      }
+    });
+  }
+
+  private configureAgent(wx: SidebarWx, config: SidebarJSSDKConfig): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (typeof wx.agentConfig !== "function") {
         reject(new Error("当前企微 SDK 不支持 agentConfig。"));
@@ -893,26 +1127,22 @@ export class SidebarController {
       };
       try {
         wx.agentConfig({
-          corpid: config.corp_id,
-          agentid: String(config.agent_id),
-          timestamp: config.timestamp,
-          nonceStr: config.nonce,
-          signature: config.signature,
-          jsApiList: ["getContext", "getCurExternalContact", "sendChatMessage"],
+          corpid: config.corpID,
+          agentid: config.agentID,
+          timestamp: config.agentConfig.timestamp,
+          nonceStr: config.agentConfig.nonce,
+          signature: config.agentConfig.signature,
+          jsApiList: this.configuredAPIs(config.agentConfig.jsApiList, AGENT_JS_API_LIST),
           success: () => finish(),
           fail: (result) =>
             finish(
               new Error(
-                `企微 agentConfig 失败：${firstString(result, ["errmsg", "err_msg", "message"]) || "未知错误"}`,
+                `企微 agentConfig 失败：${firstString(result, ["errMsg", "errmsg", "err_msg", "message"]) || "未知错误"}`,
               ),
             ),
         });
       } catch (error) {
-        finish(
-          new Error(
-            `企微 agentConfig 失败：${errorMessage(error, "未知错误")}`,
-          ),
-        );
+        finish(new Error(`企微 agentConfig 失败：${errorMessage(error, "未知错误")}`));
       }
     });
   }
@@ -928,6 +1158,7 @@ export class SidebarController {
           wx.invoke(method, payload, (result) => {
             const response = result || {};
             const message = firstString(response, [
+              "errMsg",
               "errmsg",
               "err_msg",
               "message",
@@ -1000,16 +1231,9 @@ export class SidebarController {
   }
 
   private async startOAuth(button: HTMLButtonElement): Promise<void> {
-    if (!this.externalUserId) {
-      this.renderContextError("缺少 external_userid，不能发起 OAuth。");
-      return;
-    }
     this.setContextStatus("正在发起 OAuth 回退；尚未确认员工会话…");
     try {
-      const route = this.api.oauthStartUrl({
-        external_userid: this.externalUserId,
-        next: this.nextPath(),
-      });
+      const route = this.api.oauthStartUrl({ next: this.nextPath() });
       this.setContextStatus(
         "OAuth 已发起，等待企微回调；未将受理状态视为授权成功。",
       );
@@ -3257,6 +3481,56 @@ export class SidebarController {
     status.textContent = message;
   }
 
+  private renderContextPending(): void {
+    const panel = createElement(this.doc, "section", "sidebar-panel");
+    panel.dataset.sidebarSection = "context-pending";
+    panel.append(
+      createElement(
+        this.doc,
+        "div",
+        "sidebar-status",
+        "正在识别当前企微客户；尚未建立 Sidebar 上下文。",
+      ),
+    );
+    const retry = createElement(this.doc, "button", "btn ghost", "重新读取");
+    retry.type = "button";
+    retry.dataset.sidebarAction = "retry-context";
+    markBound(retry);
+    panel.append(retry);
+    this.content.replaceChildren(panel);
+  }
+
+  private renderJSSDKInitializationFailure(): void {
+    const message =
+      this.contextStatus?.textContent || "企微 JSSDK 初始化失败，未建立客户上下文。";
+    const requiresNewDocument =
+      this.regularJSSDKState === "indeterminate" ||
+      this.agentJSSDKState === "indeterminate";
+    this.renderContextError(
+      message,
+      undefined,
+      "error",
+      [
+        requiresNewDocument
+          ? { label: "重新打开 Sidebar", action: "reload-sidebar", primary: true }
+          : { label: "重试读取", action: "retry-context", primary: true },
+      ],
+    );
+  }
+
+  private reloadSidebar(): void {
+    const view = this.doc.defaultView;
+    if (!view) return;
+    try {
+      view.location.reload();
+    } catch (error) {
+      this.setContextStatus(
+        `重新打开 Sidebar 失败：${errorMessage(error, "请手动关闭后重新打开。")}`,
+        "error",
+      );
+    }
+  }
+
   private renderViewerSessionRequired(): void {
     this.renderTabs(false);
     this.renderContextError(
@@ -3273,11 +3547,13 @@ export class SidebarController {
     tone: "error" | "warn" = "error",
     actions: Array<{
       label: string;
-      action: "retry-context" | "oauth";
+      action: "retry-context" | "reload-sidebar" | "oauth";
       primary?: boolean;
     }> = [{ label: "重试读取", action: "retry-context" }],
   ): void {
-    this.setContextStatus(detail ? `${message} ${detail}` : message, tone);
+    // Keep the shell status concise. The actionable panel is the sole place
+    // that repeats the full failure and optional provider/detail message.
+    this.setContextStatus("Sidebar 上下文未建立；请按下方提示处理。", tone);
     this.tabs.replaceChildren();
     const panel = createElement(this.doc, "section", "sidebar-panel");
     panel.dataset.sidebarSection = "context-error";
@@ -3285,7 +3561,7 @@ export class SidebarController {
       this.doc,
       "div",
       `sidebar-status ${tone}`,
-      message,
+      detail ? `${message} ${detail}` : message,
     );
     status.dataset.contextState = tone;
     panel.append(status);

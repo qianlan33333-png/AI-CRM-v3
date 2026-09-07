@@ -29,16 +29,12 @@ import (
 // OneID decision: involved only through the existing scoped
 // wecom_external_userid read path; the journey never provisions or merges a
 // customer. Persistence decision: local PostgreSQL reads only after fixture
-// setup. External Effects decision: not involved; the fixture asserts no
-// Provider request is made while rendering the thumbnail.
+// setup. External Effects decision: not involved; JSSDK ticket reads are
+// expected while the fixture asserts that no Provider business write occurs.
 func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
-	// The local macOS sandbox cannot reliably expose Chrome's DevTools port
-	// (Crashpad exits before DevToolsActivePort appears). Linux CI sets the
-	// required flag and executes this exact script; do not turn that CI path
-	// into a skip.
-	if goruntime.GOOS == "darwin" {
-		t.Skip("Darwin Chrome DevTools is unavailable in this sandbox; required Linux CI executes the journey")
-	}
+	// Linux CI requires this journey. macOS runs the same HTTPS + DevTools
+	// protocol when explicitly requested so a platform-specific startup issue is
+	// diagnosed rather than hidden behind a skip.
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
@@ -54,7 +50,7 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	t.Chdir(repository)
 	prepareProductExternalPushChromiumArtifacts(t, repository)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
 	defer cleanup()
@@ -91,9 +87,9 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	// repository-relative release artifact a deterministic test failure instead
 	// of a generic DOM timeout after the browser starts.
 	outerSidebar := httptest.NewRecorder()
-	application.handler.ServeHTTP(outerSidebar, httptest.NewRequest(http.MethodGet, "/sidebar/bind-mobile?external_userid=sidebar-thumbnail-external", nil))
-	if outerSidebar.Code != http.StatusOK || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)) {
-		t.Fatalf("outer composed sidebar Host status=%d sidebar_host=%t tabs=%t", outerSidebar.Code, bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)))
+	application.handler.ServeHTTP(outerSidebar, httptest.NewRequest(http.MethodGet, "/sidebar/bind-mobile", nil))
+	if outerSidebar.Code != http.StatusOK || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js`)) {
+		t.Fatalf("outer composed sidebar Host status=%d sidebar_host=%t tabs=%t jssdk=%t", outerSidebar.Code, bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js`)))
 	}
 	server.Config.Handler = application.handler
 	server.StartTLS()
@@ -103,6 +99,7 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 		"AICRM_SIDEBAR_THUMBNAIL_TEST_URL="+server.URL,
 		"AICRM_SIDEBAR_THUMBNAIL_TEST_USERNAME=sidebar-browser-owner",
 		"AICRM_SIDEBAR_THUMBNAIL_TEST_PASSWORD=sidebar-browser-owner-password",
+		"AICRM_SIDEBAR_JSSDK_FIXTURE="+filepath.Join(repository, "web", "v3", "sidebar", "testdata", "wecom-jweixin-1.0.0.js"),
 	)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -111,9 +108,9 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	if !strings.Contains(string(output), "sidebar_thumbnail_chromium: PASS") {
 		t.Fatalf("sidebar thumbnail Chromium journey did not report success: %q", output)
 	}
-	writes, reads := provider.Counts()
-	if writes != 0 || reads != 0 {
-		t.Fatalf("thumbnail read must not call the WeCom provider: writes=%d reads=%d", writes, reads)
+	writes, businessReads := provider.Counts()
+	if writes != 0 || businessReads != 0 || provider.JSSDKReads() != 3 {
+		t.Fatalf("sidebar handshake writes=%d business_reads=%d jssdk_ticket_reads=%d", writes, businessReads, provider.JSSDKReads())
 	}
 }
 
