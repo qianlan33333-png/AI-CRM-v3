@@ -201,7 +201,6 @@ function validateIndex(index) {
     if (canonicalPaths.has(view.target_path)) fail('INVALID_INDEX', 'view target cannot be a canonical source path');
     if (typeof view.enabled !== 'boolean') fail('INVALID_INDEX', 'view.enabled must be boolean');
   }
-
   return { index, libraryByID, contentByID };
 }
 
@@ -277,7 +276,9 @@ function sourceSummary(loaded, checked) {
 }
 
 export function verifySourceIndex(root, indexPath) {
-  const { loaded, checked } = loadValidated(root, indexPath);
+  // A reviewed P4 view is deliberately absent from the checkout until the
+  // safe materializer creates it. A tracked absence remains an error.
+  const { loaded, checked } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
   return sourceSummary(loaded, checked);
 }
 
@@ -575,6 +576,7 @@ function checkedContents(loaded, { allowMissingEnabledViewBindings = false } = {
         && error instanceof DonorViewError
         && error.code === 'MISSING_FILE'
         && enabledTargets.has(binding.logical_path)
+        && binding.current_path_state === 'untracked_post_p4'
         && !isTracked(loaded.root, binding.logical_path)
       ) {
         continue;
@@ -600,7 +602,7 @@ function loadCanonicalIndex(root, indexPath) {
 }
 
 export function planMaterialization(root, indexPath) {
-  const { loaded, checked } = loadValidated(root, indexPath);
+  const { loaded, checked } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
   return {
     ...sourceSummary(loaded, checked),
     action: 'plan',

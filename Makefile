@@ -20,6 +20,7 @@ fmt-check:
 	@test -z "$$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
 
 prepare-donor-views:
+	node scripts/check-donor-source-view-ignore.mjs
 	node scripts/prepare-donor-source-views.mjs
 
 vet: prepare-donor-views

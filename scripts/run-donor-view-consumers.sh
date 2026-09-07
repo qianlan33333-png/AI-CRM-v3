@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # This script always performs the non-destructive source-view preparation
-# itself. The P3 no-fallback CI proof additionally runs it inside
-# scripts/run-with-donor-views.mjs after exact disposable index removals.
+# itself. After P4 the exact ignored views are materialized untracked for every consumer.
 mode="${1:-}"
 v2_donor="${AICRM_V2_FROZEN_DONOR_DIR:-${PR07_DONOR_DIR:?PR07_DONOR_DIR is required}}"
 sidebar_donor="${AICRM_SIDEBAR_DONOR_DIR:?AICRM_SIDEBAR_DONOR_DIR is required}"
+node scripts/check-donor-source-view-ignore.mjs >/dev/null
 node scripts/prepare-donor-source-views.mjs >/dev/null
 
 check_v2_donor() {
@@ -41,6 +41,7 @@ run_frozen_consumer_gates() {
   scripts/check-pr08-frontend-donor-manifest.sh
   scripts/check-pr09-frontend-freeze.sh
   scripts/check-config-definition-import-boundary.sh
+  node --test scripts/check-p4-donor-view-closure.test.mjs
   scripts/check-ai-assistant-donor-manifest.sh
   bash scripts/test-check-ai-assistant-donor-manifest.sh
   AICRM_SIDEBAR_DONOR_DIR="$sidebar_donor" scripts/check-sidebar-customer360-contract.sh

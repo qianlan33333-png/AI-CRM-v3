@@ -24,7 +24,7 @@ changes must preserve.
 7. Writes use a same-directory temporary file and atomic publication. A view is published exclusively without overwriting a target that appeared after validation; the tool-owned receipt is atomically renamed while the lock is held. If the receipt write fails, the tool removes only views created in that invocation after rechecking their bytes and mode; it preserves any target that changed concurrently and reports rollback failure rather than deleting it. The prior receipt remains unchanged.
 8. The lock directory contains a private owner record with host, PID, random lock ID, and creation time. Normal `apply` and `clean` never remove a pre-existing lock. `recover-lock` is an explicit operator action: it only removes a lock whose well-formed owner record is on this host and whose PID returns `ESRCH`; active, permission-denied, remote-host, missing, malformed, or changed owner records require manual inspection. It never performs automatic stale-lock cleanup.
 
-PR-2 used `health.schemas.ts` as its mechanism pilot. PR-3 declares every P0-derived build view: 229 paths backed by 74 canonical contents. The sole active authority, `api/openapi.yaml`, remains tracked and is never a view; its package-local Go-embed copy is a declared derived view. All 229 derived paths remain tracked and byte-exact until PR-4 approves their exact removal. PR-3 only proves the transition in a clean disposable worktree by staging those exact deletions and materializing untracked replacements.
+PR-2 used `health.schemas.ts` as its mechanism pilot. PR-3 declared every P0-derived build view: 229 paths backed by 74 canonical contents and proved their consumers in a disposable worktree. PR-4 removes those 229 declared paths from Git and changes exactly their bindings to `untracked_post_p4`; the sole retained binding is the active authority `api/openapi.yaml`, which is never a view. The root `.gitignore` block enumerates every generated target and the two tool-owned receipt/lock paths explicitly. It contains no wildcard or directory-level `web/**` rule. `scripts/check-donor-source-view-ignore.mjs` compares that list to the source index and rejects an ignored unlisted source path.
 
 ## Commands and phase rules
 
@@ -36,14 +36,12 @@ node scripts/materialize-donor-views.mjs --mode plan
 node scripts/materialize-donor-views.mjs --mode recover-lock  # only after local dead-PID proof
 ```
 
-The materializer has `plan`, `apply`, `verify`, `clean`, `clean-stale`,
-`recover-partial`, and explicit `recover-lock` modes. PR-3 adds `prepare-disposable` and
-`restore-disposable`, which require `AICRM_DEDUP_DISPOSABLE_WORKTREE=1`; the
-command runner uses them to remove exactly the selected tracked paths in a
-disposable build worktree, materialize the views, run the selected consumers,
-clean the receipt, and restore the tracked paths. This is the only permitted
-PR-3 transition proof. It is not a normal developer checkout mutation or a
-package-script hook.
+The materializer has `plan`, `apply`, `verify`, `clean`, `clean-stale`, and
+explicit `recover-lock` modes. `scripts/recover-donor-source-views.mjs` performs
+receipt-scoped interrupted-clean recovery. PR-3 also added `prepare-disposable`
+and `restore-disposable`, which require `AICRM_DEDUP_DISPOSABLE_WORKTREE=1`;
+they remain historical transition-proof tools and are not part of normal P4
+builds or package-script hooks.
 
 `Makefile`, release builders, and direct build scripts automatically run the
 non-destructive preparation command. It verifies the tracked derived bytes in
@@ -57,6 +55,21 @@ make check
 scripts/build-linux.sh amd64
 scripts/run-go-with-donor-views.sh go test ./cmd/aicrm
 ```
+
+For a normal front-end command in a fresh P4 checkout, first prepare the exact
+views, then use the unchanged frozen package command. Do not edit
+`package.json` or `web/scripts/build.mjs` to create an implicit hook:
+
+```sh
+node scripts/check-donor-source-view-ignore.mjs
+node scripts/prepare-donor-source-views.mjs
+npm run typecheck  # or: npm test, npm run build
+```
+
+`make`, `scripts/run-go-with-donor-views.sh`, `scripts/build-linux.sh`,
+`scripts/build-wecom-archive-sdk-runner-linux.sh`, CI and the release builder
+perform the same safe preparation themselves. The production installer still
+receives only a built release.
 
 For an approved canonical-source update after PR-4, ordinary `clean` correctly
 rejects the stale receipt. Run `clean-stale` only when the current index still

@@ -6,5 +6,6 @@ set -euo pipefail
 # an approved removal it materializes only the declared untracked views.
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ "$#" -gt 0 ]] || { echo "usage: scripts/run-go-with-donor-views.sh COMMAND [ARGUMENT ...]" >&2; exit 2; }
+node "$repository/scripts/check-donor-source-view-ignore.mjs" "$repository" >/dev/null
 node "$repository/scripts/prepare-donor-source-views.mjs" --root "$repository" >/dev/null
 exec "$@"

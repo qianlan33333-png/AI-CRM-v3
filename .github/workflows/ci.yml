@@ -90,8 +90,8 @@ jobs:
           node scripts/validate-openapi.mjs
           node scripts/verify-donor-sources.mjs
           node --test scripts/donor-source-views.test.mjs
-          AICRM_DEDUP_DISPOSABLE_WORKTREE=1 AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
-            node scripts/run-with-donor-views.mjs -- bash scripts/run-donor-view-consumers.sh check
+          AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
+            bash scripts/run-donor-view-consumers.sh check
       - name: Run required Sidebar JSSDK Chromium journey
         # Run the actual final staged Sidebar Host before the long repository
         # and race phases. Linux Chrome is mandatory; this script uses the

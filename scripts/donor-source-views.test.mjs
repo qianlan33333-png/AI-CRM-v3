@@ -105,6 +105,13 @@ function withFixture(options, callback) {
   }
 }
 
+function markFixtureBindingUntracked(root, index, logicalPath = 'tracked/health.schemas.ts') {
+  const binding = index.bindings.find((item) => item.logical_path === logicalPath);
+  assert.ok(binding, `missing fixture binding: ${logicalPath}`);
+  binding.current_path_state = 'untracked_post_p4';
+  writeJSON(path.join(root, 'source-index.json'), index);
+}
+
 function replaceWithApprovedCanonicalRevision(root, index) {
   const revision = Buffer.from('approved replacement canonical payload\n');
   const revisionSHA256 = crypto.createHash('sha256').update(revision).digest('hex');
@@ -148,7 +155,7 @@ function expectCode(code, callback) {
   assert.throws(callback, (error) => error instanceof DonorViewError && error.code === code);
 }
 
-test('PR-3 plans every audited derived view and retains only the active OpenAPI authority', () => {
+test('PR-4 removes every declared view from Git and prepares exact ignored replacements from the 74 canonical authorities', () => {
   const result = verifySourceIndex(REPOSITORY);
   const plan = planMaterialization(REPOSITORY).materialized_view_targets;
   assert.equal(result.bindings_verified, 230);
@@ -156,6 +163,12 @@ test('PR-3 plans every audited derived view and retains only the active OpenAPI 
   assert.equal(result.canonical_contents.length, 74);
   assert.equal(plan.length, 229);
   assert.equal(plan.includes('api/openapi.yaml'), false);
+  const indexed = execFileSync('git', ['-C', REPOSITORY, 'ls-files', '-z'], { encoding: 'buffer' }).toString('utf8').split('\0').filter(Boolean);
+  for (const target of plan) {
+    assert.equal(indexed.includes(target), false, `P4 view remains tracked: ${target}`);
+    assert.doesNotThrow(() => execFileSync('git', ['-C', REPOSITORY, 'check-ignore', '-q', '--no-index', target]), `declared view is not exactly ignored: ${target}`);
+  }
+  assert.equal(indexed.includes('api/openapi.yaml'), true, 'active OpenAPI authority must stay tracked');
   for (const target of [
     'web/donors/adminops-v2/src/api/generated/health.schemas.ts',
     'web/donors/automation-operations-v2/src/api/generated/health.schemas.ts',
@@ -170,10 +183,11 @@ test('PR-3 plans every audited derived view and retains only the active OpenAPI 
     'web/donors/ai-assistant-production/static/send_content_readonly_detail.css',
   ]) assert.equal(plan.includes(target), true, `missing declared derived view: ${target}`);
   const prepared = applyMaterialization(REPOSITORY);
-  assert.deepEqual(prepared.created, []);
-  assert.equal(prepared.tracked_views.length, 229);
+  assert.deepEqual([...prepared.created, ...prepared.reused].sort(), plan);
+  assert.deepEqual(prepared.tracked_views, []);
+  assert.equal(verifyMaterialization(REPOSITORY).materialized_views_verified.length, 229);
+  assert.deepEqual(cleanMaterialization(REPOSITORY).removed, plan);
   assert.equal(fs.existsSync(path.join(REPOSITORY, '.aicrm-dedup', 'donor-views-receipt.json')), false);
-  assert.equal(verifyMaterialization(REPOSITORY).tracked_views_verified.length, 229);
 });
 
 test('materializes byte-identical untracked views atomically, reuses them, verifies and cleans only receipted paths', () => {
@@ -319,6 +333,7 @@ test('cleans a reviewed stale receipt before re-preparing, but never removes a d
   withFixture({ views }, ({ root, index }) => {
     // This models the post-PR-4 state: the compatibility binding is no longer
     // tracked, so the initial view is a materialized input rather than fallback.
+    markFixtureBindingUntracked(root, index);
     execFileSync('git', ['-C', root, 'rm', '--cached', '--', 'tracked/health.schemas.ts']);
     fs.rmSync(path.join(root, 'tracked', 'health.schemas.ts'));
     applyMaterialization(root, 'source-index.json');
@@ -330,6 +345,7 @@ test('cleans a reviewed stale receipt before re-preparing, but never removes a d
     assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), replacement);
   });
   withFixture({ views }, ({ root, index }) => {
+    markFixtureBindingUntracked(root, index);
     execFileSync('git', ['-C', root, 'rm', '--cached', '--', 'tracked/health.schemas.ts']);
     fs.rmSync(path.join(root, 'tracked', 'health.schemas.ts'));
     applyMaterialization(root, 'source-index.json');

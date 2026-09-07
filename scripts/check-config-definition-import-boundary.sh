@@ -168,19 +168,54 @@ def git_lines(*args: str) -> list[str]:
 
 changed = set(git_lines("diff", "--name-only", "HEAD", "--"))
 changed.update(git_lines("ls-files", "--others", "--exclude-standard"))
+source_index = read_json(root / "web/donor-sources/source-index.json")
+declared_views: set[str] = set()
+if isinstance(source_index, dict):
+    declared_views = {
+        item.get("target_path")
+        for item in source_index.get("views", [])
+        if isinstance(item, dict) and item.get("enabled") is True and isinstance(item.get("target_path"), str)
+    }
+    p4_bindings = {
+        item.get("logical_path")
+        for item in source_index.get("bindings", [])
+        if isinstance(item, dict) and item.get("current_path_state") == "untracked_post_p4" and isinstance(item.get("logical_path"), str)
+    }
+else:
+    p4_bindings = set()
+
 if os.environ.get("AICRM_DEDUP_DISPOSABLE_WORKTREE") == "1":
     # The shell verifier above has proven that the index contains exactly the
     # declared view deletions and every worktree replacement is receipted.
     # Keep this boundary strict for every other path, including an undeclared
     # donor file that happens to be changed in the disposable worktree.
-    source_index = read_json(root / "web/donor-sources/source-index.json")
-    if isinstance(source_index, dict):
-        declared_views = {
-            item.get("target_path")
-            for item in source_index.get("views", [])
-            if isinstance(item, dict) and item.get("enabled") is True and isinstance(item.get("target_path"), str)
-        }
-        changed.difference_update(declared_views)
+    changed.difference_update(declared_views)
+elif declared_views and p4_bindings == declared_views:
+    # P4 commits the same approved deletion set that P3 only staged in its
+    # disposable proof. The materializer/ignore verifier proves the views are
+    # exact untracked replacements before this boundary excludes their staged
+    # deletions; all other donor changes remain subject to the original gate.
+    verifier = subprocess.run(
+        ["node", str(root / "scripts/verify-materialized-donor-source-views.mjs"), "--root", str(root)],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if verifier.returncode != 0:
+        fail("P4 donor-source views are not verified replacements: " + verifier.stderr.strip())
+    donor_closure = subprocess.run(
+        ["node", str(root / "scripts/check-p4-donor-view-closure.mjs"), "--root", str(root), "--prefix", "web/donors"],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if donor_closure.returncode != 0:
+        fail("P4 donor source closure contains an undeclared active donor change: " + donor_closure.stderr.strip())
+    changed.difference_update(declared_views)
 donor_changes = sorted(path for path in changed if path == "web/donors" or path.startswith("web/donors/"))
 if donor_changes:
     fail("donor web business files changed: " + ", ".join(donor_changes))
