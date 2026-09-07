@@ -151,10 +151,19 @@ jobs:
         # from make check, while missing Chrome is a hard Linux CI failure.
         env:
           AICRM_REQUIRE_CHROMIUM_JOURNEY: "1"
+          AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/admin-shell-layout
         run: |
           set -euo pipefail
           command -v google-chrome
-          go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
+          go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney|TestPostgreSQLAdminShellLayoutChromiumJourney)$' ./cmd/aicrm
+      - name: Upload admin shell layout Chromium evidence
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: admin-shell-layout-chromium-${{ github.sha }}
+          path: artifacts/admin-shell-layout
+          if-no-files-found: warn
+          retention-days: 14
       - name: Run owner handoff Chromium journey
         # This journey covers the frozen legacy page through the v3 Host, CSRF,
         # PostgreSQL/River, and both local and WeCom transfer modes.

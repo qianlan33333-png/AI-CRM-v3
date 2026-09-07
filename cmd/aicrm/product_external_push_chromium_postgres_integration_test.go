@@ -150,6 +150,7 @@ func newProductExternalPushChromiumFixture(t *testing.T) *productExternalPushChr
 		GroupOps:     platformconfig.GroupOps{WebhookSecret: "product-external-push-chromium-webhook-secret"},
 		Survey:       platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(dataKey), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(dataKey)},
 		Effects:      platformconfig.Effects{ProviderEnabled: true},
+		AIAssistant:  platformconfig.AIAssistant{UIEnabled: true},
 		CommercePush: platformconfig.CommercePush{ProviderEnabled: true, TargetsJSON: string(targetsJSON), PayloadDataKey: base64.RawStdEncoding.EncodeToString(dataKey)},
 		Bootstrap:    platformconfig.Bootstrap{Enabled: true, Username: "product-browser-owner", Password: "product-browser-owner-password", DisplayName: "Product Browser Owner"},
 	})
@@ -428,8 +429,37 @@ func prepareProductExternalPushChromiumArtifacts(t *testing.T, repository string
 		command.Dir = repository
 		output, err := command.CombinedOutput()
 		if err != nil {
-			t.Fatalf("prepare Product Chromium release artifact %s: %v output=%s", strings.Join(invocation, " "), err, strings.TrimSpace(string(output)))
+			t.Fatalf("prepare Product Chromium build artifact %s: %v output=%s", strings.Join(invocation, " "), err, strings.TrimSpace(string(output)))
 		}
+	}
+
+	// Composition reads web/dist just as the installed binary does. Build the
+	// complete release closure into an isolated stage first, then use that exact
+	// staged artifact for this fixture. In particular, tags.html is a private
+	// PR03 carrier generated only during staging; a raw frontend build has only
+	// wecom-tags.html and would make the real tag Host fail closed with 503.
+	stage := filepath.Join(t.TempDir(), "release", "web", "dist")
+	for _, invocation := range [][]string{
+		{"node", "scripts/stage-pr01-effects-ui.mjs", "web/dist", stage},
+		{"node", "scripts/stage-survey-ui.mjs", "web/dist", stage},
+		{"node", "scripts/stage-new-shell-ui.mjs", "web/dist", stage},
+	} {
+		command := exec.Command(invocation[0], invocation[1:]...)
+		command.Dir = repository
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("prepare Product Chromium staged release artifact %s: %v output=%s", strings.Join(invocation[:2], " "), err, strings.TrimSpace(string(output)))
+		}
+	}
+	dist := filepath.Join(repository, "web", "dist")
+	if err := os.RemoveAll(dist); err != nil {
+		t.Fatalf("replace Product Chromium build artifact: %v", err)
+	}
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatalf("create Product Chromium staged artifact root: %v", err)
+	}
+	if err := os.CopyFS(dist, os.DirFS(stage)); err != nil {
+		t.Fatalf("install Product Chromium staged artifact: %v", err)
 	}
 }
 

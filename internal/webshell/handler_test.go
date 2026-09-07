@@ -574,7 +574,7 @@ func TestRenderHXCMountsLiveDashboardInTheV3Shell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || !strings.Contains(body, `data-admin-shell-source="v3_webshell" data-page="funnel"`) || !strings.Contains(body, `<main id="stage" class="stage rich"></main>`) || !strings.Contains(body, `/hxc-dashboard-assets/admin.js`) || strings.Contains(body, "功能待接入") {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Count(body, `<header class="admin-topbar">`) != 1 || !strings.Contains(body, `data-admin-shell-source="v3_webshell" data-page="funnel"`) || !strings.Contains(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--dynamic"></main>`) || !strings.Contains(body, `/hxc-dashboard-assets/admin.js`) || strings.Contains(body, "功能待接入") {
 		t.Fatalf("HXC shell mismatch status=%d body=%q", response.Code, body)
 	}
 }
@@ -590,7 +590,7 @@ func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="products">frozen donor product fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `src="/product-assets/product-host.js"`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="products">frozen donor product fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`) || strings.Contains(body, `<header class="admin-topbar">`) || !strings.Contains(body, `src="/product-assets/product-host.js"`) {
 		t.Fatalf("product shell mismatch status=%d body=%q", response.Code, body)
 	}
 }
@@ -800,7 +800,7 @@ func TestOperationCyclesHostShellJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<base href="/admin/operation-cycles/">`) || !strings.Contains(body, `data-page="cyclesDetail"`) || !strings.Contains(body, `src="/assets/operationCyclesHost.js"`) || !strings.Contains(body, `<template id="tpl"><section data-proof="frozen">原版页面</section></template>`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<base href="/admin/operation-cycles/">`) || !strings.Contains(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`) || strings.Contains(body, `<header class="admin-topbar">`) || !strings.Contains(body, `data-page="cyclesDetail"`) || !strings.Contains(body, `src="/assets/operationCyclesHost.js"`) || !strings.Contains(body, `<template id="tpl"><section data-proof="frozen">原版页面</section></template>`) {
 		t.Fatalf("operation-cycle host shell mismatch status=%d body=%q", response.Code, body)
 	}
 }

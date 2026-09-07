@@ -3464,3 +3464,32 @@ body.admin-shell {
     padding-right: 16px;
   }
 }
+
+/* Admin shell layout contract: frozen workspace fragments already own their
+ * first 52px toolbar.  The shell may not inset that toolbar a second time.
+ * These marker classes are emitted only by V3 renderers; donor source stays
+ * byte-frozen. */
+.admin-main-wrap > .admin-workspace-stage--embedded,
+.admin-main-wrap > .order-host-layout > .admin-workspace-stage--embedded {
+  align-self: stretch;
+  min-width: 0;
+  padding: 0;
+}
+
+.admin-main-wrap > .admin-workspace-stage--dynamic {
+  min-width: 0;
+  padding: 16px 20px 36px;
+}
+
+/* HXC is the one main-navigation dynamic page without a donor toolbar.  Its
+ * Webshell topbar supplies the unique title; retain the V3 refresh action in
+ * the content action row instead of showing a second page title. */
+.admin-main-wrap > .admin-topbar + .admin-workspace-stage--dynamic .sec-funnel > .crumb,
+.admin-main-wrap > .admin-topbar + .admin-workspace-stage--dynamic .sec-funnel > .page-head > :first-child {
+  display: none;
+}
+
+.admin-main-wrap > .admin-topbar + .admin-workspace-stage--dynamic .sec-funnel > .page-head {
+  min-height: 30px;
+  justify-content: flex-end;
+}
