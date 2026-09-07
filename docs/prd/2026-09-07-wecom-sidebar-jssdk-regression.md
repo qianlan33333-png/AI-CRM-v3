@@ -17,6 +17,8 @@ web/scripts/build.mjs
 
 已发布 manifest 的 `sidebarHost` entry point 是 `web/v3/sidebar/main.ts`，并包含 `web/v3/sidebarApi.ts`。`web/src/sidebar/main.ts` 与其历史适配器会先被构建流程替换，未被最终 sidebar Host 消费；它们是未运行旧源风险，不能作为线上根因或另建第二套修复。
 
+`/sidebar/bind-mobile` 没有第二个正式别名：Composition 固定以 `web/dist` 创建 Webshell，Handler 优先返回 `web/dist/sidebar/index.html`。只有该构建文件缺失或不可读时，同一路由才回退 `internal/webshell/templates/sidebar.html`。该回退模板也执行 regular/agent 握手，因此使用相同的企微专用 SDK；不改变回退机制、路由或其它静态资产。
+
 已确认的运行缺口如下：
 
 1. 最终 Host 文档此前没有在 Host module 前加载企微专用 SDK。

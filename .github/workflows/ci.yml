@@ -117,6 +117,7 @@ jobs:
           node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
+          node scripts/sidebar-wecom-jssdk-contract.mjs
           npm test
           npm run build
           node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs

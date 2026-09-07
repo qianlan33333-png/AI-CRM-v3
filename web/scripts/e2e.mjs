@@ -2,6 +2,7 @@
  * 端到端 DOM 渲染验证（jsdom）：
  * 加载 dist/ 生成页，执行真实 bundle，断言渲染结果与关键交互。
  */
+import { execFileSync } from 'node:child_process';
 import { JSDOM } from 'jsdom';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,6 +11,10 @@ import { buildTestBrowserBundle } from './test-browser-bundle.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
+// build.mjs creates the frozen sidebar document first. Replace that entry here
+// so every existing e2e invocation executes the final staged V3 Host instead
+// of accidentally asserting the pre-Host sidebar artifact.
+execFileSync(process.execPath, [path.join(ROOT, '..', 'scripts', 'build-v3-host-adapters.mjs')], { stdio: 'inherit' });
 const TEST_BUNDLES = {
   admin: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/main.ts')),
   customerHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/customerAdapter.ts')),
@@ -1110,7 +1115,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             window.setTimeout(() => {
               if (scenario === 'regular_error') {
                 window.__sidebarTest.wxStages.push({ stage: 'config_error' });
-                errorCallback?.({ err_msg: 'config:fail' });
+                errorCallback?.({ errMsg: 'config:fail' });
                 return;
               }
               regularConfigured = true;
@@ -1131,7 +1136,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             window.__sidebarTest.wxStages.push({ stage: 'agentConfig', options });
             window.setTimeout(() => {
               if (scenario === 'agent_error' || scenario === 'sdk_error' || (scenario === 'agent_retry' && agentConfigCalls === 1)) {
-                options.fail?.({ err_msg: 'agentConfig:fail' });
+                options.fail?.({ errMsg: 'agentConfig:fail' });
               } else options.success?.({ err_msg: 'agentConfig:ok' });
             }, 0);
           },
@@ -1139,7 +1144,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             window.__sidebarTest.wxMessages.push({ method, payload });
             window.__sidebarTest.wxInvokes.push(method);
             if (scenario === 'contact_error' && method === 'getCurExternalContact') {
-              callback({ err_msg: 'getCurExternalContact:fail' });
+              callback({ errMsg: 'getCurExternalContact:fail' });
               return;
             }
             if (scenario === 'late_contact_retry' && method === 'getCurExternalContact') {
@@ -3027,16 +3032,20 @@ console.log('sidebar/index.html（最终 Host、企微握手与失败关闭）')
   dom.window.close();
 }
 
-for (const [scenario, expected, action] of [
+for (const [scenario, expected, action, detail] of [
   ['sdk_missing', '企微 SDK 未载入', 'retry-context'],
-  ['regular_error', 'JSSDK regular config 失败', 'reload-sidebar'],
-  ['agent_error', 'JSSDK agentConfig 失败', 'retry-context'],
-  ['contact_error', '企微客户上下文读取失败', 'retry-context'],
+  ['regular_error', 'JSSDK regular config 失败', 'reload-sidebar', 'config:fail'],
+  ['agent_error', 'JSSDK agentConfig 失败', 'retry-context', 'agentConfig:fail'],
+  ['contact_error', '企微客户上下文读取失败', 'retry-context', 'getCurExternalContact:fail'],
 ]) {
   const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
   const text = dom.window.document.body.textContent || '';
+  const matchingErrors = [...dom.window.document.querySelectorAll('.sidebar-status')]
+    .filter((node) => node.textContent.includes(expected));
   ok(`${scenario} 在可信客户读取前关闭，呈现单一实际恢复入口且不误报 external_userid`,
-    text.includes(expected) && !text.includes('缺少 external_userid') &&
+    text.includes(expected) && matchingErrors.length === 1 &&
+    (!detail || text.includes(detail)) &&
+    !text.includes('缺少 external_userid') &&
     dom.window.document.querySelector(`[data-sidebar-action="${action}"]`) &&
     !dom.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap') || url.includes('/context-token')));
   dom.window.close();

@@ -1092,7 +1092,7 @@ export class SidebarController {
         wx.error((result) =>
           finish(
             new Error(
-              `企微 config 失败：${firstString(result, ["errmsg", "err_msg", "message"]) || "未知错误"}`,
+              `企微 config 失败：${firstString(result, ["errMsg", "errmsg", "err_msg", "message"]) || "未知错误"}`,
             ),
           ),
         );
@@ -1137,7 +1137,7 @@ export class SidebarController {
           fail: (result) =>
             finish(
               new Error(
-                `企微 agentConfig 失败：${firstString(result, ["errmsg", "err_msg", "message"]) || "未知错误"}`,
+                `企微 agentConfig 失败：${firstString(result, ["errMsg", "errmsg", "err_msg", "message"]) || "未知错误"}`,
               ),
             ),
         });
@@ -1158,6 +1158,7 @@ export class SidebarController {
           wx.invoke(method, payload, (result) => {
             const response = result || {};
             const message = firstString(response, [
+              "errMsg",
               "errmsg",
               "err_msg",
               "message",
@@ -3550,7 +3551,9 @@ export class SidebarController {
       primary?: boolean;
     }> = [{ label: "重试读取", action: "retry-context" }],
   ): void {
-    this.setContextStatus(detail ? `${message} ${detail}` : message, tone);
+    // Keep the shell status concise. The actionable panel is the sole place
+    // that repeats the full failure and optional provider/detail message.
+    this.setContextStatus("Sidebar 上下文未建立；请按下方提示处理。", tone);
     this.tabs.replaceChildren();
     const panel = createElement(this.doc, "section", "sidebar-panel");
     panel.dataset.sidebarSection = "context-error";
@@ -3558,7 +3561,7 @@ export class SidebarController {
       this.doc,
       "div",
       `sidebar-status ${tone}`,
-      message,
+      detail ? `${message} ${detail}` : message,
     );
     status.dataset.contextState = tone;
     panel.append(status);

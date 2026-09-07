@@ -182,6 +182,8 @@ try {
   ]) {
     const start = await openSidebar(scenario, resourceMode);
     await waitFor(cdp, `document.body.textContent.includes(${JSON.stringify(message)}) && Boolean(document.querySelector('[data-sidebar-action="${action}"]'))`, `${scenario} did not render its real recovery action`);
+    const normalizedReason = scenario === "regular_error" ? "config:fail" : scenario === "agent_error" ? "agentConfig:fail" : scenario === "contact_error" ? "getCurExternalContact:fail" : "";
+    if (normalizedReason && !await evaluate(cdp, `document.body.textContent.includes(${JSON.stringify(normalizedReason)})`)) throw new Error(`${scenario} did not render the official SDK normalized failure reason`);
     if (bootstrapCountSince(start) !== 0) throw new Error(`${scenario} requested sidebar bootstrap before a trusted contact`);
   }
 
