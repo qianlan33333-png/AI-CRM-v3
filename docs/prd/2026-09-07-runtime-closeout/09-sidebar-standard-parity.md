@@ -101,6 +101,8 @@ Customer 现有目录投影会被客户同步更新。四个运营字段采用 C
 
 固定生产已恢复的 SDK 来源：`https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js`；旧模板来源为 `https://res.wx.qq.com/open/js/jweixin-1.6.0.js`。**两者版本字符串不能按数字新旧判定兼容性，本 PR 不回滚已验证识别的企业 SDK。** 前端页面复用不等于连同旧 SDK/旧鉴权装配替换。
 
+已复核已有 [JSSDK 回归 PRD](../2026-09-07-wecom-sidebar-jssdk-regression.md) 和固定官方 SDK 源字节：SHA256 `0ade9f7a4d1adcb626e48a8c87ae4037a4509b9e22262846bd15d3f19ee0cda2`。当前重新执行 `node scripts/sidebar-wecom-jssdk-contract.mjs` 通过，覆盖 Mac/Windows/iOS/Android native bridge 握手。regular 成功后的 agent 单独重试、regular/SDK 超时后必须重开文档、迟到 callback 代际隔离、缓存异常降级等既有合同必须保持，不能直接照搬旧 boot 覆盖这些修复。
+
 V3 config 请求与签名按当前完整 URL 去 hash，CorpID/AgentID 从受保护服务端配置；wx.config → ready → agentConfig → getContext（员工上下文不能当客户）→ getCurExternalContact → 可信 viewer/bootstrap。保留现有 URL/企业/应用/TTL 范围缓存及失效保护。
 
 401 时自动发起一次现有 OAuth start；state/next 由服务端校验，重入与循环记号绑定当前上下文，失败才显示重试。无 viewer 身份不得仅凭 query 中 owner/customer 参数提权。当前会话切换/返回可见触发有依据的重新读取，失效请求取消，前一客户旧响应不得覆盖新页面；不要自行新增周期轮询。
@@ -109,7 +111,7 @@ V3 config 请求与签名按当前完整 URL 去 hash，CorpID/AgentID 从受保
 
 客户端结果判定保留 err_msg/errMsg/error/cancel/timeout 区分，不能复制旧“缺 err_msg 也算成功”的宽松判断。常规反馈如“已提交到当前会话，请在会话中确认”；取消/未确认如实显示。既有证据模型仍区分 client callback、client executed、delivery unknown，诊断不堆在主界面。不自动重发、不调用服务端群发替代。
 
-官方参考：企业微信开发者中心 `/document/path/94797`（当前会话分享）、`/90514` 与 `/90313`（SDK 接入相关）。本次网页读取返回不可打开，**尚未取得当前官方正文，不声称已完成官方机制复核**。执行者发布前须补官方正文/现有经核准协议证据与测试；真实客户端的实际分享结果另列验收。上述载荷已由固定旧源与已有 V3 协议源码核对。
+当前会话分享文档参考：企业微信开发者中心 `/document/path/94797`。本次网页读取返回不可打开，**尚未取得当前分享文档正文，不声称已完成其当前文档复核**。SDK 版本及握手已由上节官方资源字节和实际 VM 合同核准；执行者发布前须补分享协议依据与测试，真实客户端的分享结果另列验收。上述消息载荷已由固定旧源与已有 V3 协议源码核对。
 
 ## 8. 验收矩阵与门禁
 
