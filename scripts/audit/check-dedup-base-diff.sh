@@ -23,5 +23,5 @@ if [[ -z "$base_input" || "$base_input" =~ ^0+$ ]]; then
 fi
 base="$(resolve_commit "$base_input")"
 
-python3 "$audit_dir/check_new_exact_duplicates.py" "$repository" --base "$base" --head "$head"
-python3 "$audit_dir/check_source_authority_changes.py" "$repository" --base "$base" --head "$head"
+PYTHONDONTWRITEBYTECODE=1 python3 "$audit_dir/check_new_exact_duplicates.py" "$repository" --base "$base" --head "$head"
+PYTHONDONTWRITEBYTECODE=1 python3 "$audit_dir/check_source_authority_changes.py" "$repository" --base "$base" --head "$head"

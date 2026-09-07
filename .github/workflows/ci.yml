@@ -82,6 +82,7 @@ jobs:
         env:
           AICRM_DEDUP_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           AICRM_DEDUP_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
           python3 scripts/audit/test_scan_exact_duplicates.py
@@ -199,6 +200,7 @@ jobs:
         env:
           AICRM_DEDUP_BASE_SHA: ${{ github.event.before }}
           AICRM_DEDUP_HEAD_SHA: ${{ github.sha }}
+          PYTHONDONTWRITEBYTECODE: "1"
         run: scripts/audit/check-dedup-base-diff.sh .
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
