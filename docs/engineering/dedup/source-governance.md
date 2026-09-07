@@ -17,7 +17,7 @@ changes must preserve.
 
 1. A canonical payload has one declared authority. `authority_kind=frozen_donor` payloads live beneath `web/donor-sources/`; `authority_kind=active_v3_contract` may remain at its reviewed V3 source path when it is the authority (currently `api/openapi.yaml`). `immutable=true` means the currently reviewed repository/commit/blob/hash tuple is locked, not that an active V3 contract can never change. Its library records repository, reviewed commit, path, Git blob SHA-1, SHA-256, bytes, and mode. Verification recomputes both hashes from the canonical bytes; a syntactically valid but different source commit/blob is rejected.
 2. `web/donor-sources/source-index.json` binds every logical path to a canonical content ID. Bindings retain their module, logical path, source repository/commit/path/blob, usage, freeze gate, ledger, and mode.
-3. `web/donor-sources/source-lock.json` repeats the immutable content identities. The verifier rejects an index/lock mismatch. A later P5 base-diff gate must require explicit review whenever either the index, lock, or canonical library payload changes; a coordinated edit cannot be treated as an ordinary consumer change.
+3. `web/donor-sources/source-lock.json` repeats the immutable content identities. The verifier rejects an index/lock mismatch. P5 compares pinned Git base/head objects for every index, lock and canonical payload path; a coordinated edit cannot be treated as an ordinary consumer change. Any nonempty authority diff requires one complete base-bound SHA-256 record in `p5-authority-change-approvals.json`, which is then subject to ordinary PR review. Its `review_reference` is only an auditable declaration, never independent proof of human approval.
 4. Frozen consumers may never depend on mutable `web/src` content as their authority. If an active V3 behavior diverges, it must become an explicit V3 adapter or derived source with its own Owner and tests; it cannot edit a generated compatibility view.
 5. Compatibility views are normal untracked files, copied only from a whitelist in the index. They are never symlinks or hard links. The materializer rejects `..`, absolute/backslash paths, symlink ancestors, duplicate targets, canonical targets, tracked targets, unknown targets, dirty targets, a missing index-tracked target, missing sources, stale receipts, and a held lock.
 6. A receipt at `.aicrm-dedup/donor-views-receipt.json` records only files created by this tool. It is keyed by the source-index digest and canonical payload hashes. Cleanup verifies every recorded target before deleting only those paths; it never traverses a directory or cleans an unlisted file.
@@ -94,12 +94,18 @@ source-view materialization.
 | P1 / PR-2 | Canonical library, lock/index, materializer, isolated pilot | Tamper, missing source, wrong source version, path escape, duplicate target, dirty target, lock, idempotence, cleanup and original-byte tests |
 | P2 / PR-3 | Consumer/build/release wiring | Clean checkout runs each affected freeze gate, frontend/Host build, Go embed preparation, direct Go paths, CI artifact and release staging without a tracked-copy fallback |
 | P3 / PR-4 | Only explicitly approved tracked payload removal | Pre/post hash, freeze and behavior evidence per group; required test contexts remain independent |
-| P4 / PR-5 | Prevention and final ledger | Base-diff/injection gate rejects a new duplicate, new duplicate path, tracked generated view, unknown canonical payload, or unapproved source-index/lock change |
+| P4 / PR-5 | Prevention and final ledger | Git-object base-diff/injection gates reject a new duplicate, new duplicate path, tracked generated view, unknown canonical payload, or an authority diff lacking a complete base-bound declaration reviewed in the PR |
 
 The original PR07 20-logical-file contract, every donor SHA comparison, test
 context, template URL/MIME contract, and OpenAPI/Go-embed preparation remain
 mandatory. No later phase may lower a count, replace a hash comparison with a
 directory check, or add a broad `web/**` ignore rule.
+
+## P5 audit evidence
+
+After P4 commit `c20eaa03e7c87a990dafa9dd7e1eaa1698c6b1b9`, the complete Git-object rescan read 1,815 paths and blobs with zero exact duplicate groups; its JSON SHA-256 is `4e634edb41a553f8a5083c4f0964f785b24871c16fe4f1402a4e6e657781cd7f`. The bounded lexical candidate report has SHA-256 `a1efccb1e544f2da175490990996fbba7c70c885b74e02f18ef8325b16a8e83e`; its 418 candidate IDs are retained in [p5-near-duplicate-review.md](p5-near-duplicate-review.md), SHA-256 `14432293204d0c4b6de0319281f3e46640288d5826495c0f763d0cbdc28db282`. It authorizes no extraction, deletion, contract merger, or exception. It records bounded lexical evidence only; AST, type, data-flow, runtime and protocol equivalence remain outside its method.
+
+P5 continuously enforces both `scripts/audit/check_new_exact_duplicates.py` and `scripts/audit/check_source_authority_changes.py` through `scripts/audit/check-dedup-base-diff.sh` before CI builds and release-artifact staging. The latter validates the full base/head source snapshots before it evaluates an authority-diff record. The production installer remains source independent.
 
 ## Rollback
 

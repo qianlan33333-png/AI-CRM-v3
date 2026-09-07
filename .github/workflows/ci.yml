@@ -45,6 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Checkout frozen v2 donor
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -78,6 +79,17 @@ jobs:
           rg --version
           command -v google-chrome >/dev/null
           google-chrome --version
+      - name: Verify duplicate-source governance gates
+        env:
+          AICRM_DEDUP_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          AICRM_DEDUP_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          python3 scripts/audit/test_scan_exact_duplicates.py
+          python3 scripts/audit/test_check_new_exact_duplicates.py
+          python3 scripts/audit/test_check_source_authority_changes.py
+          scripts/audit/check-dedup-base-diff.sh .
       - name: Verify official WeCom archive SDK ABI in isolation
         run: scripts/check-wecom-message-archive-sdk.sh
       - name: Pin frozen donor npm
@@ -163,6 +175,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Checkout frozen v2 donor
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -193,6 +206,12 @@ jobs:
           sudo apt-get install --no-install-recommends --yes ripgrep
           command -v rg >/dev/null
           rg --version
+      - name: Verify duplicate-source base diff
+        env:
+          AICRM_DEDUP_BASE_SHA: ${{ github.event.before }}
+          AICRM_DEDUP_HEAD_SHA: ${{ github.sha }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: scripts/audit/check-dedup-base-diff.sh .
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build release artifact
