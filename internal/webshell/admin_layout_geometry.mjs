@@ -411,7 +411,10 @@ try {
       const create=toolbar?.querySelector('[data-action="show-create-plan"]');
       return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),createVisible:visible(create),pageH1Count:Array.from(document.querySelectorAll('h1')).filter(visible).length,syntheticWorkspaceHeadings:root?.querySelectorAll('.group-ops__page-heading').length ?? -1,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
     })()`);
-    const invalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "群运营计划" || !layout.root || !layout.toolbar || !layout.createVisible || layout.pageH1Count !== 1 || layout.syntheticWorkspaceHeadings !== 0 || layout.overflow || layout.stage.paddingLeft !== "28px" || layout.stage.paddingTop !== "20px" || layout.root.top + 1 < layout.topbar.bottom || Math.abs(layout.root.left - layout.stage.left - 28) > 1 || Math.abs(layout.root.top - layout.stage.top - 20) > 1 || Math.abs(layout.toolbar.left - layout.root.left) > 1 || Math.abs(layout.toolbar.top - layout.root.top) > 1;
+    // The final dd8 standard shell cascade gives native pages a 20px/16px
+    // content inset. Keep this exact source-backed value rather than the
+    // earlier declaration that the final cascade overrides.
+    const invalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "群运营计划" || !layout.root || !layout.toolbar || !layout.createVisible || layout.pageH1Count !== 1 || layout.syntheticWorkspaceHeadings !== 0 || layout.overflow || layout.stage.paddingLeft !== "20px" || layout.stage.paddingTop !== "16px" || layout.root.top + 1 < layout.topbar.bottom || Math.abs(layout.root.left - layout.stage.left - 20) > 1 || Math.abs(layout.root.top - layout.stage.top - 16) > 1 || Math.abs(layout.toolbar.left - layout.root.left) > 1 || Math.abs(layout.toolbar.top - layout.root.top) > 1;
     if (invalid) throw new Error(label + " native Group Ops topbar/content geometry invalid");
   };
   const navigateGroupOps = async (pathname, label, screenshot = false, fromMenu = false, finalPath = pathname) => {
