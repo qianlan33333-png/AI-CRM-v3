@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "v2-health-schemas",
+      "library_id": "v2-6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v2.git",
+      "source_commit": "6bfbe5816bb89913c70adaca87d6a486260e016e",
+      "canonical_path": "web/donor-sources/v2-6bfbe5816bb89913c70adaca87d6a486260e016e/web/src/api/generated/health.schemas.ts",
+      "source_path": "web/src/api/generated/health.schemas.ts",
+      "source_git_blob_sha": "7098901ca96c37e1bad661ac62e9592cefc8f9a0",
+      "content_sha256": "7f1bc1d05b3e012de46b1d53ef7b56319c0bc032a1c0389fa3fd138c7218b40d",
+      "bytes": 692834,
+      "mode": "100644"
+    }
+  ]
+}

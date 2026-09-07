@@ -89,6 +89,8 @@ jobs:
           npm ci
           npm run version:check
           node scripts/validate-openapi.mjs
+          node scripts/verify-donor-sources.mjs
+          node --test scripts/donor-source-views.test.mjs
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
@@ -297,6 +299,8 @@ jobs:
           npm ci
           npm run version:check
           node scripts/validate-openapi.mjs
+          node scripts/verify-donor-sources.mjs
+          node --test scripts/donor-source-views.test.mjs
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
