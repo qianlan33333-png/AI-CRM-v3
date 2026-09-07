@@ -111,6 +111,7 @@ jobs:
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
           scripts/check-ai-assistant-donor-manifest.sh
+          bash scripts/test-check-ai-assistant-donor-manifest.sh
           AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-sidebar-customer360-contract.sh
           make radar-check
           node scripts/generate-ai-assistant-client.mjs
@@ -276,6 +277,7 @@ jobs:
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
           scripts/check-ai-assistant-donor-manifest.sh
+          bash scripts/test-check-ai-assistant-donor-manifest.sh
           AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-sidebar-customer360-contract.sh
           make radar-check
           node scripts/generate-ai-assistant-client.mjs
