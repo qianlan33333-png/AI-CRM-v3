@@ -485,6 +485,13 @@ def owner_role(paths: list[str]) -> str:
 def classify_exception(paths: list[str]) -> str | None:
     if any(path.startswith("migrations/") for path in paths):
         return "historical_migration_preserved"
+    if set(paths) == {"api/openapi.yaml", "internal/config/http/openapi.yaml"}:
+        return "cross_build_openapi_source_go_embed_and_authenticated_download_contract"
+    if (
+        "internal/webshell/static/admin_console/send_content_readonly_detail.css" in paths
+        and "web/donors/ai-assistant-production/static/send_content_readonly_detail.css" in paths
+    ):
+        return "cross_host_static_asset_and_frozen_ai_donor_contract"
     if any(path.startswith("web/donors/") for path in paths):
         return "frozen_donor_lifecycle_requires_manifest_and_freeze_review"
     if any("/generated/" in path for path in paths):
@@ -494,6 +501,31 @@ def classify_exception(paths: list[str]) -> str | None:
     if any(path.startswith("docs/") for path in paths):
         return "documentation_identity_and_link_targets_require_review"
     return None
+
+
+def acceptance_for_paths(paths: list[str]) -> list[str]:
+    common = [
+        "designated human/module owner confirms canonical source and lifecycle",
+        "all static and dynamic/build/release consumers are traced",
+        "relevant characterization/build/Host checks are selected and pass",
+    ]
+    if set(paths) == {"api/openapi.yaml", "internal/config/http/openapi.yaml"}:
+        return common + [
+            "api/openapi.yaml remains the declared source for client generation and contract tests",
+            "the Go embed/download path is generated or otherwise proven byte-identical before go build and release staging",
+        ]
+    if (
+        "internal/webshell/static/admin_console/send_content_readonly_detail.css" in paths
+        and "web/donors/ai-assistant-production/static/send_content_readonly_detail.css" in paths
+    ):
+        return common + [
+            "AI frozen donor checksum and Host static asset URL/MIME checks remain exact",
+        ]
+    if any(path.startswith("web/donors/") for path in paths):
+        return common + [
+            "frozen manifest and all 20 logical PR07 files retain exact coverage",
+        ]
+    return common
 
 
 def proposed_canonical(paths: list[str]) -> str:
@@ -530,12 +562,7 @@ def make_decisions(duplicates: list[dict[str, Any]], dependency_map: dict[str, A
             "exception": exception,
             "static_consumer_observations": consumers,
             "dependency_status": "dependency_unresolved",
-            "acceptance_before_any_future_change": [
-                "designated human/module owner confirms canonical source and lifecycle",
-                "all static and dynamic/build/release consumers are traced",
-                "frozen manifest and all 20 logical PR07 files retain exact coverage",
-                "relevant characterization/build/Host checks are selected and pass",
-            ],
+            "acceptance_before_any_future_change": acceptance_for_paths(paths),
         })
     return {
         "schema_version": SCHEMA_VERSION,
