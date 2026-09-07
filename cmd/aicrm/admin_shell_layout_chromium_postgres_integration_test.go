@@ -29,6 +29,7 @@ import (
 type adminShellLayoutFixture struct {
 	*productExternalPushChromiumFixture
 	screenshots string
+	radarID     int64
 }
 
 // TestPostgreSQLAdminShellLayoutCompositionPreflight keeps the real release
@@ -81,6 +82,9 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/hxc-dashboard", marker: `admin-workspace-stage--dynamic`, expectTopbar: true},
 		{path: "/admin/questionnaires", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/radar-links", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/radarDetail.html?id=" + strconv.FormatInt(fixture.radarID, 10), marker: `data-page="radarDetail"`, expectTopbar: true},
+		{path: "/admin/radarForm.html", marker: `data-page="radarForm"`, expectTopbar: true},
+		{path: "/admin/radarForm.html?id=" + strconv.FormatInt(fixture.radarID, 10), marker: `data-page="radarForm"`, expectTopbar: true},
 		{path: "/admin/wecom-tags", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/orders", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/wechat-pay/products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
@@ -147,7 +151,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		t.Fatalf("admin shell Chromium journey did not report success: %q", output)
 	}
 	for _, name := range []string{
-		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "tags.png",
+		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "oneid.png", "api-docs.png", "order-detail-history.png", "external-effects.png",
 	} {
@@ -177,6 +181,7 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	}
 	fixture := &adminShellLayoutFixture{productExternalPushChromiumFixture: newProductExternalPushChromiumFixture(t), screenshots: screenshots}
 	seedAdminShellLayoutHXC(t, fixture.ctx, fixture.application)
+	fixture.radarID = seedAdminShellLayoutRadar(t, fixture.ctx, fixture.application)
 	return fixture
 }
 
@@ -229,4 +234,30 @@ func seedAdminShellLayoutHXC(t *testing.T, ctx context.Context, application *com
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// seedAdminShellLayoutRadar provides an existing read-only radar record so the
+// composed detail alias, as well as the empty new-form alias, are measured by
+// the same Chromium geometry contract. It never submits a browser mutation.
+func seedAdminShellLayoutRadar(t *testing.T, ctx context.Context, application *composedApplication) int64 {
+	t.Helper()
+	now := time.Date(2026, time.September, 7, 1, 2, 3, 0, time.UTC)
+	var radarID int64
+	err := application.pool.Native().QueryRow(ctx, `
+		INSERT INTO radar_links(
+			public_code,name,title,description,content_type,destination_url,
+			auth_policy,status,created_by,updated_by,created_at,updated_at
+		) VALUES(
+			'rd_adminlayoutradar','Admin layout radar','Admin layout radar','layout fixture',
+			'link','https://example.test/admin-layout-radar','unionid_required','enabled',1,1,$1,$1
+		) RETURNING id`, now).Scan(&radarID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = application.pool.Native().Exec(ctx, `
+		INSERT INTO radar_link_versions(radar_id,version,snapshot,actor_id,created_at)
+		VALUES($1,1,'{}'::jsonb,1,$2)`, radarID, now); err != nil {
+		t.Fatal(err)
+	}
+	return radarID
 }

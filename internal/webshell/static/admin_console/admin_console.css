@@ -3509,17 +3509,25 @@ body.admin-shell[data-page="funnel"] .admin-main-wrap > .admin-topbar + #stage.l
 /* These V3 dynamic hosts replace their initial stage marker when mounting.
  * The shell remains responsible for the one page-level title and topbar;
  * retain each workspace's local actions, history links, and status rows. */
-body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar {
+body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar,
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar {
   min-width: 0;
   padding: 16px 20px 36px;
 }
 
 body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .crumb,
-body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head > :first-child {
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .crumb,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .crumb,
+body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head > :first-child,
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head > :first-child,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head > :first-child {
   display: none;
 }
 
-body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head {
+body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head,
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head {
   min-height: 30px;
   justify-content: flex-end;
 }

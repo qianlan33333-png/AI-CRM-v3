@@ -116,9 +116,9 @@ const appendBounded = (items, value, limit = 240) => {
   items.push(value);
   if (items.length > limit) items.splice(0, items.length - limit);
 };
-const waitForRecorded = async (items, start, predicate, message) => {
+const waitForRecorded = async (items, predicate, message) => {
   for (let attempt = 0; attempt < 240; attempt += 1) {
-    if (items.slice(start).some(predicate)) return;
+    if (items.some(predicate)) return;
     await delay(50);
   }
   throw new Error(message);
@@ -275,13 +275,13 @@ try {
     })()`);
     if (!hxc?.stage || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible) throw new Error(label + " HXC title/padding/action layout invalid");
   };
-  const assertRadarLayout = async label => {
+  const assertRadarLayout = async (label, actionSelector) => {
     await assertLayout("standard", label, ".sec-radar .page-head");
     const radar = await evaluate(cdp, `(() => {
       const stage=document.querySelector('#stage.labs.sec-radar');
       const crumb=stage?.querySelector(':scope > .crumb');
       const title=stage?.querySelector(':scope > .page-head > :first-child');
-      const action=stage?.querySelector('#btnNew');
+      const action=stage?.querySelector(${JSON.stringify(actionSelector)});
       const style=stage ? getComputedStyle(stage) : null;
       return {stage:Boolean(stage),paddingLeft:style?.paddingLeft || '',paddingTop:style?.paddingTop || '',crumbHidden:Boolean(crumb) && getComputedStyle(crumb).display === 'none',titleHidden:Boolean(title) && getComputedStyle(title).display === 'none',actionVisible:Boolean(action) && getComputedStyle(action).display !== 'none'};
     })()`);
@@ -464,7 +464,12 @@ try {
   if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
   await navigate("/admin/questionnaires", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "questionnaires", "embedded", questionnaireTitle, true, true);
   const radarMounted = await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#btnNew'))", "radar", "standard", ".sec-radar .page-head", false, true);
-  if (radarMounted) await recordGeometry("radar", () => assertRadarLayout("radar"), true);
+  if (radarMounted) await recordGeometry("radar", () => assertRadarLayout("radar", "#btnNew"), true);
+  const radarID = Number(process.env.AICRM_ADMIN_LAYOUT_TEST_RADAR_ID || "0");
+  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit'))", "radar-detail", "standard", ".sec-radar .page-head", false);
+  if (radarDetailMounted) await recordGeometry("radar-detail", () => assertRadarLayout("radar-detail", "#dEdit"), true);
+  const radarFormMounted = await navigate("/admin/radarForm.html", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#fSave'))", "radar-form", "standard", ".sec-radar .page-head", false);
+  if (radarFormMounted) await recordGeometry("radar-form", () => assertRadarLayout("radar-form", "#fSave"), true);
   await navigate("/admin/wecom-tags", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "tags", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/orders", "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "orders", "embedded", embeddedTitle, true, true);
@@ -505,11 +510,14 @@ try {
     if (!hxcContent?.crumbHidden || !hxcContent?.headingHidden || !hxcContent?.refreshVisible || !hxcContent?.scrollable) throw new Error("HXC duplicate title/action/scroll layout invalid");
     await evaluate(cdp, "(() => { const grid=document.querySelector('.sec-funnel .grid-scroll'); grid.scrollTop=grid.scrollHeight; return grid.scrollTop > 0; })()");
     if (!await evaluate(cdp, "document.querySelector('.sec-funnel .grid-scroll')?.scrollTop > 0")) throw new Error("HXC grid did not retain a user scroll");
-    const requestStart = requestEvents.length;
-    const responseStart = responses.length;
+    // These arrays are bounded diagnostics for the full route matrix. Reset
+    // them immediately before this one interaction so their window cannot be
+    // invalidated by a later ring-buffer eviction.
+    requestEvents.length = 0;
+    responses.length = 0;
     await evaluate(cdp, "(() => { document.querySelector('#hxcRefresh').click(); return true; })()");
-    await waitForRecorded(requestEvents, requestStart, value => value === "POST /api/admin/hxc-dashboard/refreshes", "HXC refresh did not issue its configured POST");
-    await waitForRecorded(responses, responseStart, value => value === "POST /api/admin/hxc-dashboard/refreshes:503", "HXC refresh did not reach the disabled runtime contract");
+    await waitForRecorded(requestEvents, value => value === "POST /api/admin/hxc-dashboard/refreshes", "HXC refresh did not issue its configured POST");
+    await waitForRecorded(responses, value => value === "POST /api/admin/hxc-dashboard/refreshes:503", "HXC refresh did not reach the disabled runtime contract");
     await waitFor(cdp, "document.querySelector('#hxcRefresh')?.disabled === false && document.querySelector('#hxcRefresh')?.textContent === '立即刷新'", "HXC refresh action did not settle");
   } catch (error) {
     await recordRouteFailure("hxc-refresh", error);
