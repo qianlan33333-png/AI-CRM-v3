@@ -15,7 +15,7 @@ changes must preserve.
 
 ## Source and view invariants
 
-1. A canonical payload lives once beneath `web/donor-sources/`. Its library records repository, immutable commit, path, Git blob SHA-1, SHA-256, bytes, and mode. Verification recomputes both hashes from the canonical bytes; a syntactically valid but different source commit/blob is rejected.
+1. A canonical payload has one declared authority. Frozen donor payloads live beneath `web/donor-sources/`; an active V3 contract may remain at its reviewed V3 source path when it is the authority (currently `api/openapi.yaml`). Its library records repository, immutable commit, path, Git blob SHA-1, SHA-256, bytes, and mode. Verification recomputes both hashes from the canonical bytes; a syntactically valid but different source commit/blob is rejected.
 2. `web/donor-sources/source-index.json` binds every logical path to a canonical content ID. Bindings retain their module, logical path, source repository/commit/path/blob, usage, freeze gate, ledger, and mode.
 3. `web/donor-sources/source-lock.json` repeats the immutable content identities. The verifier rejects an index/lock mismatch. A later P5 base-diff gate must require explicit review whenever either the index, lock, or canonical library payload changes; a coordinated edit cannot be treated as an ordinary consumer change.
 4. Frozen consumers may never depend on mutable `web/src` content as their authority. If an active V3 behavior diverges, it must become an explicit V3 adapter or derived source with its own Owner and tests; it cannot edit a generated compatibility view.
