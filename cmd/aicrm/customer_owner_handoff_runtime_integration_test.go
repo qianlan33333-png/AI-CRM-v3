@@ -49,32 +49,47 @@ func (resolver ownerHandoffRuntimeResolver) ResolveOwnerHandoffCandidates(_ cont
 	return append([]customerport.OwnerHandoffCandidate(nil), candidates...), nil
 }
 
-type stopAfterOwnerHandoffSegment struct {
+// interruptAfterOwnerHandoffSegment makes the restart boundary explicit. River's
+// graceful client stop drains workers, but does not cancel a worker context that
+// was started with Runtime.Run. A later segment therefore cannot wait on ctx.Done
+// to leave the first runtime: the test releases it, and the durable job snoozes
+// for the fresh runtime without invoking the Customer service.
+type interruptAfterOwnerHandoffSegment struct {
 	service              *customerapp.OwnerHandoffService
-	stop                 func()
 	segmentZeroCommitted chan<- struct{}
+	laterSegmentClaimed  chan<- struct{}
+	laterSegmentReleased chan<- struct{}
+	interrupt            <-chan struct{}
 }
 
-func (worker stopAfterOwnerHandoffSegment) ProcessOwnerHandoffBatch(ctx context.Context, batchID string, segment int64) error {
+func (worker interruptAfterOwnerHandoffSegment) ProcessOwnerHandoffBatch(ctx context.Context, batchID string, segment int64) error {
 	if segment > 0 {
-		// River may claim later segments concurrently. The interruption runtime
-		// must not give them to the business service before it stops; returning
-		// its cancellation leaves each durable job for the fresh runtime.
-		<-ctx.Done()
-		return ctx.Err()
+		if worker.laterSegmentClaimed != nil {
+			select {
+			case worker.laterSegmentClaimed <- struct{}{}:
+			default:
+			}
+		}
+		// A short snooze preserves the claimed River job for the replacement
+		// runtime. It is intentionally independent from ctx: Runtime.Run starts
+		// River with context.WithoutCancel and graceful Stop waits for Work.
+		<-worker.interrupt
+		if worker.laterSegmentReleased != nil {
+			select {
+			case worker.laterSegmentReleased <- struct{}{}:
+			default:
+			}
+		}
+		return river.JobSnooze(2 * time.Second)
 	}
 	err := worker.service.ProcessOwnerHandoffBatch(ctx, batchID, segment)
 	if err == nil {
 		// ProcessOwnerHandoffBatch returns only after the Customer UoW has
 		// committed the local rows and the following durable job. Tell the
-		// interruption fixture that exact boundary has occurred before asking
-		// River to stop; a runtime-start timeout is not evidence of this
-		// business boundary under -race load.
+		// interruption fixture that exact boundary has occurred; it then waits
+		// for any concurrently claimed successor before stopping the runtime.
 		if worker.segmentZeroCommitted != nil {
 			worker.segmentZeroCommitted <- struct{}{}
-		}
-		if worker.stop != nil {
-			worker.stop()
 		}
 	}
 	return err
@@ -275,13 +290,16 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 	if err = effects.SetCompletionSink(completion); err != nil {
 		t.Fatal(err)
 	}
-	// Commit the first Customer segment in an isolated runtime, then stop it
-	// before an Outbound worker is present. The second Customer job and the
-	// first frozen EER receipt must survive this restart without a provider
-	// call; the following full runtime resumes both stable sub-batches.
-	firstStop := func() {}
+	// Commit the first Customer segment in an isolated runtime, then make the
+	// next job claim observable before stopping. River stops gracefully, so the
+	// fixture explicitly releases the claimed successor as a durable snooze;
+	// waiting for its worker context would instead block client.Stop.
+	firstSegmentCommitted := make(chan struct{}, 1)
+	firstLaterSegmentClaimed := make(chan struct{}, 1)
+	firstLaterSegmentReleased := make(chan struct{}, 1)
+	firstInterrupt := make(chan struct{})
 	firstBatchWorker := customer.NewOwnerHandoffBatchWorker()
-	if err = firstBatchWorker.Bind(stopAfterOwnerHandoffSegment{service: service, stop: func() { firstStop() }}); err != nil {
+	if err = firstBatchWorker.Bind(interruptAfterOwnerHandoffSegment{service: service, segmentZeroCommitted: firstSegmentCommitted, laterSegmentClaimed: firstLaterSegmentClaimed, laterSegmentReleased: firstLaterSegmentReleased, interrupt: firstInterrupt}); err != nil {
 		t.Fatal(err)
 	}
 	firstWorkers := river.NewWorkers()
@@ -293,17 +311,51 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 		t.Fatal(err)
 	}
 	firstCtx, cancelFirst := context.WithCancel(ctx)
-	firstStop = cancelFirst
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- firstRuntime.Run(firstCtx) }()
+	var releaseFirstRuntimeOnce sync.Once
+	releaseFirstRuntime := func() {
+		releaseFirstRuntimeOnce.Do(func() {
+			cancelFirst()
+			close(firstInterrupt)
+		})
+	}
+	defer releaseFirstRuntime()
+	select {
+	case <-firstSegmentCommitted:
+	case <-time.After(5 * time.Second):
+		releaseFirstRuntime()
+		select {
+		case <-firstDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("first owner handoff runtime did not stop while cleaning up an uncommitted segment")
+		}
+		t.Fatal("first owner handoff segment did not commit")
+	}
+	select {
+	case <-firstLaterSegmentClaimed:
+	case <-time.After(5 * time.Second):
+		releaseFirstRuntime()
+		select {
+		case <-firstDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("first owner handoff runtime did not stop while cleaning up an unclaimed successor")
+		}
+		t.Fatal("first owner handoff successor was not claimed")
+	}
+	releaseFirstRuntime()
+	select {
+	case <-firstLaterSegmentReleased:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first owner handoff successor did not leave the interruption gate")
+	}
 	select {
 	case runErr := <-firstDone:
 		if runErr != nil && runErr != context.Canceled {
 			t.Fatalf("first owner handoff runtime stop: %v", runErr)
 		}
 	case <-time.After(5 * time.Second):
-		cancelFirst()
-		t.Fatal("first owner handoff segment did not stop")
+		t.Fatal("first owner handoff runtime did not stop after its successor was released")
 	}
 	var firstEffects int
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects WHERE kind='customer_owner_handoff'`).Scan(&firstEffects); err != nil || firstEffects != 1 {
@@ -452,12 +504,15 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 		t.Fatalf("accept batch=%+v err=%v", batch, err)
 	}
 	runCtx, stopRun := context.WithCancel(ctx)
-	// Stop immediately after segment zero commits. The interruption wrapper
-	// holds any concurrent later claim until River cancels it, so exactly one
-	// 100-line segment is committed before the fresh runtime resumes the rest.
+	// Commit segment zero, then wait until River has actually claimed segment
+	// one. This makes the shutdown boundary deterministic under -race: the
+	// successor must be returned to River durably without calling the service.
 	firstSegmentCommitted := make(chan struct{}, 1)
+	firstLaterSegmentClaimed := make(chan struct{}, 1)
+	firstLaterSegmentReleased := make(chan struct{}, 1)
+	firstInterrupt := make(chan struct{})
 	firstWorker := customer.NewOwnerHandoffBatchWorker()
-	if err = firstWorker.Bind(stopAfterOwnerHandoffSegment{service: service, stop: stopRun, segmentZeroCommitted: firstSegmentCommitted}); err != nil {
+	if err = firstWorker.Bind(interruptAfterOwnerHandoffSegment{service: service, segmentZeroCommitted: firstSegmentCommitted, laterSegmentClaimed: firstLaterSegmentClaimed, laterSegmentReleased: firstLaterSegmentReleased, interrupt: firstInterrupt}); err != nil {
 		t.Fatal(err)
 	}
 	workers = river.NewWorkers()
@@ -470,6 +525,14 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 	}
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- firstRuntime.Run(runCtx) }()
+	var releaseFirstRuntimeOnce sync.Once
+	releaseFirstRuntime := func() {
+		releaseFirstRuntimeOnce.Do(func() {
+			stopRun()
+			close(firstInterrupt)
+		})
+	}
+	defer releaseFirstRuntime()
 	select {
 	case <-firstSegmentCommitted:
 		// The explicit boundary above distinguishes a slow River claim from a
@@ -480,7 +543,7 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 			(SELECT count(*) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND state='local_updated'),
 			(SELECT count(*) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND state='queued'),
 			(SELECT count(*) FROM river_job WHERE kind='customer.owner-handoff.v1')`, batch.ID).Scan(&updated, &queued, &jobs)
-		stopRun()
+		releaseFirstRuntime()
 		select {
 		case <-firstDone:
 		case <-time.After(20 * time.Second):
@@ -488,17 +551,42 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 		t.Fatalf("first owner-handoff segment did not commit within bounded start window: updated=%d queued=%d jobs=%d query_err=%v", updated, queued, jobs, queryErr)
 	}
 	select {
+	case <-firstLaterSegmentClaimed:
+	case <-time.After(30 * time.Second):
+		releaseFirstRuntime()
+		select {
+		case <-firstDone:
+		case <-time.After(20 * time.Second):
+		}
+		t.Fatal("first owner-handoff successor was not claimed before interruption")
+	}
+	var heldUpdated int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND state='local_updated'`, batch.ID).Scan(&heldUpdated); err != nil || heldUpdated != 100 {
+		t.Fatalf("claimed successor entered Customer service before interruption: updated=%d err=%v", heldUpdated, err)
+	}
+	releaseFirstRuntime()
+	select {
+	case <-firstLaterSegmentReleased:
+	case <-time.After(20 * time.Second):
+		t.Fatal("first owner-handoff successor did not leave the interruption gate")
+	}
+	select {
 	case runErr := <-firstDone:
 		if runErr != nil && runErr != context.Canceled {
 			t.Fatalf("first runtime stop: %v", runErr)
 		}
 	case <-time.After(20 * time.Second):
-		stopRun()
-		t.Fatal("first owner-handoff runtime did not stop after segment zero committed")
+		t.Fatal("first owner-handoff runtime did not stop after its successor was released")
 	}
-	var firstUpdated, firstQueued int
-	if err = native.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state='local_updated'),count(*) FILTER (WHERE state='queued') FROM customer_owner_handoff_lines WHERE batch_id=$1`, batch.ID).Scan(&firstUpdated, &firstQueued); err != nil || firstUpdated != 100 || firstQueued != handoffRows-100 {
+	var firstUpdated, firstQueued, resumableJobs int
+	if err = native.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE state='local_updated'),
+		count(*) FILTER (WHERE state='queued')
+		FROM customer_owner_handoff_lines WHERE batch_id=$1`, batch.ID).Scan(&firstUpdated, &firstQueued); err != nil || firstUpdated != 100 || firstQueued != handoffRows-100 {
 		t.Fatalf("first segment updated=%d queued=%d err=%v", firstUpdated, firstQueued, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind='customer.owner-handoff.v1' AND state IN ('available','scheduled')`).Scan(&resumableJobs); err != nil || resumableJobs != 1 {
+		t.Fatalf("interrupted successor resumable_jobs=%d err=%v", resumableJobs, err)
 	}
 	restartWorker := customer.NewOwnerHandoffBatchWorker()
 	if err = restartWorker.Bind(service); err != nil {
