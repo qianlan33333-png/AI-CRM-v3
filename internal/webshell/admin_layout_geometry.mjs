@@ -292,7 +292,7 @@ try {
     if (!radar?.stage || radar.paddingLeft !== "20px" || radar.paddingTop !== "16px" || !radar.crumbHidden || !radar.titleHidden || !radar.emptyPageHeadHidden || !radar.actionVisible) throw new Error(label + " V3 title/action layout invalid");
   };
   const assertOwnerHandoffLayout = async label => {
-    await assertLayout("standard", label, "[data-owner-migration-page] .owner-migration-header");
+    await assertLayout("standard", label, "[data-owner-picker=\"source\"]");
     const owner = await evaluate(cdp, `(() => {
       const stage=document.querySelector('#stage[data-owner-handoff-host]');
       const page=stage?.querySelector('[data-owner-migration-page]');
@@ -488,7 +488,7 @@ try {
   await navigate("/admin/attachment-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "attachment-library", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/automation-agents", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "automation-agents", "embedded", embeddedTitle, true, true);
-  const ownerMounted = await navigate("/admin/owner-migration", "Boolean(document.querySelector('[data-owner-handoff-host][data-owner-handoff-init=\"context_loaded\"]')) && Boolean(document.querySelector('[data-owner-migration-page] .owner-migration-status-bar'))", "owner-migration", "standard", "[data-owner-migration-page] .owner-migration-header", false, true);
+  const ownerMounted = await navigate("/admin/owner-migration", "Boolean(document.querySelector('[data-owner-handoff-host][data-owner-handoff-init=\"ready\"]')) && Boolean(document.querySelector('[data-owner-migration-page] .owner-migration-status-bar')) && Boolean(document.querySelector('[data-owner-migration-page] [data-owner-picker=\"source\"]'))", "owner-migration", "standard", "[data-owner-picker=\"source\"]", false, true);
   if (ownerMounted) await recordGeometry("owner-migration", () => assertOwnerHandoffLayout("owner-migration"), true);
   await navigate("/admin/config", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "config", "embedded", embeddedTitle, true, true);
   await navigateRuntimeConfig();
