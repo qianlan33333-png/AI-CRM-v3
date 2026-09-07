@@ -69,23 +69,24 @@
     if (!key || field?.input !== "boolean") return null;
     return { key, enabled: effectiveValues(model).get(key) === true };
   };
-  const applicationState = (category, model) => {
+  const applicationState = (category, model, enabled) => {
     const effective = model.effective || {};
-    if (effective.source !== "published" || !Number.isInteger(effective.revision) || effective.revision < 1) {
-      return { label: "已启用，待发布", detail: "当前值来自受保护启动配置，尚未形成已发布版本。", applied: false };
-    }
+    const published = effective.source === "published" && Number.isInteger(effective.revision) && effective.revision > 0;
     const required = new Set();
     for (const field of category.fields || []) for (const role of rolesFor(field)) required.add(role);
-    const seen = new Set((model.applications || []).filter((item) => item?.revision === effective.revision && item?.source === "published" && item?.snapshot_checksum === effective.checksum).map((item) => item.role));
+    const seen = new Set((model.applications || []).filter((item) => item?.revision === effective.revision && item?.source === effective.source && item?.snapshot_checksum === effective.checksum).map((item) => item.role));
     const missing = [...required].filter((role) => !seen.has(role));
-    if (missing.length) return { label: "已发布，待读取", detail: `当前版本尚未由 ${missing.map(roleLabel).join("、")} 读取。`, applied: false };
-    return { label: "已发布并已读取", detail: "当前版本已由所需服务读取。", applied: true };
+    if (missing.length) {
+      if (published) return { label: enabled ? "已发布，待读取" : "关闭已发布，待读取", detail: `当前版本尚未由 ${missing.map(roleLabel).join("、")} 读取。`, applied: false, enabled };
+      return { label: enabled ? "当前启动配置，待读取" : "关闭配置，待读取", detail: `当前启动配置尚未由 ${missing.map(roleLabel).join("、")} 读取。`, applied: false, enabled };
+    }
+    if (published) return { label: enabled ? "已发布并已读取" : "已关闭", detail: "当前版本已由所需服务读取。", applied: true, enabled };
+    return { label: enabled ? "当前启动配置已启用" : "当前启动配置已关闭", detail: "当前启动配置已由所需服务读取。", applied: true, enabled };
   };
   const categoryState = (category, model, toggle = categoryToggle(category, model)) => {
-    if (category.disabled) return { label: "不支持", detail: category.disabled, applied: false };
-    if (category.managed_url || !toggle) return { label: "—", detail: "请在配置详情或对应管理页面查看。", applied: false };
-    if (!toggle.enabled) return { label: "已关闭", detail: "当前启用开关处于关闭状态。", applied: false };
-    return applicationState(category, model);
+    if (category.disabled) return { label: "不支持", detail: category.disabled, applied: false, enabled: false };
+    if (category.managed_url || !toggle) return { label: "—", detail: "请在配置详情或对应管理页面查看。", applied: false, enabled: false };
+    return applicationState(category, model, toggle.enabled);
   };
   const makeSwitch = (toggle) => {
     const label = element("label", "cc-switch");
@@ -115,16 +116,23 @@
     for (const [key, value] of changes) values.set(key, value);
     return [...values.entries()].map(([key, value]) => ({ key, value }));
   };
-  const createDraft = (model, releaseModel, changes) => request(releaseAPI, {
-    method: "POST",
-    headers: writeHeaders(),
-    body: JSON.stringify({
-      expected_base_revision: releaseModel.runtime_releases?.active_revision || 0,
-      settings: fullDraftSettings(model, changes),
-      admin_action_token: releaseModel.admin_action_token,
-    }),
-  });
-  const renderState = (state) => element("span", `cc-state${state.applied ? " is-on" : ""}`, state.label);
+  const createDraft = (model, releaseModel, changes) => {
+    const snapshotRevision = model.effective?.revision;
+    const activeRevision = releaseModel.runtime_releases?.active_revision;
+    if (!Number.isInteger(snapshotRevision) || snapshotRevision < 0 || activeRevision !== snapshotRevision) {
+      return Promise.reject(new Error("配置已更新，请重新读取后再保存。"));
+    }
+    return request(releaseAPI, {
+      method: "POST",
+      headers: writeHeaders(),
+      body: JSON.stringify({
+        expected_base_revision: snapshotRevision,
+        settings: fullDraftSettings(model, changes),
+        admin_action_token: releaseModel.admin_action_token,
+      }),
+    });
+  };
+  const renderState = (state) => element("span", `cc-state${state.applied && state.enabled ? " is-on" : ""}`, state.label);
   const categoryURL = (key) => `/admin/configDetail.html?cat=${encodeURIComponent(key)}`;
   const releaseURL = (id) => `/admin/config/releases/${encodeURIComponent(String(id))}`;
   const categoryKey = () => new URL(location.href).searchParams.get("cat") || "";
@@ -146,7 +154,8 @@
     const rows = document.createElement("tbody");
     table.append(rows); wrap.append(table); card.append(wrap); root.append(card);
     try {
-      const [model, releaseModel] = await Promise.all([catalog(), releases()]);
+      const model = await catalog();
+      const releaseModel = await releases();
       for (const category of model.categories || []) {
         const toggle = categoryToggle(category, model);
         const state = categoryState(category, model, toggle);
@@ -240,7 +249,8 @@
     delete root.dataset.configCenter;
     addStatus(root);
     try {
-      const [model, releaseModel] = await Promise.all([catalog(), releases()]);
+      const model = await catalog();
+      const releaseModel = await releases();
       const category = (model.categories || []).find((item) => item?.key === categoryKey());
       if (!category) throw new Error("配置分类不存在");
       const toggle = categoryToggle(category, model);

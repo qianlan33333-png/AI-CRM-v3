@@ -484,6 +484,35 @@ try {
     }
   };
 
+  const assertConfigCenterLayout = async label => {
+    await assertLayout("standard", label, "[data-runtime-release-host] .cc-card-h h2");
+    const layout = await evaluate(cdp, `(() => {
+      const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height}; };
+      const root=document.querySelector('[data-runtime-release-host].cc-page');
+      const card=root?.querySelector('.cc-card');
+      const title=card?.querySelector('.cc-card-h h2');
+      const table=card?.querySelector('.cc-category-table');
+      const headings=table ? Array.from(table.querySelectorAll('thead th')).map(node => String(node.textContent || '').trim()) : [];
+      return {root:box('[data-runtime-release-host].cc-page'),card:box('[data-runtime-release-host].cc-page .cc-card'),title:box('[data-runtime-release-host].cc-page .cc-card-h h2'),table:box('[data-runtime-release-host].cc-page .cc-category-table'),topbar:box('.admin-topbar'),headers:document.querySelectorAll('header.admin-topbar').length,headings,rows:table?.querySelectorAll('tbody [data-category-row]').length || 0,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,titleText:String(title?.textContent || '').trim()};
+    })()`);
+    const expectedHeadings = ["类目", "是否生效", "生效开关", "配置"];
+    if (!layout.root || !layout.card || !layout.title || !layout.table || layout.titleText !== "配置类目" || !layout.topbar || layout.headers !== 1 || layout.overflow || layout.rows !== 12 || layout.headings.length !== expectedHeadings.length || layout.headings.some((heading, index) => heading !== expectedHeadings[index]) || layout.root.top + 1 < layout.topbar.bottom || layout.card.top + 1 < layout.root.top || layout.table.top + 1 < layout.card.top || layout.card.left + 1 < layout.root.left) throw new Error(label + " V3 topbar/config-center-card geometry invalid");
+  };
+  const navigateConfigCenter = async () => {
+    currentStep = "config";
+    try {
+      await cdp.call("Page.navigate", { url: baseURL + "/admin/config" });
+      await waitFor(cdp, "location.pathname === '/admin/config' && document.readyState !== 'loading'", "config center did not navigate");
+      await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-host].cc-page .cc-category-table')) && document.querySelectorAll('[data-runtime-release-host] .cc-category-table thead th').length === 4 && document.querySelectorAll('[data-runtime-release-host] [data-category-row]').length === 12", "config center Host did not become ready");
+      await waitForFonts("config");
+      await recordGeometry("config", () => assertConfigCenterLayout("config"), true);
+      return true;
+    } catch (error) {
+      await recordRouteFailure("config", error);
+      return false;
+    }
+  };
+
   const initial = "/admin/automation-conversion";
   currentStep = "automation";
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=" + encodeURIComponent(initial) });
@@ -530,7 +559,7 @@ try {
   await navigate("/admin/automation-agents", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "automation-agents", "embedded", embeddedTitle, true, true);
   const ownerMounted = await navigate("/admin/owner-migration", "Boolean(document.querySelector('[data-owner-handoff-host][data-owner-handoff-init=\"ready\"]')) && Boolean(document.querySelector('[data-owner-migration-page] .owner-migration-status-bar')) && Boolean(document.querySelector('[data-owner-migration-page] [data-owner-picker=\"source\"]'))", "owner-migration", "standard", "[data-owner-picker=\"source\"]", false, true);
   if (ownerMounted) await recordGeometry("owner-migration", () => assertOwnerHandoffLayout("owner-migration"), true);
-  await navigate("/admin/config", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "config", "embedded", embeddedTitle, true, true);
+  await navigateConfigCenter();
   await navigateRuntimeConfig();
   await navigateStandard("/admin/oneid", "Boolean(document.querySelector('[data-admin-oneid-root]'))", "oneid", true, true);
   currentStep = "api-docs";

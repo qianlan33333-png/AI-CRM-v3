@@ -6,11 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -460,4 +463,224 @@ func TestPrepareLegacyRuntimeRecoveryPostgreSQL(t *testing.T) {
 	if _, err = service.PrepareLegacyRuntimeRecovery(ctx, configport.RuntimeReleaseLegacyRecoveryCommand{ExpectedBaseRevision: active.ID, Actor: "admin:7", IdempotencyKey: "legacy-recovery-divergent"}); !errors.Is(err, configport.ErrRuntimeReleaseConflict) {
 		t.Fatalf("expected newer-catalog divergence rejection, got %v", err)
 	}
+}
+
+// OneID decision: not involved. These browser regressions create only
+// Config-owned releases and application receipts in one PostgreSQL UoW; no
+// Provider is constructed. They prove the Host never combines a catalog
+// snapshot from one revision with a release token from another.
+type configCenterBrowserRuntimeFixture struct {
+	ctx     context.Context
+	pool    *pgxpool.Pool
+	runtime *configapp.RuntimeReleaseService
+	cleanup func()
+}
+
+func newConfigCenterBrowserRuntimeFixture(t *testing.T, guards configapp.RuntimeActivationGuards) configCenterBrowserRuntimeFixture {
+	t.Helper()
+	pool, cleanupPool := runtimeReleaseBrowserPool(t)
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		cleanupPool()
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		wrapped.Close()
+		cleanupPool()
+		t.Fatal(err)
+	}
+	repository, err := configstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		wrapped.Close()
+		cleanupPool()
+		t.Fatal(err)
+	}
+	runtime, err := configapp.NewRuntimeReleaseService(uow, repository, repository, 1,
+		configapp.WithRuntimeDefaults(configCenterBrowserDefaults(t)),
+		configapp.WithRuntimeActivationGuards(guards),
+	)
+	if err != nil {
+		wrapped.Close()
+		cleanupPool()
+		t.Fatal(err)
+	}
+	return configCenterBrowserRuntimeFixture{
+		ctx:     context.Background(),
+		pool:    pool,
+		runtime: runtime,
+		cleanup: func() {
+			wrapped.Close()
+			cleanupPool()
+		},
+	}
+}
+
+func configCenterBrowserDefaults(t testing.TB) []configport.RuntimeSetting {
+	t.Helper()
+	return []configport.RuntimeSetting{
+		configCenterBrowserSetting(t, configport.AutomationOperationsMaxRecipientsPerRun, 1),
+		configCenterBrowserSetting(t, configport.AutomationOperationsProviderMode, "disabled"),
+		configCenterBrowserSetting(t, configport.WeComEnabled, false),
+		configCenterBrowserSetting(t, configport.RuntimeWeComCorpID, ""),
+		configCenterBrowserSetting(t, configport.RuntimeWeComAgentID, "agent-preserved"),
+		configCenterBrowserSetting(t, configport.WeComCallbackEnabled, false),
+		configCenterBrowserSetting(t, configport.WeComCustomerSyncEnabled, false),
+		configCenterBrowserSetting(t, configport.MessageArchiveEnabled, false),
+		configCenterBrowserSetting(t, configport.MessageArchivePageLimit, 1),
+		configCenterBrowserSetting(t, configport.MessageArchivePageBudget, 1),
+		configCenterBrowserSetting(t, configport.SidebarContextTokenTTLSeconds, 60),
+	}
+}
+
+func configCenterBrowserSetting(t testing.TB, key configport.RuntimeSettingKey, value any) configport.RuntimeSetting {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return configport.RuntimeSetting{Key: key, Value: raw}
+}
+
+func (fixture configCenterBrowserRuntimeFixture) handler(t testing.TB) http.Handler {
+	t.Helper()
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	handler, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: principal}, fixture.runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func (fixture configCenterBrowserRuntimeFixture) publishRelease(expected int64, enabled bool, suffix string) (configport.RuntimeRelease, error) {
+	value := json.RawMessage("false")
+	if enabled {
+		value = json.RawMessage("true")
+	}
+	draft, err := fixture.runtime.CreateRuntimeReleaseDraft(fixture.ctx, configport.RuntimeReleaseDraftCommand{
+		ExpectedBaseRevision: expected, Settings: []configport.RuntimeSetting{{Key: configport.WeComEnabled, Value: value}}, Actor: "admin:7", IdempotencyKey: "config-center-browser-create-" + suffix,
+	})
+	if err != nil {
+		return configport.RuntimeRelease{}, err
+	}
+	validated, err := fixture.runtime.ValidateRuntimeRelease(fixture.ctx, configport.RuntimeReleaseMutationCommand{ReleaseID: draft.ID, Actor: "admin:7", IdempotencyKey: "config-center-browser-validate-" + suffix})
+	if err != nil {
+		return validated, fmt.Errorf("validate %s: %w", suffix, err)
+	}
+	if validated.State != configport.RuntimeReleaseValidated {
+		return validated, fmt.Errorf("validate %s state=%s", suffix, validated.State)
+	}
+	published, err := fixture.runtime.PublishRuntimeRelease(fixture.ctx, configport.RuntimeReleasePublishCommand{ReleaseID: validated.ID, ExpectedBaseRevision: expected, ExpectedChecksum: validated.Checksum, Actor: "admin:7", IdempotencyKey: "config-center-browser-publish-" + suffix})
+	if err != nil {
+		return published, fmt.Errorf("publish %s: %w", suffix, err)
+	}
+	if published.State != configport.RuntimeReleasePublished {
+		return published, fmt.Errorf("publish %s state=%s", suffix, published.State)
+	}
+	return published, nil
+}
+
+func (fixture configCenterBrowserRuntimeFixture) publish(t testing.TB, expected int64, enabled bool, suffix string) configport.RuntimeRelease {
+	t.Helper()
+	published, err := fixture.publishRelease(expected, enabled, suffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return published
+}
+
+func (fixture configCenterBrowserRuntimeFixture) recordAllRoles(t testing.TB, snapshot configport.EffectiveSnapshot) {
+	t.Helper()
+	for _, role := range []string{"api", "worker", "effects-worker"} {
+		if err := fixture.runtime.RecordRuntimeApplication(fixture.ctx, configport.RuntimeApplication{Revision: snapshot.Revision, Source: snapshot.Source, Role: role, ReleaseSHA: "config-center-browser", SnapshotChecksum: snapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func runConfigCenterBrowserHost(t testing.TB, ctx context.Context, baseURL string, options ...string) string {
+	t.Helper()
+	_, file, _, ok := goruntime.Caller(0)
+	if !ok {
+		t.Fatal("locate Config Center browser journey")
+	}
+	command := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(file), "..", "..", "webshell", "config_center_host_pg.test.mjs"))
+	command.Env = append(os.Environ(), append([]string{"AICRM_RUNTIME_RELEASE_TEST_URL=" + baseURL}, options...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Config Center browser journey: %v output=%s", err, output)
+	}
+	if !strings.Contains(string(output), "config_center_host_pg: PASS") {
+		t.Fatalf("Config Center browser journey did not report success: %q", output)
+	}
+	return string(output)
+}
+
+func TestConfigCenterHostRejectsCatalogReleaseVersionRacePostgreSQL(t *testing.T) {
+	fixture := newConfigCenterBrowserRuntimeFixture(t, configapp.RuntimeActivationGuards{WeComEnabled: true})
+	defer fixture.cleanup()
+	first := fixture.publish(t, 0, true, "r1")
+	snapshot, err := fixture.runtime.EffectiveSnapshot(fixture.ctx)
+	if err != nil || snapshot.Revision != first.ID || snapshot.Source != configport.RuntimeSourcePublished {
+		t.Fatalf("first effective snapshot=%#v err=%v", snapshot, err)
+	}
+	fixture.recordAllRoles(t, snapshot)
+
+	var publishOnce sync.Once
+	var publishedSecond configport.RuntimeRelease
+	var publishErr error
+	var catalogRead bool
+	var mu sync.Mutex
+	base := fixture.handler(t)
+	race := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		mustPublish := catalogRead && r.Method == http.MethodGet && r.URL.Path == "/api/admin/config/runtime-releases"
+		mu.Unlock()
+		if mustPublish {
+			publishOnce.Do(func() {
+				publishedSecond, publishErr = fixture.publishRelease(first.ID, false, "r2")
+			})
+			if publishErr != nil {
+				http.Error(w, publishErr.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		base.ServeHTTP(w, r)
+		if r.Method == http.MethodGet && r.URL.Path == "/api/admin/config/runtime-catalog" {
+			mu.Lock()
+			catalogRead = true
+			mu.Unlock()
+		}
+	})
+	server := httptest.NewServer(race)
+	defer server.Close()
+	runConfigCenterBrowserHost(t, fixture.ctx, server.URL, "AICRM_CONFIG_CENTER_EXPECT_CATALOG_RELEASE_RACE=1", "AICRM_CONFIG_CENTER_EXPECT_AUTOMATION_MODE=disabled")
+	if publishErr != nil || publishedSecond.ID <= first.ID {
+		t.Fatalf("race publication=%#v err=%v", publishedSecond, publishErr)
+	}
+	var releases, published, drafts int
+	if err := fixture.pool.QueryRow(fixture.ctx, `SELECT count(*), count(*) FILTER (WHERE state='published'), count(*) FILTER (WHERE state='draft') FROM config_runtime_releases`).Scan(&releases, &published, &drafts); err != nil {
+		t.Fatal(err)
+	}
+	if releases != 3 || published != 1 || drafts != 1 {
+		t.Fatalf("catalog/release race created unexpected releases total/published/draft=%d/%d/%d", releases, published, drafts)
+	}
+}
+
+func TestConfigCenterHostShowsClosedReleasePendingApplicationPostgreSQL(t *testing.T) {
+	fixture := newConfigCenterBrowserRuntimeFixture(t, configapp.RuntimeActivationGuards{WeComEnabled: true})
+	defer fixture.cleanup()
+	first := fixture.publish(t, 0, true, "r1")
+	snapshot, err := fixture.runtime.EffectiveSnapshot(fixture.ctx)
+	if err != nil || snapshot.Revision != first.ID {
+		t.Fatalf("first effective snapshot=%#v err=%v", snapshot, err)
+	}
+	fixture.recordAllRoles(t, snapshot)
+	second := fixture.publish(t, first.ID, false, "r2")
+	if second.ID <= first.ID {
+		t.Fatalf("closed release did not advance revision first=%d second=%d", first.ID, second.ID)
+	}
+	server := httptest.NewServer(fixture.handler(t))
+	defer server.Close()
+	runConfigCenterBrowserHost(t, fixture.ctx, server.URL, "AICRM_CONFIG_CENTER_EXPECT_PENDING_CLOSE=1", "AICRM_CONFIG_CENTER_EXPECT_AUTOMATION_MODE=disabled")
 }

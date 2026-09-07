@@ -6,6 +6,9 @@ import { JSDOM } from "jsdom";
 
 const baseURL = process.env.AICRM_RUNTIME_RELEASE_TEST_URL;
 if (!/^https?:\/\//.test(baseURL || "")) throw new Error("Config Center PostgreSQL HTTP test server is required");
+const expectCatalogReleaseRace = process.env.AICRM_CONFIG_CENTER_EXPECT_CATALOG_RELEASE_RACE === "1";
+const expectPendingClose = process.env.AICRM_CONFIG_CENTER_EXPECT_PENDING_CLOSE === "1";
+const expectedAutomationMode = process.env.AICRM_CONFIG_CENTER_EXPECT_AUTOMATION_MODE || "limited";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const host = fs.readFileSync(path.join(here, "static/admin_console/config_center_host.js"), "utf8");
 const wait = (milliseconds = 25) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -63,12 +66,24 @@ try {
   const wecomSwitch = centerDom.window.document.querySelector('[data-category-row="wecom_base"] .cc-switch input');
   assert.ok(wecomSwitch, "WeCom retains its owned primary switch");
   assert.equal(centerDom.window.document.querySelector('[data-category-row="sidebar_identity"] .cc-switch'), null, "a category without one primary enable field must show no aggregate switch");
-  wecomSwitch.checked = true;
-  wecomSwitch.dispatchEvent(new centerDom.window.Event("change", { bubbles: true }));
-  await waitFor(() => Boolean(centerSubmitted), "Config Center switch did not create a draft through the actual HTTP endpoint");
-  const centerValues = new Map((centerSubmitted.settings || []).map((item) => [item.key, item.value]));
-  assert.equal(centerValues.get("wecom.enabled"), true, "Config Center switch must stage only its owned enabled field");
-  assert.equal(centerValues.get("wecom.agent_id"), "agent-preserved", "Config Center switch must retain the full effective snapshot");
+  if (expectPendingClose) {
+    const state = centerDom.window.document.querySelector('[data-category-row="wecom_base"] .cc-state');
+    assert.equal(state?.textContent.trim(), "关闭已发布，待读取", "a closed release remains pending until every required role reads its exact snapshot");
+    assert.equal(state?.classList.contains("is-on"), false, "a pending close must not render as currently effective");
+  } else {
+    const originalEnabled = wecomSwitch.checked;
+    wecomSwitch.checked = !originalEnabled;
+    wecomSwitch.dispatchEvent(new centerDom.window.Event("change", { bubbles: true }));
+    if (expectCatalogReleaseRace) {
+      await waitFor(() => centerDom.window.document.querySelector("[data-config-center-status]")?.textContent.includes("配置已更新"), "Config Center did not reject a catalog/release version mismatch");
+      assert.equal(centerSubmitted, undefined, "Config Center must not create a full-snapshot draft from mismatched reads");
+    } else {
+      await waitFor(() => Boolean(centerSubmitted), "Config Center switch did not create a draft through the actual HTTP endpoint");
+      const centerValues = new Map((centerSubmitted.settings || []).map((item) => [item.key, item.value]));
+      assert.equal(centerValues.get("wecom.enabled"), !originalEnabled, "Config Center switch must stage only its owned enabled field");
+      assert.equal(centerValues.get("wecom.agent_id"), "agent-preserved", "Config Center switch must retain the full effective snapshot");
+    }
+  }
 } finally {
   centerDom.window.close();
 }
@@ -82,7 +97,7 @@ try {
   await waitFor(() => Boolean(submitted), "Config Center did not create a draft through the actual HTTP endpoint");
   const values = new Map((submitted.settings || []).map((item) => [item.key, item.value]));
   assert.equal(values.get("wecom.agent_id"), "agent-preserved", "saving an untouched category must retain AgentID");
-  assert.equal(values.get("automation.operations.provider_mode"), "limited", "saving an untouched category must retain the native automation mode string");
+  assert.equal(values.get("automation.operations.provider_mode"), expectedAutomationMode, "saving an untouched category must retain the native automation mode string");
   assert.equal(values.has("WECOM_API_BASE"), false, "deployment-maintained donor fields must remain informational and cannot be submitted");
   console.log("config_center_host_pg: PASS");
 } finally {
