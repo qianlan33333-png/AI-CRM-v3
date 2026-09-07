@@ -149,6 +149,31 @@ try {
     const result = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     await fs.writeFile(path.join(screenshotDirectory, name + ".png"), Buffer.from(result.data, "base64"), { mode: 0o600 });
   };
+  const captureFailureEvidence = async label => {
+    const safeLabel = label.replace(/[^A-Za-z0-9_.-]/g, "_");
+    const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    await fs.writeFile(path.join(screenshotDirectory, "failure-" + safeLabel + ".png"), Buffer.from(shot.data, "base64"), { mode: 0o600 });
+    const geometry = await evaluate(cdp, `(() => {
+      const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
+      return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+    })()`);
+    await fs.writeFile(path.join(screenshotDirectory, "failure-" + safeLabel + "-geometry.json"), JSON.stringify(geometry), { mode: 0o600 });
+  };
+  const waitForFonts = async label => {
+    const settled = await evaluate(cdp, "document.fonts ? document.fonts.ready.then(() => document.fonts.status === 'loaded') : true");
+    if (!settled) throw new Error(label + " document fonts did not settle");
+  };
+  const geometryFailures = [];
+  const recordGeometry = async (label, assertion, screenshot) => {
+    try {
+      await assertion();
+      if (screenshot) await capture(label);
+    } catch (error) {
+      try { await captureFailureEvidence(label); } catch (_) {}
+      const message = String(error instanceof Error ? error.message : "geometry assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160);
+      geometryFailures.push(label + ":" + message);
+    }
+  };
   const currentLayout = titleSelector => evaluate(cdp, String.raw`(() => {
     const isVisible = node => { if (!node) return false; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
     const box = node => { if (!node) return null; const value=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:value.left,top:value.top,right:value.right,bottom:value.bottom,width:value.width,height:value.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
@@ -193,13 +218,14 @@ try {
     const innerBar=headerCandidates[0] || null;
     if (innerBar) globalThis.__aicrmAdminLayoutInnerBar = innerBar;
     const titleCount=stage ? Array.from(stage.querySelectorAll('h1')).filter(isVisible).filter(node => node.getBoundingClientRect().top < stage.getBoundingClientRect().top + 180).length : 0;
-    return {sidebar:box(document.querySelector('.admin-sidebar')),main:box(main),topbar:box(document.querySelector('.admin-topbar')),stage:box(stage),renderedRootCount:roots.length,innerBar:box(innerBar),innerBarText:String(innerBar?.textContent || '').trim(),headerCandidateCount:headerCandidates.length,title:box(title),titleCount,headers:document.querySelectorAll('header.admin-topbar').length,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,ready:document.readyState};
+    const content=stage || document.querySelector('.admin-main-wrap > .admin-page');
+    return {sidebar:box(document.querySelector('.admin-sidebar')),main:box(main),topbar:box(document.querySelector('.admin-topbar')),content:box(content),stage:box(stage),renderedRootCount:roots.length,innerBar:box(innerBar),innerBarText:String(innerBar?.textContent || '').trim(),headerCandidateCount:headerCandidates.length,title:box(title),titleCount,headers:document.querySelectorAll('header.admin-topbar').length,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,ready:document.readyState};
   })()`);
   const assertLayout = async (kind, label, titleSelector) => {
     const layout = await currentLayout(titleSelector);
     if (!layout.sidebar || !layout.main || layout.overflow || Math.abs(layout.sidebar.right - layout.main.left) > 1) throw new Error(`${label} shell geometry invalid`);
     if (kind === "standard") {
-      if (!layout.topbar || layout.headers !== 1 || Math.abs(layout.topbar.left - layout.main.left) > 1 || Math.abs(layout.topbar.right - layout.main.right) > 1 || Math.abs(layout.topbar.top) > 1 || layout.topbar.height < 48 || !layout.stage || layout.stage.top + 1 < layout.topbar.bottom) throw new Error(`${label} standard topbar geometry invalid`);
+      if (!layout.topbar || layout.headers !== 1 || Math.abs(layout.topbar.left - layout.main.left) > 1 || Math.abs(layout.topbar.right - layout.main.right) > 1 || Math.abs(layout.topbar.top) > 1 || layout.topbar.height < 48 || !layout.content || layout.content.top + 1 < layout.topbar.bottom) throw new Error(`${label} standard topbar geometry invalid`);
       return;
     }
     if (layout.headers !== 0 || !layout.stage || layout.renderedRootCount < 1 || !layout.innerBar || !layout.innerBarText || !layout.title || layout.titleCount > 1 || Math.abs(layout.stage.left - layout.main.left) > 1 || Math.abs(layout.stage.top - layout.main.top) > 1 || Math.abs(layout.innerBar.left - layout.stage.left) > 1 || Math.abs(layout.innerBar.top - layout.stage.top) > 1 || Math.abs(layout.innerBar.right - layout.main.right) > 1 || layout.stage.paddingLeft !== "0px" || layout.stage.paddingTop !== "0px") throw new Error(`${label} embedded workspace/header geometry invalid`);
@@ -244,8 +270,8 @@ try {
     else await cdp.call("Page.navigate", { url: baseURL + pathname });
     await waitFor(cdp, `location.pathname === ${JSON.stringify(finalPath.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
     await waitFor(cdp, ready + " && Boolean((() => { const stage=document.querySelector('#stage'); if (!stage) return false; const visible=node => { const rect=node.getBoundingClientRect(), style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; }; return Array.from(stage.querySelectorAll(" + JSON.stringify(titleSelector) + ")).some(node => visible(node) && String(node.textContent || '').trim().length > 0); })())", label + " Host did not render a visible workspace title");
-    await assertLayout(kind, label, titleSelector);
-    if (screenshot) await capture(label);
+    await waitForFonts(label);
+    await recordGeometry(label, () => assertLayout(kind, label, titleSelector), screenshot);
   };
 
   const embeddedTitle = 'h1,h2,[role="heading"],[class*="toolbar"],[class*="header"],[class*="head"],[class*="title"]';
@@ -255,8 +281,8 @@ try {
     else await cdp.call("Page.navigate", { url: baseURL + pathname });
     await waitFor(cdp, `location.pathname === ${JSON.stringify(pathname.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
     await waitFor(cdp, ready, label + " Host did not become ready");
-    await assertLayout("standard", label, embeddedTitle);
-    if (screenshot) await capture(label);
+    await waitForFonts(label);
+    await recordGeometry(label, () => assertLayout("standard", label, embeddedTitle), screenshot);
   };
   const assertStaticOpenLayout = async label => {
     const layout = await evaluate(cdp, `(() => {
@@ -288,8 +314,8 @@ try {
     await cdp.call("Page.navigate", { url: baseURL + "/admin/config/releases" });
     await waitFor(cdp, "location.pathname === '/admin/config/releases' && document.readyState !== 'loading'", "runtime config did not navigate");
     await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-host] .admin-card h2')) && document.body?.textContent?.includes('当前运行时配置')", "runtime config Host did not become ready");
-    await assertRuntimeConfigLayout("runtime-config");
-    await capture("runtime-config");
+    await waitForFonts("runtime-config");
+    await recordGeometry("runtime-config", () => assertRuntimeConfigLayout("runtime-config"), true);
   };
 
   const initial = "/admin/automation-conversion";
@@ -299,8 +325,8 @@ try {
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
   await waitFor(cdp, "location.pathname === '/admin/automation-conversion'", "login did not establish the Access session");
   await waitFor(cdp, "Boolean(document.querySelector('.admin-topbar')) && Boolean(document.querySelector('.aud-layout'))", "automation shell did not load");
-  await assertLayout("standard", "automation", embeddedTitle);
-  await capture("automation");
+  await waitForFonts("automation");
+  await recordGeometry("automation", () => assertLayout("standard", "automation", embeddedTitle), true);
 
   // The matrix follows every actual item in ADMIN_NAV_GROUPS.  The embedded
   // rows require a live workspace root and a visible donor/V3 page title in
@@ -336,8 +362,8 @@ try {
   await clickNavigation("/admin/api-docs", "api-docs");
   await waitFor(cdp, "location.pathname === '/admin/apidocs.html' && document.readyState !== 'loading'", "api-docs did not canonicalize to its V3 Host document");
   await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-host]') || document.querySelector('[class*=openPlatformHost]'))", "api-docs V3 Host did not become ready");
-  await assertStaticOpenLayout("api-docs");
-  await capture("api-docs");
+  await waitForFonts("api-docs");
+  await recordGeometry("api-docs", () => assertStaticOpenLayout("api-docs"), true);
 
   // Detail and frozen aliases remain on their business Host, including the
   // order history panel whose source mapping is independently seeded below.
@@ -355,19 +381,12 @@ try {
   await waitFor(cdp, "document.querySelector('#hxcRefresh')?.disabled === false && document.querySelector('#hxcRefresh')?.textContent === '立即刷新'", "HXC refresh action did not settle");
   if (!responses.slice(refreshResponsesBefore).includes("POST /api/admin/hxc-dashboard/refreshes:503")) throw new Error("HXC refresh did not reach the disabled runtime contract");
   if (runtimeExceptions.length) throw new Error("admin layout runtime exception=" + runtimeExceptions.join(","));
+  if (geometryFailures.length) throw new Error("admin layout geometry failures=" + geometryFailures.join(","));
   console.log("admin_shell_layout_chromium: PASS routes=" + responses.filter(value => value.includes("/admin/") || value.includes("/api/admin/hxc-dashboard")).length);
 } catch (error) {
   failed = true;
   if (cdp) {
-    try {
-      const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-      await fs.writeFile(path.join(screenshotDirectory, "failure-" + currentStep.replace(/[^A-Za-z0-9_.-]/g, "_") + ".png"), Buffer.from(shot.data, "base64"), { mode: 0o600 });
-      const geometry = await evaluate(cdp, `(() => {
-        const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
-        return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
-      })()`);
-      await fs.writeFile(path.join(screenshotDirectory, "failure-" + currentStep.replace(/[^A-Za-z0-9_.-]/g, "_") + "-geometry.json"), JSON.stringify(geometry), { mode: 0o600 });
-    } catch (_) {}
+    try { await captureFailureEvidence(currentStep); } catch (_) {}
   }
   throw error;
 } finally {

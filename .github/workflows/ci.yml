@@ -72,7 +72,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes ripgrep
+          sudo apt-get install --no-install-recommends --yes ripgrep fonts-noto-cjk
+          fc-match "Noto Sans CJK SC" | rg -qi "Noto"
           command -v rg >/dev/null
           rg --version
           command -v google-chrome >/dev/null
@@ -113,11 +114,9 @@ jobs:
           scripts/check-ai-assistant-donor-manifest.sh
           bash scripts/test-check-ai-assistant-donor-manifest.sh
           AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-sidebar-customer360-contract.sh
-          make radar-check
           node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
-          npm test
           npm run build
           node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           node --test internal/webshell/chromium_launch.test.mjs
@@ -147,6 +146,11 @@ jobs:
           set -euo pipefail
           command -v google-chrome
           go test -p 1 -count=1 -run '^(TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLAdminShellLayoutChromiumJourney)$' ./cmd/aicrm
+      - name: Verify frontend and radar checks
+        run: |
+          set -euo pipefail
+          make radar-check
+          npm test
       - name: Upload admin shell layout Chromium evidence
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
