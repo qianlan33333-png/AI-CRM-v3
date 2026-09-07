@@ -51,6 +51,7 @@ run_frontend_and_stage_checks() {
   node scripts/generate-ai-assistant-client.mjs
   npm run typecheck
   npx tsc -p web/v3/tsconfig.json --noEmit
+  node scripts/sidebar-wecom-jssdk-contract.mjs
   if [[ "$mode" == check ]]; then npm test; fi
   npm run build
   node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs

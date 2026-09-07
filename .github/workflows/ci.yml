@@ -92,6 +92,16 @@ jobs:
           node --test scripts/donor-source-views.test.mjs
           AICRM_DEDUP_DISPOSABLE_WORKTREE=1 AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
             node scripts/run-with-donor-views.mjs -- bash scripts/run-donor-view-consumers.sh check
+      - name: Run required Sidebar JSSDK Chromium journey
+        # Run the actual final staged Sidebar Host before the long repository
+        # and race phases. Linux Chrome is mandatory; this script uses the
+        # official WeCom SDK fixture and a native-bridge protocol fixture.
+        env:
+          AICRM_REQUIRE_CHROMIUM_JOURNEY: "1"
+        run: |
+          set -euo pipefail
+          command -v google-chrome
+          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^TestPostgreSQLSidebarThumbnailChromiumJourney$' ./cmd/aicrm
       - name: Verify Media shell donor interactions
         run: node scripts/media-shell-interactions-e2e.mjs
       - name: Verify Tags shell donor interactions
@@ -113,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v google-chrome
-          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
+          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
       - name: Run owner handoff Chromium journey
         # This journey covers the frozen legacy page through the v3 Host, CSRF,
         # PostgreSQL/River, and both local and WeCom transfer modes.

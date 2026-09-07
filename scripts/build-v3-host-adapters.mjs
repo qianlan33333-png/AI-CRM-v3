@@ -133,12 +133,18 @@ for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.end
 
 const sidebarHost = manifest.entries.sidebarHost;
 const frozenSidebar = manifest.entries.sidebar;
+const weComJSSDK = 'https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js';
 if (typeof sidebarHost !== 'string' || typeof frozenSidebar !== 'string') throw new Error('sidebar Host or frozen entry is absent from manifest');
+if (manifest.files[sidebarHost]?.entry_point !== 'web/v3/sidebar/main.ts' || !manifest.files[sidebarHost]?.inputs?.includes('web/v3/sidebarApi.ts')) throw new Error('sidebar Host must be the V3 sidebar entry and adapter closure');
 const sidebarDocument = path.join(dist, 'sidebar', 'index.html');
 let sidebarHTML = fs.readFileSync(sidebarDocument, 'utf8');
 const frozenSidebarReference = `../${frozenSidebar}`;
-if (!sidebarHTML.includes(frozenSidebarReference)) throw new Error('frozen sidebar document does not reference its declared entry');
-sidebarHTML = sidebarHTML.replace(frozenSidebarReference, `../${sidebarHost}`);
+const frozenSidebarScript = `<script type="module" src="${frozenSidebarReference}"></script>`;
+const sidebarHostScript = `<script type="module" src="../${sidebarHost}"></script>`;
+if (!sidebarHTML.includes(frozenSidebarScript)) throw new Error('frozen sidebar document does not reference its declared entry');
+if (sidebarHTML.includes('https://res.wx.qq.com/open/js/jweixin-1.6.0.js')) throw new Error('sidebar Host must not load the generic JSSDK before the WeCom JSSDK');
+sidebarHTML = sidebarHTML.replace(frozenSidebarScript, `<script src="${weComJSSDK}"></script>\n${sidebarHostScript}`);
+if (!sidebarHTML.includes(weComJSSDK) || !sidebarHTML.includes(sidebarHostScript) || sidebarHTML.indexOf(weComJSSDK) > sidebarHTML.indexOf(sidebarHostScript)) throw new Error('sidebar document did not load the WeCom JSSDK before the V3 Host');
 fs.writeFileSync(sidebarDocument, sidebarHTML);
 const sidebarBytes = Buffer.from(sidebarHTML);
 manifest.release_files['sidebar/index.html'] = metadataFor(sidebarBytes);

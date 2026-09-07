@@ -114,9 +114,9 @@ func TestPostgreSQLCustomerTagCommandChromiumJourney(t *testing.T) {
 }
 
 type customerTagChromiumProvider struct {
-	server        *httptest.Server
-	mu            sync.Mutex
-	writes, reads int
+	server                    *httptest.Server
+	mu                        sync.Mutex
+	writes, reads, jssdkReads int
 }
 
 func newCustomerTagChromiumProvider() *customerTagChromiumProvider {
@@ -124,8 +124,27 @@ func newCustomerTagChromiumProvider() *customerTagChromiumProvider {
 	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/cgi-bin/gettoken":
+			fixture.mu.Lock()
+			fixture.jssdkReads++
+			fixture.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"fixture-token","expires_in":7200}`))
+		case "/cgi-bin/get_jsapi_ticket":
+			fixture.mu.Lock()
+			fixture.jssdkReads++
+			fixture.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"errcode":0,"ticket":"fixture-corp-ticket","expires_in":7200}`))
+		case "/cgi-bin/ticket/get":
+			if r.URL.Query().Get("type") != "agent_config" {
+				http.Error(w, "unexpected JSSDK ticket type", http.StatusBadRequest)
+				return
+			}
+			fixture.mu.Lock()
+			fixture.jssdkReads++
+			fixture.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"errcode":0,"ticket":"fixture-agent-ticket","expires_in":7200}`))
 		case "/cgi-bin/externalcontact/mark_tag":
 			var request struct {
 				ExternalUserID string   `json:"external_userid"`
@@ -169,6 +188,14 @@ func (f *customerTagChromiumProvider) Counts() (int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.writes, f.reads
+}
+
+// JSSDKReads is separate from business-provider observations. A page handshake
+// may read signing tickets, but it must never create an outbound business write.
+func (f *customerTagChromiumProvider) JSSDKReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.jssdkReads
 }
 
 func seedCustomerTagChromiumJourney(ctx context.Context, application *composedApplication) error {
