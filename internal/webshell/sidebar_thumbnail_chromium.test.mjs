@@ -170,10 +170,12 @@ try {
   if (!session) throw new Error("Access session cookie was not issued");
   await cdp.call("Network.setCookie", { name: "aicrm_sidebar_session", value: session.value, url: baseURL, path: "/", secure: true, httpOnly: true, sameSite: "Lax" });
 
+  const sidebarDocumentReadyExpression = (scenario) => `(() => { const body = document.body; return location.pathname === "/sidebar/bind-mobile" && new URL(location.href).searchParams.get("sidebar_case") === ${JSON.stringify(scenario)} && document.readyState !== "loading" && Boolean(body); })()`;
   async function openSidebar(scenario, resourceMode = "serve") {
     jssdkResourceMode = resourceMode;
     const requestStart = requestURLs.length;
     await cdp.call("Page.navigate", { url: `${baseURL}/sidebar/bind-mobile?sidebar_case=${encodeURIComponent(scenario)}` });
+    await waitFor(cdp, sidebarDocumentReadyExpression(scenario), `${scenario} navigation did not reach its sidebar document`, `${scenario}_navigation`);
     return requestStart;
   }
   const bootstrapCountSince = (start) => requestURLs.slice(start).filter((url) => new URL(url).pathname === "/api/sidebar/v2/bootstrap").length;
@@ -187,8 +189,7 @@ try {
     ["contact_error", "企微客户上下文读取失败", "retry-context", "serve"],
   ]) {
     const start = await openSidebar(scenario, resourceMode);
-    const expectedScenario = JSON.stringify(scenario);
-    await waitFor(cdp, `(() => { const body = document.body; return location.pathname === "/sidebar/bind-mobile" && new URL(location.href).searchParams.get("sidebar_case") === ${expectedScenario} && document.readyState !== "loading" && Boolean(body && body.textContent?.includes(${JSON.stringify(message)}) && document.querySelector('[data-sidebar-action="${action}"]')); })()`, `${scenario} did not render its real recovery action`, `${scenario}_recovery`);
+    await waitFor(cdp, `(${sidebarDocumentReadyExpression(scenario)}) && Boolean(document.body?.textContent?.includes(${JSON.stringify(message)}) && document.querySelector('[data-sidebar-action="${action}"]'))`, `${scenario} did not render its real recovery action`, `${scenario}_recovery`);
     const normalizedReason = scenario === "regular_error" ? "config:fail" : scenario === "agent_error" ? "agentConfig:fail" : scenario === "contact_error" ? "getCurExternalContact:fail" : "";
     if (normalizedReason && !await evaluate(cdp, `Boolean(document.body?.textContent?.includes(${JSON.stringify(normalizedReason)}))`, `${scenario}_reason`)) throw new Error(`${scenario} did not render the official SDK normalized failure reason`);
     if (bootstrapCountSince(start) !== 0) throw new Error(`${scenario} requested sidebar bootstrap before a trusted contact`);
@@ -203,7 +204,7 @@ try {
 
   const successStart = await openSidebar("success");
   try {
-    await waitFor(cdp, "location.pathname === '/sidebar/bind-mobile' && document.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready' && Boolean(document.querySelector('#tabs button[data-sidebar-tab=\"materials\"]'))", "sidebar Host did not complete the official JSSDK handshake");
+    await waitFor(cdp, `(${sidebarDocumentReadyExpression("success")}) && document.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready' && Boolean(document.querySelector('#tabs button[data-sidebar-tab=\"materials\"]'))`, "sidebar Host did not complete the official JSSDK handshake", "success_handshake");
   } catch (_) {
     const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), document: await evaluate(cdp, "document.body ? 'ready' : 'missing'"), tabs: await evaluate(cdp, "Boolean(document.querySelector('#tabs'))"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), bootstrap: bootstrapCountSince(successStart), jssdk: jssdkCountSince(successStart), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
     throw new Error(`sidebar Host did not complete official JSSDK handshake: ${diagnostic}`);
