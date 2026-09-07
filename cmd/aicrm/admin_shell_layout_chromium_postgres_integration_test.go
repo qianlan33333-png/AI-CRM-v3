@@ -166,7 +166,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	t.Helper()
 	screenshots := t.TempDir()
-	if configured := os.Getenv("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR"); configured != "" {
+	if configured := platformconfig.AdminLayoutScreenshotDirectory(); configured != "" {
 		if !filepath.IsAbs(configured) {
 			t.Fatalf("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR must be absolute")
 		}
