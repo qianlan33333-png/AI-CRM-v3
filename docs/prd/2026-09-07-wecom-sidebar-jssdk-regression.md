@@ -51,7 +51,7 @@ SDK 合同的真实 bridge 顺序为 regular `preVerifyJSAPI`、`agentConfig`、
 1. 最终 Host 在 module 之前只插入上述企微专用 SDK；stage 测试检查唯一脚本、顺序、V3 Host entry 与 adapter 闭包。
 2. API adapter 保留 regular 和 agent 两套签名、原始 agent ID 和 exact no-fragment URL。
 3. 初始化遵循 `wx.config -> wx.ready -> wx.agentConfig -> getContext -> getCurExternalContact -> bootstrap`。
-4. 同一 URL regular 成功后，显式 agentConfig 失败可只重试 agent；每次重试重新从正式接口取得并校验新的双签名，且必须匹配已确认的 corp、agent、URL。regular 成功的全局 SDK 状态不被错误重配。
+4. 同一 URL regular 成功后，显式 agentConfig 失败可只重试 agent；每次重试直接从正式接口取得并校验新的双签名，不依赖 sessionStorage 清除成功，且必须匹配已确认的 corp、agent、URL。regular 成功的全局 SDK 状态不被错误重配；缓存被禁用或抛出 SecurityError 时只退化为网络读取。
 5. regular 或任一 SDK 超时会令当前 document 状态不确定，真实 UI 只提供“重新打开 Sidebar”，不让旧回调跨轮改变状态。正常失败显示单一阶段与真实“重试读取”入口；请求中的“重新读取”也递增初始化代际，迟到外部联系人回调不会发 bootstrap。
 6. 无 query 首访只有 SDK 成功后才读取外部联系人并 bootstrap；401 展示已有 OAuth 入口。带 query 的兼容候选仍可由服务端验证后保留只读 `degraded_ready`，发送保持禁用。
 
@@ -59,8 +59,8 @@ SDK 合同的真实 bridge 顺序为 regular `preVerifyJSAPI`、`agentConfig`、
 
 - `scripts/sidebar-wecom-jssdk-contract.mjs` 校验官方固定资源 SHA、四种 wxwork UA、regular ready 保持及 bridge 握手。
 - 最终 staged DOM e2e 校验专用 SDK 唯一加载、V3 Host 闭包和完整双签名顺序；不允许退回退休 JSSDK 路由。
-- SDK 未载入、regular 失败、agent 失败、外部联系人失败、401、agent 签名重取、URL/identity 不匹配、迟到联系人回调都断言实际 UI 和请求边界。
+- SDK 未载入、regular 失败、agent 失败、外部联系人失败、401、agent 签名重取、缓存删除/读取被拒、URL/identity 不匹配、迟到联系人回调都断言实际 UI 和请求边界。
 - Go 协议旅程覆盖无 cookie 的 401、OAuth start/callback、可信 sidebar cookie、双签名、既有 OneID 客户和 ContextToken 签发。
 - PostgreSQL + Chromium 用官方 SDK fixture 与 mocked native bridge 覆盖成功/失败握手；不产生 Provider 写入。
 
-本机原生企微 WebView 的 Computer Use 访问未获批准。本次不会绕过该限制；上线后仍需由获授权设备做现场握手复验。
+官方 SDK、模拟 native bridge、四种 wxwork UA 与 Linux Chromium 仅证明资源、协议和最终 Host 的回归合同，**不等同于用户企微 WebView 的现场成功**。本机原生企微 WebView 的 Computer Use 访问未获批准；本次不会绕过该限制，上线后仍需由获授权设备做现场握手复验。

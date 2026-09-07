@@ -887,24 +887,24 @@ export class SidebarController {
     }
 
     this.setSdkStatus("loading", "读取 JSSDK…");
-    // After an explicit agentConfig failure, retain only the confirmed regular
-    // SDK state. The agent signature is fetched again; clearing storage alone
-    // would not help if this controller kept the old pair in memory.
-    let config =
-      this.agentJSSDKState === "failed" ? null : this.regularJSSDKConfig;
+    // An explicit agentConfig failure retains only the confirmed regular SDK
+    // state. It must fetch a fresh regular/agent signature pair: cache removal
+    // is best-effort and a stale session value must never survive that retry.
+    const refreshAgentSignature = this.agentJSSDKState === "failed";
+    let config = refreshAgentSignature ? null : this.regularJSSDKConfig;
     try {
-      if (!config) {
+      if (!config && !refreshAgentSignature) {
         config = this.cachedJSSDKConfig(url);
-        if (!config) {
-          config = await withJSSDKTimeout(
-            this.api.jssdkConfig(url),
-            SDK_TIMEOUT_MS,
-            "config",
-          );
-          // Never retain malformed or stale server data for a later document.
-          this.validateJSSDKConfig(config);
-          this.cacheJSSDKConfig(config);
-        }
+      }
+      if (!config) {
+        config = await withJSSDKTimeout(
+          this.api.jssdkConfig(url),
+          SDK_TIMEOUT_MS,
+          "config",
+        );
+        // Never retain malformed or stale server data for a later document.
+        this.validateJSSDKConfig(config);
+        this.cacheJSSDKConfig(config);
       }
       this.validateJSSDKConfig(config);
       this.validateRegularJSSDKIdentity(config);
@@ -983,9 +983,9 @@ export class SidebarController {
   }
 
   private cachedJSSDKConfig(url: string): SidebarJSSDKConfig | null {
-    const storage = this.doc.defaultView?.sessionStorage;
-    if (!storage) return null;
     try {
+      const storage = this.doc.defaultView?.sessionStorage;
+      if (!storage) return null;
       const raw = storage.getItem(SDK_CACHE_KEY);
       if (!raw) return null;
       const cached = JSON.parse(raw) as {
@@ -1020,10 +1020,10 @@ export class SidebarController {
   }
 
   private cacheJSSDKConfig(config: SidebarJSSDKConfig): void {
-    const storage = this.doc.defaultView?.sessionStorage;
-    if (!storage || config.url !== this.currentPageUrl()) return;
-    const usableUntil = Date.now() + SDK_CACHE_MAX_MS - SDK_CACHE_SAFETY_MS;
     try {
+      const storage = this.doc.defaultView?.sessionStorage;
+      if (!storage || config.url !== this.currentPageUrl()) return;
+      const usableUntil = Date.now() + SDK_CACHE_MAX_MS - SDK_CACHE_SAFETY_MS;
       storage.setItem(
         SDK_CACHE_KEY,
         JSON.stringify({ url: config.url, usable_until: usableUntil, config }),

@@ -1135,7 +1135,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             agentConfigCalls += 1;
             window.__sidebarTest.wxStages.push({ stage: 'agentConfig', options });
             window.setTimeout(() => {
-              if (scenario === 'agent_error' || scenario === 'sdk_error' || (scenario === 'agent_retry' && agentConfigCalls === 1)) {
+              if (scenario === 'agent_error' || scenario === 'sdk_error' || ((scenario === 'agent_retry' || scenario === 'agent_retry_storage_failure') && agentConfigCalls === 1)) {
                 options.fail?.({ errMsg: 'agentConfig:fail' });
               } else options.success?.({ err_msg: 'agentConfig:ok' });
             }, 0);
@@ -1200,7 +1200,24 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         blob: async () => new window.Blob([JSON.stringify(data)], { type: 'application/json' }),
         clone() { return this; },
       });
-      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, materialQueries: [], sendIntentKeys: [], sendOutcomeBodies: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null };
+      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, materialQueries: [], sendIntentKeys: [], sendOutcomeBodies: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null, jssdkStorageReads: 0 };
+      if (scenario === 'agent_retry_storage_failure') {
+        const values = new Map();
+        Object.defineProperty(window, 'sessionStorage', {
+          configurable: true,
+          value: {
+            getItem(key) { window.__sidebarTest.jssdkStorageReads += 1; return values.get(key) || null; },
+            setItem(key, value) { values.set(key, String(value)); },
+            removeItem() { throw new window.DOMException('cache removal blocked', 'SecurityError'); },
+          },
+        });
+      }
+      if (scenario === 'session_storage_unavailable') {
+        Object.defineProperty(window, 'sessionStorage', {
+          configurable: true,
+          get() { throw new window.DOMException('storage disabled', 'SecurityError'); },
+        });
+      }
       if (scenario === 'sdk_cache') {
         const pageURL = window.location.href.split('#', 1)[0];
         const config = { corpID: 'ww-test', agentID: '1', url: pageURL, config: { nonce: 'cached-config-nonce', timestamp: 1, signature: 'cached-config-signature', jsApiList: [] }, agentConfig: { nonce: 'cached-agent-nonce', timestamp: 1, signature: 'cached-agent-signature', jsApiList: ['getContext', 'getCurExternalContact', 'sendChatMessage'] } };
@@ -3058,19 +3075,32 @@ for (const [scenario, expected, action, detail] of [
     !dom.window.__sidebarTest.requests.some((url) => url.includes('/bootstrap') || url.includes('/context-token')));
   dom.window.close();
 }
-{
-  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=agent_retry' });
+for (const [scenario, storageReads, label] of [
+  ['agent_retry', null, 'agentConfig 显式失败后重试仅复用同 URL 已确认的 regular 状态'],
+  ['agent_retry_storage_failure', 1, 'agentConfig 失败后即使旧 session 签名无法删除也强制重取'],
+]) {
+  const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
   const d = dom.window.document;
   const retry = d.querySelector('[data-sidebar-action="retry-context"]');
   retry?.click();
   await sleep(40);
   const stages = dom.window.__sidebarTest.wxStages.map((entry) => entry.stage);
-  ok('agentConfig 显式失败后重试仅复用同 URL 已确认的 regular 状态',
+  ok(label,
     !!retry &&
     stages.filter((stage) => stage === 'config').length === 1 &&
     stages.filter((stage) => stage === 'agentConfig').length === 2 &&
     dom.window.__sidebarTest.requests.filter((url) => url.includes('/jssdk-config')).length === 2 &&
+    (storageReads === null || dom.window.__sidebarTest.jssdkStorageReads === storageReads) &&
     d.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready');
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=session_storage_unavailable' });
+  await sleep(40);
+  ok('sessionStorage SecurityError 仅禁用短期缓存，仍通过正式签名建立上下文',
+    dom.window.__sidebarTest.requests.filter((url) => url.includes('/jssdk-config')).length === 1 &&
+    dom.window.__sidebarTest.requests.filter((url) => url.includes('/bootstrap')).length === 1 &&
+    dom.window.document.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready');
   dom.window.close();
 }
 {
