@@ -115,6 +115,15 @@ function requireMode(value, label) {
   return value;
 }
 
+function requireObservedSource(value, label) {
+  if (!isPlainObject(value)) fail('INVALID_INDEX', `${label} must be an object`);
+  requireString(value.repository, `${label}.repository`);
+  if (!isHex(value.commit, 40)) fail('INVALID_INDEX', `${label}.commit must be a 40-hex commit`);
+  value.path = normalizeLogicalPath(value.path, `${label}.path`);
+  if (!isHex(value.git_blob_sha, 40)) fail('INVALID_INDEX', `${label}.git_blob_sha must be a 40-hex Git blob`);
+  return value;
+}
+
 function validateIndex(index) {
   if (index.schema_version !== INDEX_SCHEMA_VERSION) fail('INVALID_INDEX', 'unsupported source-index schema_version');
   index.lock_path = normalizeLogicalPath(index.lock_path, 'lock_path');
@@ -130,6 +139,9 @@ function validateIndex(index) {
   const libraryByID = new Map();
   for (const library of libraries) {
     if (!isPlainObject(library) || library.immutable !== true) fail('INVALID_INDEX', 'every source library must be an immutable object');
+    if (!['frozen_donor', 'active_v3_contract'].includes(library.authority_kind)) {
+      fail('INVALID_INDEX', 'library authority_kind must be frozen_donor or active_v3_contract');
+    }
     requireString(library.source_repository, 'library.source_repository');
     if (!isHex(library.source_commit, 40)) fail('INVALID_INDEX', 'library.source_commit must be a 40-hex commit');
     library.root = normalizeLogicalPath(library.root, 'library.root');
@@ -167,7 +179,10 @@ function validateIndex(index) {
     requireString(binding.usage, 'binding.usage');
     requireString(binding.freeze_gate, 'binding.freeze_gate');
     requireString(binding.freeze_ledger, 'binding.freeze_ledger');
-    if (binding.current_path_state !== 'tracked_pre_p2') fail('INVALID_INDEX', 'PR-2 pilot bindings must remain tracked_pre_p2');
+    if (binding.observed_source !== undefined) requireObservedSource(binding.observed_source, 'binding.observed_source');
+    if (!['tracked_pre_p4_removal', 'untracked_post_p4'].includes(binding.current_path_state)) {
+      fail('INVALID_INDEX', 'binding current_path_state must describe the PR-3/P4 transition');
+    }
     const content = contentByID.get(binding.content_id);
     const library = libraryByID.get(content.library_id);
     if (
@@ -307,10 +322,56 @@ function writeAtomically(root, absolute, bytes, mode, { replaceOwnedFile = false
   }
 }
 
+const trackedIndexCache = new Map();
+
+function gitDirectory(root) {
+  const dotGit = path.join(root, '.git');
+  if (!fs.existsSync(dotGit)) fail('GIT_INDEX_UNAVAILABLE', 'source-view preparation requires a Git worktree');
+  const stat = fs.lstatSync(dotGit);
+  if (stat.isDirectory()) return dotGit;
+  if (!stat.isFile()) fail('GIT_INDEX_UNAVAILABLE', 'Git metadata is neither a directory nor a gitdir file');
+  const declaration = fs.readFileSync(dotGit, 'utf8').trim();
+  const match = /^gitdir:[ \t]*(.+)$/.exec(declaration);
+  if (!match) fail('GIT_INDEX_UNAVAILABLE', 'Git worktree metadata does not name its gitdir');
+  const gitDirectoryPath = path.resolve(path.dirname(dotGit), match[1]);
+  if (!fs.existsSync(gitDirectoryPath) || !fs.lstatSync(gitDirectoryPath).isDirectory()) {
+    fail('GIT_INDEX_UNAVAILABLE', 'Git worktree gitdir is unavailable');
+  }
+  return gitDirectoryPath;
+}
+
+function gitIndexStamp(root) {
+  const gitDirectoryPath = gitDirectory(root);
+  const index = path.join(gitDirectoryPath, 'index');
+  try {
+    const stat = fs.statSync(index);
+    if (!stat.isFile()) fail('GIT_INDEX_UNAVAILABLE', 'Git index is not a regular file');
+    return `${index}\0${stat.dev}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}`;
+  } catch (error) {
+    if (error instanceof DonorViewError) throw error;
+    fail('GIT_INDEX_UNAVAILABLE', 'Git index is unavailable');
+  }
+}
+
+function trackedPaths(root) {
+  const stamp = gitIndexStamp(root);
+  const cached = trackedIndexCache.get(root);
+  if (cached?.stamp === stamp) return cached.paths;
+  const result = spawnSync('git', ['-C', root, 'ls-files', '-z'], { encoding: 'buffer' });
+  if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stdout)) {
+    fail('GIT_INDEX_UNAVAILABLE', 'unable to inspect Git index');
+  }
+  const paths = new Set(result.stdout.toString('utf8').split('\0').filter(Boolean));
+  trackedIndexCache.set(root, { stamp, paths });
+  return paths;
+}
+
+function invalidateTrackedPaths(root) {
+  trackedIndexCache.delete(root);
+}
+
 function isTracked(root, logicalPath) {
-  if (!fs.existsSync(path.join(root, '.git'))) return false;
-  const result = spawnSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', logicalPath], { encoding: 'utf8' });
-  return result.status === 0;
+  return trackedPaths(root).has(logicalPath);
 }
 
 function indexDigest(loaded) {
@@ -354,15 +415,54 @@ function validateReceipt(loaded, receipt) {
   }
 }
 
-function assertReceiptCoversEnabledViews(loaded, receipt, { allowEmpty = false } = {}) {
-  const expected = loaded.index.views
-    .filter((view) => view.enabled)
+function validateStaleReceiptForCleanup(loaded, receipt) {
+  if (receipt.targets.length === 0) return [];
+  if (!isHex(receipt.index_sha256, 64)) {
+    fail('INVALID_RECEIPT', 'stale materialization receipt lacks an index SHA-256');
+  }
+  const currentViews = new Map(loaded.index.views.map((view) => [view.target_path, view]));
+  return receipt.targets.map((record) => {
+    if (!isPlainObject(record)) fail('INVALID_RECEIPT', 'stale materialization receipt target must be an object');
+    const targetPath = normalizeLogicalPath(record.target_path, 'receipt.target_path');
+    const current = currentViews.get(targetPath);
+    if (!current || !current.enabled) {
+      fail('STALE_RECEIPT_RECOVERY_REQUIRED', `current source index no longer declares the stale receipt target: ${targetPath}`);
+    }
+    requireString(record.content_id, `receipt:${targetPath}.content_id`);
+    normalizeLogicalPath(record.canonical_path, `receipt:${targetPath}.canonical_path`);
+    if (!isHex(record.content_sha256, 64) || !Number.isSafeInteger(record.bytes) || record.bytes < 0) {
+      fail('INVALID_RECEIPT', `stale materialization receipt has an invalid content identity: ${targetPath}`);
+    }
+    requireMode(record.mode, `receipt:${targetPath}.mode`);
+    return { ...record, target_path: targetPath };
+  });
+}
+
+function materializedViewTargets(loaded) {
+  return loaded.index.views
+    .filter((view) => view.enabled && !isTracked(loaded.root, view.target_path))
     .map((view) => view.target_path)
     .sort();
+}
+
+function trackedViewTargets(loaded) {
+  return loaded.index.views
+    .filter((view) => view.enabled && isTracked(loaded.root, view.target_path))
+    .map((view) => view.target_path)
+    .sort();
+}
+
+function assertReceiptCoversMaterializedViews(loaded, receipt, { allowEmpty = false } = {}) {
+  for (const record of receipt.targets) {
+    if (isTracked(loaded.root, record.target_path)) {
+      fail('TRACKED_TARGET', `materialized receipt target became tracked: ${record.target_path}`);
+    }
+  }
+  const expected = materializedViewTargets(loaded);
   const actual = receipt.targets.map((record) => record.target_path).sort();
   if (allowEmpty && actual.length === 0) return;
   if (stableJSON(actual) !== stableJSON(expected)) {
-    fail('RECEIPT_INCOMPLETE', 'materialization receipt does not cover exactly the enabled view targets');
+    fail('RECEIPT_INCOMPLETE', 'materialization receipt does not cover exactly the currently untracked enabled view targets');
   }
 }
 
@@ -458,18 +558,45 @@ export function recoverMaterializationLock(root) {
   fail('LOCK_RECOVERY_REQUIRED', 'materialization lock owner is still active; inspect it manually');
 }
 
-function checkedContents(loaded) {
+function checkedContents(loaded, { allowMissingEnabledViewBindings = false } = {}) {
   const checked = [...loaded.contentByID.values()].map((content) => checkContent(loaded.root, content));
   const byID = new Map(checked.map((content) => [content.id, content]));
-  for (const binding of loaded.index.bindings) checkBinding(loaded.root, binding, byID.get(binding.content_id));
+  const enabledTargets = new Set(loaded.index.views.filter((view) => view.enabled).map((view) => view.target_path));
+  for (const binding of loaded.index.bindings) {
+    try {
+      checkBinding(loaded.root, binding, byID.get(binding.content_id));
+    } catch (error) {
+      // A missing source-view binding is permissible only after it has left
+      // Git's index (the disposable proof or a reviewed P4 removal). A
+      // tracked-but-missing working-tree file is a developer/worktree error,
+      // not a signal to silently materialize a replacement.
+      if (
+        allowMissingEnabledViewBindings
+        && error instanceof DonorViewError
+        && error.code === 'MISSING_FILE'
+        && enabledTargets.has(binding.logical_path)
+        && !isTracked(loaded.root, binding.logical_path)
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
   return { checked, byID };
 }
 
-function loadValidated(root, indexPath) {
+function loadValidated(root, indexPath, options = {}) {
   const loaded = loadSourceIndex(root, indexPath);
   verifySourceLock(loaded);
-  const { checked, byID } = checkedContents(loaded);
+  const { checked, byID } = checkedContents(loaded, options);
   return { loaded, checked, byID };
+}
+
+function loadCanonicalIndex(root, indexPath) {
+  const loaded = loadSourceIndex(root, indexPath);
+  verifySourceLock(loaded);
+  const checked = [...loaded.contentByID.values()].map((content) => checkContent(loaded.root, content));
+  return { loaded, checked };
 }
 
 export function planMaterialization(root, indexPath) {
@@ -479,6 +606,126 @@ export function planMaterialization(root, indexPath) {
     action: 'plan',
     materialized_view_targets: loaded.index.views.filter((view) => view.enabled).map((view) => view.target_path).sort(),
   };
+}
+
+function runGit(root, args, label) {
+  const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) {
+    fail('GIT_COMMAND_FAILED', `${label} failed`);
+  }
+  if (['rm', 'restore', 'add', 'reset', 'read-tree', 'update-index'].includes(args[0])) invalidateTrackedPaths(root);
+  return result.stdout;
+}
+
+function enabledViewTargets(loaded) {
+  return loaded.index.views.filter((view) => view.enabled).map((view) => view.target_path).sort();
+}
+
+function assertDisposableWorktree(root, environment, { requireClean = true } = {}) {
+  if (environment.AICRM_DEDUP_DISPOSABLE_WORKTREE !== '1') {
+    fail('DISPOSABLE_WORKTREE_REQUIRED', 'preparing tracked compatibility views requires AICRM_DEDUP_DISPOSABLE_WORKTREE=1');
+  }
+  if (runGit(root, ['rev-parse', '--is-inside-work-tree'], 'Git worktree check').trim() !== 'true') {
+    fail('DISPOSABLE_WORKTREE_REQUIRED', 'preparing tracked compatibility views requires a Git worktree');
+  }
+  if (requireClean && runGit(root, ['status', '--porcelain', '--untracked-files=no'], 'Git worktree status').trim() !== '') {
+    fail('DIRTY_WORKTREE', 'preparing tracked compatibility views requires a clean tracked worktree');
+  }
+}
+
+function assertExactStagedRemovals(root, targets) {
+  for (const target of targets) {
+    if (isTracked(root, target)) fail('TRACKED_TARGET', `disposable materialized view became tracked: ${target}`);
+  }
+  const expected = targets.map((target) => `D\t${target}`).sort();
+  const actual = runGit(root, ['diff', '--cached', '--name-status', '--'], 'Git staged-removal check')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .sort();
+  if (stableJSON(actual) !== stableJSON(expected)) {
+    fail('UNEXPECTED_INDEX_CHANGES', 'disposable worktree index does not contain exactly the declared view removals');
+  }
+  if (runGit(root, ['diff', '--name-only', '--'], 'Git worktree-diff check').trim() !== '') {
+    fail('DIRTY_WORKTREE', 'disposable worktree has unstaged changes while compatibility views are prepared');
+  }
+}
+
+function restoreTrackedTargets(root, targets) {
+  runGit(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', ...targets], 'restore declared tracked view targets');
+}
+
+function restoreAfterSafePrepareFailure(root, targets, originalError) {
+  try {
+    assertExactStagedRemovals(root, targets);
+    for (const target of targets) {
+      const absolute = resolveLogicalPath(root, target, `prepare rollback:${target}`);
+      if (fs.existsSync(absolute)) {
+        fail('PREPARE_RECOVERY_REQUIRED', `preparation left an untracked target at ${target}; preserve it and restore manually`);
+      }
+    }
+    restoreTrackedTargets(root, targets);
+  } catch (rollbackError) {
+    const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+    fail('PREPARE_RECOVERY_REQUIRED', `preparation failed (${originalError.message}); no tracked target was restored because safe rollback could not be proven: ${detail}`);
+  }
+}
+
+export function prepareDisposableMaterialization(root, indexPath, { environment = process.env, faults = {} } = {}) {
+  const { loaded, checked, byID } = loadValidated(root, indexPath);
+  const targets = enabledViewTargets(loaded);
+  if (targets.length === 0) fail('NO_ENABLED_VIEWS', 'disposable preparation requires at least one enabled view');
+  assertDisposableWorktree(loaded.root, environment);
+  const release = acquireLock(loaded.root);
+  try {
+    for (const target of targets) {
+      if (!isTracked(loaded.root, target)) fail('EXPECTED_TRACKED_TARGET', `disposable preparation expected a tracked source path: ${target}`);
+    }
+    runGit(loaded.root, ['rm', '--force', '--', ...targets], 'remove declared tracked view targets');
+    try {
+      const applied = applyLoadedMaterialization(loaded, checked, byID, faults);
+      return { ...applied, action: 'prepare-disposable', materialized_view_targets: targets };
+    } catch (error) {
+      restoreAfterSafePrepareFailure(loaded.root, targets, error);
+      throw error;
+    }
+  } finally {
+    release();
+  }
+}
+
+export function restoreDisposableMaterialization(root, indexPath, { environment = process.env } = {}) {
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
+  const targets = enabledViewTargets(loaded);
+  if (targets.length === 0) fail('NO_ENABLED_VIEWS', 'disposable restoration requires at least one enabled view');
+  assertDisposableWorktree(loaded.root, environment, { requireClean: false });
+  const release = acquireLock(loaded.root);
+  try {
+    assertExactStagedRemovals(loaded.root, targets);
+    const cleaned = cleanLoadedMaterialization(loaded, checked, byID);
+    restoreTrackedTargets(loaded.root, targets);
+    return { ...cleaned, action: 'restore-disposable', restored_view_targets: targets };
+  } finally {
+    release();
+  }
+}
+
+// The disposable proof is allowed to have exactly the selected source views
+// staged as deletions. This verifier is intentionally separate from normal
+// prepare: freeze gates can call it to prove that those are the only index
+// changes and that every replacement is receipted and byte-identical.
+export function verifyDisposableMaterialization(root, indexPath, { environment = process.env } = {}) {
+  const { loaded } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
+  assertDisposableWorktree(loaded.root, environment, { requireClean: false });
+  const release = acquireLock(loaded.root);
+  try {
+    const targets = enabledViewTargets(loaded);
+    assertExactStagedRemovals(loaded.root, targets);
+    const verified = verifyMaterialization(loaded.root, indexPath);
+    return { ...verified, action: 'verify-disposable', materialized_view_targets: targets };
+  } finally {
+    release();
+  }
 }
 
 function assertWritableTarget(root, loaded, receipt, view, content) {
@@ -524,45 +771,53 @@ function rollbackCreatedViews(created) {
   }
 }
 
-export function applyMaterialization(root, indexPath, faults = {}) {
-  const { loaded, checked, byID } = loadValidated(root, indexPath);
+function applyLoadedMaterialization(loaded, checked, byID, faults = {}) {
   const enabled = loaded.index.views.filter((view) => view.enabled);
-  if (enabled.length === 0) return { ...sourceSummary(loaded, checked), action: 'apply', created: [], reused: [], no_enabled_views: true };
-  const release = acquireLock(loaded.root);
+  if (enabled.length === 0) return { ...sourceSummary(loaded, checked), action: 'apply', created: [], reused: [], tracked_views: [], no_enabled_views: true };
   const created = [];
+  const receiptState = loadReceipt(loaded.root);
+  validateReceipt(loaded, receiptState.receipt);
+  assertReceiptCoversMaterializedViews(loaded, receiptState.receipt, { allowEmpty: true });
+  const materialized = enabled.filter((view) => !isTracked(loaded.root, view.target_path));
+  const prepared = materialized.map((view) => ({ view, content: byID.get(view.content_id), ...assertWritableTarget(loaded.root, loaded, receiptState.receipt, view, byID.get(view.content_id)) }));
   try {
-    const receiptState = loadReceipt(loaded.root);
-    validateReceipt(loaded, receiptState.receipt);
-    assertReceiptCoversEnabledViews(loaded, receiptState.receipt, { allowEmpty: true });
-    const prepared = enabled.map((view) => ({ view, content: byID.get(view.content_id), ...assertWritableTarget(loaded.root, loaded, receiptState.receipt, view, byID.get(view.content_id)) }));
-    try {
-      for (const item of prepared) {
-        if (item.existing) continue;
-        writeAtomically(loaded.root, item.absolute, item.content.file_bytes, item.content.mode);
-        created.push(item);
-      }
-      if (typeof faults.beforeReceiptWrite === 'function') faults.beforeReceiptWrite();
-      const receiptWriter = faults.writeReceipt ?? writeReceipt;
-      receiptWriter(loaded.root, loaded, receiptState.absolute, enabled.map((view) => receiptRecord(view, byID.get(view.content_id))));
-    } catch (error) {
-      rollbackCreatedViews(created);
-      throw error;
+    for (const item of prepared) {
+      if (item.existing) continue;
+      writeAtomically(loaded.root, item.absolute, item.content.file_bytes, item.content.mode);
+      created.push(item);
     }
-    return {
-      ...sourceSummary(loaded, checked), action: 'apply',
-      created: created.map((item) => item.view.target_path).sort(),
-      reused: prepared.filter((item) => item.existing).map((item) => item.view.target_path).sort(),
-    };
+    if (typeof faults.beforeReceiptWrite === 'function') faults.beforeReceiptWrite();
+    const receiptWriter = faults.writeReceipt ?? writeReceipt;
+    if (materialized.length > 0) {
+      receiptWriter(loaded.root, loaded, receiptState.absolute, materialized.map((view) => receiptRecord(view, byID.get(view.content_id))));
+    }
+  } catch (error) {
+    rollbackCreatedViews(created);
+    throw error;
+  }
+  return {
+    ...sourceSummary(loaded, checked), action: 'apply',
+    created: created.map((item) => item.view.target_path).sort(),
+    reused: prepared.filter((item) => item.existing).map((item) => item.view.target_path).sort(),
+    tracked_views: trackedViewTargets(loaded),
+  };
+}
+
+export function applyMaterialization(root, indexPath, faults = {}) {
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
+  const release = acquireLock(loaded.root);
+  try {
+    return applyLoadedMaterialization(loaded, checked, byID, faults);
   } finally {
     release();
   }
 }
 
 export function verifyMaterialization(root, indexPath) {
-  const { loaded, checked, byID } = loadValidated(root, indexPath);
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
   const receiptState = loadReceipt(loaded.root);
   validateReceipt(loaded, receiptState.receipt);
-  assertReceiptCoversEnabledViews(loaded, receiptState.receipt);
+  assertReceiptCoversMaterializedViews(loaded, receiptState.receipt);
   for (const record of receiptState.receipt.targets) {
     if (isTracked(loaded.root, record.target_path)) fail('TRACKED_TARGET', `materialized view became tracked: ${record.target_path}`);
     const content = byID.get(record.content_id);
@@ -572,33 +827,122 @@ export function verifyMaterialization(root, indexPath) {
       fail('DIRTY_TARGET', `materialized view drifted: ${record.target_path}`);
     }
   }
-  return { ...sourceSummary(loaded, checked), action: 'verify', materialized_views_verified: receiptState.receipt.targets.map((record) => record.target_path).sort() };
+  return {
+    ...sourceSummary(loaded, checked), action: 'verify',
+    materialized_views_verified: receiptState.receipt.targets.map((record) => record.target_path).sort(),
+    tracked_views_verified: trackedViewTargets(loaded),
+  };
+}
+
+function cleanLoadedMaterialization(loaded, checked, byID) {
+  const receiptState = loadReceipt(loaded.root);
+  validateReceipt(loaded, receiptState.receipt);
+  assertReceiptCoversMaterializedViews(loaded, receiptState.receipt);
+  for (const record of receiptState.receipt.targets) {
+    if (isTracked(loaded.root, record.target_path)) fail('TRACKED_TARGET', `refusing to clean a materialized view that became tracked: ${record.target_path}`);
+    const content = byID.get(record.content_id);
+    const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
+    const actual = readRegularFile(absolute, `receipt:${record.target_path}`);
+    if (actual.bytes.byteLength !== content.bytes || sha256(actual.bytes) !== content.content_sha256 || actual.mode !== content.mode) {
+      fail('DIRTY_TARGET', `refusing to clean a modified generated view: ${record.target_path}`);
+    }
+  }
+  const removed = [];
+  for (const record of receiptState.receipt.targets) {
+    const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
+    fs.rmSync(absolute);
+    removed.push(record.target_path);
+  }
+  if (fs.existsSync(receiptState.absolute)) fs.rmSync(receiptState.absolute);
+  return { ...sourceSummary(loaded, checked), action: 'clean', removed: removed.sort(), tracked_views: trackedViewTargets(loaded) };
 }
 
 export function cleanMaterialization(root, indexPath) {
-  const { loaded, checked, byID } = loadValidated(root, indexPath);
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
+  const release = acquireLock(loaded.root);
+  try {
+    return cleanLoadedMaterialization(loaded, checked, byID);
+  } finally {
+    release();
+  }
+}
+
+// If a process dies after clean removed some views but before it removes the
+// receipt, this explicit repair recreates only receipt-listed files that are
+// absent. It never overwrites a present file: every present target must still
+// match the receipt exactly before any missing target is restored.
+export function recoverPartialMaterialization(root, indexPath) {
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
   const release = acquireLock(loaded.root);
   try {
     const receiptState = loadReceipt(loaded.root);
     validateReceipt(loaded, receiptState.receipt);
-    assertReceiptCoversEnabledViews(loaded, receiptState.receipt);
+    assertReceiptCoversMaterializedViews(loaded, receiptState.receipt);
+    const missing = [];
     for (const record of receiptState.receipt.targets) {
-      if (isTracked(loaded.root, record.target_path)) fail('TRACKED_TARGET', `refusing to clean a materialized view that became tracked: ${record.target_path}`);
+      if (isTracked(loaded.root, record.target_path)) {
+        fail('TRACKED_TARGET', `refusing to recover a materialized view that became tracked: ${record.target_path}`);
+      }
       const content = byID.get(record.content_id);
       const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
+      if (!fs.existsSync(absolute)) {
+        missing.push({ record, content, absolute });
+        continue;
+      }
       const actual = readRegularFile(absolute, `receipt:${record.target_path}`);
       if (actual.bytes.byteLength !== content.bytes || sha256(actual.bytes) !== content.content_sha256 || actual.mode !== content.mode) {
-        fail('DIRTY_TARGET', `refusing to clean a modified generated view: ${record.target_path}`);
+        fail('DIRTY_TARGET', `refusing to recover over a modified generated view: ${record.target_path}`);
       }
     }
-    const removed = [];
-    for (const record of receiptState.receipt.targets) {
-      const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
-      fs.rmSync(absolute);
-      removed.push(record.target_path);
+    const restored = [];
+    try {
+      for (const item of missing) {
+        writeAtomically(loaded.root, item.absolute, item.content.file_bytes, item.content.mode);
+        restored.push({ view: { target_path: item.record.target_path }, content: item.content, absolute: item.absolute });
+      }
+    } catch (error) {
+      rollbackCreatedViews(restored);
+      throw error;
     }
+    return {
+      ...sourceSummary(loaded, checked),
+      action: 'recover-partial',
+      restored: restored.map((item) => item.view.target_path).sort(),
+    };
+  } finally {
+    release();
+  }
+}
+
+// A reviewed source update can replace a canonical content identity while its
+// declared logical targets remain the same. Normal clean rejects that receipt.
+// This explicit recovery validates the current index/library and deletes only
+// exact old receipt bytes; user changes and later-tracked paths remain intact.
+export function cleanStaleMaterialization(root, indexPath) {
+  const { loaded, checked } = loadCanonicalIndex(root, indexPath);
+  const release = acquireLock(loaded.root);
+  try {
+    const receiptState = loadReceipt(loaded.root);
+    const staleTargets = validateStaleReceiptForCleanup(loaded, receiptState.receipt);
+    const prepared = staleTargets.map((record) => {
+      if (isTracked(loaded.root, record.target_path)) {
+        fail('TRACKED_TARGET', `refusing to clean a stale materialized view that became tracked: ${record.target_path}`);
+      }
+      const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
+      const actual = readRegularFile(absolute, `receipt:${record.target_path}`);
+      if (actual.bytes.byteLength !== record.bytes || sha256(actual.bytes) !== record.content_sha256 || actual.mode !== record.mode) {
+        fail('DIRTY_TARGET', `refusing to clean a modified stale generated view: ${record.target_path}`);
+      }
+      return { record, absolute };
+    });
+    for (const item of prepared) fs.rmSync(item.absolute);
     if (fs.existsSync(receiptState.absolute)) fs.rmSync(receiptState.absolute);
-    return { ...sourceSummary(loaded, checked), action: 'clean', removed: removed.sort() };
+    return {
+      ...sourceSummary(loaded, checked),
+      action: 'clean-stale',
+      prior_index_sha256: receiptState.receipt.index_sha256 ?? null,
+      removed: prepared.map((item) => item.record.target_path).sort(),
+    };
   } finally {
     release();
   }

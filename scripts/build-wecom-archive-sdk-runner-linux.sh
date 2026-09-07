@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+node scripts/prepare-donor-source-views.mjs >/dev/null
+
 # The pinned official archive SDK is Linux x86-64 only. Keep this cgo build
 # separate from build-linux.sh so macOS can continue cross-building the
 # CGO-disabled application without requiring a Linux C cross-compiler.

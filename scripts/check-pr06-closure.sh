@@ -104,15 +104,21 @@ if grep -En '<aside|class="side"|\.side([^[:alnum:]_]|$)' "$GROUPOPS_TEMPLATE" "
 fi
 pass "PR10 admin_base is the sole sidebar and Group Ops templates are business-only"
 
-# The active web/src tree is intentionally the fixed donor tree.  A filename
+# The active web/src tree is intentionally the fixed donor tree. A filename
 # search for "groupops" would therefore flag the donor implementation itself
-# as a duplicate.  The hard gate is that this branch did not modify that tree;
-# the archive/active manifest above proves every required donor file remains
-# byte exact.  Any new Group Ops runtime must live in v3-owned Go adapters.
-if git -C "$REPO_ROOT" status --short -- web/src | grep -q .; then
+# as a duplicate. Ordinary runs require no modification. The dedicated PR-3
+# disposable proof is different: it stages exactly every declared view as a
+# deletion, then proves each untracked replacement against the immutable index
+# and receipt. That is not a donor mutation or a fallback exemption.
+if [[ "${AICRM_DEDUP_DISPOSABLE_WORKTREE:-}" == "1" ]]; then
+  AICRM_DEDUP_DISPOSABLE_WORKTREE=1 node "$REPO_ROOT/scripts/verify-disposable-donor-views.mjs" >/dev/null \
+    || fail "disposable source-view proof is not the exact declared removal/materialization set"
+  pass "PR-3 disposable source views are exactly receipted replacements; no donor drift is staged"
+elif git -C "$REPO_ROOT" status --short -- web/src | grep -q .; then
   fail "branch modified active donor web/src; Group Ops frontend must remain byte-exact"
+else
+  pass "no second active frontend shell/runtime was introduced; web/src is unmodified donor"
 fi
-pass "no second active frontend shell/runtime was introduced; web/src is unmodified donor"
 
 for path in \
   internal/groupops/app/runtime.go \
