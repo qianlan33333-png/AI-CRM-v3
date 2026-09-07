@@ -21,7 +21,7 @@ class CDP {
   call(method, params = {}) { return new Promise((resolve, reject) => { const id = ++this.id; this.pending.set(id, { resolve, reject }); this.socket.send(JSON.stringify({ id, method, params })); }); }
 }
 const domEvidence = async (cdp) => {
-  const result = await cdp.call('Runtime.evaluate', { expression: `(() => ({path:location.pathname, title:document.title, headings:[...document.querySelectorAll('h1,h2,h3')].map((item)=>item.textContent.trim()).slice(0,12), ids:[...document.querySelectorAll('[id]')].map((item)=>item.id).filter((id)=>/ops|configuration|toast|questionnaire/i.test(id)).slice(0,24), buttons:[...document.querySelectorAll('button')].map((item)=>item.textContent.trim()).filter(Boolean).slice(0,16), forms:[...document.forms].map((item)=>item.getAttribute('action')||'').slice(0,8)}))()`, returnByValue: true });
+  const result = await cdp.call('Runtime.evaluate', { expression: `(() => ({path:location.pathname, title:document.title, headings:[...document.querySelectorAll('h1,h2,h3')].map((item)=>item.textContent.trim()).slice(0,12), ids:[...document.querySelectorAll('[id]')].map((item)=>item.id).filter((id)=>/ops|configuration|toast|questionnaire/i.test(id)).slice(0,24), configuration_tag:document.querySelector('#opsConfigurationReference')?.tagName||'', buttons:[...document.querySelectorAll('button')].map((item)=>item.textContent.trim()).filter(Boolean).slice(0,16), forms:[...document.forms].map((item)=>item.getAttribute('action')||'').slice(0,8)}))()`, returnByValue: true });
   return JSON.stringify(result.result?.value || {});
 };
 const evaluate = async (cdp, expression, step = 'evaluate') => {

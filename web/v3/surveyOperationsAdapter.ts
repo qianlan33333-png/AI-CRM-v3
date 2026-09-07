@@ -75,7 +75,17 @@ async function loadAndInstall(): Promise<void> {
   };
   observer = new MutationObserver(install);
   observer.observe(document, { childList: true, subtree: true });
-  window.addEventListener('pagehide', () => observer?.disconnect(), { once: true });
+  // The frozen toggle renders during its target click handler. Observing the
+  // mutation remains the primary path; this event-bound rescan covers that
+  // handler's replacement boundary after its bubble phase without polling or
+  // changing the frozen page's state machine.
+  const afterClick = () => window.setTimeout(install, 0);
+  document.addEventListener('click', afterClick, true);
+  window.addEventListener('pagehide', () => {
+    observer?.disconnect();
+    observer = undefined;
+    document.removeEventListener('click', afterClick, true);
+  }, { once: true });
   install();
 }
 
