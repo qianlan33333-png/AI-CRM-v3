@@ -548,7 +548,7 @@ func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing
 	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `class="admin-sidebar"`) != 1 || strings.Count(response.Body.String(), "<main") != 1 || !strings.Contains(response.Body.String(), `<main id="stage" class="stage rich"></main>`) || strings.Contains(response.Body.String(), `<aside class="side">`) || !strings.Contains(response.Body.String(), `src="/assets/campaign.js"`) || !strings.Contains(response.Header().Get("Content-Security-Policy"), "style-src 'self' 'unsafe-inline'") || strings.Contains(response.Header().Get("Content-Security-Policy"), "script-src 'self' 'unsafe-inline'") {
+	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `class="admin-sidebar"`) != 1 || strings.Count(response.Body.String(), "<main") != 1 || !strings.Contains(response.Body.String(), `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`) || strings.Contains(response.Body.String(), `<aside class="side">`) || !strings.Contains(response.Body.String(), `src="/assets/campaign.js"`) || !strings.Contains(response.Header().Get("Content-Security-Policy"), "style-src 'self' 'unsafe-inline'") || strings.Contains(response.Header().Get("Content-Security-Policy"), "script-src 'self' 'unsafe-inline'") {
 		t.Fatalf("external effects shell mismatch status=%d body=%q", response.Code, response.Body.String())
 	}
 	request = httptest.NewRequest(http.MethodGet, "/admin/external-effects?view=external-effects&job=0", nil)

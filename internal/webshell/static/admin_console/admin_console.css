@@ -3464,3 +3464,105 @@ body.admin-shell {
     padding-right: 16px;
   }
 }
+
+/* Admin shell layout contract: frozen workspace fragments already own their
+ * first 52px toolbar.  The shell may not inset that toolbar a second time.
+ * These marker classes are emitted only by V3 renderers; donor source stays
+ * byte-frozen. */
+/* labs.css is loaded after this sheet in the final artifact.  These V3-only
+ * markers deliberately outrank its donor .stage.rich padding without touching
+ * the frozen donor CSS. */
+.admin-shell .admin-main-wrap > main.stage.rich.admin-workspace-stage--embedded,
+.admin-shell .admin-main-wrap > .order-host-layout > main.stage.rich.admin-workspace-stage--embedded {
+  align-self: stretch;
+  min-width: 0;
+  padding: 0;
+}
+
+.admin-shell .admin-main-wrap > main.stage.rich.admin-workspace-stage--dynamic {
+  min-width: 0;
+  padding: 16px 20px 36px;
+}
+
+/* HXC is the one main-navigation dynamic page without a donor toolbar.  Its
+ * Webshell topbar supplies the unique title; retain the V3 refresh action in
+ * the content action row instead of showing a second page title. The frozen
+ * Funnel mount deliberately replaces #stage's marker class at runtime, so
+ * scope this final rule by the V3 route and the mounted root rather than a
+ * marker that no longer exists after a successful mount. */
+body.admin-shell[data-page="funnel"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-funnel {
+  min-width: 0;
+  padding: 16px 20px 36px;
+}
+
+body.admin-shell[data-page="funnel"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-funnel > .crumb,
+body.admin-shell[data-page="funnel"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-funnel > .page-head > :first-child {
+  display: none;
+}
+
+body.admin-shell[data-page="funnel"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-funnel > .page-head {
+  min-height: 30px;
+  justify-content: flex-end;
+}
+
+
+/* These V3 dynamic hosts replace their initial stage marker when mounting.
+ * The shell remains responsible for the one page-level title and topbar;
+ * retain each workspace's local actions, history links, and status rows. */
+body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar,
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar {
+  min-width: 0;
+  padding: 16px 20px 36px;
+}
+
+body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .crumb,
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .crumb,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .crumb,
+body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head > :first-child,
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head > :first-child,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head > :first-child {
+  display: none;
+}
+
+body.admin-shell[data-page="radar"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head {
+  min-height: 30px;
+  justify-content: flex-end;
+}
+
+/* Detail and form pages have no local page-head actions. Remove the now-empty
+ * donor heading row entirely; their real edit/save controls remain below the
+ * shell title and are checked by the Chromium journey. */
+body.admin-shell[data-page="radarDetail"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head,
+body.admin-shell[data-page="radarForm"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-radar > .page-head {
+  display: none;
+}
+
+/* Campaign's V3 controller retains its two read-only history links while the
+ * shell owns the page title. Its direct content wrapper is source-backed and
+ * deliberately remains padded below the standard bar. */
+body.admin-shell[data-page="campaigns"] .admin-main-wrap > .admin-topbar + #stage > div > :first-child > :first-child,
+body.admin-shell[data-page="campaigns"] .admin-main-wrap > .admin-topbar + #stage > div > :first-child > h1 {
+  display: none;
+}
+
+/* The owner donor intentionally hid its old shell bar. It is mounted as a
+ * fragment now, so restore the V3 bar and hide only the duplicate donor
+ * title/subtitle; status pills and migration controls remain live. */
+body.admin-shell[data-page="owner-handoff"] .admin-main-wrap > .admin-topbar {
+  display: flex !important;
+}
+
+body.admin-shell[data-page="owner-handoff"] .admin-main-wrap > .admin-topbar + #stage[data-owner-handoff-host] {
+  min-width: 0;
+  padding: 16px 20px 36px;
+}
+
+body.admin-shell[data-page="owner-handoff"] [data-owner-migration-page] > .owner-migration-header {
+  margin-bottom: 16px;
+  justify-content: flex-end;
+}
+
+body.admin-shell[data-page="owner-handoff"] [data-owner-migration-page] > .owner-migration-header > :first-child {
+  display: none;
+}
