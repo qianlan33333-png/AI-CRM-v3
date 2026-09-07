@@ -7,7 +7,6 @@ import {
 import type {
   BootstrapSidebarBody,
   CompleteSidebarOAuthParams,
-  ListSidebarChatActivityParams,
   ListSidebarMaterialsParams,
   ListSidebarOrdersParams,
   ListSidebarPeriodicOrdersParams,
@@ -16,11 +15,9 @@ import type {
   ListSidebarTimelineParams,
   MintSidebarContextBody,
   SidebarBootstrapResponse,
-  SidebarChatActivityResponse,
   SidebarContextResponse,
   SidebarMaterialResponse,
   SidebarOrderResponse,
-  SidebarOtherStaffChatResponse,
   SidebarPeriodicOrderResponse,
   SidebarPeriodicRemarkResponse,
   SidebarPhoneBindingResponse,
@@ -271,25 +268,6 @@ export const sidebarApi = {
       params,
       signal,
     )) as SidebarTimelineResponse;
-  },
-  chatActivity: async (
-    contextToken: string,
-    params?: ListSidebarChatActivityParams,
-    signal?: AbortSignal,
-  ) => {
-    const { loadChatActivity } = await import("./sidebar/tabs/chat");
-    return (await loadChatActivity(
-      contextToken,
-      params,
-      signal,
-    )) as SidebarChatActivityResponse;
-  },
-  otherStaffChats: async (contextToken: string, signal?: AbortSignal) => {
-    const { loadOtherStaffChats } = await import("./sidebar/tabs/chat");
-    return (await loadOtherStaffChats(
-      contextToken,
-      signal,
-    )) as SidebarOtherStaffChatResponse;
   },
   questionnaires: async (
     contextToken: string,

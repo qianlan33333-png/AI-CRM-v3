@@ -21,7 +21,7 @@ func (PostgreSQL) ReadSidebarProfile(ctx context.Context, customerID customerdom
 		return customerport.SidebarProfile{}, err
 	}
 	var p customerport.SidebarProfile
-	err = tx.QueryRow(ctx, `SELECT customer_id,display_name,avatar_url,phone_masked,COALESCE(phone_assurance,''),customer_status,activation_status,gender,contact_type,corp_name,source,source_version,last_synced_at,updated_at FROM customer_directory_projection WHERE customer_id=$1`, customerID).Scan(&p.CustomerID, &p.DisplayName, &p.AvatarURL, &p.PhoneMasked, &p.PhoneAssurance, &p.Status, &p.ActivationState, &p.Gender, &p.ContactType, &p.CorpName, &p.Source, &p.Version, &p.LastSyncedAt, &p.UpdatedAt)
+	err = tx.QueryRow(ctx, `SELECT d.customer_id,d.display_name,d.avatar_url,d.phone_masked,COALESCE(d.phone_assurance,''),d.customer_status,d.activation_status,d.gender,d.contact_type,d.corp_name,d.source,COALESCE(s.profile_source,''),COALESCE(s.version,0),COALESCE(s.industry,''),COALESCE(s.industry_description,''),COALESCE(s.needs_blockers_followup,''),d.source_version,d.last_synced_at,GREATEST(d.updated_at,COALESCE(s.updated_at,d.updated_at)) FROM customer_directory_projection d LEFT JOIN customer_sidebar_profiles s ON s.customer_id=d.customer_id WHERE d.customer_id=$1`, customerID).Scan(&p.CustomerID, &p.DisplayName, &p.AvatarURL, &p.PhoneMasked, &p.PhoneAssurance, &p.Status, &p.ActivationState, &p.Gender, &p.ContactType, &p.CorpName, &p.Source, &p.ProfileSource, &p.ProfileVersion, &p.Industry, &p.IndustryDescription, &p.NeedsBlockersFollowup, &p.Version, &p.LastSyncedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return customerport.SidebarProfile{}, customerapp.ErrNotFound
 	}
@@ -53,7 +53,12 @@ func (PostgreSQL) UpdateSidebarProfile(ctx context.Context, command customerport
 		return customerport.SidebarProfile{}, err
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `UPDATE customer_directory_projection SET display_name=$3,gender=$4,corp_name=$5,source='sidebar',source_version=source_version+1,updated_at=$6 WHERE customer_id=$1 AND source_version=$2 RETURNING customer_id`, command.CustomerID, command.ExpectedVersion, command.DisplayName, command.Gender, command.CorpName, at).Scan(&id)
+	annotationUpdate := command.SourceSet || command.IndustrySet || command.IndustryDescriptionSet || command.NeedsBlockersFollowupSet
+	if annotationUpdate {
+		err = tx.QueryRow(ctx, `INSERT INTO customer_sidebar_profiles(customer_id,profile_source,industry,industry_description,needs_blockers_followup,version,updated_at) SELECT $1,$2,$3,$4,$5,1,$7 WHERE $6=0 ON CONFLICT (customer_id) DO UPDATE SET profile_source=CASE WHEN $8 THEN EXCLUDED.profile_source ELSE customer_sidebar_profiles.profile_source END,industry=CASE WHEN $9 THEN EXCLUDED.industry ELSE customer_sidebar_profiles.industry END,industry_description=CASE WHEN $10 THEN EXCLUDED.industry_description ELSE customer_sidebar_profiles.industry_description END,needs_blockers_followup=CASE WHEN $11 THEN EXCLUDED.needs_blockers_followup ELSE customer_sidebar_profiles.needs_blockers_followup END,version=customer_sidebar_profiles.version+1,updated_at=EXCLUDED.updated_at WHERE customer_sidebar_profiles.version=$6 RETURNING customer_id`, command.CustomerID, command.ProfileSource, command.Industry, command.IndustryDescription, command.NeedsBlockersFollowup, command.ExpectedProfileVersion, at, command.SourceSet, command.IndustrySet, command.IndustryDescriptionSet, command.NeedsBlockersFollowupSet).Scan(&id)
+	} else {
+		err = tx.QueryRow(ctx, `UPDATE customer_directory_projection SET display_name=$3,gender=$4,corp_name=$5,source_version=source_version+1,updated_at=$6 WHERE customer_id=$1 AND source_version=$2 RETURNING customer_id`, command.CustomerID, command.ExpectedVersion, command.DisplayName, command.Gender, command.CorpName, at).Scan(&id)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return customerport.SidebarProfile{}, customerapp.ErrSidebarProfileConflict
 	}

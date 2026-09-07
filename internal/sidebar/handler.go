@@ -249,15 +249,36 @@ func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		DisplayName     string `json:"display_name"`
-		Gender          int16  `json:"gender"`
-		CorpName        string `json:"corp_name"`
-		ExpectedVersion int64  `json:"expected_version"`
+		DisplayName            string  `json:"display_name"`
+		Gender                 int16   `json:"gender"`
+		CorpName               string  `json:"corp_name"`
+		Source                 *string `json:"source"`
+		Industry               *string `json:"industry"`
+		IndustryDescription    *string `json:"industry_description"`
+		NeedsBlockersFollowup  *string `json:"needs_blockers_followup"`
+		ExpectedVersion        int64   `json:"expected_version"`
+		ExpectedProfileVersion *int64  `json:"expected_profile_version"`
 	}
 	if !decodeStrict(w, r, &body) {
 		return
 	}
-	result, err := h.config.Profiles.UpdateSidebarProfile(r.Context(), customerport.SidebarProfileUpdate{CustomerID: customerID, EmployeeID: principal.EmployeeID, DisplayName: body.DisplayName, Gender: body.Gender, CorpName: body.CorpName, ExpectedVersion: body.ExpectedVersion, IdempotencyKey: idempotencyKey(r)})
+	command := customerport.SidebarProfileUpdate{CustomerID: customerID, EmployeeID: principal.EmployeeID, DisplayName: body.DisplayName, Gender: body.Gender, CorpName: body.CorpName, ExpectedVersion: body.ExpectedVersion, IdempotencyKey: idempotencyKey(r)}
+	if body.Source != nil {
+		command.ProfileSource, command.SourceSet = *body.Source, true
+	}
+	if body.Industry != nil {
+		command.Industry, command.IndustrySet = *body.Industry, true
+	}
+	if body.IndustryDescription != nil {
+		command.IndustryDescription, command.IndustryDescriptionSet = *body.IndustryDescription, true
+	}
+	if body.NeedsBlockersFollowup != nil {
+		command.NeedsBlockersFollowup, command.NeedsBlockersFollowupSet = *body.NeedsBlockersFollowup, true
+	}
+	if body.ExpectedProfileVersion != nil {
+		command.ExpectedProfileVersion = *body.ExpectedProfileVersion
+	}
+	result, err := h.config.Profiles.UpdateSidebarProfile(r.Context(), command)
 	if err != nil {
 		h.commandError(w, err)
 		return

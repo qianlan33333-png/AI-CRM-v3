@@ -75,14 +75,26 @@ func (service *SidebarProfileApplication) ReadSidebarProfile(ctx context.Context
 func (service *SidebarProfileApplication) UpdateSidebarProfile(ctx context.Context, command customerport.SidebarProfileUpdate) (customerport.SidebarProfile, error) {
 	command.DisplayName = strings.TrimSpace(command.DisplayName)
 	command.CorpName = strings.TrimSpace(command.CorpName)
-	if command.CustomerID < 1 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 || command.DisplayName == "" || len(command.DisplayName) > 200 || len(command.CorpName) > 200 || command.Gender < 0 || command.Gender > 2 || command.ExpectedVersion < 1 {
+	command.ProfileSource = strings.TrimSpace(command.ProfileSource)
+	command.Industry = strings.TrimSpace(command.Industry)
+	command.IndustryDescription = strings.TrimSpace(command.IndustryDescription)
+	command.NeedsBlockersFollowup = strings.TrimSpace(command.NeedsBlockersFollowup)
+	annotationUpdate := command.SourceSet || command.IndustrySet || command.IndustryDescriptionSet || command.NeedsBlockersFollowupSet
+	if command.CustomerID < 1 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 || command.ExpectedVersion < 1 ||
+		(annotationUpdate && (command.ExpectedProfileVersion < 0 || len(command.ProfileSource) > 200 || len(command.Industry) > 200 || len(command.IndustryDescription) > 2000 || len(command.NeedsBlockersFollowup) > 2000)) ||
+		(!annotationUpdate && (command.DisplayName == "" || len(command.DisplayName) > 200 || len(command.CorpName) > 200 || command.Gender < 0 || command.Gender > 2)) {
 		return customerport.SidebarProfile{}, ErrSidebarProfileInvalid
 	}
 	key, err := idempotency.Parse(command.IdempotencyKey)
 	if err != nil {
 		return customerport.SidebarProfile{}, ErrSidebarProfileInvalid
 	}
-	payload, _ := json.Marshal([]any{command.CustomerID, command.EmployeeID, command.DisplayName, command.Gender, command.CorpName, command.ExpectedVersion})
+	payload := []byte(nil)
+	if annotationUpdate {
+		payload, _ = json.Marshal([]any{command.CustomerID, command.EmployeeID, command.ExpectedProfileVersion, command.ProfileSource, command.Industry, command.IndustryDescription, command.NeedsBlockersFollowup, command.SourceSet, command.IndustrySet, command.IndustryDescriptionSet, command.NeedsBlockersFollowupSet})
+	} else {
+		payload, _ = json.Marshal([]any{command.CustomerID, command.EmployeeID, command.DisplayName, command.Gender, command.CorpName, command.ExpectedVersion})
+	}
 	keyDigest, payloadDigest := sha256.Sum256([]byte(key)), sha256.Sum256(payload)
 	var result customerport.SidebarProfile
 	conflicted := false
