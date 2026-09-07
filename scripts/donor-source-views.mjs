@@ -310,7 +310,12 @@ function writeAtomically(root, absolute, bytes, mode, { replaceOwnedFile = false
 function isTracked(root, logicalPath) {
   if (!fs.existsSync(path.join(root, '.git'))) return false;
   const result = spawnSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', logicalPath], { encoding: 'utf8' });
-  return result.status === 0;
+  if (result.error || result.status === null) {
+    fail('GIT_INDEX_UNAVAILABLE', `unable to inspect Git index for ${logicalPath}`);
+  }
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  fail('GIT_INDEX_UNAVAILABLE', `Git index inspection failed for ${logicalPath}`);
 }
 
 function indexDigest(loaded) {
@@ -458,17 +463,27 @@ export function recoverMaterializationLock(root) {
   fail('LOCK_RECOVERY_REQUIRED', 'materialization lock owner is still active; inspect it manually');
 }
 
-function checkedContents(loaded) {
+function checkedContents(loaded, { allowMissingEnabledViewBindings = false } = {}) {
   const checked = [...loaded.contentByID.values()].map((content) => checkContent(loaded.root, content));
   const byID = new Map(checked.map((content) => [content.id, content]));
-  for (const binding of loaded.index.bindings) checkBinding(loaded.root, binding, byID.get(binding.content_id));
+  const enabledTargets = new Set(loaded.index.views.filter((view) => view.enabled).map((view) => view.target_path));
+  for (const binding of loaded.index.bindings) {
+    try {
+      checkBinding(loaded.root, binding, byID.get(binding.content_id));
+    } catch (error) {
+      if (allowMissingEnabledViewBindings && error instanceof DonorViewError && error.code === 'MISSING_FILE' && enabledTargets.has(binding.logical_path)) {
+        continue;
+      }
+      throw error;
+    }
+  }
   return { checked, byID };
 }
 
-function loadValidated(root, indexPath) {
+function loadValidated(root, indexPath, options = {}) {
   const loaded = loadSourceIndex(root, indexPath);
   verifySourceLock(loaded);
-  const { checked, byID } = checkedContents(loaded);
+  const { checked, byID } = checkedContents(loaded, options);
   return { loaded, checked, byID };
 }
 
@@ -479,6 +494,85 @@ export function planMaterialization(root, indexPath) {
     action: 'plan',
     materialized_view_targets: loaded.index.views.filter((view) => view.enabled).map((view) => view.target_path).sort(),
   };
+}
+
+function runGit(root, args, label) {
+  const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) {
+    fail('GIT_COMMAND_FAILED', `${label} failed`);
+  }
+  return result.stdout;
+}
+
+function enabledViewTargets(loaded) {
+  return loaded.index.views.filter((view) => view.enabled).map((view) => view.target_path).sort();
+}
+
+function assertDisposableWorktree(root, environment, { requireClean = true } = {}) {
+  if (environment.AICRM_DEDUP_DISPOSABLE_WORKTREE !== '1') {
+    fail('DISPOSABLE_WORKTREE_REQUIRED', 'preparing tracked compatibility views requires AICRM_DEDUP_DISPOSABLE_WORKTREE=1');
+  }
+  if (runGit(root, ['rev-parse', '--is-inside-work-tree'], 'Git worktree check').trim() !== 'true') {
+    fail('DISPOSABLE_WORKTREE_REQUIRED', 'preparing tracked compatibility views requires a Git worktree');
+  }
+  if (requireClean && runGit(root, ['status', '--porcelain', '--untracked-files=no'], 'Git worktree status').trim() !== '') {
+    fail('DIRTY_WORKTREE', 'preparing tracked compatibility views requires a clean tracked worktree');
+  }
+}
+
+function assertExactStagedRemovals(root, targets) {
+  for (const target of targets) {
+    if (isTracked(root, target)) fail('TRACKED_TARGET', `disposable materialized view became tracked: ${target}`);
+  }
+  const expected = targets.map((target) => `D\t${target}`).sort();
+  const actual = runGit(root, ['diff', '--cached', '--name-status', '--'], 'Git staged-removal check')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .sort();
+  if (stableJSON(actual) !== stableJSON(expected)) {
+    fail('UNEXPECTED_INDEX_CHANGES', 'disposable worktree index does not contain exactly the declared view removals');
+  }
+  if (runGit(root, ['diff', '--name-only', '--'], 'Git worktree-diff check').trim() !== '') {
+    fail('DIRTY_WORKTREE', 'disposable worktree has unstaged changes while compatibility views are prepared');
+  }
+}
+
+function restoreTrackedTargets(root, targets) {
+  runGit(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', ...targets], 'restore declared tracked view targets');
+}
+
+export function prepareDisposableMaterialization(root, indexPath, { environment = process.env, faults = {} } = {}) {
+  const { loaded, checked } = loadValidated(root, indexPath);
+  const targets = enabledViewTargets(loaded);
+  if (targets.length === 0) fail('NO_ENABLED_VIEWS', 'disposable preparation requires at least one enabled view');
+  assertDisposableWorktree(loaded.root, environment);
+  for (const target of targets) {
+    if (!isTracked(loaded.root, target)) fail('EXPECTED_TRACKED_TARGET', `disposable preparation expected a tracked source path: ${target}`);
+  }
+  runGit(loaded.root, ['rm', '--force', '--', ...targets], 'remove declared tracked view targets');
+  try {
+    const applied = applyMaterialization(loaded.root, loaded.indexPath, faults);
+    return { ...applied, action: 'prepare-disposable', materialized_view_targets: targets };
+  } catch (error) {
+    try {
+      restoreTrackedTargets(loaded.root, targets);
+    } catch (rollbackError) {
+      fail('PREPARE_ROLLBACK_FAILED', `preparation failed and tracked targets could not be restored: ${rollbackError.message}`);
+    }
+    throw error;
+  }
+}
+
+export function restoreDisposableMaterialization(root, indexPath, { environment = process.env } = {}) {
+  const { loaded, checked } = loadValidated(root, indexPath);
+  const targets = enabledViewTargets(loaded);
+  if (targets.length === 0) fail('NO_ENABLED_VIEWS', 'disposable restoration requires at least one enabled view');
+  assertDisposableWorktree(loaded.root, environment, { requireClean: false });
+  assertExactStagedRemovals(loaded.root, targets);
+  const cleaned = cleanMaterialization(loaded.root, loaded.indexPath);
+  restoreTrackedTargets(loaded.root, targets);
+  return { ...cleaned, action: 'restore-disposable', restored_view_targets: targets };
 }
 
 function assertWritableTarget(root, loaded, receipt, view, content) {
@@ -525,7 +619,7 @@ function rollbackCreatedViews(created) {
 }
 
 export function applyMaterialization(root, indexPath, faults = {}) {
-  const { loaded, checked, byID } = loadValidated(root, indexPath);
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
   const enabled = loaded.index.views.filter((view) => view.enabled);
   if (enabled.length === 0) return { ...sourceSummary(loaded, checked), action: 'apply', created: [], reused: [], no_enabled_views: true };
   const release = acquireLock(loaded.root);

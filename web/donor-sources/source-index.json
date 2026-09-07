@@ -137,6 +137,47 @@
       "current_tree_commit": "5291366b9742030957f48ebf7464a040a3ab46db"
     }
   ],
-  "views": [],
+  "views": [
+    {
+      "target_path": "web/donors/adminops-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "enabled": true
+    },
+    {
+      "target_path": "web/donors/automation-operations-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "enabled": true
+    },
+    {
+      "target_path": "web/donors/automation-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "enabled": true
+    },
+    {
+      "target_path": "web/donors/coupons-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "enabled": true
+    },
+    {
+      "target_path": "web/donors/groupops-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "enabled": true
+    },
+    {
+      "target_path": "web/donors/media-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "enabled": true
+    },
+    {
+      "target_path": "web/donors/products-v2/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "enabled": true
+    },
+    {
+      "target_path": "web/src/api/generated/health.schemas.ts",
+      "content_id": "v2-health-schemas",
+      "enabled": true
+    }
+  ],
   "lock_path": "web/donor-sources/source-lock.json"
 }

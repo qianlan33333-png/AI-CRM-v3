@@ -37,12 +37,16 @@ node scripts/materialize-donor-views.mjs --mode recover-lock  # only after local
 ```
 
 The materializer has `plan`, `apply`, `verify`, `clean`, and explicit
-`recover-lock` modes. They are not build hooks in PR-2. Do not add them to a
-build, Go test, CI artifact, release command, or production installer until
-PR-3 updates every declared consumer in one reviewed change. The installer
-continues to consume only validated built binaries, `web/dist`, and the release
-manifest; it must not require Node, Git, a donor checkout, or source-view
-materialization.
+`recover-lock` modes. PR-3 adds `prepare-disposable` and `restore-disposable`,
+which require `AICRM_DEDUP_DISPOSABLE_WORKTREE=1`; the command runner uses them
+to remove exactly the selected tracked paths in a disposable build worktree,
+materialize the views, run the selected consumers, clean the receipt, and
+restore the tracked paths. This is the only permitted PR-3 transition proof.
+It is not a normal developer checkout mutation or a package-script hook.
+
+The installer continues to consume only validated built binaries, `web/dist`,
+and the release manifest; it must not require Node, Git, a donor checkout, or
+source-view materialization.
 
 | Phase | Permitted result | Required proof before advancing |
 |---|---|---|

@@ -12,7 +12,9 @@ import {
   applyMaterialization,
   cleanMaterialization,
   planMaterialization,
+  prepareDisposableMaterialization,
   recoverMaterializationLock,
+  restoreDisposableMaterialization,
   verifyMaterialization,
   verifySourceIndex,
 } from './donor-source-views.mjs';
@@ -99,17 +101,36 @@ function withFixture(options, callback) {
   }
 }
 
+function commitFixture(root) {
+  execFileSync('git', ['init', '--quiet', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'fixture@example.invalid']);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'Fixture']);
+  execFileSync('git', ['-C', root, 'add', '.']);
+  execFileSync('git', ['-C', root, 'commit', '--quiet', '-m', 'fixture']);
+}
+
+const DISPOSABLE_ENV = { ...process.env, AICRM_DEDUP_DISPOSABLE_WORKTREE: '1' };
+
 function expectCode(code, callback) {
   assert.throws(callback, (error) => error instanceof DonorViewError && error.code === code);
 }
 
-test('PR-2 production health pilot verifies all eight original paths and does not enable a view', () => {
+test('PR-3 production health pilot plans all eight logical views and refuses tracked-copy fallback', () => {
   const result = verifySourceIndex(REPOSITORY);
   assert.equal(result.bindings_verified, 8);
-  assert.equal(result.enabled_views, 0);
+  assert.equal(result.enabled_views, 8);
   assert.equal(result.canonical_contents[0].content_sha256, '7f1bc1d05b3e012de46b1d53ef7b56319c0bc032a1c0389fa3fd138c7218b40d');
-  assert.deepEqual(planMaterialization(REPOSITORY).materialized_view_targets, []);
-  assert.equal(applyMaterialization(REPOSITORY).no_enabled_views, true);
+  assert.deepEqual(planMaterialization(REPOSITORY).materialized_view_targets, [
+    'web/donors/adminops-v2/src/api/generated/health.schemas.ts',
+    'web/donors/automation-operations-v2/src/api/generated/health.schemas.ts',
+    'web/donors/automation-v2/src/api/generated/health.schemas.ts',
+    'web/donors/coupons-v2/src/api/generated/health.schemas.ts',
+    'web/donors/groupops-v2/src/api/generated/health.schemas.ts',
+    'web/donors/media-v2/src/api/generated/health.schemas.ts',
+    'web/donors/products-v2/src/api/generated/health.schemas.ts',
+    'web/src/api/generated/health.schemas.ts',
+  ]);
+  expectCode('TRACKED_TARGET', () => applyMaterialization(REPOSITORY));
 });
 
 test('materializes byte-identical untracked views atomically, reuses them, verifies and cleans only receipted paths', () => {
@@ -179,6 +200,10 @@ test('rejects path escape, duplicate targets and tracked targets', () => {
     execFileSync('git', ['-C', root, 'add', 'views/health.schemas.ts']);
     expectCode('TRACKED_TARGET', () => applyMaterialization(root, 'source-index.json'));
   });
+  withFixture({}, ({ root }) => {
+    fs.writeFileSync(path.join(root, '.git'), 'not a valid gitdir\n');
+    expectCode('GIT_INDEX_UNAVAILABLE', () => applyMaterialization(root, 'source-index.json'));
+  });
 });
 
 test('rejects dirty output, held lock and a partial plan before any write', () => {
@@ -235,6 +260,70 @@ test('refuses to verify or clean a modified or later-tracked generated view', ()
     expectCode('TRACKED_TARGET', () => verifyMaterialization(root, 'source-index.json'));
     expectCode('TRACKED_TARGET', () => cleanMaterialization(root, 'source-index.json'));
     assert.equal(fs.existsSync(path.join(root, 'views', 'health.schemas.ts')), true);
+  });
+});
+
+test('prepares and restores a disposable view worktree without a tracked fallback', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    expectCode('DISPOSABLE_WORKTREE_REQUIRED', () => prepareDisposableMaterialization(root, 'source-index.json'));
+    const prepared = prepareDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV });
+    assert.equal(prepared.action, 'prepare-disposable');
+    assert.deepEqual(prepared.materialized_view_targets, ['tracked/health.schemas.ts']);
+    assert.throws(() => execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' }));
+    assert.deepEqual(verifyMaterialization(root, 'source-index.json').materialized_views_verified, ['tracked/health.schemas.ts']);
+    const restored = restoreDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV });
+    assert.equal(restored.action, 'restore-disposable');
+    assert.deepEqual(restored.restored_view_targets, ['tracked/health.schemas.ts']);
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' });
+    assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), SOURCE);
+    assert.equal(fs.existsSync(path.join(root, '.aicrm-dedup', 'donor-views-receipt.json')), false);
+    assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '');
+  });
+});
+
+test('runs a command only with disposable untracked views and restores afterward', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    const childProgram = [
+      "const { spawnSync } = require('node:child_process');",
+      "const result = spawnSync('git', ['ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts']);",
+      'process.exit(result.status === 1 ? 0 : 9);',
+    ].join(' ');
+    execFileSync(process.execPath, [
+      path.join(REPOSITORY, 'scripts', 'run-with-donor-views.mjs'),
+      '--root', root,
+      '--index', 'source-index.json',
+      '--', process.execPath, '-e', childProgram,
+    ], { env: DISPOSABLE_ENV });
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' });
+    assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '');
+  });
+});
+
+test('fails closed during disposable cleanup or preparation rollback', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    prepareDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV });
+    execFileSync('git', ['-C', root, 'add', 'tracked/health.schemas.ts']);
+    expectCode('TRACKED_TARGET', () => restoreDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV }));
+    assert.equal(fs.existsSync(path.join(root, 'tracked', 'health.schemas.ts')), true);
+  });
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    assert.throws(
+      () => prepareDisposableMaterialization(root, 'source-index.json', {
+        environment: DISPOSABLE_ENV,
+        faults: { writeReceipt: () => { throw new Error('injected receipt failure'); } },
+      }),
+      /injected receipt failure/,
+    );
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' });
+    assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), SOURCE);
+    assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '');
   });
 });
 
