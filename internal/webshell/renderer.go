@@ -438,9 +438,16 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 		return errors.New("Group Ops standard host assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded">` + donorTemplate + `</main>`
-	if !standard {
+	content := ""
+	if standard {
+		// The standard Group Ops page was extracted from the source admin base,
+		// where the shell owns its one breadcrumb/title bar and main.admin-page
+		// supplies the business-content inset. Its V3 host begins with actions,
+		// not a second page heading, so keep that same native shell boundary.
+		data.ShowPageHeader = true
+		content = `<main id="stage" class="admin-page" data-group-ops-standard-stage>` + donorTemplate + `</main>`
+	} else {
+		data.ShowPageHeader = false
 		content += `<template id="tpl">` + donorTemplate + `</template>`
 		content = `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>` + `<template id="tpl">` + donorTemplate + `</template>`
 	}

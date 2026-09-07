@@ -957,4 +957,13 @@ func TestRenderGroupOpsInjectsManifestVerifiedReadonlyContentRenderer(t *testing
 	if err := renderer.RenderGroupOps(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "", "api.admin_group_ops_ui"), "groupops", `<section></section>`, GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}); err == nil {
 		t.Fatal("group ops shell accepted missing read-only content assets")
 	}
+	standardAssets := GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: "/groupops-assets/assets/groupops.css", HostJS: "/groupops-assets/assets/groupops.js", GroupPickerCSS: "/groupops-assets/groupops/group_chat_picker.css", GroupPickerJS: "/groupops-assets/groupops/group_chat_picker.js", MaterialPickerCSS: "/groupops-assets/groupops/material_picker.css", MaterialPickerJS: "/groupops-assets/groupops/material_picker.js", ComposerCSS: "/groupops-assets/groupops/send_content_composer.css", ComposerJS: "/groupops-assets/groupops/send_content_composer.js"}
+	standardResponse := httptest.NewRecorder()
+	if err = renderer.RenderGroupOps(standardResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "管理本地群计划。", "api.admin_group_ops_ui"), "groupops", `<div id="group-ops-app" data-group-ops-standard-host="true"></div>`, standardAssets); err != nil {
+		t.Fatal(err)
+	}
+	standardBody := standardResponse.Body.String()
+	if standardResponse.Code != http.StatusOK || !strings.Contains(standardBody, `<header class="admin-topbar">`) || !strings.Contains(standardBody, `<h1 class="admin-page-title">群运营计划</h1>`) || !strings.Contains(standardBody, `<main id="stage" class="admin-page" data-group-ops-standard-stage>`) || strings.Contains(standardBody, `admin-workspace-stage--embedded`) {
+		t.Fatalf("standard Group Ops native shell mismatch status=%d body=%q", standardResponse.Code, standardBody)
+	}
 }
