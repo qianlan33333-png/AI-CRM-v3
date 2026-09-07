@@ -17,5 +17,20 @@
       "Android"
     ],
     "scope": "fixed official SDK bytes and simulated native bridge; not real WeCom delivery"
+  },
+  "live_official_sdk_contract": {
+    "audit_session_date": "2026-09-08",
+    "url": "https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js",
+    "bytes": 27032,
+    "sha256": "3423759cba33274c3d0f8acdf6e3e7bcae44cb532f98c66d6920b7063310f90b",
+    "status": "pass",
+    "ua_cases": [
+      "macOS",
+      "Windows",
+      "iOS",
+      "Android"
+    ],
+    "method": "Existing V3 contract probe with only SDK input path and expected digest changed; assertions retained.",
+    "scope": "Current official resource simulated native bridge handshake only; not browser sharing or real WeCom delivery. Same version URL is not immutable content."
   }
 }
