@@ -485,6 +485,11 @@ def make_dependency_map(records: list[dict[str, Any]], contents: dict[str, bytes
 
 V2_FROZEN_COMMIT = "6bfbe5816bb89913c70adaca87d6a486260e016e"
 AI_PRODUCTION_FROZEN_COMMIT = "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f"
+AI_PRODUCTION_SOURCE_PATHS = {
+    "web/donors/ai-assistant-production/static/send_content_readonly_detail.css": (
+        "aicrm_next/app/admin_console/static/admin_console/send_content_readonly_detail.css"
+    ),
+}
 V2_MODULES = {
     "products-v2": {
         "module": "products", "manifest": "docs/migration/product/pr04-donor-manifest.yaml",
@@ -541,9 +546,13 @@ def source_binding_for_path(path: str, record: dict[str, Any], target_commit: st
         donor = path.split("/")[2]
         logical = logical_source_path(path)
         if donor == "ai-assistant-production":
+            source_path = AI_PRODUCTION_SOURCE_PATHS.get(path)
+            if source_path is None:
+                raise ValueError(f"No exact production donor source path recorded for {path}")
             binding.update({
                 "module": "ai_assistant", "source_repository": "AI-CRM production donor",
-                "source_commit": AI_PRODUCTION_FROZEN_COMMIT, "source_path": logical or path,
+                "source_commit": AI_PRODUCTION_FROZEN_COMMIT, "source_path": source_path,
+                "source_git_blob_sha": record["object_id"],
                 "usage": "frozen_production_asset_compatibility_view",
                 "freeze_gate": "scripts/check-ai-assistant-donor-manifest.sh",
                 "freeze_ledger": "docs/migration/ai-assistant/donor-sha256.txt",
