@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This script is invoked only through scripts/run-with-donor-views.mjs. That
-# wrapper has already removed every declared tracked compatibility path from a
-# disposable Git worktree and materialized exact untracked views.
+# This script always performs the non-destructive source-view preparation
+# itself. The P3 no-fallback CI proof additionally runs it inside
+# scripts/run-with-donor-views.mjs after exact disposable index removals.
 mode="${1:-}"
 v2_donor="${AICRM_V2_FROZEN_DONOR_DIR:-${PR07_DONOR_DIR:?PR07_DONOR_DIR is required}}"
 sidebar_donor="${AICRM_SIDEBAR_DONOR_DIR:?AICRM_SIDEBAR_DONOR_DIR is required}"
+node scripts/prepare-donor-source-views.mjs >/dev/null
 
 check_v2_donor() {
   [[ -d "$v2_donor/.git" ]] || { echo "missing V2 donor Git checkout: $v2_donor" >&2; exit 2; }

@@ -45,14 +45,16 @@ clean the receipt, and restore the tracked paths. This is the only permitted
 PR-3 transition proof. It is not a normal developer checkout mutation or a
 package-script hook.
 
-All Go consumers that can reach the OpenAPI or webshell embed use the explicit
-process boundary below; `Makefile` and direct build scripts reject an unprepared
-invocation. The wrapper requires a clean tracked worktree and restores the
-tracked paths on exit:
+`Makefile`, release builders, and direct build scripts automatically run the
+non-destructive preparation command. It verifies the tracked derived bytes in
+PR-3 and, after an approved PR-4 deletion, materializes only the declared
+untracked views. It does not require a clean working tree and it never stages,
+removes, or restores a tracked path. A bare `go` command remains an explicit
+opt-in through this safe helper:
 
 ```sh
-scripts/run-go-with-donor-views.sh make check
-scripts/run-go-with-donor-views.sh scripts/build-linux.sh amd64
+make check
+scripts/build-linux.sh amd64
 scripts/run-go-with-donor-views.sh go test ./cmd/aicrm
 ```
 

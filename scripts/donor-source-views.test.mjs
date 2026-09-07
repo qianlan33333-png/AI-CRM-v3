@@ -165,7 +165,11 @@ test('PR-3 plans every audited derived view and retains only the active OpenAPI 
     'internal/webshell/static/admin_console/send_content_readonly_detail.css',
     'web/donors/ai-assistant-production/static/send_content_readonly_detail.css',
   ]) assert.equal(plan.includes(target), true, `missing declared derived view: ${target}`);
-  expectCode('TRACKED_TARGET', () => applyMaterialization(REPOSITORY));
+  const prepared = applyMaterialization(REPOSITORY);
+  assert.deepEqual(prepared.created, []);
+  assert.equal(prepared.tracked_views.length, 229);
+  assert.equal(fs.existsSync(path.join(REPOSITORY, '.aicrm-dedup', 'donor-views-receipt.json')), false);
+  assert.equal(verifyMaterialization(REPOSITORY).tracked_views_verified.length, 229);
 });
 
 test('materializes byte-identical untracked views atomically, reuses them, verifies and cleans only receipted paths', () => {
@@ -233,7 +237,10 @@ test('rejects path escape, duplicate targets and tracked targets', () => {
     fs.writeFileSync(path.join(root, 'views', 'health.schemas.ts'), SOURCE);
     execFileSync('git', ['init', '--quiet', root]);
     execFileSync('git', ['-C', root, 'add', 'views/health.schemas.ts']);
-    expectCode('TRACKED_TARGET', () => applyMaterialization(root, 'source-index.json'));
+    const prepared = applyMaterialization(root, 'source-index.json');
+    assert.deepEqual(prepared.created, []);
+    assert.deepEqual(prepared.tracked_views, ['views/health.schemas.ts']);
+    assert.deepEqual(verifyMaterialization(root, 'source-index.json').tracked_views_verified, ['views/health.schemas.ts']);
   });
   withFixture({}, ({ root }) => {
     fs.writeFileSync(path.join(root, '.git'), 'not a valid gitdir\n');
@@ -322,6 +329,21 @@ test('refuses to verify or clean a modified or later-tracked generated view', ()
   });
 });
 
+
+test('normal preparation verifies tracked views despite unrelated developer changes', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    fs.writeFileSync(path.join(root, 'unrelated-note.txt'), 'unrelated working-tree change\n');
+    const prepared = applyMaterialization(root, 'source-index.json');
+    assert.deepEqual(prepared.created, []);
+    assert.deepEqual(prepared.tracked_views, ['tracked/health.schemas.ts']);
+    assert.deepEqual(verifyMaterialization(root, 'source-index.json').materialized_views_verified, []);
+    assert.equal(fs.existsSync(path.join(root, '.aicrm-dedup', 'donor-views-receipt.json')), false);
+    assert.equal(fs.readFileSync(path.join(root, 'unrelated-note.txt'), 'utf8'), 'unrelated working-tree change\n');
+  });
+});
+
 test('prepares and restores a disposable view worktree without a tracked fallback', () => {
   const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
   withFixture({ views }, ({ root }) => {
@@ -339,6 +361,19 @@ test('prepares and restores a disposable view worktree without a tracked fallbac
     assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), SOURCE);
     assert.equal(fs.existsSync(path.join(root, '.aicrm-dedup', 'donor-views-receipt.json')), false);
     assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '');
+  });
+});
+
+
+test('takes the disposable lock before it can stage a tracked target removal', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    fs.mkdirSync(path.join(root, '.aicrm-dedup', 'donor-views.lock'), { recursive: true });
+    expectCode('CONCURRENT_MATERIALIZATION', () => prepareDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV }));
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' });
+    assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), SOURCE);
+    assert.equal(execFileSync('git', ['-C', root, 'diff', '--cached', '--name-only'], { encoding: 'utf8' }), '');
   });
 });
 

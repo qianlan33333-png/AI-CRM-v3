@@ -392,15 +392,31 @@ function validateStaleReceiptForCleanup(loaded, receipt) {
   });
 }
 
-function assertReceiptCoversEnabledViews(loaded, receipt, { allowEmpty = false } = {}) {
-  const expected = loaded.index.views
-    .filter((view) => view.enabled)
+function materializedViewTargets(loaded) {
+  return loaded.index.views
+    .filter((view) => view.enabled && !isTracked(loaded.root, view.target_path))
     .map((view) => view.target_path)
     .sort();
+}
+
+function trackedViewTargets(loaded) {
+  return loaded.index.views
+    .filter((view) => view.enabled && isTracked(loaded.root, view.target_path))
+    .map((view) => view.target_path)
+    .sort();
+}
+
+function assertReceiptCoversMaterializedViews(loaded, receipt, { allowEmpty = false } = {}) {
+  for (const record of receipt.targets) {
+    if (isTracked(loaded.root, record.target_path)) {
+      fail('TRACKED_TARGET', `materialized receipt target became tracked: ${record.target_path}`);
+    }
+  }
+  const expected = materializedViewTargets(loaded);
   const actual = receipt.targets.map((record) => record.target_path).sort();
   if (allowEmpty && actual.length === 0) return;
   if (stableJSON(actual) !== stableJSON(expected)) {
-    fail('RECEIPT_INCOMPLETE', 'materialization receipt does not cover exactly the enabled view targets');
+    fail('RECEIPT_INCOMPLETE', 'materialization receipt does not cover exactly the currently untracked enabled view targets');
   }
 }
 
@@ -599,32 +615,42 @@ function restoreAfterSafePrepareFailure(root, targets, originalError) {
 }
 
 export function prepareDisposableMaterialization(root, indexPath, { environment = process.env, faults = {} } = {}) {
-  const { loaded } = loadValidated(root, indexPath);
+  const { loaded, checked, byID } = loadValidated(root, indexPath);
   const targets = enabledViewTargets(loaded);
   if (targets.length === 0) fail('NO_ENABLED_VIEWS', 'disposable preparation requires at least one enabled view');
   assertDisposableWorktree(loaded.root, environment);
-  for (const target of targets) {
-    if (!isTracked(loaded.root, target)) fail('EXPECTED_TRACKED_TARGET', `disposable preparation expected a tracked source path: ${target}`);
-  }
-  runGit(loaded.root, ['rm', '--force', '--', ...targets], 'remove declared tracked view targets');
+  const release = acquireLock(loaded.root);
   try {
-    const applied = applyMaterialization(loaded.root, loaded.indexPath, faults);
-    return { ...applied, action: 'prepare-disposable', materialized_view_targets: targets };
-  } catch (error) {
-    restoreAfterSafePrepareFailure(loaded.root, targets, error);
-    throw error;
+    for (const target of targets) {
+      if (!isTracked(loaded.root, target)) fail('EXPECTED_TRACKED_TARGET', `disposable preparation expected a tracked source path: ${target}`);
+    }
+    runGit(loaded.root, ['rm', '--force', '--', ...targets], 'remove declared tracked view targets');
+    try {
+      const applied = applyLoadedMaterialization(loaded, checked, byID, faults);
+      return { ...applied, action: 'prepare-disposable', materialized_view_targets: targets };
+    } catch (error) {
+      restoreAfterSafePrepareFailure(loaded.root, targets, error);
+      throw error;
+    }
+  } finally {
+    release();
   }
 }
 
 export function restoreDisposableMaterialization(root, indexPath, { environment = process.env } = {}) {
-  const { loaded, checked } = loadValidated(root, indexPath);
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
   const targets = enabledViewTargets(loaded);
   if (targets.length === 0) fail('NO_ENABLED_VIEWS', 'disposable restoration requires at least one enabled view');
   assertDisposableWorktree(loaded.root, environment, { requireClean: false });
-  assertExactStagedRemovals(loaded.root, targets);
-  const cleaned = cleanMaterialization(loaded.root, loaded.indexPath);
-  restoreTrackedTargets(loaded.root, targets);
-  return { ...cleaned, action: 'restore-disposable', restored_view_targets: targets };
+  const release = acquireLock(loaded.root);
+  try {
+    assertExactStagedRemovals(loaded.root, targets);
+    const cleaned = cleanLoadedMaterialization(loaded, checked, byID);
+    restoreTrackedTargets(loaded.root, targets);
+    return { ...cleaned, action: 'restore-disposable', restored_view_targets: targets };
+  } finally {
+    release();
+  }
 }
 
 function assertWritableTarget(root, loaded, receipt, view, content) {
@@ -670,45 +696,53 @@ function rollbackCreatedViews(created) {
   }
 }
 
+function applyLoadedMaterialization(loaded, checked, byID, faults = {}) {
+  const enabled = loaded.index.views.filter((view) => view.enabled);
+  if (enabled.length === 0) return { ...sourceSummary(loaded, checked), action: 'apply', created: [], reused: [], tracked_views: [], no_enabled_views: true };
+  const created = [];
+  const receiptState = loadReceipt(loaded.root);
+  validateReceipt(loaded, receiptState.receipt);
+  assertReceiptCoversMaterializedViews(loaded, receiptState.receipt, { allowEmpty: true });
+  const materialized = enabled.filter((view) => !isTracked(loaded.root, view.target_path));
+  const prepared = materialized.map((view) => ({ view, content: byID.get(view.content_id), ...assertWritableTarget(loaded.root, loaded, receiptState.receipt, view, byID.get(view.content_id)) }));
+  try {
+    for (const item of prepared) {
+      if (item.existing) continue;
+      writeAtomically(loaded.root, item.absolute, item.content.file_bytes, item.content.mode);
+      created.push(item);
+    }
+    if (typeof faults.beforeReceiptWrite === 'function') faults.beforeReceiptWrite();
+    const receiptWriter = faults.writeReceipt ?? writeReceipt;
+    if (materialized.length > 0) {
+      receiptWriter(loaded.root, loaded, receiptState.absolute, materialized.map((view) => receiptRecord(view, byID.get(view.content_id))));
+    }
+  } catch (error) {
+    rollbackCreatedViews(created);
+    throw error;
+  }
+  return {
+    ...sourceSummary(loaded, checked), action: 'apply',
+    created: created.map((item) => item.view.target_path).sort(),
+    reused: prepared.filter((item) => item.existing).map((item) => item.view.target_path).sort(),
+    tracked_views: trackedViewTargets(loaded),
+  };
+}
+
 export function applyMaterialization(root, indexPath, faults = {}) {
   const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
-  const enabled = loaded.index.views.filter((view) => view.enabled);
-  if (enabled.length === 0) return { ...sourceSummary(loaded, checked), action: 'apply', created: [], reused: [], no_enabled_views: true };
   const release = acquireLock(loaded.root);
-  const created = [];
   try {
-    const receiptState = loadReceipt(loaded.root);
-    validateReceipt(loaded, receiptState.receipt);
-    assertReceiptCoversEnabledViews(loaded, receiptState.receipt, { allowEmpty: true });
-    const prepared = enabled.map((view) => ({ view, content: byID.get(view.content_id), ...assertWritableTarget(loaded.root, loaded, receiptState.receipt, view, byID.get(view.content_id)) }));
-    try {
-      for (const item of prepared) {
-        if (item.existing) continue;
-        writeAtomically(loaded.root, item.absolute, item.content.file_bytes, item.content.mode);
-        created.push(item);
-      }
-      if (typeof faults.beforeReceiptWrite === 'function') faults.beforeReceiptWrite();
-      const receiptWriter = faults.writeReceipt ?? writeReceipt;
-      receiptWriter(loaded.root, loaded, receiptState.absolute, enabled.map((view) => receiptRecord(view, byID.get(view.content_id))));
-    } catch (error) {
-      rollbackCreatedViews(created);
-      throw error;
-    }
-    return {
-      ...sourceSummary(loaded, checked), action: 'apply',
-      created: created.map((item) => item.view.target_path).sort(),
-      reused: prepared.filter((item) => item.existing).map((item) => item.view.target_path).sort(),
-    };
+    return applyLoadedMaterialization(loaded, checked, byID, faults);
   } finally {
     release();
   }
 }
 
 export function verifyMaterialization(root, indexPath) {
-  const { loaded, checked, byID } = loadValidated(root, indexPath);
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
   const receiptState = loadReceipt(loaded.root);
   validateReceipt(loaded, receiptState.receipt);
-  assertReceiptCoversEnabledViews(loaded, receiptState.receipt);
+  assertReceiptCoversMaterializedViews(loaded, receiptState.receipt);
   for (const record of receiptState.receipt.targets) {
     if (isTracked(loaded.root, record.target_path)) fail('TRACKED_TARGET', `materialized view became tracked: ${record.target_path}`);
     const content = byID.get(record.content_id);
@@ -718,33 +752,41 @@ export function verifyMaterialization(root, indexPath) {
       fail('DIRTY_TARGET', `materialized view drifted: ${record.target_path}`);
     }
   }
-  return { ...sourceSummary(loaded, checked), action: 'verify', materialized_views_verified: receiptState.receipt.targets.map((record) => record.target_path).sort() };
+  return {
+    ...sourceSummary(loaded, checked), action: 'verify',
+    materialized_views_verified: receiptState.receipt.targets.map((record) => record.target_path).sort(),
+    tracked_views_verified: trackedViewTargets(loaded),
+  };
+}
+
+function cleanLoadedMaterialization(loaded, checked, byID) {
+  const receiptState = loadReceipt(loaded.root);
+  validateReceipt(loaded, receiptState.receipt);
+  assertReceiptCoversMaterializedViews(loaded, receiptState.receipt);
+  for (const record of receiptState.receipt.targets) {
+    if (isTracked(loaded.root, record.target_path)) fail('TRACKED_TARGET', `refusing to clean a materialized view that became tracked: ${record.target_path}`);
+    const content = byID.get(record.content_id);
+    const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
+    const actual = readRegularFile(absolute, `receipt:${record.target_path}`);
+    if (actual.bytes.byteLength !== content.bytes || sha256(actual.bytes) !== content.content_sha256 || actual.mode !== content.mode) {
+      fail('DIRTY_TARGET', `refusing to clean a modified generated view: ${record.target_path}`);
+    }
+  }
+  const removed = [];
+  for (const record of receiptState.receipt.targets) {
+    const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
+    fs.rmSync(absolute);
+    removed.push(record.target_path);
+  }
+  if (fs.existsSync(receiptState.absolute)) fs.rmSync(receiptState.absolute);
+  return { ...sourceSummary(loaded, checked), action: 'clean', removed: removed.sort(), tracked_views: trackedViewTargets(loaded) };
 }
 
 export function cleanMaterialization(root, indexPath) {
-  const { loaded, checked, byID } = loadValidated(root, indexPath);
+  const { loaded, checked, byID } = loadValidated(root, indexPath, { allowMissingEnabledViewBindings: true });
   const release = acquireLock(loaded.root);
   try {
-    const receiptState = loadReceipt(loaded.root);
-    validateReceipt(loaded, receiptState.receipt);
-    assertReceiptCoversEnabledViews(loaded, receiptState.receipt);
-    for (const record of receiptState.receipt.targets) {
-      if (isTracked(loaded.root, record.target_path)) fail('TRACKED_TARGET', `refusing to clean a materialized view that became tracked: ${record.target_path}`);
-      const content = byID.get(record.content_id);
-      const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
-      const actual = readRegularFile(absolute, `receipt:${record.target_path}`);
-      if (actual.bytes.byteLength !== content.bytes || sha256(actual.bytes) !== content.content_sha256 || actual.mode !== content.mode) {
-        fail('DIRTY_TARGET', `refusing to clean a modified generated view: ${record.target_path}`);
-      }
-    }
-    const removed = [];
-    for (const record of receiptState.receipt.targets) {
-      const absolute = resolveLogicalPath(loaded.root, record.target_path, `receipt:${record.target_path}`);
-      fs.rmSync(absolute);
-      removed.push(record.target_path);
-    }
-    if (fs.existsSync(receiptState.absolute)) fs.rmSync(receiptState.absolute);
-    return { ...sourceSummary(loaded, checked), action: 'clean', removed: removed.sort() };
+    return cleanLoadedMaterialization(loaded, checked, byID);
   } finally {
     release();
   }
