@@ -8,6 +8,7 @@ exec python3 - "$REPO_ROOT" <<'PY'
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -167,6 +168,19 @@ def git_lines(*args: str) -> list[str]:
 
 changed = set(git_lines("diff", "--name-only", "HEAD", "--"))
 changed.update(git_lines("ls-files", "--others", "--exclude-standard"))
+if os.environ.get("AICRM_DEDUP_DISPOSABLE_WORKTREE") == "1":
+    # The shell verifier above has proven that the index contains exactly the
+    # declared view deletions and every worktree replacement is receipted.
+    # Keep this boundary strict for every other path, including an undeclared
+    # donor file that happens to be changed in the disposable worktree.
+    source_index = read_json(root / "web/donor-sources/source-index.json")
+    if isinstance(source_index, dict):
+        declared_views = {
+            item.get("target_path")
+            for item in source_index.get("views", [])
+            if isinstance(item, dict) and item.get("enabled") is True and isinstance(item.get("target_path"), str)
+        }
+        changed.difference_update(declared_views)
 donor_changes = sorted(path for path in changed if path == "web/donors" or path.startswith("web/donors/"))
 if donor_changes:
     fail("donor web business files changed: " + ", ".join(donor_changes))

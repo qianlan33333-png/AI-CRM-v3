@@ -15,16 +15,16 @@ changes must preserve.
 
 ## Source and view invariants
 
-1. A canonical payload lives once beneath `web/donor-sources/`. Its library records repository, immutable commit, path, Git blob SHA-1, SHA-256, bytes, and mode. Verification recomputes both hashes from the canonical bytes; a syntactically valid but different source commit/blob is rejected.
+1. A canonical payload has one declared authority. `authority_kind=frozen_donor` payloads live beneath `web/donor-sources/`; `authority_kind=active_v3_contract` may remain at its reviewed V3 source path when it is the authority (currently `api/openapi.yaml`). `immutable=true` means the currently reviewed repository/commit/blob/hash tuple is locked, not that an active V3 contract can never change. Its library records repository, reviewed commit, path, Git blob SHA-1, SHA-256, bytes, and mode. Verification recomputes both hashes from the canonical bytes; a syntactically valid but different source commit/blob is rejected.
 2. `web/donor-sources/source-index.json` binds every logical path to a canonical content ID. Bindings retain their module, logical path, source repository/commit/path/blob, usage, freeze gate, ledger, and mode.
 3. `web/donor-sources/source-lock.json` repeats the immutable content identities. The verifier rejects an index/lock mismatch. A later P5 base-diff gate must require explicit review whenever either the index, lock, or canonical library payload changes; a coordinated edit cannot be treated as an ordinary consumer change.
 4. Frozen consumers may never depend on mutable `web/src` content as their authority. If an active V3 behavior diverges, it must become an explicit V3 adapter or derived source with its own Owner and tests; it cannot edit a generated compatibility view.
-5. Compatibility views are normal untracked files, copied only from a whitelist in the index. They are never symlinks or hard links. The materializer rejects `..`, absolute/backslash paths, symlink ancestors, duplicate targets, canonical targets, tracked targets, unknown targets, dirty targets, missing sources, stale receipts, and a held lock.
+5. Compatibility views are normal untracked files, copied only from a whitelist in the index. They are never symlinks or hard links. The materializer rejects `..`, absolute/backslash paths, symlink ancestors, duplicate targets, canonical targets, tracked targets, unknown targets, dirty targets, a missing index-tracked target, missing sources, stale receipts, and a held lock.
 6. A receipt at `.aicrm-dedup/donor-views-receipt.json` records only files created by this tool. It is keyed by the source-index digest and canonical payload hashes. Cleanup verifies every recorded target before deleting only those paths; it never traverses a directory or cleans an unlisted file.
 7. Writes use a same-directory temporary file and atomic publication. A view is published exclusively without overwriting a target that appeared after validation; the tool-owned receipt is atomically renamed while the lock is held. If the receipt write fails, the tool removes only views created in that invocation after rechecking their bytes and mode; it preserves any target that changed concurrently and reports rollback failure rather than deleting it. The prior receipt remains unchanged.
 8. The lock directory contains a private owner record with host, PID, random lock ID, and creation time. Normal `apply` and `clean` never remove a pre-existing lock. `recover-lock` is an explicit operator action: it only removes a lock whose well-formed owner record is on this host and whose PID returns `ESRCH`; active, permission-denied, remote-host, missing, malformed, or changed owner records require manual inspection. It never performs automatic stale-lock cleanup.
 
-`health.schemas.ts` is the PR-2 pilot. Its eight existing logical paths remain tracked and byte-exact in PR-2. The production index declares no enabled view targets, so `apply` is a no-op until PR-3 has wired a reviewed target list and removed the corresponding tracked paths. This is intentional: PR-2 proves the mechanism without giving a build an untracked-file fallback.
+PR-2 used `health.schemas.ts` as its mechanism pilot. PR-3 declares every P0-derived build view: 229 paths backed by 74 canonical contents. The sole active authority, `api/openapi.yaml`, remains tracked and is never a view; its package-local Go-embed copy is a declared derived view. All 229 derived paths remain tracked and byte-exact until PR-4 approves their exact removal. PR-3 only proves the transition in a clean disposable worktree by staging those exact deletions and materializing untracked replacements.
 
 ## Commands and phase rules
 
@@ -36,13 +36,44 @@ node scripts/materialize-donor-views.mjs --mode plan
 node scripts/materialize-donor-views.mjs --mode recover-lock  # only after local dead-PID proof
 ```
 
-The materializer has `plan`, `apply`, `verify`, `clean`, and explicit
-`recover-lock` modes. They are not build hooks in PR-2. Do not add them to a
-build, Go test, CI artifact, release command, or production installer until
-PR-3 updates every declared consumer in one reviewed change. The installer
-continues to consume only validated built binaries, `web/dist`, and the release
-manifest; it must not require Node, Git, a donor checkout, or source-view
-materialization.
+The materializer has `plan`, `apply`, `verify`, `clean`, `clean-stale`,
+`recover-partial`, and explicit `recover-lock` modes. PR-3 adds `prepare-disposable` and
+`restore-disposable`, which require `AICRM_DEDUP_DISPOSABLE_WORKTREE=1`; the
+command runner uses them to remove exactly the selected tracked paths in a
+disposable build worktree, materialize the views, run the selected consumers,
+clean the receipt, and restore the tracked paths. This is the only permitted
+PR-3 transition proof. It is not a normal developer checkout mutation or a
+package-script hook.
+
+`Makefile`, release builders, and direct build scripts automatically run the
+non-destructive preparation command. It verifies the tracked derived bytes in
+PR-3 and, after an approved PR-4 deletion, materializes only the declared
+untracked views. It does not require a clean working tree and it never stages,
+removes, or restores a tracked path. A bare `go` command remains an explicit
+opt-in through this safe helper:
+
+```sh
+make check
+scripts/build-linux.sh amd64
+scripts/run-go-with-donor-views.sh go test ./cmd/aicrm
+```
+
+For an approved canonical-source update after PR-4, ordinary `clean` correctly
+rejects the stale receipt. Run `clean-stale` only when the current index still
+declares every old target and each target still exactly matches the old receipt;
+it removes no user edit or tracked file. Then run `apply` with the reviewed new
+source identity. If a process is interrupted after `clean` deleted one or more
+views but before it removed the receipt, run `node scripts/recover-donor-source-views.mjs`.
+It recreates only receipt-listed *missing* paths after every surviving path is
+proven byte/mode-identical; it refuses a tracked or changed target, then lets
+normal `clean` finish. Before switching branches, restore a disposable
+worktree. If a normal worktree contains a stale receipt, use `clean-stale` only
+under those same exact-byte conditions; otherwise preserve the files and
+recover manually.
+
+The installer continues to consume only validated built binaries, `web/dist`,
+and the release manifest; it must not require Node, Git, a donor checkout, or
+source-view materialization.
 
 | Phase | Permitted result | Required proof before advancing |
 |---|---|---|

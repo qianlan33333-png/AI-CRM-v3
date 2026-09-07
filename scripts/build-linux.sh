@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+node scripts/prepare-donor-source-views.mjs >/dev/null
+
 arch="${1:-amd64}"
 case "$arch" in
   amd64|arm64) ;;

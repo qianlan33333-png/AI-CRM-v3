@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: fmt fmt-check vet test arch build check run generate-orval orval-check radar-donor-check radar-check hxc-identity-boundaries
+.PHONY: fmt fmt-check vet test arch build check run generate-orval orval-check radar-donor-check radar-check hxc-identity-boundaries prepare-donor-views
 
 generate-orval:
 	npx orval --config ./orval.config.mjs
@@ -19,16 +19,19 @@ fmt:
 fmt-check:
 	@test -z "$$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
 
-vet:
+prepare-donor-views:
+	node scripts/prepare-donor-source-views.mjs
+
+vet: prepare-donor-views
 	GOWORK=off go vet ./...
 
-test:
+test: prepare-donor-views
 	GOWORK=off go test ./...
 
 arch:
 	python3 scripts/check-architecture.py
 
-build:
+build: prepare-donor-views
 	mkdir -p bin
 	GOWORK=off go build -o bin/aicrm ./cmd/aicrm
 
@@ -41,10 +44,10 @@ radar-donor-check:
 	bash scripts/check-radar-donor-manifest.sh
 	bash scripts/test-check-radar-donor-manifest.sh
 
-radar-check: radar-donor-check
+radar-check: prepare-donor-views radar-donor-check
 	bash scripts/check-radar-boundaries.sh
 	node scripts/validate-openapi.mjs
 	GOWORK=off go test ./internal/radar/... ./cmd/migrate-radar-v2 ./cmd/aicrm
 
-run:
+run: prepare-donor-views
 	GOWORK=off go run ./cmd/aicrm

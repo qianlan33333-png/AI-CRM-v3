@@ -31,6 +31,8 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version: '24.18.0'}
       - name: Configure pinned source SSH host
         env:
           SOURCE_SSH_KEY: ${{ secrets.AICRM_CHANNEL_SOURCE_SSH_KEY }}
@@ -50,7 +52,7 @@ jobs:
           export AICRM_RADAR_SOURCE_SSH_KEY_FILE="$HOME/.ssh/radar_source_key"
           export AICRM_RADAR_SOURCE_KNOWN_HOSTS_FILE="$HOME/.ssh/radar_source_known_hosts"
           scripts/capture-radar-source.sh "$RUNNER_TEMP/radar.stream"
-          go build -trimpath -o "$RUNNER_TEMP/migrate-radar-v2" ./cmd/migrate-radar-v2
+          scripts/run-go-with-donor-views.sh go build -trimpath -o "$RUNNER_TEMP/migrate-radar-v2" ./cmd/migrate-radar-v2
           "$RUNNER_TEMP/migrate-radar-v2" --mode inspect-stream --source-stream "$RUNNER_TEMP/radar.stream" --snapshot "$RUNNER_TEMP/radar.json" > "$RUNNER_TEMP/inspect.json"
           unlink "$RUNNER_TEMP/radar.stream"
           "$RUNNER_TEMP/migrate-radar-v2" --mode dry-run --snapshot "$RUNNER_TEMP/radar.json" > "$RUNNER_TEMP/dry-run.json"
@@ -63,7 +65,7 @@ jobs:
       - name: Rehearse migration and replay on PostgreSQL 16
         run: |
           set -euo pipefail
-          go run ./cmd/migrate-platform -dir migrations
+          scripts/run-go-with-donor-views.sh go run ./cmd/migrate-platform -dir migrations
           migrator="$RUNNER_TEMP/migrate-radar-v2"
           snapshot="$RUNNER_TEMP/radar.json"
           "$migrator" --mode import --snapshot "$snapshot" --snapshot-sha256 "$SNAPSHOT_DIGEST" --batch-key "$BATCH_KEY" --actor-id 1 --confirm > "$RUNNER_TEMP/rehearsal-import.json"

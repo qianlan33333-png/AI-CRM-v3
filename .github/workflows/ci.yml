@@ -91,91 +91,19 @@ jobs:
           node scripts/validate-openapi.mjs
           node scripts/verify-donor-sources.mjs
           node --test scripts/donor-source-views.test.mjs
-          scripts/check-pr01-donor-manifest.sh
-          scripts/check-pr02-donor-manifest.sh
-          scripts/check-pr03-frontend-donor-manifest.sh
-          AICRM_SERVICE_PERIOD_MEMBER_GRID_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-service-period-member-grid-donor.sh
-          scripts/check-automationops-donor-manifest.sh
-          scripts/check-channel-donor-manifest.sh
-          donor_dir="$(mktemp -d)"
-          git clone --quiet https://github.com/qianlan33333-png/AI-CRM-v2.git "$donor_dir"
-          git -C "$donor_dir" checkout --quiet 6bfbe5816bb89913c70adaca87d6a486260e016e
-          AICRM_SURVEY_DONOR_DIR="$donor_dir" scripts/check-survey-donor-manifest.sh
-          AICRM_PR06_DONOR_DIR="$donor_dir" scripts/check-pr06-closure.sh
-          rm -rf "$donor_dir"
-          scripts/check-pr07-frontend-freeze.sh
-          node web/scripts/channel-center-characterization.mjs
-          node web/scripts/survey-editor-characterization.mjs
-          node web/scripts/survey-public-characterization.mjs
-          node web/scripts/survey-unresolved-history-contract.mjs
-          node --check internal/webshell/static/admin_console/survey_operations.js
-          node --check internal/webshell/static/admin_console/admin_audience_detail.js
-          scripts/check-pr08-frontend-donor-manifest.sh
-          scripts/check-pr09-frontend-freeze.sh
-          scripts/check-config-definition-import-boundary.sh
-          scripts/check-ai-assistant-donor-manifest.sh
-          bash scripts/test-check-ai-assistant-donor-manifest.sh
-          AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-sidebar-customer360-contract.sh
-          node scripts/generate-ai-assistant-client.mjs
-          npm run typecheck
-          npx tsc -p web/v3/tsconfig.json --noEmit
-          node scripts/sidebar-wecom-jssdk-contract.mjs
-          npm run build
-          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
-          node --test internal/webshell/chromium_launch.test.mjs
-          node internal/webshell/owner_handoff_host.test.mjs
-          node scripts/build-v3-host-adapters.mjs
-          node scripts/operation-cycles-shell-e2e.mjs
-          node scripts/ai-assistant-shell-e2e.mjs
-          TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs
-          mkdir -p release
-          node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-pr01-effects-ui.mjs
-          node scripts/test-groupops-history-release.mjs web/dist release/web/dist
-          node scripts/stage-survey-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-survey-ui.mjs web/dist release/web/dist
-          node scripts/stage-new-shell-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-new-shell-ui.mjs web/dist release/web/dist
-          scripts/check-install-release-contract.sh
+          AICRM_DEDUP_DISPOSABLE_WORKTREE=1 AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
+            node scripts/run-with-donor-views.mjs -- bash scripts/run-donor-view-consumers.sh check
       - name: Run early shell Chromium journeys
-        # Sidebar and Admin Layout use the final three-stage release artifact.
-        # Run them before slower repository/race checks so a visible shell
-        # regression has its own precise failure. Linux Chrome is required;
-        # admin-layout screenshots are kept for review on success and failure.
+        # Sidebar and Admin Layout use the same final three-stage release
+        # artifact. Run both before repository/race checks: Linux Chrome is
+        # mandatory, and layout screenshots remain reviewable on any result.
         env:
           AICRM_REQUIRE_CHROMIUM_JOURNEY: "1"
           AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/admin-shell-layout
         run: |
           set -euo pipefail
           command -v google-chrome
-          go test -p 1 -count=1 -run '^(TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLAdminShellLayoutChromiumJourney)$' ./cmd/aicrm
-      - name: Verify frontend and radar checks
-        run: |
-          set -euo pipefail
-          make radar-check
-          npm test
-      - name: Restore final release artifact after frontend tests
-        # npm test rebuilds web/dist as part of its donor checks. Re-run the
-        # approved V3 adapter and all three release stages so later browser,
-        # Host and package checks read the same final artifact that ships.
-        run: |
-          set -euo pipefail
-          restore_backup="$RUNNER_TEMP/aicrm-release-before-frontend-tests-${GITHUB_RUN_ID}"
-          if [ -e "$restore_backup" ]; then
-            echo "release artifact backup path is unexpectedly occupied" >&2
-            exit 1
-          fi
-          mv release/web/dist "$restore_backup"
-          npm run build
-          node scripts/build-v3-host-adapters.mjs
-          node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-pr01-effects-ui.mjs
-          node scripts/test-groupops-history-release.mjs web/dist release/web/dist
-          node scripts/stage-survey-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-survey-ui.mjs web/dist release/web/dist
-          node scripts/stage-new-shell-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-new-shell-ui.mjs web/dist release/web/dist
-          scripts/check-install-release-contract.sh
+          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^(TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLAdminShellLayoutChromiumJourney)$' ./cmd/aicrm
       - name: Upload admin shell layout Chromium evidence
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
@@ -193,18 +121,19 @@ jobs:
       - name: Check repository
         # PostgreSQL integration packages share this job's service database.
         # Run packages serially so concurrent schema DDL cannot exhaust the
-        # service's lock table or race its catalog tuples.
+        # service's lock table or race its catalog tuples. Make prepares and
+        # verifies declared source views without mutating tracked paths.
         run: GOFLAGS=-p=1 make check
       - name: Run required Chromium journeys
         # These actual Chrome/CDP journeys cover Access login, their V3 Hosts,
-        # PostgreSQL/River and controlled Provider fixtures. The Admin Shell
-        # geometry journey runs earlier against this same release artifact.
+        # PostgreSQL/River and controlled Provider fixtures. They stay separate
+        # from make check, while missing Chrome is a hard Linux CI failure.
         env:
           AICRM_REQUIRE_CHROMIUM_JOURNEY: "1"
         run: |
           set -euo pipefail
           command -v google-chrome
-          go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
+          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
       - name: Run owner handoff Chromium journey
         # This journey covers the frozen legacy page through the v3 Host, CSRF,
         # PostgreSQL/River, and both local and WeCom transfer modes.
@@ -213,9 +142,9 @@ jobs:
         run: |
           set -euo pipefail
           command -v google-chrome
-          go test -p 1 -count=1 -run '^TestPostgreSQLOwnerHandoffChromiumJourney$' ./cmd/aicrm
+          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^TestPostgreSQLOwnerHandoffChromiumJourney$' ./cmd/aicrm
       - name: Race-check security and identity boundaries
-        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-v2-commerce-external-push-history ./cmd/migrate-open-platform ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-owner-handoff-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+        run: scripts/run-go-with-donor-views.sh go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-v2-commerce-external-push-history ./cmd/migrate-open-platform ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-owner-handoff-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
@@ -274,82 +203,13 @@ jobs:
           PR08_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
         run: |
           set -euo pipefail
-          mkdir -p release/bin
-          go build -trimpath -ldflags "-s -w" -o release/bin/aicrm ./cmd/aicrm
-          scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-phone-identities ./cmd/migrate-phone-identities
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-identity-phone-vault ./cmd/migrate-identity-phone-vault
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-survey-v2 ./cmd/migrate-survey-v2
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-message-archive ./cmd/migrate-message-archive
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-automation-operations ./cmd/migrate-automation-operations
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-runtime-config-releases ./cmd/migrate-v2-runtime-config-releases
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-commerce-external-push-history ./cmd/migrate-v2-commerce-external-push-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-open-platform ./cmd/migrate-open-platform
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-customer-tag-history ./cmd/migrate-v2-customer-tag-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-owner-handoff-history ./cmd/migrate-owner-handoff-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2
-          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-history ./cmd/migrate-sidebar-history
-          go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations
           npm ci
           npm run version:check
           node scripts/validate-openapi.mjs
           node scripts/verify-donor-sources.mjs
           node --test scripts/donor-source-views.test.mjs
-          scripts/check-pr01-donor-manifest.sh
-          scripts/check-pr02-donor-manifest.sh
-          scripts/check-pr03-frontend-donor-manifest.sh
-          AICRM_SERVICE_PERIOD_MEMBER_GRID_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-service-period-member-grid-donor.sh
-          scripts/check-automationops-donor-manifest.sh
-          scripts/check-channel-donor-manifest.sh
-          scripts/check-survey-donor-manifest.sh
-          node web/scripts/channel-center-characterization.mjs
-          node web/scripts/survey-editor-characterization.mjs
-          node web/scripts/survey-public-characterization.mjs
-          node web/scripts/survey-unresolved-history-contract.mjs
-          node --check internal/webshell/static/admin_console/survey_operations.js
-          node --check internal/webshell/static/admin_console/admin_audience_detail.js
-          scripts/check-pr08-frontend-donor-manifest.sh
-          scripts/check-pr09-frontend-freeze.sh
-          scripts/check-config-definition-import-boundary.sh
-          scripts/check-ai-assistant-donor-manifest.sh
-          bash scripts/test-check-ai-assistant-donor-manifest.sh
-          AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-sidebar-customer360-contract.sh
-          make radar-check
-          node scripts/generate-ai-assistant-client.mjs
-          npm run typecheck
-          npx tsc -p web/v3/tsconfig.json --noEmit
-          node scripts/sidebar-wecom-jssdk-contract.mjs
-          npm run build
-          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
-          node --test internal/webshell/chromium_launch.test.mjs
-          node internal/webshell/owner_handoff_host.test.mjs
-          node scripts/build-v3-host-adapters.mjs
-          node scripts/operation-cycles-shell-e2e.mjs
-          node scripts/ai-assistant-shell-e2e.mjs
-          TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs
-          cp -R migrations deploy release/
-          node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-pr01-effects-ui.mjs
-          node scripts/test-groupops-history-release.mjs web/dist release/web/dist
-          node scripts/stage-survey-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-survey-ui.mjs web/dist release/web/dist
-          node scripts/stage-new-shell-ui.mjs web/dist release/web/dist
-          node scripts/test-stage-new-shell-ui.mjs web/dist release/web/dist
-          (
-            cd release
-            LC_ALL=C find . -type f ! -name release-files.sha256 -print0 \
-              | sort -z \
-              | xargs -0 sha256sum > release-files.sha256
-            sha256sum --strict --check release-files.sha256
-          )
-          tar -C release -czf "aicrm-${GITHUB_SHA}.tar.gz" .
+          AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
+            bash scripts/run-donor-view-consumers.sh release
       - name: Configure pinned SSH host
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}

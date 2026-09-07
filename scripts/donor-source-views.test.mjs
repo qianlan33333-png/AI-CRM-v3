@@ -11,8 +11,13 @@ import {
   LOCK_PATH,
   applyMaterialization,
   cleanMaterialization,
+  cleanStaleMaterialization,
+  recoverPartialMaterialization,
   planMaterialization,
+  prepareDisposableMaterialization,
   recoverMaterializationLock,
+  restoreDisposableMaterialization,
+  verifyDisposableMaterialization,
   verifyMaterialization,
   verifySourceIndex,
 } from './donor-source-views.mjs';
@@ -55,7 +60,7 @@ function makeFixture({ views = [{ target_path: 'views/health.schemas.ts', conten
   fs.writeFileSync(path.join(root, 'tracked', 'health.schemas.ts'), SOURCE, { mode: 0o644 });
   const library = {
     id: 'fixture-library', source_repository: 'https://example.invalid/frozen.git', source_commit: SOURCE_COMMIT,
-    root: 'sources', immutable: true,
+    root: 'sources', immutable: true, authority_kind: 'frozen_donor',
   };
   const health = {
     id: 'health', library_id: library.id, canonical_path: 'sources/health.schemas.ts', source_path: 'web/src/api/generated/health.schemas.ts',
@@ -75,7 +80,7 @@ function makeFixture({ views = [{ target_path: 'views/health.schemas.ts', conten
       source_repository: library.source_repository, source_commit: library.source_commit,
       source_path: health.source_path, source_git_blob_sha: health.source_git_blob_sha,
       mode: '100644', usage: 'frozen_donor_compatibility_view', freeze_gate: 'scripts/check-fixture.sh',
-      freeze_ledger: 'docs/fixture-ledger.txt', current_path_state: 'tracked_pre_p2',
+      freeze_ledger: 'docs/fixture-ledger.txt', current_path_state: 'tracked_pre_p4_removal',
     }],
     views,
   };
@@ -87,6 +92,7 @@ function makeFixture({ views = [{ target_path: 'views/health.schemas.ts', conten
   }
   writeJSON(path.join(root, 'source-index.json'), index);
   writeJSON(path.join(root, 'source-lock.json'), { schema_version: 1, entries: lockEntries(index) });
+  commitFixture(root);
   return { root, index };
 }
 
@@ -99,17 +105,75 @@ function withFixture(options, callback) {
   }
 }
 
+function replaceWithApprovedCanonicalRevision(root, index) {
+  const revision = Buffer.from('approved replacement canonical payload\n');
+  const revisionSHA256 = crypto.createHash('sha256').update(revision).digest('hex');
+  const revisionBlob = crypto.createHash('sha1').update(`blob ${revision.byteLength}\0`).update(revision).digest('hex');
+  const library = {
+    id: 'fixture-library-v2', source_repository: 'https://example.invalid/frozen.git',
+    source_commit: 'fedcba9876543210fedcba9876543210fedcba98', root: 'sources-v2', immutable: true, authority_kind: 'frozen_donor',
+  };
+  const content = {
+    id: 'health-v2', library_id: library.id, canonical_path: 'sources-v2/health.schemas.ts',
+    source_path: 'web/src/api/generated/health.schemas.ts', source_git_blob_sha: revisionBlob,
+    content_sha256: revisionSHA256, bytes: revision.byteLength, mode: '100644',
+  };
+  fs.mkdirSync(path.join(root, 'sources-v2'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'sources-v2', 'health.schemas.ts'), revision, { mode: 0o644 });
+  index.libraries = [library];
+  index.contents = [content];
+  index.bindings = index.bindings.map((binding) => ({
+    ...binding, content_id: content.id, source_repository: library.source_repository,
+    source_commit: library.source_commit, source_path: content.source_path,
+    source_git_blob_sha: content.source_git_blob_sha,
+  }));
+  index.views = index.views.map((view) => ({ ...view, content_id: content.id }));
+  writeJSON(path.join(root, 'source-index.json'), index);
+  writeJSON(path.join(root, 'source-lock.json'), { schema_version: 1, entries: lockEntries(index) });
+  return revision;
+}
+
+function commitFixture(root) {
+  if (!fs.existsSync(path.join(root, '.git'))) execFileSync('git', ['init', '--quiet', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'fixture@example.invalid']);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'Fixture']);
+  execFileSync('git', ['-C', root, 'add', '.']);
+  const staged = execFileSync('git', ['-C', root, 'diff', '--cached', '--name-only'], { encoding: 'utf8' });
+  if (staged.trim() !== '') execFileSync('git', ['-C', root, 'commit', '--quiet', '-m', 'fixture']);
+}
+
+const DISPOSABLE_ENV = { ...process.env, AICRM_DEDUP_DISPOSABLE_WORKTREE: '1' };
+
 function expectCode(code, callback) {
   assert.throws(callback, (error) => error instanceof DonorViewError && error.code === code);
 }
 
-test('PR-2 production health pilot verifies all eight original paths and does not enable a view', () => {
+test('PR-3 plans every audited derived view and retains only the active OpenAPI authority', () => {
   const result = verifySourceIndex(REPOSITORY);
-  assert.equal(result.bindings_verified, 8);
-  assert.equal(result.enabled_views, 0);
-  assert.equal(result.canonical_contents[0].content_sha256, '7f1bc1d05b3e012de46b1d53ef7b56319c0bc032a1c0389fa3fd138c7218b40d');
-  assert.deepEqual(planMaterialization(REPOSITORY).materialized_view_targets, []);
-  assert.equal(applyMaterialization(REPOSITORY).no_enabled_views, true);
+  const plan = planMaterialization(REPOSITORY).materialized_view_targets;
+  assert.equal(result.bindings_verified, 230);
+  assert.equal(result.enabled_views, 229);
+  assert.equal(result.canonical_contents.length, 74);
+  assert.equal(plan.length, 229);
+  assert.equal(plan.includes('api/openapi.yaml'), false);
+  for (const target of [
+    'web/donors/adminops-v2/src/api/generated/health.schemas.ts',
+    'web/donors/automation-operations-v2/src/api/generated/health.schemas.ts',
+    'web/donors/automation-v2/src/api/generated/health.schemas.ts',
+    'web/donors/coupons-v2/src/api/generated/health.schemas.ts',
+    'web/donors/groupops-v2/src/api/generated/health.schemas.ts',
+    'web/donors/media-v2/src/api/generated/health.schemas.ts',
+    'web/donors/products-v2/src/api/generated/health.schemas.ts',
+    'web/src/api/generated/health.schemas.ts',
+    'internal/config/http/openapi.yaml',
+    'internal/webshell/static/admin_console/send_content_readonly_detail.css',
+    'web/donors/ai-assistant-production/static/send_content_readonly_detail.css',
+  ]) assert.equal(plan.includes(target), true, `missing declared derived view: ${target}`);
+  const prepared = applyMaterialization(REPOSITORY);
+  assert.deepEqual(prepared.created, []);
+  assert.equal(prepared.tracked_views.length, 229);
+  assert.equal(fs.existsSync(path.join(REPOSITORY, '.aicrm-dedup', 'donor-views-receipt.json')), false);
+  assert.equal(verifyMaterialization(REPOSITORY).tracked_views_verified.length, 229);
 });
 
 test('materializes byte-identical untracked views atomically, reuses them, verifies and cleans only receipted paths', () => {
@@ -175,9 +239,16 @@ test('rejects path escape, duplicate targets and tracked targets', () => {
   withFixture({ views: [{ target_path: 'views/health.schemas.ts', content_id: 'health', enabled: true }] }, ({ root }) => {
     fs.mkdirSync(path.join(root, 'views'), { recursive: true });
     fs.writeFileSync(path.join(root, 'views', 'health.schemas.ts'), SOURCE);
-    execFileSync('git', ['init', '--quiet', root]);
     execFileSync('git', ['-C', root, 'add', 'views/health.schemas.ts']);
-    expectCode('TRACKED_TARGET', () => applyMaterialization(root, 'source-index.json'));
+    const prepared = applyMaterialization(root, 'source-index.json');
+    assert.deepEqual(prepared.created, []);
+    assert.deepEqual(prepared.tracked_views, ['views/health.schemas.ts']);
+    assert.deepEqual(verifyMaterialization(root, 'source-index.json').tracked_views_verified, ['views/health.schemas.ts']);
+  });
+  withFixture({}, ({ root }) => {
+    fs.rmSync(path.join(root, '.git'), { recursive: true, force: true });
+    fs.writeFileSync(path.join(root, '.git'), 'not a valid gitdir\n');
+    expectCode('GIT_INDEX_UNAVAILABLE', () => applyMaterialization(root, 'source-index.json'));
   });
 });
 
@@ -220,6 +291,55 @@ test("rolls back only this invocation's generated views when receipt publication
   });
 });
 
+test('recovers a clean interrupted after a generated view was removed, but never overwrites a dirty survivor', () => {
+  const views = [
+    { target_path: 'views/first.ts', content_id: 'health', enabled: true },
+    { target_path: 'views/second.ts', content_id: 'health', enabled: true },
+  ];
+  withFixture({ views }, ({ root }) => {
+    applyMaterialization(root, 'source-index.json');
+    fs.rmSync(path.join(root, 'views', 'first.ts'));
+    const recovered = recoverPartialMaterialization(root, 'source-index.json');
+    assert.deepEqual(recovered.restored, ['views/first.ts']);
+    assert.deepEqual(fs.readFileSync(path.join(root, 'views', 'first.ts')), SOURCE);
+    assert.deepEqual(cleanMaterialization(root, 'source-index.json').removed, ['views/first.ts', 'views/second.ts']);
+  });
+  withFixture({ views }, ({ root }) => {
+    applyMaterialization(root, 'source-index.json');
+    fs.rmSync(path.join(root, 'views', 'first.ts'));
+    fs.writeFileSync(path.join(root, 'views', 'second.ts'), 'developer change');
+    expectCode('DIRTY_TARGET', () => recoverPartialMaterialization(root, 'source-index.json'));
+    assert.equal(fs.existsSync(path.join(root, 'views', 'first.ts')), false);
+    assert.equal(fs.readFileSync(path.join(root, 'views', 'second.ts'), 'utf8'), 'developer change');
+  });
+});
+
+test('cleans a reviewed stale receipt before re-preparing, but never removes a developer change', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root, index }) => {
+    // This models the post-PR-4 state: the compatibility binding is no longer
+    // tracked, so the initial view is a materialized input rather than fallback.
+    execFileSync('git', ['-C', root, 'rm', '--cached', '--', 'tracked/health.schemas.ts']);
+    fs.rmSync(path.join(root, 'tracked', 'health.schemas.ts'));
+    applyMaterialization(root, 'source-index.json');
+    const replacement = replaceWithApprovedCanonicalRevision(root, index);
+    expectCode('BINDING_DRIFT', () => cleanMaterialization(root, 'source-index.json'));
+    assert.deepEqual(cleanStaleMaterialization(root, 'source-index.json').removed, ['tracked/health.schemas.ts']);
+    assert.equal(fs.existsSync(path.join(root, 'tracked', 'health.schemas.ts')), false);
+    assert.deepEqual(applyMaterialization(root, 'source-index.json').created, ['tracked/health.schemas.ts']);
+    assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), replacement);
+  });
+  withFixture({ views }, ({ root, index }) => {
+    execFileSync('git', ['-C', root, 'rm', '--cached', '--', 'tracked/health.schemas.ts']);
+    fs.rmSync(path.join(root, 'tracked', 'health.schemas.ts'));
+    applyMaterialization(root, 'source-index.json');
+    replaceWithApprovedCanonicalRevision(root, index);
+    fs.writeFileSync(path.join(root, 'tracked', 'health.schemas.ts'), 'developer change after source update\n');
+    expectCode('DIRTY_TARGET', () => cleanStaleMaterialization(root, 'source-index.json'));
+    assert.equal(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts'), 'utf8'), 'developer change after source update\n');
+  });
+});
+
 test('refuses to verify or clean a modified or later-tracked generated view', () => {
   withFixture({}, ({ root }) => {
     applyMaterialization(root, 'source-index.json');
@@ -230,11 +350,149 @@ test('refuses to verify or clean a modified or later-tracked generated view', ()
   });
   withFixture({}, ({ root }) => {
     applyMaterialization(root, 'source-index.json');
-    execFileSync('git', ['init', '--quiet', root]);
     execFileSync('git', ['-C', root, 'add', 'views/health.schemas.ts']);
     expectCode('TRACKED_TARGET', () => verifyMaterialization(root, 'source-index.json'));
     expectCode('TRACKED_TARGET', () => cleanMaterialization(root, 'source-index.json'));
     assert.equal(fs.existsSync(path.join(root, 'views', 'health.schemas.ts')), true);
+  });
+});
+
+
+test('normal preparation rejects an index-tracked view that is missing from the working tree', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    fs.rmSync(path.join(root, 'tracked', 'health.schemas.ts'));
+    expectCode('MISSING_FILE', () => applyMaterialization(root, 'source-index.json'));
+    expectCode('MISSING_FILE', () => verifyMaterialization(root, 'source-index.json'));
+  });
+});
+
+test('normal preparation verifies tracked views despite unrelated developer changes', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    fs.writeFileSync(path.join(root, 'unrelated-note.txt'), 'unrelated working-tree change\n');
+    const prepared = applyMaterialization(root, 'source-index.json');
+    assert.deepEqual(prepared.created, []);
+    assert.deepEqual(prepared.tracked_views, ['tracked/health.schemas.ts']);
+    assert.deepEqual(verifyMaterialization(root, 'source-index.json').materialized_views_verified, []);
+    assert.equal(fs.existsSync(path.join(root, '.aicrm-dedup', 'donor-views-receipt.json')), false);
+    assert.equal(fs.readFileSync(path.join(root, 'unrelated-note.txt'), 'utf8'), 'unrelated working-tree change\n');
+  });
+});
+
+test('prepares and restores a disposable view worktree without a tracked fallback', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    expectCode('DISPOSABLE_WORKTREE_REQUIRED', () => prepareDisposableMaterialization(root, 'source-index.json'));
+    const prepared = prepareDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV });
+    assert.equal(prepared.action, 'prepare-disposable');
+    assert.deepEqual(prepared.materialized_view_targets, ['tracked/health.schemas.ts']);
+    assert.throws(() => execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' }));
+    assert.deepEqual(verifyMaterialization(root, 'source-index.json').materialized_views_verified, ['tracked/health.schemas.ts']);
+    const restored = restoreDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV });
+    assert.equal(restored.action, 'restore-disposable');
+    assert.deepEqual(restored.restored_view_targets, ['tracked/health.schemas.ts']);
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' });
+    assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), SOURCE);
+    assert.equal(fs.existsSync(path.join(root, '.aicrm-dedup', 'donor-views-receipt.json')), false);
+    assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '');
+  });
+});
+
+
+test('takes the disposable lock before it can stage a tracked target removal', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    fs.mkdirSync(path.join(root, '.aicrm-dedup', 'donor-views.lock'), { recursive: true });
+    expectCode('CONCURRENT_MATERIALIZATION', () => prepareDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV }));
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' });
+    assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), SOURCE);
+    assert.equal(execFileSync('git', ['-C', root, 'diff', '--cached', '--name-only'], { encoding: 'utf8' }), '');
+  });
+});
+
+test('disposable verification requires exactly the declared staged removals and receipted replacements', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    fs.writeFileSync(path.join(root, 'tracked', 'unrelated.ts'), 'tracked independent source\n');
+    execFileSync('git', ['-C', root, 'add', 'tracked/unrelated.ts']);
+    execFileSync('git', ['-C', root, 'commit', '--quiet', '-m', 'add unrelated tracked source']);
+    prepareDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV });
+    assert.deepEqual(
+      verifyDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV }).materialized_view_targets,
+      ['tracked/health.schemas.ts'],
+    );
+    fs.appendFileSync(path.join(root, 'tracked', 'unrelated.ts'), 'unexpected change');
+    expectCode('DIRTY_WORKTREE', () => verifyDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV }));
+  });
+});
+
+test('runs a command only with disposable untracked views and restores afterward', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    const childProgram = [
+      "const { spawnSync } = require('node:child_process');",
+      "const result = spawnSync('git', ['ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts']);",
+      "const prepared = process.env.AICRM_DEDUP_SOURCE_VIEWS_ACTIVE === '1';",
+      'process.exit(result.status === 1 && prepared ? 0 : 9);',
+    ].join(' ');
+    execFileSync(process.execPath, [
+      path.join(REPOSITORY, 'scripts', 'run-with-donor-views.mjs'),
+      '--root', root,
+      '--index', 'source-index.json',
+      '--', process.execPath, '-e', childProgram,
+    ], { env: DISPOSABLE_ENV });
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' });
+    assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '');
+  });
+});
+
+test('fails closed during disposable cleanup or preparation rollback', () => {
+  const views = [{ target_path: 'tracked/health.schemas.ts', content_id: 'health', enabled: true }];
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    prepareDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV });
+    execFileSync('git', ['-C', root, 'add', 'tracked/health.schemas.ts']);
+    expectCode('TRACKED_TARGET', () => restoreDisposableMaterialization(root, 'source-index.json', { environment: DISPOSABLE_ENV }));
+    assert.equal(fs.existsSync(path.join(root, 'tracked', 'health.schemas.ts')), true);
+  });
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    assert.throws(
+      () => prepareDisposableMaterialization(root, 'source-index.json', {
+        environment: DISPOSABLE_ENV,
+        faults: { writeReceipt: () => { throw new Error('injected receipt failure'); } },
+      }),
+      /injected receipt failure/,
+    );
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' });
+    assert.deepEqual(fs.readFileSync(path.join(root, 'tracked', 'health.schemas.ts')), SOURCE);
+    assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '');
+  });
+  withFixture({ views }, ({ root }) => {
+    commitFixture(root);
+    const target = path.join(root, 'tracked', 'health.schemas.ts');
+    assert.throws(
+      () => prepareDisposableMaterialization(root, 'source-index.json', {
+        environment: DISPOSABLE_ENV,
+        faults: {
+          beforeReceiptWrite: () => {
+            fs.writeFileSync(target, 'developer change during receipt publication\n');
+            throw new Error('injected interrupted receipt publication');
+          },
+        },
+      }),
+      (error) => error instanceof DonorViewError && error.code === 'PREPARE_RECOVERY_REQUIRED',
+    );
+    assert.equal(fs.readFileSync(target, 'utf8'), 'developer change during receipt publication\n');
+    assert.throws(() => execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', 'tracked/health.schemas.ts'], { stdio: 'ignore' }));
+    assert.match(execFileSync('git', ['-C', root, 'diff', '--cached', '--name-status'], { encoding: 'utf8' }), /^D\ttracked\/health\.schemas\.ts/m);
   });
 });
 
