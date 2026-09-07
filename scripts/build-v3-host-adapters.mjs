@@ -14,6 +14,7 @@ if (!fs.existsSync(manifestPath)) throw new Error('run the frozen donor build be
 const entryPoints = {
   operationCyclesHost: path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts'),
   productHost: path.join(repository, 'web', 'v3', 'productAdapter.ts'),
+  surveyOperationsHost: path.join(repository, 'web', 'v3', 'surveyOperationsAdapter.ts'),
   channelCenterHost: path.join(repository, 'web', 'v3', 'channelCenterAdapter.ts'),
   aiAssistantHost: path.join(repository, 'web', 'v3', 'aiAssistantAdapter.ts'),
   // Customer pages retain their frozen templates and generated V2 client; this
@@ -99,6 +100,17 @@ for (const documentName of ['customers.html', 'customerDetail.html']) {
   fs.writeFileSync(documentPath, documentHTML);
   manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
 }
+
+const surveyOperationsHost = manifest.entries.surveyOperationsHost;
+if (typeof surveyOperationsHost !== 'string') throw new Error('Survey Operations Host entry is absent from manifest');
+const surveyOperationsReference = `../${surveyOperationsHost}`;
+const surveyOperationsDocument = path.join(dist, 'admin', 'questionnaireOps.html');
+let surveyOperationsHTML = fs.readFileSync(surveyOperationsDocument, 'utf8');
+if (!surveyOperationsHTML.includes(frozenAdminReference)) throw new Error('questionnaireOps.html does not reference the declared frozen admin entry');
+if (surveyOperationsHTML.includes(surveyOperationsReference)) throw new Error('questionnaireOps.html already contains the Survey Operations Host');
+surveyOperationsHTML = surveyOperationsHTML.replace(frozenAdminReference, `<script type="module" src="${surveyOperationsReference}"></script>\n${frozenAdminReference}`);
+fs.writeFileSync(surveyOperationsDocument, surveyOperationsHTML);
+manifest.release_files['admin/questionnaireOps.html'] = metadataFor(Buffer.from(surveyOperationsHTML));
 
 const openPlatformHost = manifest.entries.openPlatformHost;
 if (typeof openPlatformHost !== 'string') throw new Error('Open Platform Host entry is absent from manifest');

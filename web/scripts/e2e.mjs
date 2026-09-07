@@ -19,6 +19,7 @@ const TEST_BUNDLES = {
   admin: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/main.ts')),
   customerHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/customerAdapter.ts')),
   productHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/productAdapter.ts')),
+  surveyOperationsHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/surveyOperationsAdapter.ts')),
   questionnaireEditor: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/sections/questionnaireEditor.ts')),
   h5: await buildTestBrowserBundle(path.join(ROOT, 'src/h5/main.ts')),
   sidebar: await buildTestBrowserBundle(path.join(ROOT, 'v3/sidebar/main.ts')),
@@ -146,7 +147,7 @@ async function loadQuestionnaireEditor({ q = '', questionnaire } = {}) {
   return { dom, trace };
 }
 
-async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, customerDetailHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false, ownerHandoffHttp = false } = {}) {
+async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, customerDetailHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, surveyOpsCatalog = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false, ownerHandoffHttp = false } = {}) {
   const file = path.join(DIST, rel);
   // ownerMig is served by the Go Webshell Host, not the unrelated historical
   // web/dist template bearing the same route name. Use its actual stage.
@@ -156,7 +157,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
   // 用 jsdom 执行内联脚本：把 bundle 内联进去，避免资源加载配置
   html = html.replace(/<script type="module" src="[^"]*assets\/(admin|h5|sidebar(?:Host)?)-[^"]+\.js"><\/script>/, (_m, name) => {
     if (customerListHttp || customerDetailHttp) return `<script>${TEST_BUNDLES.customerHost}</script><script>${TEST_BUNDLES.admin}</script>`;
-    const bundle = name.startsWith('sidebar') ? TEST_BUNDLES.sidebar : TEST_BUNDLES[name];
+    const bundle = surveyOpsCatalog ? TEST_BUNDLES.surveyOperationsHost : name.startsWith('sidebar') ? TEST_BUNDLES.sidebar : TEST_BUNDLES[name];
     return `<script>${productHttp ? TEST_BUNDLES.productHost : bundle}</script>`;
   });
   // ownerMig's Host is a separately served V3 adapter. Inline the exact built
@@ -203,6 +204,18 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (url.pathname === '/api/admin/customers/owner-handoffs/batches/batch-owner-host/transfer-result' && method === 'POST') return json({ ID: 'batch-owner-host', Mode: 'wecom_then_crm', State: 'executing', Lines: [{ Line: 1, CustomerID: 42, State: 'observed', TransferStatus: 1, TakeoverAt: '2026-09-06T12:01:00Z' }] });
           if (url.pathname === '/api/admin/customers/owner-handoffs/batches/batch-owner-host' && method === 'GET') return json({ ID: 'batch-owner-host', Mode: 'wecom_then_crm', State: 'executing', Lines: [{ Line: 1, CustomerID: 42, State: 'observed', TransferStatus: 1, TakeoverAt: '2026-09-06T12:01:00Z' }] });
           return json({ error: 'unexpected_owner_handoff_request' }, 500);
+        };
+        return;
+      }
+      if (surveyOpsCatalog) {
+        const calls = [];
+        window.__surveyOpsCatalogTest = { calls };
+        const json = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+        window.fetch = async (input, init = {}) => {
+          const url = new URL(String(input), window.location.origin);
+          calls.push({ path: url.pathname, method: init.method || 'GET' });
+          if (url.pathname === '/api/admin/questionnaires/1/operations' && (init.method || 'GET') === 'GET') return json({ target_catalog_available: true, available_configuration_references: ['survey.crm.trial', 'survey.crm.primary'] });
+          return json({ code: 'unexpected_survey_operations_request' }, 500);
         };
         return;
       }
@@ -2047,6 +2060,21 @@ console.log('admin/questionnaireOps.html?id=1（opaque 本地运营配置）');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.includes('测试推送')));
   await sleep(30);
   ok('测试外推明确为本地 queued 记录且未宣称派发', d.querySelector('#fb-body').textContent.includes('不执行外部派发'));
+  dom.window.close();
+}
+
+console.log('admin/questionnaireOps.html?id=1（受保护 target 选择）');
+{
+  const dom = await loadPage('admin/questionnaireOps.html', { id: 1, surveyOpsCatalog: true });
+  await sleep(50);
+  const d = dom.window.document;
+  const target = d.querySelector('#opsConfigurationReference');
+  const calls = dom.window.__surveyOpsCatalogTest.calls;
+  const options = target?.tagName === 'SELECT' ? [...target.options] : [];
+  const configured = options.filter((item) => item.value.startsWith('survey.crm.'));
+  const unavailable = options.find((item) => item.value === 'external-push.default');
+  const targetCatalogInstalled = target?.tagName === 'SELECT' && configured.map((item) => item.value).join('|') === 'survey.crm.primary|survey.crm.trial' && unavailable?.getAttribute('disabled') !== null && calls.length === 1 && calls[0].path === '/api/admin/questionnaires/1/operations';
+  ok('外推绑定只展示 Composition 已部署的 opaque target，未显示 endpoint 或密钥', targetCatalogInstalled);
   dom.window.close();
 }
 

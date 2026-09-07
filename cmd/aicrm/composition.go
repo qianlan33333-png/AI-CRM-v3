@@ -608,7 +608,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return fail(err)
 	}
 	surveyOAuth := surveyapp.NewOAuthService(uow, surveyRepository, surveyOAuthProvider, oneID)
-	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled)
+	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled).SetCompletionTargetCatalog(surveyCompletionProvider)
 	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
 	if err != nil {
 		return fail(err)

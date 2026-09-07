@@ -34,7 +34,9 @@ func (surveyIdentityStub) VerifiedExternalIdentityValue(context.Context, custome
 
 func TestSurveyCompletionProviderPostsSignedPayloadToWhitelistedTarget(t *testing.T) {
 	key := []byte(strings.Repeat("k", 32))
+	day, frequency, expiresAtTS := int64(15), int64(3), int64(2147483647)
 	payload := surveyport.CompletionPayload{QuestionnaireID: 1, SubmissionID: 2, CustomerID: 3, ExternalUserID: "union-3", ConfigurationReference: "trial-webhook", SourceDigest: string(effectport.Hash("source")), TargetDigest: string(effectport.Hash("target")), PayloadDigest: string(effectport.Hash("payload")), PolicyDigest: string(effectport.Hash("policy")), IdempotencyKey: "survey.completion:2", QuestionnaireTitle: "调研", SubmittedAt: time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC), Answers: []surveyport.CompletionAnswer{{QuestionTitle: "目标", QuestionType: surveyport.QuestionSingleChoice, OptionTexts: []string{"增长"}}, {QuestionTitle: "手机", QuestionType: surveyport.QuestionMobile, TextValue: "13812345678"}}}
+	payload.Policy.Day, payload.Policy.Frequency, payload.Policy.ExpiresAtTS = &day, &frequency, &expiresAtTS
 	called := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called++
@@ -49,13 +51,13 @@ func TestSurveyCompletionProviderPostsSignedPayloadToWhitelistedTarget(t *testin
 		if r.Header.Get("X-AICRM-Client-Id") != "survey-v3" || r.Header.Get("X-AICRM-Event-Id") != payload.IdempotencyKey || r.Header.Get("X-AICRM-Timestamp") != strconv.FormatInt(payload.SubmittedAt.Unix(), 10) {
 			t.Fatal("missing donor-compatible headers")
 		}
-		if !strings.Contains(string(body), `"user_id":"union-3"`) || !strings.Contains(string(body), `"phone_number":"13812345678"`) || !strings.Contains(string(body), `"answer":"13812345678"`) {
+		if !strings.Contains(string(body), `"user_id":"union-3"`) || !strings.Contains(string(body), `"phone_number":"13812345678"`) || !strings.Contains(string(body), `"answer":"13812345678"`) || !strings.Contains(string(body), `"day":15`) || !strings.Contains(string(body), `"frequency":3`) || !strings.Contains(string(body), `"expires_at_ts":2147483647`) {
 			t.Fatalf("unexpected provider payload %s", body)
 		}
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
-	target := SurveyCompletionTarget{Reference: "trial-webhook", Endpoint: server.URL, SigningKey: key, ClientID: "survey-v3", AllowLoopbackHTTP: true, Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary"}
+	target := SurveyCompletionTarget{Reference: "trial-webhook", Endpoint: server.URL, SigningKey: key, ClientID: "survey-v3", AllowLoopbackHTTP: true, Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary", Day: &day, Frequency: &frequency, ExpiresAtTS: &expiresAtTS}
 	payload.Policy.ConfigurationDigest = target.policyDigest()
 	provider, err := NewSurveyCompletionProvider(SurveyCompletionProviderConfig{Enabled: true, Targets: []SurveyCompletionTarget{target}, Reader: surveyCompletionReaderStub{payload: payload}, Identities: surveyIdentityStub{}})
 	if err != nil {

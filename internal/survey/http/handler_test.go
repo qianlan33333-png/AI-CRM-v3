@@ -82,6 +82,15 @@ type operationRouteSurvey struct {
 	receipts      []surveyport.OperationReceipt
 }
 
+type completionTargetCatalogStub struct {
+	references []string
+	err        error
+}
+
+func (s completionTargetCatalogStub) CompletionTargetReferences(context.Context) ([]string, error) {
+	return append([]string(nil), s.references...), s.err
+}
+
 func (s *operationRouteSurvey) GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error) {
 	return s.configuration, nil
 }
@@ -275,6 +284,39 @@ func TestLegacyQuestionnaireOpsSaveJourneyPreservesExternalPushMetadata(t *testi
 	handler.ServeHTTP(metadataResponse, newMetadataWithoutVersion)
 	if metadataResponse.Code != nethttp.StatusBadRequest || !strings.Contains(metadataResponse.Body.String(), "configuration_version_required") || survey.saveCalls != 2 {
 		t.Fatalf("metadata without version response=%d body=%s saves=%d", metadataResponse.Code, metadataResponse.Body.String(), survey.saveCalls)
+	}
+}
+
+func TestOperationConfigurationListsAndEnforcesCompositionTargetCatalog(t *testing.T) {
+	survey := &operationRouteSurvey{configuration: surveyport.OperationConfiguration{QuestionnaireID: 7, Version: 4}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.SetCompletionTargetCatalog(completionTargetCatalogStub{references: []string{"survey.crm.primary", "survey.crm.trial"}})
+
+	read := httptest.NewRecorder()
+	handler.ServeHTTP(read, httptest.NewRequest(nethttp.MethodGet, "/api/admin/questionnaires/7/operations", nil))
+	if read.Code != nethttp.StatusOK || !strings.Contains(read.Body.String(), `"target_catalog_available":true`) || !strings.Contains(read.Body.String(), `"available_configuration_references":["survey.crm.primary","survey.crm.trial"]`) || strings.Contains(read.Body.String(), "endpoint") || strings.Contains(read.Body.String(), "signing_key") {
+		t.Fatalf("catalog read status=%d body=%s", read.Code, read.Body.String())
+	}
+
+	unknown := httptest.NewRequest(nethttp.MethodPut, "/api/admin/questionnaires/7/operations/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"operator-typed-unknown"}`))
+	unknown.Header.Set("Content-Type", "application/json")
+	unknown.Header.Set("Idempotency-Key", "survey-operation-catalog-unknown-0001")
+	unknownResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unknownResponse, unknown)
+	if unknownResponse.Code != nethttp.StatusBadRequest || !strings.Contains(unknownResponse.Body.String(), "configuration_reference_unavailable") || survey.saveCalls != 0 {
+		t.Fatalf("unknown target status=%d body=%s saves=%d", unknownResponse.Code, unknownResponse.Body.String(), survey.saveCalls)
+	}
+
+	known := httptest.NewRequest(nethttp.MethodPut, "/api/admin/questionnaires/7/operations/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"survey.crm.primary"}`))
+	known.Header.Set("Content-Type", "application/json")
+	known.Header.Set("Idempotency-Key", "survey-operation-catalog-known-0002")
+	knownResponse := httptest.NewRecorder()
+	handler.ServeHTTP(knownResponse, known)
+	if knownResponse.Code != nethttp.StatusOK || survey.saveCalls != 1 || survey.configuration.ExternalPushConfigurationRef != "survey.crm.primary" || !survey.configuration.ExternalPushEnabled {
+		t.Fatalf("known target status=%d body=%s config=%+v saves=%d", knownResponse.Code, knownResponse.Body.String(), survey.configuration, survey.saveCalls)
 	}
 }
 

@@ -1,0 +1,78 @@
+// V3 owns this narrow bridge between the frozen questionnaire operations page
+// and Composition's protected target whitelist. The donor page still renders
+// the surrounding controls; this Host replaces only its free-form reference
+// field with an opaque-reference selector.
+type CatalogResponse = {
+  available_configuration_references?: unknown;
+  target_catalog_available?: unknown;
+};
+
+const opaqueReference = /^[A-Za-z0-9._:-]{1,128}$/;
+
+function questionnaireID(): number | undefined {
+  if (!location.pathname.endsWith('/admin/questionnaireOps.html')) return undefined;
+  const raw = new URLSearchParams(location.search).get('id') || '';
+  if (!/^[1-9][0-9]*$/.test(raw)) return undefined;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : undefined;
+}
+
+function targetReferences(value: CatalogResponse): string[] {
+  if (value.target_catalog_available !== true || !Array.isArray(value.available_configuration_references)) return [];
+  return [...new Set(value.available_configuration_references.filter((item): item is string => typeof item === 'string' && opaqueReference.test(item)))].sort();
+}
+
+function option(document: Document, value: string, label: string, disabled = false): HTMLOptionElement {
+  const item = document.createElement('option');
+  item.value = value;
+  item.textContent = label;
+  item.disabled = disabled;
+  return item;
+}
+
+function mountTargetSelector(references: readonly string[]): boolean {
+  const input = document.querySelector<HTMLInputElement>('#opsConfigurationReference');
+  if (!input) return false;
+  if (input.tagName === 'SELECT') return true;
+  const selected = input.value.trim();
+  const select = document.createElement('select');
+  select.id = input.id;
+  select.name = input.name;
+  select.style.cssText = input.style.cssText;
+  select.setAttribute('aria-label', '推送配置引用');
+  select.appendChild(option(document, '', references.length ? '请选择已部署的推送目标' : '当前没有可用的推送目标', true));
+  for (const reference of references) select.appendChild(option(document, reference, reference));
+  if (selected && !references.includes(selected)) select.appendChild(option(document, selected, '当前绑定的目标已不可用，请重新选择', true));
+  select.value = selected;
+  if (!references.length) select.disabled = true;
+  input.replaceWith(select);
+  return true;
+}
+
+async function loadAndInstall(): Promise<void> {
+  const id = questionnaireID();
+  if (!id) return;
+  const response = await fetch(`/api/admin/questionnaires/${id}/operations`, {
+    method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) return;
+  const payload = await response.json() as CatalogResponse;
+  const references = targetReferences(payload);
+  let observer: MutationObserver | undefined;
+  const install = () => {
+    if (!mountTargetSelector(references)) return;
+    observer?.disconnect();
+    observer = undefined;
+  };
+  observer = new MutationObserver(install);
+  observer.observe(document, { childList: true, subtree: true });
+  window.addEventListener('pagehide', () => observer?.disconnect(), { once: true });
+  install();
+}
+
+void loadAndInstall().catch(() => undefined);
+
+// Install the selector bridge before the byte-frozen page renders and reads
+// the current operations response.
+// @ts-expect-error The donor entry is a side-effect-only script.
+void import('../src/admin/main');

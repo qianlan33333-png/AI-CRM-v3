@@ -9,13 +9,22 @@ import (
 	"net/http"
 )
 
-type ModuleRegistration struct{ completionProviderEnabled bool }
+type ModuleRegistration struct {
+	completionProviderEnabled bool
+	completionTargets         surveyport.CompletionTargetCatalog
+}
 type HTTPBindings struct{ Survey http.Handler }
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
 func (m *ModuleRegistration) SetCompletionProviderEnabled(enabled bool) *ModuleRegistration {
 	if m != nil {
 		m.completionProviderEnabled = enabled
+	}
+	return m
+}
+func (m *ModuleRegistration) SetCompletionTargetCatalog(catalog surveyport.CompletionTargetCatalog) *ModuleRegistration {
+	if m != nil {
+		m.completionTargets = catalog
 	}
 	return m
 }
@@ -31,6 +40,7 @@ func (m *ModuleRegistration) Bind(definitions surveyport.DefinitionApplication, 
 		return HTTPBindings{}, err
 	}
 	handler.SetCompletionProviderEnabled(m.completionProviderEnabled)
+	handler.SetCompletionTargetCatalog(m.completionTargets)
 	return HTTPBindings{Survey: handler}, nil
 }
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
