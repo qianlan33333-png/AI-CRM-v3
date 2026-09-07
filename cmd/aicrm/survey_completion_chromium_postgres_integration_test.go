@@ -66,9 +66,20 @@ func TestPostgreSQLSurveyCompletionChromiumJourney(t *testing.T) {
 	}
 	var status string
 	var attempted, realCall, resultReceived bool
-	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received FROM survey_external_operation_receipts WHERE questionnaire_id=$1 ORDER BY created_at DESC LIMIT 1`, fixture.questionnaireID).Scan(&status, &attempted, &realCall, &resultReceived); err != nil || status != "executed" || !attempted || !realCall || !resultReceived {
-		t.Fatalf("effect receipt status=%q attempted=%t real=%t received=%t err=%v", status, attempted, realCall, resultReceived, err)
+	terminal := false
+	var receiptErr error
+	for time.Now().Before(deadline) {
+		receiptErr = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received FROM survey_external_operation_receipts WHERE questionnaire_id=$1 ORDER BY created_at DESC LIMIT 1`, fixture.questionnaireID).Scan(&status, &attempted, &realCall, &resultReceived)
+		if receiptErr == nil && status == "executed" && attempted && realCall && resultReceived {
+			terminal = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	if !terminal || fixture.receiverCalls.Load() != 1 {
+		t.Fatalf("effect receipt terminal=%t calls=%d status=%q attempted=%t real=%t received=%t err=%v", terminal, fixture.receiverCalls.Load(), status, attempted, realCall, resultReceived, receiptErr)
+	}
+	t.Log("survey Chromium journey: PASS")
 }
 
 type surveyCompletionChromiumFixture struct {
