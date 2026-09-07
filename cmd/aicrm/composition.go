@@ -138,10 +138,17 @@ type composedApplication struct {
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
-	return composeWithWeComClientFactory(ctx, cfg, wecomadapter.New)
+	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, wecomadapter.New, nil)
 }
 
 func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error)) (*composedApplication, error) {
+	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, providerFactory, nil)
+}
+
+// composeWithWeComClientFactoryAndSurveyCompletionHTTPClient keeps a supplied
+// HTTPS client inside test Composition only. Production Composition passes nil
+// and therefore retains the outbound provider's locked default transport.
+func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error), surveyCompletionHTTPClient *http.Client) (*composedApplication, error) {
 	if providerFactory == nil {
 		return nil, errors.New("WeCom client factory is required")
 	}
@@ -579,7 +586,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if err != nil {
 		return fail(err)
 	}
-	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Identities: queries})
+	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Client: surveyCompletionHTTPClient, Identities: queries})
 	if err != nil {
 		return fail(err)
 	}
