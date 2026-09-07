@@ -67,20 +67,22 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"]'))", 'login did not render');
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`, 'submit login');
   await waitFor(cdp, "location.pathname === '/admin/questionnaireOps.html'", 'login did not reach questionnaire operations');
-  // The controlled fixture opens the frozen page with external push already
-  // enabled. Toggling here would turn it off and remove the donor input before
-  // the Host can replace that input with its opaque target selector.
-  await waitFor(cdp, "(() => { const heading=[...document.querySelectorAll('h3')].find((item) => item.textContent.trim()==='外部推送绑定'); return Boolean(heading && document.querySelector('#opsConfigurationReference')?.tagName === 'INPUT'); })()", 'external-push panel did not render');
+  // The frozen controller starts with a placeholder state, then applies the
+  // operations GET response. Wait for the Host form, which is only mounted
+  // after that readback, before explicitly enabling the actual persisted
+  // external-push panel.
+  await waitFor(cdp, "Boolean(document.querySelector('[data-survey-push-metadata]')) && !document.querySelector('#opsConfigurationReference')", 'operations readback did not settle with external push disabled');
+  await evaluate(cdp, "(() => { const heading=[...document.querySelectorAll('h3')].find((item) => item.textContent.trim()==='外部推送绑定'); const header=heading?.parentElement?.parentElement; const toggle=header?.children?.[1]; if (!heading || !toggle || toggle.tagName !== 'SPAN') throw new Error('external-push toggle is unavailable'); toggle.click(); return true; })()", 'enable external push after operations readback');
   await waitFor(cdp, "document.querySelector('#opsConfigurationReference')?.tagName === 'SELECT'", 'target selector did not replace frozen input');
   await evaluate(cdp, `(() => { const select=document.querySelector('#opsConfigurationReference'); if (![...select.options].some((item) => item.value===${JSON.stringify(target)})) throw new Error('target absent'); select.value=${JSON.stringify(target)}; select.dispatchEvent(new Event('change',{bubbles:true})); [...document.querySelectorAll('button')].find((item) => item.textContent.trim()==='保存外部推送').click(); return true; })()`, 'select and save target');
   await waitFor(cdp, "String(document.querySelector('#fb-toast')?.textContent || '').includes('已保存')", 'configuration save did not finish');
   const reloadMarker = 'survey-journey-reload';
   await evaluate(cdp, `window.__surveyJourneyReloadMarker=${JSON.stringify(reloadMarker)}; location.reload(); true`, "reload saved configuration");
   await waitFor(cdp, `document.readyState === 'complete' && window.__surveyJourneyReloadMarker !== ${JSON.stringify(reloadMarker)} && document.querySelector('#opsConfigurationReference')?.tagName === 'SELECT' && document.querySelector('#opsConfigurationReference').value===${JSON.stringify(target)}`, 'saved target did not reload');
-  await evaluate(cdp, "[...document.querySelectorAll('button')].find((item) => item.textContent.includes('测试推送')).click(); true", 'open controlled test confirmation');
-  await waitFor(cdp, "[...document.querySelectorAll('button')].some((item) => item.textContent.trim()==='确认创建')", 'test confirmation did not render');
-  await evaluate(cdp, "[...document.querySelectorAll('button')].find((item) => item.textContent.trim()==='确认创建').click(); true", 'confirm controlled test');
-  await waitFor(cdp, "String(document.querySelector('#fb-toast')?.textContent || '').includes('本地测试记录')", 'test receipt did not render');
+  await evaluate(cdp, "(() => { const button=[...document.querySelectorAll('button')].find((item) => item.dataset.surveyHostTestPush === 'true'); if (!button) throw new Error('controlled test button is unavailable'); button.click(); return true; })()", 'open controlled test confirmation');
+  await waitFor(cdp, "Boolean(document.querySelector('[data-survey-host-test-confirmation] button[data-survey-host-test-confirm]'))", 'controlled test confirmation did not render');
+  await evaluate(cdp, "document.querySelector('[data-survey-host-test-confirmation] button[data-survey-host-test-confirm]').click(); true", 'confirm controlled test');
+  await waitFor(cdp, "document.querySelector('button[data-survey-host-test-push]')?.dataset.surveyHostTestReceipt === 'queued' && document.querySelector('button[data-survey-host-test-push]')?.textContent.includes('等待处理结果')", 'controlled test receipt did not render');
   console.log('survey_completion_chromium: PASS');
   socket.close();
 } catch (error) {

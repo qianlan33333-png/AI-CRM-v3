@@ -60,9 +60,18 @@ async function loadAndInstall(): Promise<void> {
   const references = targetReferences(payload);
   let observer: MutationObserver | undefined;
   const install = () => {
-    if (!mountTargetSelector(references)) return;
-    observer?.disconnect();
-    observer = undefined;
+    // jsdom and browser teardown can deliver a final queued mutation after
+    // their document global has gone away. It is not a page rerender and must
+    // not turn into an asynchronous uncaught exception.
+    if (!globalThis.document || !globalThis.document.documentElement) {
+      observer?.disconnect();
+      observer = undefined;
+      return;
+    }
+    // The frozen controller replaces this field whenever it rerenders after a
+    // toggle or save. Keep the bridge for the document lifetime so a later
+    // free-form input never leaks back into the enabled panel.
+    void mountTargetSelector(references);
   };
   observer = new MutationObserver(install);
   observer.observe(document, { childList: true, subtree: true });
