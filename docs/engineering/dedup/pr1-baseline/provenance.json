@@ -1,7 +1,7 @@
 {
   "artifact_generator_path": "/private/tmp/aicrm-dedup-pr1-audit-5291366/scripts/audit/generate_pr1_dedup_artifacts.py",
-  "artifact_generator_sha256": "df30926375fe659f8edc232a6c5c429e56923db624eecaee0f8d11a55afcc699",
-  "audit_checkout_head": "4ff595f709a2c59425f02156095f8063ee5e53d2",
+  "artifact_generator_sha256": "eea683404c31820383a421420dd0ad50825119e5192e05804d4c88cd21a4a79b",
+  "audit_checkout_head": "45e3f697ee9bc2d5033ed723569a703187cc8c2e",
   "audit_checkout_status_before_artifacts": "",
   "audit_kind": "PR-1 all-tracked-source duplicate baseline; read-only Git-object analysis",
   "baseline_commit": "05045c645f95d269b624771ceb215713e3300f59",

@@ -17953,7 +17953,8 @@
           "mode": "100644",
           "module": "ai_assistant",
           "source_commit": "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f",
-          "source_path": "web/donors/ai-assistant-production/static/send_content_readonly_detail.css",
+          "source_git_blob_sha": "11ea859fb340aad3f706ec53f63003d1ec3e5df9",
+          "source_path": "aicrm_next/app/admin_console/static/admin_console/send_content_readonly_detail.css",
           "source_repository": "AI-CRM production donor",
           "usage": "frozen_production_asset_compatibility_view"
         }
