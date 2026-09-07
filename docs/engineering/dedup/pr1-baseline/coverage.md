@@ -11,6 +11,16 @@ Historical tree: `0747d8a4165283fe15e5b7caa5663015eec2c41d`
 - Persistence / internal tasks / provider effects: not involved; no database, queue, provider or build command ran.
 - PR-1 action: audit only. No tracked source was removed, linked, imported, generated or rewritten.
 
+## Required PR sequence
+
+| Stage | Status in this branch | Gate before the next stage |
+|---|---|---|
+| P0 / PR-1 baseline audit | This branch only | Full object coverage, seed verification, candidate/consumer/owner records; no unknown deletion target |
+| P1 / PR-2 source mechanism and pilot | Not started | Owner-approved immutable source, bindings and materialization negative cases |
+| P2 / PR-3 consumer/build wiring | Not started | Clean-checkout relevant entrypoints and frozen logical-file verification |
+| P3 / PR-4 approved payload removal | Not started | Explicit per-group approval plus pre/post behavior and freeze evidence |
+| P4 / PR-5 prevention/final audit | Not started | Injection gate, exception review and final before/after ledger |
+
 ## Layer A: exact Git-object inventory
 
 - Target tracked entries: **1937**; blob paths verified: **1937/1937**.
@@ -54,16 +64,16 @@ Historical tree: `0747d8a4165283fe15e5b7caa5663015eec2c41d`
 ## Consumer and decision closure
 
 - Static target paths mapped: **497**; readable text blobs scanned: **1931**.
-- Exact decisions: **74**, all retain every path in PR-1. Every group remains `dependency_unresolved`; no source-of-truth or deletion decision is approved by this report.
-- The map includes only resolvable literals plus ambiguous lexical mentions. Dynamic imports, shell expansion, runtime routing, generated assets and release staging still need owner review before P1/P2.
+- Exact decisions: **74**, all retain every path in PR-1. Each has an immutable-source or active-contract canonical plan, a source/version/hash binding per current path, a reusable consumer closure and explicit P2 entrypoints; no deletion is approved.
+- Consumer closures: **3** reusable families. The static map retains both resolved literals and ambiguous lexical evidence; dynamic imports, shell expansion, runtime routing, generated assets and release staging are specifically deferred to the named P2 clean-checkout entrypoints, never treated as absent consumers.
 
 ## Artifacts
 
 - `inventory.json`: all target tracked entries, including binary, empty files, modes and special-entry status.
 - `exact-duplicates.json`: all exact groups and 39-seed verification across both pinned commits.
 - `near-duplicate-candidates.json`: B/C candidate methods, results and explicit limits.
-- `dependency-map.json`: per-target static consumer observations and unresolved boundary.
-- `dedup-decisions.json`: every exact group has an owner role, proposed-only canonical path, exception and blocked action.
+- `dependency-map.json`: per-target resolved and ambiguous static consumer observations, plus the bounded scanner boundary.
+- `dedup-decisions.json`: every exact group has a source-governance owner, concrete canonical/source-version binding, reusable consumer closure, P2 entrypoints, temporary transition constraint and retain-only action. No group has a permanent exception in PR-1.
 - `provenance.json`: direct GitHub clone, pinned commits/trees, object-scan inputs, tool hashes and pre-output checkout state.
 
-**Closure state: PR-1 audit evidence is complete for Layer A and the documented bounded B/C/static-D methods, but no group is safe to delete. P1 is blocked on named owner confirmation and dynamic/build/release consumer closure.**
+**Closure state: PR-1 records a concrete non-destructive source and consumer route for every exact group. It does not materialize a view, rewire a consumer, run a repository build or approve deletion. P1/P2 must prove those declared gates from a clean checkout before P3 can remove any tracked payload.**
