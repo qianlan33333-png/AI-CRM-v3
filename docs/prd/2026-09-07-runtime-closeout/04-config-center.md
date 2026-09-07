@@ -32,6 +32,28 @@ External Effects：不涉及。开启配置只改变受控本地运行配置；�
 | 微信小店：`WECHAT_SHOP_ENABLED`、AppID/AppSecret/API base/callback token/timeout | `wechat_shop.{provider_enabled,app_id}` 及 app secret/callback token/AES 安全引用给 `paymentprovider.NewShopCallbackVerifier`。API base/timeout尚无 V3 Owner。 | 受控启动发布并以 provider 构造/application 回读；不触发店铺写入。 |
 | 公众号授权：`WECHAT_MP_APP_ID`、`WECHAT_MP_APP_SECRET`、`WECHAT_MP_OAUTH_SCOPE` | `survey.oauth.{enabled,app_id,open_platform_id,scope}` 给 Survey/Radar OAuth provider；secret 是安全引用。 | 发布后受控启动应用；已绑定 Open Platform scope 拒绝普通发布修改，检查只验证 OAuth 配置形状和回调依赖，不替用户在公众号后台改域名。 |
 
+
+## PR #190 最终验收矩阵
+
+下表是页面十二个类目的最终交付口径。`启动读取确认` 指 active snapshot 在该角色成功完成 Composition、Adapter 构造与配置校验后写入的 `(revision, source, role, release_sha, snapshot_checksum)` 事实；它不是 Provider 成功、支付完成或消息送达。除“单次运行最大人数”外，发布后的运行时字段都要求 API、worker、effects-worker 重新启动并读取同一 checksum。页面只有收齐本类目字段所需角色的同一版本事实，才显示“已发布并已读取”或“已关闭”；关闭版本尚未读取时显示“关闭已发布，待读取”。
+
+| 类目 | 本轮可审阅字段与入口 | 发布后消费者及动作 | 缺少前置条件、受控字段或禁用项 |
+| --- | --- | --- | --- |
+| 企业微信基础 | `wecom.enabled`、`wecom.agent_id`、`wecom.callback_enabled`、`wecom.customer_sync_enabled`、`message_archive.{enabled,page_limit,page_budget}`；`wecom.corp_id` 仅可首次补齐或保存原值；五个固定 secret-reference 只回读 presence。 | API callback、客户同步/存档 worker、effects-worker 均在受控重启后读取；回调、通讯录、存档 Adapter 全部构造成功后才记录应用事实。 | 启用企业微信须已有企业微信 Secret 与上下文签名部署契约；会话存档还须存档密钥、Runner、SDK 库和私钥路径。缺任一引用或 Adapter 失败不写应用事实。API base、旧负责人、SDK/超时和标签上限逐项保持部署管理或退休状态。 |
+| 后台访问 | `/admin/admin-access` 的成员、会话与访问管理入口；Config 不写任何 Access 字段。 | Access Owner 自己管理；没有 runtime release 或 Config 应用事实。 | 旧登录模式、重定向和可信域是 Access 受保护部署项；不在 Config 创建密码、副本凭据或伪开关。 |
+| 侧边栏与身份 | `sidebar.context_token_ttl_seconds`；JSSDK Secret 只显示闭集引用 presence。 | 所有角色的启动快照一致；实际 Context Token 服务由 API 使用，发布后重启并回读 checksum。 | JSSDK adapter mode、超时、产品旧 token、图片关键词无可发布等价；JSSDK 密钥缺失只显示未配置，不把侧边栏说成已接通。 |
+| AI 与自动化 | `automation.operations.{provider_mode,max_recipients_per_run}`、`ai_assistant.{ui_enabled,dispatch_enabled}`；旧 signed intake 和两个安全引用只读。 | mode、UI、dispatch 在三角色受控重启后读取；`max_recipients_per_run` 由 API/worker 对新预览、确认和执行写 usage 快照，它是单次运行人数上限。 | mode 非 `disabled` 须已有固定发送授权、通讯录 Secret、企业微信和受控外推依赖；dispatch 须已有私信授权。旧 signed intake 保持部署禁用，不能以此判断六个 V1 Open Platform 操作是否可用。 |
+| CRM 开放 API Key | `/admin/api-docs` 的实际 Open Platform caller/OAuth2 管理入口。 | Access/Open Platform Owner 签发或轮换 caller 凭据；没有 Config release。 | Direct API Key 与旧 56 条机器接口已退休；Config 不保存 token，也不新增平行认证。 |
+| API 接入与 Token | 同一 `/admin/api-docs` caller、scope 与令牌管理入口。 | Access/Open Platform Owner 管理；没有 Config release。 | 只保留 V1 caller/OAuth2，配置中心不能编辑 machine client、scope 或 token。 |
+| Webhook 与外推 | `effects.provider_enabled`、`survey.completion_provider_enabled`、`commerce.push.provider_enabled`、`groupops.directory_read_enabled`、`groupops.dispatch_enabled`。 | 三角色重启读取。群目录只在 `directory_read_enabled || dispatch_enabled` 时可读；发送意图只在 `dispatch_enabled` 时接受。 | 问卷/商品外推须受控外推执行；群发送还须企业微信与受控外推，目录读取本身不授予发送。URL、allowlist、重试、webhook key 和 Provider 写权限由受保护部署/各 Owner 管理；发布不产生外部调用。 |
+| 稳定性 | `stability.worker_limit`。 | 三角色重启读取；Inbox worker 用它限制一次 claim 处理条数。 | 该值不是 Worker 并发数。HTTP 重试、熔断、RQ/Redis、Outbox 重试均由既有平台 Owner 管理或已退休，不能由 Config 另建可靠性内核。 |
+| 微信支付 | `wechat_pay.{provider_enabled,app_id,h5_oauth_enabled,h5_app_id,merchant_id,merchant_serial}`；三个 secret-reference presence；两个 App Scope 只读受控。 | API/worker/effects-worker 重启读取，支付 Provider 与验签 Adapter 成功构造后写应用事实。 | 支付开启须已有 AppSecret、私钥、平台证书与 API v3 Key；H5 开启须已有 H5 Secret 与订单联系人数据键。非空 AppID、H5 AppID、商户号不可普通发布改绑，merchant serial 可轮换；回调 URL、服务地址、超时和商品目录不是 Config 字段。 |
+| 支付宝支付 | 保留旧类别和逐字段禁用说明。 | 无消费者、无发布动作。 | V3 没有支付宝 Provider 或路由；不能保存、发布或显示已生效。 |
+| 微信小店 | `wechat_shop.{provider_enabled,app_id}`；AppSecret、Callback Token、Callback EncodingAESKey 仅显示 presence。 | 三角色重启读取；小店回调验签 Adapter 成功构造后写应用事实。 | 开启须三个小店专属受保护引用同时存在。Callback AES Key 缺失时保持未启用，不能借用企业微信或公众号密钥；服务地址和超时仍是部署管理。非空 AppID 只能走小店接入迁移。 |
+| 公众号授权 | `survey.oauth.{enabled,app_id,open_platform_id}`；OAuth scope 与 AppSecret 是受控只读。 | API/worker/effects-worker 重启读取，Survey/Radar OAuth Provider 成功构造后写应用事实。 | 开启须 OAuth Secret，且 AppID、Open Platform ID、scope 已形成可验证组合。非空 AppID/Open Platform ID 或 scope 不允许普通 Config 改绑；Config 不替管理员修改公众号后台域名。 |
+
+开放接口继续只保留六个 V1 caller 能力：`GET /open/v1/capabilities`、`POST /open/v1/customers:resolve`、`GET /open/v1/customers/{customer_id}`、`GET /open/v1/customers/{customer_id}/activities`、`POST /open/v1/ai/review-plans`、`GET /open/v1/operations/{operation_id}`。它们由现有 Open Platform caller 与 OAuth2 scope 授权；AI 的旧 signed intake 始终不是这些调用的旁路或开关。
+
 ## 受控应用协议
 
 1. 管理员在一个类别编辑字段；Host 用当前 effective snapshot 组成完整草稿并要求确认。
