@@ -20,8 +20,19 @@ class CDP {
   constructor(socket) { this.socket = socket; this.id = 0; this.pending = new Map(); socket.addEventListener('message', (event) => { const message = JSON.parse(String(event.data)); const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); message.error ? pending.reject(new Error('CDP request failed')) : pending.resolve(message.result || {}); }); }
   call(method, params = {}) { return new Promise((resolve, reject) => { const id = ++this.id; this.pending.set(id, { resolve, reject }); this.socket.send(JSON.stringify({ id, method, params })); }); }
 }
-const evaluate = async (cdp, expression) => { const result = await cdp.call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error('page evaluation failed'); return result.result?.value; };
-const waitFor = async (cdp, expression, message) => { for (let i = 0; i < 180; i += 1) { if (await evaluate(cdp, expression)) return; await delay(50); } throw new Error(message); };
+const domEvidence = async (cdp) => {
+  const result = await cdp.call('Runtime.evaluate', { expression: `(() => ({path:location.pathname, title:document.title, headings:[...document.querySelectorAll('h1,h2,h3')].map((item)=>item.textContent.trim()).slice(0,12), ids:[...document.querySelectorAll('[id]')].map((item)=>item.id).filter((id)=>/ops|configuration|toast|questionnaire/i.test(id)).slice(0,24), buttons:[...document.querySelectorAll('button')].map((item)=>item.textContent.trim()).filter(Boolean).slice(0,16), forms:[...document.forms].map((item)=>item.getAttribute('action')||'').slice(0,8)}))()`, returnByValue: true });
+  return JSON.stringify(result.result?.value || {});
+};
+const evaluate = async (cdp, expression, step = 'evaluate') => {
+  const result = await cdp.call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  if (result.exceptionDetails) {
+    const detail = result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Runtime.evaluate exception';
+    throw new Error(step + ': ' + String(detail).slice(0, 400) + ' dom=' + (await domEvidence(cdp)).slice(0, 1800));
+  }
+  return result.result?.value;
+};
+const waitFor = async (cdp, expression, message) => { for (let i = 0; i < 180; i += 1) { if (await evaluate(cdp, expression, message + ' probe')) return; await delay(50); } throw new Error(message + ' dom=' + await domEvidence(cdp)); };
 const portURL = async (profile) => { for (let i = 0; i < 160; i += 1) { try { const port = String(await fs.readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]; if (/^\d+$/.test(port)) return 'http://127.0.0.1:' + port; } catch (_) {} await delay(50); } throw new Error('Chromium DevTools did not start'); };
 
 const waitForBrowserExit = async (child, timeoutMilliseconds) => {
@@ -54,17 +65,17 @@ try {
   const page = '/admin/questionnaireOps.html?id=' + questionnaireID;
   await cdp.call('Page.navigate', { url: base + '/login?next=' + encodeURIComponent(page) });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"]'))", 'login did not render');
-  await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
+  await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`, 'submit login');
   await waitFor(cdp, "location.pathname === '/admin/questionnaireOps.html'", 'login did not reach questionnaire operations');
-  await evaluate(cdp, "(() => { const heading=[...document.querySelectorAll('h3')].find((item) => item.textContent.trim()==='外部推送绑定'); const toggle=[...heading.parentElement.parentElement.querySelectorAll('span')].find((item) => item.getAttribute('style')?.includes('cursor')); toggle.click(); return true; })()");
+  await evaluate(cdp, "(() => { const heading=[...document.querySelectorAll('h3')].find((item) => item.textContent.trim()==='外部推送绑定'); if (!heading) throw new Error('external-push heading absent'); const toggle=[...heading.parentElement.parentElement.querySelectorAll('span')].find((item) => item.getAttribute('style')?.includes('cursor')); if (!toggle) throw new Error('external-push toggle absent'); toggle.click(); return true; })()", 'enable external push binding');
   await waitFor(cdp, "document.querySelector('#opsConfigurationReference')?.tagName === 'SELECT'", 'target selector did not replace frozen input');
-  await evaluate(cdp, `(() => { const select=document.querySelector('#opsConfigurationReference'); if (![...select.options].some((item) => item.value===${JSON.stringify(target)})) throw new Error('target absent'); select.value=${JSON.stringify(target)}; select.dispatchEvent(new Event('change',{bubbles:true})); [...document.querySelectorAll('button')].find((item) => item.textContent.trim()==='保存外部推送').click(); return true; })()`);
+  await evaluate(cdp, `(() => { const select=document.querySelector('#opsConfigurationReference'); if (![...select.options].some((item) => item.value===${JSON.stringify(target)})) throw new Error('target absent'); select.value=${JSON.stringify(target)}; select.dispatchEvent(new Event('change',{bubbles:true})); [...document.querySelectorAll('button')].find((item) => item.textContent.trim()==='保存外部推送').click(); return true; })()`, 'select and save target');
   await waitFor(cdp, "String(document.querySelector('#fb-toast')?.textContent || '').includes('已保存')", 'configuration save did not finish');
-  await evaluate(cdp, "location.reload(); true");
+  await evaluate(cdp, "location.reload(); true", "reload saved configuration");
   await waitFor(cdp, `document.querySelector('#opsConfigurationReference')?.tagName === 'SELECT' && document.querySelector('#opsConfigurationReference').value===${JSON.stringify(target)}`, 'saved target did not reload');
-  await evaluate(cdp, "[...document.querySelectorAll('button')].find((item) => item.textContent.includes('测试推送')).click(); true");
+  await evaluate(cdp, "[...document.querySelectorAll('button')].find((item) => item.textContent.includes('测试推送')).click(); true", 'open controlled test confirmation');
   await waitFor(cdp, "[...document.querySelectorAll('button')].some((item) => item.textContent.trim()==='确认创建')", 'test confirmation did not render');
-  await evaluate(cdp, "[...document.querySelectorAll('button')].find((item) => item.textContent.trim()==='确认创建').click(); true");
+  await evaluate(cdp, "[...document.querySelectorAll('button')].find((item) => item.textContent.trim()==='确认创建').click(); true", 'confirm controlled test');
   await waitFor(cdp, "String(document.querySelector('#fb-toast')?.textContent || '').includes('本地测试记录')", 'test receipt did not render');
   console.log('survey_completion_chromium: PASS');
   socket.close();
