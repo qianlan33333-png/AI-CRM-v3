@@ -57,7 +57,7 @@ dom.window.fetch = async (url, options = {}) => {
     {test_run_id:'questionnaire-test-unknown',status:'outcome_unknown',attempt_count:2,provider_result_received:false,updated_at:'2026-09-05T00:00:01Z'},
     {test_run_id:9,status:'disabled',updated_at:'2026-08-01T00:00:00Z',read_only_legacy:true},
   ]})};
-  return {ok:true,json:async()=>({items:[{source_pk:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'queued',occurred_at:'2026-09-05T00:00:00Z'}],configuration_version:3,external_push:{enabled:true,configuration_reference:'push.v1',metadata:{type:'old',custom_params:{legacy:'yes'}}}})};
+  return {ok:true,json:async()=>({items:[{source_pk:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'queued',occurred_at:'2026-09-05T00:00:00Z'}],target_catalog_available:true,available_configuration_references:['push.v1','push.v2'],configuration_version:3,external_push:{enabled:true,configuration_reference:'push.v1',metadata:{type:'old',custom_params:{legacy:'yes'}}}})};
 };
 dom.window.eval(adapter); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 await wait(40);

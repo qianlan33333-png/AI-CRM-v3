@@ -25,6 +25,12 @@
     const heading = Array.from(document.querySelectorAll('h3')).find(function (node) { return /问卷.*(?:外推|推送).*记录/.test(node.textContent); });
     return heading ? heading.parentElement : null;
   }
+  function installTargetSelector(references) {
+    const values = Array.from(new Set((Array.isArray(references) ? references : []).filter(function (value) { return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value); }))).sort();
+    const catalog = values.join('\n');
+    const sync = function () { if (!globalThis.document || !globalThis.document.documentElement) { observer.disconnect(); return; } const field = document.getElementById('opsConfigurationReference'); if (!field) return; const isSelect = field.tagName === 'SELECT'; if (isSelect && field.dataset.surveyHostTargetCatalog === catalog) return; const selected = field.value.trim(); const select = isSelect ? field : document.createElement('select'); select.replaceChildren(); select.id = field.id; select.name = field.name; select.style.cssText = field.style.cssText; select.setAttribute('aria-label', '推送配置引用'); select.dataset.surveyHostTargetCatalog = catalog; const empty = document.createElement('option'); empty.value = ''; empty.disabled = true; empty.textContent = values.length ? '请选择已部署的推送目标' : '当前没有可用的推送目标'; select.appendChild(empty); values.forEach(function (reference) { const item = document.createElement('option'); item.value = reference; item.textContent = reference; select.appendChild(item); }); if (selected && !values.includes(selected)) { const unavailable = document.createElement('option'); unavailable.value = selected; unavailable.disabled = true; unavailable.textContent = '当前绑定的目标已不可用，请重新选择'; select.appendChild(unavailable); } select.value = selected; select.disabled = !values.length; if (!isSelect) field.replaceWith(select); };
+    const observer = new MutationObserver(sync); observer.observe(document, { childList: true, subtree: true }); window.addEventListener('pagehide', function () { observer.disconnect(); }, { once:true }); sync();
+  }
   function installFrozenPublishBridge() {
     if (!document.body || document.body.dataset.page !== 'questionnaireDetail') return;
     let pendingButton = null;
@@ -206,6 +212,7 @@
       const [payload, page] = await Promise.all([adminRequest(operationsPath, { method: 'GET', headers: { Accept: 'application/json' } }), adminRequest('/admin/questionnaires/external-push-logs?limit=100&offset=0', { method: 'GET', headers: { Accept: 'application/json' } })]);
       if (!payload || !Array.isArray(payload.items)) throw new Error('invalid operations');
       externalCard.appendChild(makeMetadataForm(payload, operationsPath));
+      installTargetSelector(payload.target_catalog_available === true ? payload.available_configuration_references : []);
       const legacyLogBoundary = Array.from((logCard.parentElement || logCard).querySelectorAll('p')).find(function (node) { return node.textContent.includes('只显示本地 queued 测试记录') || node.textContent.includes('没有 Provider 调用'); });
       if (legacyLogBoundary) { legacyLogBoundary.dataset.surveyHostLogBoundary = 'true'; legacyLogBoundary.textContent = '受控外推记录展示创建、尝试和处理回执；HTTP 受理不代表接收方业务已生效。'; }
       const logState = { current: payload.items, global: page && Array.isArray(page.items) ? page.items : [], scope: 'current' }; const redraw = function (nextScope) { logState.scope = nextScope; renderLogs(logCard, logState.current, logState.global, logState.scope, '', redraw); }; redraw(logState.scope);
