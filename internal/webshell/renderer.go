@@ -242,7 +242,10 @@ func (renderer *Renderer) RenderExternalEffects(writer http.ResponseWriter, data
 		return errors.New("external effects shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// The External Effects runtime is a V3-owned dynamic workspace. Its
+	// controller renders a local heading for its content, but it does not own
+	// the surrounding shell bar.
+	data.ShowPageHeader = true
 	content, err := executeTemplate(renderer.templates, "admin_external_effects", data)
 	if err != nil {
 		return err
@@ -266,8 +269,10 @@ func (renderer *Renderer) RenderHXC(writer http.ResponseWriter, data AdminPageDa
 		return errors.New("HXC dashboard shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
-	content, err := executeTemplate(renderer.templates, "admin_external_effects", data)
+	// HXC is a V3 dynamic content page: it has no donor-owned first toolbar,
+	// so the shell owns the single standard topbar.
+	data.ShowPageHeader = true
+	content, err := executeTemplate(renderer.templates, "admin_hxc", data)
 	if err != nil {
 		return err
 	}
@@ -292,7 +297,7 @@ func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPage
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Media: true, MediaPage: page, MediaAssets: assets})
 	if err != nil {
 		return err
@@ -309,7 +314,7 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Tags: true, TagsAssets: assets})
 	if err != nil {
 		return err
@@ -326,7 +331,7 @@ func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminP
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
 	if err != nil {
 		return err
@@ -347,7 +352,10 @@ func (renderer *Renderer) RenderOrders(writer http.ResponseWriter, data AdminPag
 	if page == "orders" {
 		panel = `<details class="order-import-panel" data-order-import><summary>生产订单快照迁移（超级管理员）</summary><div class="order-import-panel__body"><input type="file" accept="application/json,.json" data-order-import-file><label><input type="checkbox" data-order-import-confirm> 已核对快照摘要与 SHA-256，确认仅导入历史订单</label><div class="order-import-panel__actions"><button type="button" data-order-import-action="inspect">检查快照</button><button type="button" data-order-import-action="apply" disabled>导入生产</button><button type="button" data-order-import-action="reconcile" disabled>对账</button></div><pre data-order-import-status>请选择订单快照文件。</pre></div></details>`
 	}
-	content := `<div class="order-host-layout">` + panel + `<main id="stage" class="stage rich"></main></div><template id="tpl">` + donorTemplate + `</template>`
+	// The frozen order workspace owns the first row of the business page. Keep
+	// the V3-only history import control in the same Host, after that workspace,
+	// so it cannot inset or displace the donor toolbar at the shell boundary.
+	content := `<div class="order-host-layout"><main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>` + panel + `</div><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Order: true, OrderPage: page, OrderAssets: assets})
 	if err != nil {
 		return err
@@ -363,7 +371,7 @@ func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPa
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Coupons: true, CouponPage: page, CouponAssets: assets})
 	if err != nil {
 		return err
@@ -378,8 +386,10 @@ func (renderer *Renderer) RenderRadar(writer http.ResponseWriter, data AdminPage
 		return errors.New("radar shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main>`
+	// Radar replaces the stage class while it mounts. Keep the V3 shell bar
+	// outside that mutable workspace so the page has one stable topbar.
+	data.ShowPageHeader = true
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Radar: true, RadarPage: page, RadarAssets: assets})
 	if err != nil {
 		return err
@@ -401,7 +411,7 @@ func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminP
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Channel: true, ChannelPage: page, ChannelResourceID: resourceID, ChannelAssets: assets})
 	if err != nil {
 		return err
@@ -418,7 +428,7 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), GroupOps: true, GroupOpsPage: page, GroupOpsAssets: assets})
 	if err != nil {
 		return err
@@ -432,7 +442,7 @@ func (renderer *Renderer) RenderAIAssistant(writer http.ResponseWriter, data Adm
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<main id="stage" class="stage rich">` + donorTemplate + `</main>`), AIAssistant: true, AIAssistantAssets: assets})
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded">` + donorTemplate + `</main>`), AIAssistant: true, AIAssistantAssets: assets})
 	if err != nil {
 		return err
 	}
@@ -446,8 +456,10 @@ func (renderer *Renderer) RenderOwnerHandoff(writer http.ResponseWriter, data Ad
 		return errors.New("owner handoff shell is unavailable")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich" data-owner-handoff-host></main>`
+	// The frozen donor has a local title/status row. The V3 host keeps its
+	// actions but renders the sole shell topbar around it.
+	data.ShowPageHeader = true
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded" data-owner-handoff-host></main>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), OwnerHandoff: true})
 	if err != nil {
 		return err
@@ -463,7 +475,7 @@ func (renderer *Renderer) RenderAutomation(writer http.ResponseWriter, data Admi
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Automation: true, AutomationPage: page, AutomationAssets: assets, AutomationCreateCode: createCode})
 	if err != nil {
 		return err
@@ -480,7 +492,7 @@ func (renderer *Renderer) RenderSurvey(writer http.ResponseWriter, data AdminPag
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	if page == "questionnaireDetail" {
 		content = donorTemplate
 	}
@@ -500,7 +512,7 @@ func (renderer *Renderer) RenderOperationCycles(writer http.ResponseWriter, data
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<base href="/admin/operation-cycles/"><main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<base href="/admin/operation-cycles/"><main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), OperationCycles: true, OperationPage: page, OperationAssets: assets})
 	if err != nil {
 		return err
@@ -517,7 +529,9 @@ func (renderer *Renderer) RenderRuntimeConfig(writer http.ResponseWriter, data A
 		return errors.New("runtime config shell is required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// Runtime configuration is a V3 host rather than a donor-toolbar page, so
+	// it must retain the shell's standard topbar above its release cards.
+	data.ShowPageHeader = true
 	content := `<main id="runtime-release-host" class="admin-page" data-runtime-release-host>` + hostTemplate + `</main>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), RuntimeConfig: true, RuntimeConfigPage: page})
 	if err != nil {
@@ -535,7 +549,7 @@ func (renderer *Renderer) RenderConfig(writer http.ResponseWriter, data AdminPag
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Config: true, ConfigPage: page, ConfigAssets: assets})
 	if err != nil {
 		return err
