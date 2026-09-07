@@ -33,13 +33,13 @@
 4. old Questionnaire answer query by canonical UnionID → V3 CustomerSurveyAdapter → Survey CustomerHistory/Window；生产同客户记录有无及作用域已单独检查。
 5. old claimable Coupon definitions → V3 CustomerCouponReader 领取记录：确认不是相同读取语义；领取副作用本 PR 不改。
 6. old sendChatMessage news/image、封面与 Media thumbnail → V3 商品/素材会话动作；旧 JS 回调不等于外部送达，SDK官方现文仍待补证。
-7. old order/refund labels、periodic remarks、非聊天 timeline → V3 Order/Entitlement/readers；真实截图订单号未匹配，不做错误归因。
+7. old order/refund labels、periodic remarks、非聊天 timeline → V3 Order/Entitlement/readers；已按截图完整订单号匹配同一订单，确认 V3 历史记录退款事实缺失，不用前端猜测状态。
 8. V3 chat_activity/other_staff_messages 的 tab 恢复、请求、渲染路径：正式 PRD 要求删除侧边栏完整链，不删 archive owner。
 
 ## 尚未完成的检查
 
 - 本次未逐页运行旧仓全部 781 路由，也未宣称 V3 全仓业务等价。动态注册路由与测试候选仍须对应能力执行任务补运行证据。
-- 旧 screenshots 的订单未在当前两库以人工抄录 exact order number 匹配到，需要可核准订单详情；不能以同商品名称映射状态。
+- 截图订单已按完整订单号核准：旧全额退款 9900 分，V3 历史订单 refunded_minor=0。当前证据能确定事实缺口，尚未完成历史导入来源/时间截面追溯；此处不执行数据修复或退款。
 - 官方 SDK 文档网页打开失败，URL仅作后续核查索引；客户端商品分享真实行为尚待协议和受控企微验收。
 - 不执行历史数据导入；旧 8 份答卷缺失与手机号 verified/declared 来源差异已隔离说明。
 

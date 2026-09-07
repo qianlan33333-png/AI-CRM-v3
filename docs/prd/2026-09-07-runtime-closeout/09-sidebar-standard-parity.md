@@ -40,9 +40,9 @@ OneID：读取 canonical customer、解析可信外部身份；只用 Identity P
 | 商品点击只有技术回执提示 | 旧 `sendProduct` → `sendChatMessage news` 带 imgUrl；V3 payload 没有 imgUrl，且仅写 client_callback/delivery_unknown | 确认封面载荷及提示差异。真实未进入会话的充分根因尚未确认；恢复完整载荷，核客户端权限/上下文/回调，不把改文案当修复 |
 | 优惠券不可用/不完整 | 旧 CouponSidebarApplication.list_claimable 列 active 券定义及 /c/{slug}；V3 Sidebar 接 CustomerCouponReader 已领券，且 renderer 使用占位展示 | 确认读取语义接错；补可领取目录稳定 Port，保持已有客户券读取给原消费者 |
 | 聊天入口报存档未启用 | V3 main.ts 主导航 other_staff_messages、画像子页 chat_activity 仍发请求 | 用户确定移除侧边栏展示和请求；不以启用存档掩盖 UI 范围问题 |
-| 同名商品看似已支付/全额退款 | 图 4 未展开订单号；图 9 可见的目标订单号经人工抄录在当前两库均未找到 | **未确认同一订单，不能改状态或断言退款映射错误**。执行测试用准确相同 order_no；真实差异留待可匹配原始订单详情，不按标题/金额猜测 |
+| 同一订单已支付/全额退款不同 | 重新逐字符核准截图完整订单号后，两库各匹配同一订单/客户/9900分；旧 status=paid、refund_status=full_refunded、refunded=9900；V3 history、paid、refunded=0、effect_eligible=false | **确认历史退款事实缺失，不能靠 UI 把所有 paid 改退款**。页面按本地 Order 事实显示；该历史事实修复列后续数据处理，本 PR 用完整退款事实 fixture 验证映射，绝不发起真实退款 |
 
-生产证据仅保留计数、assurance、布尔和订单摘要：[脱敏只读结果](sidebar-evidence/production-redacted-check.json)。不提交原始截图、手机号、external_userid、UnionID、Cookie 或凭据。
+生产证据在 23:39 补核准确订单号，退款差异属于已导入历史记录事实不完整，尚未修改生产数据。生产证据仅保留计数、assurance、布尔和订单摘要：[脱敏只读结果](sidebar-evidence/production-redacted-check.json)。不提交原始截图、手机号、external_userid、UnionID、Cookie 或凭据。
 
 ## 5. 复用清单与允许适配
 
@@ -86,7 +86,7 @@ Customer 现有目录投影会被客户同步更新。四个运营字段采用 C
 
 - Sidebar authorize → canonical Customer → customerport.CustomerSurveyReader → Survey CustomerHistory/CustomerHistoryWindow。保持真实 total 与游标分页一致，列时间/题数/答案详情；关联未知/冲突不跨客读取。
 - 当前客户 8 条旧答卷缺失留历史数据待办；不在页面调用旧库补齐。已有导入记录如存在但同一可信 OneID 不可读，必须以其来源映射查明后只修读取，不批量迁移。
-- 订单沿用 Order Query，展示订单号、¥ 金额、时间、真实支付/退款终态和详情；普通与周期分类复用已存在字段。退款显示必须依准确记录，不按同名商品概括。
+- 订单沿用 Order Query，展示订单号、¥ 金额、时间、真实支付/退款终态和详情；普通与周期分类复用已存在字段。退款显示必须依准确记录，不按同名商品概括。已查出的历史订单缺退款事实单列后续数据修复；不能靠前端推断退款，更不能补发退款 Provider 请求。
 - 周期备注使用既有 Entitlement 备注命令和权限；不改周期/退款开通逻辑。
 - 保留非聊天活动 timeline 及其来源详情入口；若聚合 Port 同时返回 message 事件，侧边栏使用明确过滤参数/类型白名单，不请求存档补充。不要删其他调用方的 message 类型能力。
 
