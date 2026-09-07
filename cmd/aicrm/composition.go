@@ -694,7 +694,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return fail(err)
 	}
 	couponService := couponapp.NewService(uow, couponRepository, productTargets, couponRepository)
-	customerCoupons, err := couponapp.NewCustomerCouponApplication(uow, couponRepository)
+	sidebarCouponCatalog, err := couponapp.NewSidebarClaimableCatalog(uow, couponRepository, productTargets)
 	if err != nil {
 		return fail(err)
 	}
@@ -1296,7 +1296,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		},
 		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: customerTimelineAdapter{uow: uow, reader: customerStore},
 		Products: productCatalog, ProductByID: productTargets, Orders: orderService, Entitlements: entitlements,
-		Coupons: customerCoupons, Materials: mediaLibrary, MaterialSend: mediaLibrary, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin,
+		Coupons: sidebarCouponCatalog, Materials: mediaLibrary, MaterialSend: mediaLibrary, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin,
 	})
 	if err != nil {
 		return fail(err)

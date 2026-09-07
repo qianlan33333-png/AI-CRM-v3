@@ -55,7 +55,17 @@ func (PostgreSQL) UpdateSidebarProfile(ctx context.Context, command customerport
 	var id int64
 	annotationUpdate := command.SourceSet || command.IndustrySet || command.IndustryDescriptionSet || command.NeedsBlockersFollowupSet
 	if annotationUpdate {
-		err = tx.QueryRow(ctx, `INSERT INTO customer_sidebar_profiles(customer_id,profile_source,industry,industry_description,needs_blockers_followup,version,updated_at) SELECT $1,$2,$3,$4,$5,1,$7 WHERE $6=0 ON CONFLICT (customer_id) DO UPDATE SET profile_source=CASE WHEN $8 THEN EXCLUDED.profile_source ELSE customer_sidebar_profiles.profile_source END,industry=CASE WHEN $9 THEN EXCLUDED.industry ELSE customer_sidebar_profiles.industry END,industry_description=CASE WHEN $10 THEN EXCLUDED.industry_description ELSE customer_sidebar_profiles.industry_description END,needs_blockers_followup=CASE WHEN $11 THEN EXCLUDED.needs_blockers_followup ELSE customer_sidebar_profiles.needs_blockers_followup END,version=customer_sidebar_profiles.version+1,updated_at=EXCLUDED.updated_at WHERE customer_sidebar_profiles.version=$6 RETURNING customer_id`, command.CustomerID, command.ProfileSource, command.Industry, command.IndustryDescription, command.NeedsBlockersFollowup, command.ExpectedProfileVersion, at, command.SourceSet, command.IndustrySet, command.IndustryDescriptionSet, command.NeedsBlockersFollowupSet).Scan(&id)
+		if command.ExpectedProfileVersion == 0 {
+			// The first profile write is an INSERT-only CAS. A concurrent opener
+			// gets no row after the unique-key conflict and is reported as a
+			// version conflict; it must never overwrite the winner's annotations.
+			err = tx.QueryRow(ctx, `INSERT INTO customer_sidebar_profiles(customer_id,profile_source,industry,industry_description,needs_blockers_followup,version,updated_at) VALUES($1,$2,$3,$4,$5,1,$6) ON CONFLICT (customer_id) DO NOTHING RETURNING customer_id`, command.CustomerID, command.ProfileSource, command.Industry, command.IndustryDescription, command.NeedsBlockersFollowup, at).Scan(&id)
+		} else {
+			// Later profile edits update the existing row directly. Do not route
+			// this through an INSERT ... SELECT predicate: that predicate would
+			// suppress the row before ON CONFLICT can perform the CAS update.
+			err = tx.QueryRow(ctx, `UPDATE customer_sidebar_profiles SET profile_source=CASE WHEN $3 THEN $4 ELSE profile_source END,industry=CASE WHEN $5 THEN $6 ELSE industry END,industry_description=CASE WHEN $7 THEN $8 ELSE industry_description END,needs_blockers_followup=CASE WHEN $9 THEN $10 ELSE needs_blockers_followup END,version=version+1,updated_at=$11 WHERE customer_id=$1 AND version=$2 RETURNING customer_id`, command.CustomerID, command.ExpectedProfileVersion, command.SourceSet, command.ProfileSource, command.IndustrySet, command.Industry, command.IndustryDescriptionSet, command.IndustryDescription, command.NeedsBlockersFollowupSet, command.NeedsBlockersFollowup, at).Scan(&id)
+		}
 	} else {
 		err = tx.QueryRow(ctx, `UPDATE customer_directory_projection SET display_name=$3,gender=$4,corp_name=$5,source_version=source_version+1,updated_at=$6 WHERE customer_id=$1 AND source_version=$2 RETURNING customer_id`, command.CustomerID, command.ExpectedVersion, command.DisplayName, command.Gender, command.CorpName, at).Scan(&id)
 	}

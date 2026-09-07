@@ -15,7 +15,7 @@ const stagedManifest = readManifest(stage);
 const entryKeys = [
   'admin', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
-  'customerHost', 'sidebarHost', 'openPlatformHost', 'sidebarStyles',
+  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'openPlatformHost', 'sidebarStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {
@@ -60,10 +60,13 @@ assert.ok(fs.readFileSync(path.join(stage, 'sidebar', 'index.html')).equals(fs.r
 const sidebarHost = sourceManifest.entries?.sidebarHost;
 const weComJSSDK = 'https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js';
 assert.equal(sourceManifest.files?.[sidebarHost]?.entry_point, 'web/v3/sidebar/main.ts', 'sidebar Host must use the V3 sidebar entry');
-assert.ok(sourceManifest.files?.[sidebarHost]?.inputs?.includes('web/v3/sidebarApi.ts'), 'sidebar Host must retain the V3 sidebar API adapter');
+const sidebarOverlay = sourceManifest.entries?.sidebarStandardOverlay;
+assert.equal(sourceManifest.files?.[sidebarHost]?.entry_point, 'web/v3/sidebar/main.ts', 'sidebar Host must be the V3 trusted bridge entry');
+assert.equal(sourceManifest.files?.[sidebarOverlay]?.entry_point, 'web/dist/sidebar/sidebar_workbench_v3_overlay.js', 'sidebar release manifest must contain the generated dd8 overlay');
 const sidebarHTML = fs.readFileSync(path.join(stage, 'sidebar', 'index.html'), 'utf8');
 const sidebarScripts = [...sidebarHTML.matchAll(/<script(?: type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
 assert.deepEqual(sidebarScripts, [weComJSSDK, `../${sidebarHost}`], 'staged sidebar document must load only the WeCom JSSDK followed by its V3 Host');
+assert.ok(sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`), 'staged sidebar document must pass the hashed dd8 overlay only to the V3 Host');
 assert.ok(!sidebarHTML.includes('https://res.wx.qq.com/open/js/jweixin-1.6.0.js'), 'staged sidebar document still loads the generic JSSDK that blocks agentConfig');
 assert.equal(stagedManifest.entries?.h5, sourceManifest.entries?.h5, 'previous Survey stage was removed');
 assert.ok(fs.existsSync(path.join(stage, 'h5', 'index.html')), 'previous Survey public stage was removed');

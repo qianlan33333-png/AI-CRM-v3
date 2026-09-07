@@ -22,7 +22,7 @@ const stagedManifest = readJSON(stagedManifestPath);
 const entryKeys = [
   'admin', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
-  'customerHost', 'sidebarHost', 'openPlatformHost', 'sidebarStyles',
+  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'openPlatformHost', 'sidebarStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {
