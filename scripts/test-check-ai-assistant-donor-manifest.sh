@@ -3,14 +3,24 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 checker="$repo_root/scripts/check-ai-assistant-donor-manifest.sh"
+donor_prefix="web/donors"
+donor_name="ai-assistant-production"
 
 test -x "$checker" || { echo "missing executable AI Assistant donor checker" >&2; exit 1; }
+git -C "$repo_root" check-ignore -q web/donor-sources/source-index.json && {
+  echo "source index is ignored; donor boundary test would not exercise its precise exemption" >&2
+  exit 1
+}
+source_index_binding="$donor_prefix/$donor_name/static/send_content_readonly_detail.css"
+grep -Fq "$source_index_binding" \
+  "$repo_root/web/donor-sources/source-index.json" || {
+  echo "source index fixture no longer contains the governed donor binding" >&2
+  exit 1
+}
 "$checker"
 
 # These fragments deliberately create fixture contents at runtime: the fixture
 # verifies the scanner boundary without becoming a real repository reference.
-donor_prefix="web/donors"
-donor_name="ai-assistant-production"
 audit_fixture="$repo_root/scripts/audit/ai_assistant_donor_gate_fixture_$$"
 script_fixture="$repo_root/scripts/ai_assistant_donor_gate_fixture_$$.mjs"
 runtime_fixture="$repo_root/internal/ai_assistant_donor_gate_fixture_$$"
