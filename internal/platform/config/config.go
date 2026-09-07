@@ -735,6 +735,14 @@ func ChromiumJourneyRequired() bool {
 	return ok && value == "1"
 }
 
+// AdminLayoutScreenshotDirectory returns an explicitly configured CI or local
+// evidence directory for the admin-shell Chromium layout journey. It is not a
+// runtime setting and the caller still validates that any supplied path is
+// absolute before writing screenshots.
+func AdminLayoutScreenshotDirectory() string {
+	return os.Getenv("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR")
+}
+
 // NamedDatabaseURL is restricted to the two database roles used by the
 // controlled Automation Operations migration. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment
