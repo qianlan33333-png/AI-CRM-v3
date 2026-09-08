@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,12 +19,21 @@ const (
 	DefaultLimit  = 50
 	MaximumLimit  = 200
 	ExactCountCap = 10000
+	// MaximumFilterCandidates keeps an explicit directory filter bounded before
+	// its immutable matching set is supplied to the Customer-owned store.  A
+	// cursor includes that set's digest, so a changed tag/owner fact cannot be
+	// mistaken for another page of the old result.
+	MaximumFilterCandidates = 100000
 )
 
 var (
 	ErrInvalidQuery  = errors.New("invalid customer directory query")
 	ErrInvalidCursor = errors.New("invalid customer directory cursor")
 	ErrNotFound      = errors.New("customer directory record not found")
+	// ErrFilterUnavailable means a valid bounded filter could not be resolved
+	// from its owning local projection. It is deliberately distinct from a
+	// malformed client value so the Host can retain the filter and retry.
+	ErrFilterUnavailable = errors.New("customer directory filter unavailable")
 )
 
 type Filters struct {
@@ -31,6 +42,12 @@ type Filters struct {
 	ActivationStatus string
 	PhoneCustomerID  customerdomain.CustomerID
 	PhoneMatchNone   bool
+	OwnerStaffID     int64
+	OwnerCustomerIDs []customerdomain.CustomerID
+	OwnerMatchNone   bool
+	TagID            int64
+	TagCustomerIDs   []customerdomain.CustomerID
+	TagMatchNone     bool
 }
 
 type Query struct {
@@ -42,16 +59,20 @@ type Query struct {
 }
 
 type Item struct {
-	CustomerID      customerdomain.CustomerID `json:"customer_id"`
-	CustomerStatus  customerdomain.Status     `json:"status"`
-	DisplayName     string                    `json:"display_name"`
-	AvatarURL       string                    `json:"avatar_url"`
-	OneIDLabel      string                    `json:"oneid"`
-	PhoneMasked     string                    `json:"phone_masked"`
-	PhoneAssurance  string                    `json:"phone_assurance,omitempty"`
-	ActivationState string                    `json:"activation_status"`
-	LastSyncedAt    *time.Time                `json:"last_synced_at,omitempty"`
-	UpdatedAt       time.Time                 `json:"updated_at"`
+	CustomerID     customerdomain.CustomerID `json:"customer_id"`
+	CustomerStatus customerdomain.Status     `json:"status"`
+	DisplayName    string                    `json:"display_name"`
+	AvatarURL      string                    `json:"avatar_url"`
+	OneIDLabel     string                    `json:"oneid"`
+	PhoneMasked    string                    `json:"phone_masked"`
+	PhoneAssurance string                    `json:"phone_assurance,omitempty"`
+	// OwnerStaffID is the Customer-owned local assignee only.  A Provider
+	// follow relationship is a separate read-model fact and must never be
+	// represented as this CRM authority field.
+	OwnerStaffID    *int64     `json:"owner_staff_id"`
+	ActivationState string     `json:"activation_status"`
+	LastSyncedAt    *time.Time `json:"last_synced_at,omitempty"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 type Detail struct {
@@ -79,12 +100,21 @@ type Page struct {
 type Store interface {
 	List(context.Context, Query) (PageData, error)
 	Detail(context.Context, customerdomain.CustomerID) (Detail, error)
+	CustomerIDsForOwner(context.Context, int64, int) ([]customerdomain.CustomerID, error)
+}
+
+// TagCustomerMatcher is the only cross-domain input to a Customer-directory
+// tag filter.  It returns canonical Customer IDs for an already-local tag ID;
+// it cannot change the catalog, tag observations, identities, or customers.
+type TagCustomerMatcher interface {
+	CustomerIDsForTag(context.Context, int64, int) ([]customerdomain.CustomerID, error)
 }
 
 type Directory struct {
 	Store      Store
 	Now        func() time.Time
 	SigningKey []byte
+	Tags       TagCustomerMatcher
 }
 
 type ListRequest struct {
@@ -103,7 +133,7 @@ type cursorPayload struct {
 
 func (directory Directory) List(ctx context.Context, request ListRequest) (Page, error) {
 	request.Filters.Keyword = strings.TrimSpace(request.Filters.Keyword)
-	if len(request.Filters.Keyword) > 200 || !validStatus(request.Filters.Status) || !validActivation(request.Filters.ActivationStatus) || request.Limit < 0 || request.Limit > MaximumLimit {
+	if len(request.Filters.Keyword) > 200 || !validStatus(request.Filters.Status) || !validActivation(request.Filters.ActivationStatus) || request.Filters.OwnerStaffID < 0 || request.Filters.TagID < 0 || request.Limit < 0 || request.Limit > MaximumLimit {
 		return Page{}, ErrInvalidQuery
 	}
 	if len(directory.SigningKey) < 32 {
@@ -111,6 +141,25 @@ func (directory Directory) List(ctx context.Context, request ListRequest) (Page,
 	}
 	if request.Limit == 0 {
 		request.Limit = DefaultLimit
+	}
+	if request.Filters.OwnerStaffID > 0 {
+		ids, err := directory.Store.CustomerIDsForOwner(ctx, request.Filters.OwnerStaffID, MaximumFilterCandidates+1)
+		if err != nil || len(ids) > MaximumFilterCandidates {
+			return Page{}, fmt.Errorf("%w: local owner projection", ErrFilterUnavailable)
+		}
+		request.Filters.OwnerCustomerIDs = sortedUniqueCustomerIDs(ids)
+		request.Filters.OwnerMatchNone = len(request.Filters.OwnerCustomerIDs) == 0
+	}
+	if request.Filters.TagID > 0 {
+		if directory.Tags == nil {
+			return Page{}, ErrFilterUnavailable
+		}
+		ids, err := directory.Tags.CustomerIDsForTag(ctx, request.Filters.TagID, MaximumFilterCandidates+1)
+		if err != nil || len(ids) > MaximumFilterCandidates {
+			return Page{}, fmt.Errorf("%w: local tag observation", ErrFilterUnavailable)
+		}
+		request.Filters.TagCustomerIDs = sortedUniqueCustomerIDs(ids)
+		request.Filters.TagMatchNone = len(request.Filters.TagCustomerIDs) == 0
 	}
 	hash := filtersHash(request.Filters)
 	watermark := time.Now().UTC()
@@ -150,9 +199,29 @@ func (directory Directory) List(ctx context.Context, request ListRequest) (Page,
 }
 
 func filtersHash(filters Filters) string {
-	payload, _ := json.Marshal([]any{filters.Keyword, filters.Status, filters.ActivationStatus, filters.PhoneCustomerID, filters.PhoneMatchNone})
+	payload, _ := json.Marshal([]any{filters.Keyword, filters.Status, filters.ActivationStatus, filters.PhoneCustomerID, filters.PhoneMatchNone, filters.OwnerStaffID, filters.OwnerCustomerIDs, filters.OwnerMatchNone, filters.TagID, filters.TagCustomerIDs, filters.TagMatchNone})
 	digest := sha256.Sum256(payload)
 	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+func sortedUniqueCustomerIDs(values []customerdomain.CustomerID) []customerdomain.CustomerID {
+	if len(values) == 0 {
+		return []customerdomain.CustomerID{}
+	}
+	seen := make(map[customerdomain.CustomerID]struct{}, len(values))
+	result := make([]customerdomain.CustomerID, 0, len(values))
+	for _, value := range values {
+		if value < 1 {
+			continue
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	slices.Sort(result)
+	return result
 }
 
 func encodeCursor(payload cursorPayload, key []byte) (string, error) {

@@ -353,6 +353,42 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 	}
 }
 
+func TestCustomerDirectoryProviderReadsBoundedStaffProfilesAndKeepsPartialFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact secret" {
+				t.Fatal("profile read did not use the contact credential")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/user/get":
+			if request.URL.Query().Get("access_token") != "contact-token" {
+				t.Fatal("profile query did not use directory token")
+			}
+			switch request.URL.Query().Get("userid") {
+			case "staff-1":
+				_, _ = writer.Write([]byte(`{"errcode":0,"userid":"staff-1","name":"运营一"}`))
+			case "staff-2":
+				_, _ = writer.Write([]byte(`{"errcode":48002}`))
+			default:
+				t.Fatal("unexpected profile userid")
+			}
+		default:
+			t.Fatalf("unexpected path=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	snapshot, err := client.ReadContactStaffProfiles(context.Background(), []string{"staff-1", "staff-2"})
+	if err != nil || len(snapshot.Items) != 1 || snapshot.Items[0] != (wecomport.ContactStaffProfile{UserID: "staff-1", DisplayName: "运营一"}) || snapshot.ProfileReadState != "unavailable" || snapshot.ProfileErrorCode != "provider_permission_denied" {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	if _, err = client.ReadContactStaffProfiles(context.Background(), make([]string, 101)); err == nil {
+		t.Fatal("unbounded profile request accepted")
+	}
+}
+
 func TestCustomerDirectoryProviderRejectsArrayFollowInfo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -562,6 +598,150 @@ func TestListTagCatalogTokenFailureIsPreCall(t *testing.T) {
 	var failure *CatalogReadError
 	if err == nil || !errors.As(err, &failure) || failure.CallAttempted {
 		t.Fatalf("err=%v failure=%+v", err, failure)
+	}
+}
+
+func TestMutateTagCatalogUsesOfficialDirectoryWritesAndPreservesUnknownCreate(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutation   wecomport.TagCatalogMutation
+		path       string
+		response   string
+		assertBody func(*testing.T, map[string]any)
+		want       wecomport.TagCatalogMutationResult
+		unknown    bool
+	}{
+		{
+			name:     "group create",
+			mutation: wecomport.TagCatalogMutation{Operation: "group_create", GroupName: "Lifecycle", TagName: "Warm"},
+			path:     "/cgi-bin/externalcontact/add_corp_tag",
+			response: `{"errcode":0,"tag_group":{"group_id":"group-created","group_name":"Lifecycle","tag":[{"id":"tag-created","name":"Warm"}]}}`,
+			assertBody: func(t *testing.T, body map[string]any) {
+				t.Helper()
+				if body["group_name"] != "Lifecycle" || len(body["tag"].([]any)) != 1 {
+					t.Fatalf("create body=%#v", body)
+				}
+			},
+			want: wecomport.TagCatalogMutationResult{ProviderGroupID: "group-created", ProviderTagID: "tag-created"},
+		},
+		{
+			name:     "tag create",
+			mutation: wecomport.TagCatalogMutation{Operation: "tag_create", ProviderGroupID: "group-existing", TagName: "Hot"},
+			path:     "/cgi-bin/externalcontact/add_corp_tag",
+			response: `{"errcode":0,"tag_group":{"group_id":"group-existing","group_name":"Lifecycle","tag":[{"id":"tag-created","name":"Hot"}]}}`,
+			assertBody: func(t *testing.T, body map[string]any) {
+				t.Helper()
+				if body["group_id"] != "group-existing" || len(body["tag"].([]any)) != 1 {
+					t.Fatalf("create body=%#v", body)
+				}
+			},
+			want: wecomport.TagCatalogMutationResult{ProviderGroupID: "group-existing", ProviderTagID: "tag-created"},
+		},
+		{
+			name:     "group rename",
+			mutation: wecomport.TagCatalogMutation{Operation: "group_update", ProviderGroupID: "group-existing", GroupName: "Lifecycle 2"},
+			path:     "/cgi-bin/externalcontact/edit_corp_tag",
+			response: `{"errcode":0}`,
+			assertBody: func(t *testing.T, body map[string]any) {
+				t.Helper()
+				if body["id"] != "group-existing" || body["name"] != "Lifecycle 2" {
+					t.Fatalf("rename body=%#v", body)
+				}
+			},
+			want: wecomport.TagCatalogMutationResult{ProviderGroupID: "group-existing"},
+		},
+		{
+			name:     "tag rename",
+			mutation: wecomport.TagCatalogMutation{Operation: "tag_update", ProviderTagID: "tag-existing", TagName: "Hot 2"},
+			path:     "/cgi-bin/externalcontact/edit_corp_tag",
+			response: `{"errcode":0}`,
+			assertBody: func(t *testing.T, body map[string]any) {
+				t.Helper()
+				if body["id"] != "tag-existing" || body["name"] != "Hot 2" {
+					t.Fatalf("rename body=%#v", body)
+				}
+			},
+			want: wecomport.TagCatalogMutationResult{ProviderTagID: "tag-existing"},
+		},
+		{
+			name:     "group archive",
+			mutation: wecomport.TagCatalogMutation{Operation: "group_archive", ProviderGroupID: "group-existing"},
+			path:     "/cgi-bin/externalcontact/del_corp_tag",
+			response: `{"errcode":0}`,
+			assertBody: func(t *testing.T, body map[string]any) {
+				t.Helper()
+				if got := body["group_id"].([]any); len(got) != 1 || got[0] != "group-existing" {
+					t.Fatalf("archive body=%#v", body)
+				}
+			},
+			want: wecomport.TagCatalogMutationResult{ProviderGroupID: "group-existing"},
+		},
+		{
+			name:     "tag archive",
+			mutation: wecomport.TagCatalogMutation{Operation: "tag_archive", ProviderTagID: "tag-existing"},
+			path:     "/cgi-bin/externalcontact/del_corp_tag",
+			response: `{"errcode":0}`,
+			assertBody: func(t *testing.T, body map[string]any) {
+				t.Helper()
+				if got := body["tag_id"].([]any); len(got) != 1 || got[0] != "tag-existing" {
+					t.Fatalf("archive body=%#v", body)
+				}
+			},
+			want: wecomport.TagCatalogMutationResult{ProviderTagID: "tag-existing"},
+		},
+		{
+			name:     "ambiguous create response",
+			mutation: wecomport.TagCatalogMutation{Operation: "group_create", GroupName: "Lifecycle", TagName: "Warm"},
+			path:     "/cgi-bin/externalcontact/add_corp_tag",
+			response: `{"errcode":0,"tag_group":{}}`,
+			assertBody: func(t *testing.T, body map[string]any) {
+				t.Helper()
+				if body["group_name"] != "Lifecycle" {
+					t.Fatalf("create body=%#v", body)
+				}
+			},
+			unknown: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/cgi-bin/gettoken":
+					if r.URL.Query().Get("corpsecret") != "contact-secret" {
+						t.Fatalf("token query=%s", r.URL.RawQuery)
+					}
+					_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+				case test.path:
+					if r.Method != http.MethodPost || r.URL.Query().Get("access_token") != "contact-token" {
+						t.Fatalf("write request=%s?%s", r.Method, r.URL.RawQuery)
+					}
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					test.assertBody(t, body)
+					_, _ = w.Write([]byte(test.response))
+				default:
+					t.Fatalf("unexpected path=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := client.MutateTagCatalog(context.Background(), test.mutation)
+			if test.unknown {
+				if err == nil || !wecomport.ProviderCallAttempted(err) || !wecomport.ProviderOutcomeUnknown(err) {
+					t.Fatalf("ambiguous create err=%v", err)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("result=%+v err=%v want=%+v", got, err, test.want)
+			}
+		})
 	}
 }
 

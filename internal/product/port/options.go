@@ -42,6 +42,10 @@ type ProductOption struct {
 	Name        string            `json:"name"`
 	PriceMinor  int64             `json:"price_minor"`
 	Currency    string            `json:"currency"`
+	// CoverURL is Product's public first image for a message card. A consumer
+	// that needs a card must reject an empty value rather than inventing a
+	// generic cover.
+	CoverURL string `json:"cover_url,omitempty"`
 }
 
 type ProductOptionPage struct {
@@ -65,6 +69,25 @@ type ProductOptionReader interface {
 // lifecycle, order, entitlement, or provider state.
 type ProductTargetReader interface {
 	ReadProductTarget(context.Context, ProductOptionType, ID) (ProductOption, error)
+}
+
+// SidebarShareProduct is the narrow current-lifecycle projection needed to
+// form a sidebar product news card. It is deliberately separate from the
+// generic target reader: a coupon may retain a historical target while an
+// unpublished product must never be shared from the sidebar.
+type SidebarShareProduct struct {
+	ID          ID
+	Code        string
+	ProductType ProductOptionType
+	Name        string
+	CoverURL    string
+}
+
+// SidebarProductShareReader resolves one product at send-intent creation
+// time. Implementations must reject drafts, disabled products, and archived
+// service-period products from their current Product lifecycle.
+type SidebarProductShareReader interface {
+	ReadSidebarShareProduct(context.Context, ProductOptionType, ID) (SidebarShareProduct, error)
 }
 
 // CheckoutProduct is the immutable minimum required to freeze a sale into an

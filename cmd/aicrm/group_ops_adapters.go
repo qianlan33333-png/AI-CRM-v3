@@ -149,19 +149,34 @@ var _ groupopsport.ProviderDeliveryReader = wecomGroupOpsEvidence{}
 // replacement is allowed, so failed pagination cannot erase the prior group
 // projection.
 type wecomGroupOpsDirectory struct {
-	enabled bool
-	groups  wecomport.GroupChatReader
-	staffs  wecomport.DirectoryProvider
-	staff   groupOpsStaffAdapter
-	now     func() time.Time
+	uow interface {
+		Within(context.Context, func(context.Context) error) error
+	}
+	enabled  bool
+	groups   wecomport.GroupChatReader
+	staffs   wecomport.DirectoryProvider
+	profiles wecomport.ContactStaffProfileReader
+	staff    groupOpsStaffAdapter
+	now      func() time.Time
 }
 
 func (adapter *wecomGroupOpsDirectory) ListOwnedGroups(ctx context.Context, ownerID int64, _ int32) (groupopsport.GroupDirectorySnapshot, error) {
-	if adapter == nil || !adapter.enabled || adapter.groups == nil || adapter.staff.access == nil || ownerID < 1 {
+	if adapter == nil || !adapter.enabled || adapter.uow == nil || adapter.groups == nil || adapter.staff.access == nil || ownerID < 1 {
 		return groupopsport.GroupDirectorySnapshot{}, groupopsapp.ErrProviderDisabled
 	}
-	owner, err := adapter.staff.access.UserByID(ctx, ownerID, false)
-	if err != nil || !owner.Active || !validGroupOpsSenderID(owner.WeComUserID) {
+	var owner accessdomain.User
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		owner, readErr = adapter.staff.access.UserByID(tx, ownerID, false)
+		return readErr
+	})
+	if err != nil {
+		if errors.Is(err, accessdomain.ErrNotFound) {
+			return groupopsport.GroupDirectorySnapshot{}, groupopsapp.ErrProviderDisabled
+		}
+		return groupopsport.GroupDirectorySnapshot{}, err
+	}
+	if !owner.Active || !validGroupOpsSenderID(owner.WeComUserID) {
 		return groupopsport.GroupDirectorySnapshot{}, groupopsapp.ErrProviderDisabled
 	}
 	cursor := ""
@@ -205,8 +220,17 @@ func (adapter *wecomGroupOpsDirectory) ListOwnedGroups(ctx context.Context, owne
 }
 
 func (adapter *wecomGroupOpsDirectory) RefreshOperationMembers(ctx context.Context, pageSize int32) ([]groupopsport.OperationMember, error) {
-	if adapter == nil || !adapter.enabled || adapter.staffs == nil || adapter.staff.access == nil || !adapter.staffs.DirectoryReady() {
+	if adapter == nil || !adapter.enabled || adapter.uow == nil || adapter.staffs == nil || adapter.staff.access == nil || !adapter.staffs.DirectoryReady() {
 		return nil, groupopsapp.ErrProviderDisabled
+	}
+	var local []groupopsport.OperationMember
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		local, readErr = adapter.staff.ListEligibleStaff(tx)
+		return readErr
+	})
+	if err != nil {
+		return nil, err
 	}
 	providerIDs, err := adapter.staffs.ListContactStaff(ctx)
 	if err != nil {
@@ -218,20 +242,74 @@ func (adapter *wecomGroupOpsDirectory) RefreshOperationMembers(ctx context.Conte
 			allowed[id] = struct{}{}
 		}
 	}
-	local, err := adapter.staff.ListEligibleStaff(ctx)
-	if err != nil {
-		return nil, err
-	}
 	items := make([]groupopsport.OperationMember, 0, len(local))
 	for _, item := range local {
 		if _, found := allowed[item.SenderUserID]; found {
+			item.Active = true
+			item.NameSource = "local_fallback"
+			item.ProfileReadState = "unavailable"
+			item.ProfileReadErrorCode = "provider_profile_unavailable"
 			items = append(items, item)
 		}
 	}
 	if len(items) > int(pageSize) {
 		return nil, errors.New("WeCom operation-member snapshot exceeds requested page")
 	}
+	if len(items) == 0 {
+		return items, nil
+	}
+	if adapter.profiles == nil {
+		for index := range items {
+			items[index].ProfileReadErrorCode = "profile_reader_unavailable"
+		}
+		return items, nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.SenderUserID)
+	}
+	profiles, profileErr := adapter.profiles.ReadContactStaffProfiles(ctx, ids)
+	state, code := profiles.ProfileReadState, profiles.ProfileErrorCode
+	if profileErr != nil {
+		state, code = "unavailable", groupOpsProfileFailureCode(profileErr)
+	}
+	if state != "ready" {
+		state = "unavailable"
+		if code == "" {
+			code = "provider_profile_unavailable"
+		}
+	}
+	names := make(map[string]string, len(profiles.Items))
+	for _, profile := range profiles.Items {
+		if validGroupOpsSenderID(profile.UserID) && validGroupOpsDisplayName(profile.DisplayName) {
+			names[profile.UserID] = profile.DisplayName
+		}
+	}
+	now := time.Now().UTC()
+	if adapter.now != nil {
+		now = adapter.now().UTC()
+	}
+	for index := range items {
+		items[index].ProfileReadState, items[index].ProfileReadErrorCode = state, code
+		if name, found := names[items[index].SenderUserID]; found {
+			items[index].DisplayName = name
+			items[index].NameSource = "wecom_profile"
+			items[index].ProfileRefreshedAt = &now
+		}
+	}
 	return items, nil
+}
+
+func groupOpsProfileFailureCode(err error) string {
+	var failure wecomport.DirectoryFailure
+	if errors.As(err, &failure) && failure.DirectoryFailureCode() != "" {
+		return failure.DirectoryFailureCode()
+	}
+	return "provider_profile_unavailable"
+}
+
+func validGroupOpsDisplayName(value string) bool {
+	return value != "" && value == strings.TrimSpace(value) && len([]rune(value)) <= 160 && !strings.ContainsAny(value, "\x00\r\n")
 }
 
 var _ groupopsport.GroupDirectorySource = (*wecomGroupOpsDirectory)(nil)

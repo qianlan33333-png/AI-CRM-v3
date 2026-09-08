@@ -259,8 +259,8 @@ try {
   const coupons=JSON.parse(await evaluate(cdp, 'JSON.stringify({buttons:[...document.querySelectorAll("[data-copy-url]")].map(b=>({disabled:b.disabled,url:b.dataset.copyUrl,text:b.closest(".card")?.textContent||""})),text:document.body.textContent})'));
   for(const x of ["可前往领取页确认","未到领取时间","领取已截止","已领完","已达到个人领取上限"]) if(!coupons.text.includes(x)) throw new Error("coupon state "+x);
   const active=coupons.buttons.find(x=>x.text.includes("Chromium可领取券"));
-  if(!active||active.disabled||!active.url.endsWith("/c/chromium-active")||coupons.buttons.filter(x=>!x.disabled).length!==1) throw new Error("coupon buttons "+JSON.stringify(coupons));
-  await evaluate(cdp, 'document.querySelector("[data-copy-url]:not([disabled])").click();true');
+  if(!active||active.disabled||!active.url.endsWith("/c/chromium-active")||coupons.buttons.length!==6||coupons.buttons.some(x=>x.disabled!==!x.url)) throw new Error("coupon buttons "+JSON.stringify(coupons));
+  await evaluate(cdp, `document.querySelector('[data-copy-url$="/c/chromium-active"]').click();true`);
   await waitFor(cdp, 'globalThis.__sidebarClipboardWrites.length===1', "coupon clipboard");
   if(await evaluate(cdp, 'globalThis.__sidebarClipboardWrites[0]')!==active.url) throw new Error("coupon URL");
   await evaluate(cdp, 'document.querySelector("#tabs [data-tab=orders]").click();true');

@@ -38,7 +38,7 @@ func TestPostgreSQLGroupOpsStandardHostCompositionPreflight(t *testing.T) {
 	fixture := newGroupOpsChromiumFixture(t)
 	session, _ := adminAccessLogin(t, fixture.application.handler, "groupops-browser-owner", "groupops-browser-owner-password")
 	page := authenticatedAdminGet(t, fixture.application.handler, session, "/admin/automation-conversion/group-ops/plans/"+strconv.FormatInt(fixture.planID, 10))
-	if page.Code != http.StatusOK || !bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-host="true"`)) || !bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-stage`)) || !bytes.Contains(page.Body.Bytes(), []byte(`<h1 class="admin-page-title">群运营计划</h1>`)) || !bytes.Contains(page.Body.Bytes(), []byte(`/groupops-assets/`)) || !bytes.Contains(page.Body.Bytes(), []byte(`/static/admin_console/operation_member_picker_dd8d60d.js`)) {
+	if page.Code != http.StatusOK || !bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-host="true"`)) || !bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-stage`)) || !bytes.Contains(page.Body.Bytes(), []byte(`<h1 class="admin-page-title">群运营计划</h1>`)) || !bytes.Contains(page.Body.Bytes(), []byte(`/groupops-assets/`)) || !bytes.Contains(page.Body.Bytes(), []byte(`/groupops-assets/assets/standard-components/operation_member_picker.js`)) {
 		t.Fatalf("standard Group Ops page status=%d host=%t native_stage=%t topbar=%t assets=%t", page.Code, bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-host="true"`)), bytes.Contains(page.Body.Bytes(), []byte(`data-group-ops-standard-stage`)), bytes.Contains(page.Body.Bytes(), []byte(`<h1 class="admin-page-title">群运营计划</h1>`)), bytes.Contains(page.Body.Bytes(), []byte(`/groupops-assets/`)))
 	}
 	detail := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/automation-conversion/group-ops/plans/"+strconv.FormatInt(fixture.planID, 10))
@@ -75,7 +75,7 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	}
 	fixture := newGroupOpsChromiumFixture(t)
 	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
-	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10))
+	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10), "AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID="+strconv.FormatInt(fixture.replacementStaffID, 10))
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "group_ops_chromium: SKIP_DEVTOOLS") {
 		t.Fatalf("Group Ops Chromium DevTools unexpectedly unavailable: %s", strings.TrimSpace(string(output)))

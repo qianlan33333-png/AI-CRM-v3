@@ -22,18 +22,29 @@ var (
 	ErrReferenced     = errors.New("tag catalog item is still referenced by customers")
 	ErrConflict       = tagport.ErrConflict
 	ErrUnavailable    = errors.New("tag catalog unavailable")
+	// ErrProviderMutationUnavailable distinguishes the deliberately closed
+	// official write gate from a generic catalog read outage. Callers must not
+	// fall back to a local-only create, rename, or archive.
+	ErrProviderMutationUnavailable = errors.New("tag catalog official write is unavailable")
+	// ErrArchiveOperationReadUnsupported only means an older read-only test
+	// adapter cannot expose the optional recovery surface. A real store error
+	// remains unavailable and is never silently converted to an empty list.
+	ErrArchiveOperationReadUnsupported = errors.New("tag archive operation reader unsupported")
 )
 
 // Service owns catalog and group metadata only. It intentionally exposes no
 // customer target, mark or unmark method. A later outbound adapter may use a
 // separate effect contract for provider writes.
 type Service struct {
-	uow      platformport.UnitOfWork
-	store    tagport.CatalogStore
-	receipts tagport.MutationReceiptStore
-	refs     tagport.ReferenceGuard
-	events   tagport.EventAppender
-	now      func() time.Time
+	uow                       platformport.UnitOfWork
+	store                     tagport.CatalogStore
+	receipts                  tagport.MutationReceiptStore
+	refs                      tagport.ReferenceGuard
+	events                    tagport.EventAppender
+	now                       func() time.Time
+	mutationStore             tagport.CatalogMutationStore
+	mutations                 tagport.CatalogMutationEnqueuer
+	providerMutationsRequired bool
 }
 
 // NewService creates a catalog application service. Reads require only uow and
@@ -47,6 +58,32 @@ func NewService(uow platformport.UnitOfWork, store tagport.CatalogStore, receipt
 // not need the shorter NewService name.
 func NewCatalogService(uow platformport.UnitOfWork, store tagport.CatalogStore, receipts tagport.MutationReceiptStore, events tagport.EventAppender, refs tagport.ReferenceGuard) *Service {
 	return NewService(uow, store, receipts, events, refs)
+}
+
+// BindProviderMutations installs the Tag-to-Outbound intent boundary. It is
+// called by composition after both owners share the PostgreSQL UoW.
+func (service *Service) BindProviderMutations(enqueuer tagport.CatalogMutationEnqueuer) error {
+	if service == nil || enqueuer == nil || service.mutations != nil {
+		return ErrUnavailable
+	}
+	store, ok := service.store.(tagport.CatalogMutationStore)
+	if !ok || store == nil {
+		return ErrUnavailable
+	}
+	service.mutationStore, service.mutations, service.providerMutationsRequired = store, enqueuer, true
+	return nil
+}
+
+// RequireProviderMutations makes the official catalog-write boundary
+// fail-closed at the Tag owner. Composition uses it even while the provider
+// gate is disabled, so create/rename/archive cannot quietly become local-only
+// mutations. Reorder operations remain local because they do not write WeCom.
+func (service *Service) RequireProviderMutations() error {
+	if service == nil {
+		return ErrUnavailable
+	}
+	service.providerMutationsRequired = true
+	return nil
 }
 
 func (service *Service) List(ctx context.Context) (domain.Catalog, error) {
@@ -69,7 +106,9 @@ func (service *Service) List(ctx context.Context) (domain.Catalog, error) {
 	if err = domain.ValidateCatalog(result); err != nil {
 		return domain.Catalog{}, errors.Join(ErrUnavailable, err)
 	}
-	result.SyncedAt = service.clock().UTC()
+	// A local catalog read is not a provider observation. HTTP obtains the
+	// actual readback timestamp from the durable sync receipt instead.
+	result.SyncedAt = time.Time{}
 	result.Groups = append([]domain.Group{}, result.Groups...)
 	result.Tags = append([]domain.Tag{}, result.Tags...)
 	return result, nil
@@ -107,6 +146,30 @@ func (service *Service) GetTag(ctx context.Context, id int64) (domain.Tag, error
 	return domain.Tag{}, ErrNotFound
 }
 
+// ArchiveOperations returns the durable provider outcomes that remain relevant
+// after an archive command removes the item from the active catalog. It is a
+// read-only recovery surface; callers cannot retry or reconstruct a provider
+// write through it.
+func (service *Service) ArchiveOperations(ctx context.Context) ([]tagport.ArchiveMutationOperation, error) {
+	if !service.readReady() || ctx == nil {
+		return nil, ErrUnavailable
+	}
+	reader, ok := service.store.(tagport.ArchiveMutationOperationReader)
+	if !ok || nilDependency(reader) {
+		return nil, ErrArchiveOperationReadUnsupported
+	}
+	var operations []tagport.ArchiveMutationOperation
+	err := service.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		operations, err = reader.ListArchiveMutationOperations(tx, 100)
+		return err
+	})
+	if err != nil {
+		return nil, errors.Join(ErrUnavailable, err)
+	}
+	return append([]tagport.ArchiveMutationOperation(nil), operations...), nil
+}
+
 func (service *Service) CreateGroup(ctx context.Context, command domain.Command) (domain.Group, domain.Tag, error) {
 	if !domain.ValidCommand(command, command.GroupName, command.FirstTagName) {
 		return domain.Group{}, domain.Tag{}, ErrInvalidCommand
@@ -134,7 +197,7 @@ func (service *Service) CreateGroup(ctx context.Context, command domain.Command)
 			return mutationResult{}, errors.Join(ErrConflict, err)
 		}
 		return mutationResult{value: groupCreateResult{group: group, tag: tag}, resultIDs: ids}, nil
-	})
+	}, true)
 	if err != nil {
 		return domain.Group{}, domain.Tag{}, err
 	}
@@ -161,7 +224,7 @@ func (service *Service) UpdateGroup(ctx context.Context, command domain.Command)
 		}
 		group, err := service.store.GetGroup(tx, command.GroupID)
 		return mutationResult{value: group, resultIDs: ids}, err
-	})
+	}, true)
 	if err != nil {
 		return domain.Group{}, err
 	}
@@ -216,7 +279,7 @@ func (service *Service) ArchiveGroup(ctx context.Context, command domain.Command
 		}
 		group, err := archivedGroupForReplay(service.store, tx, command.GroupID)
 		return mutationResult{value: group, resultIDs: ids}, err
-	})
+	}, true)
 	if err != nil {
 		return domain.Group{}, err
 	}
@@ -243,7 +306,7 @@ func (service *Service) CreateTag(ctx context.Context, command domain.Command) (
 		}
 		tag, err := service.store.GetTag(tx, ids[0])
 		return mutationResult{value: tag, resultIDs: ids}, err
-	})
+	}, true)
 	if err != nil {
 		return domain.Tag{}, err
 	}
@@ -270,7 +333,7 @@ func (service *Service) UpdateTag(ctx context.Context, command domain.Command) (
 		}
 		tag, err := service.store.GetTag(tx, command.TagID)
 		return mutationResult{value: tag, resultIDs: ids}, err
-	})
+	}, true)
 	if err != nil {
 		return domain.Tag{}, err
 	}
@@ -307,7 +370,7 @@ func (service *Service) ArchiveTag(ctx context.Context, command domain.Command) 
 		}
 		tag, err := archivedTagForReplay(service.store, tx, command.TagID)
 		return mutationResult{value: tag, resultIDs: ids}, err
-	})
+	}, true)
 	if err != nil {
 		return domain.Tag{}, err
 	}
@@ -335,7 +398,7 @@ func (service *Service) ReorderGroups(ctx context.Context, command domain.Comman
 			return mutationResult{}, errors.Join(ErrConflict, err)
 		}
 		return mutationResult{value: groups, resultIDs: ids}, nil
-	})
+	}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +426,7 @@ func (service *Service) ReorderTags(ctx context.Context, command domain.Command)
 			return mutationResult{}, errors.Join(ErrConflict, err)
 		}
 		return mutationResult{value: tags, resultIDs: ids}, nil
-	})
+	}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -382,6 +445,51 @@ type mutationResult struct {
 type groupCreateResult struct {
 	group domain.Group
 	tag   domain.Tag
+}
+
+func providerMutationPlan(operation string, command domain.Command, value any) (tagport.CatalogMutationPlan, error) {
+	plan := tagport.CatalogMutationPlan{Actor: command.Actor, IdempotencyKey: command.IdempotencyKey, TraceID: command.TraceID}
+	switch operation {
+	case "group_create":
+		pair, ok := value.(groupCreateResult)
+		if !ok {
+			return tagport.CatalogMutationPlan{}, ErrUnavailable
+		}
+		plan.Operation, plan.GroupID, plan.TagID, plan.GroupName, plan.TagName = tagport.CatalogGroupCreate, pair.group.ID, pair.tag.ID, pair.group.Name, pair.tag.Name
+	case "group_update":
+		group, ok := value.(domain.Group)
+		if !ok {
+			return tagport.CatalogMutationPlan{}, ErrUnavailable
+		}
+		plan.Operation, plan.GroupID, plan.GroupName = tagport.CatalogGroupUpdate, group.ID, group.Name
+	case "group_archive":
+		group, ok := value.(domain.Group)
+		if !ok {
+			return tagport.CatalogMutationPlan{}, ErrUnavailable
+		}
+		plan.Operation, plan.GroupID = tagport.CatalogGroupArchive, group.ID
+	case "tag_create":
+		tag, ok := value.(domain.Tag)
+		if !ok {
+			return tagport.CatalogMutationPlan{}, ErrUnavailable
+		}
+		plan.Operation, plan.GroupID, plan.TagID, plan.TagName = tagport.CatalogTagCreate, tag.GroupID, tag.ID, tag.Name
+	case "tag_update":
+		tag, ok := value.(domain.Tag)
+		if !ok {
+			return tagport.CatalogMutationPlan{}, ErrUnavailable
+		}
+		plan.Operation, plan.TagID, plan.TagName = tagport.CatalogTagUpdate, tag.ID, tag.Name
+	case "tag_archive":
+		tag, ok := value.(domain.Tag)
+		if !ok {
+			return tagport.CatalogMutationPlan{}, ErrUnavailable
+		}
+		plan.Operation, plan.TagID = tagport.CatalogTagArchive, tag.ID
+	default:
+		return tagport.CatalogMutationPlan{}, ErrUnavailable
+	}
+	return plan, nil
 }
 
 // The public read API intentionally hides archived rows. An idempotency
@@ -407,9 +515,12 @@ func archivedTagForReplay(store tagport.CatalogStore, ctx context.Context, id in
 	return store.GetTag(ctx, id)
 }
 
-func (service *Service) mutate(ctx context.Context, operation string, command domain.Command, apply func(context.Context) (mutationResult, error), replay func(context.Context, []int64) (mutationResult, error)) (mutationResult, error) {
+func (service *Service) mutate(ctx context.Context, operation string, command domain.Command, apply func(context.Context) (mutationResult, error), replay func(context.Context, []int64) (mutationResult, error), requiresProviderWrite bool) (mutationResult, error) {
 	if !service.mutationReady() || ctx == nil {
 		return mutationResult{}, ErrUnavailable
+	}
+	if requiresProviderWrite && service.providerMutationsRequired && (service.mutationStore == nil || service.mutations == nil) {
+		return mutationResult{}, errors.Join(ErrUnavailable, ErrProviderMutationUnavailable)
 	}
 	now := service.clock().UTC()
 	if now.IsZero() {
@@ -440,12 +551,50 @@ func (service *Service) mutate(ctx context.Context, operation string, command do
 		if receipt.State != tagport.MutationInProgress {
 			return ErrConflict
 		}
+		if requiresProviderWrite && service.mutationStore != nil {
+			scope, guarded, scopeErr := providerMutationScope(operation, command)
+			if scopeErr != nil {
+				return scopeErr
+			}
+			if guarded {
+				if guardErr := service.mutationStore.GuardCatalogMutation(tx, scope); guardErr != nil {
+					return guardErr
+				}
+			}
+		}
 		result, err = apply(tx)
 		if err != nil {
 			return err
 		}
 		if !domain.ValidResultIDs(result.resultIDs) {
 			return ErrUnavailable
+		}
+		if requiresProviderWrite && service.mutations != nil && service.mutationStore != nil {
+			plan, planErr := providerMutationPlan(operation, command, result.value)
+			if planErr != nil {
+				return planErr
+			}
+			intent, reserveErr := service.mutationStore.ReserveCatalogMutation(tx, plan)
+			if reserveErr != nil {
+				return reserveErr
+			}
+			effect, enqueueErr := service.mutations.EnqueueCatalogMutation(tx, intent, command.IdempotencyKey)
+			if enqueueErr != nil {
+				return enqueueErr
+			}
+			if acceptErr := service.mutationStore.AcceptCatalogMutation(tx, intent.ID, effect); acceptErr != nil {
+				return acceptErr
+			}
+			// The accepted effect receipt is persisted by the Tag owner in this
+			// transaction. Re-read the affected local rows so callers report the
+			// durable receipt state (usually queued), rather than inferring it
+			// from the requested operation. This same replay reader is used for
+			// idempotent requests and deliberately supports archived rows.
+			hydrated, hydrateErr := replay(tx, append([]int64(nil), result.resultIDs...))
+			if hydrateErr != nil || !domain.SameIDs(hydrated.resultIDs, result.resultIDs) {
+				return errors.Join(ErrConflict, hydrateErr)
+			}
+			result = hydrated
 		}
 		payload, err := json.Marshal(map[string]any{
 			"actor": command.Actor, "operation": operation, "result": result.value, "trace_id": strings.TrimSpace(command.TraceID),
@@ -470,6 +619,29 @@ func (service *Service) mutate(ctx context.Context, operation string, command do
 		return mutationResult{}, classifyError(err)
 	}
 	return result, nil
+}
+
+func providerMutationScope(operation string, command domain.Command) (tagport.CatalogMutationScope, bool, error) {
+	scope := tagport.CatalogMutationScope{}
+	switch operation {
+	case "group_create":
+		// A new group has no pre-existing resource to serialize. Its completed
+		// local ID is guarded by ReserveCatalogMutation before any effect exists.
+		return scope, false, nil
+	case "group_update":
+		scope.Operation, scope.GroupID = tagport.CatalogGroupUpdate, command.GroupID
+	case "group_archive":
+		scope.Operation, scope.GroupID = tagport.CatalogGroupArchive, command.GroupID
+	case "tag_create":
+		scope.Operation, scope.GroupID = tagport.CatalogTagCreate, command.GroupID
+	case "tag_update":
+		scope.Operation, scope.TagID = tagport.CatalogTagUpdate, command.TagID
+	case "tag_archive":
+		scope.Operation, scope.TagID = tagport.CatalogTagArchive, command.TagID
+	default:
+		return tagport.CatalogMutationScope{}, false, ErrUnavailable
+	}
+	return scope, true, nil
 }
 
 func commandDigest(operation string, command domain.Command) []byte {

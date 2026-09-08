@@ -206,6 +206,45 @@
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
+  text-decoration: none;
+}
+
+.group-ops__button:hover:not(:disabled),
+.group-ops__button:focus-visible {
+  color: var(--group-ops-text);
+  border-color: var(--group-ops-blue);
+  background: var(--group-ops-blue-soft);
+  outline: none;
+}
+
+.group-ops__button--primary:hover:not(:disabled),
+.group-ops__button--primary:focus-visible {
+  color: #fff;
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+}
+
+.group-ops__button--danger:hover:not(:disabled),
+.group-ops__button--danger:focus-visible {
+  color: #b42318;
+  border-color: #fecdca;
+  background: var(--group-ops-danger-soft);
+}
+
+.group-ops__webhook-guide {
+  color: var(--group-ops-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.group-ops__webhook-guide summary {
+  cursor: pointer;
+  color: var(--group-ops-blue);
+  font-weight: 700;
+}
+
+.group-ops__webhook-guide p {
+  margin: 8px 0 0;
 }
 
 .group-ops__button--primary {

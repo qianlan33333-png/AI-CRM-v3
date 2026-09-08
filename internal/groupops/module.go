@@ -53,7 +53,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	}
 	var ready bool
 	err := pool.QueryRow(ctx, `SELECT
-NOT EXISTS (SELECT 1 FROM unnest(ARRAY['group_ops_plans','group_ops_plan_members','group_ops_plan_group_assets','group_ops_plan_nodes','group_ops_plan_webhook_descriptors','group_ops_operation_receipts','group_ops_audit_events','group_ops_outbox','group_ops_runs','group_ops_executions','group_ops_execution_intents','group_ops_group_message_tasks','group_ops_directory_groups','group_ops_directory_refresh_receipts','group_ops_protocol_replays','group_ops_v1_history_plans','group_ops_v1_history_directory','group_ops_v1_history_groups','group_ops_v1_history_nodes','group_ops_v1_history_import_batches','group_ops_v1_history_import_rows']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)
+NOT EXISTS (SELECT 1 FROM unnest(ARRAY['group_ops_plans','group_ops_plan_members','group_ops_plan_group_assets','group_ops_plan_nodes','group_ops_plan_webhook_descriptors','group_ops_operation_receipts','group_ops_audit_events','group_ops_outbox','group_ops_runs','group_ops_executions','group_ops_execution_intents','group_ops_group_message_tasks','group_ops_directory_groups','group_ops_directory_refresh_receipts','group_ops_protocol_replays','group_ops_operation_member_directory','group_ops_v1_history_plans','group_ops_v1_history_directory','group_ops_v1_history_groups','group_ops_v1_history_nodes','group_ops_v1_history_import_batches','group_ops_v1_history_import_rows']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)
 AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname='group_ops_plan_webhook_descriptors_configured_reference_unique' AND indexdef LIKE '%WHERE (reference <> ''''::text)%')
 AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_v1_history_plans' AND column_name='source_created_by_reference')
 AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_v1_history_directory' AND column_name='source_owner_reference')
@@ -75,7 +75,8 @@ AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['day_index','scheduled_time','trigger
 	if err = pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0078' AND name='0078_group_ops_provider_tasks.sql')
 AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0081' AND name='0081_group_ops_webhook_unconfigured_reference.sql')
 AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0082' AND name='0082_group_ops_history_import.sql')
-AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0101' AND name='0101_group_ops_ui_metadata.sql')`).Scan(&ready); err != nil {
+AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0101' AND name='0101_group_ops_ui_metadata.sql')
+AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0116' AND name='0116_group_ops_operation_member_directory.sql')`).Scan(&ready); err != nil {
 		return err
 	}
 	if !ready {

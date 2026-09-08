@@ -17,6 +17,8 @@ const overlayBuild = await import('./build-sidebar-standard-overlay.mjs');
 void overlayBuild;
 
 const entryPoints = {
+  adminSessionHost: path.join(repository, 'web', 'v3', 'adminSessionHost.ts'),
+  standardComponentsHost: path.join(repository, 'web', 'v3', 'standardComponentsHost.ts'),
   operationCyclesHost: path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts'),
   productHost: path.join(repository, 'web', 'v3', 'productAdapter.ts'),
   channelCenterHost: path.join(repository, 'web', 'v3', 'channelCenterAdapter.ts'),
@@ -58,6 +60,33 @@ const metadataFor = (contents) => ({
   gzip_bytes: gzipSync(contents, { level: 9 }).byteLength,
   sha256: crypto.createHash('sha256').update(contents).digest('hex'),
 });
+// Standard selector components are frozen donor files published as manifest
+// assets. Hosts only provide scoped API transport and never import donor files.
+const standardComponents = [
+  { name: 'operation_member_picker.js', source: 'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js', sha256: 'bd84ce78ccb834f170548dea76cb99f6434978bc21211a9ec843dd2bf7ebabea' },
+  { name: 'group_chat_picker.css', source: 'web/donors/ai-assistant-production/static/group_chat_picker.css', sha256: '99627d8e05be5419c53a5cfbc3c8d6d006b6e4efafec157dd412aa656e858481' },
+  { name: 'group_chat_picker.js', source: 'web/donors/ai-assistant-production/static/group_chat_picker.js', sha256: 'da3de5fc5861f1b22e61bbc2726b3de4ebdab8420e4af3342ba3e0c478f2c1ed' },
+  { name: 'material_picker.css', source: 'web/donors/ai-assistant-production/static/material_picker.css', sha256: '46deddd60fbbbf6a94603e689fda6830d1a5b1aa221d0af8223bb6855846f1e1' },
+  { name: 'material_picker.js', source: 'web/donors/ai-assistant-production/static/material_picker.js', sha256: '8f3e63686ffdd029d8f15b6112b771372467527fd533aa688711e0e33bb6bd73' },
+  { name: 'send_content_composer.css', source: 'web/donors/ai-assistant-production/static/send_content_composer.css', sha256: 'd542f246a1fb311040bb39329bb50d1b7383105269aa6bb0e6556d014d9700c1' },
+  { name: 'send_content_composer.js', source: 'web/donors/ai-assistant-production/static/send_content_composer.js', sha256: 'f58c588c681079d1d16ae610e8662ef177acc94caf8e612c35f373de769a6b85' },
+  { name: 'wecom_tag_picker.css', source: 'web/donors/standard-components-production/static/wecom_tag_picker.css', sha256: '00fd6603ece70aab098f606bf778281364b6dc4bc66b423598616173fbf4d147' },
+  { name: 'wecom_tag_picker.js', source: 'web/donors/standard-components-production/static/wecom_tag_picker.js', sha256: '5c53adee7b65f1f2909cf1adf981b9d3b944b3bd15ebcd7dbf4e4cfe1f13d23d' },
+];
+const standardComponentsManifest = { version: 'dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f', css: [], scripts: [] };
+for (const component of standardComponents) {
+  const contents = fs.readFileSync(path.join(repository, component.source));
+  const metadata = metadataFor(contents);
+  if (metadata.sha256 !== component.sha256) throw new Error(`standard component differs from its audited dd8 donor bytes: ${component.name}`);
+  const relative = `assets/standard-components/${component.name}`;
+  fs.mkdirSync(path.dirname(path.join(dist, relative)), { recursive: true });
+  fs.writeFileSync(path.join(dist, relative), contents);
+  manifest.files[relative] = { ...metadata, entry_point: component.source, imports: [], inputs: [component.source] };
+  manifest.release_files[relative] = metadata;
+  if (component.name.endsWith('.css')) standardComponentsManifest.css.push(relative);
+  else standardComponentsManifest.scripts.push(relative);
+}
+manifest.standard_components = standardComponentsManifest;
 // Keep the standard renderer's paging helper as an audited byte-for-byte
 // release asset. It owns the established scroll/observer behavior; the V3 Host
 // only supplies the scoped request and thumbnail adapters.
@@ -102,23 +131,34 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles') continue;
+  if (name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
 }
+
+const standardHostEntry = manifest.entries.standardComponentsHost;
+if (typeof standardHostEntry !== 'string') throw new Error('standard Components Host entry is absent from manifest');
+const stableStandardHost = 'assets/standard-components/standard_components_host.js';
+const stableStandardHostContents = fs.readFileSync(path.join(dist, standardHostEntry));
+fs.writeFileSync(path.join(dist, stableStandardHost), stableStandardHostContents);
+const stableStandardHostMetadata = metadataFor(stableStandardHostContents);
+manifest.files[stableStandardHost] = { ...stableStandardHostMetadata, entry_point: 'web/v3/standardComponentsHost.ts', imports: [], inputs: ['web/v3/standardComponentsHost.ts'] };
+manifest.release_files[stableStandardHost] = stableStandardHostMetadata;
+manifest.entries.standardComponentsStableHost = stableStandardHost;
 
 const customerHost = manifest.entries.customerHost;
 const frozenAdmin = manifest.entries.admin;
 if (typeof customerHost !== 'string' || typeof frozenAdmin !== 'string') throw new Error('customer Host or frozen admin entry is absent from manifest');
 const customerHostReference = `../${customerHost}`;
 const frozenAdminReference = `<script type="module" src="../${frozenAdmin}"></script>`;
+const standardCustomerReferences = `<link rel="stylesheet" href="../assets/standard-components/wecom_tag_picker.css">\n<script type="module" src="../${stableStandardHost}"></script>`;
 for (const documentName of ['customers.html', 'customerDetail.html']) {
   const documentPath = path.join(dist, 'admin', documentName);
   let documentHTML = fs.readFileSync(documentPath, 'utf8');
   if (!documentHTML.includes(frozenAdminReference)) throw new Error(`${documentName} does not reference the declared frozen admin entry`);
   if (documentHTML.includes(customerHostReference)) throw new Error(`${documentName} already contains the customer Host`);
-  documentHTML = documentHTML.replace(frozenAdminReference, `<script type="module" src="${customerHostReference}"></script>\n${frozenAdminReference}`);
+  documentHTML = documentHTML.replace(frozenAdminReference, `${standardCustomerReferences}\n<script type="module" src="${customerHostReference}"></script>\n${frozenAdminReference}`);
   fs.writeFileSync(documentPath, documentHTML);
   manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
 }
@@ -144,6 +184,19 @@ manifest.release_files['admin/apidocs.html'] = metadataFor(Buffer.from(openPlatf
 // remains an unavailable retired document in the Composition Root.
 const operationCyclesHref = '/admin/operation-cycles';
 const adminOutput = path.join(dist, 'admin');
+const adminSessionEntry = manifest.entries.adminSessionHost;
+if (typeof adminSessionEntry !== 'string') throw new Error('Admin session Host entry is absent');
+for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.endsWith('.html'))) {
+  const documentPath = path.join(adminOutput, documentName);
+  let documentHTML = fs.readFileSync(documentPath, 'utf8');
+  if (!documentHTML.includes('class="side-user"')) continue;
+  const script = `<script type="module" src="../${adminSessionEntry}"></script>`;
+  if (documentHTML.includes(script)) throw new Error(`${documentName} already contains the Admin session Host`);
+  if (!documentHTML.includes('</head>')) throw new Error(`${documentName} has no head for the Admin session Host`);
+  documentHTML = documentHTML.replace('</head>', `${script}\n</head>`);
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
+}
 for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.endsWith('.html'))) {
   const documentPath = path.join(adminOutput, documentName);
   let documentHTML = fs.readFileSync(documentPath, 'utf8');

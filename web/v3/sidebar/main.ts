@@ -34,6 +34,7 @@ const SDK_TIMEOUT_MS = 5_000;
 const SDK_CACHE_MAX_MS = 5 * 60 * 1000;
 const SDK_CACHE_SAFETY_MS = 30 * 1000;
 const SDK_CACHE_KEY = "aicrm.sidebar.jssdk.config.v3";
+const SEND_IDEMPOTENCY_KEY_PREFIX = "aicrm.sidebar.send.idempotency.v1:";
 const REGULAR_APIS = ["getCurExternalContact", "sendChatMessage"];
 const AGENT_APIS = ["getCurExternalContact", "sendChatMessage"];
 
@@ -503,6 +504,32 @@ export class SidebarBridge {
     try { window.sessionStorage?.removeItem(SDK_CACHE_KEY); } catch { /* no storage is safe */ }
   }
 
+  private sendKey(scope: SendScope, input: { resource_kind: "product" | "coupon" | "material"; resource_id: string; product_type?: string }): string {
+    // Product stores have independent standard and service-period ID spaces.
+    // Keep this browser key aligned with Outbound's frozen /p/ versus /s/
+    // resource binding so equal numeric IDs cannot suppress each other.
+    const productType = input.resource_kind === "product" ? `:${String(input.product_type || "")}` : "";
+    return `customer:${scope.customerID}:${input.resource_kind}${productType}:${String(input.resource_id)}`;
+  }
+
+  private sendIdempotencyKey(key: string): string {
+    const inMemory = this.sendIdempotencyKeys.get(key);
+    if (inMemory) return inMemory;
+    let persisted = "";
+    try { persisted = String(window.sessionStorage?.getItem(SEND_IDEMPOTENCY_KEY_PREFIX + key) || "").trim(); } catch { /* server remains the final guard */ }
+    const intentKey = persisted || idempotency("sidebar-send");
+    this.sendIdempotencyKeys.set(key, intentKey);
+    if (!persisted) {
+      try { window.sessionStorage?.setItem(SEND_IDEMPOTENCY_KEY_PREFIX + key, intentKey); } catch { /* server remains the final guard */ }
+    }
+    return intentKey;
+  }
+
+  private clearSendIdempotencyKey(key: string): void {
+    this.sendIdempotencyKeys.delete(key);
+    try { window.sessionStorage?.removeItem(SEND_IDEMPOTENCY_KEY_PREFIX + key); } catch { /* server remains the final guard */ }
+  }
+
   private async confirmSendScope(expected?: SendScope): Promise<SendScope> {
     const generation = this.contextGeneration;
     const externalUserID = await this.resolveWeComExternalUserID(generation);
@@ -533,10 +560,10 @@ export class SidebarBridge {
     });
   }
 
-  async send(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }): Promise<Json> {
+  async send(input: { resource_kind: "product" | "coupon" | "material"; resource_id: string; product_type?: string }): Promise<Json> {
     await this.start();
     const scope = await this.confirmSendScope();
-    const key = `customer:${scope.customerID}:${input.resource_kind}:${String(input.resource_id)}`;
+    const key = this.sendKey(scope, input);
     if (this.unknownSendKeys.has(key)) throw failure("上次发送结果未确认，禁止创建新的发送意图；请等待对账或人工确认。");
     const existing = this.sendFlights.get(key);
     if (existing) return existing;
@@ -546,12 +573,8 @@ export class SidebarBridge {
     finally { if (this.sendFlights.get(key) === flight) this.sendFlights.delete(key); }
   }
 
-  private async sendOnce(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }, key: string, scope: SendScope): Promise<Json> {
-    let intentKey = this.sendIdempotencyKeys.get(key);
-    if (!intentKey) {
-      intentKey = idempotency("sidebar-send");
-      this.sendIdempotencyKeys.set(key, intentKey);
-    }
+  private async sendOnce(input: { resource_kind: "product" | "coupon" | "material"; resource_id: string; product_type?: string }, key: string, scope: SendScope, allowTerminalReplay = true): Promise<Json> {
+    const intentKey = this.sendIdempotencyKey(key);
     const accepted = await this.scopedForSend("/api/sidebar/v2/send-intents", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": intentKey },
@@ -561,6 +584,11 @@ export class SidebarBridge {
     const grant = String(accepted.grant || "");
     const intentID = Number(accepted.intent_id || 0);
     if (accepted.replayed && !grant && Number.isInteger(intentID) && intentID > 0) {
+      const terminal = accepted.state === "client_executed" || accepted.state === "final_failed";
+      if (terminal && allowTerminalReplay) {
+        this.clearSendIdempotencyKey(key);
+        return this.sendOnce(input, key, scope, false);
+      }
       this.unknownSendKeys.add(key);
       throw failure("发送意图已受理，但执行凭据未返回；已锁定本次发送，等待对账或人工确认。");
     }
@@ -570,7 +598,7 @@ export class SidebarBridge {
     } catch (error) {
       try {
         await this.completeSendForScope(scope, intentID, grant, "final_failed", "sidebar_contact_changed_before_client_execution");
-        this.sendIdempotencyKeys.delete(key);
+        this.clearSendIdempotencyKey(key);
       } catch {
         this.unknownSendKeys.add(key);
       }
@@ -579,7 +607,7 @@ export class SidebarBridge {
     try {
       const response = await this.invoke("sendChatMessage", payload);
       await this.completeSendForScope(scope, intentID, grant, "client_executed", "sidebar_jssdk_client_executed");
-      this.sendIdempotencyKeys.delete(key);
+      this.clearSendIdempotencyKey(key);
       return response;
     } catch (error) {
       this.unknownSendKeys.add(key);

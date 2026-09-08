@@ -22,6 +22,7 @@ type GroupOpsPageRenderer func(http.ResponseWriter, *http.Request, string, strin
 type GroupOpsAssets struct {
 	TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string
 	StandardCSS, HostJS                                  string
+	OperationPickerJS                                    string
 	GroupPickerCSS, GroupPickerJS                        string
 	MaterialPickerCSS, MaterialPickerJS                  string
 	ComposerCSS, ComposerJS                              string
@@ -235,9 +236,10 @@ func (h *groupOpsUI) assets(standard bool) (GroupOpsAssets, error) {
 		return GroupOpsAssets{}, err
 	}
 	for name, target := range map[string]*string{
-		"groupops/group_chat_picker.css": &assets.GroupPickerCSS, "groupops/group_chat_picker.js": &assets.GroupPickerJS,
-		"groupops/material_picker.css": &assets.MaterialPickerCSS, "groupops/material_picker.js": &assets.MaterialPickerJS,
-		"groupops/send_content_composer.css": &assets.ComposerCSS, "groupops/send_content_composer.js": &assets.ComposerJS,
+		"assets/standard-components/operation_member_picker.js": &assets.OperationPickerJS,
+		"assets/standard-components/group_chat_picker.css":      &assets.GroupPickerCSS, "assets/standard-components/group_chat_picker.js": &assets.GroupPickerJS,
+		"assets/standard-components/material_picker.css": &assets.MaterialPickerCSS, "assets/standard-components/material_picker.js": &assets.MaterialPickerJS,
+		"assets/standard-components/send_content_composer.css": &assets.ComposerCSS, "assets/standard-components/send_content_composer.js": &assets.ComposerJS,
 	} {
 		if *target, err = get(name); err != nil {
 			return GroupOpsAssets{}, err

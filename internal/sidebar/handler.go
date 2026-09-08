@@ -599,7 +599,7 @@ func (h *Handler) createSendIntent(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &body) {
 		return
 	}
-	payload, err := h.sendPayload(r.Context(), body.ResourceKind, body.ResourceID, body.ProductType)
+	payload, err := h.sendPayload(r.Context(), int64(customerID), body.ResourceKind, body.ResourceID, body.ProductType)
 	if err != nil {
 		if errors.Is(err, mediaport.ErrSidebarMaterialNotReady) {
 			writeError(w, http.StatusServiceUnavailable, "capability_not_ready")
@@ -644,28 +644,48 @@ func (h *Handler) completeSendIntent(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, result)
 }
 
-func (h *Handler) sendPayload(ctx context.Context, kind, rawID string, productType productport.ProductOptionType) ([]byte, error) {
+func (h *Handler) sendPayload(ctx context.Context, customerID int64, kind, rawID string, productType productport.ProductOptionType) ([]byte, error) {
 	id, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil || id < 1 {
 		return nil, errors.New("invalid resource")
 	}
 	switch kind {
 	case "product":
-		product, err := h.config.ProductByID.ReadProductTarget(ctx, productType, productport.ID(id))
-		if err != nil {
-			return nil, err
+		shares, ok := h.config.ProductByID.(productport.SidebarProductShareReader)
+		if !ok {
+			return nil, errors.New("product sharing unavailable")
+		}
+		product, err := shares.ReadSidebarShareProduct(ctx, productType, productport.ID(id))
+		if err != nil || product.ID != productport.ID(id) || product.Code == "" || product.Name == "" || product.ProductType != productType {
+			return nil, errors.New("product unavailable for sharing")
 		}
 		prefix := "/p/"
 		if product.ProductType == productport.ProductOptionServicePeriod {
 			prefix = "/s/"
 		}
 		link := h.config.PublicOrigin + prefix + urlpkg.PathEscape(product.Code)
+		cover, fallbackCover := h.productCardCover(product.CoverURL)
+		description := ""
+		if fallbackCover {
+			description = "商品封面暂缺"
+		}
 		return json.Marshal(map[string]any{"msgtype": "news", "news": map[string]string{
-			"link": link, "title": product.Name, "desc": "",
-			// The frozen sidebar's standard product card cover remains the
-			// source-compatible fallback until Product publishes item media via
-			// its stable cross-domain target projection.
-			"imgUrl": h.config.PublicOrigin + "/static/sidebar_workbench/product-card-cover.png",
+			"link": link, "title": product.Name, "desc": description,
+			"imgUrl": cover,
+		}})
+	case "coupon":
+		coupon, err := h.config.Coupons.ReadSidebarClaimable(ctx, customerID, couponport.ID(id))
+		if err != nil || coupon.CouponID != couponport.ID(id) || coupon.Name == "" || coupon.PublicSlug == "" {
+			return nil, errors.New("coupon unavailable for sharing")
+		}
+		// This is a link only. Coupon's public claim command remains the only
+		// authority that can allocate stock or create a customer claim. News
+		// cards also carry the already-published neutral fallback cover used by
+		// product cards; it identifies no coupon or product and avoids omitting
+		// the SDK's imgUrl field.
+		cover, _ := h.productCardCover("")
+		return json.Marshal(map[string]any{"msgtype": "news", "news": map[string]string{
+			"link": h.config.PublicOrigin + "/c/" + urlpkg.PathEscape(coupon.PublicSlug), "title": coupon.Name, "desc": "点击领取优惠券", "imgUrl": cover,
 		}})
 	case "material":
 		material, err := h.config.MaterialSend.ReadSidebarImageForSend(ctx, id, h.now().Add(6*time.Minute))
@@ -683,6 +703,61 @@ func (h *Handler) sendPayload(ctx context.Context, kind, rawID string, productTy
 	default:
 		return nil, errors.New("unsupported resource")
 	}
+}
+
+// productCardCover returns an actually loadable public HTTPS asset. Relative
+// URLs are accepted only for the two established public product routes; in
+// particular, an /api/admin image preview is not public and falls back to the
+// neutral cover. The SDK news-card requirement therefore never becomes a
+// silent generic invalid-resource error.
+func (h *Handler) productCardCover(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value != "" && len(value) <= 2048 {
+		if parsed, err := urlpkg.Parse(value); err == nil && parsed.User == nil && parsed.Fragment == "" {
+			if parsed.Scheme == "https" && parsed.Host != "" {
+				return parsed.String(), false
+			}
+			if parsed.Scheme == "" && parsed.Host == "" && parsed.RawQuery == "" && isPublicProductCardPath(parsed.Path) {
+				return h.config.PublicOrigin + parsed.String(), false
+			}
+		}
+	}
+	return h.config.PublicOrigin + "/static/sidebar_workbench/product-card-cover.png", true
+}
+
+func isPublicProductCardPath(path string) bool {
+	if strings.HasPrefix(path, "/static/") {
+		return true
+	}
+	if standardProductPublicMediaPath(path) {
+		return true
+	}
+	const prefix = "/api/h5/service-period-products/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	if len(parts) != 5 || parts[1] != "images" || parts[3] != "variants" || parts[4] != "original" {
+		return false
+	}
+	if parts[0] == "" || parts[2] == "" {
+		return false
+	}
+	_, err := strconv.ParseInt(parts[2], 10, 64)
+	return err == nil
+}
+
+func standardProductPublicMediaPath(path string) bool {
+	const prefix = "/api/h5/product-images/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] != "variants" || parts[3] != "original" {
+		return false
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	return err == nil && id > 0 && strconv.FormatInt(id, 10) == parts[1]
 }
 
 func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) (Principal, customerdomain.CustomerID, bool) {

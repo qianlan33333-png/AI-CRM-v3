@@ -63,6 +63,10 @@ type SidebarClaimablePage struct {
 // public slug.
 type SidebarClaimableCatalog interface {
 	ListSidebarClaimable(context.Context, int64, SidebarClaimableQuery) (SidebarClaimablePage, error)
+	// ReadSidebarClaimable resolves one exact visible item for an authenticated
+	// sidebar customer. It never creates a slug, claim, reservation, or stock
+	// allocation.
+	ReadSidebarClaimable(context.Context, int64, ID) (SidebarClaimableItem, error)
 }
 
 type CustomerCoupon struct {

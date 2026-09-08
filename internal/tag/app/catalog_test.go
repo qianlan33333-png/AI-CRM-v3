@@ -255,9 +255,64 @@ func (guard referenceGuard) GroupReferences(_ context.Context, id int64) (int64,
 	return guard.store.groupReferences[id], nil
 }
 
+type providerMutationStore struct {
+	*catalogStore
+	intents []tagport.CatalogMutationIntent
+}
+
+func (*providerMutationStore) GuardCatalogMutation(context.Context, tagport.CatalogMutationScope) error {
+	return nil
+}
+
+func (store *providerMutationStore) ReserveCatalogMutation(_ context.Context, plan tagport.CatalogMutationPlan) (tagport.CatalogMutationIntent, error) {
+	if err := store.check(); err != nil {
+		return tagport.CatalogMutationIntent{}, err
+	}
+	intent := tagport.CatalogMutationIntent{ID: int64(len(store.intents) + 1), Operation: plan.Operation, Actor: plan.Actor, GroupID: plan.GroupID, TagID: plan.TagID, GroupName: plan.GroupName, TagName: plan.TagName}
+	store.intents = append(store.intents, intent)
+	return intent, nil
+}
+
+func (store *providerMutationStore) AcceptCatalogMutation(_ context.Context, id int64, effect tagport.CatalogMutationEffectReceipt) error {
+	if err := store.check(); err != nil {
+		return err
+	}
+	if id < 1 || int(id) > len(store.intents) || effect.EffectState != "queued" {
+		return ErrConflict
+	}
+	intent := store.intents[id-1]
+	for index := range store.groups {
+		if store.groups[index].ID == intent.GroupID {
+			store.groups[index].ProviderMutationState = effect.EffectState
+		}
+	}
+	for index := range store.tags {
+		if store.tags[index].ID == intent.TagID {
+			store.tags[index].ProviderMutationState = effect.EffectState
+		}
+	}
+	return nil
+}
+
+func (*providerMutationStore) ReadCatalogMutationDispatch(context.Context, string) (tagport.CatalogMutationDispatch, error) {
+	return tagport.CatalogMutationDispatch{}, ErrNotFound
+}
+func (*providerMutationStore) CompleteCatalogMutation(context.Context, tagport.CatalogMutationCompletion) error {
+	return nil
+}
+
+type providerMutationEnqueuer struct{ calls int }
+
+func (enqueuer *providerMutationEnqueuer) EnqueueCatalogMutation(_ context.Context, intent tagport.CatalogMutationIntent, _ string) (tagport.CatalogMutationEffectReceipt, error) {
+	enqueuer.calls++
+	return tagport.CatalogMutationEffectReceipt{EffectID: intent.ID, QueueJobID: intent.ID, EffectRef: "eer_1", EffectState: "queued", AcceptReceiptID: "eerop_1", QueueReceiptID: "eerop_1"}, nil
+}
+
 var _ platformport.UnitOfWork = (*catalogUOW)(nil)
 var _ tagport.CatalogStore = (*catalogStore)(nil)
 var _ tagport.MutationReceiptStore = (*catalogStore)(nil)
+var _ tagport.CatalogMutationStore = (*providerMutationStore)(nil)
+var _ tagport.CatalogMutationEnqueuer = (*providerMutationEnqueuer)(nil)
 
 // archiveReplayStore models the PostgreSQL public-read behavior: once
 // archived, GetTag no longer exposes the row, while the narrow internal
@@ -298,7 +353,7 @@ func TestCatalogServiceListsStableCatalogAndEmptySlices(t *testing.T) {
 	service := NewService(uow, store, nil, nil, nil)
 	service.now = func() time.Time { return time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC) }
 	got, err := service.List(context.Background())
-	if err != nil || len(got.Groups) != 1 || len(got.Tags) != 1 || got.SyncedAt.IsZero() {
+	if err != nil || len(got.Groups) != 1 || len(got.Tags) != 1 || !got.SyncedAt.IsZero() {
 		t.Fatalf("List() = %#v, %v", got, err)
 	}
 	store.groups, store.tags = []domain.Group{}, []domain.Tag{}
@@ -356,6 +411,39 @@ func TestCatalogServiceCreateReplaysAndRejectsPayloadDrift(t *testing.T) {
 	command.GroupName = "漂移"
 	if _, _, err = service.CreateGroup(context.Background(), command); !errors.Is(err, ErrConflict) {
 		t.Fatalf("payload drift error = %v", err)
+	}
+}
+
+func TestCatalogServiceReturnsPersistedProviderStateAfterAcceptedMutationAndReplay(t *testing.T) {
+	uow := &catalogUOW{}
+	base := &catalogStore{uow: uow, groups: []domain.Group{}, tags: []domain.Tag{}}
+	store := &providerMutationStore{catalogStore: base}
+	enqueuer := &providerMutationEnqueuer{}
+	service := NewService(uow, store, base, &catalogEvents{uow: uow}, referenceGuard{store: base})
+	if err := service.BindProviderMutations(enqueuer); err != nil {
+		t.Fatal(err)
+	}
+	command := domain.Command{Actor: 7, IdempotencyKey: "provider-state-key-0001", GroupName: "来源", FirstTagName: "活动"}
+	firstGroup, firstTag, err := service.CreateGroup(context.Background(), command)
+	if err != nil || firstGroup.ProviderMutationState != "queued" || firstTag.ProviderMutationState != "queued" {
+		t.Fatalf("first CreateGroup() = %#v/%#v, %v", firstGroup, firstTag, err)
+	}
+	secondGroup, secondTag, err := service.CreateGroup(context.Background(), command)
+	if err != nil || secondGroup.ProviderMutationState != "queued" || secondTag.ProviderMutationState != "queued" || enqueuer.calls != 1 {
+		t.Fatalf("replayed CreateGroup() = %#v/%#v, %v calls=%d", secondGroup, secondTag, err, enqueuer.calls)
+	}
+}
+
+func TestCatalogServiceFailsClosedWhenProviderMutationIsRequiredButUnbound(t *testing.T) {
+	uow := &catalogUOW{}
+	store := &catalogStore{uow: uow, groups: []domain.Group{}, tags: []domain.Tag{}}
+	service := NewService(uow, store, store, &catalogEvents{uow: uow}, referenceGuard{store})
+	if err := service.RequireProviderMutations(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := service.CreateGroup(context.Background(), domain.Command{Actor: 7, IdempotencyKey: "provider-required-key-0001", GroupName: "来源", FirstTagName: "活动"})
+	if !errors.Is(err, ErrUnavailable) || !errors.Is(err, ErrProviderMutationUnavailable) || store.writes != 0 || len(store.groups) != 0 || len(store.tags) != 0 {
+		t.Fatalf("err=%v writes=%d groups=%+v tags=%+v", err, store.writes, store.groups, store.tags)
 	}
 }
 

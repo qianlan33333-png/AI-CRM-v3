@@ -8,12 +8,15 @@ import (
 	"testing"
 	"time"
 
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	media "github.com/qianlan33333-png/AI-CRM-v3/internal/media"
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 func TestCompositionProviderDisabledAdaptersFailClosed(t *testing.T) {
@@ -28,6 +31,134 @@ func TestCompositionProviderDisabledAdaptersFailClosed(t *testing.T) {
 	if _, err := evidence.VerifyReconciliationEvidence(context.Background(), groupopsport.ReconciliationEvidence{ExternalEffectID: "effect-1"}); !errors.Is(err, groupopsapp.ErrProviderDisabled) {
 		t.Fatalf("evidence verify err=%v, want provider disabled", err)
 	}
+}
+
+func TestWeComGroupOpsDirectoryReadsAccessWithinShortUOWBeforeProviderRead(t *testing.T) {
+	access := transactionRequiredGroupOpsAccess{owner: accessdomain.User{ID: 7, Active: true, WeComUserID: "staff-seven", DisplayName: "王七"}, users: []accessdomain.User{
+		{ID: 7, Active: true, WeComUserID: "staff-seven", DisplayName: "王七"},
+		{ID: 8, Active: true, WeComUserID: "staff-eight", DisplayName: "李八"},
+	}}
+	uow := &groupOpsDirectoryUOW{}
+	provider := &groupOpsDirectoryProvider{staff: []string{"staff-seven", "staff-eight"}, profiles: []wecomport.ContactStaffProfile{{UserID: "staff-seven", DisplayName: "真实王七"}, {UserID: "staff-eight", DisplayName: "真实李八"}}, profileState: "ready", groups: []wecomport.GroupChatListItem{{ChatID: "chat-seven", Status: 0}}, details: map[string]wecomport.GroupChat{
+		"chat-seven": {ChatID: "chat-seven", OwnerUserID: "staff-seven", Name: "七号运营群", MemberCount: 3},
+	}}
+	directory := &wecomGroupOpsDirectory{uow: uow, enabled: true, groups: provider, staffs: provider, profiles: provider, staff: groupOpsStaffAdapter{access: access}}
+
+	groups, err := directory.ListOwnedGroups(context.Background(), 7, 100)
+	if err != nil || !groups.Complete || len(groups.Items) != 1 || groups.Items[0].DisplayName != "七号运营群" || groups.Items[0].OwnerStaffID != 7 {
+		t.Fatalf("group directory=%+v err=%v", groups, err)
+	}
+	members, err := directory.RefreshOperationMembers(context.Background(), 100)
+	if err != nil || len(members) != 2 || members[0].StaffID != 7 || members[0].DisplayName != "真实王七" || members[0].NameSource != "wecom_profile" || members[0].SenderUserID != "staff-seven" || members[1].StaffID != 8 || members[1].DisplayName != "真实李八" || members[1].SenderUserID != "staff-eight" {
+		t.Fatalf("operation members=%+v err=%v", members, err)
+	}
+	if uow.calls != 2 || provider.calledWithinUOW {
+		t.Fatalf("uow calls=%d provider_called_within_uow=%t", uow.calls, provider.calledWithinUOW)
+	}
+}
+
+func TestWeComGroupOpsDirectoryPreservesLocalReadFailure(t *testing.T) {
+	lookupErr := errors.New("database unavailable")
+	directory := &wecomGroupOpsDirectory{
+		uow:     &groupOpsDirectoryUOW{err: lookupErr},
+		enabled: true,
+		groups:  &groupOpsDirectoryProvider{},
+		staff:   groupOpsStaffAdapter{access: transactionRequiredGroupOpsAccess{}},
+	}
+	_, err := directory.ListOwnedGroups(context.Background(), 7, 100)
+	if !errors.Is(err, lookupErr) {
+		t.Fatalf("ListOwnedGroups error=%v, want local lookup error", err)
+	}
+}
+
+type groupOpsDirectoryTransactionKey struct{}
+
+type groupOpsDirectoryUOW struct {
+	calls int
+	err   error
+}
+
+func (uow *groupOpsDirectoryUOW) Within(ctx context.Context, callback func(context.Context) error) error {
+	uow.calls++
+	if uow.err != nil {
+		return uow.err
+	}
+	return callback(context.WithValue(ctx, groupOpsDirectoryTransactionKey{}, true))
+}
+
+type transactionRequiredGroupOpsAccess struct {
+	accessport.Repository
+	owner accessdomain.User
+	users []accessdomain.User
+}
+
+func (access transactionRequiredGroupOpsAccess) UserByID(ctx context.Context, id int64, _ bool) (accessdomain.User, error) {
+	if ctx.Value(groupOpsDirectoryTransactionKey{}) != true {
+		return accessdomain.User{}, errors.New("access read must use UOW")
+	}
+	if id != access.owner.ID {
+		return accessdomain.User{}, accessdomain.ErrNotFound
+	}
+	return access.owner, nil
+}
+
+func (access transactionRequiredGroupOpsAccess) ListUsers(ctx context.Context) ([]accessdomain.User, error) {
+	if ctx.Value(groupOpsDirectoryTransactionKey{}) != true {
+		return nil, errors.New("access read must use UOW")
+	}
+	return append([]accessdomain.User(nil), access.users...), nil
+}
+
+type groupOpsDirectoryProvider struct {
+	staff           []string
+	profiles        []wecomport.ContactStaffProfile
+	profileState    string
+	profileCode     string
+	profileErr      error
+	groups          []wecomport.GroupChatListItem
+	details         map[string]wecomport.GroupChat
+	calledWithinUOW bool
+}
+
+func (provider *groupOpsDirectoryProvider) DirectoryReady() bool { return true }
+
+func (provider *groupOpsDirectoryProvider) ListContactStaff(ctx context.Context) ([]string, error) {
+	if ctx.Value(groupOpsDirectoryTransactionKey{}) != nil {
+		provider.calledWithinUOW = true
+	}
+	return append([]string(nil), provider.staff...), nil
+}
+
+func (provider *groupOpsDirectoryProvider) ReadContactStaffProfiles(ctx context.Context, ids []string) (wecomport.ContactStaffProfileSnapshot, error) {
+	if ctx.Value(groupOpsDirectoryTransactionKey{}) != nil {
+		provider.calledWithinUOW = true
+	}
+	if provider.profileErr != nil {
+		return wecomport.ContactStaffProfileSnapshot{}, provider.profileErr
+	}
+	return wecomport.ContactStaffProfileSnapshot{Items: append([]wecomport.ContactStaffProfile(nil), provider.profiles...), ProfileReadState: provider.profileState, ProfileErrorCode: provider.profileCode}, nil
+}
+
+func (provider *groupOpsDirectoryProvider) BatchExternalContacts(context.Context, string, string, int) (wecomport.ExternalContactPage, error) {
+	return wecomport.ExternalContactPage{}, errors.New("not used by Group Ops directory")
+}
+
+func (provider *groupOpsDirectoryProvider) ListGroupChats(ctx context.Context, _ string, _ string, _ int) (wecomport.GroupChatPage, error) {
+	if ctx.Value(groupOpsDirectoryTransactionKey{}) != nil {
+		provider.calledWithinUOW = true
+	}
+	return wecomport.GroupChatPage{Items: append([]wecomport.GroupChatListItem(nil), provider.groups...)}, nil
+}
+
+func (provider *groupOpsDirectoryProvider) GetGroupChat(ctx context.Context, chatID string) (wecomport.GroupChat, error) {
+	if ctx.Value(groupOpsDirectoryTransactionKey{}) != nil {
+		provider.calledWithinUOW = true
+	}
+	value, found := provider.details[chatID]
+	if !found {
+		return wecomport.GroupChat{}, errors.New("group chat not found")
+	}
+	return value, nil
 }
 
 func TestGroupOpsDispatchReaderRejectsChangedSenderBeforeProviderCall(t *testing.T) {

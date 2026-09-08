@@ -20,6 +20,7 @@ check_v2_donor() {
 }
 
 run_frozen_consumer_gates() {
+  bash scripts/check-standard-components-donor-manifest.sh
   check_v2_donor
   scripts/check-pr01-donor-manifest.sh
   scripts/check-pr02-donor-manifest.sh

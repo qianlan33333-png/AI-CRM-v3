@@ -71,6 +71,28 @@
       ],
       "reason": "Register the audited dd8 sidebar image loader as the single frozen source and package its byte-exact pager in the Sidebar release closure.",
       "review_reference": "PR #192 Sidebar standard parity review"
+    },
+    {
+      "base_commit": "ae536c572dd93ccec5fe394ad715520ba88c1787",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "eaf724ac7935510015ce7fb4cdd0dc59e4d6b8a06d50195e1c0ac44afc00998d",
+          "head_sha256": "e604c5f39fc0b1d4f9a6797c641d992379504cffc72ef79d15907b72a215119a"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "8ff73335aa4555800ac00bb0480db7043329790b804126ee33c825f28f6fbed0",
+          "head_sha256": "b578369301c98da27d653693ac0b41d8df7ed6fe3aa152712efb3c78768f2218"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "f1ebc9dc5775f46295de3f33846a69fe92748e326ddf89c68b3a15c8dc9c95c2",
+          "head_sha256": "5ed6f33116aa3def302ab20867193ffb0f3705a1f134140a4f33d37eeb698fe4"
+        }
+      ],
+      "reason": "Register the approved Tag catalog external-effects contract change in the active V3 OpenAPI authority metadata.",
+      "review_reference": "2026-09-08 fast-launch approved Tag catalog external-effects delivery"
     }
   ]
 }

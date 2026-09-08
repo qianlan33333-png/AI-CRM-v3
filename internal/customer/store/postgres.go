@@ -152,19 +152,25 @@ func (PostgreSQL) List(ctx context.Context, query customerapp.Query) (customerap
 		return customerapp.PageData{}, err
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT customer_id,customer_status,display_name,avatar_url,oneid_label,phone_masked,
-			COALESCE(phone_assurance,''),activation_status,last_synced_at,updated_at
-		FROM customer_directory_projection
-		WHERE updated_at <= $1
-		  AND ($2::text='' OR display_name ILIKE '%'||$2||'%' OR oneid_label ILIKE '%'||$2||'%')
-		  AND ($3::text='' OR customer_status=$3)
-		  AND ($4::text='' OR activation_status=$4)
+		SELECT directory.customer_id,directory.customer_status,directory.display_name,directory.avatar_url,directory.oneid_label,directory.phone_masked,
+			COALESCE(directory.phone_assurance,''),directory.activation_status,directory.last_synced_at,directory.updated_at,owner.staff_id
+		FROM customer_directory_projection directory
+		LEFT JOIN customer_local_owners owner ON owner.customer_id=directory.customer_id
+		WHERE directory.updated_at <= $1
+		  AND ($2::text='' OR directory.display_name ILIKE '%'||$2||'%' OR directory.oneid_label ILIKE '%'||$2||'%')
+		  AND ($3::text='' OR directory.customer_status=$3)
+		  AND ($4::text='' OR directory.activation_status=$4)
 		  AND (NOT $5::boolean)
-		  AND ($6::bigint=0 OR customer_id=$6)
-		  AND ($7::timestamptz IS NULL OR (updated_at,customer_id) < ($7,$8))
-		ORDER BY updated_at DESC,customer_id DESC LIMIT $9`, query.Watermark, query.Filters.Keyword,
+		  AND ($6::bigint=0 OR directory.customer_id=$6)
+		  AND (NOT $7::boolean)
+		  AND (cardinality($8::bigint[])=0 OR directory.customer_id=ANY($8::bigint[]))
+		  AND (NOT $9::boolean)
+		  AND (cardinality($10::bigint[])=0 OR directory.customer_id=ANY($10::bigint[]))
+		  AND ($11::timestamptz IS NULL OR (directory.updated_at,directory.customer_id) < ($11,$12))
+		ORDER BY directory.updated_at DESC,directory.customer_id DESC LIMIT $13`, query.Watermark, query.Filters.Keyword,
 		query.Filters.Status, query.Filters.ActivationStatus, query.Filters.PhoneMatchNone,
-		query.Filters.PhoneCustomerID, nullableTime(query.AfterAt), query.AfterID, query.Limit)
+		query.Filters.PhoneCustomerID, query.Filters.OwnerMatchNone, customerIDs(query.Filters.OwnerCustomerIDs),
+		query.Filters.TagMatchNone, customerIDs(query.Filters.TagCustomerIDs), nullableTime(query.AfterAt), query.AfterID, query.Limit)
 	if err != nil {
 		return customerapp.PageData{}, err
 	}
@@ -173,7 +179,7 @@ func (PostgreSQL) List(ctx context.Context, query customerapp.Query) (customerap
 	for rows.Next() {
 		var item customerapp.Item
 		if err = rows.Scan(&item.CustomerID, &item.CustomerStatus, &item.DisplayName, &item.AvatarURL, &item.OneIDLabel,
-			&item.PhoneMasked, &item.PhoneAssurance, &item.ActivationState, &item.LastSyncedAt, &item.UpdatedAt); err != nil {
+			&item.PhoneMasked, &item.PhoneAssurance, &item.ActivationState, &item.LastSyncedAt, &item.UpdatedAt, &item.OwnerStaffID); err != nil {
 			return customerapp.PageData{}, err
 		}
 		data.Items = append(data.Items, item)
@@ -181,11 +187,17 @@ func (PostgreSQL) List(ctx context.Context, query customerapp.Query) (customerap
 	if err = rows.Err(); err != nil {
 		return customerapp.PageData{}, err
 	}
-	err = tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM customer_directory_projection WHERE updated_at <= $1
-		AND ($2::text='' OR display_name ILIKE '%'||$2||'%' OR oneid_label ILIKE '%'||$2||'%')
-		AND ($3::text='' OR customer_status=$3) AND ($4::text='' OR activation_status=$4)
-		AND (NOT $5::boolean) AND ($6::bigint=0 OR customer_id=$6) LIMIT 10001) capped`, query.Watermark,
-		query.Filters.Keyword, query.Filters.Status, query.Filters.ActivationStatus, query.Filters.PhoneMatchNone, query.Filters.PhoneCustomerID).Scan(&data.Count)
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM customer_directory_projection directory
+		LEFT JOIN customer_local_owners owner ON owner.customer_id=directory.customer_id
+		WHERE directory.updated_at <= $1
+		AND ($2::text='' OR directory.display_name ILIKE '%'||$2||'%' OR directory.oneid_label ILIKE '%'||$2||'%')
+		AND ($3::text='' OR directory.customer_status=$3) AND ($4::text='' OR directory.activation_status=$4)
+		AND (NOT $5::boolean) AND ($6::bigint=0 OR directory.customer_id=$6)
+		AND (NOT $7::boolean) AND (cardinality($8::bigint[])=0 OR directory.customer_id=ANY($8::bigint[]))
+		AND (NOT $9::boolean) AND (cardinality($10::bigint[])=0 OR directory.customer_id=ANY($10::bigint[]))
+		LIMIT 10001) capped`, query.Watermark, query.Filters.Keyword, query.Filters.Status, query.Filters.ActivationStatus,
+		query.Filters.PhoneMatchNone, query.Filters.PhoneCustomerID, query.Filters.OwnerMatchNone, customerIDs(query.Filters.OwnerCustomerIDs),
+		query.Filters.TagMatchNone, customerIDs(query.Filters.TagCustomerIDs)).Scan(&data.Count)
 	if err != nil {
 		return customerapp.PageData{}, err
 	}
@@ -194,6 +206,43 @@ func (PostgreSQL) List(ctx context.Context, query customerapp.Query) (customerap
 		data.TotalIsEstimate = true
 	}
 	return data, nil
+}
+
+// CustomerIDsForOwner is a Customer-owned authority lookup.  It deliberately
+// uses only customer_local_owners; active WeCom follow relationships remain a
+// separate Provider fact and cannot be presented or filtered as CRM ownership.
+func (PostgreSQL) CustomerIDsForOwner(ctx context.Context, staffID int64, limit int) ([]customerdomain.CustomerID, error) {
+	if staffID < 1 || limit < 1 || limit > customerapp.MaximumFilterCandidates+1 {
+		return nil, customerapp.ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id FROM customer_local_owners WHERE staff_id=$1 ORDER BY customer_id LIMIT $2`, staffID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]customerdomain.CustomerID, 0)
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	return result, rows.Err()
+}
+
+func customerIDs(values []customerdomain.CustomerID) []int64 {
+	result := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value > 0 {
+			result = append(result, int64(value))
+		}
+	}
+	return result
 }
 
 func (PostgreSQL) Detail(ctx context.Context, customerID customerdomain.CustomerID) (customerapp.Detail, error) {

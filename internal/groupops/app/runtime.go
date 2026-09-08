@@ -560,9 +560,20 @@ func (s *RuntimeService) ListOperationMembers(ctx context.Context, pageSize int3
 	}
 	var items []groupopsport.OperationMember
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		var err error
-		items, err = reader.ListEligibleStaff(tx)
-		return err
+		local, listErr := reader.ListEligibleStaff(tx)
+		if listErr != nil {
+			return listErr
+		}
+		if directory, ok := s.runtime.(groupopsport.OperationMemberDirectoryStore); ok {
+			stored, readErr := directory.ListOperationMemberDirectory(tx)
+			if readErr != nil {
+				return readErr
+			}
+			items = mergeOperationMemberDirectory(local, stored, len(stored) > 0)
+			return nil
+		}
+		items = normalizeLocalOperationMembers(local)
+		return nil
 	})
 	if err != nil {
 		return groupopsport.OperationMemberPage{}, classify(err)
@@ -573,7 +584,8 @@ func (s *RuntimeService) ListOperationMembers(ctx context.Context, pageSize int3
 	if items == nil {
 		items = []groupopsport.OperationMember{}
 	}
-	return groupopsport.OperationMemberPage{Scope: "group_ops", Items: items, PageSize: pageSize, RuntimeSafety: s.safety()}, nil
+	state, code := operationMemberProfileStatus(items)
+	return groupopsport.OperationMemberPage{Scope: "group_ops", Items: items, PageSize: pageSize, ProfileReadState: state, ProfileReadErrorCode: code, RuntimeSafety: s.safety()}, nil
 }
 
 func (s *RuntimeService) RefreshOperationMembers(ctx context.Context, command groupopsport.OperationMemberRefreshCommand) (groupopsport.OperationMemberPage, error) {
@@ -586,28 +598,141 @@ func (s *RuntimeService) RefreshOperationMembers(ctx context.Context, command gr
 		// a deterministic 503 rather than a malformed client command.
 		return groupopsport.OperationMemberPage{}, ErrProviderDisabled
 	}
+	directoryStore, hasDirectoryStore := s.runtime.(groupopsport.OperationMemberDirectoryStore)
+	if !hasDirectoryStore {
+		return groupopsport.OperationMemberPage{}, ErrUnavailable
+	}
 	// Provider reads are deliberately outside the UoW. A failed or partial read
 	// therefore cannot hold a database transaction or replace the prior local
 	// projection.
 	items, err := s.directory.RefreshOperationMembers(ctx, command.PageSize)
-	if err != nil || items == nil || len(items) > int(command.PageSize) {
-		if err != nil {
-			return groupopsport.OperationMemberPage{}, classify(err)
+	if err != nil {
+		// Preserve the last verified projection when the source is unavailable.
+		// Returning the explicit status is not a successful refresh and creates
+		// no receipt, so a stale name cannot masquerade as new provider data.
+		page, priorErr := s.operationMembersFromStoredDirectory(ctx, command.PageSize, "unavailable", directoryProfileFailureCode(err))
+		if priorErr == nil && len(page.Items) > 0 {
+			return page, nil
 		}
+		return groupopsport.OperationMemberPage{}, classify(err)
+	}
+	if items == nil || len(items) > int(command.PageSize) || len(items) == 0 {
 		return groupopsport.OperationMemberPage{}, ErrConflict
 	}
 	now := s.nowUTC()
 	err = s.uow.Within(ctx, func(tx context.Context) error {
-		raw, err := json.Marshal(items)
-		if err != nil {
-			return err
+		raw, marshalErr := json.Marshal(items)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if replaceErr := directoryStore.ReplaceOperationMemberDirectory(tx, items, now); replaceErr != nil {
+			return replaceErr
 		}
 		return s.runtime.RecordDirectoryRefresh(tx, "operation_members", command.ActorID, 0, sha256.Sum256([]byte(command.IdempotencyKey)), string(effectport.Hash("group-ops.operation-members.snapshot", string(raw))), int32(len(items)), true, now)
 	})
 	if err != nil {
 		return groupopsport.OperationMemberPage{}, classify(err)
 	}
-	return groupopsport.OperationMemberPage{Scope: "group_ops", Items: items, PageSize: command.PageSize, RuntimeSafety: s.safety()}, nil
+	return s.operationMembersFromStoredDirectory(ctx, command.PageSize, "", "")
+}
+
+func (s *RuntimeService) operationMembersFromStoredDirectory(ctx context.Context, pageSize int32, forcedState, forcedCode string) (groupopsport.OperationMemberPage, error) {
+	reader, ok := s.staff.(groupopsport.EligibleStaffReader)
+	directory, stored := s.runtime.(groupopsport.OperationMemberDirectoryStore)
+	if !ok || !stored {
+		return groupopsport.OperationMemberPage{}, ErrUnavailable
+	}
+	var items []groupopsport.OperationMember
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		local, listErr := reader.ListEligibleStaff(tx)
+		if listErr != nil {
+			return listErr
+		}
+		projection, readErr := directory.ListOperationMemberDirectory(tx)
+		if readErr != nil {
+			return readErr
+		}
+		items = mergeOperationMemberDirectory(local, projection, true)
+		return nil
+	})
+	if err != nil {
+		return groupopsport.OperationMemberPage{}, classify(err)
+	}
+	if len(items) > int(pageSize) {
+		items = items[:pageSize]
+	}
+	if items == nil {
+		items = []groupopsport.OperationMember{}
+	}
+	state, code := operationMemberProfileStatus(items)
+	if forcedState != "" {
+		state, code = forcedState, forcedCode
+		for index := range items {
+			items[index].ProfileReadState, items[index].ProfileReadErrorCode = state, code
+		}
+	}
+	return groupopsport.OperationMemberPage{Scope: "group_ops", Items: items, PageSize: pageSize, ProfileReadState: state, ProfileReadErrorCode: code, RuntimeSafety: s.safety()}, nil
+}
+
+func normalizeLocalOperationMembers(items []groupopsport.OperationMember) []groupopsport.OperationMember {
+	result := make([]groupopsport.OperationMember, 0, len(items))
+	for _, item := range items {
+		item.Active = true
+		if item.NameSource == "" {
+			item.NameSource = "local_fallback"
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func mergeOperationMemberDirectory(local, projection []groupopsport.OperationMember, requireProjection bool) []groupopsport.OperationMember {
+	byBinding := make(map[string]groupopsport.OperationMember, len(projection))
+	for _, item := range projection {
+		if item.Active {
+			byBinding[strconv.FormatInt(item.StaffID, 10)+"\x00"+item.SenderUserID] = item
+		}
+	}
+	items := make([]groupopsport.OperationMember, 0, len(local))
+	for _, item := range local {
+		key := strconv.FormatInt(item.StaffID, 10) + "\x00" + item.SenderUserID
+		if stored, found := byBinding[key]; found {
+			stored.Active = true
+			items = append(items, stored)
+			continue
+		}
+		if !requireProjection {
+			item.Active = true
+			item.NameSource = "local_fallback"
+			items = append(items, item)
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].StaffID < items[j].StaffID })
+	return items
+}
+
+func operationMemberProfileStatus(items []groupopsport.OperationMember) (string, string) {
+	for _, item := range items {
+		if item.ProfileReadState == "unavailable" {
+			if item.ProfileReadErrorCode != "" {
+				return "unavailable", item.ProfileReadErrorCode
+			}
+			return "unavailable", "provider_profile_unavailable"
+		}
+	}
+	if len(items) > 0 {
+		return "ready", ""
+	}
+	return "", ""
+}
+
+func directoryProfileFailureCode(err error) string {
+	type directoryFailure interface{ DirectoryFailureCode() string }
+	var failure directoryFailure
+	if errors.As(err, &failure) && failure.DirectoryFailureCode() != "" {
+		return failure.DirectoryFailureCode()
+	}
+	return "provider_profile_unavailable"
 }
 
 func (s *RuntimeService) ListGroups(ctx context.Context, owner int64, limit, offset int32) (groupopsport.GroupDirectoryPage, error) {

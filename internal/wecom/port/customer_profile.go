@@ -36,6 +36,15 @@ type CustomerTagObservationRefresher interface {
 	RefreshCustomerTagObservation(context.Context, string, customerdomain.CustomerID, string, string) error
 }
 
+// ProviderTagCustomerLister exposes only canonical Customer IDs with an
+// active, completed WeCom observation for one already-known Provider tag ID.
+// It never maps a local tag name, creates a Customer, or modifies a Provider
+// observation.  The caller must obtain that Provider ID through Tag's binding
+// port rather than guessing from names.
+type ProviderTagCustomerLister interface {
+	ListCustomerIDsForProviderTag(context.Context, string, int) ([]customerdomain.CustomerID, error)
+}
+
 // AudiencePrimaryOwner is the provider userid selected from a completed,
 // trusted directory scope for a canonical customer.  Ambiguous means active
 // provider scopes disagree and must never be resolved by choosing a row.

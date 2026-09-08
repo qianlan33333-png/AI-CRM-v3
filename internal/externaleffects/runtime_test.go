@@ -33,7 +33,7 @@ func TestClosedDigestOnlyEnvelopeAndStates(t *testing.T) {
 	if bad.Valid() {
 		t.Fatal("raw payload accepted")
 	}
-	for _, kind := range []Kind{KindOutboundMessage, KindOutboundMedia, KindWeComTagCatalog, KindGroupMessage} {
+	for _, kind := range []Kind{KindOutboundMessage, KindOutboundMedia, KindWeComTagCatalog, KindWeComTagCatalogMutation, KindGroupMessage} {
 		candidate := envelopeForTest()
 		candidate.Kind = kind
 		if !candidate.Valid() {
@@ -49,12 +49,12 @@ func TestClosedDigestOnlyEnvelopeAndStates(t *testing.T) {
 }
 
 func TestStaleAttemptCompletionProjectionKinds(t *testing.T) {
-	for _, kind := range []Kind{KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindCommerceProductPush} {
+	for _, kind := range []Kind{KindWeComTagCatalog, KindWeComTagCatalogMutation, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindCommerceProductPush, port.KindSidebarJSSDKSend} {
 		if !projectsStaleAttempt(kind) {
 			t.Fatalf("stale attempted effect kind %q must project outcome_unknown to its owner", kind)
 		}
 	}
-	for _, kind := range []Kind{KindOutboundMedia, KindChannelWelcome, KindChannelEntryTag, KindChannelLink, port.KindSidebarJSSDKSend} {
+	for _, kind := range []Kind{KindOutboundMedia, KindChannelWelcome, KindChannelEntryTag, KindChannelLink} {
 		if projectsStaleAttempt(kind) {
 			t.Fatalf("stale attempted effect kind %q lacks an approved crash-recovery projection", kind)
 		}

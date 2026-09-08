@@ -23,18 +23,22 @@ var (
 // owned by this domain; Provider identifiers are intentionally not part of
 // this local management projection.
 type Group struct {
-	ID        int64  `json:"group_id"`
-	Name      string `json:"group_name"`
-	SortOrder int32  `json:"sort_order"`
+	ID                    int64      `json:"group_id"`
+	Name                  string     `json:"group_name"`
+	SortOrder             int32      `json:"sort_order"`
+	ProviderMutationState string     `json:"-"`
+	ProviderReadbackAt    *time.Time `json:"-"`
 }
 
 // Tag is one active local catalog tag.
 type Tag struct {
-	ID        int64  `json:"tag_id"`
-	GroupID   int64  `json:"group_id"`
-	GroupName string `json:"group_name"`
-	Name      string `json:"tag_name"`
-	SortOrder int32  `json:"sort_order"`
+	ID                    int64      `json:"tag_id"`
+	GroupID               int64      `json:"group_id"`
+	GroupName             string     `json:"group_name"`
+	Name                  string     `json:"tag_name"`
+	SortOrder             int32      `json:"sort_order"`
+	ProviderMutationState string     `json:"-"`
+	ProviderReadbackAt    *time.Time `json:"-"`
 }
 
 // Catalog is a bounded, local snapshot. SyncedAt is the local observation

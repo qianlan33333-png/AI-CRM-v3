@@ -782,6 +782,119 @@ func groupDirectoryDigest(item groupopsport.GroupDirectoryItem) string {
 	return "sha256:" + fmt.Sprintf("%x", sum[:])
 }
 
+func (r *Repository) ListOperationMemberDirectory(ctx context.Context) ([]groupopsport.OperationMember, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT staff_id,sender_userid,display_name,name_source,profile_read_state,profile_read_error_code,profile_refreshed_at FROM group_ops_operation_member_directory WHERE active=true ORDER BY staff_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]groupopsport.OperationMember, 0)
+	for rows.Next() {
+		var item groupopsport.OperationMember
+		item.Active = true
+		if err = rows.Scan(&item.StaffID, &item.SenderUserID, &item.DisplayName, &item.NameSource, &item.ProfileReadState, &item.ProfileReadErrorCode, &item.ProfileRefreshedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// ReplaceOperationMemberDirectory atomically records one complete follow-user
+// snapshot alongside its refresh receipt. A profile-read failure never clears
+// an existing provider-verified display name; it only updates the stable
+// unavailable state that the UI can report.
+func (r *Repository) ReplaceOperationMemberDirectory(ctx context.Context, items []groupopsport.OperationMember, now time.Time) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if now.IsZero() {
+		return ErrInvalid
+	}
+	staffIDs := make([]int64, 0, len(items))
+	seenStaff, seenSender := make(map[int64]struct{}, len(items)), make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if !validOperationMemberDirectoryItem(item) {
+			return ErrInvalid
+		}
+		if _, duplicate := seenStaff[item.StaffID]; duplicate {
+			return ErrInvalid
+		}
+		if _, duplicate := seenSender[item.SenderUserID]; duplicate {
+			return ErrInvalid
+		}
+		seenStaff[item.StaffID], seenSender[item.SenderUserID] = struct{}{}, struct{}{}
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO group_ops_operation_member_directory(
+				staff_id,sender_userid,display_name,name_source,profile_read_state,
+				profile_read_error_code,source_digest,active,profile_refreshed_at,refreshed_at
+			) VALUES($1,$2,$3,$4,$5,$6,$7,true,$8,$9)
+			ON CONFLICT(staff_id) DO UPDATE SET
+				sender_userid=EXCLUDED.sender_userid,
+				display_name=CASE WHEN EXCLUDED.name_source='wecom_profile' THEN EXCLUDED.display_name ELSE group_ops_operation_member_directory.display_name END,
+				name_source=CASE WHEN EXCLUDED.name_source='wecom_profile' THEN EXCLUDED.name_source ELSE group_ops_operation_member_directory.name_source END,
+				profile_read_state=EXCLUDED.profile_read_state,
+				profile_read_error_code=EXCLUDED.profile_read_error_code,
+				source_digest=CASE WHEN EXCLUDED.name_source='wecom_profile' THEN EXCLUDED.source_digest ELSE group_ops_operation_member_directory.source_digest END,
+				active=true,
+				profile_refreshed_at=CASE WHEN EXCLUDED.name_source='wecom_profile' THEN EXCLUDED.profile_refreshed_at ELSE group_ops_operation_member_directory.profile_refreshed_at END,
+				refreshed_at=EXCLUDED.refreshed_at`,
+			item.StaffID, item.SenderUserID, item.DisplayName, item.NameSource, item.ProfileReadState, item.ProfileReadErrorCode, operationMemberDirectoryDigest(item), item.ProfileRefreshedAt, now); err != nil {
+			return err
+		}
+		staffIDs = append(staffIDs, item.StaffID)
+	}
+	if len(staffIDs) == 0 {
+		_, err = tx.Exec(ctx, `UPDATE group_ops_operation_member_directory SET active=false,refreshed_at=$1 WHERE active=true`, now)
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE group_ops_operation_member_directory SET active=false,refreshed_at=$1 WHERE active=true AND NOT (staff_id = ANY($2::bigint[]))`, now, staffIDs)
+	return err
+}
+
+func validOperationMemberDirectoryItem(item groupopsport.OperationMember) bool {
+	if item.StaffID < 1 || !validOpaqueStore(item.SenderUserID) || !validOperationMemberDisplayName(item.DisplayName) || !item.Active {
+		return false
+	}
+	if item.NameSource != "wecom_profile" && item.NameSource != "local_fallback" {
+		return false
+	}
+	if item.ProfileReadState != "ready" && item.ProfileReadState != "unavailable" {
+		return false
+	}
+	if item.ProfileReadErrorCode != "" && !validOperationMemberErrorCode(item.ProfileReadErrorCode) {
+		return false
+	}
+	return item.NameSource != "wecom_profile" || item.ProfileRefreshedAt != nil && !item.ProfileRefreshedAt.IsZero()
+}
+
+func validOperationMemberDisplayName(value string) bool {
+	return value != "" && value == strings.TrimSpace(value) && len([]rune(value)) <= 160 && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+func validOperationMemberErrorCode(value string) bool {
+	if len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return value != ""
+}
+
+func operationMemberDirectoryDigest(item groupopsport.OperationMember) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{strconv.FormatInt(item.StaffID, 10), item.SenderUserID, item.DisplayName, item.NameSource}, "\x00")))
+	return "sha256:" + fmt.Sprintf("%x", sum[:])
+}
+
 func (r *Repository) RecordDirectoryRefresh(ctx context.Context, kind string, actor, owner int64, key [sha256.Size]byte, snapshot string, count int32, providerRead bool, now time.Time) error {
 	tx, err := transaction(ctx)
 	if err != nil {

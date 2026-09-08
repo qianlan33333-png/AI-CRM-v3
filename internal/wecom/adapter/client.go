@@ -190,6 +190,87 @@ func (client *Client) ListContactStaff(ctx context.Context) ([]string, error) {
 	return staff, nil
 }
 
+// ReadContactStaffProfiles reads display names only for the already-authorized
+// follow-user subset supplied by the caller. It never changes local staff
+// records, roles, or eligibility. A failed profile read is returned as an
+// aggregate status so callers can retain an existing verified display name.
+func (client *Client) ReadContactStaffProfiles(ctx context.Context, userIDs []string) (wecomport.ContactStaffProfileSnapshot, error) {
+	if !client.DirectoryReady() {
+		return wecomport.ContactStaffProfileSnapshot{}, wecomport.ErrDirectoryDisabled
+	}
+	if len(userIDs) == 0 || len(userIDs) > 100 {
+		return wecomport.ContactStaffProfileSnapshot{}, classifyDirectoryReadError(ErrResponse)
+	}
+	seen := make(map[string]struct{}, len(userIDs))
+	ids := make([]string, 0, len(userIDs))
+	for _, raw := range userIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" || id != raw || invalid(id) {
+			return wecomport.ContactStaffProfileSnapshot{}, classifyDirectoryReadError(ErrResponse)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return wecomport.ContactStaffProfileSnapshot{}, classifyDirectoryReadError(ErrResponse)
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	// One bounded refresh budget covers the entire page, rather than allowing
+	// one eight-second request budget per employee. Token refresh retries only
+	// the exact user/get that reported an expired token.
+	readCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	token, err := client.contactAccessToken(readCtx)
+	if err != nil {
+		return wecomport.ContactStaffProfileSnapshot{}, classifyDirectoryReadError(err)
+	}
+	snapshot := wecomport.ContactStaffProfileSnapshot{Items: make([]wecomport.ContactStaffProfile, 0, len(ids)), ProfileReadState: "ready"}
+	for _, id := range ids {
+		payload, readErr := client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {id}})
+		if directoryTokenExpired(readErr) {
+			token, readErr = client.refreshDirectoryToken(readCtx)
+			if readErr == nil {
+				payload, readErr = client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {id}})
+			}
+			if readErr != nil {
+				readErr = classifyDirectoryRefreshError(readErr)
+			}
+		}
+		if readErr != nil {
+			recordProfileReadFailure(&snapshot, readErr)
+			if readCtx.Err() != nil {
+				break
+			}
+			continue
+		}
+		returnedID := strings.TrimSpace(payload.UserIDLower)
+		name := strings.TrimSpace(payload.Name)
+		if (returnedID != "" && returnedID != id) || !validDisplayName(name) {
+			recordProfileReadFailure(&snapshot, ErrResponse)
+			continue
+		}
+		snapshot.Items = append(snapshot.Items, wecomport.ContactStaffProfile{UserID: id, DisplayName: name})
+	}
+	return snapshot, nil
+}
+
+func recordProfileReadFailure(snapshot *wecomport.ContactStaffProfileSnapshot, cause error) {
+	if snapshot == nil {
+		return
+	}
+	snapshot.ProfileReadState = "unavailable"
+	classified := classifyDirectoryReadError(cause)
+	var failure wecomport.DirectoryFailure
+	if errors.As(classified, &failure) && failure.DirectoryFailureCode() != "" {
+		snapshot.ProfileErrorCode = failure.DirectoryFailureCode()
+		return
+	}
+	snapshot.ProfileErrorCode = "provider_profile_unavailable"
+}
+
+func validDisplayName(value string) bool {
+	return value != "" && len([]rune(value)) <= 160 && value == strings.TrimSpace(value) && !strings.ContainsAny(value, "\x00\r\n")
+}
+
 func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor string, limit int) (wecomport.ExternalContactPage, error) {
 	if !client.DirectoryReady() {
 		return wecomport.ExternalContactPage{}, wecomport.ErrDirectoryDisabled
@@ -489,9 +570,10 @@ type response struct {
 	AccessToken string          `json:"access_token"`
 	UserID      string          `json:"UserId"`
 	UserIDLower string          `json:"userid"`
+	Name        string          `json:"name"`
 	Ticket      string          `json:"ticket"`
 	ExpiresIn   int64           `json:"expires_in"`
-	TagGroups   *[]tagGroupWire `json:"tag_group"`
+	TagGroups   json.RawMessage `json:"tag_group"`
 	FollowUser  json.RawMessage `json:"follow_user"`
 	NextCursor  string          `json:"next_cursor"`
 	ConfigID    string          `json:"config_id"`
@@ -1184,11 +1266,12 @@ func (client *Client) ListTagCatalog(ctx context.Context) ([]TagCatalogGroup, er
 	if err != nil {
 		return nil, &CatalogReadError{Err: err, CallAttempted: true}
 	}
-	if payload.TagGroups == nil {
+	var sourceGroups []tagGroupWire
+	if len(payload.TagGroups) == 0 || json.Unmarshal(payload.TagGroups, &sourceGroups) != nil || sourceGroups == nil {
 		return nil, &CatalogReadError{Err: ErrResponse, CallAttempted: true}
 	}
-	groups := make([]TagCatalogGroup, 0, len(*payload.TagGroups))
-	for _, group := range *payload.TagGroups {
+	groups := make([]TagCatalogGroup, 0, len(sourceGroups))
+	for _, group := range sourceGroups {
 		tags := []tagWire{}
 		if group.Tags != nil {
 			tags = *group.Tags
@@ -1200,6 +1283,92 @@ func (client *Client) ListTagCatalog(ctx context.Context) ([]TagCatalogGroup, er
 		groups = append(groups, value)
 	}
 	return groups, nil
+}
+
+// MutateTagCatalog is the sole WeCom leaf for provider tag-directory writes.
+// It classifies every post-request ambiguity as outcome_unknown, preserving
+// the original EER effect and forbidding a second create under a new key.
+func (client *Client) MutateTagCatalog(ctx context.Context, mutation wecomport.TagCatalogMutation) (wecomport.TagCatalogMutationResult, error) {
+	if !client.DirectoryReady() || !validCatalogMutation(mutation) {
+		return wecomport.TagCatalogMutationResult{}, wecomport.WrapProviderWriteError(ErrUnavailable, false)
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.TagCatalogMutationResult{}, wecomport.WrapProviderWriteError(err, false)
+	}
+	var endpoint string
+	var body any
+	switch mutation.Operation {
+	case "group_create":
+		endpoint, body = "/cgi-bin/externalcontact/add_corp_tag", map[string]any{"group_name": mutation.GroupName, "tag": []map[string]string{{"name": mutation.TagName}}}
+	case "tag_create":
+		endpoint, body = "/cgi-bin/externalcontact/add_corp_tag", map[string]any{"group_id": mutation.ProviderGroupID, "tag": []map[string]string{{"name": mutation.TagName}}}
+	case "group_update", "tag_update":
+		id := mutation.ProviderGroupID
+		if mutation.Operation == "tag_update" {
+			id = mutation.ProviderTagID
+		}
+		endpoint, body = "/cgi-bin/externalcontact/edit_corp_tag", map[string]string{"id": id, "name": mutation.GroupName + mutation.TagName}
+	case "group_archive":
+		endpoint, body = "/cgi-bin/externalcontact/del_corp_tag", map[string]any{"group_id": []string{mutation.ProviderGroupID}}
+	case "tag_archive":
+		endpoint, body = "/cgi-bin/externalcontact/del_corp_tag", map[string]any{"tag_id": []string{mutation.ProviderTagID}}
+	default:
+		return wecomport.TagCatalogMutationResult{}, wecomport.WrapProviderWriteError(ErrUnavailable, false)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return wecomport.TagCatalogMutationResult{}, wecomport.WrapProviderWriteError(ErrResponse, false)
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, endpoint, url.Values{"access_token": {token}}, encoded)
+	if err != nil || !confirmedMarkTagSuccess(payload.ErrCode) {
+		if err == nil {
+			err = &providerResponseError{statusCode: http.StatusOK}
+		}
+		return wecomport.TagCatalogMutationResult{}, classifyContactTagWriteError(err)
+	}
+	result := wecomport.TagCatalogMutationResult{ProviderGroupID: mutation.ProviderGroupID, ProviderTagID: mutation.ProviderTagID}
+	if mutation.Operation != "group_create" && mutation.Operation != "tag_create" {
+		return result, nil
+	}
+	var group tagGroupWire
+	if json.Unmarshal(payload.TagGroups, &group) != nil || invalid(group.ID) || len(group.TagsOrEmpty()) != 1 {
+		return wecomport.TagCatalogMutationResult{}, wecomport.WrapProviderWriteDisposition(ErrResponse, true, true, false)
+	}
+	created := group.TagsOrEmpty()[0]
+	if invalid(created.ID) || created.Name != mutation.TagName || (mutation.Operation == "group_create" && group.Name != mutation.GroupName) || (mutation.Operation == "tag_create" && group.ID != mutation.ProviderGroupID) {
+		return wecomport.TagCatalogMutationResult{}, wecomport.WrapProviderWriteDisposition(ErrResponse, true, true, false)
+	}
+	return wecomport.TagCatalogMutationResult{ProviderGroupID: group.ID, ProviderTagID: created.ID}, nil
+}
+
+func (value tagGroupWire) TagsOrEmpty() []tagWire {
+	if value.Tags == nil {
+		return nil
+	}
+	return *value.Tags
+}
+
+func validCatalogMutation(value wecomport.TagCatalogMutation) bool {
+	if value.GroupName != strings.TrimSpace(value.GroupName) || value.TagName != strings.TrimSpace(value.TagName) || value.ProviderGroupID != strings.TrimSpace(value.ProviderGroupID) || value.ProviderTagID != strings.TrimSpace(value.ProviderTagID) {
+		return false
+	}
+	switch value.Operation {
+	case "group_create":
+		return value.GroupName != "" && value.TagName != ""
+	case "tag_create":
+		return !invalid(value.ProviderGroupID) && value.TagName != ""
+	case "group_update":
+		return !invalid(value.ProviderGroupID) && value.GroupName != ""
+	case "tag_update":
+		return !invalid(value.ProviderTagID) && value.TagName != ""
+	case "group_archive":
+		return !invalid(value.ProviderGroupID)
+	case "tag_archive":
+		return !invalid(value.ProviderTagID)
+	default:
+		return false
+	}
 }
 
 type privateSendError struct{ uncertain bool }
@@ -1711,5 +1880,7 @@ func itoa(value int64) string { return strconv.FormatInt(value, 10) }
 var _ wecom.OAuthClient = (*Client)(nil)
 var _ wecom.JSSDKSigner = (*Client)(nil)
 var _ wecomport.DirectoryProvider = (*Client)(nil)
+var _ wecomport.ContactStaffProfileReader = (*Client)(nil)
 var _ wecomport.ExternalContactReader = (*Client)(nil)
 var _ wecomport.AcquisitionAssetWriter = (*Client)(nil)
+var _ wecomport.TagCatalogMutationWriter = (*Client)(nil)

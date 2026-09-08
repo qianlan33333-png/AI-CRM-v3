@@ -5425,7 +5425,7 @@ components:
       properties:
         id: {$ref: "#/components/schemas/ExternalEffectID"}
         owner: {type: string, const: outbound}
-        kind: {type: string, enum: [outbound_message, outbound_media, wecom_tag_catalog, group_message]}
+        kind: {type: string, enum: [outbound_message, outbound_media, wecom_tag_catalog, wecom_tag_catalog_mutation, group_message]}
         state: {$ref: "#/components/schemas/ExternalEffectState"}
         attempt_count: {type: integer, minimum: 0}
         generation: {type: integer, format: int64, minimum: 1}

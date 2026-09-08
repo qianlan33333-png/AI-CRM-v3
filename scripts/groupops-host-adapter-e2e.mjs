@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { fileURLToPath } from "node:url";
 
 const repository = new URL("..", import.meta.url);
 const source = new URL("../web/v3/groupOpsHostAdapter.ts", import.meta.url);
 const bundle = await build({
-  entryPoints: [source.pathname],
+  entryPoints: [fileURLToPath(source)],
   bundle: true,
   write: false,
   format: "iife",
@@ -90,9 +91,9 @@ console.log("groupops-host-adapter: PASS");
 dom.window.close();
 
 // This uses the frozen picker and standard DOM together. The Group Ops API
-// deliberately returns its Access-facing staff projection; the Host must adapt
-// the frozen picker's direct GET without exposing a WeCom sender identifier or
-// confusing that sender with the local owner_staff_id written by plan commands.
+// returns the local staff key together with the trusted WeCom sender identity.
+// The Host keeps the staff key for plan commands while adapting the frozen
+// picker to display the sender identity as its second line.
 const pickerSource = await readFile(new URL("../internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js", import.meta.url), "utf8");
 const waitFor = async (condition, message) => {
   for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -105,6 +106,8 @@ const fullJourneyErrors = [];
 const fullJourneyConsole = new VirtualConsole();
 fullJourneyConsole.on("jsdomError", (error) => fullJourneyErrors.push(String(error?.message || error)));
 const calls = [];
+let memberRefreshAttempts = 0;
+let ownerDirectoryFailures = 0;
 const state = {
   revision: 4,
   plan: { plan_id: 41, name: "标准群运营计划", revision: 4, status: "draft", plan_type: "standard", updated_at: "2026-09-08T00:00:00Z" },
@@ -148,6 +151,14 @@ fullWindow.fetch = async (input, init = {}) => {
       ],
     });
   }
+  if (url.pathname === "/api/admin/common/operation-members/sync" && method === "POST") {
+    memberRefreshAttempts += 1;
+    assert.deepEqual(body, { scope: "group_ops", page_size: 100 }, "frozen picker refresh must use the scoped V3 command body");
+    assert.equal(init.headers.get("X-CSRF-Token"), "test-csrf", "picker refresh must carry CSRF");
+    assert(init.headers.get("Idempotency-Key"), "picker refresh must carry an idempotency key");
+    if (memberRefreshAttempts === 1) return response({ error: { code: "provider_read_unavailable" } }, 503);
+    return response({ items: [], page_size: 100 });
+  }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "GET") return response(detailPayload());
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "PUT") {
     if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
@@ -179,28 +190,39 @@ fullWindow.fetch = async (input, init = {}) => {
     state.plan.revision = state.revision;
     return response({ plan: clone(state.plan) });
   }
-  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: clone(state.directory), total: state.directory.length, limit: 200, offset: 0, has_more: false });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") {
+    if (url.searchParams.get("owner_userid") === "9" && ownerDirectoryFailures++ === 0) return response({ error: { code: "provider_read_unavailable" } }, 503);
+    return response({ items: clone(state.directory), total: state.directory.length, limit: 200, offset: 0, has_more: false });
+  }
   throw new Error(`unexpected Group Ops request ${method} ${url.pathname}${url.search}`);
 };
 
 try {
   // The static picker is loaded before the Host in the rendered page. Its
-  // direct fetch must nevertheless receive only the frozen picker DTO.
+  // direct fetch must retain the trusted external display identity while the
+  // selection still writes the local staff identifier.
   fullWindow.eval(pickerSource);
   fullWindow.eval(bundle.outputFiles[0].text);
   await waitFor(() => fullWindow.document.querySelector('[data-action="pick-plan-owner"]'), "standard Group Ops detail did not render");
   const directMembers = await (await fullWindow.fetch("/api/admin/common/operation-members?scope=group_ops&page_size=100")).json();
   assert.deepEqual(directMembers.items, [
-    { user_id: "7", display_name: "一号运营" },
-    { user_id: "9", display_name: "九号运营" },
-  ], "direct frozen picker fetch must project local staff ids and names only");
-  assert.equal(JSON.stringify(directMembers).includes("sender_userid"), false, "Host must not expose WeCom sender ids to the picker");
+    { user_id: "wecom-owner", staff_id: "7", display_name: "一号运营" },
+    { user_id: "wecom-replacement", staff_id: "9", display_name: "九号运营" },
+  ], "picker must show the trusted WeCom user ID while retaining the local staff key");
 
   fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
   await waitFor(() => fullWindow.document.querySelectorAll("[data-operation-member-row]").length === 2, "owner picker did not render both local staff");
-  fullWindow.document.querySelector('[data-operation-member-row][data-user-id="9"] [data-operation-member-row-select]').click();
+  assert.equal(fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] .operation-member-picker__name')?.textContent, "九号运营");
+  assert.equal(fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] .operation-member-picker__user-id')?.textContent, "wecom-replacement");
+  fullWindow.document.querySelector('[data-operation-member-refresh]').click();
+  await waitFor(() => fullWindow.document.body.textContent.includes("企微客服刷新失败"), "member refresh error did not render a retryable message");
+  assert.equal(fullWindow.document.body.textContent.includes("[object Object]"), false, "member refresh must not stringify an error object");
+  fullWindow.document.querySelector('[data-operation-member-refresh]').click();
+  await waitFor(() => memberRefreshAttempts === 2 && fullWindow.document.querySelectorAll("[data-operation-member-row]").length === 2, "member refresh retry did not recover the picker");
+  fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] [data-operation-member-row-select]').click();
   fullWindow.document.querySelector("[data-operation-member-confirm]").click();
   await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "9", "owner picker did not retain the selected local staff id");
+  await waitFor(() => fullWindow.document.body.textContent.includes("群目录读取失败，请重试"), "owner directory failure must remain explicit rather than appear as an empty group list");
   fullWindow.document.querySelector('[name="status"]').value = "active";
   fullWindow.document.querySelector('[data-action="save-plan"]').click();
   await waitFor(() => state.plan.status === "active", "saving the selected owner did not enable the existing plan");
@@ -229,9 +251,116 @@ try {
   assert.equal(state.nodes[0].scheduled_time, "09:30");
   assert.equal(state.nodes[0].action_title, "节点结果");
   assert(calls.some((item) => item.path.endsWith("/enable") && item.method === "POST"), "standard enable action did not call the V3 command");
-  assert.equal(fullWindow.document.body.textContent.includes("wecom-owner"), false, "sender identifier leaked into the standard DOM");
+  assert(fullWindow.document.body.textContent.includes("wecom-replacement"), "selected owner must show the trusted WeCom user ID");
   if (fullJourneyErrors.length) throw new Error(`Group Ops standard DOM errors: ${JSON.stringify(fullJourneyErrors)}`);
   console.log("groupops-standard-dom: PASS");
 } finally {
   fullJourney.window.close();
+}
+
+// Webhook presentation is rendered by the same standard Host: it must expose
+// the configured, callable URL and give a truthful copy receipt. A missing
+// descriptor takes the explicit unavailable branch in the production code.
+const copiedWebhook = [];
+let webhookPlan = { plan_id: 52, name: "Webhook 计划", revision: 2, status: "draft", plan_type: "webhook" };
+let webhookDescriptor = { configured: false, reference: "", path: "", signature_algorithm: "HMAC-SHA256", signature_header: "X-Signature", timestamp_header: "X-Timestamp", nonce_header: "X-Nonce", client_id_header: "X-Client-ID" };
+const webhookJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="52"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/52",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const webhookWindow = webhookJourney.window;
+webhookWindow.Headers = Headers;
+webhookWindow.Response = Response;
+Object.defineProperty(webhookWindow, "crypto", { configurable: true, value: crypto });
+Object.defineProperty(webhookWindow.navigator, "clipboard", { configurable: true, value: { writeText: async (value) => copiedWebhook.push(value) } });
+webhookWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
+webhookWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), webhookWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52" && method === "GET") return response({ plan: clone(webhookPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52/webhook-descriptor" && method === "GET") return response(clone(webhookDescriptor));
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52/webhook-descriptor" && method === "PUT") {
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.expected_revision, 2, "Webhook save must use the current plan revision");
+    assert.equal(body.reference, "hook-52", "Webhook save must persist the opaque reference only");
+    webhookPlan = { ...webhookPlan, revision: 3 };
+    webhookDescriptor = { ...webhookDescriptor, configured: true, reference: "hook-52", path: "/api/automation/group-ops/webhooks/hook-52" };
+    return response({ plan: clone(webhookPlan) });
+  }
+  throw new Error(`unexpected webhook request ${method} ${url.pathname}`);
+};
+try {
+  webhookWindow.eval(pickerSource);
+  webhookWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => webhookWindow.document.querySelector('[data-action="save-webhook"]'), "unconfigured webhook did not render its configuration action");
+  assert(webhookWindow.document.body.textContent.includes("尚未配置，无法提供可调用地址"), "unconfigured webhook must not fabricate a callable address");
+  webhookWindow.document.querySelector('[name="webhook_reference"]').value = "hook-52";
+  webhookWindow.document.querySelector('[data-action="save-webhook"]').click();
+  await waitFor(() => webhookWindow.document.querySelector('[data-action="copy-webhook"]'), "saved webhook did not reread and render its copy action");
+  const expectedWebhookURL = "https://groupops.test/api/automation/group-ops/webhooks/hook-52";
+  assert.equal(webhookWindow.document.querySelector(".group-ops__url")?.textContent, expectedWebhookURL, "Webhook presentation must show the configured callable URL");
+  assert(webhookWindow.document.body.textContent.includes("地址已配置；调用仍需签名配置和启用计划") && webhookWindow.document.body.textContent.includes("签名验证（HMAC-SHA256）") && webhookWindow.document.querySelector(".group-ops__webhook-guide")?.textContent.includes("复制地址不包含凭据，也不能绕过签名验证") && webhookWindow.document.body.textContent.includes("X-Signature / X-Timestamp / X-Nonce / X-Client-ID"), "Webhook presentation must explain the descriptor headers and signing requirement without claiming readiness or exposing a secret");
+  webhookWindow.document.querySelector('[data-action="copy-webhook"]').click();
+  await waitFor(() => copiedWebhook[0] === expectedWebhookURL, "Webhook copy did not reach the clipboard");
+  await waitFor(() => webhookWindow.document.body.textContent.includes("Webhook 地址已复制"), "Webhook copy did not render a success receipt");
+  console.log("groupops-webhook-dom: PASS");
+} finally {
+  webhookJourney.window.close();
+}
+
+// List lifecycle controls must give a visible in-flight state, submit exactly
+// once, and only show enabled after the V3 command response has been read.
+let listPlan = { plan_id: 13, name: "授权测试群计划", revision: 8, status: "disabled", plan_type: "standard" };
+let enableCalls = 0;
+let releaseEnable;
+const listJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/ui",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const listWindow = listJourney.window;
+listWindow.Headers = Headers;
+listWindow.Response = Response;
+Object.defineProperty(listWindow, "crypto", { configurable: true, value: crypto });
+listWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
+listWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), listWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return response({ items: [clone(listPlan)], total: 1 });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/13" && method === "GET") return response({ plan: clone(listPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/13/enable" && method === "POST") {
+    enableCalls += 1;
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.expected_revision, 8, "enable must use the read revision");
+    if (enableCalls === 1) return response({ error: { code: "operations_conflict" } }, 409);
+    return new Promise((resolve) => {
+      releaseEnable = () => {
+        listPlan = { ...listPlan, status: "active", revision: 9 };
+        resolve(response({ plan: clone(listPlan) }));
+      };
+    });
+  }
+  throw new Error(`unexpected list request ${method} ${url.pathname}`);
+};
+try {
+  listWindow.eval(pickerSource);
+  listWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => listWindow.document.querySelector('[data-action="enable-plan"]'), "disabled plan did not render its enable control");
+  const enable = () => listWindow.document.querySelector('[data-action="enable-plan"]');
+  enable().click();
+  await waitFor(() => listWindow.document.body.textContent.includes("计划配置未完成，无法启用") && !enable()?.disabled, "failed enable must keep a retryable control and visible error");
+  enable().click();
+  enable().click();
+  await waitFor(() => enableCalls === 2 && enable()?.disabled && enable()?.textContent === "启用中", "enable must lock repeat clicks and show progress");
+  releaseEnable();
+  await waitFor(() => listWindow.document.querySelector('[data-action="disable-plan"]') && listWindow.document.body.textContent.includes("已启用"), "enable must read back active status and show a receipt");
+  assert.equal(enableCalls, 2, "enable retry may submit once after failure but must ignore the concurrent repeat click");
+  console.log("groupops-enable-dom: PASS");
+} finally {
+  listJourney.window.close();
 }

@@ -151,18 +151,19 @@ var _ effect.ProviderAdapter = (*TagCatalogProvider)(nil)
 // different outbound kind. Unsupported intents fail closed without a network
 // call; their own future adapters can be added explicitly by composition.
 type ProviderRouter struct {
-	tagCatalog        effect.ProviderAdapter
-	groupMessage      effect.ProviderAdapter
-	channelAsset      effect.ProviderAdapter
-	channelEntrant    effect.ProviderAdapter
-	channelLink       effect.ProviderAdapter
-	privateMessage    effect.ProviderAdapter
-	automationMessage effect.ProviderAdapter
-	sidebarJSSDK      effect.ProviderAdapter
-	surveyCompletion  effect.ProviderAdapter
-	customerTag       effect.ProviderAdapter
-	ownerHandoff      effect.ProviderAdapter
-	commercePush      effect.ProviderAdapter
+	tagCatalog         effect.ProviderAdapter
+	tagCatalogMutation effect.ProviderAdapter
+	groupMessage       effect.ProviderAdapter
+	channelAsset       effect.ProviderAdapter
+	channelEntrant     effect.ProviderAdapter
+	channelLink        effect.ProviderAdapter
+	privateMessage     effect.ProviderAdapter
+	automationMessage  effect.ProviderAdapter
+	sidebarJSSDK       effect.ProviderAdapter
+	surveyCompletion   effect.ProviderAdapter
+	customerTag        effect.ProviderAdapter
+	ownerHandoff       effect.ProviderAdapter
+	commercePush       effect.ProviderAdapter
 }
 
 func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {
@@ -188,6 +189,13 @@ func (r *ProviderRouter) WithAutomationMessage(message effect.ProviderAdapter) *
 func (r *ProviderRouter) WithSidebarJSSDK(provider effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.sidebarJSSDK = provider
+	}
+	return r
+}
+
+func (r *ProviderRouter) WithTagCatalogMutation(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.tagCatalogMutation = provider
 	}
 	return r
 }
@@ -258,6 +266,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindWeComTagCatalog:
 			if r.tagCatalog != nil {
 				return r.tagCatalog.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindWeComTagCatalogMutation:
+			if r.tagCatalogMutation != nil {
+				return r.tagCatalogMutation.Execute(ctx, envelope, attempt)
 			}
 		case effect.KindGroupMessage:
 			if r.groupMessage != nil {

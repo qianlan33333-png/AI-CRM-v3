@@ -6,8 +6,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "internal/webshell/static/sidebar_workbench/sidebar_workbench_dd8d60d.js");
 const target = path.join(root, "web/dist/sidebar/sidebar_workbench_v3_overlay.js");
 let js = fs.readFileSync(source, "utf8");
@@ -144,6 +145,19 @@ replaceRange("  async function sendProduct(productIndex, kind) {", "  function a
     }
   }
 
+  async function sendCoupon(couponID) {
+    if (!couponID) {
+      showToast("优惠券不可用", "error");
+      return;
+    }
+    try {
+      await window.__AICRMSidebarBridge.send({ resource_kind: "coupon", resource_id: String(couponID) });
+      showToast("已发送优惠券领取链接");
+    } catch (error) {
+      showToast(error.message || "发送失败", "error");
+    }
+  }
+
 `, "product send bridge");
 replaceRange("  function assertWeComSendOk(res) {", "  function openMobileModal() {", "", "direct sdk send");
 
@@ -162,11 +176,14 @@ replaceRange("  function renderCoupons() {", "  function materialTypeControls() 
     };
     content.innerHTML = panel("", rows.map((item) => {
       const products = (item.products || []).map((product) => product.title || "").filter(Boolean).join("、");
-      const unavailable = Boolean(item.user_limit_reached) || String(item.availability_status || "") !== "active" || !item.url;
+      // Sending only uses an already-created public link. It does not claim a
+      // coupon or reserve stock, so the current customer's eligibility must
+      // not suppress a share to the conversation's recipient.
+      const unavailable = !item.url;
       return '<article class="card link-card"><div class="card-title"><div><h3>' + escapeHtml(item.name || "未命名优惠券") + '</h3><div class="mini">' +
         escapeHtml(item.discount_label || "") + '</div></div></div><div class="kv"><span>适用商品</span><strong>' + escapeHtml(products || "全部已配置商品") +
         '</strong><span>领取截止</span><strong>' + escapeHtml(item.claim_ends_at || "") + '</strong><span>状态</span><strong>' + escapeHtml(availabilityLabel(item)) +
-        '</strong></div><div class="row-actions"><button class="btn primary" type="button" data-copy-url="' + escapeHtml(item.url || "") + '"' + (unavailable ? " disabled" : "") + '>复制链接</button></div></article>';
+        '</strong></div><div class="row-actions"><button class="btn primary" type="button" data-coupon-send="' + escapeHtml(item.coupon_id || "") + '"' + (unavailable ? " disabled" : "") + '>发送领取链接</button><button class="btn ghost" type="button" data-copy-url="' + escapeHtml(item.url || "") + '"' + (unavailable ? " disabled" : "") + '>复制链接</button></div></article>';
     }).join(""));
   }
 
@@ -284,7 +301,7 @@ replaceRange("  async function saveMobile() {", "  async function boot(options) 
   }
 
 `, "declared phone render");
-replaceRange("    const materialSendButton = event.target.closest(\"[data-material-send]\");", "    const productTypeButton = event.target.closest(\"[data-product-type]\");", `    const materialSendButton = event.target.closest("[data-material-send]");
+replaceRange("    const materialSendButton = event.target.closest(\"[data-material-send]\");", "    const productSendButton = event.target.closest(\"[data-product-send]\");", `    const materialSendButton = event.target.closest("[data-material-send]");
     if (materialSendButton) {
       if (materialSendButton.dataset.sending === "true") return;
       const label = materialSendButton.textContent;
@@ -298,6 +315,28 @@ replaceRange("    const materialSendButton = event.target.closest(\"[data-materi
         materialSendButton.textContent = label;
         materialSendButton.disabled = false;
       }
+      return;
+    }
+    const couponSendButton = event.target.closest("[data-coupon-send]");
+    if (couponSendButton) {
+      if (couponSendButton.dataset.sending === "true") return;
+      const label = couponSendButton.textContent;
+      couponSendButton.disabled = true;
+      couponSendButton.dataset.sending = "true";
+      couponSendButton.textContent = "发送中…";
+      try {
+        await sendCoupon(couponSendButton.dataset.couponSend);
+      } finally {
+        delete couponSendButton.dataset.sending;
+        couponSendButton.textContent = label;
+        couponSendButton.disabled = false;
+      }
+      return;
+    }
+    const productTypeButton = event.target.closest("[data-product-type]");
+    if (productTypeButton) {
+      state.productType = productTypeButton.dataset.productType || "regular";
+      renderProducts();
       return;
     }
 `, "material in-flight state");

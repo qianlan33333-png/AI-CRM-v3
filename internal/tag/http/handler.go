@@ -176,11 +176,10 @@ func opaqueRequestID() string {
 	return "tagreq_" + strings.TrimPrefix(compatKey(), "server_compat_")
 }
 
-func mutationEnvelope(reason string, dryRun bool) map[string]any {
-	return map[string]any{
+func mutationEnvelope(reason string, dryRun bool, persistedState string) map[string]any {
+	result := map[string]any{
 		"ok":                          true,
 		"reason":                      reason,
-		"source_status":               "local_catalog",
 		"route_owner":                 "ai_crm_next",
 		"fallback_used":               false,
 		"real_external_call_executed": false,
@@ -188,10 +187,44 @@ func mutationEnvelope(reason string, dryRun bool) map[string]any {
 		"fixture_used":                false,
 		"dry_run":                     dryRun,
 	}
+	if dryRun {
+		result["source_status"] = "validation_only"
+		return result
+	}
+	if validProviderMutationState(persistedState) {
+		result["source_status"] = "provider_write_" + persistedState
+		result["effect_state"] = persistedState
+		return result
+	}
+	// Reorders and unbound test/local deployments complete only local catalog
+	// work. Do not claim an external acceptance where no durable receipt exists.
+	result["source_status"] = "local_catalog"
+	return result
+}
+
+func validProviderMutationState(value string) bool {
+	switch value {
+	case "queued", "attempted", "executed", "outcome_unknown", "reconciled", "retryable_failed", "final_failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchingProviderMutationState(values ...string) string {
+	if len(values) == 0 || !validProviderMutationState(values[0]) {
+		return ""
+	}
+	for _, value := range values[1:] {
+		if value != values[0] {
+			return ""
+		}
+	}
+	return values[0]
 }
 
 func validatedMutationEnvelope(operation string) map[string]any {
-	return mutationEnvelope(operation+"_validated", true)
+	return mutationEnvelope(operation+"_validated", true, "")
 }
 func compatKey() string {
 	var raw [20]byte
@@ -315,7 +348,7 @@ func (h *Handler) tags(w http.ResponseWriter, r *http.Request, tail string) {
 			resultError(w, e)
 			return
 		}
-		response := mutationEnvelope("tag_created", false)
+		response := mutationEnvelope("tag_created", false, v.ProviderMutationState)
 		response["tag"] = legacyTag(v)
 		writeJSON(w, 200, response)
 		return
@@ -377,7 +410,7 @@ func (h *Handler) tags(w http.ResponseWriter, r *http.Request, tail string) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		response := mutationEnvelope("tag_updated", false)
+		response := mutationEnvelope("tag_updated", false, v.ProviderMutationState)
 		response["tag"] = legacyTag(v)
 		writeJSON(w, 200, response)
 	case http.MethodDelete:
@@ -412,7 +445,7 @@ func (h *Handler) tags(w http.ResponseWriter, r *http.Request, tail string) {
 			resultError(w, e)
 			return
 		}
-		response := mutationEnvelope("tag_archived", false)
+		response := mutationEnvelope("tag_archived", false, v.ProviderMutationState)
 		response["tag"] = legacyTag(v)
 		writeJSON(w, 200, response)
 	default:
@@ -434,8 +467,13 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 				resultError(w, e)
 				return
 			}
+			operations, operationStatus, operationErr := h.archiveOperations(r.Context())
+			if operationErr != nil {
+				resultError(w, operationErr)
+				return
+			}
 			groups := legacyGroups(catalog.Groups, catalog.Tags)
-			writeJSON(w, 200, map[string]any{"ok": true, "groups": groups, "items": groups, "count": len(groups), "source_status": "local_catalog", "real_external_call_executed": false, "sync_executed": false})
+			writeJSON(w, 200, map[string]any{"ok": true, "groups": groups, "items": groups, "count": len(groups), "archive_operations": operations, "archive_operations_status": operationStatus, "source_status": "local_catalog", "real_external_call_executed": false, "sync_executed": false})
 			return
 		}
 		p, ok := h.mutate(w, r)
@@ -471,7 +509,7 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			resultError(w, e)
 			return
 		}
-		response := mutationEnvelope("group_created", false)
+		response := mutationEnvelope("group_created", false, matchingProviderMutationState(g.ProviderMutationState, t.ProviderMutationState))
 		response["group"], response["tag"] = legacyMutationGroup(g), legacyTag(t)
 		writeJSON(w, 200, response)
 		return
@@ -544,7 +582,7 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		response := mutationEnvelope("group_updated", false)
+		response := mutationEnvelope("group_updated", false, v.ProviderMutationState)
 		response["group"] = legacyMutationGroup(v)
 		writeJSON(w, 200, response)
 	case http.MethodDelete:
@@ -579,7 +617,7 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			resultError(w, e)
 			return
 		}
-		response := mutationEnvelope("group_archived", false)
+		response := mutationEnvelope("group_archived", false, v.ProviderMutationState)
 		response["group"] = legacyMutationGroup(v)
 		writeJSON(w, 200, response)
 	default:
@@ -593,11 +631,47 @@ func (h *Handler) catalogList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tags := legacyTags(c.Tags)
-	writeJSON(w, 200, map[string]any{"ok": true, "items": tags, "tags": tags, "groups": legacyGroups(c.Groups, c.Tags), "count": len(tags), "total_tags": len(tags), "tag_limit": domain.TagLimit, "synced_at": c.SyncedAt, "source_status": "local_catalog", "read_model_status": "ready", "route_owner": "ai_crm_next", "fallback_used": false, "real_external_call_executed": false, "sync_executed": false, "fixture_used": false})
+	operations, operationStatus, operationErr := h.archiveOperations(r.Context())
+	if operationErr != nil {
+		resultError(w, operationErr)
+		return
+	}
+	providerState := tagport.SyncIdle
+	var syncedAt any
+	if status, err := h.sync.Status(r.Context()); err == nil {
+		providerState = status.State
+		if status.State == tagport.SyncExecuted && status.CompletedAt != nil {
+			syncedAt = status.CompletedAt.UTC()
+		}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "items": tags, "tags": tags, "groups": legacyGroups(c.Groups, c.Tags), "count": len(tags), "total_tags": len(tags), "tag_limit": domain.TagLimit, "synced_at": syncedAt, "provider_sync_state": providerState, "archive_operations": operations, "archive_operations_status": operationStatus, "source_status": "local_catalog", "read_model_status": "ready", "route_owner": "ai_crm_next", "fallback_used": false, "real_external_call_executed": false, "sync_executed": providerState == tagport.SyncExecuted, "fixture_used": false})
+}
+
+func (h *Handler) archiveOperations(ctx context.Context) ([]map[string]any, string, error) {
+	operations, err := h.catalog.ArchiveOperations(ctx)
+	if errors.Is(err, tagapp.ErrArchiveOperationReadUnsupported) {
+		return []map[string]any{}, "not_configured", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	items := make([]map[string]any, 0, len(operations))
+	for _, operation := range operations {
+		items = append(items, map[string]any{
+			"operation":            string(operation.Operation),
+			"local_id":             operation.LocalID,
+			"provider_write_state": operation.State,
+			"state":                operation.State,
+			"recorded_at":          operation.RecordedAt.UTC(),
+			"provider_readback_at": operation.ReadbackAt,
+			"synced_at":            operation.ReadbackAt,
+		})
+	}
+	return items, "ready", nil
 }
 
 func legacyTag(tag domain.Tag) map[string]any {
-	return map[string]any{"tag_id": tag.ID, "id": tag.ID, "group_id": tag.GroupID, "group_name": tag.GroupName, "tag_name": tag.Name, "name": tag.Name, "sort_order": tag.SortOrder}
+	return map[string]any{"tag_id": tag.ID, "id": tag.ID, "group_id": tag.GroupID, "group_name": tag.GroupName, "tag_name": tag.Name, "name": tag.Name, "sort_order": tag.SortOrder, "provider_write_state": tag.ProviderMutationState, "provider_readback_at": tag.ProviderReadbackAt, "synced_at": tag.ProviderReadbackAt}
 }
 
 func legacyTags(tags []domain.Tag) []map[string]any {
@@ -609,11 +683,11 @@ func legacyTags(tags []domain.Tag) []map[string]any {
 }
 
 func legacyGroup(group domain.Group) map[string]any {
-	return map[string]any{"group_id": group.ID, "group_name": group.Name, "name": group.Name, "sort_order": group.SortOrder}
+	return map[string]any{"group_id": group.ID, "group_name": group.Name, "name": group.Name, "sort_order": group.SortOrder, "provider_write_state": group.ProviderMutationState, "provider_readback_at": group.ProviderReadbackAt, "synced_at": group.ProviderReadbackAt}
 }
 
 func legacyMutationGroup(group domain.Group) map[string]any {
-	return map[string]any{"group_id": group.ID, "group_name": group.Name, "sort_order": group.SortOrder}
+	return map[string]any{"group_id": group.ID, "group_name": group.Name, "sort_order": group.SortOrder, "provider_write_state": group.ProviderMutationState, "provider_readback_at": group.ProviderReadbackAt, "synced_at": group.ProviderReadbackAt}
 }
 
 func legacyGroups(groups []domain.Group, tags []domain.Tag) []map[string]any {
@@ -654,6 +728,8 @@ func resultError(w http.ResponseWriter, e error) {
 		writeError(w, 409, "sync_in_progress")
 	case errors.Is(e, tagapp.ErrReferenced):
 		writeError(w, 409, "referenced")
+	case errors.Is(e, tagapp.ErrProviderMutationUnavailable):
+		writeError(w, 503, "tag_catalog_write_unavailable")
 	default:
 		writeError(w, 503, "unavailable")
 	}
@@ -665,13 +741,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func writeError(w http.ResponseWriter, status int, code string) {
-	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "sync_in_progress": "CONFLICT", "referenced": "CONFLICT", "unauthorized": "UNAUTHORIZED", "forbidden": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
+	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "sync_in_progress": "CONFLICT", "referenced": "CONFLICT", "unauthorized": "UNAUTHORIZED", "forbidden": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "tag_catalog_write_unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
 	if compat == "" {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}
-	legacyCode := map[string]string{"invalid_request": "input_error", "not_found": "not_found", "unauthorized": "unauthorized", "forbidden": "unauthorized", "csrf_required": "unauthorized", "unavailable": "production_unavailable", "conflict": "input_error", "sync_in_progress": "sync_in_progress", "referenced": "input_error", "method_not_allowed": "input_error"}[code]
+	legacyCode := map[string]string{"invalid_request": "input_error", "not_found": "not_found", "unauthorized": "unauthorized", "forbidden": "unauthorized", "csrf_required": "unauthorized", "unavailable": "production_unavailable", "tag_catalog_write_unavailable": "production_unavailable", "conflict": "input_error", "sync_in_progress": "sync_in_progress", "referenced": "input_error", "method_not_allowed": "input_error"}[code]
 	if legacyCode == "" {
 		legacyCode = "production_unavailable"
+	}
+	message := code
+	if code == "tag_catalog_write_unavailable" {
+		message = "企业微信标签写入暂未启用，请联系管理员配置后重试；本次未新增、修改或删除标签。"
 	}
 	// Return the frozen legacy envelope as well as the v3 error triplet. The
 	// duplicated fields preserve existing browser detail semantics without
@@ -687,7 +767,7 @@ func writeError(w http.ResponseWriter, status int, code string) {
 		"sync_executed":               false,
 		"fixture_used":                false,
 		"code":                        compat,
-		"message":                     code,
+		"message":                     message,
 		"request_id":                  opaqueRequestID(),
 		"error":                       code,
 	})

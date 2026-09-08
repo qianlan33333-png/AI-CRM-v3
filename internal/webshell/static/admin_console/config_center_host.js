@@ -7,6 +7,9 @@
   // This V3 host preserves its table/detail skeleton while owning data and
   // commands through the closed runtime-release API.
   root.classList.add("cc-page");
+  const switchStyle = document.createElement("style");
+  switchStyle.textContent = ".cc-switch{width:40px;height:22px;flex:0 0 40px;margin-right:12px}.cc-slider:before{width:16px;height:16px;left:3px;top:3px;transform:translateX(0)}.cc-switch input:checked + .cc-slider:before{transform:translateX(18px)}.cc-switch input:focus-visible + .cc-slider{outline:2px solid var(--cc-blue);outline-offset:2px}.cc-switch input:disabled + .cc-slider{opacity:.55;cursor:not-allowed}@media(max-width:560px){.cc-switch{margin-right:10px;vertical-align:top}}";
+  document.head.append(switchStyle);
 
   const catalogAPI = "/api/admin/config/runtime-catalog";
   const releaseAPI = "/api/admin/config/runtime-releases";

@@ -250,6 +250,7 @@ func (handler *Handler) OwnerHandoffOperationMembersHandler() nethttp.Handler {
 }
 
 type ownerHandoffOperationMember struct {
+	StaffID     int64  `json:"staff_id"`
 	UserID      string `json:"user_id"`
 	DisplayName string `json:"display_name"`
 	Active      bool   `json:"active"`
@@ -291,7 +292,7 @@ func (handler *Handler) ownerHandoffOperationMembers(response nethttp.ResponseWr
 		if query != "" && !strings.Contains(strings.ToLower(member.UserID), query) && !strings.Contains(strings.ToLower(member.DisplayName), query) {
 			continue
 		}
-		items = append(items, ownerHandoffOperationMember{UserID: member.UserID, DisplayName: member.DisplayName, Active: member.Active})
+		items = append(items, ownerHandoffOperationMember{StaffID: member.ID, UserID: member.UserID, DisplayName: member.DisplayName, Active: member.Active})
 		if len(items) == pageSize {
 			break
 		}

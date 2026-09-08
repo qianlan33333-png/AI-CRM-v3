@@ -214,6 +214,9 @@ type runtimeTagDirectory struct{}
 func (runtimeTagDirectory) List(context.Context, customerapp.Query) (customerapp.PageData, error) {
 	return customerapp.PageData{}, nil
 }
+func (runtimeTagDirectory) CustomerIDsForOwner(context.Context, int64, int) ([]customerdomain.CustomerID, error) {
+	return []customerdomain.CustomerID{}, nil
+}
 func (runtimeTagDirectory) Detail(context.Context, customerdomain.CustomerID) (customerapp.Detail, error) {
 	return customerapp.Detail{}, nil
 }
@@ -1009,7 +1012,7 @@ func customerTagRuntimePool(t *testing.T, ctx context.Context, url string) (*pla
 		t.Fatal(err)
 	}
 	root := filepath.Clean(filepath.Join("..", ".."))
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0008_tag_catalog.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0093_customer_tag_commands.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0008_tag_catalog.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0093_customer_tag_commands.sql", "0107_tag_catalog_mutation_receipts.sql"} {
 		body, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

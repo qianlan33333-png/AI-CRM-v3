@@ -33,6 +33,7 @@ type SidebarClaimableRecordPage struct {
 // definitions cannot be substituted with a customer's already-issued claims.
 type SidebarClaimableCatalogStore interface {
 	ListSidebarClaimable(context.Context, int64, int32, int32) (SidebarClaimableRecordPage, error)
+	ReadSidebarClaimable(context.Context, int64, couponport.ID) (SidebarClaimableRecord, error)
 }
 
 // SidebarClaimableCatalogApplication assembles Coupon's rule/claim facts with
@@ -87,6 +88,22 @@ func (s *SidebarClaimableCatalogApplication) ListSidebarClaimable(ctx context.Co
 		page.Items = append(page.Items, item)
 	}
 	return page, nil
+}
+
+func (s *SidebarClaimableCatalogApplication) ReadSidebarClaimable(ctx context.Context, customerID int64, couponID couponport.ID) (couponport.SidebarClaimableItem, error) {
+	if s == nil || s.uow == nil || s.store == nil || s.products == nil || customerID < 1 || couponID < 1 {
+		return couponport.SidebarClaimableItem{}, ErrInvalidCoupon
+	}
+	var record SidebarClaimableRecord
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		var readErr error
+		record, readErr = s.store.ReadSidebarClaimable(txctx, customerID, couponID)
+		return readErr
+	})
+	if err != nil {
+		return couponport.SidebarClaimableItem{}, classify(err)
+	}
+	return s.projectSidebarClaimable(ctx, record, s.now().UTC())
 }
 
 func (s *SidebarClaimableCatalogApplication) projectSidebarClaimable(ctx context.Context, record SidebarClaimableRecord, at time.Time) (couponport.SidebarClaimableItem, error) {

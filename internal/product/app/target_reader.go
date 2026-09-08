@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"strconv"
 
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -16,6 +18,7 @@ type TargetReader struct {
 }
 
 var _ productport.ProductTargetReader = (*TargetReader)(nil)
+var _ productport.SidebarProductShareReader = (*TargetReader)(nil)
 
 func NewTargetReader(ordinary *Service, period *ServicePeriodService) (*TargetReader, error) {
 	if ordinary == nil || period == nil {
@@ -34,15 +37,78 @@ func (reader *TargetReader) ReadProductTarget(ctx context.Context, kind productp
 		if err != nil {
 			return productport.ProductOption{}, err
 		}
-		return productport.ProductOption{ID: item.ID, ProductType: productport.ProductOptionStandard, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency}, nil
+		return productport.ProductOption{ID: item.ID, Code: item.ProductCode, ProductType: productport.ProductOptionStandard, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, CoverURL: publicProductCardCover(item)}, nil
 	case productport.ProductOptionServicePeriod:
 		item, err := reader.period.GetServicePeriodProduct(ctx, id)
 		if err != nil {
 			return productport.ProductOption{}, err
 		}
-		return productport.ProductOption{ID: item.ServiceProductID, ProductType: productport.ProductOptionServicePeriod, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency}, nil
+		return productport.ProductOption{ID: item.ServiceProductID, Code: item.ProductCode, ProductType: productport.ProductOptionServicePeriod, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, CoverURL: servicePeriodCardCover(item)}, nil
 	default:
 		return productport.ProductOption{}, ErrInvalidProduct
+	}
+}
+
+// productCardCover accepts only an HTTPS image supplied as a public asset.
+// Admin image-library preview URLs are relative /api/admin paths and require
+// an administrator session, so they must never become a WeCom news imgUrl.
+func productCardCover(images []string) string {
+	for _, raw := range images {
+		if image, ok := publicHTTPSImage(raw); ok {
+			return image
+		}
+	}
+	return ""
+}
+
+// servicePeriodCardCover prefers the Product-owned public detail-media route.
+// It is derived only from an enabled service-period item's canonical admin
+// projection; the public handler independently verifies both its lifecycle
+// and image permission before returning bytes.  A raw images[] entry may be
+// an authenticated image-library preview, so it is used only when it is an
+// explicit HTTPS public asset.
+func servicePeriodCardCover(item productport.ServicePeriodProduct) string {
+	presentation, err := publicServicePeriodPresentation(item.AdminProjection)
+	if err == nil {
+		for _, media := range presentation.Media {
+			if media.ImageID > 0 {
+				return "/api/h5/service-period-products/" + url.PathEscape(item.ProductCode) + "/images/" + strconv.FormatInt(media.ImageID, 10) + "/variants/original"
+			}
+		}
+	}
+	return productCardCover(item.Images)
+}
+
+// ReadSidebarShareProduct rechecks the authoritative local lifecycle exactly
+// when the sidebar creates its send intent. A generic Product target can be
+// suitable for configuration while still being a draft or disabled item that
+// must not be shared.
+func (reader *TargetReader) ReadSidebarShareProduct(ctx context.Context, kind productport.ProductOptionType, id productport.ID) (productport.SidebarShareProduct, error) {
+	if reader == nil || id < 1 {
+		return productport.SidebarShareProduct{}, ErrNotFound
+	}
+	switch kind {
+	case productport.ProductOptionStandard:
+		item, err := reader.ordinary.Get(ctx, id)
+		if err != nil {
+			return productport.SidebarShareProduct{}, err
+		}
+		projected, projectionErr := projectLocalProduct(item)
+		if projectionErr != nil || !projected.Enabled || projected.Lifecycle != productport.LocalProductEnabled {
+			return productport.SidebarShareProduct{}, ErrNotFound
+		}
+		return productport.SidebarShareProduct{ID: item.ID, Code: item.ProductCode, ProductType: kind, Name: item.Name, CoverURL: publicProductCardCover(item)}, nil
+	case productport.ProductOptionServicePeriod:
+		item, err := reader.period.GetServicePeriodProduct(ctx, id)
+		if err != nil {
+			return productport.SidebarShareProduct{}, err
+		}
+		if !item.Enabled || item.Archived || item.Lifecycle != productport.ServicePeriodEnabled {
+			return productport.SidebarShareProduct{}, ErrNotFound
+		}
+		return productport.SidebarShareProduct{ID: item.ServiceProductID, Code: item.ProductCode, ProductType: kind, Name: item.Name, CoverURL: servicePeriodCardCover(item)}, nil
+	default:
+		return productport.SidebarShareProduct{}, ErrInvalidProduct
 	}
 }
 
@@ -56,7 +122,8 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if err != nil {
 			return productport.CheckoutProduct{}, classify(err)
 		}
-		if !validOrdinaryProduct(item) || item.LocalLifecycle != productport.LocalProductEnabled {
+		projected, projectionErr := projectLocalProduct(item)
+		if !validOrdinaryProduct(item) || projectionErr != nil || !projected.Enabled || projected.Lifecycle != productport.LocalProductEnabled {
 			return productport.CheckoutProduct{}, ErrNotFound
 		}
 		var projection struct {
