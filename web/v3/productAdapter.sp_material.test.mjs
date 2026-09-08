@@ -29,9 +29,28 @@ const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.htm
     return json({ code: 'unexpected' }, 500);
   };
 } });
+const fixtureFetch = dom.window.fetch;
 dom.window.eval(materialPicker); dom.window.eval(host); dom.window.eval(admin); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 const document = dom.window.document;
 await waitFor(() => document.getElementById('spfName'), 'frozen periodic form did not mount');
+await waitFor(() => document.querySelector('#sp-wecom [data-product-tag-open]') && document.querySelector('#sp-action [data-product-purchase-enabled]'), 'periodic action and tag controls must mount');
+document.getElementById('spfName').value = '切换保留';
+for (const id of ['sp-sale', 'sp-media', 'sp-action', 'sp-wecom', 'sp-push']) {
+  document.querySelector(`a[href="#${id}"]`).click();
+  const visible = ['sp-sale', 'sp-media', 'sp-action', 'sp-wecom', 'sp-push'].filter(key => dom.window.getComputedStyle(document.getElementById(key)).display !== 'none');
+  assert.deepEqual(visible, [id], 'only the selected periodic dimension is visible');
+  assert.equal(document.getElementById('spfName').value, '切换保留', 'dimension switch preserves unsaved input');
+}
+document.querySelector('a[href="#sp-action"]').click();
+const actionEnabled = document.querySelector('[data-product-purchase-enabled]');
+actionEnabled.checked = true; actionEnabled.dispatchEvent(new dom.window.Event('change', {bubbles:true}));
+const qrMode = document.querySelector('input[name="spfPurchaseActionMode"][value="qr"]');
+qrMode.checked = true; qrMode.dispatchEvent(new dom.window.Event('change', {bubbles:true}));
+assert.notEqual(dom.window.getComputedStyle(document.getElementById('spfLeadQrTitle').parentElement).display, 'none');
+assert.equal(dom.window.getComputedStyle(document.getElementById('spfCompletionRedirectUrl').parentElement).display, 'none');
+actionEnabled.checked = false; actionEnabled.dispatchEvent(new dom.window.Event('change', {bubbles:true}));
+document.querySelector('a[href="#sp-media"]').click();
+
 const open = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '从素材库选择'); open.click();
 await waitFor(() => document.querySelector('[data-picker-id="39"]'), 'original picker did not include later periodic catalog page');
 assert.equal(document.querySelector('.pk-mask').style.getPropertyPriority('display'), 'important', 'frozen periodic picker was not suppressed');
@@ -45,4 +64,20 @@ const save = [...document.querySelectorAll('button')].find((button) => button.te
 await waitFor(() => calls.some((call) => call.path === '/api/admin/service-period-products' && call.method === 'POST'), 'periodic frozen save did not write');
 const body = JSON.parse(calls.find((call) => call.path === '/api/admin/service-period-products' && call.method === 'POST').body);
 assert.deepEqual(body.images, ['/api/admin/image-library/39/variants/original'], 'periodic save lost original selected URL');
-await wait(300); dom.window.close(); console.log('periodic product frozen material selection, cancel, and save: PASS');
+await wait(300);
+const savedProjection = { ...projection, purchase_action_enabled: true, purchase_action_mode: 'redirect', completion_redirect_enabled: true, completion_redirect_url: '/complete', wecom_tagging: { enabled: false, tag_ids: [37] } };
+const reopened = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.html?id=201', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: new VirtualConsole(), beforeParse(window) {
+  window.__AICRM_TEST_MOCK__ = false; window.Request = Request; window.Response = Response; window.Headers = Headers;
+  window.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+    if (url.pathname === '/api/admin/service-period-products/201') return new Response(JSON.stringify({product:{service_product_id:201,product_code:'sp-media',name:'已保存周期',price_minor:2,currency:'CNY',stock_quantity:1,images:[],admin_projection:savedProjection,version:2}}), {headers:{'Content-Type':'application/json'}});
+    if (url.pathname.startsWith('/api/admin/service-period-products/201/')) return new Response(JSON.stringify({items:[],enabled:false,configuration_reference:'',service_product_id:201}), {headers:{'Content-Type':'application/json'}});
+    return fixtureFetch(input, init);
+  };
+} });
+reopened.window.eval(host); reopened.window.eval(admin); reopened.window.document.dispatchEvent(new reopened.window.Event('DOMContentLoaded'));
+await waitFor(() => reopened.window.document.querySelector('[data-product-purchase-enabled]'), 'saved periodic action controls did not reopen');
+assert.equal(reopened.window.document.querySelector('[data-product-purchase-enabled]').checked, true, 'reopening must retain the saved action switch');
+assert.equal(reopened.window.document.querySelector('input[name="spfPurchaseActionMode"][value="redirect"]').checked, true, 'reopening must retain redirect mode');
+assert.equal(reopened.window.document.querySelector('[data-product-tag-enabled]').checked, false, 'saved disabled tags must not be silently enabled from nonempty selections');
+reopened.window.close(); dom.window.close(); console.log('periodic product dimensions, action reload, material selection, cancel, and save: PASS');
