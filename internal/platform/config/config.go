@@ -581,6 +581,9 @@ func Load() (Runtime, error) {
 	if channelProviderEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled channel provider capability requires External Effects, WeCom, and contact credentials")
 	}
+	if cfg.GroupOps.ProviderReadEnabled && (!cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
+		return Runtime{}, errors.New("enabled Group Ops provider read requires WeCom and contact credentials")
+	}
 	if cfg.GroupOps.ProviderEnabled && !cfg.Effects.ProviderEnabled {
 		return Runtime{}, errors.New("enabled Group Ops provider requires External Effects")
 	}

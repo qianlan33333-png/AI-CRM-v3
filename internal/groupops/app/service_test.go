@@ -309,3 +309,102 @@ func (s *testStore) Complete(_ context.Context, id int64, snapshot json.RawMessa
 	}
 	return Receipt{}, ErrNotFound
 }
+
+func TestValidScheduledTimeMatchesDatabaseHalfHourConstraint(t *testing.T) {
+	for _, value := range []string{"08:00", "08:30"} {
+		if !validScheduledTime(value) {
+			t.Fatalf("valid scheduled time rejected: %s", value)
+		}
+	}
+	for _, value := range []string{"08:03", "08:10", "08:33", "23:50"} {
+		if validScheduledTime(value) {
+			t.Fatalf("invalid scheduled time accepted: %s", value)
+		}
+	}
+}
+
+func TestStandardNodeScheduleRequiresExplicitConsistentTuple(t *testing.T) {
+	valid := groupopsport.NodeCreateCommand{
+		PlanID: 1, ExpectedRevision: 1, Position: 1, Kind: groupopsport.NodeMessage,
+		DayIndex: 2, ScheduledTime: "09:30", TriggerTimeLabel: "09:30", ActionTitle: "第二天跟进",
+		Status: "active", MessageText: "欢迎回来", Actor: 7, IdempotencyKey: "group-ops-schedule-valid-001",
+	}
+	if !validNodeCreate(valid) {
+		t.Fatal("explicit standard schedule was rejected")
+	}
+	for _, change := range []func(*groupopsport.NodeCreateCommand){
+		func(value *groupopsport.NodeCreateCommand) { value.TriggerTimeLabel = "10:00" },
+		func(value *groupopsport.NodeCreateCommand) { value.ScheduledTime = "07:30" },
+		func(value *groupopsport.NodeCreateCommand) { value.Status = "sent" },
+		func(value *groupopsport.NodeCreateCommand) { value.DayIndex = 0 },
+	} {
+		candidate := valid
+		change(&candidate)
+		if validNodeCreate(candidate) {
+			t.Fatalf("invalid schedule accepted: %#v", candidate)
+		}
+	}
+}
+
+func TestNodeScheduledForUsesShanghaiRunDateAndDoesNotInventGroupJoinTime(t *testing.T) {
+	runAcceptedAt := time.Date(2026, time.September, 7, 16, 30, 0, 0, time.UTC) // 00:30 CST on Sep 8
+	node := groupopsport.Node{DayIndex: 2, ScheduledTime: "09:30"}
+	got := nodeScheduledFor(runAcceptedAt, node, 0)
+	want := time.Date(2026, time.September, 9, 1, 30, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("scheduled=%s want=%s", got, want)
+	}
+	legacy := nodeScheduledFor(runAcceptedAt, groupopsport.Node{DayIndex: 1, ScheduledTime: "20:00", TriggerTimeLabel: "20:00", Status: "active", ScheduleSemantics: "relative_delay"}, 45*time.Minute)
+	if !legacy.Equal(runAcceptedAt.Add(45 * time.Minute)) {
+		t.Fatalf("legacy scheduled=%s", legacy)
+	}
+	if nodeRuntimeEnabled(groupopsport.Node{Status: "draft"}) || nodeRuntimeEnabled(groupopsport.Node{Status: "disabled"}) || !nodeRuntimeEnabled(groupopsport.Node{Status: "active"}) {
+		t.Fatal("node status execution gate is wrong")
+	}
+}
+
+func TestUpdatePlanOwnerAtomicallyReplacesOnlyWhenExplicit(t *testing.T) {
+	service, _, _ := newTestService()
+	ctx := context.Background()
+	detail, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "owner command", Actor: 7, IdempotencyKey: "group-ops-owner-create-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.AddMember(ctx, groupopsport.MemberCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, StaffID: 19, Actor: 7, IdempotencyKey: "group-ops-owner-member-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.AddMember(ctx, groupopsport.MemberCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, StaffID: 20, Actor: 7, IdempotencyKey: "group-ops-owner-member-002"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An old multi-member plan remains intact when the standard form saves only
+	// plan fields. OwnerStaffIDSet is an explicit command-presence bit.
+	detail, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Name: "metadata only", Actor: 7, IdempotencyKey: "group-ops-owner-preserve-001"})
+	if err != nil || len(detail.Members) != 2 || detail.Members[0].StaffID != 19 || detail.Members[1].StaffID != 20 {
+		t.Fatalf("metadata update=%+v err=%v", detail, err)
+	}
+	beforeOwnerChange := detail.Plan.Revision
+	command := groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: beforeOwnerChange, Name: "replace owner", OwnerStaffID: 21, OwnerStaffIDSet: true, Actor: 7, IdempotencyKey: "group-ops-owner-replace-001"}
+	detail, err = service.Update(ctx, command)
+	if err != nil || len(detail.Members) != 1 || detail.Members[0].StaffID != 21 {
+		t.Fatalf("owner replacement=%+v err=%v", detail, err)
+	}
+	replayed, err := service.Update(ctx, command)
+	if err != nil || replayed.Plan.Revision != detail.Plan.Revision || len(replayed.Members) != 1 || replayed.Members[0].StaffID != 21 {
+		t.Fatalf("owner replay=%+v err=%v", replayed, err)
+	}
+	_, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: beforeOwnerChange, Name: "stale", OwnerStaffID: 19, OwnerStaffIDSet: true, Actor: 7, IdempotencyKey: "group-ops-owner-stale-001"})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale owner update err=%v", err)
+	}
+	service.staff = testStaff{active: false}
+	_, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Name: "invalid owner", OwnerStaffID: 22, OwnerStaffIDSet: true, Actor: 7, IdempotencyKey: "group-ops-owner-invalid-001"})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("inactive owner err=%v", err)
+	}
+	readback, err := service.Detail(ctx, detail.Plan.ID)
+	if err != nil || readback.Plan.Revision != detail.Plan.Revision || len(readback.Members) != 1 || readback.Members[0].StaffID != 21 {
+		t.Fatalf("failed owner update changed saved detail=%+v err=%v", readback, err)
+	}
+}

@@ -20,8 +20,9 @@ type GroupChatListItem struct {
 }
 
 type GroupChat struct {
-	ChatID      string
-	OwnerUserID string
-	Name        string
-	MemberCount int
+	ChatID              string
+	OwnerUserID         string
+	Name                string
+	MemberCount         int
+	ExternalMemberCount *int32
 }

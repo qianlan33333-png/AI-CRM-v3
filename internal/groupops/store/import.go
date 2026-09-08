@@ -59,7 +59,7 @@ func (r *Repository) ImportDefinition(ctx context.Context, input groupopsport.De
 		if !ok || !validJSONObject(legacy) {
 			return groupopsport.Plan{}, ErrInvalid
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO group_ops_plan_nodes(plan_id,position,kind,message_text,delay_minutes,material_reference,material_plan,legacy_import_definition) VALUES($1,$2,$3,$4,$5,'',$6::jsonb,$7::jsonb)`, plan.ID, node.Position, node.Kind, node.MessageText, node.DelayMinutes, raw, legacy); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO group_ops_plan_nodes(plan_id,position,kind,message_text,delay_minutes,material_reference,material_plan,legacy_import_definition,schedule_semantics) VALUES($1,$2,$3,$4,$5,'',$6::jsonb,$7::jsonb,'relative_delay')`, plan.ID, node.Position, node.Kind, node.MessageText, node.DelayMinutes, raw, legacy); err != nil {
 			return groupopsport.Plan{}, err
 		}
 	}

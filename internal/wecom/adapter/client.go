@@ -531,6 +531,7 @@ type response struct {
 		Name    string `json:"name"`
 		Members []struct {
 			UserID string `json:"userid"`
+			Type   int    `json:"type"`
 		} `json:"member_list"`
 	} `json:"group_chat"`
 	ExternalContact struct {
@@ -619,7 +620,19 @@ func (client *Client) GetGroupChat(ctx context.Context, chatID string) (wecompor
 	if err != nil {
 		return wecomport.GroupChat{}, err
 	}
+	var externalCount int32
+	knownTypes := true
+	for _, member := range payload.GroupChat.Members {
+		if member.Type == 2 {
+			externalCount++
+		} else if member.Type != 1 {
+			knownTypes = false
+		}
+	}
 	value := wecomport.GroupChat{ChatID: strings.TrimSpace(payload.GroupChat.ChatID), OwnerUserID: strings.TrimSpace(payload.GroupChat.Owner), Name: strings.TrimSpace(payload.GroupChat.Name), MemberCount: len(payload.GroupChat.Members)}
+	if knownTypes {
+		value.ExternalMemberCount = &externalCount
+	}
 	if invalid(value.ChatID) || invalid(value.OwnerUserID) || value.Name == "" || strings.TrimSpace(value.Name) != value.Name || value.MemberCount < 0 {
 		return wecomport.GroupChat{}, ErrResponse
 	}

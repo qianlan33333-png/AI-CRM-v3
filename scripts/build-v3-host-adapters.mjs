@@ -26,6 +26,8 @@ const entryPoints = {
   // The Open Platform catalog and caller lifecycle are V3-owned. The frozen
   // document only provides the authenticated admin shell around this Host.
   openPlatformHost: path.join(repository, 'web', 'v3', 'openPlatformAdapter.ts'),
+  groupopsHost: path.join(repository, 'web', 'v3', 'groupOpsHostAdapter.ts'),
+  groupopsStyles: path.join(repository, 'web', 'v3', 'groupOpsStandard.css'),
 };
 const result = await build({
   entryPoints,
@@ -79,7 +81,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'customerHost' || name === 'openPlatformHost') continue;
+  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'customerHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
@@ -153,12 +155,20 @@ const donor = path.join(repository, 'web', 'donors', 'ai-assistant-production');
 const donorOut = path.join(dist, 'aiassistant');
 fs.mkdirSync(donorOut, { recursive: true });
 const donorAssets = ['group_chat_picker.css','group_chat_picker.js','material_picker.css','material_picker.js','send_content_composer.css','send_content_composer.js','send_content_readonly_detail.css','send_content_readonly_detail.js','cloud_plan_review.js'];
+const groupOpsSupport = new Set(['group_chat_picker.css','group_chat_picker.js','material_picker.css','material_picker.js','send_content_composer.css','send_content_composer.js']);
 for (const name of donorAssets) {
   const contents = fs.readFileSync(path.join(donor, 'static', name));
   const relative = `aiassistant/${name}`;
   fs.writeFileSync(path.join(dist, relative), contents);
   manifest.files[relative] = { ...metadataFor(contents), inputs: [`web/donors/ai-assistant-production/static/${name}`], imports: [] };
   manifest.release_files[relative] = metadataFor(contents);
+  if (groupOpsSupport.has(name)) {
+    const groupOpsRelative = `groupops/${name}`;
+    fs.mkdirSync(path.join(dist, 'groupops'), { recursive: true });
+    fs.writeFileSync(path.join(dist, groupOpsRelative), contents);
+    manifest.files[groupOpsRelative] = { ...metadataFor(contents), inputs: [`web/donors/ai-assistant-production/static/${name}`], imports: [] };
+    manifest.release_files[groupOpsRelative] = metadataFor(contents);
+  }
 }
 const template = fs.readFileSync(path.join(donor, 'templates', 'cloud_plan_review.html'), 'utf8');
 const style = (template.match(/\{% block head_extra %\}[\s\S]*?(<style>[\s\S]*?<\/style>)[\s\S]*?\{% endblock %\}/) || [])[1];

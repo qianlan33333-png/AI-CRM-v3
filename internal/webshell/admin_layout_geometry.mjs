@@ -398,6 +398,40 @@ try {
       return false;
     }
   };
+  const assertGroupOpsLayout = async label => {
+    await assertLayout("standard", label, ".admin-page-title");
+    const layout = await evaluate(cdp, `(() => {
+      const box = node => { if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop}; };
+      const visible = node => { if (!node) return false; const rect=node.getBoundingClientRect(), style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
+      const stage=document.querySelector('#stage.admin-page[data-group-ops-standard-stage]');
+      const topbar=document.querySelector('.admin-topbar');
+      const title=topbar?.querySelector('.admin-page-title');
+      const root=stage?.querySelector('#group-ops-app[data-group-ops-standard-host="true"]');
+      const toolbar=root?.querySelector(':scope > .group-ops__bar');
+      const create=toolbar?.querySelector('[data-action="show-create-plan"]');
+      return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),createVisible:visible(create),pageH1Count:Array.from(document.querySelectorAll('h1')).filter(visible).length,syntheticWorkspaceHeadings:root?.querySelectorAll('.group-ops__page-heading').length ?? -1,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+    })()`);
+    // The final dd8 standard shell cascade gives native pages a 20px/16px
+    // content inset. Keep this exact source-backed value rather than the
+    // earlier declaration that the final cascade overrides.
+    const invalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "群运营计划" || !layout.root || !layout.toolbar || !layout.createVisible || layout.pageH1Count !== 1 || layout.syntheticWorkspaceHeadings !== 0 || layout.overflow || layout.stage.paddingLeft !== "20px" || layout.stage.paddingTop !== "16px" || layout.root.top + 1 < layout.topbar.bottom || Math.abs(layout.root.left - layout.stage.left - 20) > 1 || Math.abs(layout.root.top - layout.stage.top - 16) > 1 || Math.abs(layout.toolbar.left - layout.root.left) > 1 || Math.abs(layout.toolbar.top - layout.root.top) > 1;
+    if (invalid) throw new Error(label + " native Group Ops topbar/content geometry invalid");
+  };
+  const navigateGroupOps = async (pathname, label, screenshot = false, fromMenu = false, finalPath = pathname) => {
+    currentStep = label;
+    try {
+      if (fromMenu) await clickNavigation(pathname, label);
+      else await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === ${JSON.stringify(finalPath.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
+      await waitFor(cdp, "Boolean(document.querySelector('#stage.admin-page[data-group-ops-standard-stage] #group-ops-app[data-group-ops-standard-host=\"true\"] > .group-ops__bar [data-action=\"show-create-plan\"]'))", label + " native Group Ops Host did not become ready");
+      await waitForFonts(label);
+      await recordGeometry(label, () => assertGroupOpsLayout(label), screenshot);
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
+  };
   const assertAIAssistantLayout = async (label, detail) => {
     await assertLayout("standard", label, embeddedTitle);
     const layout = await evaluate(cdp, `(() => {
@@ -523,12 +557,12 @@ try {
   await waitForFonts("automation");
   await recordGeometry("automation", () => assertLayout("standard", "automation", embeddedTitle), true);
 
-  // The matrix follows every actual item in ADMIN_NAV_GROUPS.  The embedded
-  // rows require a live workspace root and a visible donor/V3 page title in
-  // addition to the shell geometry; an empty Host cannot satisfy this check.
+  // The matrix follows every actual item in ADMIN_NAV_GROUPS. Embedded rows
+  // retain a source-backed inner bar; native hosts retain the one Webshell
+  // title and their standard content inset. An empty Host cannot pass either.
   await navigate("/admin/operation-cycles", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "cycles", "embedded", embeddedTitle, true, true);
   await recordGeometry("cycles-padding-regression-control", () => assertInsetRegressionRejected("cycles", embeddedTitle), false);
-  await navigate("/admin/automation-conversion/group-ops/ui", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "groupops", "embedded", embeddedTitle, true, true, "/admin/groupops.html");
+  await navigateGroupOps("/admin/automation-conversion/group-ops/ui", "groupops", true, true, "/admin/groupops.html");
   await navigate("/admin/channels", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "channels", "embedded", embeddedTitle, true, true);
   await navigateAIAssistant("/admin/cloud-orchestrator/plans", "ai", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] .cloud-plan-toolbar [data-plan-refresh]')) && document.querySelector('[data-plan-list]')?.textContent?.includes('AI layout detail fixture')", false, true);
   await navigateAIAssistant("/admin/cloud-orchestrator/plans/" + aiPlanID, "ai-detail", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] [data-plan-approve]')) && Boolean(document.querySelector('[data-plan-reject]')) && Boolean(document.querySelector('a[href=\"/admin/cloud-orchestrator/plans\"]')) && document.querySelector('[data-plan-detail-state]')?.textContent?.trim().length > 0 && document.querySelector('[data-plan-name]')?.textContent?.includes('AI layout detail fixture')", true);

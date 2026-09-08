@@ -675,7 +675,12 @@ func (h *Handler) planRoot(w stdhttp.ResponseWriter, r *stdhttp.Request, planID 
 		return
 	}
 	revision = body.ExpectedRevision
-	value, err := h.application.Update(r.Context(), groupopsport.UpdatePlanCommand{PlanID: planID, ExpectedRevision: revision, Name: body.Name, Actor: actor.InternalID, IdempotencyKey: key})
+	command := groupopsport.UpdatePlanCommand{PlanID: planID, ExpectedRevision: revision, Name: body.Name, PlanType: body.PlanType, Actor: actor.InternalID, IdempotencyKey: key}
+	if body.OwnerStaffID != nil {
+		command.OwnerStaffIDSet = true
+		command.OwnerStaffID = *body.OwnerStaffID
+	}
+	value, err := h.application.Update(r.Context(), command)
 	h.respond(w, value, err)
 }
 
@@ -1325,8 +1330,10 @@ type revisionRequest struct {
 	ExpectedRevision int64 `json:"expected_revision"`
 }
 type updatePlanRequest struct {
+	PlanType         string `json:"plan_type"`
 	ExpectedRevision int64  `json:"expected_revision"`
 	Name             string `json:"name"`
+	OwnerStaffID     *int64 `json:"owner_staff_id"`
 }
 type memberRequest struct {
 	ExpectedRevision int64 `json:"expected_revision"`
@@ -1355,6 +1362,11 @@ type nodeRequest struct {
 	ExpectedRevision int64                     `json:"expected_revision"`
 	Position         int32                     `json:"position"`
 	Kind             groupopsport.NodeKind     `json:"kind"`
+	DayIndex         int32                     `json:"day_index"`
+	ScheduledTime    string                    `json:"scheduled_time"`
+	TriggerTimeLabel string                    `json:"trigger_time_label"`
+	ActionTitle      string                    `json:"action_title"`
+	Status           string                    `json:"status"`
 	MessageText      string                    `json:"message_text"`
 	DelayMinutes     int32                     `json:"delay_minutes"`
 	MaterialRef      string                    `json:"material_reference"`
@@ -1365,10 +1377,10 @@ func (b nodeRequest) valid() bool {
 	return b.ExpectedRevision > 0 && b.Position > 0 && (b.Kind == groupopsport.NodeMessage || b.Kind == groupopsport.NodeDelay)
 }
 func (b nodeRequest) create(planID, actor int64, key string) groupopsport.NodeCreateCommand {
-	return groupopsport.NodeCreateCommand{PlanID: planID, ExpectedRevision: b.ExpectedRevision, Position: b.Position, Kind: b.Kind, MessageText: b.MessageText, DelayMinutes: b.DelayMinutes, MaterialRef: b.MaterialRef, MaterialPlan: b.MaterialPlan, Actor: actor, IdempotencyKey: key}
+	return groupopsport.NodeCreateCommand{PlanID: planID, ExpectedRevision: b.ExpectedRevision, Position: b.Position, Kind: b.Kind, DayIndex: b.DayIndex, ScheduledTime: b.ScheduledTime, TriggerTimeLabel: b.TriggerTimeLabel, ActionTitle: b.ActionTitle, Status: b.Status, MessageText: b.MessageText, DelayMinutes: b.DelayMinutes, MaterialRef: b.MaterialRef, MaterialPlan: b.MaterialPlan, Actor: actor, IdempotencyKey: key}
 }
 func (b nodeRequest) update(planID, nodeID, actor int64, key string) groupopsport.NodeUpdateCommand {
-	return groupopsport.NodeUpdateCommand{PlanID: planID, NodeID: nodeID, ExpectedRevision: b.ExpectedRevision, Position: b.Position, Kind: b.Kind, MessageText: b.MessageText, DelayMinutes: b.DelayMinutes, MaterialRef: b.MaterialRef, MaterialPlan: b.MaterialPlan, Actor: actor, IdempotencyKey: key}
+	return groupopsport.NodeUpdateCommand{PlanID: planID, NodeID: nodeID, ExpectedRevision: b.ExpectedRevision, Position: b.Position, Kind: b.Kind, DayIndex: b.DayIndex, ScheduledTime: b.ScheduledTime, TriggerTimeLabel: b.TriggerTimeLabel, ActionTitle: b.ActionTitle, Status: b.Status, MessageText: b.MessageText, DelayMinutes: b.DelayMinutes, MaterialRef: b.MaterialRef, MaterialPlan: b.MaterialPlan, Actor: actor, IdempotencyKey: key}
 }
 
 func (h *Handler) respond(w stdhttp.ResponseWriter, value any, err error) {

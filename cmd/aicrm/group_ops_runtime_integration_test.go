@@ -645,15 +645,21 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var actorID int64
+	var actorID, replacementID, inactiveID int64
 	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-reactivate','$argon2id$reactivate','Group Ops Reactivate','journey-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-replacement','$argon2id$replacement','Group Ops Replacement','replacement-sender',true) RETURNING id`).Scan(&replacementID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-inactive','$argon2id$inactive','Group Ops Inactive','inactive-sender',false) RETURNING id`).Scan(&inactiveID); err != nil {
 		t.Fatal(err)
 	}
 	store, err := groupopsstore.NewPostgreSQL(native, uow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := groupopsapp.NewService(uow, store, journeyStaff{}, store)
+	service := groupopsapp.NewService(uow, store, groupOpsStaffAdapter{access: accessstore.NewPostgreSQL(), owners: store}, store)
 	detail, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "PG paused reactivation", Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-create"})
 	if err != nil {
 		t.Fatal(err)
@@ -662,6 +668,44 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Existing v3 plans may contain several members. A metadata-only update
+	// leaves that set untouched; an explicit standard owner command replaces it
+	// together with the plan revision and receipt in this PostgreSQL UoW.
+	detail, err = service.AddMember(ctx, groupopsport.MemberCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, StaffID: replacementID, Actor: actorID, IdempotencyKey: "groupops-pg-owner-legacy-member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Name: "PG paused reactivation metadata", Actor: actorID, IdempotencyKey: "groupops-pg-owner-preserve"})
+	if err != nil || len(detail.Members) != 2 {
+		t.Fatalf("metadata-only members=%+v err=%v", detail.Members, err)
+	}
+	ownerRevision := detail.Plan.Revision
+	ownerCommand := groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: ownerRevision, Name: "PG owner replaced", OwnerStaffID: replacementID, OwnerStaffIDSet: true, Actor: actorID, IdempotencyKey: "groupops-pg-owner-replace"}
+	detail, err = service.Update(ctx, ownerCommand)
+	if err != nil || len(detail.Members) != 1 || detail.Members[0].StaffID != replacementID {
+		t.Fatalf("owner replacement members=%+v err=%v", detail.Members, err)
+	}
+	var persistedOwnerCount, persistedOwner int64
+	if err = native.QueryRow(ctx, `SELECT count(*),coalesce(min(staff_id),0) FROM group_ops_plan_members WHERE plan_id=$1`, detail.Plan.ID).Scan(&persistedOwnerCount, &persistedOwner); err != nil || persistedOwnerCount != 1 || persistedOwner != replacementID {
+		t.Fatalf("persisted owner count=%d owner=%d err=%v", persistedOwnerCount, persistedOwner, err)
+	}
+	replayedOwner, err := service.Update(ctx, ownerCommand)
+	if err != nil || replayedOwner.Plan.Revision != detail.Plan.Revision || len(replayedOwner.Members) != 1 || replayedOwner.Members[0].StaffID != replacementID {
+		t.Fatalf("owner replay=%+v err=%v", replayedOwner, err)
+	}
+	_, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: ownerRevision, Name: "stale replacement", OwnerStaffID: actorID, OwnerStaffIDSet: true, Actor: actorID, IdempotencyKey: "groupops-pg-owner-stale"})
+	if !errors.Is(err, groupopsapp.ErrConflict) {
+		t.Fatalf("stale owner replacement err=%v", err)
+	}
+	beforeInactive := detail.Plan.Revision
+	_, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: beforeInactive, Name: "inactive replacement", OwnerStaffID: inactiveID, OwnerStaffIDSet: true, Actor: actorID, IdempotencyKey: "groupops-pg-owner-inactive"})
+	if !errors.Is(err, groupopsapp.ErrInvalid) {
+		t.Fatalf("inactive owner replacement err=%v", err)
+	}
+	readbackOwner, err := service.Detail(ctx, detail.Plan.ID)
+	if err != nil || readbackOwner.Plan.Revision != beforeInactive || len(readbackOwner.Members) != 1 || readbackOwner.Members[0].StaffID != replacementID {
+		t.Fatalf("failed replacement changed persisted owner=%+v err=%v", readbackOwner, err)
+	}
 	detail, err = service.AddGroupAsset(ctx, groupopsport.GroupAssetCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, AssetRef: "reactivate-group", Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-group"})
 	if err != nil {
 		t.Fatal(err)
@@ -669,6 +713,20 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 	detail, err = service.AddNode(ctx, groupopsport.NodeCreateCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Position: 1, Kind: groupopsport.NodeMessage, MessageText: "reactivate", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-node"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The pre-0101 node has no calendar fields. PostgreSQL must preserve its
+	// explicit relative-delay provenance, while an equally named Day 1 20:00
+	// V3 action is calendar-scheduled even with an empty optional title.
+	detail, err = service.AddNode(ctx, groupopsport.NodeCreateCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Position: 2, Kind: groupopsport.NodeMessage, DayIndex: 1, ScheduledTime: "20:00", TriggerTimeLabel: "20:00", Status: "active", MessageText: "calendar-20", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-calendar-node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldSemantics, newSemantics, newTime string
+	if err = native.QueryRow(ctx, `SELECT schedule_semantics FROM group_ops_plan_nodes WHERE plan_id=$1 AND position=1`, detail.Plan.ID).Scan(&oldSemantics); err != nil || oldSemantics != "relative_delay" {
+		t.Fatalf("legacy node semantics=%q err=%v", oldSemantics, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT schedule_semantics,scheduled_time FROM group_ops_plan_nodes WHERE plan_id=$1 AND position=2`, detail.Plan.ID).Scan(&newSemantics, &newTime); err != nil || newSemantics != "calendar" || newTime != "20:00" {
+		t.Fatalf("new Day 1 20:00 semantics=%q time=%q err=%v", newSemantics, newTime, err)
 	}
 	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-first"})
 	if err != nil || detail.Plan.Status != groupopsport.PlanActive {
@@ -1149,7 +1207,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

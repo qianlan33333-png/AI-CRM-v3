@@ -55,7 +55,7 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT p.id,p.name,p.status,p.revision,p.created_by,p.updated_by,p.created_at,p.updated_at,
+		SELECT p.id,p.name,p.status,p.revision,p.created_by,p.updated_by,p.created_at,p.updated_at,p.plan_type,
 		       count(e.id) FILTER (WHERE e.state IN ('accepted','provider_accepted','outcome_unknown'))
 		FROM group_ops_plans p
 		LEFT JOIN group_ops_executions e ON e.plan_id=p.id
@@ -68,7 +68,7 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 	items := make([]groupopsport.PlanListItem, 0)
 	for rows.Next() {
 		var item groupopsport.PlanListItem
-		if err = rows.Scan(&item.ID, &item.Name, &item.Status, &item.Revision, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.QueueCount); err != nil {
+		if err = rows.Scan(&item.ID, &item.Name, &item.Status, &item.Revision, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.Type, &item.QueueCount); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -99,12 +99,12 @@ func (r *Repository) get(ctx context.Context, id int64, lock bool) (groupopsport
 	if err != nil {
 		return groupopsport.Detail{}, err
 	}
-	query := `SELECT id,name,status,revision,created_by,updated_by,created_at,updated_at FROM group_ops_plans WHERE id=$1`
+	query := `SELECT id,name,status,revision,created_by,updated_by,created_at,updated_at,plan_type FROM group_ops_plans WHERE id=$1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var detail groupopsport.Detail
-	err = tx.QueryRow(ctx, query, id).Scan(&detail.Plan.ID, &detail.Plan.Name, &detail.Plan.Status, &detail.Plan.Revision, &detail.Plan.CreatedBy, &detail.Plan.UpdatedBy, &detail.Plan.CreatedAt, &detail.Plan.UpdatedAt)
+	err = tx.QueryRow(ctx, query, id).Scan(&detail.Plan.ID, &detail.Plan.Name, &detail.Plan.Status, &detail.Plan.Revision, &detail.Plan.CreatedBy, &detail.Plan.UpdatedBy, &detail.Plan.CreatedAt, &detail.Plan.UpdatedAt, &detail.Plan.Type)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return groupopsport.Detail{}, ErrNotFound
 	}
@@ -153,7 +153,7 @@ func (r *Repository) get(ctx context.Context, id int64, lock bool) (groupopsport
 	}
 	assetRows.Close()
 
-	nodeRows, err := tx.Query(ctx, `SELECT id,position,kind,message_text,delay_minutes,material_reference,material_plan FROM group_ops_plan_nodes WHERE plan_id=$1 ORDER BY position,id`, id)
+	nodeRows, err := tx.Query(ctx, `SELECT id,position,kind,day_index,scheduled_time,trigger_time_label,action_title,node_status,schedule_semantics,message_text,delay_minutes,material_reference,material_plan FROM group_ops_plan_nodes WHERE plan_id=$1 ORDER BY position,id`, id)
 	if err != nil {
 		return groupopsport.Detail{}, err
 	}
@@ -161,7 +161,7 @@ func (r *Repository) get(ctx context.Context, id int64, lock bool) (groupopsport
 	for nodeRows.Next() {
 		var item groupopsport.Node
 		var raw []byte
-		if err = nodeRows.Scan(&item.ID, &item.Position, &item.Kind, &item.MessageText, &item.DelayMinutes, &item.MaterialRef, &raw); err != nil {
+		if err = nodeRows.Scan(&item.ID, &item.Position, &item.Kind, &item.DayIndex, &item.ScheduledTime, &item.TriggerTimeLabel, &item.ActionTitle, &item.Status, &item.ScheduleSemantics, &item.MessageText, &item.DelayMinutes, &item.MaterialRef, &raw); err != nil {
 			nodeRows.Close()
 			return groupopsport.Detail{}, err
 		}
@@ -214,7 +214,7 @@ func (r *Repository) Save(ctx context.Context, detail groupopsport.Detail) error
 	if detail.Plan.ID < 1 {
 		return ErrInvalid
 	}
-	if _, err = tx.Exec(ctx, `UPDATE group_ops_plans SET name=$2,status=$3,revision=$4,updated_by=$5,updated_at=$6 WHERE id=$1`, detail.Plan.ID, detail.Plan.Name, detail.Plan.Status, detail.Plan.Revision, detail.Plan.UpdatedBy, detail.Plan.UpdatedAt); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE group_ops_plans SET name=$2,status=$3,revision=$4,updated_by=$5,updated_at=$6,plan_type=COALESCE(NULLIF($7,''),plan_type) WHERE id=$1`, detail.Plan.ID, detail.Plan.Name, detail.Plan.Status, detail.Plan.Revision, detail.Plan.UpdatedBy, detail.Plan.UpdatedAt, detail.Plan.Type); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM group_ops_plan_members WHERE plan_id=$1`, detail.Plan.ID); err != nil {
@@ -293,12 +293,12 @@ func reconcileNodes(ctx context.Context, tx pgx.Tx, planID int64, desired []grou
 			return marshalErr
 		}
 		if item.ID > 0 {
-			if _, err = tx.Exec(ctx, `UPDATE group_ops_plan_nodes SET position=$3,kind=$4,message_text=$5,delay_minutes=$6,material_reference=$7,material_plan=$8 WHERE id=$1 AND plan_id=$2`, item.ID, planID, item.Position, item.Kind, item.MessageText, item.DelayMinutes, item.MaterialRef, raw); err != nil {
+			if _, err = tx.Exec(ctx, `UPDATE group_ops_plan_nodes SET position=$3,kind=$4,day_index=COALESCE(NULLIF($5,0),1),scheduled_time=COALESCE(NULLIF($6,''),'20:00'),trigger_time_label=COALESCE(NULLIF($7,''),COALESCE(NULLIF($6,''),'20:00')),action_title=$8,node_status=COALESCE(NULLIF($9,''),'active'),schedule_semantics=$10,message_text=$11,delay_minutes=$12,material_reference=$13,material_plan=$14 WHERE id=$1 AND plan_id=$2`, item.ID, planID, item.Position, item.Kind, item.DayIndex, item.ScheduledTime, item.TriggerTimeLabel, item.ActionTitle, item.Status, scheduleSemantics(item), item.MessageText, item.DelayMinutes, item.MaterialRef, raw); err != nil {
 				return err
 			}
 			existing[item.ID] = true
 		} else {
-			if _, err = tx.Exec(ctx, `INSERT INTO group_ops_plan_nodes(plan_id,position,kind,message_text,delay_minutes,material_reference,material_plan) VALUES($1,$2,$3,$4,$5,$6,$7)`, planID, item.Position, item.Kind, item.MessageText, item.DelayMinutes, item.MaterialRef, raw); err != nil {
+			if _, err = tx.Exec(ctx, `INSERT INTO group_ops_plan_nodes(plan_id,position,kind,day_index,scheduled_time,trigger_time_label,action_title,node_status,schedule_semantics,message_text,delay_minutes,material_reference,material_plan) VALUES($1,$2,$3,COALESCE(NULLIF($4,0),1),COALESCE(NULLIF($5,''),'20:00'),COALESCE(NULLIF($6,''),COALESCE(NULLIF($5,''),'20:00')),$7,COALESCE(NULLIF($8,''),'active'),$9,$10,$11,$12,$13)`, planID, item.Position, item.Kind, item.DayIndex, item.ScheduledTime, item.TriggerTimeLabel, item.ActionTitle, item.Status, scheduleSemantics(item), item.MessageText, item.DelayMinutes, item.MaterialRef, raw); err != nil {
 				return err
 			}
 		}
@@ -311,6 +311,16 @@ func reconcileNodes(ctx context.Context, tx pgx.Tx, planID int64, desired []grou
 		}
 	}
 	return nil
+}
+
+func scheduleSemantics(item groupopsport.Node) string {
+	if item.ScheduleSemantics != "" {
+		return item.ScheduleSemantics
+	}
+	if item.DayIndex == 0 && item.ScheduledTime == "" && item.TriggerTimeLabel == "" && item.ActionTitle == "" && item.Status == "" {
+		return "relative_delay"
+	}
+	return "calendar"
 }
 
 func (r *Repository) Reserve(ctx context.Context, operation string, reservation groupopsapp.Reservation) (groupopsapp.Receipt, bool, error) {
@@ -717,10 +727,10 @@ func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, limit
 	if err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at FROM group_ops_directory_groups ORDER BY refreshed_at DESC,chat_reference LIMIT $1 OFFSET $2`
+	query := `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups ORDER BY refreshed_at DESC,chat_reference LIMIT $1 OFFSET $2`
 	args := []any{limit, offset}
 	if owner > 0 {
-		query = `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at FROM group_ops_directory_groups WHERE owner_staff_id=$1 ORDER BY refreshed_at DESC,chat_reference LIMIT $2 OFFSET $3`
+		query = `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups WHERE owner_staff_id=$1 ORDER BY refreshed_at DESC,chat_reference LIMIT $2 OFFSET $3`
 		args = []any{owner, limit, offset}
 	}
 	rows, err := tx.Query(ctx, query, args...)
@@ -731,7 +741,7 @@ func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, limit
 	items := make([]groupopsport.GroupDirectoryItem, 0)
 	for rows.Next() {
 		var item groupopsport.GroupDirectoryItem
-		if err = rows.Scan(&item.ChatReference, &item.OwnerStaffID, &item.DisplayName, &item.MemberCount, &item.RefreshedAt); err != nil {
+		if err = rows.Scan(&item.ChatReference, &item.OwnerStaffID, &item.DisplayName, &item.MemberCount, &item.RefreshedAt, &item.ExternalMemberCount); err != nil {
 			return nil, 0, err
 		}
 		items = append(items, item)
@@ -750,7 +760,7 @@ func (r *Repository) ReplaceDirectoryGroups(ctx context.Context, owner int64, it
 			return ErrInvalid
 		}
 		digest := groupDirectoryDigest(item)
-		if _, err = tx.Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(chat_reference) DO UPDATE SET owner_staff_id=EXCLUDED.owner_staff_id,display_name=EXCLUDED.display_name,member_count=EXCLUDED.member_count,source_digest=EXCLUDED.source_digest,refreshed_at=EXCLUDED.refreshed_at`, item.ChatReference, owner, item.DisplayName, item.MemberCount, digest, now); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(chat_reference) DO UPDATE SET owner_staff_id=EXCLUDED.owner_staff_id,display_name=EXCLUDED.display_name,member_count=EXCLUDED.member_count,source_digest=EXCLUDED.source_digest,refreshed_at=EXCLUDED.refreshed_at,external_member_count=EXCLUDED.external_member_count`, item.ChatReference, owner, item.DisplayName, item.MemberCount, digest, now, item.ExternalMemberCount); err != nil {
 			return err
 		}
 		refs = append(refs, item.ChatReference)
@@ -764,7 +774,11 @@ func (r *Repository) ReplaceDirectoryGroups(ctx context.Context, owner int64, it
 }
 
 func groupDirectoryDigest(item groupopsport.GroupDirectoryItem) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{item.ChatReference, strconv.FormatInt(item.OwnerStaffID, 10), item.DisplayName, strconv.Itoa(int(item.MemberCount))}, "\x00")))
+	external := "unknown"
+	if item.ExternalMemberCount != nil {
+		external = strconv.Itoa(int(*item.ExternalMemberCount))
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{external, item.ChatReference, strconv.FormatInt(item.OwnerStaffID, 10), item.DisplayName, strconv.Itoa(int(item.MemberCount))}, "\x00")))
 	return "sha256:" + fmt.Sprintf("%x", sum[:])
 }
 
