@@ -4,6 +4,58 @@
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";
 const revisions = new Map<number, number>();
+const operationMembersPath = "/api/admin/common/operation-members";
+const nativeFetch = window.fetch.bind(window);
+
+function requestURL(input: RequestInfo | URL): URL {
+  if (input instanceof URL) return new URL(input.toString(), window.location.origin);
+  if (typeof input === "string") return new URL(input, window.location.origin);
+  return new URL(input.url, window.location.origin);
+}
+
+function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  if (init?.method) return init.method.toUpperCase();
+  if (typeof input !== "string" && !(input instanceof URL)) return input.method.toUpperCase();
+  return "GET";
+}
+
+function pickerMembersPayload(source: Json): Json | null {
+  if (!Array.isArray(source.items)) return null;
+  const items = source.items.flatMap((value: Json) => {
+    const staffID = Number(value.staff_id);
+    if (!Number.isSafeInteger(staffID) || staffID < 1) return [];
+    return [{
+      // The frozen picker persists this as its `user_id`; it is intentionally
+      // the local Access staff ID, never the WeCom sender identifier.
+      user_id: String(staffID),
+      display_name: String(value.display_name || `员工 #${staffID}`),
+    }];
+  });
+  return { scope: "group_ops", page_size: source.page_size, items };
+}
+
+// The frozen picker reads this endpoint directly instead of AdminApi.requestJson.
+// Keep its byte-derived implementation untouched and make the single Group Ops
+// read compatible at the V3 Host boundary. No mutation, refresh, other scope,
+// or non-JSON response is intercepted.
+window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const response = await nativeFetch(input, init);
+  const url = requestURL(input);
+  if (
+    requestMethod(input, init) !== "GET" ||
+    url.pathname !== operationMembersPath ||
+    url.searchParams.get("scope") !== "group_ops" ||
+    !response.ok
+  ) return response;
+  const source = await response.clone().json().catch(() => null);
+  const projected = source && typeof source === "object" ? pickerMembersPayload(source as Json) : null;
+  if (!projected) return response;
+  return new Response(JSON.stringify(projected), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+};
 
 function csrf(): string {
   return (
@@ -374,13 +426,18 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
         limit: Number(body.limit || 100),
       },
     });
-  if (url.startsWith("/api/admin/common/operation-members")) {
+  if (url.startsWith(operationMembersPath)) {
     const data = await nativeRequest(url);
     return {
-      items: (data.items || []).map((item: Json) => ({
-        user_id: item.staff_id,
-        name: item.display_name || `员工 #${item.staff_id}`,
-      })),
+      ...data,
+      items: (data.items || []).flatMap((item: Json) => {
+        const userID = String(item.user_id || item.staff_id || "").trim();
+        if (!userID) return [];
+        return [{
+          user_id: userID,
+          display_name: String(item.display_name || item.name || `员工 #${userID}`),
+        }];
+      }),
     };
   }
   return nativeRequest(url, options);

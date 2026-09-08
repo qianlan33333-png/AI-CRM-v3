@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +30,7 @@ type groupOpsChromiumFixture struct {
 	server             *httptest.Server
 	script             string
 	planID             int64
+	ownerStaffID       int64
 	replacementStaffID int64
 }
 
@@ -42,6 +44,28 @@ func TestPostgreSQLGroupOpsStandardHostCompositionPreflight(t *testing.T) {
 	detail := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/automation-conversion/group-ops/plans/"+strconv.FormatInt(fixture.planID, 10))
 	if detail.Code != http.StatusOK || !bytes.Contains(detail.Body.Bytes(), []byte(`"plan"`)) || !bytes.Contains(detail.Body.Bytes(), []byte(`"plan_type":"standard"`)) {
 		t.Fatalf("standard Group Ops detail status=%d plan=%t type=%t", detail.Code, bytes.Contains(detail.Body.Bytes(), []byte(`"plan"`)), bytes.Contains(detail.Body.Bytes(), []byte(`"plan_type":"standard"`)))
+	}
+	members := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/common/operation-members?scope=group_ops&page_size=100")
+	if members.Code != http.StatusOK {
+		t.Fatalf("Group Ops operation-members status=%d body=%s", members.Code, members.Body.String())
+	}
+	var memberPayload struct {
+		Scope string `json:"scope"`
+		Items []struct {
+			StaffID      int64  `json:"staff_id"`
+			SenderUserID string `json:"sender_userid"`
+			DisplayName  string `json:"display_name"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(members.Body).Decode(&memberPayload); err != nil {
+		t.Fatalf("decode Group Ops operation-members: %v", err)
+	}
+	seen := map[int64]string{}
+	for _, member := range memberPayload.Items {
+		seen[member.StaffID] = member.SenderUserID
+	}
+	if memberPayload.Scope != "group_ops" || len(memberPayload.Items) != 2 || seen[fixture.ownerStaffID] != "chromium-owner" || seen[fixture.replacementStaffID] != "chromium-replacement" {
+		t.Fatalf("Group Ops eligible member projection scope=%q items=%+v", memberPayload.Scope, memberPayload.Items)
 	}
 }
 
@@ -107,6 +131,12 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	if err = application.pool.Native().QueryRow(ctx, `SELECT id FROM admin_users WHERE username='groupops-browser-owner'`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
+	// Group Ops can select only active Access users with a verified, valid WeCom
+	// sender binding. Bootstrap creates the local operator without one, so make
+	// the fixture represent the same authorized local state as production.
+	if _, err = application.pool.Native().Exec(ctx, `UPDATE admin_users SET wecom_userid='chromium-owner' WHERE id=$1`, actorID); err != nil {
+		t.Fatal(err)
+	}
 	if err = application.pool.Native().QueryRow(ctx, "INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES($1,$2,$3,$4,true) RETURNING id", "groupops-browser-replacement", "$argon2id$browser-replacement", "Chromium Replacement", "chromium-replacement").Scan(&replacementStaffID); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +149,7 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	}
 	server.Config.Handler = application.handler
 	server.StartTLS()
-	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, replacementStaffID: replacementStaffID}
+	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID}
 }
 
 // Group Ops runs against the same already-staged release closure as CI. The
