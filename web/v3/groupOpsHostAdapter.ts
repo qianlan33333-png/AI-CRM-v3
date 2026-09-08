@@ -260,18 +260,27 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     return nativeRequest(`${base}/plans/${id}/nodes/${encodeURIComponent(url.split("/").pop() || "")}`, { method, body: { expected_revision: await revision(id) } });
   if (id && /\/nodes(?:\/\d+)?$/.test(url) && method !== "GET") {
     const nodeID = Number(url.split("/").pop());
+    const currentDetail = await detail(id);
+    const nodes = currentDetail.nodes || [];
     const current = nodeID
-      ? (await detail(id)).nodes.find(
-          (item: Json) => Number(item.node_id) === nodeID,
-        ) || {}
+      ? nodes.find((item: Json) => Number(item.node_id) === nodeID) || {}
       : {};
+    // The frozen form keeps its historic default sort value (10) for a new
+    // action. V3 stores contiguous positions and rejects a position after the
+    // current tail, so interpret an out-of-range legacy sort value as append.
+    // Existing actions retain their real position unless the submitted value
+    // identifies a valid insertion point in this current plan.
+    const requestedPosition = Number(body.sort_order);
+    const maximumPosition = nodes.length + (nodeID ? 0 : 1);
+    const position =
+      Number.isInteger(requestedPosition) &&
+      requestedPosition >= 1 &&
+      requestedPosition <= maximumPosition
+        ? requestedPosition
+        : Number(current.position || nodes.length + 1);
     const payload = {
       expected_revision: await revision(id),
-      position: Number(
-        body.sort_order ||
-          current.position ||
-          (await detail(id)).nodes.length + 1,
-      ),
+      position,
       kind: "message",
       day_index: Number(body.day_index || 1),
       scheduled_time: body.scheduled_time || "20:00",
