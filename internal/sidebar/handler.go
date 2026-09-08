@@ -2,14 +2,16 @@ package sidebar
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	urlpkg "net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +64,10 @@ type Config struct {
 	ProductByID  productport.ProductTargetReader
 	Orders       orderport.Query
 	Entitlements orderport.EntitlementService
-	Coupons      couponport.CustomerCouponReader
+	// Coupons is the Coupon-owned definition directory. It intentionally is
+	// not CustomerCouponReader: a customer's issued claims are not the set of
+	// public rules that the standard sidebar is allowed to display.
+	Coupons      couponport.SidebarClaimableCatalog
 	Materials    mediaport.ImageLibraryReader
 	MaterialSend mediaport.SidebarImageSendReader
 	// ImageVariants serves bounded enabled-image previews to the scoped sidebar
@@ -72,20 +77,26 @@ type Config struct {
 	Radar         radarport.Manager
 	Sends         outboundport.SidebarSendAccepter
 	PublicOrigin  string
-	Now           func() time.Time
+	// CursorSigningKey binds sidebar pagination to the authenticated Customer
+	// projection and its fixed watermark. It is process-local, like the
+	// Customer admin profile cursor key, so a restart deliberately requires a
+	// fresh first page rather than accepting an old cursor under a new process.
+	CursorSigningKey []byte
+	Now              func() time.Time
 }
 
 type Handler struct{ config Config }
 
 func NewHandler(config Config) (*Handler, error) {
-	if config.Contexts == nil || config.Profiles == nil || config.Surveys == nil || config.Timeline == nil || config.Products == nil || config.ProductByID == nil || config.Orders == nil || config.Entitlements == nil || config.Coupons == nil || config.Materials == nil || config.MaterialSend == nil || config.Radar == nil || config.Sends == nil {
+	if config.Contexts == nil || config.Profiles == nil || config.Surveys == nil || config.Timeline == nil || config.Products == nil || config.ProductByID == nil || config.Orders == nil || config.Entitlements == nil || config.Coupons == nil || config.Materials == nil || config.MaterialSend == nil || config.Radar == nil || config.Sends == nil || len(config.CursorSigningKey) < 32 {
 		return nil, errors.New("sidebar dependencies are required")
 	}
-	origin, err := url.Parse(strings.TrimRight(config.PublicOrigin, "/"))
+	origin, err := urlpkg.Parse(strings.TrimRight(config.PublicOrigin, "/"))
 	if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.Path != "" {
 		return nil, errors.New("sidebar public origin must be an https origin")
 	}
 	config.PublicOrigin = origin.String()
+	config.CursorSigningKey = append([]byte(nil), config.CursorSigningKey...)
 	return &Handler{config: config}, nil
 }
 
@@ -193,24 +204,43 @@ func (h *Handler) workbenchProjection(ctx context.Context, customerID customerdo
 		return nil, err
 	}
 	return map[string]any{
-		"profile": map[string]any{
-			"customer_id":  int64(profile.CustomerID),
-			"name":         name,
-			"avatar_url":   profile.AvatarURL,
-			"phone_masked": profile.PhoneMasked,
-			"status":       profile.Status,
-			"gender":       profile.Gender,
-			"corp_name":    profile.CorpName,
-			"source":       profile.Source,
-			"version":      profile.Version,
-			"updated_at":   profile.UpdatedAt.UTC().Format(time.RFC3339),
-		},
+		"profile":              sidebarWorkbenchProfile(profile, name),
 		"questionnaire_count":  surveys.Total,
 		"order_count":          orders.Total,
 		"periodic_order_count": entitlements.Total,
 		"material_count":       materials.Total,
 		"safety":               sidebarSafety(),
 	}, nil
+}
+
+// sidebarWorkbenchProfile is a deliberately safe Customer-owned projection.
+// It includes the full profile contract that the standard Sidebar renders,
+// while preserving the Port's boundary: no raw phone or external identifier is
+// present. A declared phone therefore remains distinguishable from a provider
+// verified phone through PhoneAssurance.
+func sidebarWorkbenchProfile(profile customerport.SidebarProfile, name string) map[string]any {
+	return map[string]any{
+		"customer_id":             int64(profile.CustomerID),
+		"name":                    name,
+		"display_name":            name,
+		"avatar_url":              profile.AvatarURL,
+		"phone_masked":            profile.PhoneMasked,
+		"phone_assurance":         profile.PhoneAssurance,
+		"status":                  profile.Status,
+		"activation_status":       profile.ActivationState,
+		"gender":                  profile.Gender,
+		"contact_type":            profile.ContactType,
+		"corp_name":               profile.CorpName,
+		"source":                  profile.Source,
+		"profile_source":          profile.ProfileSource,
+		"profile_version":         profile.ProfileVersion,
+		"industry":                profile.Industry,
+		"industry_description":    profile.IndustryDescription,
+		"needs_blockers_followup": profile.NeedsBlockersFollowup,
+		"version":                 profile.Version,
+		"last_synced_at":          profile.LastSyncedAt,
+		"updated_at":              profile.UpdatedAt.UTC().Format(time.RFC3339),
+	}
 }
 
 func (h *Handler) workbench(w http.ResponseWriter, r *http.Request) {
@@ -249,15 +279,36 @@ func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		DisplayName     string `json:"display_name"`
-		Gender          int16  `json:"gender"`
-		CorpName        string `json:"corp_name"`
-		ExpectedVersion int64  `json:"expected_version"`
+		DisplayName            string  `json:"display_name"`
+		Gender                 int16   `json:"gender"`
+		CorpName               string  `json:"corp_name"`
+		Source                 *string `json:"source"`
+		Industry               *string `json:"industry"`
+		IndustryDescription    *string `json:"industry_description"`
+		NeedsBlockersFollowup  *string `json:"needs_blockers_followup"`
+		ExpectedVersion        int64   `json:"expected_version"`
+		ExpectedProfileVersion *int64  `json:"expected_profile_version"`
 	}
 	if !decodeStrict(w, r, &body) {
 		return
 	}
-	result, err := h.config.Profiles.UpdateSidebarProfile(r.Context(), customerport.SidebarProfileUpdate{CustomerID: customerID, EmployeeID: principal.EmployeeID, DisplayName: body.DisplayName, Gender: body.Gender, CorpName: body.CorpName, ExpectedVersion: body.ExpectedVersion, IdempotencyKey: idempotencyKey(r)})
+	command := customerport.SidebarProfileUpdate{CustomerID: customerID, EmployeeID: principal.EmployeeID, DisplayName: body.DisplayName, Gender: body.Gender, CorpName: body.CorpName, ExpectedVersion: body.ExpectedVersion, IdempotencyKey: idempotencyKey(r)}
+	if body.Source != nil {
+		command.ProfileSource, command.SourceSet = *body.Source, true
+	}
+	if body.Industry != nil {
+		command.Industry, command.IndustrySet = *body.Industry, true
+	}
+	if body.IndustryDescription != nil {
+		command.IndustryDescription, command.IndustryDescriptionSet = *body.IndustryDescription, true
+	}
+	if body.NeedsBlockersFollowup != nil {
+		command.NeedsBlockersFollowup, command.NeedsBlockersFollowupSet = *body.NeedsBlockersFollowup, true
+	}
+	if body.ExpectedProfileVersion != nil {
+		command.ExpectedProfileVersion = *body.ExpectedProfileVersion
+	}
+	result, err := h.config.Profiles.UpdateSidebarProfile(r.Context(), command)
 	if err != nil {
 		h.commandError(w, err)
 		return
@@ -289,16 +340,21 @@ func (h *Handler) questionnaires(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit, ok := boundedLimit(w, r, 20, 50)
+	query, limit, ok := h.sidebarPageQuery(w, r, "questionnaires", customerID)
 	if !ok {
 		return
 	}
-	page, err := h.config.Surveys.CustomerSurveys(r.Context(), customerID, customerport.PageQuery{Limit: limit, Watermark: h.now()})
+	page, err := h.config.Surveys.CustomerSurveys(r.Context(), customerID, query)
 	if err != nil {
 		h.sectionError(w)
 		return
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{"customer_id": customerID, "items": page.Items, "source_status": page.Status.State, "as_of": page.Status.AsOf})
+	items, next, hasMore, err := h.pageSurveys(page.Items, limit, customerID, query)
+	if err != nil {
+		h.sectionError(w)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"customer_id": customerID, "items": items, "total": page.Total, "limit": limit, "has_more": hasMore, "next_cursor": next, "source_status": page.Status.State, "as_of": page.Status.AsOf})
 }
 
 func (h *Handler) timeline(w http.ResponseWriter, r *http.Request) {
@@ -306,16 +362,21 @@ func (h *Handler) timeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit, ok := boundedLimit(w, r, 20, 50)
+	query, limit, ok := h.sidebarPageQuery(w, r, "timeline", customerID)
 	if !ok {
 		return
 	}
-	page, err := h.config.Timeline.CustomerTimeline(r.Context(), customerID, customerport.PageQuery{Limit: limit, Watermark: h.now()})
+	page, err := h.config.Timeline.CustomerTimeline(r.Context(), customerID, query)
 	if err != nil {
 		h.sectionError(w)
 		return
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{"customer_id": customerID, "items": page.Items, "source_status": page.Status.State, "as_of": page.Status.AsOf})
+	items, next, hasMore, err := h.pageTimeline(page.Items, limit, customerID, query)
+	if err != nil {
+		h.sectionError(w)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"customer_id": customerID, "items": items, "limit": limit, "has_more": hasMore, "next_cursor": next, "source_status": page.Status.State, "as_of": page.Status.AsOf})
 }
 
 func (h *Handler) products(w http.ResponseWriter, r *http.Request) {
@@ -406,12 +467,38 @@ func (h *Handler) coupons(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page, err := h.config.Coupons.ListCustomerCoupons(r.Context(), int64(customerID), int32(limit))
+	offset, ok := boundedOffset(w, r, int(couponport.SidebarClaimableMaximumOffset))
+	if !ok {
+		return
+	}
+	page, err := h.config.Coupons.ListSidebarClaimable(r.Context(), int64(customerID), couponport.SidebarClaimableQuery{Limit: int32(limit), Offset: int32(offset)})
 	if err != nil {
 		h.sectionError(w)
 		return
 	}
-	h.writeJSON(w, http.StatusOK, page)
+	// The Host may compose only a pre-existing, validated slug with its
+	// configured origin. Missing slugs deliberately remain unlinked: rendering
+	// the directory must never create a share or reserve/claim a coupon.
+	type item struct {
+		CouponID           couponport.ID                       `json:"coupon_id"`
+		Name               string                              `json:"name"`
+		DiscountMinor      int64                               `json:"discount_minor"`
+		Currency           string                              `json:"currency"`
+		Targets            []couponport.SidebarClaimableTarget `json:"targets"`
+		ClaimEndsAt        time.Time                           `json:"claim_ends_at"`
+		URL                string                              `json:"url,omitempty"`
+		AvailabilityStatus string                              `json:"availability_status"`
+		UserLimitReached   bool                                `json:"user_limit_reached"`
+	}
+	items := make([]item, 0, len(page.Items))
+	for _, row := range page.Items {
+		url := ""
+		if row.PublicSlug != "" {
+			url = h.config.PublicOrigin + "/c/" + urlpkg.PathEscape(row.PublicSlug)
+		}
+		items = append(items, item{CouponID: row.CouponID, Name: row.Name, DiscountMinor: row.DiscountMinor, Currency: row.Currency, Targets: row.Targets, ClaimEndsAt: row.ClaimEndsAt, URL: url, AvailabilityStatus: row.AvailabilityStatus, UserLimitReached: row.UserLimitReached})
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
 }
 
 func (h *Handler) materials(w http.ResponseWriter, r *http.Request) {
@@ -494,7 +581,7 @@ func (h *Handler) radarLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]item, 0, len(page.Items))
 	for _, row := range page.Items {
-		items = append(items, item{ID: int64(row.Link.ID), Name: row.Link.Name, Title: row.Link.Title, URL: h.config.PublicOrigin + "/r/" + url.PathEscape(string(row.Link.PublicCode)), ContentType: string(row.Link.Content.Type)})
+		items = append(items, item{ID: int64(row.Link.ID), Name: row.Link.Name, Title: row.Link.Title, URL: h.config.PublicOrigin + "/r/" + urlpkg.PathEscape(string(row.Link.PublicCode)), ContentType: string(row.Link.Content.Type)})
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": page.Total})
 }
@@ -568,8 +655,18 @@ func (h *Handler) sendPayload(ctx context.Context, kind, rawID string, productTy
 		if err != nil {
 			return nil, err
 		}
-		content := fmt.Sprintf("%s\n价格：¥%.2f", product.Name, float64(product.PriceMinor)/100)
-		return json.Marshal(map[string]any{"msgtype": "text", "text": map[string]string{"content": content}})
+		prefix := "/p/"
+		if product.ProductType == productport.ProductOptionServicePeriod {
+			prefix = "/s/"
+		}
+		link := h.config.PublicOrigin + prefix + urlpkg.PathEscape(product.Code)
+		return json.Marshal(map[string]any{"msgtype": "news", "news": map[string]string{
+			"link": link, "title": product.Name, "desc": "",
+			// The frozen sidebar's standard product card cover remains the
+			// source-compatible fallback until Product publishes item media via
+			// its stable cross-domain target projection.
+			"imgUrl": h.config.PublicOrigin + "/static/sidebar_workbench/product-card-cover.png",
+		}})
 	case "material":
 		material, err := h.config.MaterialSend.ReadSidebarImageForSend(ctx, id, h.now().Add(6*time.Minute))
 		if err != nil {
@@ -581,7 +678,7 @@ func (h *Handler) sendPayload(ctx context.Context, kind, rawID string, productTy
 		if err != nil || detail.Link.Status != radarport.StatusEnabled {
 			return nil, errors.New("radar unavailable")
 		}
-		link := h.config.PublicOrigin + "/r/" + url.PathEscape(string(detail.Link.PublicCode))
+		link := h.config.PublicOrigin + "/r/" + urlpkg.PathEscape(string(detail.Link.PublicCode))
 		return json.Marshal(map[string]any{"msgtype": "link", "link": map[string]string{"title": detail.Link.Title, "desc": detail.Link.Description, "url": link}})
 	default:
 		return nil, errors.New("unsupported resource")
@@ -633,6 +730,131 @@ func (h *Handler) now() time.Time {
 		return h.config.Now().UTC()
 	}
 	return time.Now().UTC()
+}
+
+type sidebarPageCursor struct {
+	Version    int    `json:"v"`
+	Section    string `json:"s"`
+	CustomerID int64  `json:"c"`
+	Watermark  string `json:"w"`
+	AfterAt    string `json:"a"`
+	AfterID    int64  `json:"i"`
+}
+
+// sidebarPageQuery makes the Customer Owner's keyset fields available to the
+// standard sidebar without replacing them with offsets. The cursor is signed,
+// scoped to the already-verified customer, and carries a fixed watermark so a
+// later page cannot shift when new owner records arrive.
+func (h *Handler) sidebarPageQuery(w http.ResponseWriter, r *http.Request, section string, customerID customerdomain.CustomerID) (customerport.PageQuery, int, bool) {
+	values := r.URL.Query()
+	for key, entries := range values {
+		if (key != "limit" && key != "cursor") || len(entries) != 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return customerport.PageQuery{}, 0, false
+		}
+	}
+	limit := 20
+	if rawLimit := values.Get("limit"); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 || parsed > 50 || strconv.Itoa(parsed) != rawLimit {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return customerport.PageQuery{}, 0, false
+		}
+		limit = parsed
+	}
+	query := customerport.PageQuery{Limit: limit + 1, Watermark: h.now()}
+	cursor := values.Get("cursor")
+	if cursor == "" {
+		return query, limit, true
+	}
+	payload, err := decodeSidebarPageCursor(cursor, h.config.CursorSigningKey)
+	if err != nil || payload.Section != section || payload.CustomerID != int64(customerID) || payload.AfterID < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return customerport.PageQuery{}, 0, false
+	}
+	query.Watermark, err = time.Parse(time.RFC3339Nano, payload.Watermark)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return customerport.PageQuery{}, 0, false
+	}
+	query.AfterAt, err = time.Parse(time.RFC3339Nano, payload.AfterAt)
+	if err != nil || query.AfterAt.After(query.Watermark) {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return customerport.PageQuery{}, 0, false
+	}
+	query.AfterID = payload.AfterID
+	return query, limit, true
+}
+
+func (h *Handler) pageSurveys(items []customerport.SurveyItem, limit int, customerID customerdomain.CustomerID, query customerport.PageQuery) ([]customerport.SurveyItem, string, bool, error) {
+	if len(items) <= limit {
+		return items, "", false, nil
+	}
+	items = items[:limit]
+	last := items[len(items)-1]
+	next, err := encodeSidebarPageCursor(sidebarPageCursor{Version: 1, Section: "questionnaires", CustomerID: int64(customerID), Watermark: query.Watermark.UTC().Format(time.RFC3339Nano), AfterAt: last.SubmittedAt.UTC().Format(time.RFC3339Nano), AfterID: last.ID}, h.config.CursorSigningKey)
+	return items, next, true, err
+}
+
+func (h *Handler) pageTimeline(items []customerport.TimelineItem, limit int, customerID customerdomain.CustomerID, query customerport.PageQuery) ([]customerport.TimelineItem, string, bool, error) {
+	if len(items) <= limit {
+		return items, "", false, nil
+	}
+	items = items[:limit]
+	last := items[len(items)-1]
+	next, err := encodeSidebarPageCursor(sidebarPageCursor{Version: 1, Section: "timeline", CustomerID: int64(customerID), Watermark: query.Watermark.UTC().Format(time.RFC3339Nano), AfterAt: last.OccurredAt.UTC().Format(time.RFC3339Nano), AfterID: last.ID}, h.config.CursorSigningKey)
+	return items, next, true, err
+}
+
+func encodeSidebarPageCursor(payload sidebarPageCursor, key []byte) (string, error) {
+	if len(key) < 32 {
+		return "", ErrInvalidContext
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(raw)
+	return base64.RawURLEncoding.EncodeToString(raw) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
+func decodeSidebarPageCursor(value string, key []byte) (sidebarPageCursor, error) {
+	if len(key) < 32 || len(value) > 2048 {
+		return sidebarPageCursor{}, ErrInvalidContext
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) != 2 {
+		return sidebarPageCursor{}, ErrInvalidContext
+	}
+	raw, err := decodeCanonicalSidebarBase64(parts[0])
+	if err != nil {
+		return sidebarPageCursor{}, err
+	}
+	signature, err := decodeCanonicalSidebarBase64(parts[1])
+	if err != nil {
+		return sidebarPageCursor{}, err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(raw)
+	if !hmac.Equal(signature, mac.Sum(nil)) {
+		return sidebarPageCursor{}, ErrInvalidContext
+	}
+	var payload sidebarPageCursor
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&payload); err != nil || !errors.Is(decoder.Decode(&struct{}{}), io.EOF) || payload.Version != 1 || payload.Section == "" || payload.CustomerID < 1 || payload.Watermark == "" || payload.AfterAt == "" {
+		return sidebarPageCursor{}, ErrInvalidContext
+	}
+	return payload, nil
+}
+
+func decodeCanonicalSidebarBase64(value string) ([]byte, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || base64.RawURLEncoding.EncodeToString(decoded) != value {
+		return nil, ErrInvalidContext
+	}
+	return decoded, nil
 }
 
 func boundedLimit(w http.ResponseWriter, r *http.Request, fallback, maximum int) (int, bool) {

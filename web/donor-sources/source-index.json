@@ -777,6 +777,16 @@
       "content_sha256": "b0963b207fe385f8f84bb8c709aa383ed0b1ea148dec096e5e51f9a3dc4b71c4",
       "bytes": 8367,
       "mode": "100644"
+    },
+    {
+      "id": "production-1da6a57139ade71f33de45e818e5e6fb3199f3ea",
+      "library_id": "production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f",
+      "canonical_path": "web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js",
+      "source_path": "aicrm_next/app/admin_console/static/admin_console/image_resource_loader.js",
+      "source_git_blob_sha": "1da6a57139ade71f33de45e818e5e6fb3199f3ea",
+      "content_sha256": "38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d",
+      "bytes": 14096,
+      "mode": "100644"
     }
   ],
   "bindings": [

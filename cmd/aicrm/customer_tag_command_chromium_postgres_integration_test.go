@@ -114,9 +114,10 @@ func TestPostgreSQLCustomerTagCommandChromiumJourney(t *testing.T) {
 }
 
 type customerTagChromiumProvider struct {
-	server                    *httptest.Server
-	mu                        sync.Mutex
-	writes, reads, jssdkReads int
+	server                                           *httptest.Server
+	mu                                               sync.Mutex
+	writes, reads                                    int
+	jssdkTokenReads, jssdkCorpReads, jssdkAgentReads int
 }
 
 func newCustomerTagChromiumProvider() *customerTagChromiumProvider {
@@ -125,13 +126,13 @@ func newCustomerTagChromiumProvider() *customerTagChromiumProvider {
 		switch r.URL.Path {
 		case "/cgi-bin/gettoken":
 			fixture.mu.Lock()
-			fixture.jssdkReads++
+			fixture.jssdkTokenReads++
 			fixture.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"fixture-token","expires_in":7200}`))
 		case "/cgi-bin/get_jsapi_ticket":
 			fixture.mu.Lock()
-			fixture.jssdkReads++
+			fixture.jssdkCorpReads++
 			fixture.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"errcode":0,"ticket":"fixture-corp-ticket","expires_in":7200}`))
@@ -141,7 +142,7 @@ func newCustomerTagChromiumProvider() *customerTagChromiumProvider {
 				return
 			}
 			fixture.mu.Lock()
-			fixture.jssdkReads++
+			fixture.jssdkAgentReads++
 			fixture.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"errcode":0,"ticket":"fixture-agent-ticket","expires_in":7200}`))
@@ -190,12 +191,12 @@ func (f *customerTagChromiumProvider) Counts() (int, int) {
 	return f.writes, f.reads
 }
 
-// JSSDKReads is separate from business-provider observations. A page handshake
-// may read signing tickets, but it must never create an outbound business write.
-func (f *customerTagChromiumProvider) JSSDKReads() int {
+// JSSDKReadCounts separates the access-token and both signing-ticket reads from
+// business-provider observations so the Chromium journey also proves cache reuse.
+func (f *customerTagChromiumProvider) JSSDKReadCounts() (int, int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.jssdkReads
+	return f.jssdkTokenReads, f.jssdkCorpReads, f.jssdkAgentReads
 }
 
 func seedCustomerTagChromiumJourney(ctx context.Context, application *composedApplication) error {

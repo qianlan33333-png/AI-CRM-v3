@@ -36,14 +36,24 @@ func (SidebarJSSDKExpiry) CompleteEffect(ctx context.Context, effectRef string, 
 	now := time.Now().UTC()
 	receiptDigest := sha256.Sum256([]byte(result.ReceiptDigest))
 	var intentID int64
-	err = tx.QueryRow(ctx, `UPDATE outbound_sidebar_send_intents SET state='final_failed',updated_at=$2 WHERE effect_id=$1 AND state='queued' RETURNING id`, effectRef, now).Scan(&intentID)
+	var transitioned bool
+	err = tx.QueryRow(ctx, `WITH transitioned AS (
+		UPDATE outbound_sidebar_send_intents SET state='final_failed',updated_at=$2 WHERE effect_id=$1 AND state='queued' RETURNING id
+	)
+	SELECT id,true FROM transitioned
+	UNION ALL
+	SELECT id,false FROM outbound_sidebar_send_intents WHERE effect_id=$1 AND state='final_failed'
+	LIMIT 1`, effectRef, now).Scan(&intentID, &transitioned)
 	if err != nil {
 		return err
+	}
+	if !transitioned {
+		return nil
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO outbound_sidebar_send_audit_events(intent_id,operation,payload_digest,occurred_at) VALUES($1,'expire',$2,$3)`, intentID, receiptDigest[:], now); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO outbound_sidebar_send_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.sidebar_send.expired.v1',$1,jsonb_build_object('intent_id',$1,'effect_id',$2,'state','final_failed'),$3,$4)`, intentID, effectRef, receiptDigest[:], now)
+	_, err = tx.Exec(ctx, `INSERT INTO outbound_sidebar_send_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.sidebar_send.expired.v1',$1,jsonb_build_object('intent_id',$1::bigint,'effect_id',$2::text,'state','final_failed'),$3::bytea,$4::timestamptz)`, intentID, effectRef, receiptDigest[:], now)
 	return err
 }
 

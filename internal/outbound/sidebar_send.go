@@ -101,7 +101,7 @@ func (s *SidebarSendService) AcceptSidebarSend(ctx context.Context, in outboundp
 		if _, e = tx.Exec(txctx, `INSERT INTO outbound_sidebar_send_audit_events(intent_id,operation,payload_digest,occurred_at) VALUES($1,'accept',$2,$3)`, id, auditDigest[:], now); e != nil {
 			return e
 		}
-		if _, e = tx.Exec(txctx, `INSERT INTO outbound_sidebar_send_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.sidebar_send.queued.v1',$1,jsonb_build_object('intent_id',$1,'effect_id',$2,'state','queued'),$3,$4)`, id, projection.ID, keyDigest[:], now); e != nil {
+		if _, e = tx.Exec(txctx, `INSERT INTO outbound_sidebar_send_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.sidebar_send.queued.v1',$1,jsonb_build_object('intent_id',$1::bigint,'effect_id',$2::text,'state','queued'),$3::bytea,$4::timestamptz)`, id, projection.ID, keyDigest[:], now); e != nil {
 			return e
 		}
 		out = outboundport.SidebarSendAcceptance{IntentID: id, EffectID: projection.ID, State: "queued", Grant: grant, GrantExpiresAt: expires, Payload: append([]byte(nil), in.Payload...)}
@@ -128,7 +128,7 @@ func (s *SidebarSendService) CompleteSidebarSend(ctx context.Context, in outboun
 		var expires time.Time
 		var consumed *time.Time
 		var priorOutcome *string
-		e = tx.QueryRow(txctx, `SELECT intent.effect_id,intent.state,intent.payload,intent.employee_digest,grant.token_digest,grant.expires_at,grant.consumed_at,grant.outcome FROM outbound_sidebar_send_intents intent JOIN outbound_sidebar_send_grants grant ON grant.intent_id=intent.id WHERE intent.id=$1 AND intent.customer_id=$2 FOR UPDATE`, in.IntentID, in.CustomerID).Scan(&effectID, &state, &payload, &storedEmployee, &storedGrant, &expires, &consumed, &priorOutcome)
+		e = tx.QueryRow(txctx, `SELECT intent.effect_id,intent.state,intent.payload,intent.employee_digest,send_grant.token_digest,send_grant.expires_at,send_grant.consumed_at,send_grant.outcome FROM outbound_sidebar_send_intents intent JOIN outbound_sidebar_send_grants send_grant ON send_grant.intent_id=intent.id WHERE intent.id=$1 AND intent.customer_id=$2 FOR UPDATE`, in.IntentID, in.CustomerID).Scan(&effectID, &state, &payload, &storedEmployee, &storedGrant, &expires, &consumed, &priorOutcome)
 		if e != nil {
 			return e
 		}
@@ -166,7 +166,7 @@ func (s *SidebarSendService) CompleteSidebarSend(ctx context.Context, in outboun
 			return e
 		}
 		eventKey := sha256.Sum256([]byte("complete\x00" + in.Grant))
-		if _, e = tx.Exec(txctx, `INSERT INTO outbound_sidebar_send_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.sidebar_send.client_completed.v1',$1,jsonb_build_object('intent_id',$1,'effect_id',$2,'state',$3,'delivery_state','unknown'),$4,$5)`, in.IntentID, effectID, in.Outcome, eventKey[:], now); e != nil {
+		if _, e = tx.Exec(txctx, `INSERT INTO outbound_sidebar_send_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.sidebar_send.client_completed.v1',$1,jsonb_build_object('intent_id',$1::bigint,'effect_id',$2::text,'state',$3::text,'delivery_state','unknown'),$4::bytea,$5::timestamptz)`, in.IntentID, effectID, in.Outcome, eventKey[:], now); e != nil {
 			return e
 		}
 		out = outboundport.SidebarSendAcceptance{IntentID: in.IntentID, EffectID: projection.ID, State: in.Outcome, Payload: payload}

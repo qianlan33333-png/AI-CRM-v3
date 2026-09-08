@@ -8,6 +8,7 @@ const username = process.env.AICRM_SIDEBAR_THUMBNAIL_TEST_USERNAME;
 const password = process.env.AICRM_SIDEBAR_THUMBNAIL_TEST_PASSWORD;
 const jssdkFixturePath = process.env.AICRM_SIDEBAR_JSSDK_FIXTURE;
 const weComJSSDKURL = "https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js";
+const screenshotDirectory = process.env.AICRM_SIDEBAR_SCREENSHOT_DIR || "";
 if (!/^https:\/\//.test(baseURL || "") || !username || !password || !jssdkFixturePath) throw new Error("sidebar Chromium journey requires HTTPS URL, credentials, and the official WeCom JSSDK fixture");
 const jssdkFixture = await fs.readFile(jssdkFixturePath);
 if (!jssdkFixture.includes(Buffer.from("agentConfig"))) throw new Error("sidebar Chromium journey JSSDK fixture lacks agentConfig");
@@ -80,6 +81,12 @@ async function waitFor(cdp, expression, message, stage = "wait") {
   }
   throw new Error(message);
 }
+async function captureScreenshot(cdp, name) {
+  if (!screenshotDirectory) return;
+  await fs.mkdir(screenshotDirectory, { recursive: true, mode: 0o700 });
+  const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+  await fs.writeFile(path.join(screenshotDirectory, `${name}.png`), Buffer.from(shot.data, "base64"), { mode: 0o600 });
+}
 async function browserExit(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   await Promise.race([new Promise((resolve) => child.once("exit", resolve)), delay(3000)]);
@@ -110,6 +117,8 @@ try {
     const calls = [];
     let agentCalls = 0;
     Object.defineProperty(globalThis, "__sidebarNativeBridgeCalls", { value: calls, configurable: false });
+    Object.defineProperty(globalThis, "__sidebarClipboardWrites", { value: [], configurable: false });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText(value) { globalThis.__sidebarClipboardWrites.push(String(value)); return Promise.resolve(); } } });
     Object.defineProperty(globalThis, "WeixinJSBridge", { configurable: false, value: {
       invoke(method, payload, callback) {
         calls.push(method);
@@ -144,16 +153,19 @@ try {
     })().catch(() => undefined);
   });
 
-  const resources = new Map(); const requestURLs = []; const exceptions = []; const loginResponses = new Map(); let sidebarCSP = "";
+  const resources = new Map(); const requestURLs = []; const requestRecords = []; const exceptions = []; const loginResponses = new Map(); let sidebarCSP = "";
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
-  cdp.on("Network.requestWillBeSent", (params) => { requestURLs.push(String(params.request?.url || "")); });
+  cdp.on("Network.requestWillBeSent", (params) => {
+    requestURLs.push(String(params.request?.url || ""));
+    requestRecords.push({ url: String(params.request?.url || ""), postData: String(params.request?.postData || "") });
+  });
   cdp.on("Network.responseReceived", (params) => {
     try {
       const pathname = new URL(String(params.response?.url || "")).pathname;
       const status = Number(params.response?.status) || 0;
       if (pathname === "/sidebar/bind-mobile") sidebarCSP = String(params.response?.headers?.["content-security-policy"] || params.response?.headers?.["Content-Security-Policy"] || "");
       if (pathname === "/login" || pathname === "/admin" || pathname === "/admin/customers.html") loginResponses.set(pathname, status);
-      if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/sidebar-assets\/sidebarHost-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, status);
+      if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/sidebar-assets\/(sidebarHost|sidebarStandardOverlay|sidebarImageResourceLoader)-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, status);
     } catch (_) {}
   });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin` });
@@ -182,44 +194,105 @@ try {
   const jssdkCountSince = (start) => requestURLs.slice(start).filter((url) => new URL(url).pathname === "/api/sidebar/jssdk-config").length;
   const bridgeCalls = () => evaluate(cdp, "JSON.stringify(globalThis.__sidebarNativeBridgeCalls || [])").then((value) => JSON.parse(value || "[]"));
 
-  for (const [scenario, message, action, resourceMode] of [
-    ["sdk_missing", "企微 SDK 未载入", "retry-context", "missing"],
-    ["regular_error", "JSSDK regular config 失败", "reload-sidebar", "serve"],
-    ["agent_error", "JSSDK agentConfig 失败", "retry-context", "serve"],
-    ["contact_error", "企微客户上下文读取失败", "retry-context", "serve"],
+  for (const [scenario, message, resourceMode] of [
+    ["sdk_missing", "企微 SDK 未载入", "missing"],
+    ["regular_error", "企微 config 失败：config:fail", "serve"],
+    ["agent_error", "agentConfig:fail", "serve"],
+    ["contact_error", "getCurExternalContact:fail", "serve"],
   ]) {
     const start = await openSidebar(scenario, resourceMode);
-    await waitFor(cdp, `(${sidebarDocumentReadyExpression(scenario)}) && Boolean(document.body?.textContent?.includes(${JSON.stringify(message)}) && document.querySelector('[data-sidebar-action="${action}"]'))`, `${scenario} did not render its real recovery action`, `${scenario}_recovery`);
-    const normalizedReason = scenario === "regular_error" ? "config:fail" : scenario === "agent_error" ? "agentConfig:fail" : scenario === "contact_error" ? "getCurExternalContact:fail" : "";
-    if (normalizedReason && !await evaluate(cdp, `Boolean(document.body?.textContent?.includes(${JSON.stringify(normalizedReason)}))`, `${scenario}_reason`)) throw new Error(`${scenario} did not render the official SDK normalized failure reason`);
+    await waitFor(cdp, `(${sidebarDocumentReadyExpression(scenario)}) && Boolean(document.body?.textContent?.includes(${JSON.stringify(message)}) && document.querySelector('[data-retry-boot]'))`, `${scenario} did not render the standard overlay recovery action`, `${scenario}_recovery`);
     if (bootstrapCountSince(start) !== 0) throw new Error(`${scenario} requested sidebar bootstrap before a trusted contact`);
   }
 
   const retryStart = await openSidebar("agent_retry");
-  await waitFor(cdp, "Boolean(document.querySelector('[data-sidebar-action=\"retry-context\"]'))", "agent failure did not render retry action");
-  await evaluate(cdp, "document.querySelector('[data-sidebar-action=\"retry-context\"]').click(); true");
-  await waitFor(cdp, "document.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready' && Boolean(document.querySelector('#tabs button[data-sidebar-tab=\"materials\"]'))", "agent retry did not establish sidebar context");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-retry-boot]'))", "agent failure did not render standard overlay retry action");
+  await evaluate(cdp, "document.querySelector('[data-retry-boot]').click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('#tabs button[data-tab=\"materials\"]:not([disabled])'))", "agent retry did not establish the trusted sidebar context");
   const retryCalls = await bridgeCalls();
   if (retryCalls.filter((call) => call === "preVerifyJSAPI").length !== 1 || retryCalls.filter((call) => call === "agentConfig").length !== 2 || jssdkCountSince(retryStart) !== 2 || bootstrapCountSince(retryStart) !== 1) throw new Error("agent retry did not reuse regular config or re-read the agent signature exactly once");
 
   const successStart = await openSidebar("success");
   try {
-    await waitFor(cdp, `(${sidebarDocumentReadyExpression("success")}) && document.querySelector('#sidebar-jssdk-status')?.dataset.state === 'ready' && Boolean(document.querySelector('#tabs button[data-sidebar-tab=\"materials\"]'))`, "sidebar Host did not complete the official JSSDK handshake", "success_handshake");
+    await waitFor(cdp, `(${sidebarDocumentReadyExpression("success")}) && Boolean(document.querySelector('#tabs button[data-tab=\"materials\"]:not([disabled])'))`, "sidebar standard overlay did not complete the official JSSDK handshake", "success_handshake");
   } catch (_) {
-    const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), document: await evaluate(cdp, "document.body ? 'ready' : 'missing'"), tabs: await evaluate(cdp, "Boolean(document.querySelector('#tabs'))"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), bootstrap: bootstrapCountSince(successStart), jssdk: jssdkCountSince(successStart), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
-    throw new Error(`sidebar Host did not complete official JSSDK handshake: ${diagnostic}`);
+    const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), document: await evaluate(cdp, "document.body ? 'ready' : 'missing'"), tabs: await evaluate(cdp, "Boolean(document.querySelector('#tabs'))"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), overlay: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(path) && status === 200), bootstrap: bootstrapCountSince(successStart), jssdk: jssdkCountSince(successStart), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
+    throw new Error(`sidebar standard overlay did not complete official JSSDK handshake: ${diagnostic}`);
   }
   const successCalls = await bridgeCalls();
   if (successCalls.join("|") !== "preVerifyJSAPI|agentConfig|getContext|getCurExternalContact" || bootstrapCountSince(successStart) !== 1) throw new Error(`official JSSDK success order mismatch: ${JSON.stringify(successCalls)}`);
-  await evaluate(cdp, "document.querySelector('#tabs button[data-sidebar-tab=\"materials\"]')?.click(); true");
-  const ready = "(() => { const image=document.querySelector('img[data-material-preview=\"ready\"]'); return Boolean(image && image.src.startsWith('blob:') && image.complete && image.naturalWidth === 1 && image.naturalHeight === 1); })()";
-  try { await waitFor(cdp, ready, "sidebar thumbnail did not load through a blob URL"); }
+  for (const width of [320, 375, 430, 768]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    const geometry = JSON.parse(await evaluate(cdp, 'JSON.stringify((()=>{const t=[...document.querySelectorAll("#tabs [data-tab]")],r=t.map(n=>n.getBoundingClientRect());return {v:innerWidth,c:document.documentElement.clientWidth,s:document.documentElement.scrollWidth,n:t.length,rows:new Set(r.map(x=>Math.round(x.top))).size,cols:new Set(r.slice(0,3).map(x=>Math.round(x.left))).size,in:r.every(x=>x.left>=0&&x.right<=innerWidth+.5)}})())'));
+    if (geometry.v!==width || geometry.s>geometry.c || geometry.n!==6 || geometry.rows!==2 || geometry.cols!==3 || !geometry.in) throw new Error("geometry "+width+" "+JSON.stringify(geometry));
+  }
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width:375, height:900, deviceScaleFactor:1, mobile:false });
+  await captureScreenshot(cdp, "profile-375");
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width:430, height:900, deviceScaleFactor:1, mobile:false });
+  const profileStart=requestRecords.length;
+  await evaluate(cdp, '(()=>{const f=document.querySelector("[data-profile-field=source]");f.value="Chromium活动报名";f.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
+  for(let n=0;n<140&&requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile").length<1;n++) await delay(50);
+  let writes=requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile"), body=JSON.parse(writes[0]?.postData||"{}");
+  if(writes.length!==1||body.expected_profile_version!==0||body.source!=="Chromium活动报名") throw new Error("profile CAS 0 "+JSON.stringify(writes));
+  await evaluate(cdp, '(()=>{const f=document.querySelector("[data-profile-field=industry]");f.value="教育";f.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
+  for(let n=0;n<140&&requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile").length<2;n++) await delay(50);
+  writes=requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile");body=JSON.parse(writes[1]?.postData||"{}");
+  if(writes.length!==2||body.expected_profile_version!==1||body.industry!=="教育") throw new Error("profile CAS 1 "+JSON.stringify(writes));
+  const surveyStart=requestRecords.length;
+  await evaluate(cdp, 'document.querySelector("#tabs [data-tab=questionnaires]").click();true');
+  await waitFor(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length===20', "survey page 1");
+  while(await evaluate(cdp, 'Boolean(document.querySelector("[data-load-more-questionnaires]"))')){
+    const before=await evaluate(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length');
+    await evaluate(cdp, 'document.querySelector("[data-load-more-questionnaires]").click();true');
+    await waitFor(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length>'+before, "survey cursor append");
+  }
+  const surveyCount=await evaluate(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length');
+  const surveyReads=requestRecords.slice(surveyStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/questionnaires");
+  if(surveyCount!==102||surveyReads.length!==6||surveyReads.slice(1).some(r=>!new URL(r.url).searchParams.get("cursor"))||surveyReads.some(r=>new URL(r.url).searchParams.has("offset"))) throw new Error("survey 102 cursor "+surveyCount+" "+JSON.stringify(surveyReads));
+  await evaluate(cdp, 'document.querySelector("#tabs [data-tab=coupons]").click();true');
+  await waitFor(cdp, 'document.body.textContent.includes("Chromium无链接券")', "coupon fixtures");
+  const coupons=JSON.parse(await evaluate(cdp, 'JSON.stringify({buttons:[...document.querySelectorAll("[data-copy-url]")].map(b=>({disabled:b.disabled,url:b.dataset.copyUrl,text:b.closest(".card")?.textContent||""})),text:document.body.textContent})'));
+  for(const x of ["可前往领取页确认","未到领取时间","领取已截止","已领完","已达到个人领取上限"]) if(!coupons.text.includes(x)) throw new Error("coupon state "+x);
+  const active=coupons.buttons.find(x=>x.text.includes("Chromium可领取券"));
+  if(!active||active.disabled||!active.url.endsWith("/c/chromium-active")||coupons.buttons.filter(x=>!x.disabled).length!==1) throw new Error("coupon buttons "+JSON.stringify(coupons));
+  await evaluate(cdp, 'document.querySelector("[data-copy-url]:not([disabled])").click();true');
+  await waitFor(cdp, 'globalThis.__sidebarClipboardWrites.length===1', "coupon clipboard");
+  if(await evaluate(cdp, 'globalThis.__sidebarClipboardWrites[0]')!==active.url) throw new Error("coupon URL");
+  await evaluate(cdp, 'document.querySelector("#tabs [data-tab=orders]").click();true');
+  await waitFor(cdp, 'document.body.textContent.includes("SIDEBAR-ORDER-001")', "order fixture");
+  const regular=await evaluate(cdp, 'document.getElementById("content").textContent');
+  if(!regular.includes("¥99.00")||!regular.includes("已退款")||regular.includes("支付时间")) throw new Error("order facts "+regular);
+  await captureScreenshot(cdp, "orders-430");
+  await evaluate(cdp, 'document.querySelector("[data-order-type=periodic]").click();true');
+  await waitFor(cdp, 'document.body.textContent.includes("31日真实服务周期")', "periodic fixture");
+  const periodic=await evaluate(cdp, 'document.getElementById("content").textContent');
+  if(!periodic.includes("浏览器周期外推商品")||!periodic.includes("生效时间")||!periodic.includes("到期时间")) throw new Error("periodic facts "+periodic);
+  const materialStart = requestRecords.length;
+  await evaluate(cdp, "document.querySelector('#tabs button[data-tab=\"materials\"]')?.click(); true");
+  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5', "material first page did not render five standard cards");
+  await evaluate(cdp, '(()=>{const old=document.querySelector(".material-page-sentinel");if(!old)throw new Error("initial material pager missing");old.dataset.preSearchPager="true";const input=document.querySelector("[data-material-search-input]");input.value="Chromium";document.querySelector("[data-material-search-form]").requestSubmit();return true})()');
+  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5&&Boolean(document.querySelector(".material-page-sentinel:not([data-pre-search-pager])"))', "filtered material first page did not replace the standard pager");
+  await cdp.call("Input.dispatchMouseEvent", { type: "mouseWheel", x: 215, y: 820, deltaX: 0, deltaY: 700 });
+  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===7', "standard image loader did not append material offset 5");
+  const materialReads=requestRecords.slice(materialStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/materials").map(r=>new URL(r.url));
+  const filteredReads=materialReads.filter(url=>url.searchParams.get("q")==="Chromium");
+  if(filteredReads.length!==2||filteredReads[0].searchParams.get("offset")!=="0"||filteredReads[1].searchParams.get("offset")!=="5"||filteredReads.some(url=>url.searchParams.get("limit")!=="5"||url.searchParams.has("type"))) throw new Error("material standard pager query "+JSON.stringify(materialReads.map(url=>url.pathname+url.search)));
+  const ready = "(() => { const images=[...document.querySelectorAll('img[data-material-preview=\"ready\"]')]; return images.length===7 && images.every(image => image.src.startsWith('blob:') && image.complete && image.naturalWidth === 1 && image.naturalHeight === 1); })()";
+  try { await waitFor(cdp, ready, "sidebar thumbnails did not load through blob URLs for both standard pages"); }
   catch (_) {
     const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), bootstrap: resources.get("/api/sidebar/v2/bootstrap") || 0, materials: resources.get("/api/sidebar/v2/materials") || 0, thumbnail: [...resources.entries()].some(([path, status]) => /variants\/thumb_320$/.test(path) && status === 200), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
     throw new Error(`sidebar thumbnail did not render: ${diagnostic}`);
   }
+  await captureScreenshot(cdp, "materials-430");
   if (!sidebarCSP.includes("img-src 'self' data: blob:")) throw new Error("sidebar CSP did not permit its scoped thumbnail blob URL");
-  if (![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarHost-/.test(pathname) && status === 200) || resources.get("/api/sidebar/v2/bootstrap") !== 200 || resources.get("/api/sidebar/v2/materials") !== 200 || ![...resources.entries()].some(([pathname, status]) => /\/variants\/thumb_320$/.test(pathname) && status === 200)) throw new Error("sidebar Host/resources did not use the actual scoped thumbnail route");
+  if (![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarHost-/.test(pathname) && status === 200) || ![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(pathname) && status === 200) || ![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarImageResourceLoader-/.test(pathname) && status === 200) || resources.get("/api/sidebar/v2/bootstrap") !== 200 || resources.get("/api/sidebar/v2/materials") !== 200 || ![...resources.entries()].some(([pathname, status]) => /\/variants\/thumb_320$/.test(pathname) && status === 200)) throw new Error("sidebar Host/standard overlay resources did not use the actual scoped thumbnail route");
+  if (requestURLs.slice(successStart).some((url) => /\/(other-staff-messages|chat-activity|chat_activity)(?:[/?]|$)/.test(new URL(url).pathname))) throw new Error("sidebar standard overlay attempted a removed chat route");
+  await evaluate(cdp, '(()=>{localStorage.setItem("sidebar_tab","chat_activity");sessionStorage.setItem("sidebar_active_tab","other_staff_messages");return true})()');
+  const negativeStart=requestURLs.length;
+  await cdp.call("Page.navigate",{url:baseURL+"/sidebar/bind-mobile?sidebar_case=success&tab=chat_activity&view=other_staff_messages#other-staff-messages"});
+  await waitFor(cdp, 'Boolean(document.querySelector("#tabs button[data-tab=materials]:not([disabled])"))', "chat deeplink ready");
+  const negative=JSON.parse(await evaluate(cdp, 'JSON.stringify({tabs:[...document.querySelectorAll("#tabs [data-tab]")].map(n=>n.dataset.tab),text:document.body.textContent})'));
+  if(negative.tabs.join("|")!=="profile|questionnaires|products|orders|coupons|materials"||/其他客服聊天|聊天动态/.test(negative.text)||requestURLs.slice(negativeStart).some(url=>{const pathname=new URL(url).pathname;return pathname.includes("other-staff-messages")||pathname.includes("chat-activity")||pathname.includes("chat_activity")})) throw new Error("chat deeplink "+JSON.stringify(negative));
   if (exceptions.length) throw new Error(`sidebar Host emitted runtime exceptions: ${exceptions.join(",")}`);
   console.log("sidebar_thumbnail_chromium: PASS");
 } catch (error) { failed = true; throw error; }

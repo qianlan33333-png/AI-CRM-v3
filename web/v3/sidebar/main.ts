@@ -1,152 +1,127 @@
-// @ts-nocheck
-/**
- * 企微侧边栏入口。
- *
- * 这里仅消费当前 Go OpenAPI 的 sidebar V2 契约。没有上下文或真实读取失败时，
- * 页面保持失败/待授权状态，不回退到示例数据或静态成功文案。
- */
-import {
-  newSidebarIdempotencyKey,
-  sidebarApi,
-  type SidebarJSSDKConfig,
-  type SidebarSendIntentAcceptance,
-} from "../sidebarApi";
-import type {
-  SidebarBootstrapResponse,
-  SidebarChatActivityResponse,
-  SidebarOtherStaffChatResponse,
-  SidebarMaterialResponse,
-  SidebarOrderResponse,
-  SidebarPeriodicOrderResponse,
-  SidebarPeriodicRemarkResponse,
-  SidebarPhoneBindingResponse,
-  SidebarProfileUpdateResponse,
-  SidebarProfileUpdateSafety,
-  SidebarQuestionnaireResponse,
-  SidebarShareableProduct,
-  SidebarShareableProductResponse,
-  SidebarServicePeriodMember,
-  SidebarSafety,
-  SidebarTimelineResponse,
-  SidebarWorkbenchResponse,
-} from "../../src/api/generated/health.schemas";
-import { initFeedback } from "../../src/shared/ui/feedback";
+// The dd8 overlay owns the standard sidebar presentation. This Host retains the
+// V3 production controller's identity, JSSDK, generation, OAuth, and durable
+// send-receipt controls; the overlay can only call this narrow boundary.
 
-const SDK_TIMEOUT_MS = 5000;
-const SDK_CACHE_MAX_MS = 5 * 60 * 1000;
-const SDK_CACHE_SAFETY_MS = 30 * 1000;
-const SDK_CACHE_KEY = "aicrm.sidebar.jssdk.config.v2";
-const PROFILE_SAVE_DEBOUNCE_MS = 520;
-const REGULAR_JS_API_LIST = ["getCurExternalContact", "sendChatMessage"];
-const AGENT_JS_API_LIST = ["getContext", "getCurExternalContact", "sendChatMessage"];
+import { orderStatusLabel } from "./tabs/local-contract";
 
-/**
- * 可编辑画像字段：对齐后端 PUT /api/sidebar/v2/profile 契约
- * （display_name/gender/corp_name + expected_version 乐观锁）。
- * 后端客户目录无 industry/description/needs/pain_points 存储，
- * 这些字段不再提供编辑入口；来源/手机号/状态只读展示。
- */
-export const PROFILE_FIELDS = ["name", "corp_name"] as const;
-export type ProfileField = (typeof PROFILE_FIELDS)[number];
+type Json = Record<string, any>;
+type RequestOptions = RequestInit & { timeoutMs?: number; retryCount?: number; retryDelayMs?: number };
 
-const PROFILE_LABELS: Record<ProfileField, string> = {
-  name: "姓名",
-  corp_name: "公司",
+type WX = {
+  config(options: Json): void;
+  ready(callback: () => void): void;
+  error(callback: (result?: Json) => void): void;
+  agentConfig(options: Json): void;
+  invoke(method: string, payload: Json, callback: (result?: Json) => void): void;
 };
 
-type BoundSidebarApi = Pick<
-  typeof sidebarApi,
-  | "bootstrap"
-  | "mintContext"
-  | "agentConfig"
-  | "oauthStartUrl"
-  | "oauthCallbackUrl"
-  | "workbench"
-  | "timeline"
-  | "chatActivity"
-  | "otherStaffChats"
-  | "profile"
-  | "bindPhone"
-  | "questionnaires"
-  | "orders"
-  | "periodicOrders"
-  | "updateRemark"
-  | "materials"
-  | "shareableProducts"
-  | "thumbnailPreview"
-  | "createSendIntent"
-  | "completeSendIntent"
->;
-
-interface SidebarWx {
-  config(options: {
-    beta: boolean;
-    debug: boolean;
-    appId: string;
-    timestamp: number;
-    nonceStr: string;
-    signature: string;
-    jsApiList: string[];
-  }): void;
-  ready(callback: () => void): void;
-  error(callback: (result?: Record<string, unknown>) => void): void;
-  agentConfig(options: {
-    corpid: string;
-    agentid: string;
-    timestamp: number;
-    nonceStr: string;
-    signature: string;
-    jsApiList: string[];
-    success?: (result?: Record<string, unknown>) => void;
-    fail?: (result?: Record<string, unknown>) => void;
-  }): void;
-  invoke(
-    method: string,
-    payload: Record<string, unknown>,
-    callback: (result?: Record<string, unknown>) => void,
-  ): void;
-}
+type JSSDKSignature = { timestamp: number; nonceStr: string; signature: string; jsApiList?: string[] };
+type JSSDKConfig = { corp_id: string; agent_id: string; config: JSSDKSignature; agent_config: JSSDKSignature };
+type SendScope = { customerID: string; externalUserID: string; token: string; generation: number };
 
 declare global {
   interface Window {
-    wx?: SidebarWx;
+    wx?: WX;
+    __AICRMSidebarBridge?: SidebarBridge;
+    ImageResourceLoader?: {
+      loadInto(image: HTMLImageElement, url: string, options?: { signal?: AbortSignal; onState?: (state: string) => void }): Promise<void>;
+      createPager?: (options: Json) => Json;
+    };
   }
 }
 
-type ReceiptStep = {
-  key: "accepted" | "queued" | "outcome_unknown";
-  label: string;
-};
+const SDK_TIMEOUT_MS = 5_000;
+const SDK_CACHE_MAX_MS = 5 * 60 * 1000;
+const SDK_CACHE_SAFETY_MS = 30 * 1000;
+const SDK_CACHE_KEY = "aicrm.sidebar.jssdk.config.v2";
+const REGULAR_APIS = ["getCurExternalContact", "sendChatMessage"];
+const AGENT_APIS = ["getContext", "getCurExternalContact", "sendChatMessage"];
 
-type SidebarTab =
-  | "profile"
-  | "questionnaires"
-  | "timeline"
-  | "chat_activity"
-  | "other_staff_messages"
-  | "orders"
-  | "periodic_orders"
-  | "products"
-  | "products_periodic"
-  | "coupons"
-  | "materials"
-  | "radar_links";
+function failure(message: string, status?: number, payload?: Json): Error & { status?: number; payload?: Json } {
+  const error = new Error(message) as Error & { status?: number; payload?: Json };
+  error.status = status;
+  error.payload = payload;
+  return error;
+}
 
+class JSSDKTimeoutError extends Error {
+  constructor(stage: string) {
+    super(`企微 ${stage} 初始化超时；请关闭并重新打开侧边栏后再试。`);
+    this.name = "JSSDKTimeoutError";
+  }
+}
+
+class SidebarAuthenticationRequiredError extends Error {
+  constructor(message = "需要通过企微 OAuth 授权") {
+    super(message);
+    this.name = "SidebarAuthenticationRequiredError";
+  }
+}
+
+function errorStatus(error: unknown): number | undefined {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : undefined;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function firstString(value: unknown, keys: string[]): string {
+  if (!value || typeof value !== "object") return "";
+  const record = value as Json;
+  for (const key of keys) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return "";
+}
+
+function oneString(value: unknown, keys: string[]): string {
+  const direct = firstString(value, keys);
+  if (direct) return direct;
+  if (!value || typeof value !== "object") return "";
+  const record = value as Json;
+  for (const nested of ["data", "context", "user", "currentUser", "current_user"]) {
+    const candidate = oneString(record[nested], keys);
+    if (candidate) return candidate;
+  }
+  return "";
+}
+
+function formatMoney(minor: unknown, currency = "CNY"): string {
+  const value = Number(minor);
+  if (!Number.isFinite(value)) return "";
+  return `${currency === "CNY" ? "¥" : `${currency} `}${(value / 100).toFixed(2)}`;
+}
+
+function date(value: unknown): string {
+  const parsed = new Date(String(value ?? ""));
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().replace("T", " ").slice(0, 16);
+}
+
+function idempotency(scope: string): string {
+  return `${scope}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function anySignal(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const present = signals.filter(Boolean) as AbortSignal[];
+  if (!present.length) return undefined;
+  if (present.length === 1) return present[0];
+  if (typeof AbortSignal.any === "function") return AbortSignal.any(present);
+  const controller = new AbortController();
+  for (const signal of present) signal.addEventListener("abort", () => controller.abort(), { once: true });
+  return controller.signal;
+}
+
+// This is the production SidebarBootstrapCoordinator from origin/main, retained
+// here because an old contact callback must never mint a current context token.
 export class SidebarBootstrapCoordinator<T> {
-  private flight: {
-    externalUserId: string;
-    generation: number;
-    controller: AbortController;
-    promise: Promise<T>;
-  } | null = null;
+  private flight: { externalUserId: string; generation: number; controller: AbortController; promise: Promise<T> } | null = null;
   private generation = 0;
 
-  run(
-    externalUserId: string,
-    request: (signal: AbortSignal) => Promise<T>,
-  ): Promise<T> {
-    if (this.flight?.externalUserId === externalUserId)
-      return this.flight.promise;
+  run(externalUserId: string, request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    if (this.flight?.externalUserId === externalUserId) return this.flight.promise;
     this.flight?.controller.abort();
     const generation = ++this.generation;
     const controller = new AbortController();
@@ -159,3460 +134,689 @@ export class SidebarBootstrapCoordinator<T> {
       return value;
     });
     this.flight = { externalUserId, generation, controller, promise };
-    const clear = () => {
-      if (this.flight?.promise === promise) this.flight = null;
-    };
+    const clear = () => { if (this.flight?.promise === promise) this.flight = null; };
     void promise.then(clear, clear);
     return promise;
   }
-}
 
-function isSidebarTab(value: string | undefined): value is SidebarTab {
-  return (
-    value === "profile" ||
-    value === "questionnaires" ||
-    value === "timeline" ||
-    value === "chat_activity" ||
-    value === "other_staff_messages" ||
-    value === "orders" ||
-    value === "periodic_orders" ||
-    value === "products" ||
-    value === "products_periodic" ||
-    value === "materials" ||
-    value === "radar_links"
-  );
-}
-
-/**
- * Convert the profile write safety flags into a truthful local receipt sequence.
- * The API never claims that a WeCom effect has completed; an external effect with
- * no provider receipt remains outcome_unknown.
- */
-export function profileReceiptSteps(
-  safety: Pick<
-    SidebarProfileUpdateSafety,
-    "effect_queued" | "provider_execution_eligible"
-  >,
-): ReceiptStep[] {
-  const steps: ReceiptStep[] = [
-    { key: "accepted", label: "accepted · 本地已受理" },
-  ];
-  if (safety.effect_queued) {
-    steps.push({ key: "queued", label: "queued · 异步效果已登记" });
-    steps.push({
-      key: "outcome_unknown",
-      label: "outcome_unknown · 尚未收到企微回执",
-    });
-  }
-  return steps;
-}
-
-function createElement<K extends keyof HTMLElementTagNameMap>(
-  doc: Document,
-  tag: K,
-  className?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const element = doc.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
-}
-
-function markBound(element: HTMLElement): void {
-  (element as HTMLElement & { __dcBound?: boolean }).__dcBound = true;
-}
-
-function errorStatus(error: unknown): number | undefined {
-  const status = (error as { status?: unknown } | null)?.status;
-  return typeof status === "number" ? status : undefined;
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
-}
-
-function isProfileField(value: string | undefined): value is ProfileField {
-  return (
-    value !== undefined && (PROFILE_FIELDS as readonly string[]).includes(value)
-  );
-}
-
-function firstString(
-  value: Record<string, unknown> | undefined,
-  keys: string[],
-): string {
-  if (!value) return "";
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === "string" && candidate.trim())
-      return candidate.trim();
-  }
-  return "";
-}
-
-type ChatType = "all" | "private" | "group";
-type MaterialFilter = "q" | "category" | "tags";
-type ThumbnailStatus = "pending" | "ready" | "not_found" | "error";
-
-/** 本地时间轴/订单时间统一本地化展示；解析失败时原样返回服务端值。 */
-function formatDateTime(value: string): string {
-  const time = Date.parse(value);
-  if (!Number.isFinite(time)) return value;
-  const date = new Date(time);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatFileSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/** 仅掩码本次会话内用户亲自输入且绑定成功的 11 位手机号。 */
-function maskMobileDigits(digits: string): string {
-  return digits.length === 11
-    ? `${digits.slice(0, 3)}****${digits.slice(7)}`
-    : digits;
-}
-
-/**
- * remark 幂等键按 member_ref 固化：同一 member 的同一次编辑（同版本同内容）
- * 重试永远使用同一个键；内容或版本变化派生新键，避免与已完成的命令冲突。
- */
-function stableRemarkIdempotencyKey(
-  memberRef: string,
-  expectedVersion: number,
-  remark: string,
-): string {
-  const payload = `${memberRef}${expectedVersion}${remark}`;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < payload.length; i += 1) {
-    hash ^= payload.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `sidebar-periodic-remark-${memberRef}-${(hash >>> 0).toString(16)}`;
-}
-
-/** 时间线 event_type 中文映射；未命中的类型回退为「动态」并附原始类型小字。 */
-const TIMELINE_EVENT_LABELS: Record<string, string> = {
-  "customer.created": "客户创建",
-  "customer.updated": "客户资料更新",
-  "customer.stage_changed": "客户阶段变更",
-  "store.update": "客户资料更新",
-  "store.stage": "客户阶段变更",
-  "store.tag.add": "添加标签",
-  "store.tag.remove": "移除标签",
-  "survey.submitted": "提交问卷",
-  survey_submitted: "提交问卷",
-  "survey.callback": "问卷回调",
-  "order.checkout_created": "订单创建",
-  "order.payment_settled": "支付成功",
-  "order.refund_requested": "退款申请",
-  "order.refund_settled": "退款完成",
-  "extension.payment_succeeded": "支付成功",
-  "channel.acquisition.entrant": "渠道获客进入",
-  "channel.acquisition.entrant.reconciled": "渠道获客归并",
-  "wecom.callback": "企微回调",
-};
-
-const PERIODIC_STATE_LABELS: Record<string, string> = {
-  active: "生效中",
-  expired: "已过期",
-  removed: "已移除",
-};
-
-const THUMBNAIL_STATUS_LABELS: Record<ThumbnailStatus, string> = {
-  pending: "处理中",
-  ready: "就绪",
-  not_found: "无缩略图",
-  error: "读取失败",
-};
-
-function validateSidebarSafety(safety: SidebarSafety, label: string): void {
-  if (
-    !safety ||
-    safety.local_only !== true ||
-    safety.provider_execution_eligible !== false ||
-    safety.real_external_call_executed !== false
-  ) {
-    throw new Error(`${label}安全声明不完整，已停止渲染。`);
+  cancel(): void {
+    this.generation += 1;
+    this.flight?.controller.abort();
+    this.flight = null;
   }
 }
 
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
-class JSSDKTimeoutError extends Error {
-  constructor(readonly stage: "config" | "regular" | "agent") {
-    super(`企微 ${stage} 初始化超时。`);
-    this.name = "JSSDKTimeoutError";
-  }
-}
-
-// wx.config/wx.ready are global SDK state. A timed-out callback can still arrive,
-// so callers must treat the document as indeterminate instead of starting another
-// regular-config round in the same WebView.
-function withJSSDKTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  stage: "config" | "regular" | "agent",
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new JSSDKTimeoutError(stage)),
-      timeoutMs,
-    );
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
-export class SidebarController {
-  private readonly content: HTMLElement;
-  private readonly tabs: HTMLElement;
-  private readonly contextStatus: HTMLElement | null;
-  private readonly sdkStatus: HTMLElement | null;
-  private readonly customerName: HTMLElement | null;
-  private readonly customerMeta: HTMLElement | null;
-  private readonly bindingState: HTMLElement | null;
-  private readonly phoneEditButton: HTMLButtonElement | null;
-  private readonly phoneModal: HTMLElement | null;
-  private readonly phoneInput: HTMLInputElement | null;
-  private readonly phoneModalStatus: HTMLElement | null;
-  private readonly phoneModalSave: HTMLButtonElement | null;
+export class SidebarBridge {
+  private token = "";
+  private externalUserID = "";
+  private customerID = "";
+  private profileVersion = 0;
+  private profile: Json = {};
+  private periodicVersions = new Map<string, number>();
+  private startFlight: Promise<void> | null = null;
+  private refreshFlight: Promise<void> | null = null;
+  private contextGeneration = 0;
+  private contextController = new AbortController();
+  private contextNeedsValidation = false;
   private eventsBound = false;
-  private profileSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly pendingProfileFields = new Set<ProfileField>();
-  private savingProfile = false;
-  private saveAgain = false;
-  private externalUserId = "";
-  private contextToken = "";
-  private workbench: SidebarWorkbenchResponse | null = null;
-  private activeTab: SidebarTab = "profile";
-  private questionnaires: SidebarQuestionnaireResponse | null = null;
-  private questionnaireLoading = false;
-  private questionnaireError: unknown = null;
-  private questionnaireRequestVersion = 0;
-  private timeline: SidebarTimelineResponse | null = null;
-  private timelineLoading = false;
-  private timelineError: unknown = null;
-  private timelineRequestVersion = 0;
-  private chatActivity: SidebarChatActivityResponse | null = null;
-  private chatActivityType: ChatType = "all";
-  private chatActivityLoading = false;
-  private chatActivityError: unknown = null;
-  private chatActivityRequestVersion = 0;
-  private otherStaffChats: SidebarOtherStaffChatResponse | null = null;
-  private otherStaffChatsLoading = false;
-  private otherStaffChatsError: unknown = null;
-  private otherStaffChatsRequestVersion = 0;
-  private orders: SidebarOrderResponse | null = null;
-  private ordersLoading = false;
-  private ordersError: unknown = null;
-  private ordersRequestVersion = 0;
-  private periodicOrders: SidebarPeriodicOrderResponse | null = null;
-  private periodicOrdersLoading = false;
-  private periodicOrdersError: unknown = null;
-  private periodicOrdersRequestVersion = 0;
-  private readonly periodicRemarkDrafts = new Map<string, string>();
-  private readonly periodicRemarkStatuses = new Map<
-    string,
-    { message: string; failed: boolean }
-  >();
-  private readonly periodicRemarkSaving = new Set<string>();
-  private materials: SidebarMaterialResponse | null = null;
-  private materialFilters: Record<MaterialFilter, string> = {
-    q: "",
-    category: "",
-    tags: "",
-  };
-  private materialsLoading = false;
-  private materialsError: unknown = null;
-  private materialsRequestVersion = 0;
-  private products: SidebarShareableProductResponse | null = null;
-  private productsLoading = false;
-  private productsError: unknown = null;
-  private productsRequestVersion = 0;
-  private readonly productSendStatuses = new Map<
-    string,
-    { message: string; failed: boolean }
-  >();
-  private readonly imageSendStatuses = new Map<
-    number,
-    { message: string; failed: boolean }
-  >();
-  private readonly imageSendPreparing = new Set<number>();
+  private readonly bootstrapCoordinator = new SidebarBootstrapCoordinator<Json>();
+  private readonly sendFlights = new Map<string, Promise<Json>>();
+  private readonly sendIdempotencyKeys = new Map<string, string>();
+  private readonly unknownSendKeys = new Set<string>();
+
   private jssdkReady = false;
-  private jssdkAuthenticationRequired = false;
-  private jssdkFlight: Promise<boolean> | null = null;
-  private regularJSSDKState: "idle" | "initializing" | "ready" | "indeterminate" =
-    "idle";
+  private jssdkFlight: Promise<void> | null = null;
+  private regularJSSDKState: "idle" | "initializing" | "ready" | "indeterminate" = "idle";
+  private agentJSSDKState: "idle" | "initializing" | "failed" | "ready" | "indeterminate" = "idle";
   private regularJSSDKURL = "";
-  private regularJSSDKConfig: SidebarJSSDKConfig | null = null;
-  private regularJSSDKIdentity: { corpID: string; agentID: string; url: string } | null =
-    null;
-  private agentJSSDKState: "idle" | "initializing" | "failed" | "ready" | "indeterminate" =
-    "idle";
-  private degradedReady = false;
-  private initializationVersion = 0;
-  private tabRequestController = new AbortController();
-  private readonly bootstrapCoordinator =
-    new SidebarBootstrapCoordinator<SidebarBootstrapResponse>();
-  private readonly thumbnailStatuses = new Map<number, ThumbnailStatus>();
-  private readonly thumbnailURLs = new Map<number, string>();
-  private phoneBindingLoading = false;
-  /** 手机号绑定幂等键：同一 mobile 在结果未知期间复用，明确结果后清除。 */
-  private phoneBindKey: { mobile: string; key: string } | null = null;
-  private phoneBound = false;
-  private phoneMaskedMobile = "";
+  private regularJSSDKConfig: JSSDKConfig | null = null;
+  private regularJSSDKIdentity: { corpID: string; agentID: string; url: string } | null = null;
 
-  constructor(
-    private readonly api: BoundSidebarApi = sidebarApi,
-    private readonly doc: Document = document,
-  ) {
-    const content = doc.getElementById("content");
-    const tabs = doc.getElementById("tabs");
-    if (!content || !tabs)
-      throw new Error("Sidebar 页面缺少 content 或 tabs 容器");
-    this.content = content;
-    this.tabs = tabs;
-    this.contextStatus = doc.getElementById("sidebar-context-status");
-    this.sdkStatus = doc.getElementById("sidebar-jssdk-status");
-    this.customerName = doc.getElementById("customer-name");
-    this.customerMeta = doc.getElementById("customer-mobile");
-    this.bindingState = doc.getElementById("binding-state");
-    this.phoneEditButton = doc.getElementById(
-      "customer-phone-edit",
-    ) as HTMLButtonElement | null;
-    this.phoneModal = doc.getElementById("phone-modal");
-    this.phoneInput = doc.getElementById(
-      "sidebar-phone-input",
-    ) as HTMLInputElement | null;
-    this.phoneModalStatus = doc.getElementById("sidebar-phone-status");
-    this.phoneModalSave = doc.getElementById(
-      "phone-modal-save",
-    ) as HTMLButtonElement | null;
+  contextToken(): string { return this.token; }
+
+  async start(): Promise<void> {
+    this.bindContextEvents();
+    // A retained token is not proof that this WebView is still attached to
+    // the same external contact. Every privileged entry point verifies the
+    // current contact before it can reuse the scoped token or projection.
+    if (this.token) {
+      if (!this.contextNeedsValidation) return;
+      return this.refreshVisibleContext();
+    }
+    if (this.startFlight) return this.startFlight;
+    const flight = this.startTrustedContext();
+    this.startFlight = flight;
+    try { await flight; }
+    finally { if (this.startFlight === flight) this.startFlight = null; }
   }
 
-  async boot(): Promise<void> {
-    this.bindEvents();
-    this.renderTabs(false);
-    const callbackHandled = await this.handleOAuthCallback();
-    if (callbackHandled) return;
-    await this.initialize();
+  // Retry begins a new generation. It must never join an old JSSDK/contact
+  // flight: a late callback from that flight is untrusted after the user has
+  // asked to retry or OAuth has renewed the WebView.
+  async retry(): Promise<void> {
+    this.bindContextEvents();
+    this.invalidateContext();
+    const flight = this.startTrustedContext();
+    this.startFlight = flight;
+    try { await flight; }
+    finally { if (this.startFlight === flight) this.startFlight = null; }
   }
 
-  private bindEvents(): void {
+  private bindContextEvents(): void {
     if (this.eventsBound) return;
     this.eventsBound = true;
-    this.phoneEditButton?.addEventListener("click", () =>
-      this.openPhoneModal(),
-    );
-    this.doc
-      .getElementById("phone-modal-close")
-      ?.addEventListener("click", () => this.closePhoneModal());
-    this.doc
-      .getElementById("phone-modal-cancel")
-      ?.addEventListener("click", () => this.closePhoneModal());
-    this.phoneModalSave?.addEventListener("click", () => void this.bindPhone());
-    this.phoneModal?.addEventListener("click", (event) => {
-      if (event.target === this.phoneModal) this.closePhoneModal();
+    const refresh = () => {
+      this.contextNeedsValidation = true;
+      void this.refreshVisibleContext();
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refresh();
     });
-    this.tabs.addEventListener("click", (event) => {
-      const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
-        "[data-sidebar-tab]",
-      );
-      if (!button || button.disabled) return;
-      const tab = button.dataset.sidebarTab;
-      if (isSidebarTab(tab)) {
-        this.activateTab(tab);
-      } else {
-        this.setContextStatus(
-          "该板块尚未接入当前 OpenAPI，已安全关闭。",
-          "warn",
-        );
-      }
-    });
-    this.content.addEventListener("click", (event) => {
-      const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
-        "[data-sidebar-subtab]",
-      );
-      if (!button || button.disabled) return;
-      const tab = button.dataset.sidebarSubtab;
-      if (isSidebarTab(tab)) this.activateTab(tab);
-    });
-    this.content.addEventListener("input", (event) => {
-      const target = event.target as HTMLInputElement | HTMLTextAreaElement;
-      const field = target.dataset.profileField;
-      if (isProfileField(field) && this.workbench) {
-        this.workbench.profile[field] = target.value;
-        this.pendingProfileFields.add(field);
-        this.setProfileSaveStatus("待保存：停止编辑 520ms 后自动保存。");
-        this.scheduleProfileSave();
-        return;
-      }
-      const materialFilter = target.dataset.materialFilter as
-        MaterialFilter | undefined;
-      if (materialFilter && materialFilter in this.materialFilters)
-        this.materialFilters[materialFilter] = target.value;
-      const memberRef = target.dataset.periodicRemark;
-      if (memberRef) this.periodicRemarkDrafts.set(memberRef, target.value);
-    });
-    this.content.addEventListener("change", (event) => {
-      const target = event.target as HTMLSelectElement;
-      if (target.dataset.chatFilter !== "chat_type") return;
-      const value = target.value;
-      this.chatActivityType =
-        value === "private" || value === "group" ? value : "all";
-      this.chatActivity = null;
-      this.chatActivityError = null;
-      this.renderActiveContent();
-      void this.loadChatActivity();
-    });
-    this.content.addEventListener("click", (event) => {
-      const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
-        "[data-sidebar-action], [data-material-keyword]",
-      );
-      if (!button || button.disabled) return;
-      const keyword = button.dataset.materialKeyword;
-      if (keyword !== undefined) {
-        this.materialFilters.q = keyword;
-        this.renderActiveContent();
-        void this.loadMaterials();
-        return;
-      }
-      const action = button.dataset.sidebarAction;
-      if (action === "retry-context") {
-        button.disabled = true;
-        void this.initialize();
-      } else if (action === "reload-sidebar") {
-        button.disabled = true;
-        this.reloadSidebar();
-      } else if (action === "oauth") {
-        button.disabled = true;
-        void this.startOAuth(button);
-      } else if (action === "retry-questionnaires") {
-        button.disabled = true;
-        void this.loadQuestionnaires();
-      } else if (action === "retry-timeline") {
-        button.disabled = true;
-        void this.loadTimeline();
-      } else if (action === "timeline-more") {
-        void this.loadTimeline(this.timeline?.next_cursor);
-      } else if (action === "retry-chat-activity") {
-        button.disabled = true;
-        void this.loadChatActivity();
-      } else if (action === "chat-activity-more") {
-        void this.loadChatActivity(this.chatActivity?.next_cursor);
-      } else if (action === "retry-other-staff-chats") {
-        button.disabled = true;
-        void this.loadOtherStaffChats();
-      } else if (action === "retry-orders") {
-        button.disabled = true;
-        void this.loadOrders(this.orders?.items.length || 0);
-      } else if (action === "orders-more") {
-        void this.loadOrders(this.orders?.items.length || 0);
-      } else if (action === "retry-periodic-orders") {
-        button.disabled = true;
-        void this.loadPeriodicOrders(this.periodicOrders?.items.length || 0);
-      } else if (action === "periodic-orders-more") {
-        void this.loadPeriodicOrders(this.periodicOrders?.items.length || 0);
-      } else if (action === "periodic-remark-save") {
-        void this.savePeriodicRemark(button);
-      } else if (action === "retry-products") {
-        button.disabled = true;
-        void this.loadProducts();
-      } else if (action === "send-product") {
-        const product = this.findShareableProduct(
-          button.dataset.productKind,
-          Number(button.dataset.productId),
-        );
-        if (product) void this.sendProduct(product);
-      } else if (action === "send-material-image") {
-        const imageID = Number(button.dataset.materialId);
-        if (Number.isSafeInteger(imageID) && imageID > 0)
-          void this.sendMaterialImage(imageID);
-      } else if (action === "retry-materials") {
-        button.disabled = true;
-        void this.loadMaterials();
-      } else if (action === "materials-search") {
-        void this.loadMaterials();
-      } else if (action === "materials-clear") {
-        this.materialFilters = { q: "", category: "", tags: "" };
-        this.renderActiveContent();
-        void this.loadMaterials();
-      } else if (action === "materials-more") {
-        const response = this.materials;
-        if (response)
-          void this.loadMaterials(response.offset + response.items.length);
-      } else if (action === "refresh-timeline") {
-        button.disabled = true;
-        void this.loadTimeline();
-      } else if (action === "open-related-questionnaires") {
-        this.activateTab("questionnaires");
-      } else if (action === "open-related-orders") {
-        this.activateTab("orders");
-      }
-    });
+    window.addEventListener("focus", refresh);
   }
 
-  private async initialize(): Promise<void> {
-    const initializationVersion = ++this.initializationVersion;
-    this.cancelTabRequests();
-    this.setContextStatus("正在识别当前客户并准备本地上下文…");
-    this.renderTabs(false);
-    this.renderContextPending();
-    const query = new URLSearchParams(
-      this.doc.defaultView?.location.search || "",
-    );
-    let externalUserid = this.queryExternalUserid(query);
-
-    let sdkPromise: Promise<boolean>;
-    if (externalUserid) {
-      // A legacy query candidate remains a read-only compatibility input. The
-      // server still derives the employee from the HttpOnly sidebar session and
-      // verifies the corp/employee/customer relationship before minting a
-      // context token; the browser never upgrades this value into identity.
-      this.externalUserId = externalUserid;
-      sdkPromise = this.prepareJssdk();
-    } else {
-      const sdkReady = await this.prepareJssdk();
-      if (initializationVersion !== this.initializationVersion) return;
-      if (!sdkReady) {
-        if (this.jssdkAuthenticationRequired) this.renderViewerSessionRequired();
-        else this.renderJSSDKInitializationFailure();
-        return;
-      }
+  private async refreshVisibleContext(): Promise<void> {
+    if (this.refreshFlight) return this.refreshFlight;
+    const flight = (async () => {
+      if (!this.token) return this.start();
+      const generation = this.contextGeneration;
       try {
-        externalUserid = await this.resolveExternalUseridFromWx();
-        // A prior WebView/native callback may complete after the user chose
-        // “retry”. Do not let that older contact candidate mint a context.
-        if (initializationVersion !== this.initializationVersion) return;
+        const externalUserID = await this.resolveWeComExternalUserID(generation);
+        this.assertGeneration(generation);
+        if (!externalUserID || externalUserID !== this.externalUserID) {
+          this.invalidateContext();
+          return this.start();
+        }
+        this.contextNeedsValidation = false;
       } catch (error) {
-        if (initializationVersion !== this.initializationVersion) return;
-        this.renderContextError(
-          "企微客户上下文读取失败，请从企微客户侧边栏重新打开。",
-          errorMessage(error, "企微上下文读取失败"),
-        );
-        return;
+        // An activated WebView whose current contact cannot be proven must not
+        // continue using a prior contact's token or cached projection.
+        if (generation === this.contextGeneration) this.invalidateContext();
+        throw error;
       }
-      sdkPromise = Promise.resolve(true);
-    }
+    })();
+    this.refreshFlight = flight;
+    try { await flight; }
+    finally { if (this.refreshFlight === flight) this.refreshFlight = null; }
+  }
 
-    if (!externalUserid) {
-      this.renderContextError("未取得可信的企微客户上下文，未创建 Sidebar 上下文。");
-      return;
-    }
+  private invalidateContext(): void {
+    this.contextGeneration += 1;
+    this.token = "";
+    this.externalUserID = "";
+    this.customerID = "";
+    this.profile = {};
+    this.profileVersion = 0;
+    this.contextNeedsValidation = false;
+    this.contextController.abort();
+    this.contextController = new AbortController();
+    this.bootstrapCoordinator.cancel();
+    window.dispatchEvent(new CustomEvent("aicrm-sidebar-context-invalidated"));
+  }
 
-    this.externalUserId = externalUserid;
-    this.setContextStatus("正在读取客户范围的本地工作台…");
+  private assertGeneration(generation: number): void {
+    if (generation !== this.contextGeneration) {
+      const error = new Error("Sidebar 客户上下文已切换，已拒绝过期响应。");
+      error.name = "AbortError";
+      throw error;
+    }
+  }
+
+  private async startTrustedContext(): Promise<void> {
+    const generation = this.contextGeneration;
+    const query = new URL(window.location.href).searchParams;
+    const queryExternal = oneString(Object.fromEntries(query), ["external_userid", "externalUserid", "externalUserId"]);
+    let sdkExternal = "";
     try {
-      const bootstrap = await this.bootstrap(externalUserid);
-      if (initializationVersion !== this.initializationVersion) return;
-      if (bootstrap.state === "viewer_session_required") {
-        this.renderViewerSessionRequired();
-        return;
-      }
-      if (bootstrap.state === "customer_not_bound") {
-        this.renderContextError("当前员工无权查看该客户，客户上下文未建立。");
-        return;
-      }
-      if (
-        bootstrap.state !== "ready" ||
-        !bootstrap.context_token ||
-        !bootstrap.workbench
-      ) {
-        this.renderContextError(
-          `Sidebar 上下文不可用：${bootstrap.state || "unknown"}`,
-        );
-        return;
-      }
-      this.contextToken = bootstrap.context_token;
-      this.degradedReady = false;
-      this.renderWorkbench(bootstrap.workbench);
-      if (externalUserid) {
-        this.setContextStatus(
-          "客户画像已就绪；企微 JSSDK 正在并行初始化。",
-          "warn",
-        );
-      }
-      const sdkReady = await sdkPromise;
-      if (initializationVersion !== this.initializationVersion) return;
-      this.degradedReady = !sdkReady;
-      this.renderActiveContent();
-      this.setContextStatus(
-        sdkReady
-          ? "客户范围工作台已就绪：当前数据来自本地 CRM；真实企微外部效果仍需单独回执。"
-          : "degraded_ready：客户画像和本地只读能力可用；企微 JSSDK 未就绪，发送按钮已禁用。",
-        sdkReady ? "" : "warn",
-      );
+      sdkExternal = await this.resolveWeComExternalUserID(generation);
     } catch (error) {
-      if (initializationVersion !== this.initializationVersion) return;
-      const status = errorStatus(error);
-      const message =
-        status === 401
-          ? "登录状态已失效，请重新打开 Sidebar 或完成 OAuth 授权。"
-          : status === 403
-            ? "当前账号无权查看该客户，Sidebar 已安全关闭。"
-            : errorMessage(error, "Sidebar 工作台读取失败");
-      this.renderContextError(message);
+      if (error instanceof SidebarAuthenticationRequiredError || errorStatus(error) === 401) {
+        this.startOAuth();
+        throw failure("正在恢复员工登录态。");
+      }
+      // Query input remains a compatibility candidate only. The server still
+      // verifies its current HttpOnly viewer session before minting the token.
+      if (!queryExternal) throw error;
     }
-  }
-
-  private bootstrap(externalUserId: string): Promise<SidebarBootstrapResponse> {
-    return this.bootstrapCoordinator.run(externalUserId, (signal) =>
-      this.api.bootstrap({ external_userid: externalUserId }, signal),
-    );
-  }
-
-  private cancelTabRequests(): void {
-    this.tabRequestController.abort();
-    this.tabRequestController = new AbortController();
-    this.questionnaireRequestVersion += 1;
-    this.timelineRequestVersion += 1;
-    this.chatActivityRequestVersion += 1;
-    this.otherStaffChatsRequestVersion += 1;
-    this.ordersRequestVersion += 1;
-    this.periodicOrdersRequestVersion += 1;
-    this.productsRequestVersion += 1;
-    this.materialsRequestVersion += 1;
-  }
-
-  private queryExternalUserid(query: URLSearchParams): string {
-    for (const key of ["external_userid", "externalUserid", "externalUserId"]) {
-      const value = query.get(key)?.trim();
-      if (value) return value;
+    this.assertGeneration(generation);
+    const externalUserID = sdkExternal || queryExternal;
+    if (!externalUserID) throw failure("未识别到客户，请从企微客户侧边栏重新打开。");
+    const bootstrap = await this.bootstrapCoordinator.run(externalUserID, (signal) => this.raw("/api/sidebar/v2/bootstrap", {
+      method: "POST",
+      signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ external_userid: externalUserID }),
+    }, { allowViewerSessionState: true }));
+    this.assertGeneration(generation);
+    if (bootstrap.state === "viewer_session_required") {
+      this.startOAuth();
+      throw failure("正在恢复员工登录态。");
     }
-    return "";
+    if (bootstrap.state !== "ready" || !String(bootstrap.context_token || "").trim()) {
+      throw failure(bootstrap.state === "customer_not_bound" ? "当前企微联系人尚未绑定本地客户。" : "侧边栏上下文未就绪。");
+    }
+    const customerID = Number(bootstrap.customer_id || bootstrap.workbench?.profile?.customer_id || 0);
+    if (!Number.isSafeInteger(customerID) || customerID < 1) throw failure("侧边栏未返回可信客户主键。");
+    this.externalUserID = externalUserID;
+    this.customerID = String(customerID);
+    this.token = String(bootstrap.context_token);
+    this.rememberWorkbench(bootstrap.workbench || {});
+    this.contextNeedsValidation = false;
   }
 
-  private currentPageUrl(): string {
-    const view = this.doc.defaultView;
-    if (!view) return "";
-    return view.location.href.split("#", 1)[0];
+  private startOAuth(): void {
+    const next = window.location.pathname + window.location.search;
+    const target = `/api/sidebar/oauth/start?next=${encodeURIComponent(next)}`;
+    // assign is deliberately automatic for a 401/session-required response;
+    // no prior contact token is retained while OAuth re-establishes the viewer.
+    window.dispatchEvent(new CustomEvent("aicrm-sidebar-oauth-required", { detail: { target } }));
+    window.location.assign(target);
   }
 
-  private nextPath(): string {
-    const view = this.doc.defaultView;
-    if (!view) return "/sidebar/index.html";
-    const url = new URL(view.location.href);
-    url.searchParams.delete("code");
-    url.searchParams.delete("state");
-    const query = url.searchParams.toString();
-    return url.pathname + (query ? `?${query}` : "");
+  private currentPageURL(): string {
+    return window.location.href.split("#", 1)[0];
   }
 
-  private prepareJssdk(): Promise<boolean> {
-    if (this.jssdkReady) return Promise.resolve(true);
+  private async resolveWeComExternalUserID(generation: number): Promise<string> {
+    await this.prepareJSSDK();
+    this.assertGeneration(generation);
+    const wx = window.wx;
+    if (!wx || typeof wx.invoke !== "function") throw failure("企微 SDK 未载入，请从企微客户侧边栏重新打开。");
+    await this.invoke("getContext", {});
+    this.assertGeneration(generation);
+    const contact = await this.invoke("getCurExternalContact", {});
+    this.assertGeneration(generation);
+    const externalUserID = oneString(contact, ["external_userid", "externalUserid", "externalUserId", "userId", "user_id"]);
+    if (!externalUserID) throw failure("企微未返回当前客户 external_userid。");
+    return externalUserID;
+  }
+
+  private async prepareJSSDK(): Promise<void> {
+    if (this.jssdkReady) return;
     if (this.jssdkFlight) return this.jssdkFlight;
-    const flight = this.prepareJssdkAttempt();
+    const flight = this.prepareJSSDKAttempt();
     this.jssdkFlight = flight;
-    void flight.then(
-      () => {
-        if (this.jssdkFlight === flight) this.jssdkFlight = null;
-      },
-      () => {
-        if (this.jssdkFlight === flight) this.jssdkFlight = null;
-      },
-    );
-    return flight;
+    try { await flight; }
+    finally { if (this.jssdkFlight === flight) this.jssdkFlight = null; }
   }
 
-  private async prepareJssdkAttempt(): Promise<boolean> {
-    this.jssdkAuthenticationRequired = false;
-    const view = this.doc.defaultView;
-    const wx = view?.wx;
-    if (!wx) {
-      this.setSdkStatus("unavailable", "企微 SDK 未载入");
-      this.setContextStatus("企微 SDK 未载入：请从企微客户侧边栏打开。", "warn");
-      return false;
+  private async prepareJSSDKAttempt(): Promise<void> {
+    const wx = window.wx;
+    if (!wx) throw failure("企微 SDK 未载入，请从企微客户侧边栏重新打开。");
+    const url = this.currentPageURL();
+    if (!url || url.length > 4096) throw failure("JSSDK 配置读取失败：当前页面 URL 无效。");
+    if (this.regularJSSDKState === "indeterminate" || this.agentJSSDKState === "indeterminate") {
+      throw failure("企微 JSSDK 上一次初始化未确认；请关闭并重新打开侧边栏后再试。");
     }
-    const url = this.currentPageUrl();
-    if (!url || url.length > 4096) {
-      this.setSdkStatus("error", "JSSDK URL 无效");
-      this.setContextStatus("JSSDK 配置读取失败：当前页面 URL 无效。", "error");
-      return false;
-    }
-    if (
-      this.regularJSSDKState === "indeterminate" ||
-      this.agentJSSDKState === "indeterminate"
-    ) {
-      this.setSdkStatus("error", "JSSDK 初始化状态未确认");
-      this.setContextStatus(
-        "企微 JSSDK 上一次初始化未确认；请关闭并重新打开侧边栏后再试。",
-        "error",
-      );
-      return false;
-    }
-    if (
-      this.regularJSSDKState === "ready" &&
-      this.regularJSSDKURL !== url
-    ) {
+    if (this.regularJSSDKState === "ready" && this.regularJSSDKURL !== url) {
       this.regularJSSDKState = "indeterminate";
-      this.setSdkStatus("error", "JSSDK 页面 URL 已变化");
-      this.setContextStatus(
-        "企微 JSSDK 已按另一页面地址初始化；请关闭并重新打开侧边栏后再试。",
-        "error",
-      );
-      return false;
+      throw failure("企微 JSSDK 已按另一页面地址初始化；请关闭并重新打开侧边栏后再试。");
     }
-
-    this.setSdkStatus("loading", "读取 JSSDK…");
-    // An explicit agentConfig failure retains only the confirmed regular SDK
-    // state. It must fetch a fresh regular/agent signature pair: cache removal
-    // is best-effort and a stale session value must never survive that retry.
     const refreshAgentSignature = this.agentJSSDKState === "failed";
-    let config = refreshAgentSignature ? null : this.regularJSSDKConfig;
+    let config = refreshAgentSignature ? null : this.regularJSSDKConfig || this.cachedJSSDKConfig(url);
     try {
-      if (!config && !refreshAgentSignature) {
-        config = this.cachedJSSDKConfig(url);
-      }
       if (!config) {
-        config = await withJSSDKTimeout(
-          this.api.jssdkConfig(url),
-          SDK_TIMEOUT_MS,
-          "config",
-        );
-        // Never retain malformed or stale server data for a later document.
-        this.validateJSSDKConfig(config);
-        this.cacheJSSDKConfig(config);
+        config = await this.withSDKTimeout(this.jssdkConfig(url), "config");
+        this.validateJSSDKConfig(config, url);
+        this.cacheJSSDKConfig(url, config);
       }
-      this.validateJSSDKConfig(config);
-      this.validateRegularJSSDKIdentity(config);
+      this.validateJSSDKConfig(config, url);
+      this.validateRegularJSSDKIdentity(config, url);
     } catch (error) {
       this.jssdkReady = false;
       this.clearCachedJSSDKConfig();
-      if (errorStatus(error) === 401) {
-        this.jssdkAuthenticationRequired = true;
-        this.setSdkStatus("error", "需要企微 OAuth 授权");
-        return false;
-      }
-      this.setSdkStatus("error", "JSSDK 配置失败");
-      this.setContextStatus(
-        `JSSDK 配置读取失败：${errorMessage(error, "请确认企微配置后重试。")}`,
-        "error",
-      );
-      return false;
+      if (errorStatus(error) === 401) throw new SidebarAuthenticationRequiredError();
+      throw error;
     }
-
     if (this.regularJSSDKState !== "ready") {
       this.regularJSSDKState = "initializing";
       try {
-        await withJSSDKTimeout(
-          this.configureRegular(wx, config),
-          SDK_TIMEOUT_MS,
-          "regular",
-        );
+        await this.withSDKTimeout(this.configureRegular(wx, config), "regular config");
         this.regularJSSDKState = "ready";
         this.regularJSSDKURL = url;
         this.regularJSSDKConfig = config;
-        this.regularJSSDKIdentity = {
-          corpID: config.corpID,
-          agentID: config.agentID,
-          url: config.url,
-        };
+        this.regularJSSDKIdentity = { corpID: config.corp_id, agentID: String(config.agent_id), url };
       } catch (error) {
         this.jssdkReady = false;
         this.regularJSSDKState = "indeterminate";
         this.clearCachedJSSDKConfig();
-        this.setSdkStatus("error", "JSSDK regular config 失败");
-        this.setContextStatus(
-          error instanceof JSSDKTimeoutError
-            ? "企微 regular config 初始化超时；请关闭并重新打开侧边栏后再试。"
-            : `JSSDK regular config 失败：${errorMessage(error, "请确认企微配置后重试。")}`,
-          "error",
-        );
-        return false;
+        throw error;
       }
     }
-
     this.agentJSSDKState = "initializing";
     try {
-      await withJSSDKTimeout(
-        this.configureAgent(wx, config),
-        SDK_TIMEOUT_MS,
-        "agent",
-      );
+      await this.withSDKTimeout(this.configureAgent(wx, config), "agentConfig");
       this.agentJSSDKState = "ready";
-      this.setSdkStatus("ready", "JSSDK 就绪");
       this.jssdkReady = true;
-      return true;
     } catch (error) {
       this.jssdkReady = false;
       this.clearCachedJSSDKConfig();
-      this.agentJSSDKState =
-        error instanceof JSSDKTimeoutError ? "indeterminate" : "failed";
-      this.setSdkStatus("error", "JSSDK agentConfig 失败");
-      this.setContextStatus(
-        error instanceof JSSDKTimeoutError
-          ? "企微 agentConfig 初始化超时；请关闭并重新打开侧边栏后再试。"
-          : `JSSDK agentConfig 失败：${errorMessage(error, "请确认企微配置后重试。")}`,
-        "error",
-      );
-      return false;
+      this.agentJSSDKState = error instanceof JSSDKTimeoutError ? "indeterminate" : "failed";
+      throw error;
     }
   }
 
-  private cachedJSSDKConfig(url: string): SidebarJSSDKConfig | null {
-    try {
-      const storage = this.doc.defaultView?.sessionStorage;
-      if (!storage) return null;
-      const raw = storage.getItem(SDK_CACHE_KEY);
-      if (!raw) return null;
-      const cached = JSON.parse(raw) as {
-        url?: unknown;
-        usable_until?: unknown;
-        config?: SidebarJSSDKConfig;
+  private withSDKTimeout<T>(promise: Promise<T>, stage: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new JSSDKTimeoutError(stage)), SDK_TIMEOUT_MS);
+      void promise.then((value) => { window.clearTimeout(timer); resolve(value); }, (error) => { window.clearTimeout(timer); reject(error); });
+    });
+  }
+
+  private async jssdkConfig(url: string): Promise<JSSDKConfig> {
+    return this.raw(`/api/sidebar/jssdk-config?url=${encodeURIComponent(url)}`) as Promise<JSSDKConfig>;
+  }
+
+  private validateJSSDKConfig(config: JSSDKConfig, url: string): void {
+    const valid = (signature: JSSDKSignature | undefined) => {
+      if (!signature) return false;
+      return Number.isSafeInteger(signature.timestamp) && signature.timestamp > 0 && Boolean(signature.nonceStr) && Boolean(signature.signature);
+    };
+    if (!config || !config.corp_id || !config.agent_id || !valid(config.config) || !valid(config.agent_config)) {
+      throw failure("JSSDK regular 或 agent_config 签名不完整。");
+    }
+    if (url !== this.currentPageURL()) throw failure("JSSDK 页面 URL 已改变；请重新打开侧边栏。");
+  }
+
+  private validateRegularJSSDKIdentity(config: JSSDKConfig, url: string): void {
+    const identity = this.regularJSSDKIdentity;
+    if (this.regularJSSDKState === "ready" && (!identity || identity.corpID !== config.corp_id || identity.agentID !== String(config.agent_id) || identity.url !== url)) {
+      throw failure("JSSDK 重试返回了与已确认 regular 状态不一致的身份。");
+    }
+  }
+
+  private configuredAPIs(value: unknown, fallback: string[]): string[] {
+    const declared = Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim()) : [];
+    return declared.length ? declared : fallback;
+  }
+
+  private configureRegular(wx: WX, config: JSSDKConfig): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        error ? reject(error) : resolve();
       };
-      if (
-        cached.url !== url ||
-        typeof cached.usable_until !== "number" ||
-        cached.usable_until <= Date.now() ||
-        !cached.config ||
-        cached.config.url !== url
-      ) {
+      try {
+        wx.error((result) => finish(failure(`企微 config 失败：${firstString(result, ["errMsg", "errmsg", "err_msg", "message"]) || "未知错误"}`)));
+        wx.ready(() => finish());
+        wx.config({ beta: true, debug: false, appId: config.corp_id, timestamp: config.config.timestamp, nonceStr: config.config.nonceStr, signature: config.config.signature, jsApiList: this.configuredAPIs(config.config.jsApiList, REGULAR_APIS) });
+      } catch (error) { finish(failure(`企微 config 失败：${errorMessage(error, "未知错误")}`)); }
+    });
+  }
+
+  private configureAgent(wx: WX, config: JSSDKConfig): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        error ? reject(error) : resolve();
+      };
+      try {
+        wx.agentConfig({ corpid: config.corp_id, agentid: String(config.agent_id), timestamp: config.agent_config.timestamp, nonceStr: config.agent_config.nonceStr, signature: config.agent_config.signature, jsApiList: this.configuredAPIs(config.agent_config.jsApiList, AGENT_APIS), success: () => finish(), fail: (result: Json) => finish(failure(`企微 agentConfig 失败：${firstString(result, ["errMsg", "errmsg", "err_msg", "message"]) || "未知错误"}`)) });
+      } catch (error) { finish(failure(`企微 agentConfig 失败：${errorMessage(error, "未知错误")}`)); }
+    });
+  }
+
+  async invoke(method: string, payload: Json): Promise<Json> {
+    const wx = window.wx;
+    if (!wx || typeof wx.invoke !== "function") throw failure("企微发送能力未加载，请从企微客户侧边栏重新打开。");
+    return this.withSDKTimeout(new Promise<Json>((resolve, reject) => {
+      try {
+        wx.invoke(method, payload, (result) => {
+          const response = result || {};
+          const status = firstString(response, ["errMsg", "errmsg", "err_msg", "message"]);
+          // An absent result or status is not evidence that WeCom accepted the
+          // operation. Only its documented :ok completion may be recorded.
+          if (!status || !/:ok$/i.test(status)) {
+            reject(failure(`企微 ${method} 失败：${status || "未返回确认结果"}`));
+            return;
+          }
+          resolve(response);
+        });
+      } catch (error) { reject(failure(`企微 ${method} 失败：${errorMessage(error, "未知错误")}`)); }
+    }), method);
+  }
+
+  private cachedJSSDKConfig(url: string): JSSDKConfig | null {
+    try {
+      const raw = window.sessionStorage?.getItem(SDK_CACHE_KEY);
+      if (!raw) return null;
+      const cached = JSON.parse(raw) as { url?: unknown; usable_until?: unknown; config?: JSSDKConfig };
+      if (cached.url !== url || typeof cached.usable_until !== "number" || cached.usable_until <= Date.now() || !cached.config) {
         this.clearCachedJSSDKConfig();
         return null;
       }
-      this.validateJSSDKConfig(cached.config);
+      this.validateJSSDKConfig(cached.config, url);
       return cached.config;
-    } catch {
-      this.clearCachedJSSDKConfig();
-      return null;
-    }
+    } catch { this.clearCachedJSSDKConfig(); return null; }
+  }
+
+  private cacheJSSDKConfig(url: string, config: JSSDKConfig): void {
+    try {
+      if (url !== this.currentPageURL()) return;
+      window.sessionStorage?.setItem(SDK_CACHE_KEY, JSON.stringify({ url, usable_until: Date.now() + SDK_CACHE_MAX_MS - SDK_CACHE_SAFETY_MS, config }));
+    } catch { /* session storage is optional cache only */ }
   }
 
   private clearCachedJSSDKConfig(): void {
+    try { window.sessionStorage?.removeItem(SDK_CACHE_KEY); } catch { /* no storage is safe */ }
+  }
+
+  private async confirmSendScope(expected?: SendScope): Promise<SendScope> {
+    const generation = this.contextGeneration;
+    const externalUserID = await this.resolveWeComExternalUserID(generation);
+    this.assertGeneration(generation);
+    if (!this.token || !this.customerID || externalUserID !== this.externalUserID) {
+      this.invalidateContext();
+      throw failure("当前企微联系人已变化，已停止发送；请重新确认当前客户。");
+    }
+    const scope = { customerID: this.customerID, externalUserID, token: this.token, generation };
+    if (expected && (scope.customerID !== expected.customerID || scope.externalUserID !== expected.externalUserID || scope.token !== expected.token || scope.generation !== expected.generation)) {
+      throw failure("发送期间客户上下文已变化，已停止发送。");
+    }
+    return scope;
+  }
+
+  private async scopedForSend(path: string, options: RequestOptions, scope: SendScope): Promise<Json> {
+    const { timeoutMs: _timeout, retryCount: _retry, retryDelayMs: _delay, signal, ...init } = options;
+    const payload = await this.raw(path, { ...init, signal: anySignal([signal ?? undefined, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": scope.token, ...(init.headers || {}) } });
+    if (scope.generation !== this.contextGeneration || scope.token !== this.token) throw failure("发送期间客户上下文已变化，已停止发送。");
+    return payload;
+  }
+
+  private completeSendForScope(scope: SendScope, intentID: number, grant: string, outcome: "client_executed" | "outcome_unknown" | "final_failed", evidence: string): Promise<Json> {
+    return this.raw(`/api/sidebar/v2/send-intents/${intentID}/outcome`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Sidebar-Context-Token": scope.token },
+      body: JSON.stringify({ grant, outcome, evidence }),
+    });
+  }
+
+  async send(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }): Promise<Json> {
+    await this.start();
+    const scope = await this.confirmSendScope();
+    const key = `customer:${scope.customerID}:${input.resource_kind}:${String(input.resource_id)}`;
+    if (this.unknownSendKeys.has(key)) throw failure("上次发送结果未确认，禁止创建新的发送意图；请等待对账或人工确认。");
+    const existing = this.sendFlights.get(key);
+    if (existing) return existing;
+    const flight = this.sendOnce(input, key, scope);
+    this.sendFlights.set(key, flight);
+    try { return await flight; }
+    finally { if (this.sendFlights.get(key) === flight) this.sendFlights.delete(key); }
+  }
+
+  private async sendOnce(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }, key: string, scope: SendScope): Promise<Json> {
+    let intentKey = this.sendIdempotencyKeys.get(key);
+    if (!intentKey) {
+      intentKey = idempotency("sidebar-send");
+      this.sendIdempotencyKeys.set(key, intentKey);
+    }
+    const accepted = await this.scopedForSend("/api/sidebar/v2/send-intents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": intentKey },
+      body: JSON.stringify(input),
+    }, scope);
+    const payload = accepted.payload || {};
+    const grant = String(accepted.grant || "");
+    const intentID = Number(accepted.intent_id || 0);
+    if (accepted.replayed && !grant && Number.isInteger(intentID) && intentID > 0) {
+      this.unknownSendKeys.add(key);
+      throw failure("发送意图已受理，但执行凭据未返回；已锁定本次发送，等待对账或人工确认。");
+    }
+    if (!grant || !Number.isInteger(intentID) || intentID < 1 || !payload.msgtype) throw failure("发送意图未返回可执行回执。");
     try {
-      this.doc.defaultView?.sessionStorage?.removeItem(SDK_CACHE_KEY);
-    } catch {
-      // Storage may be disabled; the in-document state remains authoritative.
-    }
-  }
-
-  private cacheJSSDKConfig(config: SidebarJSSDKConfig): void {
-    try {
-      const storage = this.doc.defaultView?.sessionStorage;
-      if (!storage || config.url !== this.currentPageUrl()) return;
-      const usableUntil = Date.now() + SDK_CACHE_MAX_MS - SDK_CACHE_SAFETY_MS;
-      storage.setItem(
-        SDK_CACHE_KEY,
-        JSON.stringify({ url: config.url, usable_until: usableUntil, config }),
-      );
-    } catch {
-      // A session without storage remains correct; it only loses the short cache.
-    }
-  }
-
-  private validateJSSDKConfig(config: SidebarJSSDKConfig): void {
-    const validSignature = (signature: SidebarJSSDKConfig["config"]) =>
-      Number.isSafeInteger(signature?.timestamp) &&
-      signature.timestamp > 0 &&
-      Boolean(signature.nonce) &&
-      Boolean(signature.signature);
-    if (
-      !config ||
-      !config.corpID ||
-      !config.agentID ||
-      !config.url ||
-      !validSignature(config.config) ||
-      !validSignature(config.agentConfig)
-    ) {
-      throw new Error("JSSDK regular 或 agent_config 签名不完整。");
-    }
-  }
-
-
-  private validateRegularJSSDKIdentity(config: SidebarJSSDKConfig): void {
-    const identity = this.regularJSSDKIdentity;
-    if (
-      this.regularJSSDKState === "ready" &&
-      (!identity ||
-        identity.corpID !== config.corpID ||
-        identity.agentID !== config.agentID ||
-        identity.url !== config.url)
-    ) {
-      throw new Error("JSSDK 重试返回了与已确认 regular 状态不一致的身份。");
-    }
-  }
-
-  private configuredAPIs(declared: string[], fallback: string[]): string[] {
-    const valid = Array.isArray(declared)
-      ? declared.filter((value) => typeof value === "string" && value.trim() !== "")
-      : [];
-    return valid.length > 0 ? valid : fallback;
-  }
-
-  private configureRegular(wx: SidebarWx, config: SidebarJSSDKConfig): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      if (typeof wx.config !== "function" || typeof wx.ready !== "function" || typeof wx.error !== "function") {
-        reject(new Error("当前企微 SDK 不支持 regular config。"));
-        return;
-      }
-      let settled = false;
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        if (error) reject(error);
-        else resolve();
-      };
+      await this.confirmSendScope(scope);
+    } catch (error) {
       try {
-        // The dedicated WeCom SDK stores regular readiness globally. This promise
-        // is local and idempotent; controller state prevents another regular round
-        // after a timeout, while an explicit agentConfig failure may retry agent only.
-        wx.error((result) =>
-          finish(
-            new Error(
-              `企微 config 失败：${firstString(result, ["errMsg", "errmsg", "err_msg", "message"]) || "未知错误"}`,
-            ),
-          ),
-        );
-        wx.ready(() => finish());
-        wx.config({
-          beta: true,
-          debug: false,
-          appId: config.corpID,
-          timestamp: config.config.timestamp,
-          nonceStr: config.config.nonce,
-          signature: config.config.signature,
-          jsApiList: this.configuredAPIs(config.config.jsApiList, REGULAR_JS_API_LIST),
-        });
-      } catch (error) {
-        finish(new Error(`企微 config 失败：${errorMessage(error, "未知错误")}`));
+        await this.completeSendForScope(scope, intentID, grant, "final_failed", "sidebar_contact_changed_before_client_execution");
+        this.sendIdempotencyKeys.delete(key);
+      } catch {
+        this.unknownSendKeys.add(key);
       }
-    });
-  }
-
-  private configureAgent(wx: SidebarWx, config: SidebarJSSDKConfig): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      if (typeof wx.agentConfig !== "function") {
-        reject(new Error("当前企微 SDK 不支持 agentConfig。"));
-        return;
-      }
-      let settled = false;
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        if (error) reject(error);
-        else resolve();
-      };
+      throw error;
+    }
+    try {
+      const response = await this.invoke("sendChatMessage", payload);
+      await this.completeSendForScope(scope, intentID, grant, "client_executed", "sidebar_jssdk_client_executed");
+      this.sendIdempotencyKeys.delete(key);
+      return response;
+    } catch (error) {
+      this.unknownSendKeys.add(key);
       try {
-        wx.agentConfig({
-          corpid: config.corpID,
-          agentid: config.agentID,
-          timestamp: config.agentConfig.timestamp,
-          nonceStr: config.agentConfig.nonce,
-          signature: config.agentConfig.signature,
-          jsApiList: this.configuredAPIs(config.agentConfig.jsApiList, AGENT_JS_API_LIST),
-          success: () => finish(),
-          fail: (result) =>
-            finish(
-              new Error(
-                `企微 agentConfig 失败：${firstString(result, ["errMsg", "errmsg", "err_msg", "message"]) || "未知错误"}`,
-              ),
-            ),
-        });
-      } catch (error) {
-        finish(new Error(`企微 agentConfig 失败：${errorMessage(error, "未知错误")}`));
-      }
-    });
-  }
-
-  private invokeWx(
-    wx: SidebarWx,
-    method: string,
-    payload: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    return withTimeout(
-      new Promise<Record<string, unknown>>((resolve, reject) => {
-        try {
-          wx.invoke(method, payload, (result) => {
-            const response = result || {};
-            const message = firstString(response, [
-              "errMsg",
-              "errmsg",
-              "err_msg",
-              "message",
-            ]);
-            if (
-              message &&
-              !/:ok$/i.test(message) &&
-              /(fail|error)/i.test(message)
-            ) {
-              reject(new Error(`企微 ${method} 失败：${message}`));
-              return;
-            }
-            resolve(response);
-          });
-        } catch (error) {
-          reject(
-            new Error(
-              `企微 ${method} 失败：${errorMessage(error, "未知错误")}`,
-            ),
-          );
-        }
-      }),
-      SDK_TIMEOUT_MS,
-      `企微 ${method} 超时，请重试。`,
-    );
-  }
-
-  private async resolveExternalUseridFromWx(): Promise<string> {
-    const wx = this.doc.defaultView?.wx;
-    if (!wx || typeof wx.invoke !== "function")
-      throw new Error("企微 SDK 不支持上下文读取。");
-    // getContext proves that the agent context was established. Its userId is
-    // the employee identity and must not be mistaken for the external contact.
-    await this.invokeWx(wx, "getContext", {});
-    const contact = await this.invokeWx(wx, "getCurExternalContact", {});
-    const externalUserid = firstString(contact, [
-      "external_userid",
-      "externalUserid",
-      "userId",
-      "user_id",
-    ]);
-    if (!externalUserid)
-      throw new Error("企微未返回当前客户 external_userid。");
-    return externalUserid;
-  }
-
-  private async handleOAuthCallback(): Promise<boolean> {
-    const view = this.doc.defaultView;
-    if (!view) return false;
-    const query = new URLSearchParams(view.location.search);
-    const code = query.get("code")?.trim() || "";
-    const state = query.get("state")?.trim() || "";
-    if (!code && !state) return false;
-    if (!code || !state) {
-      this.renderContextError("OAuth 回调参数不完整，未建立员工会话。");
-      return true;
-    }
-    this.setContextStatus("正在接收 OAuth 回调并建立员工会话…");
-    try {
-      const route = this.api.oauthCallbackUrl({ code, state });
-      this.setContextStatus("OAuth 回调正在由服务端验证，尚未确认员工会话…");
-      this.navigate(route);
-      return true;
-    } catch (error) {
-      this.renderContextError(
-        `OAuth 回调失败：${errorMessage(error, "未建立员工会话。")}`,
-      );
-      return true;
+        await this.completeSendForScope(scope, intentID, grant, "outcome_unknown", "sidebar_jssdk_outcome_unknown");
+      } catch { /* original accepted intent remains reconcilable under its grant */ }
+      throw error;
     }
   }
 
-  private async startOAuth(button: HTMLButtonElement): Promise<void> {
-    this.setContextStatus("正在发起 OAuth 回退；尚未确认员工会话…");
-    try {
-      const route = this.api.oauthStartUrl({ next: this.nextPath() });
-      this.setContextStatus(
-        "OAuth 已发起，等待企微回调；未将受理状态视为授权成功。",
-      );
-      this.navigate(route);
-    } catch (error) {
-      button.disabled = false;
-      this.renderContextError(
-        `OAuth 发起失败：${errorMessage(error, "请稍后重试。")}`,
-      );
+  async request(input: string, options: RequestOptions = {}): Promise<Json> {
+    await this.start();
+    const url = new URL(input, window.location.origin);
+    const path = url.pathname;
+    if (path.includes("other-staff") || path.includes("chat")) throw failure("聊天能力不属于侧边栏。");
+    if (path === "/api/sidebar/v2/materials" && url.searchParams.has("type")) {
+      const types = url.searchParams.getAll("type");
+      if (types.length !== 1 || types[0] !== "image") throw failure("素材类型不受支持。");
+      // The frozen standard renderer names its image-only tab explicitly. The
+      // V3 endpoint is already image-only and rejects that legacy query key.
+      url.searchParams.delete("type");
     }
+    if (path === "/api/sidebar/v2/workbench") return this.legacyWorkbench();
+    if (path === "/api/sidebar/bind-mobile") return this.bindMobile(options);
+    if (path === "/api/sidebar/v2/profile" && String(options.method || "GET").toUpperCase() === "PUT") return this.saveProfile(options);
+    if (/^\/api\/sidebar\/v2\/periodic-orders\/\d+\/remark$/.test(path) && String(options.method || "GET").toUpperCase() === "PUT") return this.savePeriodicRemark(path, options);
+    const raw = await this.scoped(url.pathname + url.search, options);
+    return this.legacy(path, raw);
   }
 
-  private navigate(location: string): void {
-    const view = this.doc.defaultView;
-    if (!view) return;
-    try {
-      view.location.assign(new URL(location, view.location.origin).toString());
-    } catch (error) {
-      this.setContextStatus(
-        `OAuth 重定向失败：${errorMessage(error, "请手动重新打开 Sidebar。")}`,
-        "error",
-      );
-    }
+  private async raw(path: string, options: RequestInit = {}, contract: { allowViewerSessionState?: boolean } = {}): Promise<Json> {
+    const response = await fetch(path, { cache: "no-store", ...options, headers: { Accept: "application/json", ...(options.headers || {}) } });
+    const text = await response.text();
+    let payload: Json = {};
+    try { payload = text ? JSON.parse(text) : {}; }
+    catch { throw failure("服务端返回了无效数据。", response.status); }
+    // Bootstrap must expose its viewer_session_required state before HTTP error
+    // handling so OAuth recovery cannot be bypassed by a generic 401 throw.
+    if (contract.allowViewerSessionState && payload.state === "viewer_session_required") return payload;
+    if (!response.ok) throw failure(String(payload?.error?.code || payload?.code || payload?.error || "请求失败"), response.status, payload);
+    return payload;
   }
 
-  private renderWorkbench(workbench: SidebarWorkbenchResponse): void {
-    this.validateWorkbench(workbench);
-    this.workbench = workbench;
-    this.activeTab = "profile";
-    this.questionnaires = null;
-    this.questionnaireLoading = false;
-    this.questionnaireError = null;
-    this.questionnaireRequestVersion += 1;
-    this.timeline = null;
-    this.timelineError = null;
-    this.timelineLoading = false;
-    this.timelineRequestVersion += 1;
-    this.chatActivity = null;
-    this.chatActivityType = "all";
-    this.chatActivityError = null;
-    this.chatActivityLoading = false;
-    this.chatActivityRequestVersion += 1;
-    this.otherStaffChats = null;
-    this.otherStaffChatsError = null;
-    this.otherStaffChatsLoading = false;
-    this.otherStaffChatsRequestVersion += 1;
-    this.orders = null;
-    this.ordersError = null;
-    this.ordersLoading = false;
-    this.ordersRequestVersion += 1;
-    this.periodicOrders = null;
-    this.periodicOrdersError = null;
-    this.periodicOrdersLoading = false;
-    this.periodicOrdersRequestVersion += 1;
-    this.periodicRemarkDrafts.clear();
-    this.periodicRemarkStatuses.clear();
-    this.periodicRemarkSaving.clear();
-    this.materials = null;
-    this.materialsError = null;
-    this.materialsLoading = false;
-    this.materialsRequestVersion += 1;
-    this.products = null;
-    this.productsError = null;
-    this.productsLoading = false;
-    this.productsRequestVersion += 1;
-    this.productSendStatuses.clear();
-    this.imageSendStatuses.clear();
-    this.imageSendPreparing.clear();
-    this.thumbnailStatuses.clear();
-    this.clearThumbnailURLs();
-    this.phoneBindingLoading = false;
-    this.phoneBound = false;
-    this.phoneMaskedMobile = "";
-    this.closePhoneModal();
-    this.renderTop();
-    this.renderTabs(true);
-    this.renderActiveContent();
-    this.setContextStatus(
-      "客户范围工作台已就绪：当前数据来自本地 CRM；真实企微外部效果仍需单独回执。",
-    );
+  private async scoped(path: string, options: RequestOptions = {}): Promise<Json> {
+    if (!this.token) throw failure("侧边栏上下文未就绪。");
+    const generation = this.contextGeneration;
+    const token = this.token;
+    const { timeoutMs: _timeout, retryCount: _retry, retryDelayMs: _delay, signal, ...init } = options;
+    const payload = await this.raw(path, { ...init, signal: anySignal([signal ?? undefined, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": token, ...(init.headers || {}) } });
+    this.assertGeneration(generation);
+    return payload;
   }
 
-  private validateWorkbench(workbench: SidebarWorkbenchResponse): void {
-    const profile = workbench?.profile;
-    if (!profile || !profile.updated_at || !workbench.safety)
-      throw new Error("工作台响应不完整，已停止渲染。");
-    validateSidebarSafety(workbench.safety, "工作台");
-    if (!profile.name || !Number.isInteger(profile.customer_id))
-      throw new Error("工作台客户档案响应不完整，已停止渲染。");
-    if (
-      profile.owner_staff_id !== undefined &&
-      !Number.isInteger(profile.owner_staff_id)
-    )
-      throw new Error("工作台客户档案响应不完整，已停止渲染。");
-    for (const count of [
-      workbench.questionnaire_count,
-      workbench.order_count,
-      workbench.periodic_order_count,
-      workbench.material_count,
-    ]) {
-      if (!Number.isInteger(count) || count < 0)
-        throw new Error("工作台统计响应不完整，已停止渲染。");
-    }
+  async loadThumbnail(image: HTMLImageElement, input: string, options: { signal?: AbortSignal; onState?: (state: string) => void } = {}): Promise<void> {
+    await this.start();
+    const generation = this.contextGeneration;
+    const token = this.token;
+    options.onState?.("loading");
+    const url = new URL(input, window.location.origin);
+    const response = await fetch(url.pathname + url.search, { cache: "no-store", signal: anySignal([options.signal, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": token } });
+    if (!response.ok) throw failure("预览不可用。", response.status);
+    this.assertGeneration(generation);
+    const objectURL = URL.createObjectURL(await response.blob());
+    this.assertGeneration(generation);
+    const prior = image.dataset.sidebarBlobURL;
+    if (prior) URL.revokeObjectURL(prior);
+    image.dataset.sidebarBlobURL = objectURL;
+    image.src = objectURL;
+    image.dataset.materialPreview = "ready";
+    options.onState?.("ready");
   }
 
-  private renderTop(): void {
-    const profile = this.workbench?.profile;
-    if (!profile) return;
-    if (this.customerName) this.customerName.textContent = profile.name;
-    this.renderPhoneBindingState();
-    if (this.phoneEditButton) this.phoneEditButton.hidden = false;
-    const root = this.doc.getElementById("sidebar-workbench-root");
-    if (root) root.dataset.sidebarCustomerId = String(profile.customer_id);
+  private rememberWorkbench(workbench: Json): void {
+    const profile = workbench.profile || {};
+    this.profile = profile;
+    this.profileVersion = Number(profile.profile_version || 0);
   }
 
-  /**
-   * 手机号绑定态徽章：契约不提供已绑定手机号字段，只能诚实呈现
-   * 本次会话内经 bind-mobile 链路确认的绑定结果与掩码号。
-   */
-  private renderPhoneBindingState(): void {
-    if (this.bindingState) {
-      this.bindingState.textContent = this.phoneBound
-        ? "手机号已绑定"
-        : "手机号未绑定";
-      this.bindingState.className = `binding-state${this.phoneBound ? " ready" : ""}`;
-    }
-    if (this.customerMeta)
-      this.customerMeta.textContent =
-        this.phoneBound && this.phoneMaskedMobile
-          ? `手机号 ${this.phoneMaskedMobile}`
-          : "";
+  private legacyWorkbench(): Json {
+    const profile = this.profile;
+    const phoneAssurance = String(profile.phone_assurance || "").toLowerCase();
+    return {
+      customer: {
+        display_name: profile.display_name || profile.name || "当前客户",
+        mobile: profile.phone_masked || "",
+        // Declared phone data never upgrades the UI to provider-verified.
+        phone_assurance: phoneAssurance,
+        mobile_bound: phoneAssurance === "verified",
+      },
+      profile: { source: profile.profile_source || "", industry: profile.industry || "", industry_description: profile.industry_description || "", needs_blockers_followup: profile.needs_blockers_followup || "" },
+      workflow: {}, diagnostics: { context_source_status: "ready" },
+    };
   }
 
-  private renderTabs(ready: boolean): void {
-    const wb = this.workbench;
-    const definitions = [
-      ["profile", "核心画像"],
-      ["questionnaires", `问卷 ${wb?.questionnaire_count ?? ""}`],
-      ["products", "商品"],
-      ["orders", `订单 ${wb?.order_count ?? ""}`],
-      ["coupons", "优惠券"],
-      ["materials", `素材 ${wb?.material_count ?? ""}`],
-      ["other_staff_messages", "其他客服聊天"],
-    ] as const;
-    this.tabs.replaceChildren(
-      ...definitions.map(([key, label]) => {
-        const button = createElement(this.doc, "button", "tab", label);
-        button.type = "button";
-        button.dataset.sidebarTab = key;
-        const supported = isSidebarTab(key);
-        button.disabled = !ready || !supported;
-        if (key === this.topLevelTab(this.activeTab)) {
-          button.classList.add("active");
-        }
-        if (supported && ready) {
-          markBound(button);
-        }
-        return button;
-      }),
-    );
+  private async saveProfile(options: RequestOptions): Promise<Json> {
+    let donor: Json = {};
+    try { donor = options.body ? JSON.parse(String(options.body)) : {}; } catch { throw failure("画像保存请求无效。"); }
+    const body = { display_name: "", gender: 0, corp_name: "", expected_version: 0, expected_profile_version: this.profileVersion, source: String(donor.source ?? ""), industry: String(donor.industry ?? ""), industry_description: String(donor.industry_description ?? ""), needs_blockers_followup: String(donor.needs_blockers_followup ?? "") };
+    const updated = await this.scoped("/api/sidebar/v2/profile", { method: "PUT", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency("sidebar-profile") }, body: JSON.stringify(body) });
+    const profile = updated.customer || updated.profile || {};
+    this.profile = profile;
+    this.profileVersion = Number(profile.profile_version || this.profileVersion);
+    return { profile: { source: profile.profile_source || "", industry: profile.industry || "", industry_description: profile.industry_description || "", needs_blockers_followup: profile.needs_blockers_followup || "" } };
   }
 
-  private activateTab(tab: SidebarTab): void {
-    if (!this.workbench || !this.contextToken) return;
-    this.activeTab = tab;
-    this.renderTabs(true);
-    this.renderActiveContent();
-    if (
-      tab === "questionnaires" &&
-      !this.questionnaires &&
-      !this.questionnaireLoading
-    )
-      void this.loadQuestionnaires();
-    else if (tab === "timeline" && !this.timeline && !this.timelineLoading)
-      void this.loadTimeline();
-    else if (
-      tab === "chat_activity" &&
-      !this.chatActivity &&
-      !this.chatActivityLoading
-    )
-      void this.loadChatActivity();
-    else if (
-      tab === "other_staff_messages" &&
-      !this.otherStaffChats &&
-      !this.otherStaffChatsLoading
-    )
-      void this.loadOtherStaffChats();
-    else if (tab === "orders" && !this.orders && !this.ordersLoading)
-      void this.loadOrders();
-    else if (
-      tab === "periodic_orders" &&
-      !this.periodicOrders &&
-      !this.periodicOrdersLoading
-    )
-      void this.loadPeriodicOrders();
-    else if (
-      (tab === "products" || tab === "products_periodic") &&
-      !this.products &&
-      !this.productsLoading
-    )
-      void this.loadProducts();
-    else if (tab === "materials" && !this.materials && !this.materialsLoading)
-      void this.loadMaterials();
+  private async bindMobile(options: RequestOptions): Promise<Json> {
+    let donor: Json = {};
+    try { donor = options.body ? JSON.parse(String(options.body)) : {}; } catch { throw failure("手机号保存请求无效。"); }
+    const updated = await this.scoped("/api/sidebar/v2/phone-binding", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency("sidebar-phone") }, body: JSON.stringify({ phone: String(donor.mobile || "") }) });
+    // A manual sidebar declaration has declared assurance. Do not make the
+    // donor's former "bound" label imply a provider-verified identity.
+    return { binding: { mobile: updated.phone_masked || "", phone_assurance: updated.phone_assurance || "declared" } };
   }
 
-  private renderActiveContent(): void {
-    const workbench = this.workbench;
-    if (!workbench) return;
-    const panel =
-      this.activeTab === "profile"
-        ? this.renderProfile(workbench)
-        : this.activeTab === "questionnaires"
-          ? this.renderQuestionnairesPanel()
-          : this.activeTab === "timeline"
-            ? this.renderTimelinePanel()
-            : this.activeTab === "chat_activity"
-              ? this.renderChatActivityPanel()
-              : this.activeTab === "other_staff_messages"
-                ? this.renderOtherStaffChatsPanel()
-                : this.activeTab === "orders"
-                  ? this.renderOrdersPanel()
-                  : this.activeTab === "periodic_orders"
-                    ? this.renderPeriodicOrdersPanel()
-                    : this.activeTab === "products" ||
-                        this.activeTab === "products_periodic"
-                      ? this.renderProductsPanel()
-                      : this.activeTab === "coupons"
-                        ? this.renderBlockedPanel(
-                            "coupons",
-                            "优惠券",
-                            "当前后端未提供侧边栏优惠券接口；面板已安全停用，不会发起请求，也不展示示例内容。",
-                          )
-                        : this.activeTab === "radar_links"
-                          ? this.renderBlockedPanel(
-                              "radar-links",
-                              "雷达链接",
-                              "当前后端未提供侧边栏雷达链接接口；面板已安全停用，不会发起请求。",
-                            )
-                          : this.renderMaterialsPanel();
-    const subTabs = this.renderSecondaryTabs();
-    this.content.replaceChildren(...(subTabs ? [subTabs, panel] : [panel]));
+  private async savePeriodicRemark(path: string, options: RequestOptions): Promise<Json> {
+    let donor: Json = {};
+    try { donor = options.body ? JSON.parse(String(options.body)) : {}; } catch { throw failure("备注保存请求无效。"); }
+    const id = path.split("/")[5];
+    const updated = await this.scoped(path, { method: "PUT", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency("sidebar-periodic-remark") }, body: JSON.stringify({ remark: String(donor.remark || ""), expected_version: this.periodicVersions.get(id) || 0 }) });
+    this.periodicVersions.set(id, Number(updated.version || this.periodicVersions.get(id) || 0));
+    return { periodic_order: { id, remark: updated.remark || "" } };
   }
 
-  private topLevelTab(tab: SidebarTab): SidebarTab {
-    if (tab === "timeline" || tab === "chat_activity") return "profile";
-    if (tab === "periodic_orders") return "orders";
-    if (tab === "products_periodic") return "products";
-    if (tab === "radar_links") return "materials";
-    return tab;
+  private periodLabels(item: Json): { start_at: string; end_at: string; duration_label: string; remaining_label: string } {
+    const start = new Date(String(item.start_at || ""));
+    const end = new Date(String(item.end_at || ""));
+    const valid = !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end.getTime() >= start.getTime();
+    if (!valid) return { start_at: date(item.start_at), end_at: date(item.end_at), duration_label: "", remaining_label: "" };
+    // This is the same calendar-day rule used by the Order entitlement store:
+    // ceil(end-start) for duration and ceil(end-now) clamped at expiry. It is
+    // derived only when the owner supplied both real boundary instants.
+    const day = 24 * 60 * 60 * 1000;
+    const duration = Math.ceil((end.getTime() - start.getTime()) / day);
+    const remaining = Math.ceil((end.getTime() - Date.now()) / day);
+    return {
+      start_at: date(item.start_at),
+      end_at: date(item.end_at),
+      duration_label: `${duration} 天`,
+      remaining_label: remaining <= 0 ? "已到期" : `${remaining} 天`,
+    };
   }
 
-  private renderBlockedPanel(
-    section: string,
-    title: string,
-    message: string,
-  ): HTMLElement {
-    const panel = this.panelShell(section, title, "后端未提供该面板接口");
-    const status = createElement(this.doc, "div", "sidebar-status warn", message);
-    status.dataset.sidebarBlocked = "true";
-    panel.append(status);
-    return panel;
-  }
-
-  private renderSecondaryTabs(): HTMLElement | null {
-    const top = this.topLevelTab(this.activeTab);
-    const definitions =
-      top === "profile"
-        ? ([
-            ["profile", "基础信息"],
-            ["timeline", "用户时间线"],
-            ["chat_activity", "聊天活动"],
-          ] as const)
-        : top === "orders"
-          ? ([
-              ["orders", "普通订单"],
-              ["periodic_orders", "周期订单"],
-            ] as const)
-          : top === "products"
-            ? ([
-                ["products", "普通商品"],
-                ["products_periodic", "周期性商品"],
-              ] as const)
-            : top === "materials"
-              ? ([
-                  ["materials", "图片素材"],
-                  ["radar_links", "雷达链接"],
-                ] as const)
-              : null;
-    if (!definitions) return null;
-    const nav = createElement(
-      this.doc,
-      "div",
-      `secondary-tabs${top === "profile" ? " profile-tabs" : ""}`,
-    );
-    for (const [key, label] of definitions) {
-      const button = createElement(this.doc, "button", "secondary-tab", label);
-      button.type = "button";
-      button.dataset.sidebarSubtab = key;
-      if (this.activeTab === key) button.classList.add("active");
-      markBound(button);
-      nav.append(button);
-    }
-    return nav;
-  }
-
-  private renderProfile(workbench: SidebarWorkbenchResponse): HTMLElement {
-    const panel = createElement(this.doc, "section", "sidebar-panel");
-    panel.dataset.sidebarSection = "profile";
-    const head = createElement(this.doc, "div", "panel-head");
-    head.append(createElement(this.doc, "h2", undefined, "核心画像"));
-    head.append(
-      createElement(this.doc, "span", "panel-meta", "停留 520ms 自动保存"),
-    );
-    panel.append(head);
-    const editor = createElement(this.doc, "div", "profile-editor");
-    for (const field of PROFILE_FIELDS) {
-      const label = createElement(this.doc, "label", "profile-field");
-      label.append(
-        createElement(this.doc, "span", undefined, PROFILE_LABELS[field]),
-      );
-      const input = createElement(this.doc, "textarea");
-      input.dataset.profileField = field;
-      input.name = field;
-      input.rows = 1;
-      input.maxLength = 200;
-      input.value = workbench.profile[field] || "";
-      input.setAttribute("aria-label", PROFILE_LABELS[field]);
-      label.append(input);
-      editor.append(label);
-    }
-    panel.append(editor);
-    const readonlyRows: Array<[string, string]> = [
-      ["用户来源", workbench.profile.source || "—"],
-      ["手机号", workbench.profile.phone_masked || "—"],
-      ["客户状态", workbench.profile.status || "—"],
-    ];
-    const readonlyBox = createElement(this.doc, "div", "profile-editor");
-    for (const [label, value] of readonlyRows) {
-      const row = createElement(this.doc, "div", "profile-field");
-      row.append(createElement(this.doc, "span", undefined, label));
-      row.append(createElement(this.doc, "span", "panel-meta", value));
-      readonlyBox.append(row);
-    }
-    panel.append(readonlyBox);
-    const status = createElement(
-      this.doc,
-      "div",
-      "profile-save-status",
-      "姓名与公司修改后停留 520ms 自动保存；仅写入本地 CRM，其余资料为只读。",
-    );
-    status.id = "profile-save-status";
-    status.dataset.receipt = "idle";
-    panel.append(status);
-    const updated = createElement(
-      this.doc,
-      "div",
-      "panel-meta",
-      `最后本地更新：${formatDateTime(workbench.profile.updated_at)}`,
-    );
-    updated.id = "profile-updated-at";
-    panel.append(updated);
-    return panel;
-  }
-
-  private openPhoneModal(): void {
-    if (!this.workbench || !this.contextToken) return;
-    if (this.phoneInput) {
-      this.phoneInput.value = "";
-      this.phoneInput.classList.remove("input-error");
-    }
-    this.setPhoneModalStatus(
-      "仅绑定当前客户；不支持从其他客户强制抢占手机号。",
-    );
-    if (this.phoneModal) this.phoneModal.hidden = false;
-    this.phoneInput?.focus();
-  }
-
-  private closePhoneModal(): void {
-    if (this.phoneModal) this.phoneModal.hidden = true;
-  }
-
-  private setPhoneModalStatus(message: string, failed = false): void {
-    if (!this.phoneModalStatus) return;
-    this.phoneModalStatus.className = `panel-meta${failed ? " error" : ""}`;
-    this.phoneModalStatus.textContent = message;
-  }
-
-  private setPhoneModalBusy(): void {
-    if (!this.phoneModalSave) return;
-    this.phoneModalSave.disabled = this.phoneBindingLoading;
-    this.phoneModalSave.textContent = this.phoneBindingLoading
-      ? "保存中…"
-      : "保存";
-  }
-
-  private async bindPhone(): Promise<void> {
-    if (!this.contextToken || this.phoneBindingLoading) return;
-    const digits = (this.phoneInput?.value || "").replace(/\D/g, "");
-    if (!/^1[0-9]{10}$/.test(digits)) {
-      this.phoneInput?.classList.add("input-error");
-      this.setPhoneModalStatus("请输入 11 位手机号。", true);
-      return;
-    }
-    this.phoneInput?.classList.remove("input-error");
-    // 后端契约（internal/customer BindSidebarPhone）要求 11 位大陆手机号，
-    // 不做 E.164 转换。
-    const phone = digits;
-    // 幂等键按 context+phone 固化：结果未知（网络/5xx）时重试复用同一键；输入变化或拿到明确结果后才换键。
-    if (!this.phoneBindKey || this.phoneBindKey.mobile !== phone) {
-      this.phoneBindKey = { mobile: phone, key: newSidebarIdempotencyKey("sidebar-phone") };
-    }
-    this.phoneBindingLoading = true;
-    this.setPhoneModalBusy();
-    this.setPhoneModalStatus("正在写入本地 Identity…");
-    try {
-      const response = await this.api.bindPhone(this.contextToken, { phone }, this.phoneBindKey.key);
-      this.validatePhoneBinding(response);
-      if (response.status === "rejected") {
-        this.phoneBindKey = null;
-        this.setPhoneModalStatus("该手机号已属于其他客户，本次未改动。", true);
-        return;
-      }
-      this.phoneBindKey = null;
-      this.phoneBound = true;
-      this.phoneMaskedMobile = maskMobileDigits(digits);
-      this.renderPhoneBindingState();
-      this.closePhoneModal();
-      this.setContextStatus(
-        response.status === "bound"
-          ? "手机号已绑定到当前客户（本地事实）。"
-          : "该手机号已绑定到当前客户，无需重复操作。",
-      );
-    } catch (error) {
-      this.setPhoneModalStatus(
-        `手机号绑定失败：${errorMessage(error, "请稍后重试。")}`,
-        true,
-      );
-    } finally {
-      this.phoneBindingLoading = false;
-      this.setPhoneModalBusy();
-    }
-  }
-
-  private validatePhoneBinding(response: SidebarPhoneBindingResponse): void {
-    if (
-      !response ||
-      !["bound", "already_bound", "rejected"].includes(response.status)
-    )
-      throw new Error("手机号绑定响应不完整，已停止更新状态。");
-    validateSidebarSafety(response.safety, "手机号绑定");
-  }
-
-  private panelShell(
-    section: string,
-    title: string,
-    meta: string,
-  ): HTMLElement {
-    const panel = createElement(this.doc, "section", "sidebar-panel");
-    panel.dataset.sidebarSection = section;
-    const head = createElement(this.doc, "div", "panel-head");
-    head.append(createElement(this.doc, "h2", undefined, title));
-    head.append(createElement(this.doc, "span", "panel-meta", meta));
-    panel.append(head);
-    return panel;
-  }
-
-  private appendSafety(panel: HTMLElement, safety: SidebarSafety): void {
-    const note = createElement(
-      this.doc,
-      "div",
-      "panel-meta",
-      "数据来源：本地 CRM · 未执行企微外部调用",
-    );
-    note.dataset.sidebarSafety = "local";
-    panel.append(note);
-    if (safety.local_only !== true)
-      note.textContent = "安全声明异常，未执行外部调用。";
-  }
-
-  private appendRetry(
-    panel: HTMLElement,
-    message: string,
-    action: string,
-    label: string,
-  ): void {
-    panel.append(
-      createElement(this.doc, "div", "sidebar-status error", message),
-    );
-    const controls = createElement(this.doc, "div", "context-actions");
-    const retry = createElement(this.doc, "button", "btn primary", label);
-    retry.type = "button";
-    retry.dataset.sidebarAction = action;
-    markBound(retry);
-    controls.append(retry);
-    panel.append(controls);
-  }
-
-  private appendLoading(panel: HTMLElement, message: string): void {
-    const status = createElement(this.doc, "div", "loading", message);
-    status.setAttribute("aria-busy", "true");
-    panel.append(status);
-  }
-
-  private async loadQuestionnaires(): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const requestVersion = ++this.questionnaireRequestVersion;
-    this.questionnaireLoading = true;
-    this.questionnaireError = null;
-    this.renderActiveContent();
-    try {
-      const response = await this.api.questionnaires(
-        this.contextToken,
-        { limit: 100 },
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.questionnaireRequestVersion) return;
-      this.validateQuestionnaires(response);
-      this.questionnaires = response;
-    } catch (error) {
-      if (requestVersion !== this.questionnaireRequestVersion) return;
-      this.questionnaireError = error;
-    } finally {
-      if (requestVersion === this.questionnaireRequestVersion) {
-        this.questionnaireLoading = false;
-        if (this.activeTab === "questionnaires") this.renderActiveContent();
-      }
-    }
-  }
-
-  private validateQuestionnaires(response: SidebarQuestionnaireResponse): void {
-    if (
-      !response ||
-      !Array.isArray(response.items) ||
-      typeof response.scan_truncated !== "boolean" ||
-      typeof response.result_truncated !== "boolean"
-    ) {
-      throw new Error("问卷响应不完整，已停止渲染。");
-    }
-    validateSidebarSafety(response.safety, "问卷");
-    for (const item of response.items) {
-      if (
-        !Number.isInteger(item.submission_id) ||
-        item.submission_id < 1 ||
-        (item.questionnaire_id !== undefined &&
-          (!Number.isInteger(item.questionnaire_id) ||
-            item.questionnaire_id < 1)) ||
-        typeof item.submitted_at !== "string" ||
-        !Number.isFinite(item.score) ||
-        !Array.isArray(item.choice_answers)
-      ) {
-        throw new Error("问卷答案响应不完整，已停止渲染。");
-      }
-      for (const answer of item.choice_answers) {
-        if (
-          !Number.isInteger(answer.question_id) ||
-          answer.question_id < 1 ||
-          (answer.question_type !== "single_choice" &&
-            answer.question_type !== "multi_choice") ||
-          !Number.isInteger(answer.sort_order) ||
-          answer.sort_order < 0 ||
-          !Array.isArray(answer.option_ids)
-        ) {
-          throw new Error("问卷选项答案响应不完整，已停止渲染。");
-        }
-      }
-    }
-  }
-
-  private renderQuestionnairesPanel(): HTMLElement {
-    const panel = this.panelShell(
-      "questionnaires",
-      "问卷",
-      this.questionnaires
-        ? `${this.questionnaires.items.length} 条 · 本地安全答案投影`
-        : "本地安全答案投影",
-    );
-    if (!this.questionnaires) {
-      if (this.questionnaireError) {
-        const status = errorStatus(this.questionnaireError);
-        const message =
-          status === 401
-            ? "登录状态已失效，请重新打开 Sidebar 后重试。"
-            : status === 403
-              ? "当前账号无权查看该客户，问卷读取已安全关闭。"
-              : `问卷读取失败：${errorMessage(this.questionnaireError, "请稍后重试。")}`;
-        this.appendRetry(
-          panel,
-          message,
-          "retry-questionnaires",
-          "重试读取问卷",
-        );
-      } else {
-        this.appendLoading(panel, "正在读取问卷答案…");
-      }
-      return panel;
-    }
-    const response = this.questionnaires;
-    if (response.scan_truncated || response.result_truncated) {
-      const warning = createElement(
-        this.doc,
-        "div",
-        "sidebar-status warn",
-        "问卷结果已按安全上限截断，页面仅展示当前返回的答案。",
-      );
-      warning.dataset.questionnaireTruncated = "true";
-      panel.append(warning);
-    }
-    if (!response.items.length)
-      panel.append(createElement(this.doc, "div", "empty", "暂无问卷回答记录"));
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const item of response.items)
-        list.append(this.renderQuestionnaireItem(item));
-      panel.append(list);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private renderQuestionnaireItem(
-    item: SidebarQuestionnaireResponse["items"][number],
-  ): HTMLElement {
-    const card = createElement(this.doc, "article", "list-item");
-    card.dataset.questionnaireSubmissionId = String(item.submission_id);
-    // 本地投影含问卷标题与题目文本；选择题选项 ID 在本地契约下缺省。
-    const textAnswers = item.text_answers ?? [];
-    const answered = item.choice_answers.length + textAnswers.length;
-    const main = createElement(this.doc, "div", "item-main");
-    main.append(
-      createElement(
-        this.doc,
-        "div",
-        "item-title",
-        item.title || "问卷提交记录",
-      ),
-      createElement(
-        this.doc,
-        "div",
-        "item-meta",
-        `提交时间 ${formatDateTime(item.submitted_at)} · 已作答 ${answered} 题 · 得分 ${item.score}（服务端原始分）`,
-      ),
-    );
-    card.append(main);
-    const details = createElement(this.doc, "details", "questionnaire-answers");
-    const summary = createElement(
-      this.doc,
-      "summary",
-      "link-button",
-      `展开答案（${answered}）`,
-    );
-    details.append(summary);
-    if (!answered) {
-      details.append(createElement(this.doc, "div", "empty", "暂无答案记录"));
-    } else {
-      const answers = createElement(this.doc, "div", "answer-list");
-      for (const answer of item.choice_answers) {
-        const type = answer.question_type === "multi_choice" ? "多选" : "单选";
-        const chosen = answer.option_ids.length;
-        answers.append(
-          createElement(
-            this.doc,
-            "div",
-            "answer-item",
-            `第 ${answer.sort_order + 1} 题 · ${type} · ${chosen ? `已选 ${chosen} 个选项` : "未选择选项"}`,
-          ),
-        );
-      }
-      for (const answer of textAnswers) {
-        const text = answer.answers.filter(Boolean).join("、") || "未作答";
-        answers.append(
-          createElement(
-            this.doc,
-            "div",
-            "answer-item",
-            `${answer.question || "未命名题目"}：${text}`,
-          ),
-        );
-      }
-      details.append(answers);
-    }
-    card.append(details);
-    return card;
-  }
-
-  private validateTimeline(response: SidebarTimelineResponse): void {
-    if (!response || !Array.isArray(response.items))
-      throw new Error("时间线响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "时间线");
-    if (response.next_cursor !== undefined && !response.next_cursor)
-      throw new Error("时间线游标响应不完整，已停止渲染。");
-    for (const item of response.items) {
-      if (
-        !Number.isInteger(item.id) ||
-        item.id < 1 ||
-        typeof item.event_type !== "string" ||
-        !item.event_type ||
-        typeof item.occurred_at !== "string" ||
-        !item.occurred_at
-      )
-        throw new Error("时间线安全元数据响应不完整，已停止渲染。");
-    }
-  }
-
-  private async loadTimeline(cursor?: string): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const append = Boolean(cursor && this.timeline);
-    const requestVersion = ++this.timelineRequestVersion;
-    this.timelineLoading = true;
-    this.timelineError = null;
-    if (!append) this.timeline = null;
-    if (this.activeTab === "timeline") this.renderActiveContent();
-    try {
-      const response = await this.api.timeline(
-        this.contextToken,
-        { cursor, limit: 20 },
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.timelineRequestVersion) return;
-      this.validateTimeline(response);
-      this.timeline =
-        append && this.timeline
-          ? { ...response, items: [...this.timeline.items, ...response.items] }
-          : response;
-    } catch (error) {
-      if (requestVersion !== this.timelineRequestVersion) return;
-      this.timelineError = error;
-    } finally {
-      if (requestVersion === this.timelineRequestVersion) {
-        this.timelineLoading = false;
-        if (this.activeTab === "timeline") this.renderActiveContent();
-      }
-    }
-  }
-
-  private renderTimelinePanel(): HTMLElement {
-    const response = this.timeline;
-    const panel = this.panelShell(
-      "timeline",
-      "时间线",
-      response ? `${response.items.length} 条 · 安全元数据` : "安全元数据",
-    );
-    const toolbar = createElement(this.doc, "div", "context-actions");
-    toolbar.append(
-      createElement(this.doc, "span", "panel-meta", "最新动态在前"),
-    );
-    const refresh = createElement(
-      this.doc,
-      "button",
-      "btn ghost",
-      this.timelineLoading ? "正在刷新…" : "刷新",
-    );
-    refresh.type = "button";
-    refresh.disabled = this.timelineLoading;
-    refresh.dataset.sidebarAction = "refresh-timeline";
-    markBound(refresh);
-    toolbar.append(refresh);
-    panel.append(toolbar);
-    if (!response) {
-      if (this.timelineError)
-        this.appendRetry(
-          panel,
-          `时间线读取失败：${errorMessage(this.timelineError, "请稍后重试。")}`,
-          "retry-timeline",
-          "重试读取时间线",
-        );
-      else this.appendLoading(panel, "正在读取安全时间线…");
-      return panel;
-    }
-    if (this.timelineError)
-      panel.append(
-        createElement(
-          this.doc,
-          "div",
-          "sidebar-status error",
-          `加载更多失败：${errorMessage(this.timelineError, "请稍后重试。")}`,
-        ),
-      );
-    if (!response.items.length)
-      panel.append(createElement(this.doc, "div", "empty", "暂无时间线记录"));
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const item of response.items) {
-        const card = createElement(this.doc, "article", "list-item");
-        card.dataset.timelineEventId = String(item.id);
-        const label = TIMELINE_EVENT_LABELS[item.event_type];
-        card.append(
-          createElement(this.doc, "div", "item-title", label || "动态"),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `发生时间 ${formatDateTime(item.occurred_at)}`,
-          ),
-        );
-        if (!label)
-          card.append(
-            createElement(
-              this.doc,
-              "div",
-              "panel-meta",
-              `原始类型 ${item.event_type}`,
-            ),
-          );
-        const relatedTab = ["survey.submitted", "survey_submitted"].includes(
-          item.event_type,
-        )
-          ? "questionnaires"
-          : item.event_type.startsWith("order.")
-            ? "orders"
-            : "";
-        if (relatedTab) {
-          const related = createElement(
-            this.doc,
-            "button",
-            "link-button",
-            relatedTab === "questionnaires" ? "查看相关问卷" : "查看相关订单",
-          ) as HTMLButtonElement;
-          related.type = "button";
-          related.dataset.sidebarAction =
-            relatedTab === "questionnaires"
-              ? "open-related-questionnaires"
-              : "open-related-orders";
-          markBound(related);
-          card.append(related);
-        }
-        list.append(card);
-      }
-      panel.append(list);
-    }
-    if (response.next_cursor) {
-      const controls = createElement(this.doc, "div", "context-actions");
-      const more = createElement(
-        this.doc,
-        "button",
-        "btn ghost",
-        this.timelineLoading ? "正在加载…" : "加载更多时间线",
-      );
-      more.type = "button";
-      more.disabled = this.timelineLoading;
-      more.dataset.sidebarAction = "timeline-more";
-      markBound(more);
-      controls.append(more);
-      panel.append(controls);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private validateChatActivity(response: SidebarChatActivityResponse): void {
-    if (!response || !Array.isArray(response.items))
-      throw new Error("聊天活动响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "聊天活动");
-    for (const cursor of [response.next_cursor, response.previous_cursor]) {
-      if (cursor !== undefined && !cursor)
-        throw new Error("聊天活动游标响应不完整，已停止渲染。");
-    }
-    for (const item of response.items) {
-      if (
-        (item.chat_type !== "private" && item.chat_type !== "group") ||
-        typeof item.message_type !== "string" ||
-        !item.message_type ||
-        typeof item.sent_at !== "string" ||
-        !item.sent_at
-      )
-        throw new Error("聊天活动安全元数据响应不完整，已停止渲染。");
-    }
-  }
-
-  private async loadChatActivity(cursor?: string): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const append = Boolean(cursor && this.chatActivity);
-    const requestVersion = ++this.chatActivityRequestVersion;
-    this.chatActivityLoading = true;
-    this.chatActivityError = null;
-    if (!append) this.chatActivity = null;
-    if (this.activeTab === "chat_activity") this.renderActiveContent();
-    try {
-      const response = await this.api.chatActivity(
-        this.contextToken,
-        {
-          chat_type:
-            this.chatActivityType === "all" ? undefined : this.chatActivityType,
-          cursor,
-          limit: 50,
-        },
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.chatActivityRequestVersion) return;
-      this.validateChatActivity(response);
-      this.chatActivity =
-        append && this.chatActivity
-          ? {
-              ...response,
-              items: [...this.chatActivity.items, ...response.items],
-            }
-          : response;
-    } catch (error) {
-      if (requestVersion !== this.chatActivityRequestVersion) return;
-      this.chatActivityError = error;
-    } finally {
-      if (requestVersion === this.chatActivityRequestVersion) {
-        this.chatActivityLoading = false;
-        if (this.activeTab === "chat_activity") this.renderActiveContent();
-      }
-    }
-  }
-
-  private renderChatActivityPanel(): HTMLElement {
-    const response = this.chatActivity;
-    const panel = this.panelShell(
-      "chat-activity",
-      "聊天活动",
-      response ? `${response.items.length} 条 · V2 补充能力` : "V2 补充能力",
-    );
-    panel.dataset.sidebarCapability = "v2-supplement";
-    panel.append(
-      createElement(
-        this.doc,
-        "div",
-        "sidebar-status warn",
-        "V2 补充能力 · 不计 LEGACY-S05-028 销项；仅展示聊天类型和时间，不展示正文、参与者或外部回执。",
-      ),
-    );
-    const controls = createElement(this.doc, "div", "filter-row");
-    const label = createElement(this.doc, "label", "filter-control");
-    label.append(createElement(this.doc, "span", undefined, "会话类型"));
-    const select = createElement(this.doc, "select");
-    select.dataset.chatFilter = "chat_type";
-    select.setAttribute("aria-label", "聊天活动会话类型");
-    for (const [value, text] of [
-      ["all", "全部"],
-      ["private", "私聊"],
-      ["group", "群聊"],
-    ] as const) {
-      const option = createElement(this.doc, "option", undefined, text);
-      option.value = value;
-      option.selected = this.chatActivityType === value;
-      select.append(option);
-    }
-    label.append(select);
-    controls.append(label);
-    panel.append(controls);
-    if (!response) {
-      if (this.chatActivityError)
-        this.appendRetry(
-          panel,
-          `聊天活动读取失败：${errorMessage(this.chatActivityError, "请稍后重试。")}`,
-          "retry-chat-activity",
-          "重试读取聊天活动",
-        );
-      else this.appendLoading(panel, "正在读取聊天活动元数据…");
-      return panel;
-    }
-    if (this.chatActivityError)
-      panel.append(
-        createElement(
-          this.doc,
-          "div",
-          "sidebar-status error",
-          `加载更多失败：${errorMessage(this.chatActivityError, "请稍后重试。")}`,
-        ),
-      );
-    if (!response.items.length)
-      panel.append(createElement(this.doc, "div", "empty", "暂无聊天活动记录"));
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const item of response.items) {
-        const card = createElement(this.doc, "article", "list-item");
-        card.dataset.chatActivityAt = item.sent_at;
-        card.append(
-          createElement(
-            this.doc,
-            "div",
-            "item-title",
-            `${item.chat_type === "private" ? "私聊" : "群聊"} · ${item.message_type}`,
-          ),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `发送时间 ${formatDateTime(item.sent_at)}`,
-          ),
-        );
-        list.append(card);
-      }
-      panel.append(list);
-    }
-    if (response.next_cursor) {
-      const controlsMore = createElement(this.doc, "div", "context-actions");
-      const more = createElement(
-        this.doc,
-        "button",
-        "btn ghost",
-        this.chatActivityLoading ? "正在加载…" : "加载更多聊天活动",
-      );
-      more.type = "button";
-      more.disabled = this.chatActivityLoading;
-      more.dataset.sidebarAction = "chat-activity-more";
-      markBound(more);
-      controlsMore.append(more);
-      panel.append(controlsMore);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private validateOtherStaffChats(
-    response: SidebarOtherStaffChatResponse,
-  ): void {
-    if (
-      !response ||
-      !Array.isArray(response.items) ||
-      response.items.length > 20
-    )
-      throw new Error("其他客服聊天响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "其他客服聊天");
-    for (const item of response.items) {
-      if (
-        typeof item.staff_userid !== "string" ||
-        !item.staff_userid ||
-        (item.message_type !== "text" && item.message_type !== "image") ||
-        typeof item.content_masked !== "string" ||
-        !item.content_masked ||
-        typeof item.sent_at !== "string" ||
-        !item.sent_at
-      )
-        throw new Error("其他客服聊天安全字段不完整，已停止渲染。");
-    }
-  }
-
-  private async loadOtherStaffChats(): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const requestVersion = ++this.otherStaffChatsRequestVersion;
-    this.otherStaffChatsLoading = true;
-    this.otherStaffChatsError = null;
-    this.otherStaffChats = null;
-    if (this.activeTab === "other_staff_messages") this.renderActiveContent();
-    try {
-      const response = await this.api.otherStaffChats(
-        this.contextToken,
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.otherStaffChatsRequestVersion) return;
-      this.validateOtherStaffChats(response);
-      this.otherStaffChats = response;
-    } catch (error) {
-      if (requestVersion !== this.otherStaffChatsRequestVersion) return;
-      this.otherStaffChatsError = error;
-    } finally {
-      if (requestVersion === this.otherStaffChatsRequestVersion) {
-        this.otherStaffChatsLoading = false;
-        if (this.activeTab === "other_staff_messages")
-          this.renderActiveContent();
-      }
-    }
-  }
-
-  private renderOtherStaffChatsPanel(): HTMLElement {
-    const response = this.otherStaffChats;
-    const panel = this.panelShell(
-      "other-staff-chats",
-      "其他客服聊天",
-      response ? `${response.items.length} 条 · 最近 20 条` : "最近 20 条",
-    );
-    panel.dataset.sidebarCapability = "local-archive";
-    panel.append(
-      createElement(
-        this.doc,
-        "div",
-        "sidebar-status warn",
-        "仅展示本地归档的脱敏 text/image；当前负责人身份无法确认时会安全关闭，不调用企微，也不表示外部效果成功。",
-      ),
-    );
-    if (!response) {
-      if (this.otherStaffChatsError)
-        this.appendRetry(
-          panel,
-          `其他客服聊天读取失败：${errorMessage(this.otherStaffChatsError, "请稍后重试。")}`,
-          "retry-other-staff-chats",
-          "重试读取其他客服聊天",
-        );
-      else this.appendLoading(panel, "正在读取本地脱敏聊天归档…");
-      return panel;
-    }
-    if (!response.items.length)
-      panel.append(
-        createElement(this.doc, "div", "empty", "暂无其他客服聊天记录"),
-      );
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const item of response.items) {
-        const card = createElement(this.doc, "article", "list-item");
-        card.dataset.otherStaffChatAt = item.sent_at;
-        // 契约不含员工姓名与会话类型字段，员工仅以 ID 语义标注，不猜姓名。
-        card.append(
-          createElement(
-            this.doc,
-            "div",
-            "item-title",
-            `员工 ID ${item.staff_userid} · ${item.message_type === "image" ? "图片" : "文本"}`,
-          ),
-          createElement(this.doc, "div", "item-body", item.content_masked),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `发送时间 ${formatDateTime(item.sent_at)}`,
-          ),
-        );
-        list.append(card);
-      }
-      panel.append(list);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private validateOrderResponse(response: SidebarOrderResponse): void {
-    if (
-      !response ||
-      !Array.isArray(response.items) ||
-      !Number.isInteger(response.total) ||
-      response.total < 0 ||
-      !Number.isInteger(response.limit) ||
-      response.limit < 1 ||
-      typeof response.has_more !== "boolean"
-    )
-      throw new Error("订单响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "订单");
-    for (const item of response.items) {
-      if (
-        typeof item.created_at !== "string" ||
-        typeof item.merchant_order_no !== "string" ||
-        typeof item.product_code !== "string" ||
-        typeof item.product_name !== "string" ||
-        typeof item.amount_yuan !== "string" ||
-        typeof item.currency !== "string" ||
-        typeof item.status !== "string" ||
-        typeof item.status_label !== "string" ||
-        typeof item.provider !== "string" ||
-        typeof item.provider_label !== "string"
-      )
-        throw new Error("订单安全投影响应不完整，已停止渲染。");
-    }
-  }
-
-  private async loadOrders(offset = 0): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const append = Boolean(offset && this.orders);
-    const requestVersion = ++this.ordersRequestVersion;
-    this.ordersLoading = true;
-    this.ordersError = null;
-    if (!append) this.orders = null;
-    if (this.activeTab === "orders") this.renderActiveContent();
-    try {
-      const response = await this.api.orders(
-        this.contextToken,
-        { limit: 20, offset },
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.ordersRequestVersion) return;
-      this.validateOrderResponse(response);
-      this.orders =
-        append && this.orders
-          ? { ...response, items: [...this.orders.items, ...response.items] }
-          : response;
-    } catch (error) {
-      if (requestVersion !== this.ordersRequestVersion) return;
-      this.ordersError = error;
-    } finally {
-      if (requestVersion === this.ordersRequestVersion) {
-        this.ordersLoading = false;
-        if (this.activeTab === "orders") this.renderActiveContent();
-      }
-    }
-  }
-
-  private renderOrdersPanel(): HTMLElement {
-    const response = this.orders;
-    const panel = this.panelShell(
-      "orders",
-      "订单",
-      response ? `${response.total} 条 · 安全本地投影` : "安全本地投影",
-    );
-    if (!response) {
-      if (this.ordersError)
-        this.appendRetry(
-          panel,
-          `订单读取失败：${errorMessage(this.ordersError, "请稍后重试。")}`,
-          "retry-orders",
-          "重试读取订单",
-        );
-      else this.appendLoading(panel, "正在读取订单…");
-      return panel;
-    }
-    if (this.ordersError)
-      panel.append(
-        createElement(
-          this.doc,
-          "div",
-          "sidebar-status error",
-          `加载更多失败：${errorMessage(this.ordersError, "请稍后重试。")}`,
-        ),
-      );
-    if (!response.items.length)
-      panel.append(createElement(this.doc, "div", "empty", "暂无普通订单记录"));
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const item of response.items) {
-        const card = createElement(this.doc, "article", "list-item");
-        card.dataset.orderNo = item.merchant_order_no;
-        card.append(
-          createElement(this.doc, "div", "item-title", item.product_name),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `${item.amount_yuan} ${item.currency} · ${item.status_label || item.status} · ${item.provider_label || item.provider}`,
-          ),
-        );
-        const detail = createElement(
-          this.doc,
-          "details",
-          "order-detail",
-        ) as HTMLDetailsElement;
-        detail.dataset.orderDetail = "local";
-        detail.append(
-          createElement(this.doc, "summary", "link-button", "展开安全订单详情"),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `订单号 ${item.merchant_order_no} · 商品编码 ${item.product_code}`,
-          ),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `渠道 ${item.provider_label || item.provider} · 创建 ${formatDateTime(item.created_at)}`,
-          ),
-        );
-        card.append(detail);
-        list.append(card);
-      }
-      panel.append(list);
-    }
-    if (response.has_more) {
-      const controls = createElement(this.doc, "div", "context-actions");
-      const more = createElement(
-        this.doc,
-        "button",
-        "btn ghost",
-        this.ordersLoading ? "正在加载…" : "加载更多订单",
-      );
-      more.type = "button";
-      more.disabled = this.ordersLoading;
-      more.dataset.sidebarAction = "orders-more";
-      markBound(more);
-      controls.append(more);
-      panel.append(controls);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private validatePeriodicMember(member: SidebarServicePeriodMember): void {
-    if (
-      !member ||
-      !/^spm_[A-Za-z0-9_-]{22}$/.test(member.member_ref) ||
-      !Number.isInteger(member.service_product_id) ||
-      member.service_product_id < 1 ||
-      !Number.isInteger(member.customer_id) ||
-      member.customer_id < 1 ||
-      !["active", "expired", "removed"].includes(member.state) ||
-      !["manual", "paid_order"].includes(member.source) ||
-      typeof member.starts_at !== "string" ||
-      !Number.isInteger(member.version) ||
-      member.version < 1 ||
-      typeof member.created_at !== "string" ||
-      typeof member.updated_at !== "string" ||
-      (member.remark !== undefined && typeof member.remark !== "string") ||
-      (member.alliance !== undefined && typeof member.alliance !== "string")
-    )
-      throw new Error("周期订单安全投影响应不完整，已停止渲染。");
-  }
-
-  private validatePeriodicOrders(response: SidebarPeriodicOrderResponse): void {
-    if (
-      !response ||
-      !Array.isArray(response.items) ||
-      !Number.isInteger(response.limit) ||
-      response.limit < 1 ||
-      !Number.isInteger(response.offset) ||
-      response.offset < 0 ||
-      typeof response.has_more !== "boolean"
-    )
-      throw new Error("周期订单响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "周期订单");
-    for (const member of response.items) this.validatePeriodicMember(member);
-  }
-
-  private async loadPeriodicOrders(offset = 0): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const append = Boolean(offset && this.periodicOrders);
-    const requestVersion = ++this.periodicOrdersRequestVersion;
-    this.periodicOrdersLoading = true;
-    this.periodicOrdersError = null;
-    if (!append) this.periodicOrders = null;
-    if (this.activeTab === "periodic_orders") this.renderActiveContent();
-    try {
-      const response = await this.api.periodicOrders(
-        this.contextToken,
-        { limit: 20, offset },
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.periodicOrdersRequestVersion) return;
-      this.validatePeriodicOrders(response);
-      this.periodicOrders =
-        append && this.periodicOrders
-          ? {
-              ...response,
-              items: [...this.periodicOrders.items, ...response.items],
-            }
-          : response;
-    } catch (error) {
-      if (requestVersion !== this.periodicOrdersRequestVersion) return;
-      this.periodicOrdersError = error;
-    } finally {
-      if (requestVersion === this.periodicOrdersRequestVersion) {
-        this.periodicOrdersLoading = false;
-        if (this.activeTab === "periodic_orders") this.renderActiveContent();
-      }
-    }
-  }
-
-  private renderPeriodicOrdersPanel(): HTMLElement {
-    const response = this.periodicOrders;
-    const panel = this.panelShell(
-      "periodic-orders",
-      "周期订单",
-      response
-        ? `${response.items.length} 条 · canonical member 投影`
-        : "canonical member 投影",
-    );
-    if (!response) {
-      if (this.periodicOrdersError)
-        this.appendRetry(
-          panel,
-          `周期订单读取失败：${errorMessage(this.periodicOrdersError, "请稍后重试。")}`,
-          "retry-periodic-orders",
-          "重试读取周期订单",
-        );
-      else this.appendLoading(panel, "正在读取周期订单…");
-      return panel;
-    }
-    if (this.periodicOrdersError)
-      panel.append(
-        createElement(
-          this.doc,
-          "div",
-          "sidebar-status error",
-          `加载更多失败：${errorMessage(this.periodicOrdersError, "请稍后重试。")}`,
-        ),
-      );
-    if (!response.items.length)
-      panel.append(createElement(this.doc, "div", "empty", "暂无周期订单记录"));
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const member of response.items)
-        list.append(this.renderPeriodicMember(member));
-      panel.append(list);
-    }
-    if (response.has_more) {
-      const controls = createElement(this.doc, "div", "context-actions");
-      const more = createElement(
-        this.doc,
-        "button",
-        "btn ghost",
-        this.periodicOrdersLoading ? "正在加载…" : "加载更多周期订单",
-      );
-      more.type = "button";
-      more.disabled = this.periodicOrdersLoading;
-      more.dataset.sidebarAction = "periodic-orders-more";
-      markBound(more);
-      controls.append(more);
-      panel.append(controls);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private renderPeriodicMember(
-    member: SidebarServicePeriodMember,
-  ): HTMLElement {
-    const card = createElement(this.doc, "article", "list-item");
-    card.dataset.periodicMemberRef = member.member_ref;
-    // 契约无商品名/金额/订单号字段，标题用真实 source 语义，技术串不直出。
-    const titleRow = createElement(this.doc, "div", "item-title-row");
-    titleRow.append(
-      createElement(
-        this.doc,
-        "div",
-        "item-title",
-        member.source === "paid_order"
-          ? "周期服务 · 付费订单"
-          : "周期服务 · 人工登记",
-      ),
-      createElement(
-        this.doc,
-        "span",
-        `state-chip ${member.state}`,
-        PERIODIC_STATE_LABELS[member.state] || member.state,
-      ),
-    );
-    if (member.state === "active" && member.expires_at) {
-      const days = Math.ceil(
-        (Date.parse(member.expires_at) - Date.now()) / 86400000,
-      );
-      if (Number.isFinite(days) && days >= 1)
-        titleRow.append(
-          createElement(this.doc, "span", "state-chip active", `剩 ${days} 天`),
-        );
-    }
-    card.append(titleRow);
-    const rangeParts = [`生效 ${formatDateTime(member.starts_at)}`];
-    if (member.expires_at)
-      rangeParts.push(`到期 ${formatDateTime(member.expires_at)}`);
-    if (member.state === "expired" && member.expired_at)
-      rangeParts.push(`过期 ${formatDateTime(member.expired_at)}`);
-    if (member.state === "removed" && member.removed_at)
-      rangeParts.push(`移除 ${formatDateTime(member.removed_at)}`);
-    if (member.alliance) rangeParts.push(`联盟 ${member.alliance}`);
-    card.append(
-      createElement(this.doc, "div", "item-meta", rangeParts.join(" · ")),
-    );
-    const label = createElement(this.doc, "label", "remark-editor");
-    label.append(createElement(this.doc, "span", undefined, "备注"));
-    const row = createElement(this.doc, "div", "remark-row");
-    const input = createElement(this.doc, "input") as HTMLInputElement;
-    input.type = "text";
-    input.dataset.periodicRemark = member.member_ref;
-    input.maxLength = 500;
-    input.placeholder = "填写备注后保存";
-    input.value =
-      this.periodicRemarkDrafts.get(member.member_ref) ?? member.remark ?? "";
-    input.setAttribute("aria-label", "周期订单备注");
-    row.append(input);
-    const save = createElement(
-      this.doc,
-      "button",
-      "btn primary",
-      this.periodicRemarkSaving.has(member.member_ref) ? "保存中…" : "保存",
-    );
-    save.type = "button";
-    save.dataset.sidebarAction = "periodic-remark-save";
-    save.dataset.memberRef = member.member_ref;
-    save.dataset.serviceProductId = String(member.service_product_id);
-    save.disabled = this.periodicRemarkSaving.has(member.member_ref);
-    markBound(save);
-    row.append(save);
-    label.append(row);
-    card.append(label);
-    const status = this.periodicRemarkStatuses.get(member.member_ref);
-    if (status) {
-      const receipt = createElement(
-        this.doc,
-        "div",
-        `remark-status${status.failed ? " error" : ""}`,
-        status.message,
-      );
-      receipt.dataset.periodicRemarkReceipt = status.failed
-        ? "failed"
-        : "accepted";
-      card.append(receipt);
-    }
-    return card;
-  }
-
-  private validatePeriodicRemark(
-    response: SidebarPeriodicRemarkResponse,
-  ): void {
-    if (!response?.member) throw new Error("备注保存响应不完整，未显示成功。");
-    this.validatePeriodicMember(response.member);
-    validateSidebarSafety(response.safety, "周期订单备注");
-  }
-
-  private async savePeriodicRemark(button: HTMLButtonElement): Promise<void> {
-    const memberRef = button.dataset.memberRef || "";
-    const serviceProductId = Number(button.dataset.serviceProductId);
-    const current = this.periodicOrders?.items.find(
-      (item) => item.member_ref === memberRef,
-    );
-    if (!current || !Number.isInteger(serviceProductId) || serviceProductId < 1)
-      return;
-    const remark = (
-      this.periodicRemarkDrafts.get(memberRef) ??
-      current.remark ??
-      ""
-    ).trim();
-    if (!remark) {
-      this.periodicRemarkStatuses.set(memberRef, {
-        message: "备注不能为空，未发起写入。",
-        failed: true,
-      });
-      this.renderActiveContent();
-      return;
-    }
-    if (this.periodicRemarkSaving.has(memberRef)) return;
-    this.periodicRemarkSaving.add(memberRef);
-    this.periodicRemarkStatuses.delete(memberRef);
-    this.renderActiveContent();
-    try {
-      const response = await this.api.updateRemark(
-        this.contextToken,
-        serviceProductId,
-        memberRef,
-        { expected_version: current.version, remark },
-        stableRemarkIdempotencyKey(memberRef, current.version, remark),
-      );
-      this.validatePeriodicRemark(response);
-      const index = this.periodicOrders?.items.findIndex(
-        (item) => item.member_ref === memberRef,
-      );
-      if (index !== undefined && index >= 0 && this.periodicOrders) {
-        this.periodicOrders.items[index] = response.member;
-        this.periodicRemarkDrafts.delete(memberRef);
-      }
-      this.periodicRemarkStatuses.set(memberRef, {
-        message: `备注已保存：accepted · 本地提交成功（CAS version ${response.member.version}）。`,
-        failed: false,
-      });
-    } catch (error) {
-      this.periodicRemarkStatuses.set(memberRef, {
-        message:
-          errorStatus(error) === 409
-            ? "备注保存冲突：版本已变化，请刷新周期订单后重试。"
-            : `备注保存失败：${errorMessage(error, "请稍后重试。")}`,
-        failed: true,
-      });
-    } finally {
-      this.periodicRemarkSaving.delete(memberRef);
-      if (this.activeTab === "periodic_orders") this.renderActiveContent();
-    }
-  }
-
-  private validateMaterials(response: SidebarMaterialResponse): void {
-    if (
-      !response ||
-      !Array.isArray(response.items) ||
-      !Number.isInteger(response.total) ||
-      response.total < 0 ||
-      !Number.isInteger(response.limit) ||
-      response.limit < 1 ||
-      !Number.isInteger(response.offset) ||
-      response.offset < 0 ||
-      !Array.isArray(response.quick_keywords)
-    )
-      throw new Error("素材响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "素材");
-    for (const item of response.items) {
-      if (
-        !Number.isInteger(item.id) ||
-        item.id < 1 ||
-        typeof item.name !== "string" ||
-        typeof item.file_name !== "string" ||
-        !item.file_name ||
-        typeof item.mime_type !== "string" ||
-        !item.mime_type ||
-        !Number.isInteger(item.file_size) ||
-        item.file_size < 1 ||
-        typeof item.description !== "string" ||
-        !Array.isArray(item.tags) ||
-        typeof item.category !== "string" ||
-        !Number.isInteger(item.width) ||
-        item.width < 1 ||
-        !Number.isInteger(item.height) ||
-        item.height < 1 ||
-        typeof item.updated_at !== "string" ||
-        item.thumbnail_status !== "pending"
-      )
-        throw new Error("素材元数据响应不完整，已停止渲染。");
-    }
-  }
-
-  private validateShareableProducts(
-    response: SidebarShareableProductResponse,
-  ): void {
-    if (!response || !Array.isArray(response.items) || !response.safety)
-      throw new Error("可分享商品响应不完整，已停止渲染。");
-    validateSidebarSafety(response.safety, "可分享商品");
-    for (const product of response.items) {
-      if (
-        (product.kind !== "ordinary" && product.kind !== "service_period") ||
-        !Number.isSafeInteger(product.product_id) ||
-        product.product_id < 1 ||
-        typeof product.product_code !== "string" ||
-        !product.product_code ||
-        typeof product.name !== "string" ||
-        !product.name ||
-        typeof product.description !== "string" ||
-        !Number.isSafeInteger(product.price_minor) ||
-        product.price_minor < 0 ||
-        !/^[A-Z]{3}$/.test(product.currency) ||
-        (product.stock_quantity !== undefined &&
-          (!Number.isSafeInteger(product.stock_quantity) ||
-            product.stock_quantity < 0)) ||
-        !new RegExp(`^/p/${product.kind}/[1-9][0-9]{0,18}$`).test(
-          product.public_path,
-        )
-      )
-        throw new Error("可分享商品响应不完整，已停止渲染。");
-    }
-  }
-
-  private async loadProducts(): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const requestVersion = ++this.productsRequestVersion;
-    this.productsLoading = true;
-    this.productsError = null;
-    if (this.activeTab === "products") this.renderActiveContent();
-    try {
-      const response = await this.api.shareableProducts(
-        this.contextToken,
-        { limit: 50 },
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.productsRequestVersion) return;
-      this.validateShareableProducts(response);
-      this.products = response;
-    } catch (error) {
-      if (requestVersion !== this.productsRequestVersion) return;
-      this.productsError = error;
-    } finally {
-      if (requestVersion === this.productsRequestVersion) {
-        this.productsLoading = false;
-        if (this.activeTab === "products") this.renderActiveContent();
-      }
-    }
-  }
-
-  private findShareableProduct(
-    kind: string | undefined,
-    productID: number,
-  ): SidebarShareableProduct | undefined {
-    if (
-      (kind !== "ordinary" && kind !== "service_period") ||
-      !Number.isSafeInteger(productID) ||
-      productID < 1
-    )
-      return undefined;
-    return this.products?.items.find(
-      (product) => product.kind === kind && product.product_id === productID,
-    );
-  }
-
-  private productSendKey(product: SidebarShareableProduct): string {
-    return `${product.kind}:${product.product_id}`;
-  }
-
-  private productPublicURL(product: SidebarShareableProduct): string {
-    const origin = this.doc.defaultView?.location.origin;
-    if (!origin || origin === "null")
-      throw new Error("当前页面缺少同源商品详情地址。");
-    const url = new URL(product.public_path, origin);
-    if (url.origin !== origin || url.pathname !== product.public_path)
-      throw new Error("商品详情地址不在当前同源站点。");
-    return url.toString();
-  }
-
-  private async ensureJssdkForSend(): Promise<SidebarWx> {
-    if (!this.jssdkReady && !(await this.prepareJssdk()))
-      throw new Error("JSSDK 未就绪，未调用发送接口。");
-    const wx = this.doc.defaultView?.wx;
-    if (!wx || typeof wx.invoke !== "function")
-      throw new Error("当前企微 SDK 不支持发送接口。");
-    return wx;
-  }
-
-  private async sendProduct(product: SidebarShareableProduct): Promise<void> {
-    const key = this.productSendKey(product);
-    this.productSendStatuses.set(key, {
-      message: "正在调用企微 JSSDK 商品卡片…",
-      failed: false,
-    });
-    if (this.activeTab === "products") this.renderActiveContent();
-    try {
-      const wx = await this.ensureJssdkForSend();
-      await this.invokeWx(wx, "sendChatMessage", {
-        msgtype: "news",
-        news: {
-          link: this.productPublicURL(product),
-          title: product.name,
-          desc: product.description || product.product_code,
-        },
-      });
-      this.productSendStatuses.set(key, {
-        message:
-          "client_callback · JSSDK 已回调；delivery_unknown · 未取得企微外部送达回执。",
-        failed: false,
-      });
-    } catch (error) {
-      this.productSendStatuses.set(key, {
-        message: `client_callback · JSSDK 调用失败；delivery_unknown · 未取得外部送达状态。${errorMessage(error, "")}`,
-        failed: true,
-      });
-    }
-    if (this.activeTab === "products") this.renderActiveContent();
-  }
-
-  /**
-   * 素材图片发送：后端 send-intents 已在服务端封装临时媒体与 payload
-   * （mediaid 由 Media 域出具），前端只执行 JSSDK 调用并用一次性 grant
-   * 回执结果。grant 过期、冲突或素材未就绪由后端 409/503 表达。
-   */
-  private async sendMaterialImage(imageID: number): Promise<void> {
-    if (!this.contextToken || this.imageSendPreparing.has(imageID)) return;
-    this.imageSendPreparing.add(imageID);
-    this.imageSendStatuses.set(imageID, {
-      message: "正在创建本地发送意图（服务端封装临时媒体）…",
-      failed: false,
-    });
-    if (this.activeTab === "materials") this.renderActiveContent();
-    let acceptance: SidebarSendIntentAcceptance | undefined;
-    try {
-      const wx = await this.ensureJssdkForSend();
-      acceptance = await this.api.createSendIntent(
-        this.contextToken,
-        { resource_kind: "material", resource_id: String(imageID) },
-        newSidebarIdempotencyKey(`sidebar-send-material-${imageID}`),
-      );
-      if (
-        !acceptance ||
-        !Number.isInteger(acceptance.intent_id) ||
-        !acceptance.grant ||
-        !acceptance.payload
-      )
-        throw new Error("发送意图响应不完整，未调用 JSSDK。");
-      const payload =
-        typeof acceptance.payload === "string"
-          ? (JSON.parse(acceptance.payload) as Record<string, unknown>)
-          : (acceptance.payload as Record<string, unknown>);
-      const result = await this.invokeWx(wx, "sendChatMessage", payload);
-      await this.api.completeSendIntent(this.contextToken, acceptance.intent_id, {
-        grant: acceptance.grant,
-        outcome: "client_executed",
-        evidence: JSON.stringify(result ?? {}).slice(0, 512) || "jssdk_callback",
-      });
-      this.imageSendStatuses.set(imageID, {
-        message:
-          "client_executed · JSSDK 已回调并登记本地回执；delivery_unknown · 未取得企微外部送达回执。",
-        failed: false,
-      });
-    } catch (error) {
-      if (
-        acceptance?.grant &&
-        Number.isInteger(acceptance.intent_id)
-      ) {
-        try {
-          await this.api.completeSendIntent(this.contextToken, acceptance.intent_id, {
-            grant: acceptance.grant,
-            outcome: "outcome_unknown",
-            evidence: errorMessage(error, "jssdk 未确认").slice(0, 512),
-          });
-        } catch {
-          // 回执登记失败不改变本地状态展示；grant 一次性，冲突由后端裁决。
-        }
-      }
-      this.imageSendStatuses.set(imageID, {
-        message: `发送未完成：${errorMessage(error, "请稍后重试。")} delivery_unknown · 未取得外部送达状态。`,
-        failed: true,
-      });
-    } finally {
-      this.imageSendPreparing.delete(imageID);
-      if (this.activeTab === "materials") this.renderActiveContent();
-    }
-  }
-
-
-  private renderProductsPanel(): HTMLElement {
-    const response = this.products;
-    const periodic = this.activeTab === "products_periodic";
-    const panel = this.panelShell(
-      "products",
-      periodic ? "周期性商品" : "普通商品",
-      "仅已启用的本地商品；卡片仅链接同源只读详情页",
-    );
-    if (!response) {
-      if (this.productsError)
-        this.appendRetry(
-          panel,
-          `商品读取失败：${errorMessage(this.productsError, "请稍后重试。")}`,
-          "retry-products",
-          "重试读取商品",
-        );
-      else this.appendLoading(panel, "正在读取可分享商品…");
-      return panel;
-    }
-    const items = response.items.filter(
-      (product) =>
-        product.kind === (periodic ? "service_period" : "ordinary"),
-    );
-    if (!items.length)
-      panel.append(
-        createElement(
-          this.doc,
-          "div",
-          "empty",
-          periodic ? "暂无可分享的周期性商品" : "暂无可分享的普通商品",
-        ),
-      );
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const product of items) {
-        const card = createElement(this.doc, "article", "list-item");
-        card.dataset.productId = String(product.product_id);
-        card.dataset.productKind = product.kind;
-        const kind = product.kind === "ordinary" ? "普通商品" : "周期商品";
-        card.append(
-          createElement(this.doc, "div", "item-title", product.name),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `${kind} · ${product.product_code} · ${product.currency} ${(product.price_minor / 100).toFixed(2)} · ${product.stock_quantity === undefined ? "库存未同步" : `库存 ${product.stock_quantity}`}`,
-          ),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            product.description || "无商品描述",
-          ),
-        );
-        const actions = createElement(this.doc, "div", "context-actions");
-        const send = createElement(
-          this.doc,
-          "button",
-          "btn primary",
-          "发送商品卡片",
-        );
-        send.type = "button";
-        send.disabled = !this.jssdkReady;
-        if (!this.jssdkReady) send.title = "企微 JSSDK 未就绪，发送已禁用";
-        send.dataset.sidebarAction = "send-product";
-        send.dataset.productId = String(product.product_id);
-        send.dataset.productKind = product.kind;
-        markBound(send);
-        actions.append(send);
-        card.append(actions);
-        const receipt = this.productSendStatuses.get(
-          this.productSendKey(product),
-        );
-        if (receipt) {
-          const status = createElement(
-            this.doc,
-            "div",
-            `sidebar-status${receipt.failed ? " error" : ""}`,
-            receipt.message,
-          );
-          status.dataset.sendReceipt = receipt.failed
-            ? "client_callback,delivery_unknown,error"
-            : "client_callback,delivery_unknown";
-          card.append(status);
-        }
-        list.append(card);
-      }
-      panel.append(list);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private async loadMaterials(offset = 0): Promise<void> {
-    if (!this.contextToken || !this.workbench) return;
-    const append = Boolean(offset && this.materials);
-    const requestVersion = ++this.materialsRequestVersion;
-    this.materialsLoading = true;
-    this.materialsError = null;
-    if (!append) {
-      this.materials = null;
-      this.thumbnailStatuses.clear();
-      this.clearThumbnailURLs();
-    }
-    if (this.activeTab === "materials") this.renderActiveContent();
-    try {
-      const params = {
-        q: this.materialFilters.q.trim() || undefined,
-        category: this.materialFilters.category.trim() || undefined,
-        tags: this.materialFilters.tags.trim() || undefined,
-        limit: 20,
-        offset,
+  private legacy(path: string, payload: Json): Json {
+    if (path === "/api/sidebar/v2/questionnaires") {
+      return {
+        questionnaires: (payload.items || []).map((item: Json) => ({
+          title: item.title,
+          submitted_at: date(item.submitted_at),
+          answer_count: (item.answers || []).length,
+          total_count: (item.answers || []).length,
+          answers: (item.answers || []).map((answer: Json) => ({ question: answer.question, answer: (answer.answers || []).join("、") })),
+        })),
+        total: payload.total,
+        limit: payload.limit,
+        has_more: Boolean(payload.has_more),
+        next_cursor: payload.next_cursor || "",
       };
-      const response = await this.api.materials(
-        this.contextToken,
-        params,
-        this.tabRequestController.signal,
-      );
-      if (requestVersion !== this.materialsRequestVersion) return;
-      this.validateMaterials(response);
-      this.materials =
-        append && this.materials
-          ? { ...response, items: [...this.materials.items, ...response.items] }
-          : response;
-    } catch (error) {
-      if (requestVersion !== this.materialsRequestVersion) return;
-      this.materialsError = error;
-    } finally {
-      if (requestVersion === this.materialsRequestVersion) {
-        this.materialsLoading = false;
-        if (this.activeTab === "materials") this.renderActiveContent();
-      }
     }
-  }
-
-  private clearThumbnailURLs(): void {
-    const revoke = this.doc.defaultView?.URL?.revokeObjectURL;
-    if (typeof revoke === "function") {
-      for (const url of this.thumbnailURLs.values())
-        revoke.call(this.doc.defaultView?.URL, url);
+    if (path === "/api/sidebar/v2/timeline") {
+      return {
+        items: (payload.items || []).filter((item: Json) => !String(item.event_type || "").includes("message")).map((item: Json) => ({ title: item.title, event_time: item.occurred_at, type: item.event_type })),
+        total: payload.total,
+        has_more: Boolean(payload.has_more),
+        next_cursor: payload.next_cursor || "",
+      };
     }
-    this.thumbnailURLs.clear();
-  }
-
-  private queueThumbnailStatus(imageId: number): void {
-    if (this.thumbnailStatuses.has(imageId)) return;
-    this.thumbnailStatuses.set(imageId, "pending");
-    void this.loadThumbnailStatus(imageId);
-  }
-
-  private async loadThumbnailStatus(imageId: number): Promise<void> {
-    if (!this.contextToken) return;
-    try {
-      const blob = await this.api.thumbnailPreview(
-        this.contextToken,
-        imageId,
-        this.tabRequestController.signal,
-      );
-      if (
-        !blob ||
-        blob.size < 1 ||
-        !["image/png", "image/jpeg", "image/gif"].includes(blob.type)
-      )
-        throw new Error("缩略图二进制响应不完整。");
-      const create = this.doc.defaultView?.URL?.createObjectURL;
-      if (typeof create === "function") {
-        const previous = this.thumbnailURLs.get(imageId);
-        if (previous) this.doc.defaultView?.URL?.revokeObjectURL(previous);
-        this.thumbnailURLs.set(
-          imageId,
-          create.call(this.doc.defaultView?.URL, blob),
-        );
-      }
-      this.thumbnailStatuses.set(imageId, "ready");
-    } catch (error) {
-      this.thumbnailStatuses.set(
-        imageId,
-        errorStatus(error) === 404 ? "not_found" : "error",
-      );
+    if (path === "/api/sidebar/v2/products") {
+      const map = (item: Json) => ({ id: item.id, title: item.name, price_label: formatMoney(item.price_minor, item.currency), duration_days: item.service_period_duration_days, product_url: item.public_url || "" });
+      const items = payload.items || [];
+      return { products: items.filter((item: Json) => item.product_type === "standard").map(map), service_period_products: items.filter((item: Json) => item.product_type === "service_period").map(map), total: payload.total, next_cursor: payload.next_cursor || "" };
     }
-    if (this.activeTab === "materials") this.renderActiveContent();
-  }
-
-  private renderMaterialsPanel(): HTMLElement {
-    const response = this.materials;
-    const panel = this.panelShell(
-      "materials",
-      "素材",
-      response ? `${response.total} 条 · 本地图片元数据` : "本地图片元数据",
-    );
-    const filters = createElement(this.doc, "div", "material-filters");
-    for (const [key, labelText, placeholder] of [
-      ["q", "搜索", "名称、文件名或描述"],
-      ["category", "分类", "分类"],
-      ["tags", "标签", "逗号分隔标签"],
-    ] as const) {
-      const label = createElement(this.doc, "label", "filter-control");
-      label.append(createElement(this.doc, "span", undefined, labelText));
-      const input = createElement(this.doc, "input");
-      input.id = `material-${key}`;
-      input.dataset.materialFilter = key;
-      input.value = this.materialFilters[key];
-      input.placeholder = placeholder;
-      input.maxLength = key === "tags" ? 500 : 200;
-      label.append(input);
-      filters.append(label);
+    if (path === "/api/sidebar/v2/orders") {
+      return {
+        orders: (payload.items || []).map((item: Json) => {
+          const amount = item.amount || {};
+          const refundedMinor = Number(item.refunded_minor);
+          return {
+            id: item.merchant_order_no || item.id,
+            title: item.items?.[0]?.product_name || "订单",
+            amount_label: formatMoney(amount.amount_minor, amount.currency),
+            status_label: orderStatusLabel(String(item.status || "")),
+            // Snapshot has no paid_at field. Keep creation time truthfully
+            // labeled by the renderer rather than presenting it as payment.
+            paid_at: item.paid_at ? date(item.paid_at) : "",
+            created_at: item.created_at ? date(item.created_at) : "",
+            refund_label: Number.isFinite(refundedMinor) && refundedMinor > 0 ? formatMoney(refundedMinor, amount.currency) : "",
+            detail_url: item.detail_url || "",
+          };
+        }),
+        total: payload.total,
+        next_cursor: payload.next_cursor || "",
+      };
     }
-    const search = createElement(this.doc, "button", "btn primary", "搜索素材");
-    search.type = "button";
-    search.dataset.sidebarAction = "materials-search";
-    markBound(search);
-    filters.append(search);
-    const clear = createElement(this.doc, "button", "btn ghost", "清空");
-    clear.type = "button";
-    clear.dataset.sidebarAction = "materials-clear";
-    markBound(clear);
-    filters.append(clear);
-    panel.append(filters);
-    if (response?.quick_keywords?.length) {
-      const quick = createElement(this.doc, "div", "quick-keywords");
-      quick.append(createElement(this.doc, "span", "panel-meta", "快捷关键词"));
-      for (const keyword of response.quick_keywords) {
-        const button = createElement(
-          this.doc,
-          "button",
-          "link-button",
-          keyword,
-        );
-        button.type = "button";
-        button.dataset.materialKeyword = keyword;
-        markBound(button);
-        quick.append(button);
-      }
-      panel.append(quick);
+    if (path === "/api/sidebar/v2/periodic-orders") {
+      return {
+        periodic_orders: (payload.items || []).map((item: Json) => {
+          this.periodicVersions.set(String(item.id), Number(item.version || 0));
+          return { id: item.id, title: item.title, status_label: item.status, remark: item.remark, version: item.version, detail_url: item.detail_url || "", ...this.periodLabels(item) };
+        }),
+        total: payload.total,
+      };
     }
-    if (!response) {
-      if (this.materialsError)
-        this.appendRetry(
-          panel,
-          `素材读取失败：${errorMessage(this.materialsError, "请稍后重试。")}`,
-          "retry-materials",
-          "重试读取素材",
-        );
-      else this.appendLoading(panel, "正在读取素材元数据…");
-      return panel;
+    if (path === "/api/sidebar/v2/materials") {
+      const sourceItems = Array.isArray(payload.items) ? payload.items : [];
+      const total = Number(payload.total);
+      const offset = Number(payload.offset);
+      const limit = Number(payload.limit);
+      if (!Number.isSafeInteger(total) || total < 0 || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || sourceItems.length > limit) throw failure("素材分页响应无效。");
+      const materials = sourceItems.map((item: Json) => ({ id: item.id, tags: item.tags || [], thumbnail_url: `/api/sidebar/v2/materials/${encodeURIComponent(String(item.id))}/variants/thumb_320` }));
+      const nextOffset = offset + materials.length;
+      if (!Number.isSafeInteger(nextOffset) || nextOffset < offset) throw failure("素材分页响应无效。");
+      return { materials, total, limit, offset, has_more: materials.length > 0 && nextOffset < total, next_offset: nextOffset, quick_keywords: [] };
     }
-    if (this.materialsError)
-      panel.append(
-        createElement(
-          this.doc,
-          "div",
-          "sidebar-status error",
-          `加载更多失败：${errorMessage(this.materialsError, "请稍后重试。")}`,
-        ),
-      );
-    if (!response.items.length)
-      panel.append(createElement(this.doc, "div", "empty", "暂无匹配素材"));
-    else {
-      const list = createElement(this.doc, "div", "list");
-      for (const item of response.items) {
-        this.queueThumbnailStatus(item.id);
-        const card = createElement(this.doc, "article", "list-item");
-        card.dataset.materialId = String(item.id);
-        const status = this.thumbnailStatuses.get(item.id) || "pending";
-        const badge = createElement(
-          this.doc,
-          "span",
-          "thumbnail-status",
-          THUMBNAIL_STATUS_LABELS[status],
-        );
-        badge.dataset.thumbnailStatus = status;
-        const previewURL = this.thumbnailURLs.get(item.id);
-        if (status === "ready" && previewURL) {
-          const preview = createElement(this.doc, "img") as HTMLImageElement;
-          preview.src = previewURL;
-          preview.alt = item.name || item.file_name;
-          preview.loading = "lazy";
-          preview.dataset.materialPreview = "ready";
-          card.append(preview);
-        }
-        card.append(
-          createElement(
-            this.doc,
-            "div",
-            "item-title",
-            item.name || item.file_name,
-          ),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `${item.file_name} · ${formatFileSize(item.file_size)} · ${item.width}×${item.height}`,
-          ),
-          createElement(
-            this.doc,
-            "div",
-            "item-meta",
-            `分类 ${item.category || "未分类"}${item.tags.length ? ` · 标签 ${item.tags.join("、")}` : ""} · 更新 ${formatDateTime(item.updated_at)}`,
-          ),
-          badge,
-        );
-        if (item.description)
-          card.append(
-            createElement(this.doc, "div", "item-meta", item.description),
-          );
-        const actions = createElement(this.doc, "div", "context-actions");
-        const send = createElement(
-          this.doc,
-          "button",
-          "btn primary",
-          "发送图片",
-        );
-        send.type = "button";
-        send.disabled =
-          !this.jssdkReady || this.imageSendPreparing.has(item.id);
-        if (!this.jssdkReady) send.title = "企微 JSSDK 未就绪，发送已禁用";
-        send.dataset.sidebarAction = "send-material-image";
-        send.dataset.materialId = String(item.id);
-        markBound(send);
-        actions.append(send);
-        card.append(actions);
-        const receipt = this.imageSendStatuses.get(item.id);
-        if (receipt) {
-          const sendStatus = createElement(
-            this.doc,
-            "div",
-            `sidebar-status${receipt.failed ? " error" : ""}`,
-            receipt.message,
-          );
-          sendStatus.dataset.sendReceipt = receipt.failed
-            ? "client_callback,delivery_unknown,error"
-            : "client_callback,delivery_unknown";
-          card.append(sendStatus);
-        }
-        list.append(card);
-      }
-      panel.append(list);
-    }
-    if (response.offset + response.items.length < response.total) {
-      const controls = createElement(this.doc, "div", "context-actions");
-      const more = createElement(
-        this.doc,
-        "button",
-        "btn ghost",
-        this.materialsLoading ? "正在加载…" : "加载更多素材",
-      );
-      more.type = "button";
-      more.disabled = this.materialsLoading;
-      more.dataset.sidebarAction = "materials-more";
-      markBound(more);
-      controls.append(more);
-      panel.append(controls);
-    }
-    this.appendSafety(panel, response.safety);
-    return panel;
-  }
-
-  private scheduleProfileSave(): void {
-    if (this.profileSaveTimer) clearTimeout(this.profileSaveTimer);
-    this.profileSaveTimer = setTimeout(() => {
-      this.profileSaveTimer = null;
-      void this.flushProfileSave();
-    }, PROFILE_SAVE_DEBOUNCE_MS);
-  }
-
-  private async flushProfileSave(): Promise<void> {
-    if (this.savingProfile) {
-      this.saveAgain = true;
-      return;
-    }
-    if (
-      !this.contextToken ||
-      !this.workbench ||
-      this.pendingProfileFields.size === 0
-    )
-      return;
-    const fields = new Set(this.pendingProfileFields);
-    this.pendingProfileFields.clear();
-    const profile = this.workbench.profile;
-    const snapshot: Partial<Record<ProfileField, string>> = {};
-    for (const field of fields) snapshot[field] = profile[field] ?? "";
-    this.savingProfile = true;
-    this.setProfileSaveStatus("正在保存本地画像…");
-    try {
-      const response = await this.api.profile(this.contextToken, {
-        display_name: profile.name,
-        gender: profile.gender ?? 0,
-        corp_name: profile.corp_name ?? "",
-        expected_version: profile.version ?? 0,
-      });
-      this.validateProfileUpdate(response);
-      for (const field of fields) {
-        if ((profile[field] ?? "") === snapshot[field])
-          profile[field] = response.profile[field] ?? "";
-      }
-      profile.updated_at = response.profile.updated_at;
-      if (response.profile.version !== undefined)
-        profile.version = response.profile.version;
-      const updated = this.doc.getElementById("profile-updated-at");
-      if (updated)
-        updated.textContent = `最后本地更新：${formatDateTime(profile.updated_at)}`;
-      this.renderProfileReceipt(response);
-    } catch (error) {
-      for (const field of fields) {
-        if ((profile[field] ?? "") === snapshot[field])
-          this.pendingProfileFields.add(field);
-      }
-      const status = errorStatus(error);
-      const message =
-        status === 409
-          ? "画像保存冲突：数据已被其他操作更新，请刷新工作台后再编辑。"
-          : `画像保存失败：${errorMessage(error, "请稍后重试。")}`;
-      this.setProfileSaveStatus(message, true);
-    } finally {
-      this.savingProfile = false;
-      if (this.saveAgain) {
-        this.saveAgain = false;
-        this.scheduleProfileSave();
-      }
-    }
-  }
-
-  private validateProfileUpdate(response: SidebarProfileUpdateResponse): void {
-    if (!response?.profile?.updated_at || !response.safety)
-      throw new Error("画像保存响应不完整，未显示成功。");
-  }
-
-  private renderProfileReceipt(response: SidebarProfileUpdateResponse): void {
-    const steps = profileReceiptSteps(response.safety);
-    const labels = steps.map((step) => step.label).join(" · ");
-    const external = response.safety.real_external_call_executed
-      ? "外部调用已执行，回执需另行核对。"
-      : response.safety.effect_queued &&
-          response.safety.provider_execution_eligible
-        ? "真实企微外呼未执行；等待 Provider 回执。"
-        : "真实企微外呼未执行。";
-    this.setProfileSaveStatus(`画像保存：${labels}。${external}`);
-    const status = this.doc.getElementById("profile-save-status");
-    if (!status) return;
-    status.dataset.receipt = steps.map((step) => step.key).join(",");
-    const receipt = createElement(this.doc, "div", "receipt");
-    for (const step of steps) {
-      const item = createElement(
-        this.doc,
-        "span",
-        step.key === "outcome_unknown" ? "unknown" : step.key,
-        step.label,
-      );
-      item.dataset.receiptStep = step.key;
-      receipt.append(item);
-    }
-    status.replaceChildren(
-      createElement(
-        this.doc,
-        "span",
-        undefined,
-        `画像保存：${labels}。${external}`,
-      ),
-      receipt,
-    );
-  }
-
-  private setProfileSaveStatus(message: string, failed = false): void {
-    const status = this.doc.getElementById("profile-save-status");
-    if (!status) return;
-    status.className = `profile-save-status${failed ? " error" : ""}`;
-    status.textContent = message;
-  }
-
-  private renderContextPending(): void {
-    const panel = createElement(this.doc, "section", "sidebar-panel");
-    panel.dataset.sidebarSection = "context-pending";
-    panel.append(
-      createElement(
-        this.doc,
-        "div",
-        "sidebar-status",
-        "正在识别当前企微客户；尚未建立 Sidebar 上下文。",
-      ),
-    );
-    const retry = createElement(this.doc, "button", "btn ghost", "重新读取");
-    retry.type = "button";
-    retry.dataset.sidebarAction = "retry-context";
-    markBound(retry);
-    panel.append(retry);
-    this.content.replaceChildren(panel);
-  }
-
-  private renderJSSDKInitializationFailure(): void {
-    const message =
-      this.contextStatus?.textContent || "企微 JSSDK 初始化失败，未建立客户上下文。";
-    const requiresNewDocument =
-      this.regularJSSDKState === "indeterminate" ||
-      this.agentJSSDKState === "indeterminate";
-    this.renderContextError(
-      message,
-      undefined,
-      "error",
-      [
-        requiresNewDocument
-          ? { label: "重新打开 Sidebar", action: "reload-sidebar", primary: true }
-          : { label: "重试读取", action: "retry-context", primary: true },
-      ],
-    );
-  }
-
-  private reloadSidebar(): void {
-    const view = this.doc.defaultView;
-    if (!view) return;
-    try {
-      view.location.reload();
-    } catch (error) {
-      this.setContextStatus(
-        `重新打开 Sidebar 失败：${errorMessage(error, "请手动关闭后重新打开。")}`,
-        "error",
-      );
-    }
-  }
-
-  private renderViewerSessionRequired(): void {
-    this.renderTabs(false);
-    this.renderContextError(
-      "需要先确认当前员工身份，才能读取客户范围数据。OAuth 回退只建立员工会话，返回后仍需重新读取本地上下文。",
-      undefined,
-      "warn",
-      [{ label: "通过企微 OAuth 授权", action: "oauth", primary: true }],
-    );
-  }
-
-  private renderContextError(
-    message: string,
-    detail?: string,
-    tone: "error" | "warn" = "error",
-    actions: Array<{
-      label: string;
-      action: "retry-context" | "reload-sidebar" | "oauth";
-      primary?: boolean;
-    }> = [{ label: "重试读取", action: "retry-context" }],
-  ): void {
-    // Keep the shell status concise. The actionable panel is the sole place
-    // that repeats the full failure and optional provider/detail message.
-    this.setContextStatus("Sidebar 上下文未建立；请按下方提示处理。", tone);
-    this.tabs.replaceChildren();
-    const panel = createElement(this.doc, "section", "sidebar-panel");
-    panel.dataset.sidebarSection = "context-error";
-    const status = createElement(
-      this.doc,
-      "div",
-      `sidebar-status ${tone}`,
-      detail ? `${message} ${detail}` : message,
-    );
-    status.dataset.contextState = tone;
-    panel.append(status);
-    const controls = createElement(this.doc, "div", "context-actions");
-    for (const item of actions) {
-      const button = createElement(
-        this.doc,
-        "button",
-        `btn${item.primary ? " primary" : " ghost"}`,
-        item.label,
-      );
-      button.type = "button";
-      button.dataset.sidebarAction = item.action;
-      markBound(button);
-      controls.append(button);
-    }
-    panel.append(controls);
-    this.content.replaceChildren(panel);
-  }
-
-  private setContextStatus(
-    message: string,
-    tone: "error" | "warn" | "" = "",
-  ): void {
-    if (!this.contextStatus) return;
-    this.contextStatus.className = `sidebar-status${tone ? ` ${tone}` : ""}`;
-    this.contextStatus.textContent = message;
-  }
-
-  private setSdkStatus(
-    state: "idle" | "loading" | "ready" | "unavailable" | "error",
-    message: string,
-  ): void {
-    if (!this.sdkStatus) return;
-    this.sdkStatus.dataset.state = state;
-    this.sdkStatus.textContent = message;
+    if (path === "/api/sidebar/v2/radar-links") return { items: (payload.items || []).map((item: Json) => ({ title: item.title || item.name, url: item.url, type_label: item.content_type || "追踪链接" })) };
+    if (path === "/api/sidebar/v2/coupons") return { ...payload, items: (payload.items || []).map((item: Json) => ({ ...item, discount_label: formatMoney(item.discount_minor, item.currency), products: item.targets || [], claim_ends_at: date(item.claim_ends_at) })) };
+    return payload;
   }
 }
 
-export function startSidebar(
-  doc: Document = document,
-  api: BoundSidebarApi = sidebarApi,
-): SidebarController {
-  initFeedback();
-  const controller = new SidebarController(api, doc);
-  void controller.boot();
-  return controller;
+function start(): void {
+  const root = document.getElementById("sidebar-workbench-root");
+  if (!root) return;
+  const bridge = new SidebarBridge();
+  window.__AICRMSidebarBridge = bridge;
+  window.ImageResourceLoader = { ...window.ImageResourceLoader, loadInto: (image, input, options = {}) => bridge.loadThumbnail(image, input, options) };
+  const overlay = String(root.dataset.overlayUrl || "").trim();
+  if (!overlay) { root.textContent = "侧边栏资源未就绪。"; return; }
+  const script = document.createElement("script");
+  script.src = overlay;
+  script.async = false;
+  script.onerror = () => { root.textContent = "侧边栏资源加载失败。"; };
+  document.head.append(script);
 }
 
 if (typeof document !== "undefined") {
-  if (document.readyState === "loading")
-    document.addEventListener("DOMContentLoaded", () => startSidebar());
-  else startSidebar();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
+  else start();
 }

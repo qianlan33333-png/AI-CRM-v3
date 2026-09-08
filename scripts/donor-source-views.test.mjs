@@ -155,12 +155,18 @@ function expectCode(code, callback) {
   assert.throws(callback, (error) => error instanceof DonorViewError && error.code === code);
 }
 
-test('PR-4 removes every declared view from Git and prepares exact ignored replacements from the 75 canonical authorities', () => {
+test('PR-4 removes every declared view from Git and prepares exact ignored replacements from the 76 canonical authorities', () => {
   const result = verifySourceIndex(REPOSITORY);
   const plan = planMaterialization(REPOSITORY).materialized_view_targets;
   assert.equal(result.bindings_verified, 231);
   assert.equal(result.enabled_views, 230);
-  assert.equal(result.canonical_contents.length, 75);
+  assert.equal(result.canonical_contents.length, 76);
+  assert.deepEqual(result.canonical_contents.find((content) => content.id === "production-1da6a57139ade71f33de45e818e5e6fb3199f3ea"), {
+    id: "production-1da6a57139ade71f33de45e818e5e6fb3199f3ea",
+    canonical_path: "web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js",
+    content_sha256: "38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d",
+    bytes: 14096,
+  });
   assert.equal(plan.length, 230);
   assert.equal(plan.includes('api/openapi.yaml'), false);
   const indexed = execFileSync('git', ['-C', REPOSITORY, 'ls-files', '-z'], { encoding: 'buffer' }).toString('utf8').split('\0').filter(Boolean);

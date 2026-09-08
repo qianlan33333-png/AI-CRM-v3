@@ -49,6 +49,28 @@
       ],
       "reason": "OperationCycle Runner adds the fenced action-lease renewal API contract while preserving the merged Config Center contract.",
       "review_reference": "PR #193 OperationCycle Runner closeout review"
+    },
+    {
+      "base_commit": "1778225e308504a40679033f08853cdc2f723eef",
+      "changes": [
+        {
+          "path": "web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js",
+          "base_sha256": null,
+          "head_sha256": "38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "a2a71c2c77e426a6519f6696b2e31e9e176a7967999070ce87e3df27d2790259",
+          "head_sha256": "8ff73335aa4555800ac00bb0480db7043329790b804126ee33c825f28f6fbed0"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "b07c0ecf5a9ab3c1346040e0a94bd98ba5e92d93f98e15d69caa5ca73199d01f",
+          "head_sha256": "f1ebc9dc5775f46295de3f33846a69fe92748e326ddf89c68b3a15c8dc9c95c2"
+        }
+      ],
+      "reason": "Register the audited dd8 sidebar image loader as the single frozen source and package its byte-exact pager in the Sidebar release closure.",
+      "review_reference": "PR #192 Sidebar standard parity review"
     }
   ]
 }

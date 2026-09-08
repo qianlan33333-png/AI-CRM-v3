@@ -190,6 +190,7 @@ jobs:
         env:
           AICRM_REQUIRE_CHROMIUM_JOURNEY: '1'
           AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/admin-shell-layout
+          AICRM_SIDEBAR_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/sidebar-standard
         run: python3 scripts/dev_preflight.py browser --group all --report-dir "$RUNNER_TEMP/browser-evidence"
       - name: Upload browser results and screenshots
         if: always()
@@ -199,6 +200,7 @@ jobs:
           path: |
             ${{ runner.temp }}/browser-evidence
             artifacts/admin-shell-layout
+            artifacts/sidebar-standard
           retention-days: 14
 
   archive-sdk:
