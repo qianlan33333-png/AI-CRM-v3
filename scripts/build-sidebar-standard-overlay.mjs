@@ -82,19 +82,29 @@ replaceRange("  function safeJsonParse(text) {", "  function queryUrl(baseUrl, p
 
 // The V3 bridge performs the exact current JSSDK/OAuth/contact sequence. The
 // donor remains responsible only for standard UI state and rendering.
-replaceRange("  async function resolveContextFromQuery() {", "  tabsNode.addEventListener(\"click\", (event) => {", `  async function boot() {
+replaceRange("  async function resolveContextFromQuery() {", "  tabsNode.addEventListener(\"click\", (event) => {", `  async function boot(options) {
+    // A retry or a new visible WebView context supersedes every prior boot.
+    // The previous contact/JSSDK promise may still settle after cancellation;
+    // it must never redraw an error or a workbench over the newer context.
+    const generation = Number(state.v3TrustedBootGeneration || 0) + 1;
+    state.v3TrustedBootGeneration = generation;
     setWorkbenchState(WORKBENCH_STATES.identifying_customer);
     renderTabs();
     setPanelLoading("");
     try {
       const bridge = window.__AICRMSidebarBridge;
       if (!bridge) throw new Error("侧边栏可信桥未就绪");
-      await bridge.start();
+      // A retry explicitly abandons the prior generation before resolving a
+      // new WeCom contact. It cannot reuse a token/cache from the old view.
+      if (options && options.forceSidebarOAuth && typeof bridge.retry === "function") await bridge.retry();
+      else await bridge.start();
+      if (state.v3TrustedBootGeneration !== generation) return;
       // The overlay never receives or renders an external identifier. This
       // stable local marker keeps its donor cache keys isolated per reload.
       setExternalUserid("v3-trusted-context");
       await loadWorkbench();
     } catch (error) {
+      if (state.v3TrustedBootGeneration !== generation) return;
       setWorkbenchState(WORKBENCH_STATES.error, { message: error.message || String(error) });
       renderRetryPanel("", error.message || "加载失败，请稍后重试。");
     }
@@ -162,11 +172,281 @@ replaceRange("  function renderCoupons() {", "  function materialTypeControls() 
 
 `, "coupon availability render");
 
+// The donor used a single generic "bound" mobile label and made regular-order
+// detail buttons unconditionally clickable. V3 keeps the standard layout but
+// only presents facts supplied by the owning projection.
+replaceRange("  function renderTop() {", "  function updateProfileField(key, value) {", `  function renderTop() {
+    const workbench = state.workbench || {};
+    const customer = workbench.customer || {};
+    const workflow = workbench.workflow || {};
+    const name = String(customer.display_name || "当前客户").trim();
+    const mobile = String(customer.mobile || "").trim();
+    const assurance = String(customer.phone_assurance || "").toLowerCase();
+    const isVerified = assurance === "verified";
+    document.getElementById("customer-name").textContent = name;
+    document.getElementById("customer-mobile").textContent = mobile ? "手机号 " + mobile : "";
+    document.getElementById("workflow-title").textContent = String(workflow.title || "").trim();
+    const bindingState = document.getElementById("binding-state");
+    const hideBindingState = Boolean(customer.owner_pending);
+    bindingState.textContent = hideBindingState ? "" : (mobile ? (isVerified ? "手机号已验证" : "手机号已声明") : "手机号未声明");
+    bindingState.classList.toggle("hidden", hideBindingState);
+    bindingState.classList.remove("loading");
+    bindingState.classList.toggle("unbound", !mobile);
+    const changeButton = document.getElementById("change-mobile-button");
+    if (changeButton) changeButton.disabled = Boolean(customer.owner_pending);
+  }
+
+`, "phone assurance render");
+replaceRange("  function regularOrderCards() {", "  function renderOrders() {", `  function regularOrderCards() {
+    const rows = state.data.orders || [];
+    if (!rows.length) return empty("暂无普通订单");
+    return rows
+      .map((item) => {
+        const time = item.paid_at || item.created_at || "";
+        const timeLabel = item.paid_at ? "支付时间" : (item.created_at ? "创建时间" : "时间");
+        const refund = item.refund_label ? '<span>退款</span><strong>' + escapeHtml(item.refund_label) + "</strong>" : "";
+        const detailAction = item.detail_url
+          ? '<div class="row-actions"><button class="btn primary" type="button" data-order-detail-url="' + escapeHtml(item.detail_url) + '">查看详情</button></div>'
+          : "";
+        return '<article class="card"><div class="card-title"><div><h3>' + escapeHtml(item.title || "未命名商品") + "</h3>" +
+          '<div class="mini">' + escapeHtml(item.id || "") + '</div></div><div class="price">' + escapeHtml(item.amount_label || "") + "</div></div>" +
+          '<div class="kv"><span>状态</span><strong>' + escapeHtml(item.status_label || "") + "</strong>" + refund +
+          '<span>' + escapeHtml(timeLabel) + "</span><strong>" + escapeHtml(time) + "</strong></div>" + detailAction + "</article>";
+      })
+      .join("");
+  }
+
+`, "owner order render");
+replaceRange("  function periodicOrderCards() {", "  function renderPeriodicOrders() {", `  function periodicOrderCards() {
+    const rows = state.data.periodic_orders || [];
+    if (!rows.length) return empty("暂无周期订单");
+    return rows
+        .map((item) => {
+          const lastOrder = [item.last_out_trade_no || "", item.last_order_paid_at || ""].filter(Boolean).join(" · ");
+          const detailAction = item.detail_url
+            ? '<div class="row-actions"><button class="btn primary" type="button" data-order-detail-url="' + escapeHtml(item.detail_url || "") + '">查看详情</button></div>'
+            : "";
+          return (
+            '<article class="card periodic-order-card"><div class="card-title"><div><h3>' + escapeHtml(item.title || "未命名周期商品") + "</h3>" +
+            '<div class="mini">' + escapeHtml(lastOrder || item.product_code || "") + '</div></div><div class="price">' + escapeHtml(item.amount_label || "") + "</div></div>" +
+            '<div class="kv"><span>生效时间</span><strong>' + escapeHtml(item.start_at || "未提供") + "</strong>" +
+            '<span>到期时间</span><strong>' + escapeHtml(item.end_at || "未提供") + "</strong>" +
+            '<span>剩余有效期</span><strong>' + escapeHtml(item.remaining_label || "未提供") + "</strong>" +
+            '<span>周期</span><strong>' + escapeHtml(item.duration_label || "未提供") + "</strong>" +
+            '<span>正式登录</span><strong>' + escapeHtml(huangyoucanBoolean(item, "huangyoucan_formally_logged_in", "是", "否")) + "</strong>" +
+            '<span>token 消耗</span><strong>' + escapeHtml(huangyoucanBoolean(item, "huangyoucan_has_token_usage", "有", "无")) + "</strong>" +
+            '<span>学习计划进度</span><strong>' + escapeHtml(huangyoucanProgress(item)) + "</strong>" +
+            '<span>近 7 天打开次数</span><strong>' + escapeHtml(huangyoucanMatched(item) ? String(Number(item.huangyoucan_open_count_7d || 0)) : "—") + "</strong>" +
+            '<span>最后打开时间</span><strong>' + escapeHtml(huangyoucanLastOpen(item)) + "</strong></div>" +
+            '<div class="field periodic-remark"><div class="field-title">备注</div>' +
+            '<textarea class="textarea periodic-remark-textarea" data-periodic-order-remark="' + escapeHtml(item.id || "") + '">' + escapeHtml(item.remark || "") + "</textarea></div>" +
+            detailAction + "</article>"
+          );
+        })
+        .join("");
+  }
+
+`, "owner periodic render");
+replaceRange("  async function saveMobile() {", "  async function boot(options) {", `  async function saveMobile() {
+    confirmMobileButton.disabled = true;
+    mobileStatus.textContent = "正在保存…";
+    try {
+      const customer = (state.workbench || {}).customer || {};
+      if (customer.owner_pending) {
+        throw new Error("请先从企微侧边栏重新打开以确认当前员工身份");
+      }
+      const payload = await requestJson(endpoint("bindMobileUrl"), {
+        method: "POST",
+        body: JSON.stringify({
+          external_userid: state.external_userid,
+          owner_userid: state.owner_userid,
+          bind_by_userid: state.bind_by_userid || state.owner_userid,
+          mobile: mobileInput.value,
+          force_rebind: Boolean(customer.mobile_bound !== undefined ? customer.mobile_bound : customer.is_bound && customer.mobile),
+        }),
+      });
+      const binding = payload.binding || payload;
+      const assurance = String(binding.phone_assurance || "declared").toLowerCase();
+      state.workbench.customer.mobile = binding.mobile || mobileInput.value;
+      state.workbench.customer.is_bound = true;
+      state.workbench.customer.mobile_bound = assurance === "verified";
+      state.workbench.customer.phone_assurance = assurance;
+      renderTop();
+      closeMobileModal();
+      showToast(assurance === "verified" ? "手机号已验证" : "手机号已声明");
+    } catch (error) {
+      mobileStatus.textContent = error.message || "保存失败";
+      mobileStatus.className = "status error";
+      showToast(error.message || "保存失败", "error");
+    } finally {
+      confirmMobileButton.disabled = false;
+    }
+  }
+
+`, "declared phone render");
+replaceRange("    const materialSendButton = event.target.closest(\"[data-material-send]\");", "    const productTypeButton = event.target.closest(\"[data-product-type]\");", `    const materialSendButton = event.target.closest("[data-material-send]");
+    if (materialSendButton) {
+      if (materialSendButton.dataset.sending === "true") return;
+      const label = materialSendButton.textContent;
+      materialSendButton.disabled = true;
+      materialSendButton.dataset.sending = "true";
+      materialSendButton.textContent = "发送中…";
+      try {
+        await sendMaterial(materialSendButton.dataset.materialSend);
+      } finally {
+        delete materialSendButton.dataset.sending;
+        materialSendButton.textContent = label;
+        materialSendButton.disabled = false;
+      }
+      return;
+    }
+`, "material in-flight state");
+replaceRange("    const productSendButton = event.target.closest(\"[data-product-send]\");", "    const orderDetailButton = event.target.closest(\"[data-order-detail-url]\");", `    const productSendButton = event.target.closest("[data-product-send]");
+    if (productSendButton) {
+      if (productSendButton.dataset.sending === "true") return;
+      const label = productSendButton.textContent;
+      productSendButton.disabled = true;
+      productSendButton.dataset.sending = "true";
+      productSendButton.textContent = "发送中…";
+      try {
+        await sendProduct(productSendButton.dataset.productSend, productSendButton.dataset.productKind || state.productType);
+      } finally {
+        delete productSendButton.dataset.sending;
+        productSendButton.textContent = label;
+        productSendButton.disabled = false;
+      }
+      return;
+    }
+`, "product in-flight state");
+
+
+// Questionnaire and timeline cursor contracts are owned by Customer. Preserve
+// their opaque continuation tokens rather than translating them to donor
+// offsets; the standard list gets an explicit more action for multi-page data.
+replaceRange("  function renderQuestionnaires() {", "  function renderProducts() {", `  function renderQuestionnaires() {
+    const rows = state.data.questionnaires || [];
+    const pager = state.questionnairePager || { has_more: false };
+    if (!rows.length) {
+      content.innerHTML = panel("问卷", empty("暂无问卷记录"));
+      return;
+    }
+    content.innerHTML = panel(
+      "问卷",
+      rows
+        .map((item, index) => {
+          const answers = item.answers || [];
+          const count = String(item.answer_count || answers.length || 0) + "/" + String(item.total_count || item.answer_count || answers.length || 0) + " 题";
+          return (
+            '<article class="card" tabindex="-1" data-questionnaire-card="' + index + '" data-questionnaire-submission-id="' + escapeHtml(item.submission_id || item.id || "") + '" data-questionnaire-id="' + escapeHtml(item.questionnaire_id || "") + '">' +
+            '<div class="card-title"><div><h3>' + escapeHtml(item.title || "未命名问卷") + "</h3>" +
+            '<div class="mini">' + escapeHtml([item.submitted_at || "", count].filter(Boolean).join(" · ")) + "</div></div></div>" +
+            '<div class="row-actions"><button class="btn primary" type="button" data-toggle-questionnaire="' + index + '">查看答案</button></div>' +
+            '<div class="questions">' +
+            answers.map((answer) => '<div class="question"><b>' + escapeHtml(answer.question || "未命名问题") + "</b><em>" + escapeHtml(answer.answer || "未填写") + "</em></div>").join("") +
+            "</div></article>"
+          );
+        })
+        .join("") +
+        (pager.has_more ? '<div class="row-actions"><button class="btn ghost" type="button" data-load-more-questionnaires>加载更多</button></div>' : "")
+    );
+  }
+
+`, "questionnaire cursor render");
+
+const questionnaireBranch = `    if (tab === "questionnaires") {
+      const payload = await requestPanelJson("questionnaires", queryUrl(endpoint("questionnairesUrl"), customerContextQuery()));
+      state.data.questionnaires = payload.questionnaires || [];
+    } else if (tab === "products") {`;
+const questionnaireBranchReplacement = `    if (tab === "questionnaires") {
+      await loadQuestionnaires({ reset: true });
+    } else if (tab === "products") {`;
+once(questionnaireBranch, "questionnaire load branch");
+js = js.replace(questionnaireBranch, questionnaireBranchReplacement);
+replaceRange("  async function loadOrders(type) {", "  async function loadMaterials(type) {", `  async function loadQuestionnaires(options) {
+    const reset = Boolean(options && options.reset);
+    const pager = state.questionnairePager || { has_more: false, next_cursor: "" };
+    const cursor = reset ? "" : String(pager.next_cursor || "");
+    const params = { limit: 20 };
+    if (cursor) params.cursor = cursor;
+    const payload = await requestPanelJson("questionnaires", queryUrl(endpoint("questionnairesUrl"), params));
+    const prior = reset ? [] : (state.data.questionnaires || []);
+    state.data.questionnaires = prior.concat(payload.questionnaires || []);
+    state.questionnairePager = { total: Number(payload.total || state.data.questionnaires.length), has_more: Boolean(payload.has_more), next_cursor: String(payload.next_cursor || "") };
+  }
+
+  async function loadOrders(type) {
+    const normalized = type === "periodic" ? "periodic" : "regular";
+    const cacheKey = "orders:" + normalized;
+    if (state.loaded[cacheKey]) return;
+    const panelKey = normalized === "periodic" ? "periodic_orders" : "orders";
+    const url = normalized === "periodic" ? endpoint("periodicOrdersUrl") : endpoint("ordersUrl");
+    const payload = await requestPanelJson(panelKey, queryUrl(url, customerContextQuery()));
+    if (payload.customer) {
+      state.workbench.customer = Object.assign({}, state.workbench.customer || {}, payload.customer);
+      renderTop();
+    }
+    if (normalized === "periodic") {
+      writeDebug("periodic orders response", payload.diagnostics || {});
+      state.data.periodic_orders = payload.periodic_orders || [];
+    } else {
+      writeDebug("orders response", payload.diagnostics || {});
+      state.data.orders = payload.orders || [];
+    }
+    state.loaded[cacheKey] = true;
+  }
+
+`, "questionnaire cursor loader");
+replaceRange("  async function loadTimeline(options) {", "  async function switchProfileView(view) {", `  async function loadTimeline(options) {
+    const reset = Boolean(options && options.reset);
+    const force = Boolean(options && options.force);
+    const currentTimeline = state.data.timeline || { items: [], next_cursor: "" };
+    const cursor = reset ? "" : String(currentTimeline.next_cursor || "");
+    const requestVersion = reset ? ++state.timelineRequestVersion : state.timelineRequestVersion;
+    const params = { limit: 20 };
+    if (cursor) params.cursor = cursor;
+    const url = queryUrl(endpoint("timelineUrl"), params);
+    if (force) clearPanelCache("timeline");
+    const payload = await requestPanelJson("timeline", url);
+    if (requestVersion !== state.timelineRequestVersion) return;
+    const current = reset ? [] : (state.data.timeline.items || []);
+    state.data.timeline = {
+      items: current.concat(payload.items || []),
+      total: Number(payload.total || current.length + (payload.items || []).length),
+      has_more: Boolean(payload.has_more),
+      next_cursor: String(payload.next_cursor || ""),
+    };
+  }
+
+`, "timeline cursor loader");
+replaceRange("    const materialTypeButton = event.target.closest(\"[data-material-type]\");", "    const materialKeywordButton = event.target.closest(\"[data-material-keyword]\");", `    const moreQuestionnairesButton = event.target.closest("[data-load-more-questionnaires]");
+    if (moreQuestionnairesButton) {
+      moreQuestionnairesButton.disabled = true;
+      try {
+        await loadQuestionnaires({ reset: false });
+        if (state.activeTab === "questionnaires") renderQuestionnaires();
+      } catch (error) {
+        showToast(error.message || "加载更多失败", "error");
+        moreQuestionnairesButton.disabled = false;
+      }
+      return;
+    }
+    const materialTypeButton = event.target.closest("[data-material-type]");
+    if (materialTypeButton) {
+      await switchMaterialType(materialTypeButton.dataset.materialType);
+      return;
+    }
+`, "questionnaire more action");
+
 // The release template intentionally omits this raw identifier field.
 for (const fragment of [
   '    document.getElementById("customer-external-userid").textContent = state.external_userid ? "外部联系人 ID " + state.external_userid : "";\n',
   '    document.getElementById("customer-external-userid").textContent = externalUserid ? "外部联系人 ID " + externalUserid : "";\n',
-]) { once(fragment, "external identifier render"); js = js.replace(fragment, ""); }
+]) {
+  // renderTop and boot are replaced above; they already omit the identifiers.
+  // Keep this cleanup idempotent so a future independent source-range adapter
+  // cannot accidentally restore either raw external identifier.
+  if (js.includes(fragment)) js = js.replace(fragment, "");
+}
 
 for (const forbidden of ["other_staff_messages", "其他客服聊天", "chat_activity", "other-staff-messages", "/api/sidebar/v2/other-staff-messages"]) {
   if (js.includes(forbidden)) throw new Error(`removed chat capability survived overlay: ${forbidden}`);

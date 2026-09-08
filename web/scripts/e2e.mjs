@@ -1115,7 +1115,11 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             window.setTimeout(() => {
               if (scenario === 'regular_error') {
                 window.__sidebarTest.wxStages.push({ stage: 'config_error' });
-                errorCallback?.({ err_msg: 'preVerifyJSAPI:fail' });
+                errorCallback?.({ errMsg: 'preVerifyJSAPI:fail' });
+                return;
+              }
+              if (scenario === 'regular_timeout') {
+                window.__sidebarTest.wxStages.push({ stage: 'config_timeout' });
                 return;
               }
               regularConfigured = true;
@@ -1136,27 +1140,44 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             window.__sidebarTest.wxStages.push({ stage: 'agentConfig', options });
             window.setTimeout(() => {
               if (scenario === 'agent_error' || scenario === 'sdk_error' || ((scenario === 'agent_retry' || scenario === 'agent_retry_storage_failure') && agentConfigCalls === 1)) {
-                options.fail?.({ err_msg: 'agentConfig:fail' });
-              } else options.success?.({ err_msg: 'agentConfig:ok' });
+                options.fail?.({ errMsg: 'agentConfig:fail' });
+              } else options.success?.({ errMsg: 'agentConfig:ok' });
             }, 0);
           },
           invoke(method, payload, callback) {
             window.__sidebarTest.wxMessages.push({ method, payload });
             window.__sidebarTest.wxInvokes.push(method);
             if (scenario === 'contact_error' && method === 'getCurExternalContact') {
-              callback({ err_msg: 'getCurExternalContact:fail' });
+              callback({ errMsg: 'getCurExternalContact:fail' });
               return;
             }
             if (scenario === 'late_contact_retry' && method === 'getCurExternalContact') {
               externalContactCalls += 1;
               if (externalContactCalls === 1) {
-                window.__sidebarTest.releaseStaleContact = () => callback({ err_msg: 'getCurExternalContact:ok', external_userid: 'ext-stale' });
+                window.__sidebarTest.releaseStaleContact = () => callback({ errMsg: 'getCurExternalContact:ok', external_userid: 'ext-stale' });
                 return;
               }
-              callback({ err_msg: 'getCurExternalContact:ok', external_userid: 'ext-current' });
+              callback({ errMsg: 'getCurExternalContact:ok', external_userid: 'ext-current' });
               return;
             }
-            callback({ err_msg: method + ':ok', ...(method === 'getCurExternalContact' ? { external_userid: 'ext-7' } : {}) });
+            if (scenario === 'contact_switch' && method === 'getCurExternalContact') {
+              externalContactCalls += 1;
+              callback({ errMsg: 'getCurExternalContact:ok', external_userid: externalContactCalls === 1 ? 'ext-7' : 'ext-8' });
+              return;
+            }
+            if (method === 'sendChatMessage' && scenario === 'send_delayed') {
+              window.__sidebarTest.releaseSend = () => callback({ errMsg: 'sendChatMessage:ok' });
+              return;
+            }
+            if (method === 'sendChatMessage' && scenario === 'invoke_errmsg_fail') {
+              callback({ errMsg: 'sendChatMessage:fail' });
+              return;
+            }
+            if (method === 'sendChatMessage' && scenario === 'invoke_empty') {
+              callback({});
+              return;
+            }
+            callback({ errMsg: method + ':ok', ...(method === 'getCurExternalContact' ? { external_userid: 'ext-7' } : {}) });
           },
         };
       }
@@ -1168,8 +1189,15 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       const profile = {
         customer_id: 7,
         name: '侧边栏测试客户',
+        display_name: '侧边栏测试客户',
         avatar_url: '',
         phone_masked: '',
+        phone_assurance: '',
+        profile_source: '企微',
+        profile_version: 0,
+        industry: '',
+        industry_description: '',
+        needs_blockers_followup: '',
         status: 'active',
         gender: 0,
         corp_name: '测试公司',
@@ -1200,7 +1228,8 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         blob: async () => new window.Blob([JSON.stringify(data)], { type: 'application/json' }),
         clone() { return this; },
       });
-      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, materialQueries: [], sendIntentKeys: [], sendOutcomeBodies: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null, jssdkStorageReads: 0 };
+      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, profileBodies: [], profileKeys: [], materialQueries: [], sendIntentKeys: [], sendOutcomeBodies: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null, releaseSend: null, oauthTargets: [], jssdkStorageReads: 0 };
+      window.addEventListener('aicrm-sidebar-oauth-required', (event) => window.__sidebarTest.oauthTargets.push(event.detail?.target || ''));
       if (scenario === 'agent_retry_storage_failure') {
         const values = new Map();
         Object.defineProperty(window, 'sessionStorage', {
@@ -1237,7 +1266,8 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         }
         if (url.includes('/bootstrap')) {
           window.__sidebarTest.bootstrapBodies.push(JSON.parse(init.body || '{}'));
-          return json({ state: 'ready', context_token: 'sidebar-context-token-' + 'x'.repeat(52), customer_id: 7, workbench: { profile, questionnaire_count: scenario === 'empty' ? 0 : 1, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
+          if (scenario === 'viewer_session_required') return json({ state: 'viewer_session_required', safety }, 401);
+          return json({ state: 'ready', context_token: 'sidebar-context-token-' + 'x'.repeat(52), customer_id: 7, workbench: { profile, questionnaire_count: scenario === 'empty' ? 0 : 2, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
         }
         if (url.includes('/phone-binding')) {
           window.__sidebarTest.phoneBody = JSON.parse(init.body || '{}');
@@ -1247,20 +1277,48 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (scenario === 'phone_flaky' && window.__sidebarTest.phoneAttempts === 1) return json({ code: 'unavailable' }, 503);
           return json({ status: 'attached', phone_masked: '138****8000', phone_assurance: 'declared' });
         }
+        if (url.includes('/api/sidebar/v2/profile')) {
+          const body = JSON.parse(init.body || '{}');
+          window.__sidebarTest.profileBodies.push(body);
+          window.__sidebarTest.profileKeys.push(new Headers(init.headers).get('Idempotency-Key'));
+          if (scenario === 'profile_conflict') return json({ code: 'conflict' }, 409);
+          Object.assign(profile, {
+            profile_source: body.source,
+            industry: body.industry,
+            industry_description: body.industry_description,
+            needs_blockers_followup: body.needs_blockers_followup,
+            profile_version: Number(profile.profile_version || 0) + 1,
+          });
+          return json({ customer: { ...profile } });
+        }
         if (url.includes('/questionnaires')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
+          const secondPage = new URL(url, window.location.origin).searchParams.get('cursor') === 'survey-page-2';
           return json({
             customer_id: 7,
-            items: scenario === 'empty' ? [] : [{ id: 11, title: '满意度回访', submitted_at: '2026-08-26T01:00:00Z', score: 8.5, answers: [{ question: '是否满意', answers: ['满意'] }] }],
+            items: scenario === 'empty' ? [] : secondPage
+              ? [{ id: 12, title: '第二页问卷', submitted_at: '2026-08-25T01:00:00Z', score: 7.5, answers: [{ question: '是否继续', answers: ['继续'] }] }]
+              : [{ id: 11, title: '满意度回访', submitted_at: '2026-08-26T01:00:00Z', score: 8.5, answers: [{ question: '是否满意', answers: ['满意'] }] }],
+            total: scenario === 'empty' ? 0 : 2,
+            limit: 20,
+            has_more: !secondPage && scenario !== 'empty',
+            next_cursor: secondPage || scenario === 'empty' ? '' : 'survey-page-2',
             source_status: 'ready',
             as_of: '2026-08-26T02:00:00Z',
           });
         }
         if (url.includes('/timeline')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
+          const secondPage = new URL(url, window.location.origin).searchParams.get('cursor') === 'timeline-page-2';
           return json({
             customer_id: 7,
-            items: scenario === 'empty' ? [] : [{ id: 7, event_type: 'survey_submitted', title: '提交问卷', source_domain: 'survey', occurred_at: '2026-08-26T00:00:00Z' }],
+            items: scenario === 'empty' ? [] : secondPage
+              ? [{ id: 8, event_type: 'order_created', title: '创建订单', source_domain: 'order', occurred_at: '2026-08-25T00:00:00Z' }]
+              : [{ id: 7, event_type: 'survey_submitted', title: '提交问卷', source_domain: 'survey', occurred_at: '2026-08-26T00:00:00Z' }],
+            total: scenario === 'empty' ? 0 : 2,
+            limit: 20,
+            has_more: !secondPage && scenario !== 'empty',
+            next_cursor: secondPage || scenario === 'empty' ? '' : 'timeline-page-2',
             source_status: 'ready',
             as_of: '2026-08-26T02:00:00Z',
           });
@@ -3082,7 +3140,7 @@ console.log('sidebar/index.html（dd8 标准 Overlay 与可信 Host）');
 }
 
 for (const [scenario, expected] of [
-  ['sdk_missing', '未识别到客户'],
+  ['sdk_missing', '企微 SDK 未载入'],
   ['regular_error', 'preVerifyJSAPI:fail'],
   ['agent_error', 'agentConfig:fail'],
   ['contact_error', 'getCurExternalContact:fail'],
@@ -3143,6 +3201,148 @@ for (const [scenario, expected] of [
   ok('图片素材经过接受回执后才调用 JSSDK；缩略图保持受 scope 的 blob 加载',
     image?.method === 'sendChatMessage' && image.payload.image?.mediaid === 'media-real-31' &&
     !!d.querySelector('img[data-material-preview="ready"]'));
+  dom.window.close();
+}
+
+
+for (const [scenario, expectedRequest] of [
+  ['jssdk_401', '/api/sidebar/jssdk-config'],
+  ['viewer_session_required', '/api/sidebar/v2/bootstrap'],
+]) {
+  const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
+  const d = dom.window.document;
+  const state = dom.window.__sidebarTest;
+  const scopedReads = state.requests.filter((url) => !url.includes('/jssdk-config') && !url.includes('/bootstrap'));
+  ok(`${scenario} 在 401 后自动发起 OAuth，且不读取旧客户投影`,
+    state.oauthTargets.length === 1 && state.requests.some((url) => url.includes(expectedRequest)) &&
+    scopedReads.length === 0 && state.bootstrapBodies.length === (scenario === 'viewer_session_required' ? 1 : 0) &&
+    !!d.querySelector('[data-retry-boot]'));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=session_storage_unavailable' });
+  const state = dom.window.__sidebarTest;
+  ok('JSSDK sessionStorage 不可用仍以当次签名启动，未降级为匿名或缓存客户',
+    state.requests.filter((url) => url.includes('/jssdk-config')).length === 1 &&
+    state.bootstrapBodies.length === 1 && dom.window.document.body.textContent.includes('侧边栏测试客户'));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=contact_switch' });
+  const state = dom.window.__sidebarTest;
+  dom.window.dispatchEvent(new dom.window.Event('focus'));
+  await sleep(100);
+  ok('窗口重新可见时重验联系人；旧 context token 不可用于新客户',
+    state.bootstrapBodies.map((body) => body.external_userid).join('|') === 'ext-7|ext-8' &&
+    state.wxInvokes.filter((method) => method === 'getCurExternalContact').length === 3 &&
+    dom.window.__AICRMSidebarBridge.contextToken().startsWith('sidebar-context-token-'));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=regular_timeout' });
+  const d = dom.window.document;
+  const state = dom.window.__sidebarTest;
+  await sleep(5_150);
+  const configCallsBeforeRetry = state.wxStages.filter((entry) => entry.stage === 'config').length;
+  click(dom, d.querySelector('[data-retry-boot]'));
+  await sleep(100);
+  ok('regular wx.config 超时后保持 unknown；重试不在同一 WebView 重配 regular SDK',
+    configCallsBeforeRetry === 1 && state.wxStages.filter((entry) => entry.stage === 'config').length === 1 &&
+    state.requests.filter((url) => url.includes('/bootstrap')).length === 0 &&
+    d.body.textContent.includes('关闭并重新打开侧边栏'));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=success' });
+  const d = dom.window.document;
+  const state = dom.window.__sidebarTest;
+  input(dom, d.querySelector('[data-profile-field="source"]'), '活动报名');
+  await waitFor(() => state.profileBodies.length === 1);
+  click(dom, d.querySelector('#change-mobile-button'));
+  input(dom, d.querySelector('#mobile-input'), '13800138000');
+  click(dom, d.querySelector('#confirm-mobile-button'));
+  await sleep(70);
+  ok('画像保存带当前 profile CAS，手机号仅声明且 Host 丢弃 donor 外部标识字段',
+    state.profileBodies.length === 1 && state.profileBodies[0].expected_profile_version === 0 &&
+    state.profileBodies[0].source === '活动报名' && state.profileKeys[0]?.startsWith('sidebar-profile-') &&
+    state.phoneBody?.phone === '13800138000' && !('external_userid' in state.phoneBody) &&
+    state.phoneKey?.startsWith('sidebar-phone-') && d.body.textContent.includes('手机号已声明') &&
+    !d.body.textContent.includes('手机号已验证'));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=profile_conflict' });
+  const d = dom.window.document;
+  input(dom, d.querySelector('[data-profile-field="industry"]'), '教育');
+  await waitFor(() => dom.window.__sidebarTest.profileBodies.length === 1);
+  ok('画像陈旧 CAS 冲突不会伪造已保存，也不会覆盖本地版本',
+    dom.window.__sidebarTest.profileBodies.length === 1 &&
+    dom.window.__sidebarTest.profileBodies[0].expected_profile_version === 0 &&
+    d.querySelector('#toast')?.textContent.includes('conflict') && !d.querySelector('#toast')?.textContent.includes('已保存'));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=success' });
+  const d = dom.window.document;
+  const state = dom.window.__sidebarTest;
+  click(dom, d.querySelector('#tabs [data-tab="questionnaires"]'));
+  await sleep(50);
+  click(dom, d.querySelector('[data-load-more-questionnaires]'));
+  await sleep(50);
+  click(dom, d.querySelector('#tabs [data-tab="profile"]'));
+  await sleep(20);
+  click(dom, d.querySelector('[data-profile-view="timeline"]'));
+  await sleep(50);
+  click(dom, d.querySelector('[data-load-more-timeline]'));
+  await sleep(50);
+  const questionnaireReads = state.requests.filter((url) => url.includes('/questionnaires'));
+  const timelineReads = state.requests.filter((url) => url.includes('/timeline'));
+  ok('问卷和时间线使用 Customer 的 opaque cursor，逐页追加且不伪造 offset 或总数',
+    d.body.textContent.includes('提交问卷') && d.body.textContent.includes('创建订单') &&
+    questionnaireReads.length === 2 && questionnaireReads[1].includes('cursor=survey-page-2') &&
+    timelineReads.length === 2 && timelineReads[1].includes('cursor=timeline-page-2') &&
+    !questionnaireReads.concat(timelineReads).some((url) => url.includes('offset=')));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=success' });
+  const d = dom.window.document;
+  click(dom, d.querySelector('#tabs [data-tab="orders"]'));
+  await sleep(50);
+  const regularTruthful = d.body.textContent.includes('¥99.00') && d.body.textContent.includes('创建时间') &&
+    !d.body.textContent.includes('支付时间') && !d.querySelector('[data-order-detail-url]');
+  click(dom, d.querySelector('[data-order-type="periodic"]'));
+  await sleep(50);
+  ok('订单和权益只渲染 Owner 投影：minor 金额、真实创建/周期边界，无虚构详情或付款时刻',
+    regularTruthful && d.body.textContent.includes('生效时间') && d.body.textContent.includes('到期时间') &&
+    d.body.textContent.includes('2026-08-01') && d.body.textContent.includes('2026-09-01') &&
+    !d.querySelector('[data-order-detail-url]'));
+  dom.window.close();
+}
+for (const scenario of ['send_delayed', 'invoke_errmsg_fail', 'invoke_empty']) {
+  const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
+  const d = dom.window.document;
+  const state = dom.window.__sidebarTest;
+  click(dom, d.querySelector('#tabs [data-tab="products"]'));
+  await sleep(50);
+  const send = d.querySelector('[data-product-send]');
+  click(dom, send);
+  click(dom, send);
+  await sleep(50);
+  if (scenario === 'send_delayed') {
+    const held = state.sendIntentKeys.length === 1 && send.disabled && send.dataset.sending === 'true' && send.textContent.includes('发送中');
+    state.releaseSend?.();
+    await sleep(50);
+    ok('发送中按钮禁止重复点击；同一 accepted intent 只记录一次成功回执',
+      held && state.sendIntentKeys.length === 1 && state.sendOutcomeBodies.filter((body) => body.outcome === 'client_executed').length === 1 && !send.disabled);
+  } else {
+    click(dom, send);
+    await sleep(50);
+    ok(`${scenario} 没有明确 :ok 时只登记 outcome_unknown，禁止生成第二个发送意图`,
+      state.sendIntentKeys.length === 1 && state.sendOutcomeBodies.filter((body) => body.outcome === 'client_executed').length === 0 &&
+      state.sendOutcomeBodies.filter((body) => body.outcome === 'outcome_unknown').length === 1 &&
+      d.querySelector('#toast')?.textContent.includes('上次发送结果未确认'));
+  }
   dom.window.close();
 }
 
