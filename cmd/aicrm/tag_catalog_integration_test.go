@@ -417,7 +417,8 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
-	target := outbound.SurveyCompletionTarget{Reference: "local-webhook", Endpoint: server.URL, SigningKey: []byte(strings.Repeat("s", 32)), ClientID: "survey-v3-test", AllowLoopbackHTTP: true, Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary", CustomParams: map[string]string{"campaign": "control", "unionid": "must-not-send"}}
+	day, frequency, expiresAtTS := int64(15), int64(3), int64(2147483647)
+	target := outbound.SurveyCompletionTarget{Reference: "local-webhook", Endpoint: server.URL, SigningKey: []byte(strings.Repeat("s", 32)), ClientID: "survey-v3-test", AllowLoopbackHTTP: true, Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary", Day: &day, Frequency: &frequency, ExpiresAtTS: &expiresAtTS, CustomParams: map[string]string{"campaign": "control", "unionid": "must-not-send"}}
 	provider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: true, Targets: []outbound.SurveyCompletionTarget{target}, Reader: surveys, Identities: surveyCompletionIntegrationIdentity{}})
 	if err != nil {
 		t.Fatal(err)
@@ -492,7 +493,7 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	receivedMu.Lock()
 	firstBody := append([]string(nil), received...)
 	receivedMu.Unlock()
-	if len(firstBody) != 1 || strings.Contains(firstBody[0], "changed") || !strings.Contains(firstBody[0], `"remark":"frozen"`) || !strings.Contains(firstBody[0], `"user_id":"questionnaire_test"`) || strings.Contains(firstBody[0], "unionid") || strings.Contains(firstBody[0], "must-not-send") {
+	if len(firstBody) != 1 || strings.Contains(firstBody[0], "changed") || !strings.Contains(firstBody[0], `"remark":"frozen"`) || !strings.Contains(firstBody[0], `"user_id":"questionnaire_test"`) || !strings.Contains(firstBody[0], `"day":15`) || !strings.Contains(firstBody[0], `"frequency":3`) || !strings.Contains(firstBody[0], `"expires_at_ts":2147483647`) || strings.Contains(firstBody[0], "unionid") || strings.Contains(firstBody[0], "must-not-send") {
 		t.Fatalf("runtime body=%v", firstBody)
 	}
 	var receiptState string

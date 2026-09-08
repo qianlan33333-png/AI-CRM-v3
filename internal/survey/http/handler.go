@@ -38,11 +38,18 @@ type Handler struct {
 	security                  RequestSecurity
 	oauth                     OAuthApplication
 	completionProviderEnabled bool
+	completionTargets         surveyport.CompletionTargetCatalog
 }
 
 func (h *Handler) SetCompletionProviderEnabled(enabled bool) {
 	if h != nil {
 		h.completionProviderEnabled = enabled
+	}
+}
+
+func (h *Handler) SetCompletionTargetCatalog(catalog surveyport.CompletionTargetCatalog) {
+	if h != nil {
+		h.completionTargets = catalog
 	}
 }
 
@@ -857,7 +864,12 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "metadata": config.ExternalPushMetadata}, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": h.completionProviderEnabled, "local_only": !h.completionProviderEnabled, "items": items, "total": total, "real_external_call_executed": false})
+		references, catalogAvailable, err := h.completionTargetReferences(r.Context())
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "configuration_target_catalog_unavailable")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "metadata": config.ExternalPushMetadata}, "available_configuration_references": references, "target_catalog_available": catalogAvailable, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": h.completionProviderEnabled, "local_only": !h.completionProviderEnabled, "items": items, "total": total, "real_external_call_executed": false})
 		return
 	}
 	principal, ok := h.write(w, r)
@@ -902,6 +914,17 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			if body.Metadata != nil && body.ConfigurationVersion == nil {
 				writeError(w, 400, "configuration_version_required")
 				return
+			}
+			if body.Enabled {
+				references, catalogAvailable, catalogErr := h.completionTargetReferences(r.Context())
+				if catalogErr != nil {
+					writeError(w, http.StatusServiceUnavailable, "configuration_target_catalog_unavailable")
+					return
+				}
+				if catalogAvailable && !containsCompletionTargetReference(references, body.ConfigurationReference) {
+					writeError(w, http.StatusBadRequest, "configuration_reference_unavailable")
+					return
+				}
 			}
 			config.ExternalPushEnabled, config.ExternalPushConfigurationRef = body.Enabled, body.ConfigurationReference
 			if body.Metadata != nil {
@@ -956,6 +979,26 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	writeError(w, http.StatusServiceUnavailable, "provider_disabled")
+}
+
+func (h *Handler) completionTargetReferences(ctx context.Context) ([]string, bool, error) {
+	if h == nil || h.completionTargets == nil {
+		return []string{}, false, nil
+	}
+	references, err := h.completionTargets.CompletionTargetReferences(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	return references, true, nil
+}
+
+func containsCompletionTargetReference(references []string, want string) bool {
+	for _, reference := range references {
+		if reference == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) legacyAdminTail(w http.ResponseWriter, r *http.Request, tail string) {

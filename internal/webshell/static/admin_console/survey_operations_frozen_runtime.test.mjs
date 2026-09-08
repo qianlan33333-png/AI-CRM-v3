@@ -77,13 +77,12 @@ const form = document.querySelector("[data-survey-push-metadata]");
 const logCard = document.querySelector("[data-survey-host-logs]");
 if (!form || !logCard) throw new Error("Host did not attach; host error=" + document.querySelector('[data-survey-host-error]')?.dataset.surveyHostError + "; headings=" + [...document.querySelectorAll("h3")].map((node) => node.textContent).join("|"));
 
-const originalTest = [...document.querySelectorAll("button")].find((button) => button.textContent.includes("测试推送（仅本地记录）"));
-if (!originalTest) throw new Error("compiled donor test button is missing");
-originalTest.click();
-await wait(50);
-originalTest.click();
-await wait(50);
-if (testPosts !== 2 || !originalTest.textContent.includes("测试已创建") || !logCard.textContent.includes("等待处理")) throw new Error("original test button was not taken over by the Host on every click");
+const originalTest = [...document.querySelectorAll("button")].find((button) => button.dataset.surveyHostTestPush === "true");
+if (!originalTest || originalTest.textContent.includes("仅本地记录") || document.body.textContent.includes("没有 Provider 调用、接收或送达回执") || !document.querySelector('[data-survey-host-log-boundary]')?.textContent.includes("HTTP 受理不代表")) throw new Error("compiled donor test button or receipt boundary was not replaced by the Host");
+async function confirmControlledTest() { originalTest.click(); await wait(5); const confirm = document.querySelector('[data-survey-host-test-confirmation] [data-survey-host-test-confirm]'); if (!confirm) throw new Error("Host controlled-test confirmation did not render"); confirm.click(); await wait(50); }
+await confirmControlledTest();
+await confirmControlledTest();
+if (testPosts !== 2 || !originalTest.textContent.includes("受控外推测试已创建") || !logCard.textContent.includes("等待处理")) throw new Error("original test button did not run through the confirmed Host controlled-test receipt path");
 document.querySelector('[data-survey-log-scope="global"]').click();
 await wait(10);
 if (!logCard.textContent.includes("已收到处理结果") || !logCard.textContent.includes("处理结果待确认（不会自动重复发送）")) throw new Error("actual log card did not show true effect states");

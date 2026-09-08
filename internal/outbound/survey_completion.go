@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -184,6 +185,18 @@ func (p *SurveyCompletionProvider) CompletionPolicy(_ context.Context, reference
 	return surveyport.CompletionPolicy{ConfigurationReference: target.Reference, ConfigurationVersion: target.Version, ConfigurationDigest: target.policyDigest(), IdentityKind: target.IdentityKind, IdentityScope: target.IdentityScope, Day: target.Day, Frequency: target.Frequency, ExpiresAtTS: target.ExpiresAtTS, PushType: target.PushType, Remark: target.Remark, CustomParams: target.CustomParams}, true, nil
 }
 
+func (p *SurveyCompletionProvider) CompletionTargetReferences(context.Context) ([]string, error) {
+	if p == nil {
+		return []string{}, nil
+	}
+	references := make([]string, 0, len(p.targets))
+	for reference := range p.targets {
+		references = append(references, reference)
+	}
+	sort.Strings(references)
+	return references, nil
+}
+
 func (p *SurveyCompletionProvider) SnapshotCompletionIdentity(ctx context.Context, customerID int64, policy surveyport.CompletionPolicy) (string, bool, error) {
 	if p == nil || p.identities == nil || customerID < 1 || policy.IdentityKind == "" || policy.IdentityScope == "" {
 		return "", false, nil
@@ -316,6 +329,7 @@ func (s *SurveyCompletionSink) CompleteEffect(ctx context.Context, effectID stri
 var _ effectport.ProviderAdapter = (*SurveyCompletionProvider)(nil)
 var _ effectport.CompletionSink = (*SurveyCompletionSink)(nil)
 var _ surveyport.CompletionPolicyResolver = (*SurveyCompletionProvider)(nil)
+var _ surveyport.CompletionTargetCatalog = (*SurveyCompletionProvider)(nil)
 var _ surveyport.CompletionIdentitySnapshotter = (*SurveyCompletionProvider)(nil)
 
 func reservedSurveyPayloadField(key string) bool {

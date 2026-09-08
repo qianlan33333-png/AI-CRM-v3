@@ -50,16 +50,18 @@ func (a surveyCompletionEffectAccepter) AcceptCompletionWithin(ctx context.Conte
 var _ surveyport.CompletionIntentAccepter = surveyCompletionEffectAccepter{}
 
 type surveyCompletionTargetConfig struct {
-	Endpoint                    string              `json:"endpoint"`
-	SigningKey                  string              `json:"signing_key"`
-	ClientID                    string              `json:"client_id"`
-	Version                     string              `json:"version"`
-	IdentityKind                identitydomain.Kind `json:"identity_kind"`
-	IdentityScope               string              `json:"identity_scope"`
-	Day, Frequency, ExpiresAtTS *int64
-	PushType                    string            `json:"type"`
-	Remark                      string            `json:"remark"`
-	CustomParams                map[string]string `json:"custom_params"`
+	Endpoint      string              `json:"endpoint"`
+	SigningKey    string              `json:"signing_key"`
+	ClientID      string              `json:"client_id"`
+	Version       string              `json:"version"`
+	IdentityKind  identitydomain.Kind `json:"identity_kind"`
+	IdentityScope string              `json:"identity_scope"`
+	Day           *int64              `json:"day"`
+	Frequency     *int64              `json:"frequency"`
+	ExpiresAtTS   *int64              `json:"expires_at_ts"`
+	PushType      string              `json:"type"`
+	Remark        string              `json:"remark"`
+	CustomParams  map[string]string   `json:"custom_params"`
 }
 
 // surveyCompletionTargets parses composition-only deployment configuration.
