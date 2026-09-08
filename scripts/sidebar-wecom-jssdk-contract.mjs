@@ -25,7 +25,7 @@ function node() {
   };
 }
 
-function runNativeBridgeJourney(name, userAgent, platform) {
+function runNativeBridgeJourney(name, userAgent, platform, regularFailure = false) {
   const bridgeCalls = [];
   const document = {
     title: 'sidebar fixture',
@@ -61,6 +61,10 @@ function runNativeBridgeJourney(name, userAgent, platform) {
     WeixinJSBridge: {
       invoke(method, payload, callback) {
         bridgeCalls.push({ method, payload });
+        if (method === 'preVerifyJSAPI' && regularFailure) {
+          callback({ err_msg: 'preVerifyJSAPI:fail' });
+          return;
+        }
         if (method === 'getCurExternalContact') {
           callback({ err_msg: 'getCurExternalContact:ok', external_userid: 'fixture-external' });
           return;
@@ -84,8 +88,12 @@ function runNativeBridgeJourney(name, userAgent, platform) {
   let ready = false;
   let agentReady = false;
   let externalUserID = '';
+  let regularError = '';
   wx.ready(() => { ready = true; });
-  wx.error((result) => { throw new Error(`${name}: unexpected SDK error ${result?.err_msg || ''}`); });
+  wx.error((result) => {
+    regularError = result?.errMsg || result?.errmsg || result?.err_msg || '';
+    if (!regularFailure) throw new Error(`${name}: unexpected SDK error ${regularError}`);
+  });
   wx.config({
     beta: true,
     debug: false,
@@ -95,6 +103,12 @@ function runNativeBridgeJourney(name, userAgent, platform) {
     signature: 'regular-signature',
     jsApiList: ['getCurExternalContact', 'sendChatMessage'],
   });
+  if (regularFailure) {
+    assert.equal(ready, true, `${name}: official SDK no longer calls ready after its failure callback`);
+    assert.equal(regularError, 'config:fail', `${name}: official SDK failure normalization changed`);
+    assert.deepEqual(bridgeCalls.map((call) => call.method), ['preVerifyJSAPI'], `${name}: failed regular config called an unexpected native method`);
+    return;
+  }
   assert.equal(ready, true, `${name}: regular config did not settle ready`);
   // The official SDK retains regular ready state for this document. A new
   // wx.ready callback fires immediately, so application retries must not start
@@ -135,5 +149,6 @@ for (const [name, userAgent, platform] of [
   ['iOS', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) wxwork/4.1.36 MicroMessenger/7.0.1', 'iPhone'],
   ['Android', 'Mozilla/5.0 (Linux; Android 14) wxwork/4.1.36 MicroMessenger/7.0.1', 'Linux armv8l'],
 ]) runNativeBridgeJourney(name, userAgent, platform);
+runNativeBridgeJourney('regular failure', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) wxwork/4.1.36 MicroMessenger/7.0.1', 'MacIntel', true);
 
 console.log(`sidebar WeCom JSSDK contract passed: ${runtimeURL} sha256=${sourceSHA256}`);

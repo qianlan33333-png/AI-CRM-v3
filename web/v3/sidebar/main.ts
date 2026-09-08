@@ -403,7 +403,10 @@ export class SidebarBridge {
   }
 
   private validateJSSDKConfig(config: JSSDKConfig, url: string): void {
-    const valid = (signature: JSSDKSignature | undefined) => Number.isSafeInteger(signature?.timestamp) && Number(signature.timestamp) > 0 && Boolean(signature.nonceStr) && Boolean(signature.signature);
+    const valid = (signature: JSSDKSignature | undefined) => {
+      if (!signature) return false;
+      return Number.isSafeInteger(signature.timestamp) && signature.timestamp > 0 && Boolean(signature.nonceStr) && Boolean(signature.signature);
+    };
     if (!config || !config.corp_id || !config.agent_id || !valid(config.config) || !valid(config.agent_config)) {
       throw failure("JSSDK regular 或 agent_config 签名不完整。");
     }
@@ -514,7 +517,7 @@ export class SidebarBridge {
 
   private async scopedForSend(path: string, options: RequestOptions, scope: SendScope): Promise<Json> {
     const { timeoutMs: _timeout, retryCount: _retry, retryDelayMs: _delay, signal, ...init } = options;
-    const payload = await this.raw(path, { ...init, signal: anySignal([signal, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": scope.token, ...(init.headers || {}) } });
+    const payload = await this.raw(path, { ...init, signal: anySignal([signal ?? undefined, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": scope.token, ...(init.headers || {}) } });
     if (scope.generation !== this.contextGeneration || scope.token !== this.token) throw failure("发送期间客户上下文已变化，已停止发送。");
     return payload;
   }
@@ -615,7 +618,7 @@ export class SidebarBridge {
     const generation = this.contextGeneration;
     const token = this.token;
     const { timeoutMs: _timeout, retryCount: _retry, retryDelayMs: _delay, signal, ...init } = options;
-    const payload = await this.raw(path, { ...init, signal: anySignal([signal, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": token, ...(init.headers || {}) } });
+    const payload = await this.raw(path, { ...init, signal: anySignal([signal ?? undefined, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": token, ...(init.headers || {}) } });
     this.assertGeneration(generation);
     return payload;
   }

@@ -189,7 +189,7 @@ try {
 
   for (const [scenario, message, resourceMode] of [
     ["sdk_missing", "企微 SDK 未载入", "missing"],
-    ["regular_error", "preVerifyJSAPI:fail", "serve"],
+    ["regular_error", "企微 config 失败：config:fail", "serve"],
     ["agent_error", "agentConfig:fail", "serve"],
     ["contact_error", "getCurExternalContact:fail", "serve"],
   ]) {
