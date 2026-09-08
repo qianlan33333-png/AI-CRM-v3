@@ -59,17 +59,19 @@ func TestApplyRuntimeConfigAllowsValidatedAutomationAndAIDispatchSwitches(t *tes
 	cfg := platformconfig.Runtime{
 		AutomationOperations: platformconfig.AutomationOperations{ProviderMode: platformconfig.AutomationProviderDisabled, MaxRecipientsPerRun: 1},
 		AIAssistant:          platformconfig.AIAssistant{DispatchEnabled: false},
+		AIGeneration:         platformconfig.AIGeneration{Enabled: false},
 		WorkerLimit:          1,
 		WeCom:                platformconfig.WeCom{ContextTokenTTL: time.Minute, MessageArchivePageLimit: 1, MessageArchivePageBudget: 1},
 	}
 	applied, err := applyRuntimeConfig(cfg, configport.EffectiveSnapshot{Settings: []configport.RuntimeSetting{
 		runtimeApplySetting(t, configport.AutomationOperationsProviderMode, "limited"),
 		runtimeApplySetting(t, configport.AIAssistantDispatchEnabled, true),
+		runtimeApplySetting(t, configport.AIAgentGenerationEnabled, true),
 	}})
 	if err != nil {
 		t.Fatalf("apply editable switches: %v", err)
 	}
-	if applied.AutomationOperations.ProviderMode != platformconfig.AutomationProviderLimited || !applied.AIAssistant.DispatchEnabled {
+	if applied.AutomationOperations.ProviderMode != platformconfig.AutomationProviderLimited || !applied.AIAssistant.DispatchEnabled || !applied.AIGeneration.Enabled {
 		t.Fatalf("editable switches were not applied: %#v", applied)
 	}
 }
@@ -107,6 +109,22 @@ func TestValidateAppliedRuntimeConfigRequiresExistingAutomationAuthorization(t *
 	cfg.AutomationOperations.ProviderPermission = ""
 	if err := validateAppliedRuntimeConfig(cfg); err == nil {
 		t.Fatal("expected missing automation authorization rejection")
+	}
+}
+
+func TestValidateAppliedRuntimeConfigRequiresSafeGenerationProviderBeforeReleaseActivation(t *testing.T) {
+	cfg := platformconfig.Runtime{
+		Effects:      platformconfig.Effects{ProviderEnabled: true},
+		AIGeneration: platformconfig.AIGeneration{Enabled: true, BaseURL: "https://models.example/v1", APIKey: "configured", Model: "provider-neutral-model", Timeout: time.Minute},
+		WorkerLimit:  1,
+		WeCom:        platformconfig.WeCom{ContextTokenTTL: time.Minute, MessageArchivePageLimit: 1, MessageArchivePageBudget: 1},
+	}
+	if err := validateAppliedRuntimeConfig(cfg); err != nil {
+		t.Fatalf("validate configured generation: %v", err)
+	}
+	cfg.AIGeneration.BaseURL = "http://models.example/v1"
+	if err := validateAppliedRuntimeConfig(cfg); err == nil {
+		t.Fatal("insecure generation endpoint was accepted by a release activation guard")
 	}
 }
 

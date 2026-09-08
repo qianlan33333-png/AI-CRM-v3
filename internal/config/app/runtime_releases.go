@@ -56,9 +56,9 @@ type RuntimeReleaseService struct {
 }
 
 type RuntimeActivationGuards struct {
-	WeComEnabled, MessageArchiveEnabled, AutomationProviderEnabled, AIDispatchEnabled bool
-	AIAssistantIntakeEnabled, WeChatPayEnabled, WeChatPayH5OAuthEnabled               bool
-	WeChatShopEnabled, SurveyOAuthEnabled                                             bool
+	WeComEnabled, MessageArchiveEnabled, AutomationProviderEnabled, AIDispatchEnabled             bool
+	AIAssistantIntakeEnabled, AIAgentGenerationEnabled, WeChatPayEnabled, WeChatPayH5OAuthEnabled bool
+	WeChatShopEnabled, SurveyOAuthEnabled                                                         bool
 }
 
 type RuntimeReleaseOption func(*RuntimeReleaseService) error
@@ -702,6 +702,7 @@ func runtimeReleaseValidationIssues(defaults, scopeBaseline []configport.Runtime
 	guard(stringAt(configport.AutomationOperationsProviderMode) != "" && stringAt(configport.AutomationOperationsProviderMode) != "disabled", configport.AutomationOperationsProviderMode, guards.AutomationProviderEnabled, "需已有固定发送授权和受保护接入凭据")
 	guard(boolAt(configport.AIAssistantDispatchEnabled), configport.AIAssistantDispatchEnabled, guards.AIDispatchEnabled, "需已有私信发送授权和受保护通讯录凭据")
 	guard(boolAt(configport.AIAssistantIntakeEnabled), configport.AIAssistantIntakeEnabled, guards.AIAssistantIntakeEnabled, "需已有 AI 接入受保护凭据")
+	guard(boolAt(configport.AIAgentGenerationEnabled), configport.AIAgentGenerationEnabled, guards.AIAgentGenerationEnabled, "需已有 AI 生成 Provider endpoint、model 和受保护凭据")
 	guard(boolAt(configport.WeChatPayProviderEnabled), configport.WeChatPayProviderEnabled, guards.WeChatPayEnabled, "需已有支付受保护凭据")
 	guard(boolAt(configport.WeChatPayH5OAuthEnabled), configport.WeChatPayH5OAuthEnabled, guards.WeChatPayH5OAuthEnabled, "需已有 H5 OAuth 受保护凭据")
 	guard(boolAt(configport.WeChatShopProviderEnabled), configport.WeChatShopProviderEnabled, guards.WeChatShopEnabled, "需已有微信小店 AppSecret、回调 Token 和专属 EncodingAESKey")

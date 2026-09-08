@@ -5,6 +5,7 @@ import "testing"
 func TestRuntimeCatalogRetainsTwelveLegacyCategoriesAndReferencePresence(t *testing.T) {
 	catalog := RuntimeCatalog(map[string]bool{
 		"environment://AICRM_WECOM_SECRET":                 true,
+		"environment://AICRM_AI_GENERATION_API_KEY":        true,
 		"environment://AICRM_WECHAT_SHOP_APP_SECRET":       true,
 		"environment://AICRM_WECHAT_SHOP_CALLBACK_TOKEN":   true,
 		"environment://AICRM_WECHAT_SHOP_CALLBACK_AES_KEY": false,
@@ -12,7 +13,7 @@ func TestRuntimeCatalogRetainsTwelveLegacyCategoriesAndReferencePresence(t *test
 	if len(catalog) != 12 || catalog[0].Key != "wecom_base" || catalog[11].Key != "wechat_oauth" {
 		t.Fatalf("catalog categories=%#v", catalog)
 	}
-	var secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES bool
+	var secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES, generationKey, generationEndpoint bool
 	for _, category := range catalog {
 		for _, field := range category.Fields {
 			switch field.Key {
@@ -30,10 +31,14 @@ func TestRuntimeCatalogRetainsTwelveLegacyCategoriesAndReferencePresence(t *test
 				shopToken = field.Configured != nil && *field.Configured
 			case "WECHAT_SHOP_CALLBACK_AES_KEY":
 				shopAES = field.Configured != nil && *field.Configured
+			case "AICRM_AI_GENERATION_API_KEY":
+				generationKey = field.Configured != nil && *field.Configured
+			case "AICRM_AI_GENERATION_BASE_URL":
+				generationEndpoint = field.Input == "deployment" && field.Unsupported != ""
 			}
 		}
 	}
-	if !secretConfigured || !apiBase || !workerLimit || !scopeBound || !shopAppSecret || !shopToken || shopAES {
-		t.Fatalf("catalog presence/field mapping secret=%t apiBase=%t worker=%t scope=%t shop app/token/aes=%t/%t/%t", secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES)
+	if !secretConfigured || !apiBase || !workerLimit || !scopeBound || !shopAppSecret || !shopToken || shopAES || !generationKey || !generationEndpoint {
+		t.Fatalf("catalog presence/field mapping secret=%t apiBase=%t worker=%t scope=%t shop app/token/aes=%t/%t/%t generation=%t/%t", secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES, generationKey, generationEndpoint)
 	}
 }

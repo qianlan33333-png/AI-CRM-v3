@@ -31,6 +31,7 @@ type ResultArtifact = port.ResultArtifact
 const (
 	OwnerOutbound               = port.OwnerOutbound
 	OwnerPayment                = port.OwnerPayment
+	OwnerAutomation             = port.OwnerAutomation
 	KindOutboundMessage         = port.KindOutboundMessage
 	KindAutomationMessage       = port.KindAutomationMessage
 	KindOutboundMedia           = port.KindOutboundMedia
@@ -45,6 +46,7 @@ const (
 	KindCommerceProductPush     = port.KindCommerceProductPush
 	KindChannelLink             = port.KindChannelLink
 	KindSurveyCompletion        = port.KindSurveyCompletion
+	KindAIAgentGenerate         = port.KindAIAgentGenerate
 	KindWeChatPayPrepay         = port.KindWeChatPayPrepay
 	KindWeChatPayRefund         = port.KindWeChatPayRefund
 	KindWeChatShopRefund        = port.KindWeChatShopRefund

@@ -49,7 +49,10 @@ func TestRuntimeReleaseHostJSDOMJourneyUsesActualPostgreSQLHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := configapp.NewRuntimeReleaseService(uow, repository, repository, 1)
+	runtime, err := configapp.NewRuntimeReleaseService(uow, repository, repository, 1, configapp.WithRuntimeDefaults([]configport.RuntimeSetting{
+		{Key: configport.AutomationOperationsMaxRecipientsPerRun, Value: json.RawMessage(`1`)},
+		{Key: configport.AIAgentGenerationEnabled, Value: json.RawMessage(`false`)},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +124,7 @@ func runtimeReleaseBrowserPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(ctx)
 		t.Fatal("locate runtime release browser migration")
 	}
-	for _, name := range []string{"0013_automation_agents.sql", "0015_config_adminops.sql", "0043_automation_runtime.sql", "0094_runtime_config_releases.sql", "0102_config_center_runtime_application.sql"} {
+	for _, name := range []string{"0013_automation_agents.sql", "0015_config_adminops.sql", "0043_automation_runtime.sql", "0094_runtime_config_releases.sql", "0102_config_center_runtime_application.sql", "0118_config_ai_generation_runtime_setting.sql"} {
 		payload, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			pool.Close()

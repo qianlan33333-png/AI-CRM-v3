@@ -174,29 +174,30 @@ type RunPreview struct {
 	ExpiresAt              time.Time `json:"expires_at"`
 }
 type RuntimeRun struct {
-	ID                    int64                   `json:"id"`
-	PolicyID              int64                   `json:"policy_id,omitempty"`
-	PolicyVersion         int64                   `json:"policy_version,omitempty"`
-	PackageID             int64                   `json:"package_id"`
-	PackageVersion        int64                   `json:"package_version"`
-	SnapshotID            int64                   `json:"snapshot_id"`
-	AgentID               int64                   `json:"agent_id"`
-	AgentPublishedVersion int64                   `json:"agent_published_version"`
-	AIPlanID              int64                   `json:"ai_plan_id,omitempty"`
-	AIPlanState           string                  `json:"ai_plan_state,omitempty"`
-	BindingVersion        int64                   `json:"binding_version"`
-	SenderSetVersion      int64                   `json:"sender_set_version"`
-	RuntimeConfigObserved bool                    `json:"runtime_config_observed"`
-	RuntimeConfigRevision int64                   `json:"runtime_config_revision,omitempty"`
-	MaxRecipientsPerRun   int                     `json:"max_recipients_per_run,omitempty"`
-	PreviewDigest         [32]byte                `json:"-"`
-	State                 automationport.RunState `json:"state"`
-	TargetCount           int64                   `json:"target_count"`
-	SkippedCount          int64                   `json:"skipped_count"`
-	OutcomeUnknownCount   int64                   `json:"outcome_unknown_count"`
-	CreatedBy             int64                   `json:"created_by"`
-	CreatedAt             time.Time               `json:"created_at"`
-	UpdatedAt             time.Time               `json:"updated_at"`
+	ID                    int64                             `json:"id"`
+	PolicyID              int64                             `json:"policy_id,omitempty"`
+	PolicyVersion         int64                             `json:"policy_version,omitempty"`
+	PackageID             int64                             `json:"package_id"`
+	PackageVersion        int64                             `json:"package_version"`
+	SnapshotID            int64                             `json:"snapshot_id"`
+	AgentID               int64                             `json:"agent_id"`
+	AgentPublishedVersion int64                             `json:"agent_published_version"`
+	AIPlanID              int64                             `json:"ai_plan_id,omitempty"`
+	AIPlanState           string                            `json:"ai_plan_state,omitempty"`
+	BindingVersion        int64                             `json:"binding_version"`
+	SenderSetVersion      int64                             `json:"sender_set_version"`
+	RuntimeConfigObserved bool                              `json:"runtime_config_observed"`
+	RuntimeConfigRevision int64                             `json:"runtime_config_revision,omitempty"`
+	MaxRecipientsPerRun   int                               `json:"max_recipients_per_run,omitempty"`
+	PreviewDigest         [32]byte                          `json:"-"`
+	State                 automationport.RunState           `json:"state"`
+	TargetCount           int64                             `json:"target_count"`
+	SkippedCount          int64                             `json:"skipped_count"`
+	OutcomeUnknownCount   int64                             `json:"outcome_unknown_count"`
+	CreatedBy             int64                             `json:"created_by"`
+	CreatedAt             time.Time                         `json:"created_at"`
+	UpdatedAt             time.Time                         `json:"updated_at"`
+	Generation            automationport.GenerationProgress `json:"generation"`
 }
 
 type RunReconciliation struct {
@@ -223,4 +224,35 @@ type RuntimeRecipient struct {
 	EffectID      string                        `json:"effect_id,omitempty"`
 	CreatedAt     time.Time                     `json:"created_at"`
 	UpdatedAt     time.Time                     `json:"updated_at"`
+}
+
+// GenerationItem is Automation-owned persisted work. Context and prompt text
+// are kept only in this owner table; External Effects receives its four
+// digests, while the provider adapter re-reads this immutable dispatch record.
+type GenerationItem struct {
+	ID                    int64
+	RunID                 int64
+	CustomerID            int64
+	SenderStaffID         int64
+	AgentID               int64
+	AgentPublishedVersion int64
+	AgentCode             string
+	RolePrompt            string
+	TaskPrompt            string
+	Context               automationport.GenerationContext
+	ModelPolicy           automationport.GenerationModelPolicy
+	SourceDigest          [32]byte
+	TargetDigest          [32]byte
+	PayloadDigest         [32]byte
+	PolicyDigest          [32]byte
+	ReceiptKeyDigest      [32]byte
+	EffectID              string
+	State                 string
+	GeneratedText         string
+	ResultDigest          [32]byte
+	FailureCode           string
+	AttemptCount          int32
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           *time.Time
 }

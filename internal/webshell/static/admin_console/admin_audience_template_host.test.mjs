@@ -87,6 +87,11 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         broadcastRuns = [{ id: 91, package_id: 13, state: "pending_review", ai_plan_id: 44, ai_plan_state: "pending_review", target_count: 2, skipped_count: 0, outcome_unknown_count: 0, created_at: "2026-09-05T12:00:00Z" }];
         return json({ run: broadcastRuns[0] });
       }
+      if (url.pathname === "/api/admin/automation-runs/92/generation-items") return json({ items: [
+        { id: 1, customer_id: 101, sender_staff_id: 8, effect_id: "eer_201", state: "executed" },
+        { id: 2, customer_id: 102, sender_staff_id: 8, effect_id: "eer_202", state: "final_failed", failure_code: "generation_response_invalid" },
+        { id: 3, customer_id: 103, sender_staff_id: 8, effect_id: "eer_203", state: "outcome_unknown", failure_code: "generation_call_unknown" },
+      ] });
       if (url.pathname === "/api/admin/automation-runs" && (!init.method || init.method === "GET")) return json({ items: broadcastRuns, next_cursor: "" });
       return json({ error: `unexpected ${url.pathname}` }, 500);
     };
@@ -233,5 +238,13 @@ if (broadcastConfirmCalls !== 1) throw new Error("manual broadcast confirmation 
 const runRow = document.querySelector("#sendRecordRows tr");
 const aiReviewLink = runRow?.querySelector('a[href="/admin/cloud-orchestrator/plans/44"]');
 if (!aiReviewLink || !aiReviewLink.textContent.includes("AI 审阅与收件人") || runRow.querySelector("[data-run-id]")) throw new Error("manual run did not render the existing AI review and recipients handoff");
+broadcastRuns = [{ id: 92, package_id: 13, state: "preparing", target_count: 3, skipped_count: 0, outcome_unknown_count: 1, created_at: "2026-09-05T12:00:00Z", generation: { total: 3, queued: 0, succeeded: 1, failed: 1, unknown: 1 } }];
+document.querySelector('[data-panel="records"]').click();
+await wait(180);
+const dynamicProgress = document.querySelector("#sendRecordRows");
+if (!dynamicProgress.textContent.includes("动态生成 3 项") || !dynamicProgress.textContent.includes("失败排除 1") || !dynamicProgress.textContent.includes("未知排除 1")) throw new Error("dynamic generation progress and exclusions were not rendered");
+document.querySelector("[data-generation-run-id=\"92\"]").click();
+await wait(180);
+if (!document.querySelector("#sendRecordMeta").textContent.includes("generation_response_invalid") || !document.querySelector("#sendRecordMeta").textContent.includes("generation_call_unknown") || !document.querySelector("#sendRecordContentDetail").textContent.includes("AI 审阅与收件人")) throw new Error("dynamic generation readback did not show durable exclusions and review handoff");
 dom.window.close();
 console.log("admin-audience-template-host-browser: PASS");

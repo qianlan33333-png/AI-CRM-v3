@@ -540,7 +540,7 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	// projecting it here as well would update the same execution twice. AI
 	// Assistant and Automation Operations delegate their owner projection to
 	// the sink.
-	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindWeComTagCatalogMutation || Kind(kind) == KindOutboundMessage || Kind(kind) == KindAutomationMessage) && r.sink != nil {
+	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindWeComTagCatalogMutation || Kind(kind) == KindOutboundMessage || Kind(kind) == KindAutomationMessage || Kind(kind) == KindAIAgentGenerate) && r.sink != nil {
 		envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: next, ReceiptDigest: digest}); err != nil {
 			return Projection{}, Receipt{}, err
@@ -706,7 +706,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			receipt = Hash("provider-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 		}
 	}
-	if next == StateExecuted && (envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelLink || envelope.Kind == KindCustomerOwnerHandoff) && (r.sink == nil || !adapterResult.Artifact.Valid()) {
+	if next == StateExecuted && (envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelLink || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindAIAgentGenerate) && (r.sink == nil || !adapterResult.Artifact.Valid()) {
 		next, receipt = StateUnknown, Hash("provider-artifact-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 	}
 	tx, err = r.pool.Begin(ctx)
@@ -727,7 +727,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return ErrTransition
 	}
 	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
-	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindCustomerTagCommand || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindCommerceProductPush || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Kind == port.KindSidebarJSSDKSend || envelope.Kind == KindSurveyCompletion || envelope.Owner == OwnerPayment)
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindCustomerTagCommand || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindCommerceProductPush || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Kind == port.KindSidebarJSSDKSend || envelope.Kind == KindSurveyCompletion || envelope.Kind == KindAIAgentGenerate || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = next
@@ -743,7 +743,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 
 func projectsStaleAttempt(kind Kind) bool {
 	switch kind {
-	case KindWeComTagCatalog, KindWeComTagCatalogMutation, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindSurveyCompletion, KindCustomerTagCommand, KindCustomerOwnerHandoff, KindCommerceProductPush, port.KindSidebarJSSDKSend:
+	case KindWeComTagCatalog, KindWeComTagCatalogMutation, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindSurveyCompletion, KindCustomerTagCommand, KindCustomerOwnerHandoff, KindCommerceProductPush, KindAIAgentGenerate, port.KindSidebarJSSDKSend:
 		return true
 	default:
 		return false

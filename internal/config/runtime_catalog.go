@@ -77,6 +77,8 @@ func RuntimeCatalog(statuses ...map[string]bool) []RuntimeCategory {
 			field(configport.AIAssistantUIEnabled, "启用 AI 助手界面", "AI 助手", "boolean", "restart"),
 			protected(configport.AIAssistantIntakeEnabled, "旧 signed intake（部署受控）", "AI 助手", "restart", "V1 caller/OAuth2 创建待审计划不受此字段影响；旧专用签名入口保持 deployment-disabled。"),
 			field(configport.AIAssistantDispatchEnabled, "启用 AI 助手发送意图", "AI 助手", "boolean", "restart"),
+			field(configport.AIAgentGenerationEnabled, "启用 AI 动态文本生成", "AI 生成", "boolean", "restart"),
+			secret("AICRM_AI_GENERATION_API_KEY", "AI 生成 Provider Key", "AI 生成", "environment://AICRM_AI_GENERATION_API_KEY"),
 			secret("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET", "自动化 Webhook 密钥", "自动化", "environment://AICRM_AUTOMATION_OPS_WEBHOOK_SECRET"),
 			secret("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION", "发送授权确认（只读）", "自动化", "environment://AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
 		}},
@@ -173,6 +175,7 @@ func runtimeDefinitions() map[configport.RuntimeSettingKey]runtimeDefinition {
 		configport.AIAssistantUIEnabled:                    {input: "boolean", validate: boolValue},
 		configport.AIAssistantIntakeEnabled:                {input: "boolean", validate: boolValue},
 		configport.AIAssistantDispatchEnabled:              {input: "boolean", validate: boolValue},
+		configport.AIAgentGenerationEnabled:                {input: "boolean", validate: boolValue},
 		configport.WeComEnabled:                            {input: "boolean", validate: boolValue},
 		configport.RuntimeWeComCorpID:                      {input: "text", validate: text},
 		configport.RuntimeWeComAgentID:                     {input: "text", validate: text},
@@ -266,6 +269,7 @@ func ValidateRuntimeDependencies(settings []configport.RuntimeSetting) []configp
 		}
 	}
 	providerReady := boolAt(configport.EffectsProviderEnabled) && boolAt(configport.WeComEnabled)
+	require(boolAt(configport.AIAgentGenerationEnabled), configport.AIAgentGenerationEnabled, boolAt(configport.EffectsProviderEnabled), "需先启用受控外推执行")
 	require(boolAt(configport.GroupOpsDispatchEnabled), configport.GroupOpsDispatchEnabled, providerReady, "需先启用企业微信和受控外推执行")
 	require(boolAt(configport.SurveyCompletionProviderEnabled), configport.SurveyCompletionProviderEnabled, boolAt(configport.EffectsProviderEnabled), "需先启用受控外推执行")
 	require(boolAt(configport.CommercePushProviderEnabled), configport.CommercePushProviderEnabled, boolAt(configport.EffectsProviderEnabled), "需先启用受控外推执行")
@@ -377,6 +381,7 @@ func legacyCatalogFields(category string) []RuntimeField {
 			retired("图片素材", "旧快捷关键词没有当前安全接入点，已退休。", "AICRM_SIDEBAR_IMAGE_QUICK_KEYWORDS"))
 	case "ai_automation":
 		return combine(
+			deployment("AI 生成", "由 AI 生成 Provider 的受保护部署配置管理；页面只显示 Key 引用是否已配置。", "AICRM_AI_GENERATION_BASE_URL", "AICRM_AI_GENERATION_MODEL", "AICRM_AI_GENERATION_TIMEOUT_SECONDS"),
 			retired("AI", "DeepSeek 旧接入未迁入当前系统，已退休。", "DEEPSEEK_ENABLED", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_ROUTER_MODEL", "DEEPSEEK_EXECUTION_MODEL", "DEEPSEEK_REASONER_MODEL", "DEEPSEEK_TIMEOUT_SECONDS"),
 			deployment("统一授权平台", "由后台访问和开放接口的受保护部署配置管理。", "AICRM_AUTH_ISSUER", "AICRM_AUTH_SESSION_HASH_PEPPER", "AICRM_AUTH_JWT_SIGNING_KEY", "AICRM_AUTH_TRUSTED_PROXY_ADDRESSES", "AICRM_AUTH_CA_FILE"),
 			retired("机器身份", "旧机器 client 配置由 V1 caller/OAuth2 取代，旧入口已退休。", "AICRM_AUTH_AUTOMATION_WORKER_CLIENT_ID", "AICRM_AUTH_AUTOMATION_WORKER_CLIENT_SECRET_REF", "AICRM_AUTH_ARCHIVE_WORKER_CLIENT_ID", "AICRM_AUTH_ARCHIVE_WORKER_CLIENT_SECRET_REF", "AICRM_AUTH_CALLBACK_WORKER_CLIENT_ID", "AICRM_AUTH_CALLBACK_WORKER_CLIENT_SECRET_REF", "AICRM_AUTH_GROUP_BROADCAST_CLIENT_ID", "AICRM_AUTH_GROUP_BROADCAST_CLIENT_SECRET_REF", "AICRM_AUTH_IDENTITY_CLIENT_ID", "AICRM_AUTH_IDENTITY_CLIENT_SECRET_REF", "AICRM_AUTH_MCP_CLIENT_ID", "AICRM_AUTH_MCP_CLIENT_SECRET_REF", "AICRM_AUTH_EXTERNAL_AGENT_CLIENT_ID", "AICRM_AUTH_EXTERNAL_AGENT_CLIENT_SECRET_REF", "AICRM_AUTH_CAMPAIGN_AGENT_CLIENT_ID", "AICRM_AUTH_CAMPAIGN_AGENT_CLIENT_SECRET_REF", "AICRM_AUTH_OPS_REPORTER_CLIENT_ID", "AICRM_AUTH_OPS_REPORTER_CLIENT_SECRET_REF", "AICRM_AUTH_OPERATION_RUNNER_CLIENT_ID", "AICRM_AUTH_OPERATION_RUNNER_CLIENT_SECRET_REF", "AICRM_AUTH_OUTBOUND_WEBHOOK_CLIENT_ID"))
