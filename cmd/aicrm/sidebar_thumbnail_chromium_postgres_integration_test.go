@@ -136,8 +136,9 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 		t.Fatalf("Chromium profile durable facts source=%q industry=%q version=%d", profileSource, industry, profileVersion)
 	}
 	writes, businessReads := provider.Counts()
-	if writes != 0 || businessReads != 0 || provider.JSSDKReads() != 4 {
-		t.Fatalf("sidebar handshake writes=%d business_reads=%d jssdk_ticket_reads=%d", writes, businessReads, provider.JSSDKReads())
+	tokenReads, corpTicketReads, agentTicketReads := provider.JSSDKReadCounts()
+	if writes != 0 || businessReads != 0 || tokenReads != 1 || corpTicketReads != 1 || agentTicketReads != 1 {
+		t.Fatalf("sidebar handshake writes=%d business_reads=%d access_token_reads=%d corp_ticket_reads=%d agent_ticket_reads=%d", writes, businessReads, tokenReads, corpTicketReads, agentTicketReads)
 	}
 }
 
