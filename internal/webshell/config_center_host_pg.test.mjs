@@ -22,6 +22,7 @@ const waitFor = async (predicate, message) => {
 let submitted;
 let centerSubmitted;
 let centerCatalog;
+const centerSubmissions = [];
 const cookie = `aicrm_admin_session=config-center-browser; aicrm_admin_csrf=${"c".repeat(43)}`;
 const dom = new JSDOM('<!doctype html><html><body data-runtime-config-page="runtimeConfigCategory"><main data-runtime-release-host></main></body></html>', {
   url: `${baseURL}/admin/configDetail.html?cat=wecom_base`, runScripts: "outside-only", pretendToBeVisual: true,
@@ -56,6 +57,7 @@ const centerDom = new JSDOM('<!doctype html><html><body data-runtime-config-page
       }
       if (url.pathname === "/api/admin/config/runtime-releases" && String(init.method || "GET").toUpperCase() === "POST") {
         centerSubmitted = JSON.parse(String(init.body || "{}"));
+        centerSubmissions.push(centerSubmitted);
       }
       return response;
     };
@@ -79,23 +81,31 @@ try {
     assert.equal(state?.textContent.trim(), "关闭已发布，待读取", "a closed release remains pending until every required role reads its exact snapshot");
     assert.equal(state?.classList.contains("is-on"), false, "a pending close must not render as currently effective");
   } else {
-    const targetSwitch = expectCatalogReleaseRace ? wecomSwitch : oauthSwitch;
-    const originalEnabled = targetSwitch.checked;
-    targetSwitch.checked = !originalEnabled;
-    targetSwitch.dispatchEvent(new centerDom.window.Event("change", { bubbles: true }));
+    const originalWeComEnabled = wecomSwitch.checked;
+    wecomSwitch.checked = !originalWeComEnabled;
+    wecomSwitch.dispatchEvent(new centerDom.window.Event("change", { bubbles: true }));
     if (expectCatalogReleaseRace) {
       await waitFor(() => centerDom.window.document.querySelector("[data-config-center-status]")?.textContent.includes("配置已更新"), "Config Center did not reject a catalog/release version mismatch");
       assert.equal(centerSubmitted, undefined, "Config Center must not create a full-snapshot draft from mismatched reads");
     } else {
-      await waitFor(() => Boolean(centerSubmitted), "Config Center switch did not create a draft through the actual HTTP endpoint");
+      await waitFor(() => centerSubmissions.length === 1, "WeCom switch did not create a draft through the actual HTTP endpoint");
       const centerValues = new Map((centerSubmitted.settings || []).map((item) => [item.key, item.value]));
-      assert.equal(centerValues.get("survey.oauth_enabled"), !originalEnabled, "OAuth switch must stage its RuntimeCatalog enabled field");
-      assert.equal(centerValues.has("survey.oauth.enabled"), false, "OAuth switch must never submit the obsolete dotted key");
-      assert.equal(centerValues.get("wecom.agent_id"), "agent-preserved", "Config Center switch must retain the full effective snapshot");
-      assert.equal(centerValues.get("survey.oauth_app_id"), "oauth-app-preserved", "OAuth switch must retain the bound AppID from the effective snapshot");
-      assert.equal(centerValues.get("survey.oauth_open_platform_id"), "oauth-platform-preserved", "OAuth switch must retain the bound Open Platform ID from the effective snapshot");
+      assert.equal(centerValues.get("wecom.enabled"), !originalWeComEnabled, "WeCom switch must stage its owned enabled field");
+      assert.equal(centerValues.get("wecom.agent_id"), "agent-preserved", "WeCom switch must retain the full effective snapshot");
+
+      const originalOAuthEnabled = oauthSwitch.checked;
+      oauthSwitch.checked = !originalOAuthEnabled;
+      oauthSwitch.dispatchEvent(new centerDom.window.Event("change", { bubbles: true }));
+      await waitFor(() => centerSubmissions.length === 2, "OAuth switch did not create a draft through the actual HTTP endpoint");
+      const oauthValues = new Map((centerSubmitted.settings || []).map((item) => [item.key, item.value]));
+      assert.equal(oauthValues.get("survey.oauth_enabled"), !originalOAuthEnabled, "OAuth switch must stage its RuntimeCatalog enabled field");
+      assert.equal(oauthValues.get("wecom.enabled"), originalWeComEnabled, "each homepage action must start from the unchanged effective snapshot");
+      assert.equal(oauthValues.has("survey.oauth.enabled"), false, "OAuth switch must never submit the obsolete dotted key");
+      assert.equal(oauthValues.get("wecom.agent_id"), "agent-preserved", "OAuth switch must retain the full effective snapshot");
+      assert.equal(oauthValues.get("survey.oauth_app_id"), "oauth-app-preserved", "OAuth switch must retain the bound AppID from the effective snapshot");
+      assert.equal(oauthValues.get("survey.oauth_open_platform_id"), "oauth-platform-preserved", "OAuth switch must retain the bound Open Platform ID from the effective snapshot");
       assert.equal(centerSubmitted.settings.length, centerCatalog.effective.settings.length, "OAuth switch must submit the complete effective snapshot");
-      assert.deepEqual([...centerValues.keys()].sort(), centerCatalog.effective.settings.map((item) => item.key).sort(), "OAuth draft keys must exactly match the real runtime catalog snapshot");
+      assert.deepEqual([...oauthValues.keys()].sort(), centerCatalog.effective.settings.map((item) => item.key).sort(), "OAuth draft keys must exactly match the real runtime catalog snapshot");
     }
   }
 } finally {
