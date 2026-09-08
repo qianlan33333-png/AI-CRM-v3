@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -188,6 +189,35 @@ func TestOwnerHandoffContextRouteUsesAccessProjection(t *testing.T) {
 	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers/owner-handoffs/context", nil))
 	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "private, no-store" || !strings.Contains(response.Body.String(), `"operator":"管理员 #7"`) || !strings.Contains(response.Body.String(), `"UserID":"inactive-source"`) || !strings.Contains(response.Body.String(), `"UserID":"active-target"`) {
 		t.Fatalf("context status=%d cache=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Body.String())
+	}
+}
+
+func TestOwnerHandoffPickerKeepsStaffAndWeComIDsDistinct(t *testing.T) {
+	for _, role := range []accessdomain.Role{accessdomain.RoleSuperAdmin, accessdomain.RoleViewer} {
+		security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{role}}}
+		config := testConfig(security, &testCustomerStore{}, &testIdentities{}, &testAudit{})
+		config.OwnerHandoffStaff = testOwnerHandoffStaffDirectory{}
+		handler, err := NewHandler(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.OwnerHandoffOperationMembersHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/common/operation-members?scope=owner_migration", nil))
+		if role != accessdomain.RoleSuperAdmin {
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("unprivileged directory status=%d", response.Code)
+			}
+			continue
+		}
+		var result struct {
+			Items []struct {
+				StaffID int64  `json:"staff_id"`
+				UserID  string `json:"user_id"`
+			} `json:"items"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Items) != 1 || result.Items[0].StaffID != 13 || result.Items[0].UserID != "active-target" {
+			t.Fatalf("picker must preserve distinct trusted identifiers: status=%d body=%s", response.Code, response.Body.String())
+		}
 	}
 }
 

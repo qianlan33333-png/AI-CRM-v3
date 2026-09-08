@@ -187,6 +187,7 @@
     try {
       const catalog = await request(api.tags);
       const tags = Array.isArray(catalog.items) ? catalog.items : [];
+      await window.AICRMStandardComponents?.ready?.();
       for (const select of selects) {
         select.replaceChildren();
         select.disabled = false;
@@ -198,6 +199,20 @@
           option.textContent = (tag.group_name ? tag.group_name + " / " : "") + (tag.tag_name || tag.name || ("标签 " + id));
           select.append(option);
         }
+        if (!window.AICRMWeComTagPicker || select.dataset.standardTagPicker) continue;
+        select.dataset.standardTagPicker = "1";
+        select.hidden = true;
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "admin-button admin-button--ghost"; button.textContent = "选择标签";
+        const summary = document.createElement("span"); summary.style.cssText = "font-size:12px;color:#646A73";
+        const sync = () => { const selected = [...select.selectedOptions].map((option) => option.textContent || option.value); summary.textContent = selected.length ? `已选：${selected.join("、")}` : "暂未选择标签"; };
+        button.addEventListener("click", () => {
+          const selected = [...select.selectedOptions].map((option) => ({ tag_id: option.value, tag_name: option.textContent || option.value }));
+          window.AICRMWeComTagPicker.open({ title: select.name === "add_tag_ids" ? "选择新增标签" : "选择移除标签", mode: "multiple", catalog: { groups: catalog.groups || [], items: tags }, value: selected, allowManual: false,
+            onConfirm: (picked) => { const ids = new Set(picked.map((tag) => String(tag.tag_id))); [...select.options].forEach((option) => { option.selected = ids.has(option.value); }); sync(); },
+            onClear: () => { [...select.options].forEach((option) => { option.selected = false; }); sync(); } });
+        });
+        select.parentElement?.append(button, summary); sync();
       }
     } catch (_error) {
       for (const select of selects) select.disabled = true;
