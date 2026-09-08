@@ -954,6 +954,9 @@ func TestFrozenMemberGridBrowserJourneyUsesActualHTTPAPI(t *testing.T) {
 	mux.Handle("/shared/service-period-member-grid", ui)
 	mux.Handle("/service-period-member-grid-assets/", ui)
 	mux.Handle("/static/service-period/icons/", ui)
+	mux.HandleFunc("/assets/standard-components/operation_member_picker.js", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join("..", "..", "webshell", "static", "admin_console", "operation_member_picker_dd8d60d.js"))
+	})
 	mux.Handle("/", handler)
 	server := httptest.NewServer(mux)
 	defer server.Close()

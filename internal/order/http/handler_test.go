@@ -41,6 +41,17 @@ func (names customerNamesStub) DisplayNames(context.Context, []customerdomain.Cu
 	return names, nil
 }
 
+type customerFilterStub struct {
+	result orderport.CustomerFilterResolution
+	err    error
+	input  orderport.CustomerFilter
+}
+
+func (stub *customerFilterStub) ResolveOrderCustomerFilter(_ context.Context, input orderport.CustomerFilter) (orderport.CustomerFilterResolution, error) {
+	stub.input = input
+	return stub.result, stub.err
+}
+
 func (a *appStub) Get(context.Context, int64) (domain.Snapshot, error) { return a.detail, a.getErr }
 func (a *appStub) GetByReference(context.Context, string) (domain.Snapshot, error) {
 	return a.detail, a.getErr
@@ -89,6 +100,65 @@ func TestListUsesSafeServerFiltersAndNoStore(t *testing.T) {
 	}
 }
 
+func TestListResolvesCustomerIdentityBeforeUsingTheSamePagedFilter(t *testing.T) {
+	application := &appStub{page: orderport.Page{}}
+	handler, _ := NewHandler(application, adminSecurity())
+	resolver := &customerFilterStub{result: orderport.CustomerFilterResolution{Status: orderport.CustomerFilterFound, CustomerID: 51}}
+	if err := handler.SetCustomerFilterResolver(resolver); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders?phone=13800138000&limit=20&offset=40", nil))
+	if response.Code != http.StatusOK || resolver.input.Phone != "13800138000" || resolver.input.ExternalUserID != "" || application.query.CustomerID != 51 || application.query.NoCustomerMatch || application.query.Limit != 20 || application.query.Offset != 40 {
+		t.Fatalf("code=%d input=%+v query=%+v body=%s", response.Code, resolver.input, application.query, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "13800138000") {
+		t.Fatalf("identity leaked into response: %s", response.Body.String())
+	}
+}
+
+func TestListIdentityNotFoundKeepsAnEmptyCustomerPredicate(t *testing.T) {
+	application := &appStub{page: orderport.Page{}}
+	handler, _ := NewHandler(application, adminSecurity())
+	if err := handler.SetCustomerFilterResolver(&customerFilterStub{result: orderport.CustomerFilterResolution{Status: orderport.CustomerFilterNotFound}}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders?external_userid=external-missing&limit=20&offset=40", nil))
+	if response.Code != http.StatusOK || !application.query.NoCustomerMatch || application.query.CustomerID != 0 || application.query.Limit != 20 || application.query.Offset != 40 {
+		t.Fatalf("code=%d query=%+v body=%s", response.Code, application.query, response.Body.String())
+	}
+}
+
+func TestListRejectsAmbiguousOrUncomposedIdentityFilter(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		url  string
+		stub *customerFilterStub
+		want int
+		code string
+	}{
+		{name: "conflict", url: "/api/admin/orders?external_userid=ambiguous", stub: &customerFilterStub{result: orderport.CustomerFilterResolution{Status: orderport.CustomerFilterConflict}}, want: http.StatusConflict, code: "identity_filter_conflict"},
+		{name: "both dimensions", url: "/api/admin/orders?phone=13800138000&external_userid=external", stub: &customerFilterStub{}, want: http.StatusBadRequest, code: "invalid_request"},
+		{name: "uncomposed", url: "/api/admin/orders?phone=13800138000", want: http.StatusServiceUnavailable, code: "identity_filter_unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			application := &appStub{}
+			handler, _ := NewHandler(application, adminSecurity())
+			if test.stub != nil {
+				if err := handler.SetCustomerFilterResolver(test.stub); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.url, nil))
+			if response.Code != test.want || !strings.Contains(response.Body.String(), `"error":"`+test.code+`"`) || application.query != (orderport.ListQuery{}) {
+				t.Fatalf("code=%d query=%+v body=%s", response.Code, application.query, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestAmbiguousReferenceReturnsConflict(t *testing.T) {
 	app := &appStub{getErr: orderport.ErrConflict}
 	handler, _ := NewHandler(app, adminSecurity())
@@ -99,7 +169,7 @@ func TestAmbiguousReferenceReturnsConflict(t *testing.T) {
 	}
 }
 
-func TestExportRequiresAdminCSRFAndRejectsRawIdentityFilter(t *testing.T) {
+func TestExportRequiresAdminCSRFAndRejectsUnresolvedIdentityFilters(t *testing.T) {
 	body := `{"resource":"orders","format":"csv","filters":{"provider":"wechat","identity":"raw-openid"}}`
 	for _, test := range []struct {
 		name     string
@@ -115,6 +185,19 @@ func TestExportRequiresAdminCSRFAndRejectsRawIdentityFilter(t *testing.T) {
 			handler.ServeHTTP(response, request)
 			if response.Code != test.want || app.exports != 0 {
 				t.Fatalf("code=%d exports=%d body=%s", response.Code, app.exports, response.Body.String())
+			}
+		})
+	}
+	for _, field := range []string{"phone", "external_userid"} {
+		t.Run("list-only "+field, func(t *testing.T) {
+			app := &appStub{}
+			handler, _ := NewHandler(app, adminSecurity())
+			request := httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/order-exports", strings.NewReader(`{"resource":"orders","format":"csv","filters":{"`+field+`":"filter-value"}}`))
+			request.Header.Set("Idempotency-Key", "order-export-key-0001")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || app.exports != 0 {
+				t.Fatalf("field=%s code=%d exports=%d body=%s", field, response.Code, app.exports, response.Body.String())
 			}
 		})
 	}

@@ -487,7 +487,10 @@ func ProjectLocalProduct(product productport.Product) (productport.LocalProduct,
 
 func localProductLifecycleFromProjection(raw json.RawMessage) (productport.LocalProductLifecycle, bool, error) {
 	canonical, err := CanonicalLegacyAdminProjection(raw)
-	if err != nil || !jsonEquivalent(canonical, raw) {
+	// Canonicalization already rejects unknown or malformed data. It may add
+	// disabled defaults introduced after this Product was saved, which must not
+	// turn an otherwise valid old record into an unavailable public product.
+	if err != nil {
 		return "", false, ErrUnavailable
 	}
 	var projection struct {

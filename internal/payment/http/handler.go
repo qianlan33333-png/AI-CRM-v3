@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
@@ -21,6 +22,7 @@ import (
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
 const SessionCookieName = paymentport.TrustedSessionCookieName
@@ -72,6 +74,8 @@ type Handler struct {
 	h5OAuth            H5OAuthApplication
 	commerceOrders     orderport.CommercePushDeliveryReferenceReader
 	commerceDeliveries outboundport.CommercePushDeliveryReader
+	purchaseActions    productport.PaidPurchaseActionReader
+	leadQR             channelport.PublicLeadQRCodeReader
 }
 
 func (handler *Handler) SetH5OAuth(application H5OAuthApplication) error {
@@ -106,6 +110,18 @@ func (handler *Handler) SetCommercePushDeliveryReaders(orders orderport.Commerce
 		return paymentport.ErrInvalid
 	}
 	handler.commerceOrders, handler.commerceDeliveries = orders, deliveries
+	return nil
+}
+
+// SetPaidPurchaseActionReader wires Product's immutable paid-action snapshot
+// and Channel's persisted public QR reader into the already session-authorized
+// checkout-status route. Neither reader may resolve identity, write Provider
+// state, or broaden checkout access.
+func (handler *Handler) SetPaidPurchaseActionReader(actions productport.PaidPurchaseActionReader, leadQR channelport.PublicLeadQRCodeReader) error {
+	if handler == nil || actions == nil || leadQR == nil {
+		return paymentport.ErrInvalid
+	}
+	handler.purchaseActions, handler.leadQR = actions, leadQR
 	return nil
 }
 
@@ -560,10 +576,46 @@ func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http
 		result["expires_at"] = handoff.ExpiresAt
 		status = http.StatusOK
 	}
-	if handoff.Status == domain.StatusPaid || handoff.Status == domain.StatusFailed || handoff.Status == domain.StatusCancelled {
+	if handoff.Status == domain.StatusPaid {
+		// Keep the already-authorized, short-lived payer session through the
+		// terminal paid state. A refresh can therefore re-read the same frozen
+		// completion action, while GetCheckout still binds it to this exact
+		// merchant order and cannot create a new payment or action.
+		result["completion_action"] = handler.paidPurchaseAction(request.Context(), handoff.OrderID)
+	} else if handoff.Status == domain.StatusFailed || handoff.Status == domain.StatusCancelled {
 		clearSessionCookie(writer)
 	}
 	writeJSON(writer, status, result)
+}
+
+func (handler *Handler) paidPurchaseAction(ctx context.Context, orderID int64) map[string]any {
+	if handler == nil || handler.purchaseActions == nil || handler.leadQR == nil || orderID < 1 {
+		return map[string]any{"state": "unavailable"}
+	}
+	action, err := handler.purchaseActions.ReadPaidPurchaseAction(ctx, orderID)
+	if err != nil || action.OrderID != orderID {
+		return map[string]any{"state": "unavailable"}
+	}
+	switch action.Mode {
+	case productport.PaidPurchaseActionNone:
+		return map[string]any{"state": "none"}
+	case productport.PaidPurchaseActionRedirect:
+		if !action.Enabled || action.RedirectURL == "" {
+			return map[string]any{"state": "unavailable"}
+		}
+		return map[string]any{"state": "available", "mode": "redirect", "redirect_url": action.RedirectURL}
+	case productport.PaidPurchaseActionQR:
+		if !action.Enabled || action.LeadChannelID < 1 {
+			return map[string]any{"state": "unavailable"}
+		}
+		lead, readErr := handler.leadQR.ReadPublicLeadQRCode(ctx, action.LeadChannelID)
+		if readErr != nil || lead.URL == "" {
+			return map[string]any{"state": "unavailable"}
+		}
+		return map[string]any{"state": "available", "mode": "qr", "lead_qr": map[string]string{"url": lead.URL, "title": action.LeadQRTitle, "subtitle": action.LeadQRSubtitle}}
+	default:
+		return map[string]any{"state": "unavailable"}
+	}
 }
 
 func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request, rawPaymentID string) {

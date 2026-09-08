@@ -26,7 +26,7 @@ const (
 
 func IsServicePeriodProjection(raw json.RawMessage) bool {
 	canonical, err := CanonicalLegacyAdminProjection(raw)
-	if err != nil || !jsonEquivalent(canonical, raw) {
+	if err != nil {
 		return false
 	}
 	var projection struct {
@@ -666,7 +666,7 @@ func projectServicePeriodProduct(product productport.Product, durationDays int32
 
 func servicePeriodLifecycleFromProjection(raw json.RawMessage) (productport.ServicePeriodLifecycle, bool, error) {
 	canonical, err := CanonicalLegacyAdminProjection(raw)
-	if err != nil || !jsonEquivalent(canonical, raw) {
+	if err != nil {
 		return "", false, ErrUnavailable
 	}
 	var projection struct {
@@ -958,7 +958,7 @@ type servicePeriodPublicPresentation struct {
 
 func publicServicePeriodPresentation(raw json.RawMessage) (servicePeriodPublicPresentation, error) {
 	canonical, err := CanonicalLegacyAdminProjection(raw)
-	if err != nil || !jsonEquivalent(canonical, raw) {
+	if err != nil {
 		return servicePeriodPublicPresentation{}, ErrUnavailable
 	}
 	var projection struct {

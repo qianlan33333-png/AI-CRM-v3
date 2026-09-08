@@ -127,15 +127,18 @@ type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // ProductAssets are manifest-derived URLs for the frozen donor Product
 // bundle. They are passed by the Product UI adapter and contain no markup.
-type ProductAssets struct{ TokensCSS, LabsCSS, HostJS string }
+type ProductAssets struct {
+	TokensCSS, LabsCSS, HostJS, StandardHostJS string
+	StandardCSS                                []string
+}
 
 // OrderAssets are release-manifest URLs for the frozen transaction UI.
 type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // CouponAssets are verified manifest paths for the frozen coupon workspaces.
-type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 
-type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS string }
 
 // GroupOpsAssets are manifest-derived URLs for the immutable donor Group Ops
 // bundle. The v3 shell owns the sidebar; the donor supplies only its stage
@@ -153,7 +156,10 @@ type GroupOpsAssets struct {
 // shell supplies only URLs; donor markup remains the extracted template.
 type AutomationAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
-type SurveyAssets struct{ TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS string }
+type SurveyAssets struct {
+	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS string
+	StandardCSS                                                      []string
+}
 
 // OperationCycleAssets keep the immutable donor presentation separate from
 // the minimal v3 host binding that supplies real data and commands.
@@ -163,7 +169,10 @@ type OperationCycleAssets struct{ TokensCSS, LabsCSS, HostJS string }
 // adapter. The v3 shell owns authentication and only mounts template#tpl.
 type ConfigAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
-type ChannelAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type ChannelAssets struct {
+	TokensCSS, LabsCSS, AdminJS, StandardHostJS string
+	StandardCSS                                 []string
+}
 type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS string }
 
 // Render implements the small presentation contract consumed by the Access
@@ -217,8 +226,6 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		contentTemplate = "admin_audience_detail"
 	} else if data.RequestPath == LoginAccessPath {
 		contentTemplate = "admin_access"
-	} else if data.RequestPath == OneIDPagePath {
-		contentTemplate = "admin_oneid"
 	} else if customers {
 		contentTemplate = "admin_customers"
 	} else if archive {
@@ -334,7 +341,7 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 // PR10 shell. The donor template is the release-built template#tpl fragment;
 // this method never renders the donor document or a second sidebar.
 func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 3 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -374,7 +381,7 @@ func (renderer *Renderer) RenderOrders(writer http.ResponseWriter, data AdminPag
 // RenderCoupons mounts a verified coupons/couponForm donor template inside
 // the only v3 admin shell; it never serves the donor's outer HTML document.
 func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets CouponAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "coupons" && page != "couponForm" && page != "couponData") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.HostJS == "" || (page != "coupons" && page != "couponForm" && page != "couponData") {
 		return errors.New("coupon shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -390,7 +397,7 @@ func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPa
 // RenderRadar mounts the byte-frozen Radar runtime in the v3 shell. Its host
 // bridge is additive v3 code and therefore remains outside the donor hash set.
 func (renderer *Renderer) RenderRadar(writer http.ResponseWriter, data AdminPageData, page string, assets RadarAssets) error {
-	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "radar" && page != "radarDetail" && page != "radarForm") {
+	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || (page != "radar" && page != "radarDetail" && page != "radarForm") {
 		return errors.New("radar shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -409,7 +416,7 @@ func (renderer *Renderer) RenderRadar(writer http.ResponseWriter, data AdminPage
 // are supplied as inert body data for the v3 host adapter; they are never
 // interpolated into donor markup.
 func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminPageData, page, resourceID, donorTemplate string, assets ChannelAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "channels" && page != "channelForm") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 5 || (page != "channels" && page != "channelForm") {
 		return errors.New("channel shell assets are required")
 	}
 	if resourceID != "" {

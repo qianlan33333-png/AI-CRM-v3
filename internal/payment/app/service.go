@@ -417,7 +417,7 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		if !checkoutReadAuthorized(payment, actor) {
 			return paymentport.ErrConflict
 		}
-		out = paymentport.Handoff{PaymentID: payment.ID, MerchantOrder: payment.MerchantOrderNo, Status: payment.Status}
+		out = paymentport.Handoff{PaymentID: payment.ID, OrderID: payment.OrderID, MerchantOrder: payment.MerchantOrderNo, Status: payment.Status}
 		// A terminal outcome is an immutable Payment fact. It remains readable to
 		// the original trusted payer after the short-lived JSAPI handoff expires;
 		// handoff material is neither needed nor safe to revive at this point.

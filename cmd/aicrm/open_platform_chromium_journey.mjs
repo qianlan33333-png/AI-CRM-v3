@@ -253,8 +253,12 @@ try {
   if (firstActivation.status !== 200) throw new Error(`manual confirmation activation status=${firstActivation.status} category=${await activationFailureCategory(cdp, firstActivation)}`);
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "activation succeeded but the caller Host did not refresh as enabled");
   progress("activated");
-  const catalogCapabilityValues = await evaluate(cdp, "[...document.querySelectorAll('input[name=\"create-capability\"]')].map((input)=>input.value).sort()");
   const expectedCatalogCapabilities = ["ai.review_plan.create", "customer.activity.read", "customer.read", "customer.resolve", "operation.read", "platform.capabilities.read"];
+  // Activation refreshes the selected detail and catalog separately. The caller
+  // badge may be enabled while the create form is still withheld during loading.
+  // Wait for the exact catalog, then retain the independent contents assertion.
+  await waitFor(cdp, `JSON.stringify([...document.querySelectorAll('input[name="create-capability"]')].map(input=>input.value).sort()) === ${JSON.stringify(JSON.stringify(expectedCatalogCapabilities))}`, "administrator catalog did not finish refreshing after activation");
+  const catalogCapabilityValues = await evaluate(cdp, "[...document.querySelectorAll('input[name=\"create-capability\"]')].map((input)=>input.value).sort()");
   if (!Array.isArray(catalogCapabilityValues) || catalogCapabilityValues.length !== expectedCatalogCapabilities.length || catalogCapabilityValues.some((value, index) => value !== expectedCatalogCapabilities[index])) throw new Error("administrator catalog did not expose the six current V1 capabilities");
   const operationIDs = (catalog) => Array.isArray(catalog?.body?.data?.operations) ? catalog.body.data.operations.map((item) => item?.operation_id).filter((item) => typeof item === "string").sort() : [];
   const toolNames = (catalog) => Array.isArray(catalog?.body?.result?.tools) ? catalog.body.result.tools.map((item) => item?.name).filter((item) => typeof item === "string").sort() : [];

@@ -20,7 +20,11 @@ const entryPoints = {
   adminSessionHost: path.join(repository, 'web', 'v3', 'adminSessionHost.ts'),
   standardComponentsHost: path.join(repository, 'web', 'v3', 'standardComponentsHost.ts'),
   operationCyclesHost: path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts'),
+  materialSaveHost: path.join(repository, 'web', 'v3', 'materialSaveAdapter.ts'),
+  orderHost: path.join(repository, 'web', 'v3', 'orderAdapter.ts'),
   productHost: path.join(repository, 'web', 'v3', 'productAdapter.ts'),
+  radarHost: path.join(repository, 'web', 'v3', 'radarAdapter.ts'),
+  couponHost: path.join(repository, 'web', 'v3', 'couponAdapter.ts'),
   channelCenterHost: path.join(repository, 'web', 'v3', 'channelCenterAdapter.ts'),
   aiAssistantHost: path.join(repository, 'web', 'v3', 'aiAssistantAdapter.ts'),
   // Customer pages retain their frozen templates and generated V2 client; this
@@ -37,6 +41,7 @@ const entryPoints = {
   openPlatformHost: path.join(repository, 'web', 'v3', 'openPlatformAdapter.ts'),
   groupopsHost: path.join(repository, 'web', 'v3', 'groupOpsHostAdapter.ts'),
   groupopsStyles: path.join(repository, 'web', 'v3', 'groupOpsStandard.css'),
+  h5AuthHost: path.join(repository, 'web', 'v3', 'h5AuthAdapter.ts'),
 };
 const result = await build({
   entryPoints,
@@ -60,8 +65,11 @@ const metadataFor = (contents) => ({
   gzip_bytes: gzipSync(contents, { level: 9 }).byteLength,
   sha256: crypto.createHash('sha256').update(contents).digest('hex'),
 });
-// Standard selector components are frozen donor files published as manifest
-// assets. Hosts only provide scoped API transport and never import donor files.
+// The original dd8 selection components are released once below /assets.
+// Page Hosts receive only these manifest-verified URLs; they never import a
+// donor directory or recreate a picker.  The first eight payloads already
+// have canonical frozen homes, while the previously unshipped tag picker is
+// registered in the standard-components donor ledger.
 const standardComponents = [
   { name: 'operation_member_picker.js', source: 'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js', sha256: 'bd84ce78ccb834f170548dea76cb99f6434978bc21211a9ec843dd2bf7ebabea' },
   { name: 'group_chat_picker.css', source: 'web/donors/ai-assistant-production/static/group_chat_picker.css', sha256: '99627d8e05be5419c53a5cfbc3c8d6d006b6e4efafec157dd412aa656e858481' },
@@ -72,6 +80,8 @@ const standardComponents = [
   { name: 'send_content_composer.js', source: 'web/donors/ai-assistant-production/static/send_content_composer.js', sha256: 'f58c588c681079d1d16ae610e8662ef177acc94caf8e612c35f373de769a6b85' },
   { name: 'wecom_tag_picker.css', source: 'web/donors/standard-components-production/static/wecom_tag_picker.css', sha256: '00fd6603ece70aab098f606bf778281364b6dc4bc66b423598616173fbf4d147' },
   { name: 'wecom_tag_picker.js', source: 'web/donors/standard-components-production/static/wecom_tag_picker.js', sha256: '5c53adee7b65f1f2909cf1adf981b9d3b944b3bd15ebcd7dbf4e4cfe1f13d23d' },
+  { name: 'coupon_form.html', source: 'web/donors/standard-components-production/coupons/coupon_form.html', sha256: 'f9116280af8e0c9f4702c54c3cac192012f4c8af7944713afb32b929380f8e86' },
+  { name: 'coupon_styles.html', source: 'web/donors/standard-components-production/coupons/coupon_styles.html', sha256: '89d4d72fb3234fc67c630ba61ff5f4292feae2286656fe8bb4b12942aea554f0' },
 ];
 const standardComponentsManifest = { version: 'dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f', css: [], scripts: [] };
 for (const component of standardComponents) {
@@ -84,9 +94,50 @@ for (const component of standardComponents) {
   manifest.files[relative] = { ...metadata, entry_point: component.source, imports: [], inputs: [component.source] };
   manifest.release_files[relative] = metadata;
   if (component.name.endsWith('.css')) standardComponentsManifest.css.push(relative);
-  else standardComponentsManifest.scripts.push(relative);
+  else if (component.name.endsWith('.js')) standardComponentsManifest.scripts.push(relative);
 }
 manifest.standard_components = standardComponentsManifest;
+// The coupon donor keeps its executable behavior in an inline script. CSP
+// permits the same bytes only as a separately served release asset, so extract
+// the one inline body without adding a wrapper or changing a byte. CouponHost
+// appends this URL only after it has mounted the frozen DOM.
+const couponSource = fs.readFileSync(path.join(repository, 'web/donors/standard-components-production/coupons/coupon_form.html'), 'utf8');
+const couponInlineScripts = [...couponSource.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+if (couponInlineScripts.length !== 1) throw new Error('coupon donor must contain exactly one extractable inline runtime');
+const couponRuntime = Buffer.from(couponInlineScripts[0][1]);
+const couponRuntimeMetadata = metadataFor(couponRuntime);
+if (couponRuntimeMetadata.sha256 !== 'a3e15d50e97609d934a4edcab1adb2a2048d23e0dd7517e46ad4b9b677b6c88c') throw new Error('coupon inline runtime differs from the audited donor bytes');
+const couponRuntimeRelative = 'assets/standard-components/coupon_form_runtime.js';
+fs.writeFileSync(path.join(dist, couponRuntimeRelative), couponRuntime);
+manifest.files[couponRuntimeRelative] = { ...couponRuntimeMetadata, entry_point: 'web/donors/standard-components-production/coupons/coupon_form.html#inline-script[1]', imports: [], inputs: ['web/donors/standard-components-production/coupons/coupon_form.html#inline-script[1]'] };
+manifest.release_files[couponRuntimeRelative] = couponRuntimeMetadata;
+standardComponentsManifest.passive = [couponRuntimeRelative];
+// Page Hosts append these byte-frozen documents/scripts only after their own
+// scoped DOM exists. They deliberately stay outside ready()'s auto-evaluation list.
+const standardPassiveAssets = [
+  { name: 'channel_code_form.html', source: 'web/donors/standard-components-production/channel/channel_code_form.html', sha256: '9ab90756f1b2c58bd96368559339ca61865ebdd1641ab2c8c2f1146d80d1f909' },
+  { name: 'channel_admission_pages.js', source: 'web/donors/standard-components-production/channel/channel_admission_pages.js', sha256: 'ae1d9007dbd37757850d35ac25bd147cb09e7f576563122ec26cba7f4285832a' },
+];
+for (const component of standardPassiveAssets) {
+  const contents = fs.readFileSync(path.join(repository, component.source));
+  const metadata = metadataFor(contents);
+  if (metadata.sha256 !== component.sha256) throw new Error(`standard passive asset differs from its audited donor bytes: ${component.name}`);
+  const relative = `assets/standard-components/${component.name}`;
+  fs.writeFileSync(path.join(dist, relative), contents);
+  manifest.files[relative] = { ...metadata, entry_point: component.source, imports: [], inputs: [component.source] };
+  manifest.release_files[relative] = metadata;
+  standardComponentsManifest.passive.push(relative);
+}
+// The Channel Center owns this page-specific stylesheet.  Keep it a release
+// asset rather than importing it into the Host bundle so the original CSS
+// remains inspectable and its load order stays before the page Host.
+const channelAdmissionStylesSource = 'web/v3/channelAdmissionStandard.css';
+const channelAdmissionStyles = fs.readFileSync(path.join(repository, channelAdmissionStylesSource));
+const channelAdmissionStylesRelative = 'assets/channelAdmissionStandard.css';
+fs.writeFileSync(path.join(dist, channelAdmissionStylesRelative), channelAdmissionStyles);
+manifest.files[channelAdmissionStylesRelative] = { ...metadataFor(channelAdmissionStyles), entry_point: channelAdmissionStylesSource, imports: [], inputs: [channelAdmissionStylesSource] };
+manifest.release_files[channelAdmissionStylesRelative] = metadataFor(channelAdmissionStyles);
+manifest.entries.channelAdmissionStyles = channelAdmissionStylesRelative;
 // Keep the standard renderer's paging helper as an audited byte-for-byte
 // release asset. It owns the established scroll/observer behavior; the V3 Host
 // only supplies the scoped request and thumbnail adapters.
@@ -131,11 +182,12 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles') continue;
+  if (name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
 }
+
 
 const standardHostEntry = manifest.entries.standardComponentsHost;
 if (typeof standardHostEntry !== 'string') throw new Error('standard Components Host entry is absent from manifest');
@@ -163,6 +215,32 @@ for (const documentName of ['customers.html', 'customerDetail.html']) {
   manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
 }
 
+const orderHost = manifest.entries.orderHost;
+if (typeof orderHost !== 'string') throw new Error('Order Host entry is absent from manifest');
+const orderHostReference = `../${orderHost}`;
+for (const documentName of ['orders.html', 'orderDetail.html']) {
+  const documentPath = path.join(dist, 'admin', documentName);
+  let documentHTML = fs.readFileSync(documentPath, 'utf8');
+  if (!documentHTML.includes(frozenAdminReference)) throw new Error(`${documentName} does not reference the declared frozen admin entry`);
+  if (documentHTML.includes(orderHostReference)) throw new Error(`${documentName} already contains the Order Host`);
+  documentHTML = documentHTML.replace(frozenAdminReference, `<script type="module" src="${orderHostReference}"></script>\n${frozenAdminReference}`);
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
+}
+
+const materialSaveHost = manifest.entries.materialSaveHost;
+if (typeof materialSaveHost !== 'string') throw new Error('Material Save Host entry is absent from manifest');
+const materialSaveReference = `../${materialSaveHost}`;
+for (const documentName of ['images.html', 'mpLib.html', 'attach.html']) {
+  const documentPath = path.join(dist, 'admin', documentName);
+  let documentHTML = fs.readFileSync(documentPath, 'utf8');
+  if (!documentHTML.includes(frozenAdminReference)) throw new Error(`${documentName} does not reference the declared frozen admin entry`);
+  if (documentHTML.includes(materialSaveReference)) throw new Error(`${documentName} already contains the Material Save Host`);
+  documentHTML = documentHTML.replace(frozenAdminReference, `<script type="module" src="${materialSaveReference}"></script>\n${frozenAdminReference}`);
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
+}
+
 const openPlatformHost = manifest.entries.openPlatformHost;
 if (typeof openPlatformHost !== 'string') throw new Error('Open Platform Host entry is absent from manifest');
 const openPlatformReference = `../${openPlatformHost}`;
@@ -177,6 +255,19 @@ if (openPlatformHTML.includes(openPlatformReference)) throw new Error('apidocs.h
 openPlatformHTML = openPlatformHTML.replace(frozenAdminReference, `<script type="module" src="${openPlatformReference}"></script>`);
 fs.writeFileSync(openPlatformDocument, openPlatformHTML);
 manifest.release_files['admin/apidocs.html'] = metadataFor(Buffer.from(openPlatformHTML));
+
+const h5AuthHost = manifest.entries.h5AuthHost;
+const frozenH5 = manifest.entries.h5;
+if (typeof h5AuthHost !== 'string' || typeof frozenH5 !== 'string') throw new Error('H5 auth Host or frozen H5 entry is absent from manifest');
+const h5AuthDocument = path.join(dist, 'h5', 'auth.html');
+let h5AuthHTML = fs.readFileSync(h5AuthDocument, 'utf8');
+const frozenH5Reference = `<script type="module" src="../${frozenH5}"></script>`;
+const h5AuthReference = `<script type="module" src="../${h5AuthHost}"></script>`;
+if (!h5AuthHTML.includes(frozenH5Reference)) throw new Error('auth.html does not reference the declared frozen H5 entry');
+if (h5AuthHTML.includes(h5AuthReference)) throw new Error('auth.html already contains the H5 auth Host');
+h5AuthHTML = h5AuthHTML.replace(frozenH5Reference, `${h5AuthReference}\n${frozenH5Reference}`);
+fs.writeFileSync(h5AuthDocument, h5AuthHTML);
+manifest.release_files['h5/auth.html'] = metadataFor(Buffer.from(h5AuthHTML));
 
 // The frozen shell keeps its navigation markup byte-for-byte in the donor
 // source. Adapt its generated release documents instead: Operation Cycles is
@@ -235,21 +326,13 @@ manifest.release_files['sidebar/index.html'] = metadataFor(Buffer.from(sidebarHT
 const donor = path.join(repository, 'web', 'donors', 'ai-assistant-production');
 const donorOut = path.join(dist, 'aiassistant');
 fs.mkdirSync(donorOut, { recursive: true });
-const donorAssets = ['group_chat_picker.css','group_chat_picker.js','material_picker.css','material_picker.js','send_content_composer.css','send_content_composer.js','send_content_readonly_detail.css','send_content_readonly_detail.js','cloud_plan_review.js'];
-const groupOpsSupport = new Set(['group_chat_picker.css','group_chat_picker.js','material_picker.css','material_picker.js','send_content_composer.css','send_content_composer.js']);
+const donorAssets = ['send_content_readonly_detail.css','send_content_readonly_detail.js','cloud_plan_review.js'];
 for (const name of donorAssets) {
   const contents = fs.readFileSync(path.join(donor, 'static', name));
   const relative = `aiassistant/${name}`;
   fs.writeFileSync(path.join(dist, relative), contents);
   manifest.files[relative] = { ...metadataFor(contents), inputs: [`web/donors/ai-assistant-production/static/${name}`], imports: [] };
   manifest.release_files[relative] = metadataFor(contents);
-  if (groupOpsSupport.has(name)) {
-    const groupOpsRelative = `groupops/${name}`;
-    fs.mkdirSync(path.join(dist, 'groupops'), { recursive: true });
-    fs.writeFileSync(path.join(dist, groupOpsRelative), contents);
-    manifest.files[groupOpsRelative] = { ...metadataFor(contents), inputs: [`web/donors/ai-assistant-production/static/${name}`], imports: [] };
-    manifest.release_files[groupOpsRelative] = metadataFor(contents);
-  }
 }
 const template = fs.readFileSync(path.join(donor, 'templates', 'cloud_plan_review.html'), 'utf8');
 const style = (template.match(/\{% block head_extra %\}[\s\S]*?(<style>[\s\S]*?<\/style>)[\s\S]*?\{% endblock %\}/) || [])[1];

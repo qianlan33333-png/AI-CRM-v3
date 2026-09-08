@@ -230,8 +230,21 @@ func TestPostgreSQLPublicCheckoutResponseLossRejectsRenewedSessionReplay(t *test
 	if terminal.Code != http.StatusAccepted || !strings.Contains(terminal.Body.String(), `"status":"paid"`) || strings.Contains(terminal.Body.String(), `"handoff"`) {
 		t.Fatalf("renewed same-payer terminal recovery status=%d body=%s", terminal.Code, terminal.Body.String())
 	}
-	if cookies := terminal.Result().Cookies(); len(cookies) != 1 || cookies[0].Name != paymentport.TrustedSessionCookieName || cookies[0].MaxAge >= 0 {
-		t.Fatalf("terminal recovery must clear its current trusted cookie: %+v", cookies)
+	if cookies := terminal.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("terminal recovery must retain the current trusted payer cookie for the exact-order reload: %+v", cookies)
+	}
+	// A browser reload keeps that short-lived trusted session and may re-read
+	// only this terminal order. It must not re-open the payment mutation or
+	// revive an expired handoff.
+	reloaded := httptest.NewRecorder()
+	reloadedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/"+replayBody.MerchantOrderNo, nil)
+	reloadedRequest.AddCookie(&http.Cookie{Name: paymentport.TrustedSessionCookieName, Value: second.Token})
+	paymentHandler.ServeHTTP(reloaded, reloadedRequest)
+	if reloaded.Code != http.StatusAccepted || !strings.Contains(reloaded.Body.String(), `"status":"paid"`) || strings.Contains(reloaded.Body.String(), `"handoff"`) {
+		t.Fatalf("terminal same-order reload status=%d body=%s", reloaded.Code, reloaded.Body.String())
+	}
+	if cookies := reloaded.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("terminal same-order reload must not replace the trusted payer cookie: %+v", cookies)
 	}
 	assertCheckoutRecoveryCounts(t, ctx, pool, 1)
 

@@ -95,6 +95,7 @@ type EffectProjection struct {
 
 type Handoff struct {
 	PaymentID     int64
+	OrderID       int64
 	MerchantOrder string
 	Status        domain.Status
 	Payload       []byte

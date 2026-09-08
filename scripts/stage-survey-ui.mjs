@@ -27,7 +27,7 @@ const copy = (relative) => {
 
 if (!fs.existsSync(stage) || !fs.statSync(stage).isDirectory()) fail(`missing existing release stage: ${stage}`);
 
-const entryKeys = ['h5', 'questionnaireEditor', 'questionnaireEditorStyles'];
+const entryKeys = ['h5', 'h5AuthHost', 'questionnaireEditor', 'questionnaireEditorStyles'];
 const selected = new Set();
 const includeStatic = (relative) => {
   if (selected.has(relative)) return;

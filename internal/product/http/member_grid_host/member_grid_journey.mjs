@@ -95,6 +95,7 @@ async function runInternalJourney() {
   const {window, document, html, scripts} = first;
   assert.match(html, /data-service-product-id="7"/, 'the established product-data URL must render the frozen grid host');
   assert.deepEqual(scripts, [
+    '/assets/standard-components/operation_member_picker.js',
     '/service-period-member-grid-assets/member_grid_host.js',
     '/service-period-member-grid-assets/member_grid_state.js',
     '/service-period-member-grid-assets/member_grid_share.js',
@@ -144,8 +145,10 @@ async function runInternalJourney() {
   click(window, document.getElementById('spShareButton'), 'share button');
   await eventually(() => document.getElementById('spShareDialog')?.open, 'share dialog');
   click(window, document.getElementById('spInviteCollaborator'), 'invite collaborator');
-  const picker = await eventually(() => document.querySelector('.sp-picker-list button'), 'staff picker result');
-  click(window, picker, 'select staff');
+  const picker = await eventually(() => document.querySelector('[data-operation-member-row-select]'), 'standard staff picker result');
+  assert.equal(document.querySelector('[data-operation-member-refresh]')?.hidden, true, 'scoped collaborator picker must not offer global directory refresh');
+  click(window, picker, 'select scoped staff');
+  click(window, document.querySelector('[data-operation-member-confirm]'), 'confirm standard staff selection');
   const collaborator = await eventually(() => document.querySelector('[data-collaborator-id]'), 'created collaborator');
   const permission = collaborator.querySelector('[data-collaborator-permission]');
   permission.value = 'edit';

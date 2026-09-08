@@ -310,6 +310,9 @@ func orderFilterSQL(filter orderapp.ListFilter) (string, []any) {
 		placeholder := "$" + strconv.Itoa(len(args))
 		conditions = append(conditions, `(payer_customer_id=`+placeholder+` OR beneficiary_customer_id=`+placeholder+`)`)
 	}
+	if filter.NoCustomerMatch {
+		conditions = append(conditions, `FALSE`)
+	}
 	if filter.Product != "" {
 		args = append(args, "%"+filter.Product+"%")
 		placeholder := "$" + strconv.Itoa(len(args))

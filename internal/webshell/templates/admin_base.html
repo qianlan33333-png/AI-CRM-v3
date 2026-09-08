@@ -24,9 +24,6 @@
   {{if eq .RequestPath "/admin/config/login-access"}}
   <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=static-mime2">
   {{end}}
-  {{if eq .RequestPath "/admin/oneid"}}
-  <link rel="stylesheet" href="/static/admin_console/admin_oneid.css?v=static-mime2">
-  {{end}}
   {{if .ExternalEffects}}
   <link rel="stylesheet" href="{{.ExternalAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.ExternalAssets.LabsCSS}}">
@@ -61,6 +58,8 @@
   {{if .Product}}
   <link rel="stylesheet" href="{{.ProductAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.ProductAssets.LabsCSS}}">
+  {{range .ProductAssets.StandardCSS}}<link rel="stylesheet" href="{{.}}">{{end}}
+  <script type="module" src="{{.ProductAssets.StandardHostJS}}"></script>
   <script type="module" src="{{.ProductAssets.HostJS}}"></script>
   {{end}}
 	{{if .Order}}
@@ -73,13 +72,16 @@
   {{if .Coupons}}
   <link rel="stylesheet" href="{{.CouponAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.CouponAssets.LabsCSS}}">
+  <script type="module" src="{{.CouponAssets.HostJS}}"></script>
   <script type="module" src="{{.CouponAssets.AdminJS}}"></script>
   {{end}}
   {{if .Radar}}
   <link rel="stylesheet" href="{{.RadarAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.RadarAssets.LabsCSS}}">
+  <link rel="stylesheet" href="/assets/standard-components/material_picker.css">
+  <script type="module" src="{{.RadarAssets.StandardHostJS}}"></script>
   <script defer src="/static/admin_console/radar_oneid_bridge.js?v=radar-oneid-v1"></script>
-  <script type="module" src="{{.RadarAssets.AdminJS}}"></script>
+  <script type="module" src="{{.RadarAssets.HostJS}}"></script>
   {{end}}
   {{if .GroupOps}}
   <link rel="stylesheet" href="{{.GroupOpsAssets.TokensCSS}}">
@@ -110,6 +112,8 @@
   {{if .Survey}}
   {{if eq .SurveyPage "questionnaireDetail"}}
   <link rel="stylesheet" href="{{.SurveyAssets.EditorCSS}}">
+  {{range .SurveyAssets.StandardCSS}}<link rel="stylesheet" href="{{.}}">{{end}}
+  <script type="module" src="{{.SurveyAssets.StandardHostJS}}"></script>
   <script type="module" src="{{.SurveyAssets.EditorJS}}"></script>
   {{else}}
   <link rel="stylesheet" href="{{.SurveyAssets.TokensCSS}}">
@@ -137,6 +141,8 @@
   {{if .Channel}}
   <link rel="stylesheet" href="{{.ChannelAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.ChannelAssets.LabsCSS}}">
+  {{range .ChannelAssets.StandardCSS}}<link rel="stylesheet" href="/{{.}}">{{end}}
+  <script type="module" src="{{.ChannelAssets.StandardHostJS}}"></script>
   <script type="module" src="{{.ChannelAssets.AdminJS}}"></script>
   {{end}}
   {{if .OwnerHandoff}}

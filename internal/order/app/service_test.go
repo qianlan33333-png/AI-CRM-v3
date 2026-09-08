@@ -141,6 +141,9 @@ func (s *memoryStore) Get(_ context.Context, id int64, _ bool) (domain.Order, er
 
 func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, filter ListFilter) ([]domain.Order, error) {
 	rows := make([]domain.Order, 0)
+	if filter.NoCustomerMatch {
+		return rows, nil
+	}
 	for id := s.nextID - 1; id >= 1 && len(rows) < int(limit); id-- {
 		snapshot := s.orders[id]
 		if before != nil && (snapshot.CreatedAt.After(before.CreatedAt) || snapshot.CreatedAt.Equal(before.CreatedAt) && snapshot.ID >= before.ID) {
@@ -161,7 +164,10 @@ func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, filte
 	return rows, nil
 }
 
-func (s *memoryStore) Count(context.Context, ListFilter) (int64, error) {
+func (s *memoryStore) Count(_ context.Context, filter ListFilter) (int64, error) {
+	if filter.NoCustomerMatch {
+		return 0, nil
+	}
 	return int64(len(s.orders)), nil
 }
 
@@ -452,6 +458,18 @@ func TestListUsesStableCreatedAtIDCursor(t *testing.T) {
 	}
 	if _, err = service.List(context.Background(), orderport.ListQuery{Limit: 2, Cursor: first.NextCursor + "tampered"}); !errors.Is(err, orderport.ErrConflict) {
 		t.Fatalf("tampered cursor err=%v", err)
+	}
+}
+
+func TestListKeepsUnresolvedCustomerFilterEmptyAcrossCountAndPage(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	if _, err := service.Create(context.Background(), orderport.CreateCommand{Input: orderInput("identity-empty"), Actor: 7, IdempotencyKey: "order-create-key-identity-empty"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.List(context.Background(), orderport.ListQuery{Limit: 20, NoCustomerMatch: true})
+	if err != nil || page.Total != 0 || len(page.Items) != 0 || page.NextCursor != "" {
+		t.Fatalf("page=%+v err=%v", page, err)
 	}
 }
 

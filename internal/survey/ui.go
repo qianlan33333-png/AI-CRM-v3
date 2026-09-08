@@ -14,7 +14,8 @@ import (
 )
 
 type UIAssets struct {
-	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS string
+	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS string
+	StandardCSS                                                      []string
 }
 
 type PageRenderer func(http.ResponseWriter, *http.Request, string, string, UIAssets) error
@@ -137,7 +138,8 @@ func surveyAssets(dist string) (UIAssets, error) {
 		return UIAssets{}, err
 	}
 	var manifest struct {
-		Entries map[string]string `json:"entries"`
+		Entries map[string]string          `json:"entries"`
+		Files   map[string]json.RawMessage `json:"files"`
 	}
 	if err = json.Unmarshal(raw, &manifest); err != nil {
 		return UIAssets{}, err
@@ -167,6 +169,18 @@ func surveyAssets(dist string) (UIAssets, error) {
 	}
 	if assets.EditorCSS, err = get("questionnaireEditorStyles"); err != nil {
 		return UIAssets{}, err
+	}
+	if assets.StandardHostJS, err = get("standardComponentsHost"); err != nil {
+		return UIAssets{}, err
+	}
+	for _, relative := range []string{"assets/standard-components/wecom_tag_picker.css"} {
+		if _, ok := manifest.Files[relative]; !ok {
+			return UIAssets{}, errors.New("survey standard component asset missing")
+		}
+		if _, statErr := os.Stat(filepath.Join(dist, relative)); statErr != nil {
+			return UIAssets{}, statErr
+		}
+		assets.StandardCSS = append(assets.StandardCSS, "/survey-assets/"+strings.TrimPrefix(relative, "assets/"))
 	}
 	return assets, nil
 }

@@ -4411,6 +4411,8 @@ components:
         completion_redirect_enabled: {type: boolean}
         completion_redirect_url: {type: string, maxLength: 2048}
         completion_target: {type: [object, "null"], additionalProperties: true}
+        purchase_action_enabled: {type: boolean}
+        purchase_action_mode: {type: string, enum: ["", qr, redirect]}
         wecom_tagging: {type: object, additionalProperties: true}
         slices: {type: array, maxItems: 20, items: {type: object, additionalProperties: true}}
     Product:

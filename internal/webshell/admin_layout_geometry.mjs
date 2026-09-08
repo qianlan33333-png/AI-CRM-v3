@@ -71,7 +71,8 @@ class CDP {
 
 const waitForPort = async profile => {
   const active = path.join(profile, "DevToolsActivePort");
-  for (let attempt = 0; attempt < 180; attempt += 1) {
+  // A cold CI runner can take longer than nine seconds to initialize Chromium.
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     try {
       const port = String(await fs.readFile(active, "utf8")).split("\n")[0];
       if (/^\d+$/.test(port)) return "http://127.0.0.1:" + port;
@@ -582,8 +583,26 @@ try {
   await navigate("/admin/orders", "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "orders", "embedded", embeddedTitle, true, true);
   await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "products", "embedded", frozenListToolbarTitle, true, true);
   await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "service-period-products", "embedded", frozenListToolbarTitle, true, true);
-  await navigate("/admin/productForm.html?id=" + productID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#pfExternalPushEnabled'))", "product", "embedded", embeddedTitle, true);
-  await navigate("/admin/spProductForm.html?id=" + serviceProductID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#spfExternalPushEnabled'))", "service-period-product", "embedded", embeddedTitle, true);
+  const assertProductDimensions = async (prefix) => {
+    const result = await evaluate(cdp, `(${function(prefix) {
+      const ids = ['sale', 'media', 'action', 'wecom', 'push'].map(key => `${prefix}-${key}`);
+      const input = document.getElementById(prefix === 'product' ? 'pfName' : 'spfName');
+      const original = input.value; input.value = '未保存维度草稿';
+      const visible = () => ids.filter(id => { const node = document.getElementById(id); return node && getComputedStyle(node).display !== 'none'; });
+      const failures = [];
+      for (const id of ids) {
+        document.querySelector(`a[href="#${id}"]`)?.click();
+        if (visible().join() !== id || input.value !== '未保存维度草稿') failures.push(id);
+      }
+      input.value = original; document.querySelector(`a[href="#${prefix}-sale"]`)?.click();
+      return { failures, action: Boolean(document.querySelector(`#${prefix}-action [data-product-purchase-enabled]`)), tags: Boolean(document.querySelector(`#${prefix}-wecom [data-product-tag-open]`)) };
+    }.toString()})(${JSON.stringify(prefix)})`);
+    if (result.failures.length || !result.action || !result.tags) throw new Error(`product dimension switching: ${JSON.stringify(result)}`);
+  };
+  await navigate("/admin/productForm.html?id=" + productID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#pfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#product-sale\"][aria-current=\"step\"]'))", "product", "embedded", embeddedTitle, true);
+  await assertProductDimensions('product');
+  await navigate("/admin/spProductForm.html?id=" + serviceProductID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#spfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#sp-sale\"][aria-current=\"step\"]'))", "service-period-product", "embedded", embeddedTitle, true);
+  await assertProductDimensions('sp');
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "image-library", "embedded", frozenListToolbarTitle, true, true);
@@ -595,7 +614,13 @@ try {
   if (ownerMounted) await recordGeometry("owner-migration", () => assertOwnerHandoffLayout("owner-migration"), true);
   await navigateConfigCenter();
   await navigateRuntimeConfig();
-  await navigateStandard("/admin/oneid", "Boolean(document.querySelector('[data-admin-oneid-root]'))", "oneid", true, true);
+  const removedOneID = await evaluate(cdp, `(async () => ({
+    menuPresent: Boolean(document.querySelector('a[href="/admin/oneid"], a[href="/admin/oneid.html"]')),
+    statuses: await Promise.all(['/admin/oneid','/admin/oneid.html'].map(async path => (await fetch(path, {credentials:'same-origin'})).status))
+  }))()`);
+  if (removedOneID.menuPresent || removedOneID.statuses.some(status => status !== 404)) {
+    interactionFailures.push("oneid:retired frontend entry remains accessible");
+  }
   currentStep = "api-docs";
   await clickNavigation("/admin/api-docs", "api-docs");
   await waitFor(cdp, "location.pathname === '/admin/apidocs.html' && document.readyState !== 'loading'", "api-docs did not canonicalize to its V3 Host document");

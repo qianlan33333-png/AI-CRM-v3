@@ -372,6 +372,32 @@ func TestSecurityHeadersAllowDashboardRuntimeStyles(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersKeepChannelDonorScriptSameOriginOnly(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/channels/17/edit", nil))
+	policy := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "script-src 'self' https://res.wx.qq.com") {
+		t.Fatalf("channel CSP does not allow same-origin donor script: %q", policy)
+	}
+	if strings.Contains(policy, "unsafe-eval") || strings.Contains(policy, "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("channel CSP must not relax script execution for the donor: %q", policy)
+	}
+}
+
+func TestSecurityHeadersKeepCouponDonorRuntimeSameOriginOnly(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/couponForm.html", nil))
+	policy := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "script-src 'self' https://res.wx.qq.com") {
+		t.Fatalf("coupon CSP does not allow same-origin donor runtime: %q", policy)
+	}
+	if strings.Contains(policy, "unsafe-eval") || strings.Contains(policy, "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("coupon CSP must not relax script execution for the donor runtime: %q", policy)
+	}
+}
+
 func TestSecurityHeadersAllowFrozenOperationCycleInlineStylesOnBothPagesOnly(t *testing.T) {
 	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	for path, allowed := range map[string]bool{
@@ -638,7 +664,7 @@ func TestCouponRoutesAreExplicitAndClaimPageMounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/admin/coupons", "/api/admin/coupons/7", "/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html?id=7"} {
+	for _, path := range []string{"/api/admin/coupons", "/api/admin/coupons/7", "/admin/coupons", "/admin/coupons/7/edit", "/admin/coupons.html", "/admin/couponForm.html?id=7"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 		res := httptest.NewRecorder()

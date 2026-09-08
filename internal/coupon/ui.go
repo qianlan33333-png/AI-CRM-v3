@@ -6,13 +6,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/donortemplate"
 )
 
-type Assets struct{ TokensCSS, LabsCSS, AdminJS string }
+type Assets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
+
+var couponEditPath = regexp.MustCompile(`^/admin/coupons/([1-9][0-9]*)/edit$`)
+
 type PageRenderer func(http.ResponseWriter, *http.Request, string, string, Assets) error
 type ui struct {
 	dist   string
@@ -56,6 +60,13 @@ func (h *ui) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func pageFor(r *http.Request) (string, bool) {
+	if match := couponEditPath.FindStringSubmatch(r.URL.Path); len(match) == 2 {
+		id, err := strconv.ParseInt(match[1], 10, 64)
+		if err == nil && id > 0 && strconv.FormatInt(id, 10) == match[1] && len(r.URL.Query()) == 0 {
+			return "couponForm", true
+		}
+		return "", false
+	}
 	switch r.URL.Path {
 	case "/admin/coupons", "/admin/coupons.html":
 		return "coupons", len(r.URL.Query()) == 0
@@ -115,5 +126,9 @@ func couponAssets(dist string) (Assets, error) {
 	if e != nil {
 		return Assets{}, e
 	}
-	return Assets{t, l, a}, nil
+	h, e := get("couponHost")
+	if e != nil {
+		return Assets{}, e
+	}
+	return Assets{TokensCSS: t, LabsCSS: l, AdminJS: a, HostJS: h}, nil
 }

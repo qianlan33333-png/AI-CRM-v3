@@ -131,13 +131,22 @@ func (h *uiHandler) assets() (Assets, error) {
 	if err != nil {
 		return Assets{}, err
 	}
-	group, _ := get("aiassistant/group_chat_picker.css")
-	material, _ := get("aiassistant/material_picker.css")
-	composer, _ := get("aiassistant/send_content_composer.css")
+	group, err := get("assets/standard-components/group_chat_picker.css")
+	if err != nil {
+		return Assets{}, err
+	}
+	material, err := get("assets/standard-components/material_picker.css")
+	if err != nil {
+		return Assets{}, err
+	}
+	composer, err := get("assets/standard-components/send_content_composer.css")
+	if err != nil {
+		return Assets{}, err
+	}
 	readonly, _ := get("aiassistant/send_content_readonly_detail.css")
 	scripts := []string{}
-	for _, name := range []string{"group_chat_picker.js", "material_picker.js", "send_content_composer.js", "send_content_readonly_detail.js", "cloud_plan_review.js"} {
-		value, e := get("aiassistant/" + name)
+	for _, name := range []string{"assets/standard-components/group_chat_picker.js", "assets/standard-components/material_picker.js", "assets/standard-components/send_content_composer.js", "aiassistant/send_content_readonly_detail.js", "aiassistant/cloud_plan_review.js"} {
+		value, e := get(name)
 		if e != nil {
 			return Assets{}, e
 		}

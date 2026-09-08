@@ -12,7 +12,10 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/donortemplate"
 )
 
-type UIAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type UIAssets struct {
+	TokensCSS, LabsCSS, AdminJS, StandardHostJS string
+	StandardCSS                                 []string
+}
 type ChannelPageRenderer func(http.ResponseWriter, *http.Request, string, string, string, UIAssets) error
 type channelUI struct {
 	dist   string
@@ -94,7 +97,8 @@ func channelAssets(dist string) (UIAssets, error) {
 		return UIAssets{}, err
 	}
 	var manifest struct {
-		Entries map[string]string `json:"entries"`
+		Entries map[string]string          `json:"entries"`
+		Files   map[string]json.RawMessage `json:"files"`
 	}
 	if err = json.Unmarshal(raw, &manifest); err != nil {
 		return UIAssets{}, err
@@ -121,7 +125,26 @@ func channelAssets(dist string) (UIAssets, error) {
 	if err != nil {
 		return UIAssets{}, err
 	}
-	return UIAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin}, nil
+	standardHost, err := get("standardComponentsHost")
+	if err != nil {
+		return UIAssets{}, err
+	}
+	standardCSS := []string{
+		"assets/standard-components/group_chat_picker.css",
+		"assets/standard-components/material_picker.css",
+		"assets/standard-components/send_content_composer.css",
+		"assets/standard-components/wecom_tag_picker.css",
+		"assets/channelAdmissionStandard.css",
+	}
+	for _, value := range standardCSS {
+		if _, ok := manifest.Files[value]; !ok {
+			return UIAssets{}, errors.New("channel standard component asset missing")
+		}
+		if _, statErr := os.Stat(filepath.Join(dist, value)); statErr != nil {
+			return UIAssets{}, statErr
+		}
+	}
+	return UIAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin, StandardHostJS: standardHost, StandardCSS: standardCSS}, nil
 }
 
 var _ http.Handler = (*channelUI)(nil)

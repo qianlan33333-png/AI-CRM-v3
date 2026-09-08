@@ -259,7 +259,7 @@ func TestPublicCheckoutBrowserJourney(t *testing.T) {
 		t.Fatalf("records=%+v", records)
 	}
 	lost := records["checkout-journey-1"]
-	if lost.createCalls != 2 || lost.command.CouponClaimID != 11 || lost.command.MobileE164 != "+8613800138000" {
+	if lost.createCalls != 2 || lost.statusCalls != 2 || lost.command.CouponClaimID != 11 || lost.command.MobileE164 != "+8613800138000" {
 		t.Fatalf("lost-response replay=%+v", lost)
 	}
 	cancelled := records["checkout-journey-2"]

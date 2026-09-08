@@ -154,6 +154,66 @@
       });
     };
   }
+  function installFrozenShareStateGuard() {
+    const page = document.body && document.body.dataset.page || '';
+    if (!['questionnaires', 'questionnaireDetail'].includes(page)) return;
+    function ready(questionnaire) {
+      return !!(questionnaire && questionnaire.status === 'active' && questionnaire.enabled === true && text(questionnaire.public_path));
+    }
+    function notice(button) {
+      let status = document.querySelector('[data-survey-host-share-status]');
+      if (!status) {
+        status = document.createElement('span'); status.dataset.surveyHostShareStatus = 'true'; status.setAttribute('role', 'alert');
+        status.style.cssText = 'margin-left:10px;font-size:13px;color:#d93026';
+        (button && button.parentElement || document.body).appendChild(status);
+      }
+      status.textContent = '问卷尚未发布或已停用，不能分享公开链接。请先保存并发布。';
+    }
+    function setButtonState(questionnaire) {
+      const published = ready(questionnaire);
+      document.querySelectorAll('[data-action="share"],#editor-share-btn').forEach(function (button) {
+        button.dataset.surveyHostShareReady = published ? 'true' : 'false';
+        button.disabled = !published; button.setAttribute('aria-disabled', published ? 'false' : 'true');
+        button.title = published ? '' : '请先保存并发布问卷';
+      });
+    }
+    function setListState() {
+      const activeDocument = globalThis.document;
+      if (!activeDocument || !activeDocument.body) return;
+      activeDocument.querySelectorAll('tbody tr').forEach(function (row) {
+        // The frozen V3 list binds r.shareIt directly to an ordinary anchor;
+        // it has neither legacy classes nor data-action attributes. Its own
+        // controller has already derived these canonical labels from status,
+        // is_disabled and public_path, so use that rendered state rather than
+        // guessing from a draft URL.
+        const share = Array.from(row.querySelectorAll('a')).find(function (anchor) { return text(anchor.textContent).trim() === '分享'; });
+        if (!share) return;
+        const published = !/(未发布|已停用|草稿|draft)/i.test(text(row.textContent));
+        share.dataset.surveyHostShareReady = published ? 'true' : 'false';
+        share.setAttribute('aria-disabled', published ? 'false' : 'true');
+        share.title = published ? '' : '请先保存并发布问卷';
+      });
+    }
+    const questionnaireID = new URLSearchParams(location.search).get('id') || '';
+    if (page === 'questionnaireDetail' && /^[1-9][0-9]*$/.test(questionnaireID)) {
+      adminRequest('/api/admin/questionnaires/' + questionnaireID, { method: 'GET', headers: { Accept: 'application/json' } }).then(function (payload) {
+        const questionnaire = payload && (payload.questionnaire || payload.data && payload.data.questionnaire || payload); setButtonState(questionnaire);
+      }).catch(function () { setButtonState(null); });
+      window.addEventListener('aicrm:survey-editor-save', function (event) {
+        const detail = event && event.detail;
+        if (!detail || !detail.promise || typeof detail.promise.then !== 'function') return;
+        Promise.resolve(detail.promise).then(function (payload) { setButtonState(payload && (payload.questionnaire || payload.data && payload.data.questionnaire || payload)); }).catch(function () { setButtonState(null); });
+      });
+    } else {
+      setListState(); new MutationObserver(setListState).observe(document.body, { childList: true, subtree: true });
+    }
+    document.addEventListener('click', function (event) {
+      const candidate = event.target && event.target.closest && event.target.closest('[data-action="share"],#editor-share-btn,a');
+      const button = candidate && (candidate.id === 'editor-share-btn' || candidate.dataset.action === 'share' || (page === 'questionnaires' && text(candidate.textContent).trim() === '分享')) ? candidate : null;
+      if (!button || button.dataset.surveyHostShareReady === 'true') return;
+      event.preventDefault(); event.stopImmediatePropagation(); notice(button);
+    }, true);
+  }
   function installQrFallback() {
     const page = document.body.dataset.page || ''; if (!['questionnaires', 'questionnaireDetail', 'questionnaireOps'].includes(page)) return;
     const pending = new WeakSet();
@@ -232,6 +292,7 @@
   }
   installFrozenPublishBridge();
   installFrozenEnableBridge();
+  installFrozenShareStateGuard();
   installLegacyQuestionnaireOpsGuard();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
 }());
