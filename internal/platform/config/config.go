@@ -55,6 +55,7 @@ type Runtime struct {
 	HXCDashboard               HXCDashboard
 	OperationCycleServiceToken string
 	AIAssistant                AIAssistant
+	AIGeneration               AIGeneration
 	OpenPlatform               OpenPlatform
 }
 
@@ -244,6 +245,34 @@ type AIAssistant struct {
 	ProviderPermission                        string
 }
 
+// AIGeneration holds the provider-neutral OpenAI-compatible generation
+// endpoint. Its key remains deployment-owned and never enters Config releases
+// or Automation-owned prompt snapshots.
+type AIGeneration struct {
+	Enabled bool
+	BaseURL string
+	APIKey  string
+	Model   string
+	Timeout time.Duration
+}
+
+// Ready reports whether the deployment-owned portion of a generation
+// provider configuration is safe to activate. Callers use it when a Config
+// Center release can turn the feature on after environment loading; it never
+// returns or records the secret itself.
+func (c AIGeneration) Ready() bool {
+	values := []string{c.BaseURL, c.APIKey, c.Model}
+	if nonEmptyCount(values) != len(values) || !validAIGenerationBaseURL(c.BaseURL) || c.Timeout < time.Second || c.Timeout > 2*time.Minute {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
+			return false
+		}
+	}
+	return true
+}
+
 // OpenPlatform contains only the signing and proxy trust boundary for Access
 // machine credentials. It is deliberately separate from AI Assistant HMAC and
 // from ordinary Config/AdminOps secret projections.
@@ -307,6 +336,7 @@ func Load() (Runtime, error) {
 		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), IdentityObservationVaultKey: os.Getenv("AICRM_IDENTITY_OBSERVATION_VAULT_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
 		OperationCycleServiceToken: os.Getenv("AICRM_OPERATION_CYCLE_SERVICE_TOKEN"),
 		AIAssistant:                AIAssistant{UIEnabled: true, IntegrationKey: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY"), IntegrationSecret: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET"), ProviderPermission: os.Getenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION")},
+		AIGeneration:               AIGeneration{BaseURL: os.Getenv("AICRM_AI_GENERATION_BASE_URL"), APIKey: os.Getenv("AICRM_AI_GENERATION_API_KEY"), Model: os.Getenv("AICRM_AI_GENERATION_MODEL"), Timeout: 30 * time.Second},
 		OpenPlatform:               OpenPlatform{JWTSigningKey: os.Getenv("AICRM_OPEN_PLATFORM_JWT_SIGNING_KEY"), TrustedProxyCIDRs: splitCommaSeparated("AICRM_OPEN_PLATFORM_TRUSTED_PROXY_CIDRS")},
 		Bootstrap: Bootstrap{
 			Username: os.Getenv("AICRM_BOOTSTRAP_USERNAME"), Password: os.Getenv("AICRM_BOOTSTRAP_PASSWORD"),
@@ -360,6 +390,16 @@ func Load() (Runtime, error) {
 	}
 	if cfg.AIAssistant.DispatchEnabled, err = strictBool("AICRM_AI_ASSISTANT_DISPATCH_ENABLED", false); err != nil {
 		return Runtime{}, err
+	}
+	if cfg.AIGeneration.Enabled, err = strictBool("AICRM_AI_GENERATION_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if raw := os.Getenv("AICRM_AI_GENERATION_TIMEOUT_SECONDS"); raw != "" {
+		seconds, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || seconds < 1 || seconds > 120 {
+			return Runtime{}, errors.New("invalid AICRM_AI_GENERATION_TIMEOUT_SECONDS")
+		}
+		cfg.AIGeneration.Timeout = time.Duration(seconds) * time.Second
 	}
 	if raw := os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID"); raw != "" {
 		cfg.AIAssistant.IntegrationActorID, err = strconv.ParseInt(raw, 10, 64)
@@ -612,6 +652,11 @@ func Load() (Runtime, error) {
 	if cfg.AIAssistant.DispatchEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || cfg.WeCom.ContactSecret == "" || cfg.AIAssistant.ProviderPermission != "private-message-authorized") {
 		return Runtime{}, errors.New("enabled AI Assistant dispatch requires External Effects, WeCom contact credentials, and explicit permission")
 	}
+	if cfg.AIGeneration.Enabled {
+		if !cfg.Effects.ProviderEnabled || !cfg.AIGeneration.Ready() {
+			return Runtime{}, errors.New("enabled AI generation configuration is incomplete")
+		}
+	}
 	if cfg.WeChatPay.Enabled {
 		values := []string{cfg.WeChatPay.AppID, cfg.WeChatPay.AppSecret, cfg.WeChatPay.AppScope, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, cfg.WeChatPay.PrivateKeyPath, cfg.WeChatPay.PlatformCertPath, cfg.WeChatPay.APIV3Key}
 		if nonEmptyCount(values) != len(values) || len(cfg.WeChatPay.APIV3Key) != 32 || !strings.HasPrefix(cfg.WeChatPay.AppScope, "wechat-app:") {
@@ -755,6 +800,11 @@ func strictBool(key string, fallback bool) (bool, error) {
 func validPublicOrigin(value string) bool {
 	parsed, err := url.Parse(value)
 	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func validAIGenerationBaseURL(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.RawQuery == "" && parsed.Fragment == "" && parsed.User == nil
 }
 
 func nonEmptyCount(values []string) int {

@@ -37,6 +37,7 @@ type Kind string
 const (
 	OwnerOutbound               Owner = "outbound"
 	OwnerPayment                Owner = "payment"
+	OwnerAutomation             Owner = "automation"
 	KindOutboundMessage         Kind  = "outbound_message"
 	KindAutomationMessage       Kind  = "automation_message"
 	KindOutboundMedia           Kind  = "outbound_media"
@@ -52,6 +53,7 @@ const (
 	KindChannelLink             Kind  = "channel_acquisition_link_mutation"
 	KindSidebarJSSDKSend        Kind  = "sidebar_jssdk_send"
 	KindSurveyCompletion        Kind  = "survey_completion"
+	KindAIAgentGenerate         Kind  = "ai_agent_generate"
 	KindWeChatPayPrepay         Kind  = "wechat_pay_prepay_v1"
 	KindWeChatPayRefund         Kind  = "wechat_pay_refund_v1"
 	KindWeChatShopRefund        Kind  = "wechat_shop_refund_v1"
@@ -79,7 +81,8 @@ type Envelope struct {
 
 func (value Envelope) Valid() bool {
 	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
-		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund)
+		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund) ||
+		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }
 func (value Envelope) Fingerprint() Digest {
@@ -211,8 +214,11 @@ type Attempt struct {
 }
 
 type AdapterResult struct {
-	Completion               State
-	ReceiptDigest            Digest
+	Completion    State
+	ReceiptDigest Digest
+	// FailureCode is a short provider-safe classification. It must never carry
+	// a request, response, credential, customer identifier, or model text.
+	FailureCode              string
 	CallAttempted            bool
 	RealExternalCallExecuted bool
 	Artifact                 ResultArtifact

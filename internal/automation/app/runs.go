@@ -148,7 +148,13 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 		recipients[i] = aiassistantport.RecipientCandidate{CustomerID: customerdomain.CustomerID(item.CustomerID), StaffID: configuration.SenderStaffIDs[i%len(configuration.SenderStaffIDs)]}
 	}
 	published, contentFound, err := s.content.OutboundPublishedContent(ctx, automationport.AgentID(c.AgentID), c.AgentPublishedVersion)
-	if err != nil || !contentFound || published.ContentDigest != configuration.ContentDigest {
+	if err != nil {
+		return automationdomain.RuntimeRun{}, ErrRuntimeUnavailable
+	}
+	if !contentFound {
+		return s.confirmDynamicRun(ctx, c, preview, digest, recipients, payload, now)
+	}
+	if published.ContentDigest != configuration.ContentDigest {
 		return automationdomain.RuntimeRun{}, ErrRuntimeConflict
 	}
 	blocks, err := reviewContentBlocks(published.Content)
@@ -234,6 +240,9 @@ func (s *RuntimeService) ListRuns(ctx context.Context, cursor int64, limit int) 
 		if err = s.projectAIPlanState(ctx, &out[index]); err != nil {
 			return nil, "", err
 		}
+		if err = s.projectGenerationProgress(ctx, &out[index]); err != nil {
+			return nil, "", err
+		}
 	}
 	return out, next, nil
 }
@@ -249,7 +258,27 @@ func (s *RuntimeService) Run(ctx context.Context, id int64) (automationdomain.Ru
 	if err = s.projectAIPlanState(ctx, &out); err != nil {
 		return automationdomain.RuntimeRun{}, err
 	}
+	if err = s.projectGenerationProgress(ctx, &out); err != nil {
+		return automationdomain.RuntimeRun{}, err
+	}
 	return out, nil
+}
+
+func (s *RuntimeService) projectGenerationProgress(ctx context.Context, run *automationdomain.RuntimeRun) error {
+	if s == nil || run == nil || run.ID < 1 {
+		return ErrRuntimeInvalid
+	}
+	var progress automationport.GenerationProgress
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		progress, readErr = s.store.GenerationProgress(tx, run.ID)
+		return readErr
+	})
+	if err != nil {
+		return ErrRuntimeUnavailable
+	}
+	run.Generation = progress
+	return nil
 }
 
 // projectAIPlanState is a read-only projection of the existing AI Assistant

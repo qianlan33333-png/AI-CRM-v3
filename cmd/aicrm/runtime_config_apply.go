@@ -24,6 +24,7 @@ func runtimeConfigDefaults(cfg platformconfig.Runtime) ([]configport.RuntimeSett
 		{configport.AutomationOperationsMaxRecipientsPerRun, cfg.AutomationOperations.MaxRecipientsPerRun},
 		{configport.AutomationOperationsProviderMode, string(cfg.AutomationOperations.ProviderMode)},
 		{configport.AIAssistantUIEnabled, cfg.AIAssistant.UIEnabled}, {configport.AIAssistantIntakeEnabled, cfg.AIAssistant.IntakeEnabled}, {configport.AIAssistantDispatchEnabled, cfg.AIAssistant.DispatchEnabled},
+		{configport.AIAgentGenerationEnabled, cfg.AIGeneration.Enabled},
 		{configport.WeComEnabled, cfg.WeCom.Enabled}, {configport.RuntimeWeComCorpID, cfg.WeCom.CorpID}, {configport.RuntimeWeComAgentID, cfg.WeCom.AgentID}, {configport.WeComCallbackEnabled, cfg.WeCom.CallbackEnabled}, {configport.WeComCustomerSyncEnabled, cfg.WeCom.CustomerSyncEnabled},
 		{configport.MessageArchiveEnabled, cfg.WeCom.MessageArchiveEnabled}, {configport.MessageArchivePageLimit, cfg.WeCom.MessageArchivePageLimit}, {configport.MessageArchivePageBudget, cfg.WeCom.MessageArchivePageBudget}, {configport.SidebarContextTokenTTLSeconds, int(cfg.WeCom.ContextTokenTTL / time.Second)},
 		{configport.GroupOpsDirectoryReadEnabled, cfg.GroupOps.ProviderReadEnabled}, {configport.GroupOpsDispatchEnabled, cfg.GroupOps.ProviderEnabled},
@@ -118,6 +119,9 @@ func applyRuntimeConfig(cfg platformconfig.Runtime, snapshot configport.Effectiv
 		return cfg, err
 	}
 	if err := boolValue(configport.AIAssistantDispatchEnabled, &cfg.AIAssistant.DispatchEnabled); err != nil {
+		return cfg, err
+	}
+	if err := boolValue(configport.AIAgentGenerationEnabled, &cfg.AIGeneration.Enabled); err != nil {
 		return cfg, err
 	}
 	if err := boolValue(configport.WeComEnabled, &cfg.WeCom.Enabled); err != nil {
@@ -241,6 +245,7 @@ func runtimeConfigProtectedReferencePresence(cfg platformconfig.Runtime) map[str
 		"environment://AICRM_WECOM_MESSAGE_ARCHIVE_SECRET":       cfg.WeCom.MessageArchiveSecret != "",
 		"environment://AICRM_AUTOMATION_OPS_WEBHOOK_SECRET":      cfg.AutomationOperations.WebhookSecret != "",
 		"environment://AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION": cfg.AutomationOperations.ProviderPermission != "",
+		"environment://AICRM_AI_GENERATION_API_KEY":              cfg.AIGeneration.APIKey != "",
 		"environment://AICRM_WECHAT_PAY_API_V3_KEY":              cfg.WeChatPay.APIV3Key != "",
 		"environment://AICRM_WECHAT_PAY_PRIVATE_KEY_PATH":        cfg.WeChatPay.PrivateKeyPath != "",
 		"environment://AICRM_WECHAT_PAY_PLATFORM_CERT_PATH":      cfg.WeChatPay.PlatformCertPath != "",
@@ -262,6 +267,7 @@ func runtimeConfigActivationGuards(cfg platformconfig.Runtime) configapp.Runtime
 		AutomationProviderEnabled: cfg.AutomationOperations.ProviderPermission == "fixed-script-send-authorized" && cfg.WeCom.ContactSecret != "",
 		AIDispatchEnabled:         cfg.AIAssistant.ProviderPermission == "private-message-authorized" && cfg.WeCom.ContactSecret != "",
 		AIAssistantIntakeEnabled:  cfg.AIAssistant.IntegrationKey != "" && cfg.AIAssistant.IntegrationSecret != "" && cfg.AIAssistant.IntegrationActorID > 0,
+		AIAgentGenerationEnabled:  cfg.Effects.ProviderEnabled && cfg.AIGeneration.Ready(),
 		WeChatPayEnabled:          cfg.WeChatPay.AppSecret != "" && cfg.WeChatPay.PrivateKeyPath != "" && cfg.WeChatPay.PlatformCertPath != "" && cfg.WeChatPay.APIV3Key != "",
 		WeChatPayH5OAuthEnabled:   cfg.WeChatPay.H5AppSecret != "" && cfg.WeChatPay.OrderContactDataKey != "",
 		WeChatShopEnabled:         cfg.WeChatShop.AppSecret != "" && cfg.WeChatShop.CallbackToken != "" && cfg.WeChatShop.CallbackEncodingAESKey != "",

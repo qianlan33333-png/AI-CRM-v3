@@ -8,8 +8,9 @@ import (
 )
 
 type composedProviderRouter struct {
-	outbound effectport.ProviderAdapter
-	payment  effectport.ProviderAdapter
+	outbound   effectport.ProviderAdapter
+	payment    effectport.ProviderAdapter
+	automation effectport.ProviderAdapter
 }
 
 type paymentProviderRouter struct {
@@ -41,6 +42,12 @@ func (router composedProviderRouter) Execute(ctx context.Context, envelope effec
 		}
 		return router.payment.Execute(ctx, envelope, attempt)
 	}
+	if envelope.Owner == effectport.OwnerAutomation {
+		if router.automation == nil {
+			return effectport.AdapterResult{}, errors.New("automation provider unavailable")
+		}
+		return router.automation.Execute(ctx, envelope, attempt)
+	}
 	if router.outbound == nil {
 		return effectport.AdapterResult{}, errors.New("outbound provider unavailable")
 	}
@@ -48,8 +55,9 @@ func (router composedProviderRouter) Execute(ctx context.Context, envelope effec
 }
 
 type composedCompletionRouter struct {
-	outbound effectport.CompletionSink
-	payment  effectport.CompletionSink
+	outbound   effectport.CompletionSink
+	payment    effectport.CompletionSink
+	automation effectport.CompletionSink
 }
 
 func (router composedCompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
@@ -58,6 +66,12 @@ func (router composedCompletionRouter) CompleteEffect(ctx context.Context, effec
 			return errors.New("payment completion unavailable")
 		}
 		return router.payment.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	}
+	if envelope.Owner == effectport.OwnerAutomation {
+		if router.automation == nil {
+			return errors.New("automation completion unavailable")
+		}
+		return router.automation.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	}
 	if router.outbound == nil {
 		return errors.New("outbound completion unavailable")

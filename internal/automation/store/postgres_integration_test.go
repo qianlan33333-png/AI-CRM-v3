@@ -3,12 +3,14 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
@@ -238,6 +241,171 @@ func TestPostgreSQLRuntimeConfigObservedShapeRejectsIncompleteSnapshot(t *testin
 	}
 }
 
+// OneID decision: these owner rows retain opaque customer IDs and do not
+// resolve or provision identities. Persistence decision: item creation,
+// effect binding and terminal aggregation are each exercised in PostgreSQL
+// UoWs; the concurrent final completions prove the run lock admits one plan
+// creation decision only. Provider decision: no provider call is made here.
+func TestPostgreSQLDynamicGenerationUOWConcurrencyAndReplay(t *testing.T) {
+	native, cleanup := automationRuntimeIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 0115 must admit Automation's single generation envelope in the shared
+	// EER registry. It deliberately does not open any outbound delivery kind.
+	var generationEffectID int64
+	err = native.QueryRow(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES('automation','ai_agent_generate',$1,$2,$3,$4,$5,'queued') RETURNING id`, effectport.Hash("generation-eer", "source"), effectport.Hash("generation-eer", "target"), effectport.Hash("generation-eer", "payload"), effectport.Hash("generation-eer", "policy"), effectport.Hash("generation-eer", "envelope")).Scan(&generationEffectID)
+	if err != nil || generationEffectID < 1 {
+		t.Fatalf("automation generation effect constraint=%d err=%v", generationEffectID, err)
+	}
+	var tagMutationEffectID int64
+	err = native.QueryRow(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES('outbound','wecom_tag_catalog_mutation',$1,$2,$3,$4,$5,'queued') RETURNING id`, effectport.Hash("tag-mutation-eer", "source"), effectport.Hash("tag-mutation-eer", "target"), effectport.Hash("tag-mutation-eer", "payload"), effectport.Hash("tag-mutation-eer", "policy"), effectport.Hash("tag-mutation-eer", "envelope")).Scan(&tagMutationEffectID)
+	if err != nil || tagMutationEffectID < 1 {
+		t.Fatalf("0115 narrowed tag mutation effect constraint=%d err=%v", tagMutationEffectID, err)
+	}
+	runID := insertGenerationTestRun(t, native)
+	items := []automationdomain.GenerationItem{generationTestItem(runID, 1001, "eer_1"), generationTestItem(runID, 1002, "eer_2")}
+	rollback := errors.New("rollback dynamic generation item creation")
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		created, createErr := repository.CreateGenerationItems(tx, items)
+		if createErr != nil {
+			return createErr
+		}
+		for index := range created {
+			if bindErr := repository.BindGenerationEffect(tx, created[index].ID, items[index].EffectID, time.Date(2026, 9, 8, 8, 0, 0, 0, time.UTC)); bindErr != nil {
+				return bindErr
+			}
+		}
+		return rollback
+	}); !errors.Is(err, rollback) {
+		t.Fatalf("rollback err=%v", err)
+	}
+	var count int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_generation_items WHERE run_id=$1`, runID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled-back items=%d err=%v", count, err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		created, createErr := repository.CreateGenerationItems(tx, items)
+		if createErr != nil {
+			return createErr
+		}
+		for index := range created {
+			if bindErr := repository.BindGenerationEffect(tx, created[index].ID, items[index].EffectID, time.Date(2026, 9, 8, 8, 0, 0, 0, time.UTC)); bindErr != nil {
+				return bindErr
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	errorsByCompletion := make(chan error, 2)
+	var wait sync.WaitGroup
+	complete := func(effectID string, state effectport.State, body string) {
+		defer wait.Done()
+		<-start
+		completion := generationTestCompletion(effectID, state, body)
+		err := uow.Within(ctx, func(tx context.Context) error {
+			_, _, createPlan, settleErr := repository.SettleGeneration(tx, completion)
+			if settleErr == nil {
+				results <- createPlan
+			}
+			return settleErr
+		})
+		errorsByCompletion <- err
+	}
+	wait.Add(2)
+	go complete("eer_1", effectport.StateExecuted, "为你准备的专属建议")
+	go complete("eer_2", effectport.StateUnknown, "")
+	close(start)
+	wait.Wait()
+	close(results)
+	close(errorsByCompletion)
+	for completeErr := range errorsByCompletion {
+		if completeErr != nil {
+			t.Fatal(completeErr)
+		}
+	}
+	planDecisions := 0
+	for decision := range results {
+		if decision {
+			planDecisions++
+		}
+	}
+	if planDecisions != 1 {
+		t.Fatalf("plan decisions=%d, want exactly one", planDecisions)
+	}
+	var progress automationport.GenerationProgress
+	err = uow.Within(ctx, func(tx context.Context) error {
+		var progressErr error
+		progress, progressErr = repository.GenerationProgress(tx, runID)
+		return progressErr
+	})
+	if err != nil || progress.Total != 2 || progress.Succeeded != 1 || progress.Unknown != 1 || progress.Queued != 0 || progress.Failed != 0 {
+		t.Fatalf("progress=%+v err=%v", progress, err)
+	}
+	var planItems []automationdomain.GenerationItem
+	err = uow.Within(ctx, func(tx context.Context) error {
+		var itemErr error
+		planItems, itemErr = repository.GenerationItemsForPlan(tx, runID)
+		return itemErr
+	})
+	if err != nil || len(planItems) != 1 || planItems[0].GeneratedText != "为你准备的专属建议" {
+		t.Fatalf("plan items=%+v err=%v", planItems, err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, _, createPlan, settleErr := repository.SettleGeneration(tx, generationTestCompletion("eer_1", effectport.StateExecuted, "为你准备的专属建议"))
+		if settleErr != nil {
+			return settleErr
+		}
+		if createPlan {
+			return errors.New("terminal generation replay requested a second review plan")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertGenerationTestRun(t *testing.T, native *pgxpool.Pool) int64 {
+	t.Helper()
+	var id int64
+	err := native.QueryRow(context.Background(), `INSERT INTO automation_runs(package_id,package_version,snapshot_id,agent_id,agent_published_version,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at) VALUES(1,1,1,1,1,1,1,decode(repeat('1a',32),'hex'),'preparing',2,0,7,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func generationTestItem(runID, customerID int64, effectID string) automationdomain.GenerationItem {
+	now := time.Date(2026, 9, 8, 8, 0, 0, 0, time.UTC)
+	digest := func(namespace string) [32]byte { return sha256.Sum256([]byte(namespace + effectID)) }
+	return automationdomain.GenerationItem{RunID: runID, CustomerID: customerID, SenderStaffID: 7, AgentID: 1, AgentPublishedVersion: 1, AgentCode: "dynamic_text", RolePrompt: "给出简洁建议", TaskPrompt: "结合冻结上下文生成一条消息", Context: automationport.GenerationContext{Questionnaire: "目标：增长", RecentChats: "想了解", Tags: "活跃", Activation: "activated"}, ModelPolicy: automationport.GenerationModelPolicy{Mode: "enabled", Endpoint: "https://model.example.test/chat/completions", Model: "test-model", Temperature: 0.4}, SourceDigest: digest("source"), TargetDigest: digest("target"), PayloadDigest: digest("payload"), PolicyDigest: digest("policy"), ReceiptKeyDigest: digest("receipt"), State: "accepted", CreatedAt: now, UpdatedAt: now, EffectID: effectID}
+}
+
+func generationTestCompletion(effectID string, state effectport.State, body string) automationport.GenerationCompletion {
+	completion := automationport.GenerationCompletion{EffectID: effectID, State: state, Attempt: effectport.Attempt{EffectID: effectID, Number: 1, Generation: 1, Fence: 1}, ReceiptDigest: effectport.Hash("generation-test-receipt", effectID), CompletedAt: time.Date(2026, 9, 8, 8, 1, 0, 0, time.UTC), FailureCode: "generation_call_unknown"}
+	if state == effectport.StateExecuted {
+		completion.Artifact = effectport.ResultArtifact{Kind: "automation.ai_agent_generate.text.v1", Payload: []byte(body)}
+		completion.Artifact.Digest = effectport.Hash("external-effect.artifact.v1", completion.Artifact.Kind, body)
+	}
+	return completion
+}
+
 func automationIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -292,7 +460,7 @@ func automationIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 
 func automationRuntimeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
-	pool, cleanup := automationIntegrationPoolWithMigrations(t, []string{"0013_automation_agents.sql", "0043_automation_runtime.sql", "0087_automation_manual_ai_review.sql", "0015_config_adminops.sql", "0094_runtime_config_releases.sql"})
+	pool, cleanup := automationIntegrationPoolWithMigrations(t, []string{"0005_external_effects.sql", "0013_automation_agents.sql", "0043_automation_runtime.sql", "0087_automation_manual_ai_review.sql", "0015_config_adminops.sql", "0094_runtime_config_releases.sql", "0115_automation_dynamic_text_generation.sql"})
 	return pool, cleanup
 }
 

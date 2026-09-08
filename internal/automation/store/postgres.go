@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
@@ -246,4 +247,10 @@ func (r *Repository) Append(ctx context.Context, event automationport.Event) (au
 	_, e = t.Exec(ctx, `INSERT INTO automation_outbox(event_type,agent_id,payload,idempotency_digest,occurred_at) VALUES($1,$2,$3::jsonb,$4,$5)`, event.Type, p.AgentID, event.Payload, d[:], event.OccurredAt)
 	return automationport.EventID(id), e
 }
-func unique(e error) bool { return e != nil && strings.Contains(strings.ToLower(e.Error()), "unique") }
+func unique(e error) bool {
+	if e == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(e, &pgErr) && pgErr.Code == "23505" || strings.Contains(strings.ToLower(e.Error()), "unique")
+}

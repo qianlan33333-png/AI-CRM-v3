@@ -17,6 +17,7 @@ const (
 	AIAssistantUIEnabled                    RuntimeSettingKey = "ai_assistant.ui_enabled"
 	AIAssistantIntakeEnabled                RuntimeSettingKey = "ai_assistant.intake_enabled"
 	AIAssistantDispatchEnabled              RuntimeSettingKey = "ai_assistant.dispatch_enabled"
+	AIAgentGenerationEnabled                RuntimeSettingKey = "ai_agent_generation.enabled"
 	WeComEnabled                            RuntimeSettingKey = "wecom.enabled"
 	RuntimeWeComCorpID                      RuntimeSettingKey = "wecom.corp_id"
 	RuntimeWeComAgentID                     RuntimeSettingKey = "wecom.agent_id"

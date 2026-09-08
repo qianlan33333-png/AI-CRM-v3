@@ -81,20 +81,20 @@
     if (error.status === 403) return { state: "forbidden", message: error.code === "csrf_required" ? "页面安全令牌已失效，请刷新页面后重试。" : "当前账号没有执行此操作的权限。" };
     if (error.status === 409) return { state: "conflict", message: "服务端版本已经变化。页面将重新读取；请重新预览后确认。" };
     if (error.status === 404) return { state: "empty", message: "记录不存在或尚未生成。" };
-    if (error.status === 422 || error.status === 503) return { state: "not-ready", message: "能力尚未满足执行条件；请检查 OneID、快照、固定话术、发送人与 Provider 就绪状态。" };
+    if (error.status === 422 || error.status === 503) return { state: "not-ready", message: "能力尚未满足执行条件；请检查 OneID、快照、已发布话术 Agent、发送人与 Provider 就绪状态。" };
     return { state: "unknown", message: `请求未完成（${escapeHTML(error.code)}），请勿按成功处理。` };
   }
 
   const readinessReasonLabels = {
     configuration_missing: "尚未配置人群筛选条件",
-    automation_binding_missing: "未绑定已发布的固定话术",
+    automation_binding_missing: "未绑定已发布的话术 Agent",
     sender_set_missing: "未配置发送人白名单",
     sender_set_empty: "发送人白名单为空",
     published_snapshot_missing: "尚未发布人群快照",
-    published_content_missing: "固定话术尚未发布",
-    agent_execution_not_supported: "当前绑定不是固定话术",
-    content_not_active: "固定话术尚未激活",
-    content_version_drift: "固定话术版本已经变化，需要重新绑定",
+    published_content_missing: "话术 Agent 尚未发布",
+    agent_execution_not_supported: "当前绑定的话术类型无法执行",
+    content_not_active: "话术 Agent 尚未激活",
+    content_version_drift: "话术 Agent 版本已经变化，需要重新绑定",
     sender_ineligible: "发送人当前不具备企微发送资格",
     sender_version_drift: "发送人资格版本已经变化，需要重新保存",
     provider_disabled: "Automation Provider 尚未获得生产发送授权",
@@ -133,7 +133,7 @@
   }
 
   function runStateLabel(value) {
-    return ({ accepted: "已接受", queued: "已排队", pending_review: "等待 AI 审阅", executing: "执行中", completed: "已完成", partial: "部分完成", partial_failed: "部分失败", failed: "失败", cancelled: "已取消", outcome_unknown: "结果未知", reconciled: "已对账", provider_accepted: "Provider 已接受", delivery_proven: "已证明送达", retryable_failed: "可重试失败", final_failed: "最终失败" })[value] || text(value);
+    return ({ accepted: "已接受", queued: "已排队", preparing: "动态生成中", pending_review: "等待 AI 审阅", executing: "执行中", completed: "已完成", partial: "部分完成", partial_failed: "部分失败", failed: "失败", cancelled: "已取消", outcome_unknown: "结果未知", reconciled: "已对账", provider_accepted: "Provider 已接受", delivery_proven: "已证明送达", retryable_failed: "可重试失败", final_failed: "最终失败" })[value] || text(value);
   }
 
   async function bootList() {
@@ -188,7 +188,7 @@
         state.templates = (templates.items || []).filter((item) => item.available);
         enable();
         render();
-        showNotice(state.packages.length ? "" : "尚未创建人群包。创建后仍需配置快照、固定话术和发送人。", false);
+        showNotice(state.packages.length ? "" : "尚未创建人群包。创建后仍需配置快照、话术 Agent 和发送人。", false);
       } catch (error) {
         const detail = errorState(error);
         showNotice(detail.message, true);
@@ -335,8 +335,8 @@
     }
 
     function renderAgents() {
-      const eligible = state.agents.filter((agent) => agent.automation_type === "fixed_script" && agent.status !== "archived");
-      byID("automationCapabilitySelector").innerHTML = `<select class="ai-select" id="automationAgentSelect"><option value="">请选择已发布固定话术</option>${eligible.map((agent) => `<option value="${agent.id}"${state.binding?.agent_id === agent.id ? " selected" : ""}>${escapeHTML(agent.agent_name)} · ${escapeHTML(agent.status)}</option>`).join("")}</select><p class="ai-label">Agent 类型首版不可执行；绑定时冻结已发布版本与内容摘要。</p>`;
+      const eligible = state.agents.filter((agent) => (agent.automation_type === "fixed_script" || agent.automation_type === "agent") && agent.status !== "archived");
+      byID("automationCapabilitySelector").innerHTML = `<select class="ai-select" id="automationAgentSelect"><option value="">请选择已发布固定话术或动态文本 Agent</option>${eligible.map((agent) => `<option value="${agent.id}"${state.binding?.agent_id === agent.id ? " selected" : ""}>${escapeHTML(agent.agent_name)} · ${agent.automation_type === "agent" ? "动态文本" : "固定话术"} · ${escapeHTML(agent.status)}</option>`).join("")}</select><p class="ai-label">固定话术会进入现有 AI 审阅；动态文本会先按冻结客户上下文生成，再进入同一审阅流程。绑定时冻结已发布版本和摘要。</p>`;
     }
 
     function renderSenders() {
@@ -359,7 +359,7 @@
           request(`${API}/ai-audience/package-groups`),
           request(`${API}/ai-audience/templates`),
           optional(`${API}/ai-audience/packages/${packageID}/configuration`, "基础配置"),
-          optional(`${API}/ai-audience/packages/${packageID}/automation-binding`, "固定话术绑定"),
+          optional(`${API}/ai-audience/packages/${packageID}/automation-binding`, "话术 Agent 绑定"),
           optional(`${API}/ai-audience/packages/${packageID}/senders`, "发送人白名单"),
           request(`${API}/automation-agents?limit=100&offset=0`),
         ]);
@@ -378,7 +378,7 @@
         try {
           const check = await request(`${API}/ai-audience/packages/${packageID}/precheck`, { method: "POST", body: {} });
           const value = check.precheck;
-          setCapability(value.ready ? "执行预检通过：快照、固定话术、发送人和 Provider 均已就绪。" : `当前不可执行：${readinessMessage(value.reasons) || "条件未满足"}`, value.ready ? "ready" : "not-ready");
+          setCapability(value.ready ? "执行预检通过：快照、已发布话术 Agent、发送人和 Provider 均已就绪。" : `当前不可执行：${readinessMessage(value.reasons) || "条件未满足"}`, value.ready ? "ready" : "not-ready");
         } catch (error) {
           const detail = errorState(error);
           const dependencyMessage = state.dependencyIssues.length ? `部分配置读取失败：${state.dependencyIssues.join("；")}。` : "";
@@ -442,7 +442,7 @@
     async function saveBinding() {
       const selected = Number(byID("automationAgentSelect")?.value || 0);
       const agent = state.agents.find((item) => item.id === selected);
-      if (!agent || !state.pkg) return setStatus(byID("automationStatusLine"), "请选择已发布固定话术。", "error");
+      if (!agent || !state.pkg) return setStatus(byID("automationStatusLine"), "请选择已发布固定话术或动态文本 Agent。", "error");
       try {
         const detailResult = await request(`${API}/automation-agents/${agent.id}`);
         const detail = detailResult.agent;
@@ -483,9 +483,33 @@
         const result = await request(`${API}/automation-runs?limit=100`);
         state.runs = (result.items || []).filter((run) => run.package_id === packageID);
         byID("sendRecordTotal").textContent = `${state.runs.length} 次运行`;
-        byID("sendRecordRows").innerHTML = state.runs.length ? state.runs.map((run) => `<tr><td>#${run.id}</td><td><span class="ai-pill${run.state === "outcome_unknown" ? " gray" : ""}">${runStateLabel(run.state)}</span>${run.ai_plan_state ? `<div class="ai-label">AI：${escapeHTML(run.ai_plan_state)}</div>` : ""}</td><td>${run.target_count} / ${run.skipped_count}</td><td>${formatTime(run.created_at)}</td><td>${run.outcome_unknown_count || 0}</td><td>${run.ai_plan_id ? `<a class="ai-btn soft" href="/admin/cloud-orchestrator/plans/${encodeURIComponent(run.ai_plan_id)}">进入 AI 审阅与收件人</a>` : `<button class="ai-btn soft" data-run-id="${run.id}">查看收件人</button>`}</td></tr>`).join("") : `<tr><td class="ai-empty" colspan="7">尚无真实运行记录</td></tr>`;
+        byID("sendRecordRows").innerHTML = state.runs.length ? state.runs.map((run) => {
+          const generated = run.generation || {};
+          const dynamic = Number(generated.total || 0) > 0;
+          const generationStatus = dynamic ? `<div class="ai-label">动态生成 ${generated.total} 项 · 成功 ${generated.succeeded || 0} · 失败排除 ${generated.failed || 0} · 未知排除 ${generated.unknown || 0} · 待处理 ${generated.queued || 0}</div>` : "";
+          const action = run.ai_plan_id
+            ? `<a class="ai-btn soft" href="/admin/cloud-orchestrator/plans/${encodeURIComponent(run.ai_plan_id)}">进入 AI 审阅与收件人</a>`
+            : dynamic
+              ? `<button class="ai-btn soft" data-generation-run-id="${run.id}">查看动态生成进度</button>`
+              : `<button class="ai-btn soft" data-run-id="${run.id}">查看收件人</button>`;
+          return `<tr><td>#${run.id}</td><td><span class="ai-pill${run.state === "outcome_unknown" ? " gray" : ""}">${runStateLabel(run.state)}</span>${generationStatus}${run.ai_plan_state ? `<div class="ai-label">AI：${escapeHTML(run.ai_plan_state)}</div>` : ""}</td><td>${run.target_count} / ${run.skipped_count}</td><td>${formatTime(run.created_at)}</td><td>${run.outcome_unknown_count || generated.unknown || 0}</td><td>${action}</td></tr>`;
+        }).join("") : `<tr><td class="ai-empty" colspan="7">尚无真实运行记录</td></tr>`;
         byID("sendRecordRows").querySelectorAll("[data-run-id]").forEach((node) => node.addEventListener("click", () => loadRecipients(Number(node.dataset.runId))));
-        setStatus(byID("sendRecordStatusLine"), "accepted / queued / Provider 接受 / 送达证明 / 未知结果分别展示。", "success");
+        byID("sendRecordRows").querySelectorAll("[data-generation-run-id]").forEach((node) => node.addEventListener("click", () => loadGenerationItems(Number(node.dataset.generationRunId))));
+        setStatus(byID("sendRecordStatusLine"), "固定发送和动态生成均读取持久状态；失败和未知项会明确排除出 AI 待审。", "success");
+      } catch (error) { const detail = errorState(error); setStatus(byID("sendRecordStatusLine"), detail.message, "error"); }
+    }
+
+    async function loadGenerationItems(runID) {
+      try {
+        const result = await request(`${API}/automation-runs/${runID}/generation-items?limit=100`);
+        const items = result.items || [];
+        byID("sendRecordDrawerSubtitle").textContent = `运行 #${runID} · ${items.length} 项动态生成`;
+        byID("sendRecordMeta").innerHTML = items.map((item) => `<div class="ai-mini"><div class="label">Customer #${item.customer_id} · Staff #${item.sender_staff_id}</div><div class="value">${escapeHTML(runStateLabel(item.state))}</div>${item.effect_id ? `<div>Effect ${escapeHTML(item.effect_id)}</div>` : ""}${item.failure_code ? `<div class="ai-label">已排除：${escapeHTML(item.failure_code)}</div>` : ""}</div>`).join("") || `<div class="ai-empty">暂无动态生成记录</div>`;
+        byID("sendRecordContentDetail").innerHTML = `<div class="ai-status-line">此处只展示持久生成进度和排除原因；成功内容进入既有 AI 审阅与收件人流程。</div>`;
+        byID("sendRecordDrawerMask").style.display = "block";
+        byID("sendRecordDrawer").style.display = "block";
+        byID("sendRecordDrawer").setAttribute("aria-hidden", "false");
       } catch (error) { const detail = errorState(error); setStatus(byID("sendRecordStatusLine"), detail.message, "error"); }
     }
 
@@ -568,7 +592,9 @@
       const quiet = byID("policyQuietHoursInput").value.match(/^([0-2][0-9]:[0-5][0-9])-([0-2][0-9]:[0-5][0-9])$/);
       const action = byID("policyActionSelect").value;
       const agentID = Number(byID("automationAgentSelect")?.value || state.binding?.agent_id || 0);
+      const selectedAgent = state.agents.find((item) => item.id === agentID);
       if (!quiet || (action === "outbound_message" && !agentID)) return setStatus(byID("policyStatusLine"), "请提供有效安静时段，并为发送动作选择固定话术。", "error");
+      if (action === "outbound_message" && selectedAgent?.automation_type !== "fixed_script") return setStatus(byID("policyStatusLine"), "自动触发策略仍只支持固定话术；动态文本仅支持人工创建运行。", "error");
       const body = { code: byID("policyCodeInput").value.trim(), name: byID("policyNameInput").value.trim(), package_id: packageID, trigger: byID("policyTriggerSelect").value, action, action_config: action === "outbound_message" ? { agent_id: agentID } : { record_type: "audience_member_entered" }, quiet_hours: { timezone: byID("policyTimezoneInput").value.trim(), start: quiet[1], end: quiet[2] }, single_run_limit: Number(byID("policyLimitInput").value), expected_version: 0 };
       try { await request(`${API}/automations`, { method: "POST", mutate: true, scope: "automation-policy-create", body }); setStatus(byID("policyStatusLine"), "暂停策略及不可变版本已创建。", "success"); await loadPolicies(); }
       catch (error) { const detail = errorState(error); setStatus(byID("policyStatusLine"), detail.message, "error"); }
@@ -587,7 +613,7 @@
     byID("refreshMembersBtn").addEventListener("click", () => loadMembers());
     byID("saveAutomationBtn").addEventListener("click", saveBinding);
     byID("unbindAutomationBtn").addEventListener("click", async () => {
-      if (!state.binding || !state.pkg || !window.confirm("解除当前固定话术绑定？历史版本仍会保留用于审计。")) return;
+      if (!state.binding || !state.pkg || !window.confirm("解除当前话术 Agent 绑定？历史版本仍会保留用于审计。")) return;
       try {
         await request(`${API}/ai-audience/packages/${packageID}/automation-binding?expected_version=${state.pkg.version}`, { method: "DELETE", mutate: true, scope: "audience-binding-delete" });
         setStatus(byID("automationStatusLine"), "绑定已解除，历史冻结版本仍保留。", "success");

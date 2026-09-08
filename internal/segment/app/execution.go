@@ -312,7 +312,11 @@ func (s *ExecutionService) Precheck(ctx context.Context, packageID int64) (Prech
 		if readErr != nil || !found {
 			result.Reasons = append(result.Reasons, "published_content_missing")
 		} else {
-			if agent.AutomationType != automationport.AutomationTypeFixedScript {
+			// A manually confirmed audience run may bind either immutable fixed
+			// content or a published dynamic Agent. The latter is still held at
+			// the Automation boundary until per-customer generation and existing
+			// AI review complete; automatic policy sends remain fixed-content only.
+			if agent.AutomationType != automationport.AutomationTypeFixedScript && agent.AutomationType != automationport.AutomationTypeAgent {
 				result.Reasons = append(result.Reasons, "agent_execution_not_supported")
 			}
 			if agent.Status != automationport.AgentStatusActive {

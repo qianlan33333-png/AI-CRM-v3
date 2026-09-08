@@ -24,6 +24,7 @@ import (
 	aiassistantstore "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/store"
 	automation "github.com/qianlan33333-png/AI-CRM-v3/internal/automation"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
+	automationprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/provider"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
@@ -608,6 +609,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	outboundCompletionSink.WithAutomationMessage(outboundMessages)
 	sidebarExpiry := outbound.SidebarJSSDKExpiry{}
 	outboundCompletionSink.WithSidebarJSSDK(sidebarExpiry)
+	generationCompletionSink, err := automationprovider.NewGenerationCompletionSink(automationRuntime)
+	if err != nil {
+		return fail(err)
+	}
 	if cfg.Survey.DataKey == "" {
 		return fail(errors.New("survey data encryption key is not configured"))
 	}
@@ -1023,7 +1028,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink}); err != nil {
+	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink, automation: generationCompletionSink}); err != nil {
 		return fail(err)
 	}
 	if err = paymentReconciliationWorker.BindService(paymentService); err != nil {
@@ -1300,8 +1305,21 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	generationProvider, err := automationprovider.NewGenerationProvider(automationprovider.GenerationConfig{Enabled: cfg.AIGeneration.Enabled, BaseURL: cfg.AIGeneration.BaseURL, APIKey: cfg.AIGeneration.APIKey, Model: cfg.AIGeneration.Model, Timeout: cfg.AIGeneration.Timeout}, automationRuntime)
+	if err != nil {
+		return fail(err)
+	}
+	generationContext := dynamicGenerationContextAdapter{
+		questionnaires: surveySubmissions,
+		messages:       archiveService,
+		tags:           customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
+		profiles:       sidebarProfiles,
+	}
+	if err = automationRuntime.SetDynamicGenerationDependencies(effectRepository, generationContext, automationService, generationProvider); err != nil {
+		return fail(err)
+	}
 	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter, automation: generationProvider}); err != nil {
 		return fail(err)
 	}
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()

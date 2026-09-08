@@ -119,3 +119,31 @@ func TestSendersRejectDuplicateInternalStaffAndPrecheckReportsProviderDisabled(t
 		t.Fatalf("check=%+v err=%v", check, err)
 	}
 }
+
+// OneID decision: the test uses an already-persisted Segment snapshot and
+// internal staff facts; it does not resolve or provision customers.
+// Persistence/provider decision: Precheck stays read-only. It proves an
+// active published Agent may reach the manual dynamic-generation path, while
+// automatic policy sends retain their fixed-content restriction.
+func TestPrecheckAllowsPublishedDynamicAgentForManualRun(t *testing.T) {
+	now := time.Now().UTC()
+	content := sha256.Sum256([]byte("dynamic-content"))
+	materials := sha256.Sum256([]byte("dynamic-materials"))
+	agent := automationport.PublishedAgent{AgentID: 3, PublishedVersion: 2, AutomationType: automationport.AutomationTypeAgent, Status: automationport.AgentStatusActive, ContentDigest: content, MaterialsDigest: materials}
+	staff := staffReaderStub{accessport.StaffEligibility{StaffID: 9, Active: true, Eligible: true, EligibilityVersion: 2, RefreshedAt: now}}
+	store := executionStoreStub{
+		pkg:      segmentdomain.Package{ID: 1, Lifecycle: segmentdomain.Paused},
+		config:   segmentdomain.ConfigurationVersion{ID: 2, Definition: []byte(`{"schema_version":1,"template_key":"active_contacts","parameters":{"within_days":"30"}}`)},
+		binding:  segmentdomain.AutomationBinding{AgentID: agent.AgentID, AutomationType: agent.AutomationType, AgentPublishedVersion: agent.PublishedVersion, ContentDigest: content, MaterialsDigest: materials, Version: 1},
+		senders:  segmentdomain.SenderSet{Version: 1, Members: []segmentdomain.Sender{{StaffID: 9, EligibilityVersion: 2, EligibilityRefreshedAt: now}}},
+		snapshot: segmentport.Snapshot{ID: 4},
+	}
+	service, err := NewExecutionService(directUOW{}, store, publishedAgentStub{agent, true}, staff, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, err := service.Precheck(context.Background(), 1)
+	if err != nil || !check.Ready || len(check.Reasons) != 0 {
+		t.Fatalf("dynamic Agent precheck=%+v err=%v", check, err)
+	}
+}

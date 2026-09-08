@@ -50,3 +50,20 @@ func (s *Service) OutboundPublishedContent(ctx context.Context, id automationpor
 }
 
 var _ automationport.OutboundPublishedContentReader = (*Service)(nil)
+
+func (s *Service) PublishedGeneration(ctx context.Context, id automationport.AgentID, version int64) (automationport.PublishedGeneration, bool, error) {
+	agent, err := s.Get(ctx, id)
+	if errors.Is(err, ErrAgentNotFound) {
+		return automationport.PublishedGeneration{}, false, nil
+	}
+	if err != nil {
+		return automationport.PublishedGeneration{}, false, err
+	}
+	if agent.AutomationType != automationport.AutomationTypeAgent || agent.Status != automationport.AgentStatusActive || agent.PublishedVersion != version {
+		return automationport.PublishedGeneration{}, false, nil
+	}
+	published := automationport.PublishedGeneration{AgentID: agent.ID, PublishedVersion: agent.PublishedVersion, AgentCode: agent.AgentCode, RolePrompt: agent.PublishedRolePrompt, TaskPrompt: agent.PublishedTaskPrompt}
+	return published, published.Valid(), nil
+}
+
+var _ automationport.PublishedGenerationReader = (*Service)(nil)

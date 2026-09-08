@@ -58,7 +58,7 @@ document.querySelector('[data-action="activate"][data-package-id="13"]')?.click(
 await wait(300);
 
 const notice = document.querySelector("#audNotice")?.textContent || "";
-if (!notice.includes("未绑定已发布的固定话术") || !notice.includes("未配置发送人白名单") || !notice.includes("Provider")) {
+if (!notice.includes("未绑定已发布的话术 Agent") || !notice.includes("未配置发送人白名单") || !notice.includes("Provider")) {
   throw new Error(`activation blockers were not explained: ${notice}`);
 }
 if (requests.some((request) => request.path.endsWith("/activate"))) {

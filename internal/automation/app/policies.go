@@ -56,6 +56,14 @@ type RuntimeStore interface {
 	RecipientForEffect(context.Context, int64, string) (automationdomain.RuntimeRecipient, error)
 	CreateRunReconciliation(context.Context, automationdomain.RunReconciliation) (automationdomain.RunReconciliation, error)
 	CancelRun(context.Context, int64, time.Time) (automationdomain.RuntimeRun, error)
+	CreateGenerationItems(context.Context, []automationdomain.GenerationItem) ([]automationdomain.GenerationItem, error)
+	BindGenerationEffect(context.Context, int64, string, time.Time) error
+	GenerationByEffect(context.Context, string) (automationdomain.GenerationItem, error)
+	SettleGeneration(context.Context, automationport.GenerationCompletion) (automationdomain.GenerationItem, automationdomain.RuntimeRun, bool, error)
+	GenerationItemsForPlan(context.Context, int64) ([]automationdomain.GenerationItem, error)
+	AttachGenerationPlan(context.Context, int64, int64, time.Time) error
+	GenerationProgress(context.Context, int64) (automationport.GenerationProgress, error)
+	GenerationItems(context.Context, int64, int64, int) ([]automationport.GenerationItem, string, error)
 }
 type reviewPlanGateway interface {
 	aiassistantport.TransactionalIntake
@@ -63,18 +71,22 @@ type reviewPlanGateway interface {
 }
 
 type RuntimeService struct {
-	uow            platformport.UnitOfWork
-	store          RuntimeStore
-	audiences      segmentport.ExecutionConfigurationReader
-	snapshots      segmentport.SnapshotReader
-	messages       outboundport.TransactionalMessageAccepter
-	effects        effectport.TransactionalReconciler
-	reviewPlans    reviewPlanGateway
-	content        automationport.OutboundPublishedContentReader
-	contentFreezer automationport.OutboundContentFreezer
-	runtimeConfig  configport.EffectiveReader
-	runtimeUsage   configport.UsageRecorder
-	now            func() time.Time
+	uow               platformport.UnitOfWork
+	store             RuntimeStore
+	audiences         segmentport.ExecutionConfigurationReader
+	snapshots         segmentport.SnapshotReader
+	messages          outboundport.TransactionalMessageAccepter
+	effects           effectport.TransactionalReconciler
+	reviewPlans       reviewPlanGateway
+	content           automationport.OutboundPublishedContentReader
+	contentFreezer    automationport.OutboundContentFreezer
+	generationEffects effectport.TransactionalAccepter
+	generationContext automationport.GenerationContextReader
+	generationAgents  automationport.PublishedGenerationReader
+	generationPolicy  automationport.GenerationModelPolicyReader
+	runtimeConfig     configport.EffectiveReader
+	runtimeUsage      configport.UsageRecorder
+	now               func() time.Time
 }
 type PolicyCommand struct {
 	Code, Name                string
@@ -187,6 +199,17 @@ func (s *RuntimeService) SetReviewPlanIntake(intake reviewPlanGateway, content a
 		return ErrRuntimeNotReady
 	}
 	s.reviewPlans, s.content = intake, content
+	return nil
+}
+
+// SetDynamicGenerationDependencies deliberately binds only stable read ports,
+// the existing transactional accepter, and the existing AI review intake. No
+// caller receives a provider client, queue, or identity-write capability.
+func (s *RuntimeService) SetDynamicGenerationDependencies(effects effectport.TransactionalAccepter, contexts automationport.GenerationContextReader, agents automationport.PublishedGenerationReader, policy automationport.GenerationModelPolicyReader) error {
+	if s == nil || effects == nil || contexts == nil || agents == nil || policy == nil {
+		return ErrRuntimeNotReady
+	}
+	s.generationEffects, s.generationContext, s.generationAgents, s.generationPolicy = effects, contexts, agents, policy
 	return nil
 }
 

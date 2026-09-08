@@ -416,6 +416,31 @@ func TestAIAssistantIntakeAndDispatchFailClosed(t *testing.T) {
 	}
 }
 
+func TestAIGenerationProviderConfigurationFailsClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	cfg, err := Load()
+	if err != nil || cfg.AIGeneration.Enabled || cfg.AIGeneration.Timeout != 30*time.Second {
+		t.Fatalf("disabled default=%+v err=%v", cfg.AIGeneration, err)
+	}
+	t.Setenv("AICRM_AI_GENERATION_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("enabled AI generation without protected provider inputs accepted")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_AI_GENERATION_API_KEY", "provider-key")
+	t.Setenv("AICRM_AI_GENERATION_BASE_URL", "https://models.example/v1")
+	t.Setenv("AICRM_AI_GENERATION_MODEL", "provider-neutral-model")
+	t.Setenv("AICRM_AI_GENERATION_TIMEOUT_SECONDS", "45")
+	cfg, err = Load()
+	if err != nil || !cfg.AIGeneration.Enabled || cfg.AIGeneration.Timeout != 45*time.Second || cfg.AIGeneration.Model != "provider-neutral-model" {
+		t.Fatalf("enabled config=%+v err=%v", cfg.AIGeneration, err)
+	}
+	t.Setenv("AICRM_AI_GENERATION_BASE_URL", "http://models.example/v1")
+	if _, err = Load(); err == nil {
+		t.Fatal("insecure AI generation endpoint accepted")
+	}
+}
+
 func TestDatabaseURLPrecedenceAndValidation(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://fallback")
 	t.Setenv("AICRM_DATABASE_URL", "postgres://canonical")

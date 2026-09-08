@@ -330,6 +330,19 @@ func (h *RuntimeHandler) runs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"items": items, "next_cursor": next})
 		return
 	}
+	if len(parts) == 2 && parts[1] == "generation-items" && r.Method == http.MethodGet {
+		if _, ok := h.principal(w, r, false); !ok {
+			return
+		}
+		cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+		items, next, e := h.service.GenerationItems(r.Context(), id, cursor, queryLimit(r, 50))
+		if e != nil {
+			runtimeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items, "next_cursor": next})
+		return
+	}
 	if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost {
 		p, ok := h.principal(w, r, true)
 		if !ok {
@@ -395,7 +408,7 @@ func (h *RuntimeHandler) runs(w http.ResponseWriter, r *http.Request) {
 	errorJSON(w, 404, "automation_run_not_found")
 }
 func runDTO(r automationdomain.RuntimeRun) map[string]any {
-	return map[string]any{"id": r.ID, "policy_id": r.PolicyID, "policy_version": r.PolicyVersion, "state": r.State, "ai_plan_id": r.AIPlanID, "ai_plan_state": r.AIPlanState, "target_count": r.TargetCount, "skipped_count": r.SkippedCount, "outcome_unknown_count": r.OutcomeUnknownCount, "package_id": r.PackageID, "snapshot_id": r.SnapshotID, "agent_id": r.AgentID, "agent_published_version": r.AgentPublishedVersion, "created_at": r.CreatedAt}
+	return map[string]any{"id": r.ID, "policy_id": r.PolicyID, "policy_version": r.PolicyVersion, "state": r.State, "ai_plan_id": r.AIPlanID, "ai_plan_state": r.AIPlanState, "target_count": r.TargetCount, "skipped_count": r.SkippedCount, "outcome_unknown_count": r.OutcomeUnknownCount, "generation": r.Generation, "package_id": r.PackageID, "snapshot_id": r.SnapshotID, "agent_id": r.AgentID, "agent_published_version": r.AgentPublishedVersion, "created_at": r.CreatedAt}
 }
 func strictInt(v string) (int64, bool) {
 	n, e := strconv.ParseInt(v, 10, 64)
