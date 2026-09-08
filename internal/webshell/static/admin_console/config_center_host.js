@@ -60,7 +60,7 @@
     wecom_base: "wecom.enabled",
     wechat_pay: "wechat_pay.provider_enabled",
     wechat_shop: "wechat_shop.provider_enabled",
-    wechat_oauth: "survey.oauth.enabled",
+    wechat_oauth: "survey.oauth_enabled",
   });
   const effectiveValues = (model) => new Map((model.effective?.settings || []).map((item) => [item.key, decode(item.value)]));
   const categoryToggle = (category, model) => {
