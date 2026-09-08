@@ -595,7 +595,13 @@ try {
   if (ownerMounted) await recordGeometry("owner-migration", () => assertOwnerHandoffLayout("owner-migration"), true);
   await navigateConfigCenter();
   await navigateRuntimeConfig();
-  await navigateStandard("/admin/oneid", "Boolean(document.querySelector('[data-admin-oneid-root]'))", "oneid", true, true);
+  const removedOneID = await evaluate(cdp, `(async () => ({
+    menuPresent: Boolean(document.querySelector('a[href="/admin/oneid"], a[href="/admin/oneid.html"]')),
+    statuses: await Promise.all(['/admin/oneid','/admin/oneid.html'].map(async path => (await fetch(path, {credentials:'same-origin'})).status))
+  }))()`);
+  if (removedOneID.menuPresent || removedOneID.statuses.some(status => status !== 404)) {
+    interactionFailures.push("oneid:retired frontend entry remains accessible");
+  }
   currentStep = "api-docs";
   await clickNavigation("/admin/api-docs", "api-docs");
   await waitFor(cdp, "location.pathname === '/admin/apidocs.html' && document.readyState !== 'loading'", "api-docs did not canonicalize to its V3 Host document");
