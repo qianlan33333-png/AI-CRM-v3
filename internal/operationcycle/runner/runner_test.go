@@ -62,6 +62,11 @@ func (s *remoteStub) Event(_ context.Context, event ActionEvent) error {
 }
 func (s *remoteStub) renewCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.renew) }
 func (s *remoteStub) eventCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.events) }
+func (s *remoteStub) heartbeatSnapshot() []Heartbeat {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Heartbeat(nil), s.heartbeat...)
+}
 func (s *remoteStub) eventSnapshot() []ActionEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -531,6 +536,17 @@ func TestServeRenewsAnActiveActionAndRunsTheLocalControlConsumer(t *testing.T) {
 	if remote.renewCount() < 2 {
 		cancel()
 		t.Fatalf("serve did not renew active action")
+	}
+	heartbeats := remote.heartbeatSnapshot()
+	if len(heartbeats) < 2 {
+		cancel()
+		t.Fatalf("long-running action stopped heartbeating while its lease was renewed: %#v", heartbeats)
+	}
+	for _, heartbeat := range heartbeats {
+		if heartbeat.CompatibilityStatus != "ready" {
+			cancel()
+			t.Fatalf("long-running action published unexpected compatibility: %#v", heartbeats)
+		}
 	}
 	cancel()
 	select {

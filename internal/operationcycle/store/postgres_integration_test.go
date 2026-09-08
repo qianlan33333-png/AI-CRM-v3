@@ -117,6 +117,59 @@ func TestPostgreSQLOperationCycleReportToTerminalActionJourney(t *testing.T) {
 	}
 }
 
+// Runner selection uses the immutable execution's local capabilities. The
+// strategy key identifies business configuration and is deliberately unrelated
+// to a reviewed local binding such as an Excel workspace.
+func TestPostgreSQLOperationCycleStartSelectsRunnerByEveryRequiredBinding(t *testing.T) {
+	native, cleanup := operationCycleIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := operationapp.NewService(uow, NewRepository(), NewEventJournal(), NewEventJournal())
+	strategyKey := "binding.selection.review"
+	runKey := strategyKey + ".001"
+	snapshot := map[string]any{
+		"schema_version": "operation_cycle_snapshot.v1", "strategy_key": strategyKey, "run_key": runKey,
+		"revision": 1, "strategy_version": 1, "status": "active", "title": "binding selection",
+		"name": "binding selection", "cron": "weekly", "dot": "#2EA121", "action": "review", "steps": []any{},
+	}
+	if _, err = service.Report(ctx, operationapp.ReportCommand{Snapshot: snapshot, IdempotencyKey: "binding-selection-report", ReporterID: "cycle-runner", ClientID: "v3-runner"}); err != nil {
+		t.Fatal(err)
+	}
+	definition := executableDefinition()
+	definition.Execution.RequiredLocalBindings = []string{"excel_workspace", "review_templates"}
+	if _, err = service.UpdateStrategy(ctx, operationapp.UpdateStrategyCommand{StrategyKey: strategyKey, ExpectedVersion: 1, Title: "binding selection", Definition: definition, IdempotencyKey: "binding-selection-config", ActorID: "7"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, heartbeat := range []operationapp.RunnerHeartbeatCommand{
+		{RunnerID: "runner-missing-binding", PrincipalID: "operation-cycle-service", ConnectorVersion: "v1", CodexVersion: "v1", AppServerProtocol: "v1", CompatibilityStatus: "ready", BindingKeys: []string{strategyKey, "excel_workspace"}},
+		{RunnerID: "runner-with-bindings", PrincipalID: "operation-cycle-service", ConnectorVersion: "v1", CodexVersion: "v1", AppServerProtocol: "v1", CompatibilityStatus: "ready", BindingKeys: []string{"review_templates", "excel_workspace"}},
+	} {
+		if _, err = service.Heartbeat(ctx, heartbeat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queued, err := service.Start(ctx, operationapp.StartCommand{StrategyKey: strategyKey, RunKey: runKey, ActionKey: "start_review", IdempotencyKey: "binding-selection-start", ActorID: "7"})
+	if err != nil {
+		t.Fatalf("start with exactly one capable runner: %v", err)
+	}
+	if missing, claimErr := service.Claim(ctx, "runner-missing-binding", "operation-cycle-service"); claimErr != nil || missing["claimed"] != false {
+		t.Fatalf("runner missing a frozen binding claimed action: %#v err=%v", missing, claimErr)
+	}
+	claimed, err := service.Claim(ctx, "runner-with-bindings", "operation-cycle-service")
+	if err != nil || claimed["claimed"] != true || claimed["request_id"] != queued["request_id"] {
+		t.Fatalf("runner with all frozen bindings did not receive action: %#v err=%v", claimed, err)
+	}
+}
+
 // The admin Journey is entirely local: typed strategy definition changes,
 // immutable versions, receipts, audit and outbox commit in one PostgreSQL UoW.
 // A newly constructed service proves that a browser refresh reads persisted

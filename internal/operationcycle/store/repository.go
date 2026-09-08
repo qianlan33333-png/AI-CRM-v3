@@ -339,7 +339,10 @@ func (repository *Repository) Start(ctx context.Context, command operationapp.St
 	}
 	matchedRunners := make([]operationcycledb.OperationCycleRunner, 0, len(runners))
 	for _, runner := range runners {
-		if runnerMatchesStrategy(runner.BindingKeys, command.StrategyKey) {
+		// A runner is eligible only when its heartbeat advertises every
+		// frozen execution binding. The strategy key is business identity,
+		// not a local workspace capability, so it must not select a runner.
+		if runnerHasRequiredBindings(runner.BindingKeys, definition.Execution.RequiredLocalBindings) {
 			matchedRunners = append(matchedRunners, runner)
 		}
 	}
@@ -886,17 +889,21 @@ func validActionTransition(current, next string) bool {
 	}
 }
 
-func runnerMatchesStrategy(bindingKeys []byte, strategyKey string) bool {
+func runnerHasRequiredBindings(bindingKeys []byte, required []string) bool {
 	var bindings []string
 	if json.Unmarshal(bindingKeys, &bindings) != nil {
 		return false
 	}
+	available := make(map[string]struct{}, len(bindings))
 	for _, binding := range bindings {
-		if binding == strategyKey {
-			return true
+		available[binding] = struct{}{}
+	}
+	for _, binding := range required {
+		if _, ok := available[binding]; !ok {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func receiptResult(strategyKey, runKey string, revision int32, projectionMade bool) map[string]any {

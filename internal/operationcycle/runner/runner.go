@@ -106,14 +106,11 @@ func (r *Runner) RunOnce(ctx context.Context) (Action, error) {
 	if r == nil {
 		return Action{}, errors.New("operation runner is nil")
 	}
-	status := "ready"
-	if err := r.executor.Available(ctx); err != nil {
-		status = "unavailable"
-	}
-	if err := r.remote.Heartbeat(ctx, Heartbeat{RunnerID: r.config.RunnerID, ConnectorVersion: connectorVersion, CodexVersion: r.config.CodexVersion, AppServerProtocol: r.config.AppServerProtocol, CompatibilityStatus: status, BindingKeys: sortedKeys(r.config.Bindings)}); err != nil {
+	ready, err := r.heartbeat(ctx)
+	if err != nil {
 		return Action{}, err
 	}
-	if status != "ready" {
+	if !ready {
 		return Action{}, nil
 	}
 	action, err := r.remote.Claim(ctx, r.config.RunnerID)
@@ -208,8 +205,17 @@ func (r *Runner) Serve(ctx context.Context, controlSocket string, renewalInterva
 			}
 		} else if _, stillActive := r.action(active.RequestID); !stillActive {
 			active = Action{}
-		} else if err := r.Renew(runCtx, active); err != nil {
-			return err
+		} else {
+			// A long-running action must remain visible to Start's 45-second
+			// runner-offline guard. Recheck the managed app-server on every
+			// renewal cycle, then publish the observed compatibility before
+			// renewing this already-fenced action.
+			if _, err := r.heartbeat(runCtx); err != nil {
+				return err
+			}
+			if err := r.Renew(runCtx, active); err != nil {
+				return err
+			}
 		}
 		timer := time.NewTimer(renewalInterval)
 		select {
@@ -227,6 +233,21 @@ func (r *Runner) Serve(ctx context.Context, controlSocket string, renewalInterva
 		case <-timer.C:
 		}
 	}
+}
+
+// heartbeat performs the same read-only compatibility check before both a
+// claim and each active-action renewal. An unavailable executor is recorded as
+// such, which prevents a later Start while keeping the current fenced action
+// available to its local terminal-result control socket.
+func (r *Runner) heartbeat(ctx context.Context) (bool, error) {
+	status := "ready"
+	if err := r.executor.Available(ctx); err != nil {
+		status = "unavailable"
+	}
+	if err := r.remote.Heartbeat(ctx, Heartbeat{RunnerID: r.config.RunnerID, ConnectorVersion: connectorVersion, CodexVersion: r.config.CodexVersion, AppServerProtocol: r.config.AppServerProtocol, CompatibilityStatus: status, BindingKeys: sortedKeys(r.config.Bindings)}); err != nil {
+		return false, err
+	}
+	return status == "ready", nil
 }
 
 func (r *Runner) remember(action Action) {
