@@ -119,6 +119,14 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	if !strings.Contains(string(output), "sidebar_thumbnail_chromium: PASS") {
 		t.Fatalf("sidebar thumbnail Chromium journey did not report success: %q", output)
 	}
+	var profileSource, industry string
+	var profileVersion int64
+	if err = application.pool.Native().QueryRow(ctx, `SELECT profile_source,industry,version FROM customer_sidebar_profiles WHERE customer_id=1`).Scan(&profileSource, &industry, &profileVersion); err != nil {
+		t.Fatal(err)
+	}
+	if profileSource != "Chromium活动报名" || industry != "教育" || profileVersion != 2 {
+		t.Fatalf("Chromium profile durable facts source=%q industry=%q version=%d", profileSource, industry, profileVersion)
+	}
 	writes, businessReads := provider.Counts()
 	if writes != 0 || businessReads != 0 || provider.JSSDKReads() != 4 {
 		t.Fatalf("sidebar handshake writes=%d business_reads=%d jssdk_ticket_reads=%d", writes, businessReads, provider.JSSDKReads())

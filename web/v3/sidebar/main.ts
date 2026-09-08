@@ -1,4 +1,3 @@
-// @ts-nocheck
 // The dd8 overlay owns the standard sidebar presentation. This Host retains the
 // V3 production controller's identity, JSSDK, generation, OAuth, and durable
 // send-receipt controls; the overlay can only call this narrow boundary.
@@ -144,6 +143,7 @@ export class SidebarBootstrapCoordinator<T> {
 export class SidebarBridge {
   private token = "";
   private externalUserID = "";
+  private customerID = "";
   private profileVersion = 0;
   private profile: Json = {};
   private periodicVersions = new Map<string, number>();
@@ -155,6 +155,7 @@ export class SidebarBridge {
   private eventsBound = false;
   private readonly bootstrapCoordinator = new SidebarBootstrapCoordinator<Json>();
   private readonly sendFlights = new Map<string, Promise<Json>>();
+  private readonly sendIdempotencyKeys = new Map<string, string>();
   private readonly unknownSendKeys = new Set<string>();
 
   private jssdkReady = false;
@@ -237,6 +238,7 @@ export class SidebarBridge {
     this.contextGeneration += 1;
     this.token = "";
     this.externalUserID = "";
+    this.customerID = "";
     this.profile = {};
     this.profileVersion = 0;
     this.contextNeedsValidation = false;
@@ -287,7 +289,10 @@ export class SidebarBridge {
     if (bootstrap.state !== "ready" || !String(bootstrap.context_token || "").trim()) {
       throw failure(bootstrap.state === "customer_not_bound" ? "当前企微联系人尚未绑定本地客户。" : "侧边栏上下文未就绪。");
     }
+    const customerID = Number(bootstrap.customer_id || bootstrap.workbench?.profile?.customer_id || 0);
+    if (!Number.isSafeInteger(customerID) || customerID < 1) throw failure("侧边栏未返回可信客户主键。");
     this.externalUserID = externalUserID;
+    this.customerID = String(customerID);
     this.token = String(bootstrap.context_token);
     this.rememberWorkbench(bootstrap.workbench || {});
     this.contextNeedsValidation = false;
@@ -492,7 +497,9 @@ export class SidebarBridge {
   }
 
   async send(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }): Promise<Json> {
-    const key = `${input.resource_kind}:${String(input.resource_id)}`;
+    await this.start();
+    if (!this.customerID) throw failure("侧边栏客户上下文未就绪。");
+    const key = `customer:${this.customerID}:${input.resource_kind}:${String(input.resource_id)}`;
     if (this.unknownSendKeys.has(key)) throw failure("上次发送结果未确认，禁止创建新的发送意图；请等待对账或人工确认。");
     const existing = this.sendFlights.get(key);
     if (existing) return existing;
@@ -503,10 +510,16 @@ export class SidebarBridge {
   }
 
   private async sendOnce(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }, key: string): Promise<Json> {
-    await this.start();
+    let intentKey = this.sendIdempotencyKeys.get(key);
+    if (!intentKey) {
+      intentKey = idempotency("sidebar-send");
+      this.sendIdempotencyKeys.set(key, intentKey);
+    }
+    // If the accept response is lost, this key remains attached to the same
+    // confirmed Customer/resource tuple. A retry replays the original intent.
     const accepted = await this.scoped("/api/sidebar/v2/send-intents", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency(`sidebar-send-${key}`) },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": intentKey },
       body: JSON.stringify(input),
     });
     const payload = accepted.payload || {};
@@ -519,6 +532,7 @@ export class SidebarBridge {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ grant, outcome: "client_executed", evidence: "sidebar_jssdk_client_executed" }),
       });
+      this.sendIdempotencyKeys.delete(key);
       return response;
     } catch (error) {
       this.unknownSendKeys.add(key);

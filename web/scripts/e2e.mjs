@@ -1160,9 +1160,13 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
               callback({ errMsg: 'getCurExternalContact:ok', external_userid: 'ext-current' });
               return;
             }
-            if (scenario === 'contact_switch' && method === 'getCurExternalContact') {
+            if ((scenario === 'contact_switch' || scenario === 'contact_switch_unknown') && method === 'getCurExternalContact') {
               externalContactCalls += 1;
               callback({ errMsg: 'getCurExternalContact:ok', external_userid: externalContactCalls === 1 ? 'ext-7' : 'ext-8' });
+              return;
+            }
+            if (method === 'sendChatMessage' && scenario === 'contact_switch_unknown' && externalContactCalls === 1) {
+              callback({});
               return;
             }
             if (method === 'sendChatMessage' && scenario === 'send_delayed') {
@@ -1267,7 +1271,9 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         if (url.includes('/bootstrap')) {
           window.__sidebarTest.bootstrapBodies.push(JSON.parse(init.body || '{}'));
           if (scenario === 'viewer_session_required') return json({ state: 'viewer_session_required', safety }, 401);
-          return json({ state: 'ready', context_token: 'sidebar-context-token-' + 'x'.repeat(52), customer_id: 7, workbench: { profile, questionnaire_count: scenario === 'empty' ? 0 : 2, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
+          const bootstrapInput = window.__sidebarTest.bootstrapBodies.at(-1);
+          const scopedCustomerID = bootstrapInput?.external_userid === 'ext-8' ? 8 : 7;
+          return json({ state: 'ready', context_token: 'sidebar-context-token-' + 'x'.repeat(52), customer_id: scopedCustomerID, workbench: { profile: { ...profile, customer_id: scopedCustomerID }, questionnaire_count: scenario === 'empty' ? 0 : 2, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
         }
         if (url.includes('/phone-binding')) {
           window.__sidebarTest.phoneBody = JSON.parse(init.body || '{}');
@@ -1370,6 +1376,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
           const command = JSON.parse(init.body || '{}');
           window.__sidebarTest.sendIntentKeys.push(new Headers(init.headers).get('Idempotency-Key'));
+          if (scenario === 'send_accept_response_lost' && window.__sidebarTest.sendIntentKeys.length === 1) throw new TypeError('accepted response lost');
           const payload = command.resource_kind === 'product'
             ? { msgtype: 'news', news: { link: 'http://localhost/p/course-ordinary', title: '普通课程', desc: '', imgUrl: 'http://localhost/static/sidebar_workbench/product-card-cover.png' } }
             : { msgtype: 'image', image: { mediaid: 'media-real-31' } };
@@ -3317,6 +3324,31 @@ for (const [scenario, expectedRequest] of [
     regularTruthful && d.body.textContent.includes('生效时间') && d.body.textContent.includes('到期时间') &&
     d.body.textContent.includes('2026-08-01') && d.body.textContent.includes('2026-09-01') &&
     !d.querySelector('[data-order-detail-url]'));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=send_accept_response_lost' });
+  await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' }).catch(() => undefined);
+  await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' });
+  const state = dom.window.__sidebarTest;
+  ok('发送意图接受响应丢失后按同一客户资源重放同一幂等键',
+    state.sendIntentKeys.length === 2 && state.sendIntentKeys[0] === state.sendIntentKeys[1] &&
+    state.wxMessages.filter((entry) => entry.method === 'sendChatMessage').length === 1 &&
+    state.sendOutcomeBodies.filter((body) => body.outcome === 'client_executed').length === 1);
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=contact_switch_unknown' });
+  await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' }).catch(() => undefined);
+  dom.window.dispatchEvent(new dom.window.Event('focus'));
+  await waitFor(() => dom.window.__sidebarTest.bootstrapBodies.length === 2);
+  await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' });
+  const state = dom.window.__sidebarTest;
+  ok('切换可信客户后同一资源不继承前一客户的未知发送锁',
+    state.bootstrapBodies.map((body) => body.external_userid).join('|') === 'ext-7|ext-8' &&
+    state.sendIntentKeys.length === 2 && state.sendIntentKeys[0] !== state.sendIntentKeys[1] &&
+    state.sendOutcomeBodies.filter((body) => body.outcome === 'outcome_unknown').length === 1 &&
+    state.sendOutcomeBodies.filter((body) => body.outcome === 'client_executed').length === 1);
   dom.window.close();
 }
 for (const scenario of ['send_delayed', 'invoke_errmsg_fail', 'invoke_empty']) {

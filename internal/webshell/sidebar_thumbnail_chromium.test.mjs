@@ -188,7 +188,7 @@ try {
   const bridgeCalls = () => evaluate(cdp, "JSON.stringify(globalThis.__sidebarNativeBridgeCalls || [])").then((value) => JSON.parse(value || "[]"));
 
   for (const [scenario, message, resourceMode] of [
-    ["sdk_missing", "未识别到客户", "missing"],
+    ["sdk_missing", "企微 SDK 未载入", "missing"],
     ["regular_error", "preVerifyJSAPI:fail", "serve"],
     ["agent_error", "agentConfig:fail", "serve"],
     ["contact_error", "getCurExternalContact:fail", "serve"],
