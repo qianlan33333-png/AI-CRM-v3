@@ -19,7 +19,10 @@ import (
 	"testing"
 	"time"
 
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
 
@@ -98,7 +101,7 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	if err = seedSidebarStandardParityChromiumFacts(ctx, application, productID, serviceProductID); err != nil {
 		t.Fatal(err)
 	}
-	assertSidebarSendHTTPReplayOmitsGrant(t, ctx, application, productID)
+	assertSidebarSendHTTPReplayOmitsGrant(t, ctx, application, productID, serviceProductID)
 	// Assert the same outer route Chromium will open. This makes a missing
 	// repository-relative release artifact a deterministic test failure instead
 	// of a generic DOM timeout after the browser starts.
@@ -231,7 +234,7 @@ VALUES('sidebar-chromium','limit-claim',1,$1,'claimed',$2,$2,$3,$4,$2,$2)`, coup
 	return nil
 }
 
-func assertSidebarSendHTTPReplayOmitsGrant(t *testing.T, ctx context.Context, application *composedApplication, productID int64) {
+func assertSidebarSendHTTPReplayOmitsGrant(t *testing.T, ctx context.Context, application *composedApplication, productID, serviceProductID int64) {
 	t.Helper()
 	contextToken, err := (wecom.ContextTokenService{CorpID: "fixture-corp", SigningKey: []byte("sidebar-thumbnail-context-key-32")}).Issue(ctx, wecom.SidebarPrincipal{CorpID: "fixture-corp", EmployeeID: "fixture-staff"}, 1)
 	if err != nil {
@@ -239,16 +242,17 @@ func assertSidebarSendHTTPReplayOmitsGrant(t *testing.T, ctx context.Context, ap
 	}
 	type acceptance struct {
 		IntentID int64           `json:"intent_id"`
+		EffectID string          `json:"effect_id"`
 		State    string          `json:"state"`
 		Grant    string          `json:"grant"`
 		Payload  json.RawMessage `json:"payload"`
 		Replayed bool            `json:"replayed"`
 	}
-	send := func() acceptance {
-		request := httptest.NewRequest(http.MethodPost, "/api/sidebar/v2/send-intents", strings.NewReader(fmt.Sprintf(`{"resource_kind":"product","resource_id":"%d","product_type":"standard"}`, productID)))
+	send := func(key string, resourceID int64, productType string) acceptance {
+		request := httptest.NewRequest(http.MethodPost, "/api/sidebar/v2/send-intents", strings.NewReader(fmt.Sprintf(`{"resource_kind":"product","resource_id":"%d","product_type":%q}`, resourceID, productType)))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("X-Sidebar-Context-Token", contextToken)
-		request.Header.Set("Idempotency-Key", "sidebar-chromium-replay-contract")
+		request.Header.Set("Idempotency-Key", key)
 		response := httptest.NewRecorder()
 		application.handler.ServeHTTP(response, request)
 		if response.Code != http.StatusAccepted {
@@ -260,7 +264,7 @@ func assertSidebarSendHTTPReplayOmitsGrant(t *testing.T, ctx context.Context, ap
 		}
 		return result
 	}
-	first, replay := send(), send()
+	first, replay := send("sidebar-chromium-replay-contract", productID, "standard"), send("sidebar-chromium-replay-contract", productID, "standard")
 	if first.IntentID < 1 || first.State != "queued" || first.Grant == "" || len(first.Payload) == 0 || first.Replayed ||
 		replay.IntentID != first.IntentID || replay.State != "queued" || replay.Grant != "" || len(replay.Payload) == 0 || !replay.Replayed {
 		t.Fatalf("sidebar real HTTP replay first=%+v replay=%+v", first, replay)
@@ -286,5 +290,43 @@ func assertSidebarSendHTTPReplayOmitsGrant(t *testing.T, ctx context.Context, ap
 	}
 	if state != "final_failed" {
 		t.Fatalf("sidebar replay original-scope completion state=%q", state)
+	}
+
+	expiring := send("sidebar-chromium-expiry-contract", serviceProductID, "service_period")
+	if expiring.IntentID < 1 || expiring.EffectID == "" || expiring.State != "queued" || expiring.Grant == "" || expiring.Replayed {
+		t.Fatalf("sidebar expiry acceptance=%+v", expiring)
+	}
+	expiry := outbound.SidebarJSSDKExpiry{}
+	envelope := effectport.Envelope{Kind: effectport.KindSidebarJSSDKSend, PayloadDigest: effectport.Hash("sidebar-expiry-contract", expiring.EffectID)}
+	result, err := expiry.Execute(ctx, envelope, effectport.Attempt{EffectID: expiring.EffectID, Number: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(application.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err = uow.Within(ctx, func(txctx context.Context) error {
+			return expiry.CompleteEffect(txctx, expiring.EffectID, envelope, effectport.Attempt{EffectID: expiring.EffectID, Number: 1}, result)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var expireAudits, expireOutbox int
+	var expirePayload json.RawMessage
+	if err = application.pool.Native().QueryRow(ctx, `SELECT intent.state,(SELECT count(*) FROM outbound_sidebar_send_audit_events audit WHERE audit.intent_id=intent.id AND audit.operation='expire'),(SELECT count(*) FROM outbound_sidebar_send_outbox event WHERE event.intent_id=intent.id AND event.event_type='outbound.sidebar_send.expired.v1'),(SELECT payload FROM outbound_sidebar_send_outbox event WHERE event.intent_id=intent.id AND event.event_type='outbound.sidebar_send.expired.v1') FROM outbound_sidebar_send_intents intent WHERE intent.id=$1`, expiring.IntentID).Scan(&state, &expireAudits, &expireOutbox, &expirePayload); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		IntentID int64  `json:"intent_id"`
+		EffectID string `json:"effect_id"`
+		State    string `json:"state"`
+	}
+	if err = json.Unmarshal(expirePayload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if state != "final_failed" || expireAudits != 1 || expireOutbox != 1 || payload.IntentID != expiring.IntentID || payload.EffectID != expiring.EffectID || payload.State != "final_failed" {
+		t.Fatalf("sidebar expiry durable facts state=%q audits=%d outbox=%d payload=%+v", state, expireAudits, expireOutbox, payload)
 	}
 }
