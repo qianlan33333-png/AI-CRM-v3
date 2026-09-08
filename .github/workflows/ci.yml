@@ -2,6 +2,15 @@ name: ci
 
 on:
   workflow_dispatch:
+    inputs:
+      force_full:
+        description: Run all checks even when an identical merged tree has PR evidence
+        type: boolean
+        default: false
+      hxc_full_rollout:
+        description: Repeat the full HXC inspect/apply acceptance instead of effective-state readback
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
   push:
@@ -11,18 +20,46 @@ permissions:
   contents: read
 
 concurrency:
-  # GitHub keeps only one pending run per group. Give each main SHA its own
-  # group so a later main push cannot replace a pending or running release;
-  # non-main refs continue to share a group and supersede obsolete PR runs.
+  # Preserve numbered main releases; only obsolete PR runs are cancelled.
   group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
+  PR08_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
+  PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
+  AICRM_AUTOMATIONOPS_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
+  AICRM_SIDEBAR_DONOR_DIR: ${{ github.workspace }}/.ci-donor-sidebar
+
 jobs:
-  preflight:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      PYTHONDONTWRITEBYTECODE: "1"
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      verified_run: ${{ steps.plan.outputs.verified_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: plan
+        name: Verify whether main is exactly the tested PR tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_FULL: ${{ inputs.force_full }}
+        run: python3 scripts/ci/verification.py plan
+
+  preflight:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -31,57 +68,34 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0'}
-      - name: Run shared local and CI fast preflight
-        run: python3 scripts/dev_preflight.py fast --report-dir "$RUNNER_TEMP/preflight/fast"
-      - name: Verify duplicate-source governance gates
+      - name: Fast source and architecture gates
+        run: python3 scripts/dev_preflight.py fast --report-dir "$RUNNER_TEMP/preflight"
+      - name: Verify CI evidence policy and source governance
         env:
           AICRM_DEDUP_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          # Checkout tests GitHub's merge commit: compare that same tree to its
-          # base, including when main has advanced beyond the branch fork.
           AICRM_DEDUP_HEAD_SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
+          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
           python3 scripts/audit/test_scan_exact_duplicates.py
           python3 scripts/audit/test_check_new_exact_duplicates.py
           python3 scripts/audit/test_check_source_authority_changes.py
           scripts/audit/check-dedup-base-diff.sh .
-      - name: Compile all Go packages and tests before expensive integration
-        run: python3 scripts/dev_preflight.py compile --report-dir "$RUNNER_TEMP/preflight/compile"
-      - name: Upload preflight execution evidence
+      - name: Upload preflight evidence
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
         with:
           name: preflight-${{ github.sha }}
           path: ${{ runner.temp }}/preflight
-          if-no-files-found: warn
           retention-days: 14
 
-  archive-sdk:
+  backend:
+    needs: [plan, preflight]
+    if: needs.plan.outputs.full == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with: {node-version: '24.18.0'}
-      - name: Verify official WeCom archive SDK ABI in isolation
-        run: scripts/check-wecom-message-archive-sdk.sh
-
-  integration:
-    # Failed prerequisites prevent expensive integration setup.
-    needs: [preflight, archive-sdk]
-    runs-on: ubuntu-latest
-    # Full PostgreSQL/race/browser verification can approach thirty minutes; keep
-    # every gate and give the final race phase a bounded completion margin.
-    timeout-minutes: 45
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -89,140 +103,146 @@ jobs:
           POSTGRES_DB: aicrm_ci
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
+        ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U postgres -d aicrm_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_ci?sslmode=disable
-      PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
-      PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
-      AICRM_AUTOMATIONOPS_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Checkout frozen v2 donor
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/ci-setup
         with:
-          repository: qianlan33333-png/AI-CRM-v2
-          ref: 6bfbe5816bb89913c70adaca87d6a486260e016e
-          path: .ci-donor-v2
-          fetch-depth: 1
+          lane: race
+          donors: 'true'
+      - name: Prepare browser assets required by backend fixtures
+        run: bash scripts/run-donor-view-consumers.sh stage
+      - name: Vet all Go packages
+        run: scripts/run-go-with-donor-views.sh go vet ./...
+      - name: Test every Go package once with PostgreSQL and race detection
+        # Includes all cmd/* importers (archive, open-platform, owner-handoff,
+        # and future commands). Each job owns its database; packages stay serial.
+        run: scripts/run-go-with-donor-views.sh go test -p 1 -race -count=1 ./...
+
+  frontend:
+    needs: [plan, preflight]
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: Checkout frozen sidebar donor
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/ci-setup
         with:
-          repository: qianlan33333-png/AI-CRM
-          ref: dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f
-          path: .ci-donor-sidebar
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with: {node-version: '24.18.0', cache: npm}
-      - name: Install required repository tools
+          lane: frontend
+          donors: 'true'
+      - name: Verify frontend, frozen contracts and final package layout
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes ripgrep fonts-noto-cjk
-          fc-match "Noto Sans CJK SC" | rg -qi "Noto"
-          command -v rg >/dev/null
-          rg --version
-          command -v google-chrome >/dev/null
-          google-chrome --version
-      - name: Pin frozen donor npm
-        run: npm install --global npm@11.12.1
-      - name: Build and stage frozen External Effects workspace
-        env:
-          PR08_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
-        run: |
-          npm ci
-          npm run version:check
           node scripts/validate-openapi.mjs
           node scripts/verify-donor-sources.mjs
           node --test scripts/donor-source-views.test.mjs
-          AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
-            bash scripts/run-donor-view-consumers.sh check
-      - name: Run early shell Chromium journeys
-        # Sidebar and Admin Layout use the same final three-stage release
-        # artifact. Run both before repository/race checks: Linux Chrome is
-        # mandatory, and layout screenshots remain reviewable on any result.
+          bash scripts/run-donor-view-consumers.sh check
+          node scripts/media-shell-interactions-e2e.mjs
+          node scripts/tags-shell-interactions-e2e.mjs
+          node scripts/customer-directory-shell-e2e.mjs
+
+  browser:
+    needs: [plan, preflight]
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
         env:
-          AICRM_REQUIRE_CHROMIUM_JOURNEY: "1"
-          AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/admin-shell-layout
-        run: |
-          set -euo pipefail
-          command -v google-chrome
-          python3 scripts/dev_preflight.py browser --group shell --report-dir "$RUNNER_TEMP/browser-evidence/shell"
-      - name: Upload admin shell layout Chromium evidence
-        if: always()
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+          POSTGRES_DB: aicrm_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d aicrm_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_ci?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: admin-shell-layout-chromium-${{ github.sha }}
-          path: artifacts/admin-shell-layout
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Verify Media shell donor interactions
-        run: node scripts/media-shell-interactions-e2e.mjs
-      - name: Verify Tags shell donor interactions
-        run: node scripts/tags-shell-interactions-e2e.mjs
-      - name: Verify customer directory shell interactions
-        run: node scripts/customer-directory-shell-e2e.mjs
-      - name: Check repository
-        # PostgreSQL integration packages share this job's service database.
-        # Run packages serially so concurrent schema DDL cannot exhaust the
-        # service's lock table or race its catalog tuples. Make prepares and
-        # verifies declared source views without mutating tracked paths.
-        run: GOFLAGS=-p=1 make check
-      - name: Run required Chromium journeys
-        # These actual Chrome/CDP journeys cover Access login, their V3 Hosts,
-        # PostgreSQL/River and controlled Provider fixtures. They stay separate
-        # from make check, while missing Chrome is a hard Linux CI failure.
-        env:
-          AICRM_REQUIRE_CHROMIUM_JOURNEY: "1"
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        with:
+          lane: browser
+          donors: 'true'
+      - name: Install required Chromium fonts
         run: |
-          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes fonts-noto-cjk
+          fc-match "Noto Sans CJK SC" | rg -qi "Noto"
           command -v google-chrome
-          python3 scripts/dev_preflight.py browser --group business --report-dir "$RUNNER_TEMP/browser-evidence/business"
-      - name: Upload required browser execution evidence
+      - name: Prepare frontend inputs
+        run: node scripts/generate-ai-assistant-client.mjs
+      - name: Run every required Chromium journey against the staged release
+        env:
+          AICRM_REQUIRE_CHROMIUM_JOURNEY: '1'
+          AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/admin-shell-layout
+        run: python3 scripts/dev_preflight.py browser --group all --report-dir "$RUNNER_TEMP/browser-evidence"
+      - name: Upload browser results and screenshots
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
         with:
           name: required-browser-tests-${{ github.sha }}
-          path: ${{ runner.temp }}/browser-evidence
-          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/browser-evidence
+            artifacts/admin-shell-layout
           retention-days: 14
-      - name: Race-check security and identity boundaries
-        run: scripts/run-go-with-donor-views.sh go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-v2-commerce-external-push-history ./cmd/migrate-open-platform ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-owner-handoff-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+
+  archive-sdk:
+    needs: [plan, preflight]
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        with:
+          lane: sdk
+          donors: 'false'
+      - name: Verify official WeCom archive SDK ABI in isolation
+        run: scripts/check-wecom-message-archive-sdk.sh
 
   check:
-    # A skipped job can satisfy branch protection. Keep the original required
-    # name as a fail-closed aggregate, not a potentially skipped dependency.
     if: always()
-    needs: [preflight, archive-sdk, integration]
+    needs: [plan, preflight, backend, frontend, browser, archive-sdk]
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
-      - name: Require every verification phase to succeed
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require full success or a verified identical merged tree
         env:
-          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
-          SDK_RESULT: ${{ needs.archive-sdk.result }}
-          INTEGRATION_RESULT: ${{ needs.integration.result }}
-        run: |
-          test "$PREFLIGHT_RESULT" = success
-          test "$SDK_RESULT" = success
-          test "$INTEGRATION_RESULT" = success
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/verification.py gate
+      - name: Record the exact tested tree for main
+        if: needs.plan.outputs.full == 'true'
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: ci-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification.json
+          if-no-files-found: error
+          retention-days: 30
 
   deploy:
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && needs.check.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     needs: check
     runs-on: ubuntu-latest
     # Cross-region upload to the mainland deployment host can exceed 30 minutes.
@@ -231,67 +251,20 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-    env:
-      PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
-      PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
-      AICRM_AUTOMATIONOPS_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Checkout frozen v2 donor
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/ci-setup
         with:
-          repository: qianlan33333-png/AI-CRM-v2
-          ref: 6bfbe5816bb89913c70adaca87d6a486260e016e
-          path: .ci-donor-v2
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Checkout frozen sidebar donor
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: qianlan33333-png/AI-CRM
-          ref: dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f
-          path: .ci-donor-sidebar
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with: {node-version: '24.18.0', cache: npm}
-      - name: Install required repository tools
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes ripgrep
-          command -v rg >/dev/null
-          rg --version
-      - name: Verify duplicate-source base diff
+          lane: release
+      - name: Build the merged release without repeating PR regression tests
         env:
-          AICRM_DEDUP_BASE_SHA: ${{ github.event.before }}
-          AICRM_DEDUP_HEAD_SHA: ${{ github.sha }}
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: scripts/audit/check-dedup-base-diff.sh .
-      - name: Pin frozen donor npm
-        run: npm install --global npm@11.12.1
-      - name: Build release artifact
-        env:
-          CGO_ENABLED: "0"
+          CGO_ENABLED: '0'
           GOOS: linux
           GOARCH: amd64
-          PR08_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
-        run: |
-          set -euo pipefail
-          npm ci
-          npm run version:check
-          node scripts/validate-openapi.mjs
-          node scripts/verify-donor-sources.mjs
-          node --test scripts/donor-source-views.test.mjs
-          AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" \
-            bash scripts/run-donor-view-consumers.sh release
+        run: bash scripts/run-donor-view-consumers.sh release-fast
       - name: Configure pinned SSH host
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -321,7 +294,6 @@ jobs:
           scp "${ssh_flags[@]}" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_installer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "sudo /usr/bin/bash ${remote_installer} /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
-          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
       - name: Configure HXC production source
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -349,17 +321,16 @@ jobs:
           scp "${ssh_flags[@]}" deploy/configure-hxc-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}"
-          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
-      - name: Roll out HXC OneID dual-key persistence
+      - name: Ensure HXC activation without repeating completed rollout
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          HXC_ROLLOUT_MODE: ${{ inputs.hxc_full_rollout && 'full' || 'ensure' }}
         run: |
           set -euo pipefail
           ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sudo /usr/bin/bash /opt/aicrm/current/deploy/rollout-hxc-identity-v2.sh ${GITHUB_SHA}"
-          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
+            "sudo /usr/bin/bash /opt/aicrm/current/deploy/rollout-hxc-identity-v2.sh ${GITHUB_SHA} ${HXC_ROLLOUT_MODE}"
       - name: Configure WeChat Pay H5 OAuth
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -388,4 +359,5 @@ jobs:
           scp "${ssh_flags[@]}" deploy/configure-payment-h5-oauth-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA} skip-if-provider-disabled"
-          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
+      - name: Verify the public server is running this release
+        run: python3 scripts/ci/verify_deployment.py https://id-dev.youcangogogo.com "$GITHUB_SHA"
