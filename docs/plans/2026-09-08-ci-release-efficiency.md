@@ -2,9 +2,10 @@
 
 OneID: not involved; no customer or external identity behavior changes.
 Persistence: CI artifacts only; no business transaction or durable job changes.
-External Effects: no Provider calls added or changed. Deployment reads existing
-HXC activation and projection state using the existing deployment owner. No new
-identity matching, provisioning, business table writes or execution kernel.
+External Effects: no Provider calls added or changed. HXC activation and business
+acceptance use the existing deployment owner only when explicitly requested by
+manual dispatch. Ordinary deployment does not run HXC state checks. No new identity
+matching, provisioning, business table writes or execution kernel.
 
 ## Execution
 
@@ -40,13 +41,15 @@ main checkout, verifies the file manifest and package structure, then uses the
 existing chunk uploader and installer. It does not repeat PR regression, vet,
 typechecks or governance self-tests. Keep host locking, stale release protection,
 migration failure rollback, worker readiness, bootstrap and config activation.
-For HXC, routine deployment verifies existing write enablement, schema versions,
-identity uniqueness, published current-rule projection consistency, timer/worker
-state and exact release readiness. It avoids repeating inspect/apply/scheduled
-refresh when that activation is valid. Missing activation, a new projection rule
-or failed state checks enter the original full rollout. Manual
-`hxc_full_rollout` forces the original acceptance. Any incompatible HXC projection
-semantics must update the owner's RuleVersion, as required by versioned projections.
+Routine deployment does not invoke HXC business acceptance or automatically
+fall back to inspect/apply/scheduled refresh. Keep the existing HXC source
+configuration step, but run the full rollout only on an explicit manual
+`workflow_dispatch` with `hxc_full_rollout` enabled. First activation and an
+incompatible HXC projection rule change require this explicit rollout; ordinary
+deployment success establishes the installed release, not HXC business acceptance.
+Any incompatible HXC projection semantics must update the owner's RuleVersion,
+as required by versioned projections. No new file-based deployment routing or
+separate script upload path is introduced.
 Replace redundant public health requests with a final bounded readiness check
 that must report the expected release SHA. A healthy older version cannot pass.
 
