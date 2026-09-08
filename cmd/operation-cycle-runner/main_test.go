@@ -14,6 +14,7 @@ func TestParseConfigRequiresExplicitSafeLocalBindings(t *testing.T) {
 	for _, args := range [][]string{
 		{"--crm-url", "http://crm.example.test"},
 		{"--crm-url", "https://crm.example.test", "--runner-id", "x", "--codex-binary", "/x", "--codex-socket", "/x", "--codex-version", "v", "--control-socket", "/x", "--binding", "bad=relative"},
+		{"--crm-url", "https://crm.example.test", "--runner-id", "x", "--codex-binary", "/x", "--codex-socket", "/x", "--codex-version", "v", "--control-socket", "/x", "--renewal-interval", "26s", "--binding", "safe=/tmp/x"},
 		{"--crm-url", "https://crm.example.test", "--runner-id", "x", "--codex-binary", "/x", "--codex-socket", "/x", "--codex-version", "v", "--control-socket", "/x", "--renewal-interval", "60s", "--binding", "safe=/tmp/x"},
 	} {
 		if _, err := parseConfig(args); err == nil {

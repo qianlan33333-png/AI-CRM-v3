@@ -73,7 +73,7 @@ func parseConfig(args []string) (config, error) {
 	flags.StringVar(&result.codexSocket, "codex-socket", "", "absolute managed Codex app-server socket")
 	flags.StringVar(&result.codexVersion, "codex-version", "", "exact Codex version")
 	flags.StringVar(&result.controlSocket, "control-socket", "", "absolute local completion socket")
-	flags.DurationVar(&result.renewalInterval, "renewal-interval", 25*time.Second, "active lease renewal interval, below 60 seconds")
+	flags.DurationVar(&result.renewalInterval, "renewal-interval", 25*time.Second, "active lease renewal interval, at most 25 seconds")
 	flags.Var(&rawBindings, "binding", "required local binding as key=/absolute/directory; repeatable")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return config{}, errors.New("invalid operation runner arguments")
@@ -104,7 +104,7 @@ func (values *bindingFlags) Set(value string) error {
 }
 
 func validConfig(value config) bool {
-	return strings.HasPrefix(value.crmURL, "https://") && validKey(value.serviceTokenEnv) && validKey(value.runnerID) && filepath.IsAbs(value.codexBinary) && filepath.IsAbs(value.codexSocket) && validKey(value.codexVersion) && filepath.IsAbs(value.controlSocket) && value.controlSocket != "/" && value.renewalInterval > 0 && value.renewalInterval < time.Minute && len(value.bindings) > 0
+	return strings.HasPrefix(value.crmURL, "https://") && validKey(value.serviceTokenEnv) && validKey(value.runnerID) && filepath.IsAbs(value.codexBinary) && filepath.IsAbs(value.codexSocket) && validKey(value.codexVersion) && filepath.IsAbs(value.controlSocket) && value.controlSocket != "/" && value.renewalInterval > 0 && value.renewalInterval <= 25*time.Second && len(value.bindings) > 0
 }
 func validKey(value string) bool {
 	return strings.TrimSpace(value) == value && len(value) > 0 && len(value) <= 200 && !strings.ContainsAny(value, "\r\n\t")

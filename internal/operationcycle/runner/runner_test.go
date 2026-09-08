@@ -29,6 +29,8 @@ type remoteStub struct {
 	renew               []string
 	events              []ActionEvent
 	err                 error
+	heartbeatErr        error
+	heartbeatErrAfter   int
 	eventErr            error
 	emptyAfterCompleted bool
 }
@@ -37,6 +39,9 @@ func (s *remoteStub) Heartbeat(_ context.Context, value Heartbeat) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.heartbeat = append(s.heartbeat, value)
+	if s.heartbeatErr != nil && len(s.heartbeat) > s.heartbeatErrAfter {
+		return s.heartbeatErr
+	}
 	return s.err
 }
 func (s *remoteStub) Claim(context.Context, string) (Action, error) {
@@ -90,6 +95,30 @@ func (s *executorStub) StartThread(context.Context, string) (string, error) {
 func (s *executorStub) StartTurn(context.Context, string, string) (string, error) {
 	s.turns++
 	return "turn-1", nil
+}
+
+type slowAfterFirstCompatibilityExecutor struct {
+	executorStub
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+}
+
+func (s *slowAfterFirstCompatibilityExecutor) Available(ctx context.Context) error {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		return nil
+	}
+	select {
+	case <-s.started:
+	default:
+		close(s.started)
+	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func executableAction() Action {
@@ -147,6 +176,27 @@ func TestRunOnceOnlyReportsUnavailableWhenSocketExecutorIsUnavailable(t *testing
 	}
 	if len(remote.heartbeat) != 1 || remote.heartbeat[0].CompatibilityStatus != "unavailable" || len(remote.renew) != 0 {
 		t.Fatalf("heartbeat=%#v renew=%#v", remote.heartbeat, remote.renew)
+	}
+}
+
+func TestHeartbeatPublishesUnavailableAfterBoundedSlowProbe(t *testing.T) {
+	remote := &remoteStub{}
+	executor := &slowAfterFirstCompatibilityExecutor{calls: 1, started: make(chan struct{})}
+	local, err := New(remote, executor, Config{RunnerID: "designated-mac", CodexVersion: "codex 1", AppServerProtocol: "v2", ControlSocket: "/tmp/aicrm-operation-runner.sock", Bindings: map[string]string{"weekly.review": "/local"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	ready, err := local.heartbeatWithProbeTimeout(context.Background(), 15*time.Millisecond)
+	if err != nil || ready {
+		t.Fatalf("bounded compatibility heartbeat ready=%v err=%v", ready, err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("compatibility probe exceeded its budget: %s", elapsed)
+	}
+	heartbeats := remote.heartbeatSnapshot()
+	if len(heartbeats) != 1 || heartbeats[0].CompatibilityStatus != "unavailable" {
+		t.Fatalf("slow compatibility was not published as unavailable: %#v", heartbeats)
 	}
 }
 func TestAppServerProxyFailsClosedForUnavailableSocket(t *testing.T) {
@@ -240,6 +290,7 @@ if [ "$1" = "--version" ]; then
 else
   IFS= read -r _
   printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+  IFS= read -r _
 fi
 `), 0700); err != nil {
 		t.Fatal(err)
@@ -521,7 +572,7 @@ func TestServeRenewsAnActiveActionAndRunsTheLocalControlConsumer(t *testing.T) {
 	}
 	defer os.Remove(socket)
 	action := executableAction()
-	remote := &remoteStub{action: action}
+	remote := &remoteStub{action: action, heartbeatErr: errors.New("heartbeat transport timeout"), heartbeatErrAfter: 1}
 	runner, err := New(remote, &executorStub{}, Config{RunnerID: "designated-mac", CodexVersion: "codex 1", AppServerProtocol: "v2", ControlSocket: socket, Bindings: map[string]string{"weekly.review": "/local"}})
 	if err != nil {
 		t.Fatal(err)
@@ -535,7 +586,7 @@ func TestServeRenewsAnActiveActionAndRunsTheLocalControlConsumer(t *testing.T) {
 	}
 	if remote.renewCount() < 2 {
 		cancel()
-		t.Fatalf("serve did not renew active action")
+		t.Fatalf("serve did not renew active action after heartbeat transport failure")
 	}
 	heartbeats := remote.heartbeatSnapshot()
 	if len(heartbeats) < 2 {
@@ -556,6 +607,49 @@ func TestServeRenewsAnActiveActionAndRunsTheLocalControlConsumer(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("serve did not stop after cancellation")
+	}
+}
+
+func TestServeRenewsBeforeASlowCompatibilityProbe(t *testing.T) {
+	file, err := os.CreateTemp("/tmp", "aicrm-operation-runner-slow-probe-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := file.Name()
+	if err = file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	remote := &remoteStub{action: executableAction()}
+	executor := &slowAfterFirstCompatibilityExecutor{started: make(chan struct{})}
+	local, err := New(remote, executor, Config{RunnerID: "designated-mac", CodexVersion: "codex 1", AppServerProtocol: "v2", ControlSocket: socket, Bindings: map[string]string{"weekly.review": "/local"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- local.Serve(ctx, socket, 15*time.Millisecond) }()
+	select {
+	case <-executor.started:
+		if remote.renewCount() == 0 {
+			cancel()
+			t.Fatal("slow compatibility probe started before the active lease was renewed")
+		}
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("active compatibility probe did not start")
+	}
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not stop after cancellation")
 	}
 }
 

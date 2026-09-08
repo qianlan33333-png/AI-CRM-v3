@@ -13,7 +13,12 @@ import (
 	"time"
 )
 
-const connectorVersion = "operation-cycle-go-runner/1.0"
+const (
+	connectorVersion               = "operation-cycle-go-runner/1.0"
+	maximumRenewalInterval         = 25 * time.Second
+	activeHeartbeatBudget          = 10 * time.Second
+	activeCompatibilityProbeBudget = 5 * time.Second
+)
 
 var ErrOutcomeUnknown = errors.New("operation action start outcome is unknown; manual verification is required")
 
@@ -166,7 +171,7 @@ func (r *Runner) Serve(ctx context.Context, controlSocket string, renewalInterva
 	if controlSocket != r.config.ControlSocket {
 		return errors.New("operation runner control socket does not match prompt configuration")
 	}
-	if renewalInterval <= 0 || renewalInterval >= time.Minute {
+	if renewalInterval <= 0 || renewalInterval > maximumRenewalInterval {
 		return errors.New("operation runner renewal interval is invalid")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
@@ -206,16 +211,17 @@ func (r *Runner) Serve(ctx context.Context, controlSocket string, renewalInterva
 		} else if _, stillActive := r.action(active.RequestID); !stillActive {
 			active = Action{}
 		} else {
-			// A long-running action must remain visible to Start's 45-second
-			// runner-offline guard. Recheck the managed app-server on every
-			// renewal cycle, then publish the observed compatibility before
-			// renewing this already-fenced action.
-			if _, err := r.heartbeat(runCtx); err != nil {
-				return err
-			}
+			// Renew first so a slow compatibility probe cannot consume the
+			// current 60-second fence. The bounded heartbeat then keeps the
+			// runner visible to Start's 45-second offline guard. Heartbeat
+			// transport failure is non-terminal for an already-fenced action:
+			// its local control socket must remain able to record the result.
 			if err := r.Renew(runCtx, active); err != nil {
 				return err
 			}
+			heartbeatCtx, heartbeatCancel := context.WithTimeout(runCtx, activeHeartbeatBudget)
+			_, _ = r.heartbeatWithProbeTimeout(heartbeatCtx, activeCompatibilityProbeBudget)
+			heartbeatCancel()
 		}
 		timer := time.NewTimer(renewalInterval)
 		select {
@@ -240,10 +246,20 @@ func (r *Runner) Serve(ctx context.Context, controlSocket string, renewalInterva
 // such, which prevents a later Start while keeping the current fenced action
 // available to its local terminal-result control socket.
 func (r *Runner) heartbeat(ctx context.Context) (bool, error) {
+	return r.heartbeatWithProbeTimeout(ctx, 0)
+}
+
+func (r *Runner) heartbeatWithProbeTimeout(ctx context.Context, probeTimeout time.Duration) (bool, error) {
 	status := "ready"
-	if err := r.executor.Available(ctx); err != nil {
+	probeCtx := ctx
+	cancel := func() {}
+	if probeTimeout > 0 {
+		probeCtx, cancel = context.WithTimeout(ctx, probeTimeout)
+	}
+	if err := r.executor.Available(probeCtx); err != nil {
 		status = "unavailable"
 	}
+	cancel()
 	if err := r.remote.Heartbeat(ctx, Heartbeat{RunnerID: r.config.RunnerID, ConnectorVersion: connectorVersion, CodexVersion: r.config.CodexVersion, AppServerProtocol: r.config.AppServerProtocol, CompatibilityStatus: status, BindingKeys: sortedKeys(r.config.Bindings)}); err != nil {
 		return false, err
 	}
