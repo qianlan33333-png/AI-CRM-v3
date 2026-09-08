@@ -168,6 +168,10 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
 	fixture := newAdminShellLayoutFixture(t)
+	// Hold the two reads long enough for the Host to expose its loading root.
+	// The browser script must wait on rendered semantic controls, not that root,
+	// before it measures the static sidebar/header geometry.
+	fixture.server.Config.Handler = delayedOpenPlatformDirectoryReads(fixture.application.handler, 150*time.Millisecond)
 	script := filepath.Join(filepath.Dir(fixture.script), "..", "..", "internal", "webshell", "admin_layout_geometry.mjs")
 	command := exec.CommandContext(fixture.ctx, "node", script)
 	command.Env = append(os.Environ(),
@@ -203,6 +207,15 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 			}())
 		}
 	}
+}
+
+func delayedOpenPlatformDirectoryReads(next http.Handler, duration time.Duration) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && (request.URL.Path == "/api/admin/open-platform/clients" || request.URL.Path == "/api/admin/open-platform/routes") {
+			time.Sleep(duration)
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {

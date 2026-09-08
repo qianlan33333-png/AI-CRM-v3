@@ -186,8 +186,8 @@ try {
         const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
         const visible = node => { if (!node) return false; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
         const token = value => String(value || '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
-        const dom = [document.body, ...document.querySelectorAll('.admin-main-wrap,.admin-sidebar,.admin-topbar,#stage,.order-host-layout,[data-runtime-release-host],[data-open-platform-host],.sec-funnel')].filter((node, index, all) => node instanceof Element && all.indexOf(node) === index).slice(0, 20).map(node => ({tag:node.tagName.toLowerCase(),id:token(node.id),classes:Array.from(node.classList).map(token).filter(Boolean).slice(0, 12),visible:visible(node)}));
-        return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,dom};
+        const dom = [document.body, ...document.querySelectorAll('.admin-main-wrap,.admin-sidebar,.admin-topbar,.side,#stage,.order-host-layout,[data-runtime-release-host],[data-open-platform-host],.open-platform-header,.sec-funnel')].filter((node, index, all) => node instanceof Element && all.indexOf(node) === index).slice(0, 20).map(node => ({tag:node.tagName.toLowerCase(),id:token(node.id),classes:Array.from(node.classList).map(token).filter(Boolean).slice(0, 12),visible:visible(node)}));
+        return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),static_sidebar:box('.side'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),static_header:box('.open-platform-header'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,dom};
       })()`);
       geometry = { ...measured, screenshot_captured: screenshotCaptured, responses: responses.slice(-12), runtime_exceptions: runtimeExceptions.slice(-8) };
     } catch (_) {}
@@ -565,7 +565,17 @@ try {
   currentStep = "api-docs";
   await clickNavigation("/admin/api-docs", "api-docs");
   await waitFor(cdp, "location.pathname === '/admin/apidocs.html' && document.readyState !== 'loading'", "api-docs did not canonicalize to its V3 Host document");
-  await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-host]') || document.querySelector('[class*=openPlatformHost]'))", "api-docs V3 Host did not become ready");
+  // The Host creates its root before its two V1 read requests settle. Do not
+  // turn that loading sentinel into a geometry-ready signal: wait for the
+  // rendered header, its control, and a populated V1 directory.
+  await waitFor(cdp, `(() => {
+    const root=document.querySelector('[data-open-platform-host="v1"]');
+    const title=root?.querySelector('.open-platform-header h1');
+    const refresh=root?.querySelector('button[data-open-platform-action="刷新"]');
+    const catalog=Array.from(root?.querySelectorAll('.open-platform-catalog') || []).find(node => node.querySelector('h2')?.textContent?.trim() === 'V1 能力目录');
+    const rows=catalog?.querySelectorAll('tbody tr') || [];
+    return Boolean(root && title?.textContent?.trim() === '开放平台调用方' && refresh && rows.length > 0);
+  })()`, "api-docs V1 header, control, and directory did not become ready");
   await waitForFonts("api-docs");
   await recordGeometry("api-docs", () => assertStaticOpenLayout("api-docs"), true);
 
