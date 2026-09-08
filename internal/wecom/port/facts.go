@@ -41,6 +41,22 @@ type TagCatalogTag struct {
 	Deleted bool
 }
 
+// TagCatalogMutation is an Outbound-only provider write request. Both IDs are
+// Tag-owned provider bindings, never customer or identity values.
+type TagCatalogMutation struct {
+	Operation                      string
+	GroupName, TagName             string
+	ProviderGroupID, ProviderTagID string
+}
+
+type TagCatalogMutationResult struct {
+	ProviderGroupID, ProviderTagID string
+}
+
+type TagCatalogMutationWriter interface {
+	MutateTagCatalog(context.Context, TagCatalogMutation) (TagCatalogMutationResult, error)
+}
+
 // ProviderCallFailure identifies only whether the catalog request itself may
 // have crossed a network boundary. It never carries Provider status/body data.
 type ProviderCallFailure interface {

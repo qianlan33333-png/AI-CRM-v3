@@ -60,6 +60,33 @@ type DirectoryProvider interface {
 	BatchExternalContacts(context.Context, string, string, int) (ExternalContactPage, error)
 }
 
+// ContactStaffProfile is a read-only, provider-verified display projection for
+// a known customer-contact capable employee. The caller supplies the eligible
+// userid set from ListContactStaff; this type must never expand that set or
+// grant the employee a local role.
+type ContactStaffProfile struct {
+	UserID      string
+	DisplayName string
+}
+
+// ContactStaffProfileSnapshot intentionally retains only safe display facts
+// and one stable aggregate failure classification. A partial profile failure
+// leaves Items populated for every successfully read employee while allowing
+// callers to keep their last verified local name for the rest.
+type ContactStaffProfileSnapshot struct {
+	Items            []ContactStaffProfile
+	ProfileReadState string
+	ProfileErrorCode string
+}
+
+// ContactStaffProfileReader is an optional refinement of DirectoryProvider.
+// The external-contact follow-user list remains the authority for eligibility;
+// implementations may only enrich the requested subset with display names.
+// The bounded input avoids an unbounded user/get fan-out on an admin refresh.
+type ContactStaffProfileReader interface {
+	ReadContactStaffProfiles(context.Context, []string) (ContactStaffProfileSnapshot, error)
+}
+
 // ExternalContactReader reads one known external contact. It is a Provider-read
 // boundary only; it cannot mark, unmark, or otherwise mutate WeCom state.
 type ExternalContactReader interface {

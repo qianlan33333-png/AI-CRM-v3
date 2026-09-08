@@ -21,6 +21,17 @@ one bounded callback-inbox claim or creates a scheduled customer-sync run. The
 long-running effects worker is the single River runtime for both durable queues;
 there is no ticker or scheduler inside a domain package.
 
+Official WeCom tag directory writes stay disabled until an operator starts the
+`ci` workflow on `main` with **Activate official WeCom tag catalog writes**.
+That deployment-owned action changes only
+`AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_ENABLED` and its explicit
+`catalog-write-authorized` acknowledgement. Before replacing either setting it
+requires exactly one active catalog read gate, WeCom gate, outbound gate, and
+contact credential in the existing runtime environment. It restarts the API and
+effects worker, verifies the installed release through `/readyz`, and restores
+the prior environment if restart or readiness fails. It never enables the read,
+WeCom, outbound, or credential prerequisites itself.
+
 ## Automated release
 
 The `deploy` job runs only after the required `check` job succeeds on `main`.

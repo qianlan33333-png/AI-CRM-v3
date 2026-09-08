@@ -14,7 +14,7 @@ func TestActivePageUsesStandardHostAndManifestBoundAssets(t *testing.T) {
 	dist := t.TempDir()
 	files := map[string]string{
 		"assets/tokens.css": "", "assets/labs.css": "", "assets/admin.js": "", "assets/groupops.css": "", "assets/groupops-host.js": "",
-		"groupops/group_chat_picker.css": "", "groupops/group_chat_picker.js": "", "groupops/material_picker.css": "", "groupops/material_picker.js": "", "groupops/send_content_composer.css": "", "groupops/send_content_composer.js": "",
+		"assets/standard-components/operation_member_picker.js": "", "assets/standard-components/group_chat_picker.css": "", "assets/standard-components/group_chat_picker.js": "", "assets/standard-components/material_picker.css": "", "assets/standard-components/material_picker.js": "", "assets/standard-components/send_content_composer.css": "", "assets/standard-components/send_content_composer.js": "",
 		"aiassistant/send_content_readonly_detail.css": "", "aiassistant/send_content_readonly_detail.js": "",
 	}
 	for relative, content := range files {
@@ -48,7 +48,7 @@ func TestActivePageUsesStandardHostAndManifestBoundAssets(t *testing.T) {
 	})
 	response := httptest.NewRecorder()
 	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/automation-conversion/group-ops/plans/9", nil))
-	if response.Code != http.StatusNoContent || !strings.Contains(gotBody, `id="group-ops-app"`) || !strings.Contains(gotBody, `data-page-mode="detail"`) || !strings.Contains(gotBody, `data-plan-id="9"`) || gotAssets.HostJS != "/groupops-assets/assets/groupops-host.js" || gotAssets.ComposerJS != "/groupops-assets/groupops/send_content_composer.js" {
+	if response.Code != http.StatusNoContent || !strings.Contains(gotBody, `id="group-ops-app"`) || !strings.Contains(gotBody, `data-page-mode="detail"`) || !strings.Contains(gotBody, `data-plan-id="9"`) || gotAssets.HostJS != "/groupops-assets/assets/groupops-host.js" || gotAssets.ComposerJS != "/groupops-assets/assets/standard-components/send_content_composer.js" || gotAssets.OperationPickerJS != "/groupops-assets/assets/standard-components/operation_member_picker.js" {
 		t.Fatalf("host=%q assets=%+v status=%d", gotBody, gotAssets, response.Code)
 	}
 }

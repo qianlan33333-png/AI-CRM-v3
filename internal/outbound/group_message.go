@@ -259,6 +259,7 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
 	tag          *TagCatalogCompletionSink
+	tagMutation  effectport.CompletionSink
 	group        *GroupMessageCompletionSink
 	channel      *ChannelAssetCompletionSink
 	entrant      *ChannelEntrantCompletionSink
@@ -403,6 +404,12 @@ func (r *CompletionRouter) WithCustomerTag(sink effectport.CompletionSink) {
 	}
 }
 
+func (r *CompletionRouter) WithTagCatalogMutation(sink effectport.CompletionSink) {
+	if r != nil {
+		r.tagMutation = sink
+	}
+}
+
 func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
 	if r == nil {
 		return errors.New("completion router is unavailable")
@@ -418,6 +425,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("tag completion sink is unavailable")
 		}
 		return r.tag.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindWeComTagCatalogMutation:
+		if r.tagMutation == nil {
+			return errors.New("tag catalog mutation completion sink is unavailable")
+		}
+		return r.tagMutation.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	case effectport.KindGroupMessage:
 		if r.group == nil {
 			return errors.New("Group Ops completion sink is unavailable")

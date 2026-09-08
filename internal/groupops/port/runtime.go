@@ -160,15 +160,22 @@ type GroupDirectoryPage struct {
 }
 
 type OperationMember struct {
-	StaffID      int64  `json:"staff_id,omitempty"`
-	SenderUserID string `json:"sender_userid"`
-	DisplayName  string `json:"display_name"`
+	StaffID              int64      `json:"staff_id,omitempty"`
+	SenderUserID         string     `json:"sender_userid"`
+	DisplayName          string     `json:"display_name"`
+	Active               bool       `json:"active"`
+	NameSource           string     `json:"name_source,omitempty"`
+	ProfileReadState     string     `json:"profile_read_state,omitempty"`
+	ProfileReadErrorCode string     `json:"profile_read_error_code,omitempty"`
+	ProfileRefreshedAt   *time.Time `json:"profile_refreshed_at,omitempty"`
 }
 
 type OperationMemberPage struct {
-	Scope    string            `json:"scope"`
-	Items    []OperationMember `json:"items"`
-	PageSize int32             `json:"page_size"`
+	Scope                string            `json:"scope"`
+	Items                []OperationMember `json:"items"`
+	PageSize             int32             `json:"page_size"`
+	ProfileReadState     string            `json:"profile_read_state,omitempty"`
+	ProfileReadErrorCode string            `json:"profile_read_error_code,omitempty"`
 	RuntimeSafety
 }
 
@@ -344,6 +351,16 @@ type RuntimeStore interface {
 // members picker. It has no customer or external-recipient semantics.
 type EligibleStaffReader interface {
 	ListEligibleStaff(context.Context) ([]OperationMember, error)
+}
+
+// OperationMemberDirectoryStore is the Group Ops-owned display projection for
+// the already-authorized operation-member set. It deliberately contains no
+// Access roles or identity records: Access continues to own staff activation
+// and sender bindings, while WeCom profile reads only enrich this presentation
+// data after the follow-user list has established eligibility.
+type OperationMemberDirectoryStore interface {
+	ListOperationMemberDirectory(context.Context) ([]OperationMember, error)
+	ReplaceOperationMemberDirectory(context.Context, []OperationMember, time.Time) error
 }
 
 // ExecutionContinuationEnqueuer inserts a unique, effect-bound shared River

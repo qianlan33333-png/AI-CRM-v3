@@ -25,9 +25,11 @@ function pickerMembersPayload(source: Json): Json | null {
     const staffID = Number(value.staff_id);
     if (!Number.isSafeInteger(staffID) || staffID < 1) return [];
     return [{
-      // The frozen picker persists this as its `user_id`; it is intentionally
-      // the local Access staff ID, never the WeCom sender identifier.
-      user_id: String(staffID),
+      // The picker shows `user_id` as its second line. Keep the real WeCom
+      // identity there, while preserving the local staff ID as the value that
+      // plan commands write through the Host.
+      user_id: String(value.sender_userid || staffID),
+      staff_id: String(staffID),
       display_name: String(value.display_name || `员工 #${staffID}`),
     }];
   });
@@ -36,13 +38,30 @@ function pickerMembersPayload(source: Json): Json | null {
 
 // The frozen picker reads this endpoint directly instead of AdminApi.requestJson.
 // Keep its byte-derived implementation untouched and make the single Group Ops
-// read compatible at the V3 Host boundary. No mutation, refresh, other scope,
-// or non-JSON response is intercepted.
+// read compatible at the V3 Host boundary. The frozen refresh call predates
+// the V3 scoped command body, so add its scope, CSRF and idempotency envelope
+// here without changing the donor picker.
 window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const response = await nativeFetch(input, init);
   const url = requestURL(input);
+  const method = requestMethod(input, init);
+  if (method === "POST" && url.pathname === `${operationMembersPath}/sync`) {
+    const headers = new Headers(init?.headers || (typeof input === "string" || input instanceof URL ? undefined : input.headers));
+    headers.set("Accept", "application/json");
+    headers.set("Content-Type", "application/json");
+    headers.set("Idempotency-Key", key());
+    const token = csrf();
+    if (token) headers.set("X-CSRF-Token", token);
+    return nativeFetch(input, {
+      ...init,
+      method: "POST",
+      headers,
+      credentials: "same-origin",
+      body: JSON.stringify({ scope: "group_ops", page_size: 100 }),
+    });
+  }
+  const response = await nativeFetch(input, init);
   if (
-    requestMethod(input, init) !== "GET" ||
+    method !== "GET" ||
     url.pathname !== operationMembersPath ||
     url.searchParams.get("scope") !== "group_ops" ||
     !response.ok
@@ -81,7 +100,24 @@ function html(value: unknown): string {
   );
 }
 function errorMessage(error: unknown, fallback = "请求失败"): string {
-  return error instanceof Error && error.message ? error.message : fallback;
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : typeof (error as Json)?.message === "string"
+        ? (error as Json).message
+        : "";
+  return message && message !== "[object Object]" ? message : fallback;
+}
+function responseMessage(data: Json, fallback: string): string {
+  if (data?.code === "operations_conflict" || (data?.error as Json)?.code === "operations_conflict") return "计划配置未完成，无法启用";
+  const candidates = [data?.error_message, data?.message, data?.error, data?.code];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const text = candidate.trim();
+    if (text && text !== "[object Object]" && !/^[a-z][a-z0-9_]+$/i.test(text)) return text;
+  }
+  return fallback;
 }
 async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
   const headers = new Headers(options.headers || {});
@@ -107,9 +143,7 @@ async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
     /* reported below */
   }
   if (!response.ok || data.ok === false)
-    throw new Error(
-      String(data.error || data.code || `HTTP ${response.status}`),
-    );
+    throw new Error(responseMessage(data, `HTTP ${response.status}`));
   return data;
 }
 function plan(value: Json): Json {
@@ -188,7 +222,13 @@ async function revision(id: number): Promise<number> {
   return revisions.get(id) || 0;
 }
 async function directory(): Promise<Json[]> {
-  const data = await nativeRequest(`${base}/groups?limit=200&offset=0`);
+  let data: Json;
+  try {
+    data = await nativeRequest(`${base}/groups?limit=200&offset=0`);
+  } catch {
+    throw new Error("群目录读取失败，请重试");
+  }
+  if (!Array.isArray(data.items)) throw new Error("群目录读取失败，请重试");
   return data.items || [];
 }
 async function groupsForPlan(id: number): Promise<Json[]> {
@@ -349,9 +389,29 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
       { method: nodeID ? "PUT" : method, body: payload },
     );
   }
-  if (id && /\/webhook$/.test(url)) {
-    const value = await detail(id);
-    return { webhook_url: value.webhook_descriptor?.url || "" };
+  if (id && /\/webhook$/.test(url) && method === "GET") {
+    const descriptor = await nativeRequest(`${base}/plans/${id}/webhook-descriptor`);
+    const path = String(descriptor.path || "").trim();
+    const configured = Boolean(descriptor.configured && descriptor.reference && path);
+    return {
+      configured,
+      reference: String(descriptor.reference || ""),
+      webhook_url: configured ? new URL(path, window.location.origin).href : "",
+      signature_algorithm: descriptor.signature_algorithm || "",
+      signature_header: descriptor.signature_header || "",
+      timestamp_header: descriptor.timestamp_header || "",
+      nonce_header: descriptor.nonce_header || "",
+      client_id_header: descriptor.client_id_header || "",
+    };
+  }
+  if (id && /\/webhook-descriptor$/.test(url) && method === "PUT") {
+    const value = await nativeRequest(`${base}/plans/${id}/webhook-descriptor`, {
+      method,
+      body: { expected_revision: await revision(id), reference: String(body.reference || "").trim() },
+    });
+    const updated = value.plan || value;
+    if (Number.isSafeInteger(Number(updated.revision))) revisions.set(id, Number(updated.revision));
+    return value;
   }
   if (id && url === `${base}/plans/${id}` && method === "GET") {
     const value = await detail(id);
@@ -398,9 +458,13 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     return value;
   }
   if (url.startsWith(`${base}/groups`) && method === "GET") {
-    const data = await nativeRequest(
-      url,
-    );
+    let data: Json;
+    try {
+      data = await nativeRequest(url);
+    } catch {
+      throw new Error("群目录读取失败，请重试");
+    }
+    if (!Array.isArray(data.items)) throw new Error("群目录读取失败，请重试");
     return {
       ...data,
       items: (data.items || []).map((item: Json) => {
@@ -410,7 +474,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
         const knownExternal = external !== null && external !== undefined && Number.isFinite(Number(external));
         return {
           chat_id: item.chat_reference,
-          group_name: item.display_name,
+          group_name: item.display_name || item.chat_reference,
           owner_userid: String(item.owner_staff_id || ""),
           internal_member_count_snapshot: knownTotal && knownExternal ? Number(total) - Number(external) : null,
           external_member_count_snapshot: knownExternal ? Number(external) : null,
@@ -431,10 +495,12 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     return {
       ...data,
       items: (data.items || []).flatMap((item: Json) => {
-        const userID = String(item.user_id || item.staff_id || "").trim();
-        if (!userID) return [];
+        const staffID = String(item.staff_id || "").trim();
+        const userID = String(item.sender_userid || item.user_id || staffID).trim();
+        if (!userID || !staffID) return [];
         return [{
           user_id: userID,
+          staff_id: staffID,
           display_name: String(item.display_name || item.name || `员工 #${userID}`),
         }];
       }),
@@ -449,7 +515,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   escapeHtml: html,
   errorMessage,
   responseErrorMessage: (_response: unknown, data: Json, fallback: string) =>
-    String(data?.error || fallback),
+    responseMessage(data, fallback),
 };
 // @ts-expect-error The standard donor script is intentionally JavaScript.
 void import("./groupOpsStandard.js");

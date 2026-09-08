@@ -331,7 +331,11 @@ func assertSidebarSendHTTPReplayOmitsGrant(t *testing.T, ctx context.Context, ap
 	if err = json.Unmarshal(expirePayload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if state != "final_failed" || expireAudits != 1 || expireOutbox != 1 || payload.IntentID != expiring.IntentID || payload.EffectID != expiring.EffectID || payload.State != "final_failed" {
+	if state != "outcome_unknown" || expireAudits != 1 || expireOutbox != 1 || payload.IntentID != expiring.IntentID || payload.EffectID != expiring.EffectID || payload.State != "outcome_unknown" {
 		t.Fatalf("sidebar expiry durable facts state=%q audits=%d outbox=%d payload=%+v", state, expireAudits, expireOutbox, payload)
+	}
+	reloadedExpiry := send("sidebar-chromium-expiry-reload", serviceProductID, "service_period")
+	if !reloadedExpiry.Replayed || reloadedExpiry.IntentID != expiring.IntentID || reloadedExpiry.State != "outcome_unknown" || reloadedExpiry.Grant != "" {
+		t.Fatalf("sidebar expiry reload must replay unresolved intent result=%+v", reloadedExpiry)
 	}
 }

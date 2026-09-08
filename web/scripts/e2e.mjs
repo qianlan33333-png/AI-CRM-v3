@@ -1244,7 +1244,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         blob: async () => new window.Blob([JSON.stringify(data)], { type: 'application/json' }),
         clone() { return this; },
       });
-      window.__sidebarTest = { contactSwitched: false, remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, profileBodies: [], profileKeys: [], materialQueries: [], sendIntentKeys: [], sendIntentTokens: [], sendOutcomeBodies: [], sendOutcomeTokens: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null, releaseSend: null, oauthTargets: [], jssdkStorageReads: 0 };
+      window.__sidebarTest = { contactSwitched: false, remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, profileBodies: [], profileKeys: [], materialQueries: [], sendIntentBodies: [], sendIntentKeys: [], sendIntentTokens: [], sendOutcomeBodies: [], sendOutcomeTokens: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null, releaseSend: null, oauthTargets: [], jssdkStorageReads: 0 };
       window.addEventListener('aicrm-sidebar-oauth-required', (event) => window.__sidebarTest.oauthTargets.push(event.detail?.target || ''));
       if (scenario === 'agent_retry_storage_failure') {
         const values = new Map();
@@ -1389,11 +1389,14 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         if (url.includes('/send-intents')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
           const command = JSON.parse(init.body || '{}');
+          window.__sidebarTest.sendIntentBodies.push(command);
           window.__sidebarTest.sendIntentKeys.push(new Headers(init.headers).get('Idempotency-Key'));
           window.__sidebarTest.sendIntentTokens.push(new Headers(init.headers).get('X-Sidebar-Context-Token'));
           if (scenario === 'send_accept_response_lost' && window.__sidebarTest.sendIntentKeys.length === 1) throw new TypeError('accepted response lost');
           const payload = command.resource_kind === 'product'
-            ? { msgtype: 'news', news: { link: 'http://localhost/p/course-ordinary', title: '普通课程', desc: '', imgUrl: 'http://localhost/static/sidebar_workbench/product-card-cover.png' } }
+            ? { msgtype: 'news', news: { link: 'http://localhost/p/course-ordinary', title: '普通课程', desc: '', imgUrl: 'https://assets.example.test/products/course-ordinary.png' } }
+            : command.resource_kind === 'coupon'
+              ? { msgtype: 'news', news: { link: 'http://localhost/c/coupon-71', title: '可领取目录券', desc: '点击领取优惠券' } }
             : { msgtype: 'image', image: { mediaid: 'media-real-31' } };
           if (scenario === 'send_accept_response_lost' && window.__sidebarTest.sendIntentKeys.length > 1) return json({ intent_id: 51, effect_id: 'eff-1', state: 'queued', payload, replayed: true }, 202);
           if (scenario === 'send_accept_switch') return await new Promise((resolve) => { window.__sidebarTest.releaseAccept = () => resolve(json({ intent_id: 51, effect_id: 'eff-1', state: 'queued', grant: 'grant-token', grant_expires_at: '2026-08-28T00:00:00Z', payload, replayed: false }, 202)); });
@@ -1777,19 +1780,17 @@ console.log('admin/customers.html（筛选、opaque cursor 翻页与详情导航
 
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '清空'));
   await sleep(300);
-  const requestsBeforeOwnerFilter = dom.window.__customerListRequests.length;
   input(dom, d.querySelector('#fCustomerOwner'), '101');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
   await sleep(300);
-  ok('负责人筛选在后端无谓词时明确拒绝、清除旧页且不读取目录', Boolean(d.querySelector('[data-customer-error]')?.textContent.trim()) && dom.window.__customerListRequests.length === requestsBeforeOwnerFilter && d.querySelectorAll('tbody tr').length === 0);
+  ok('负责人筛选透传 Customer-owned local owner 谓词', dom.window.__customerListRequests.at(-1)?.includes('owner_staff_id=101') && !d.querySelector('[data-customer-error]')?.textContent.trim());
 
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '清空'));
   await sleep(300);
-  const requestsBeforeTagFilter = dom.window.__customerListRequests.length;
   input(dom, d.querySelector('#fCustomerTag'), '2');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
   await sleep(300);
-  ok('标签筛选在后端无谓词时明确拒绝且不读取目录', Boolean(d.querySelector('[data-customer-error]')?.textContent.trim()) && dom.window.__customerListRequests.length === requestsBeforeTagFilter);
+  ok('标签筛选透传当前本地标签谓词', dom.window.__customerListRequests.at(-1)?.includes('tag_id=2') && !d.querySelector('[data-customer-error]')?.textContent.trim());
 
   input(dom, d.querySelector('#fCustomerMobile'), '138000000000');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
@@ -3204,10 +3205,10 @@ for (const [scenario, expected] of [
 
   click(dom, d.querySelector('#tabs [data-tab="coupons"]'));
   await sleep(40);
-  ok('Coupon 目录显示规则状态而非客户已领券，已结束或个人上限项禁用链接',
+  ok('Coupon 目录显示规则状态而不创建客户领取记录；已有链接可分享给当前会话对象',
     d.body.textContent.includes('可领取目录券') && d.body.textContent.includes('已结束目录券') &&
     d.body.textContent.includes('已达到个人领取上限') &&
-    [...d.querySelectorAll('[data-copy-url]')].some((node) => node.disabled) &&
+    [...d.querySelectorAll('[data-coupon-send]')].every((node) => !node.disabled) &&
     !d.body.textContent.includes('claim_id'));
 
   click(dom, d.querySelector('#tabs [data-tab="products"]'));
@@ -3217,8 +3218,18 @@ for (const [scenario, expected] of [
   const news = dom.window.__sidebarTest.wxMessages.find((entry) => entry.payload?.msgtype === 'news');
   ok('商品先被 Outbound 接受，再以完整 news card 调用 JSSDK 并回写同一 grant',
     news?.method === 'sendChatMessage' && news.payload.news?.link === 'http://localhost/p/course-ordinary' &&
-    news.payload.news?.imgUrl === 'http://localhost/static/sidebar_workbench/product-card-cover.png' &&
+    news.payload.news?.imgUrl === 'https://assets.example.test/products/course-ordinary.png' &&
     dom.window.__sidebarTest.sendOutcomeBodies.some((body) => body.grant === 'grant-token' && body.outcome === 'client_executed'));
+
+  click(dom, d.querySelector('#tabs [data-tab="coupons"]'));
+  await sleep(40);
+  click(dom, d.querySelector('[data-coupon-send="71"]'));
+  await sleep(40);
+  const couponNews = dom.window.__sidebarTest.wxMessages.find((entry) => entry.payload?.news?.link === 'http://localhost/c/coupon-71');
+  ok('优惠券只发送既有领取链接：news 卡片经同一发送意图回写，不占用当前客户库存',
+    dom.window.__sidebarTest.sendIntentBodies.some((body) => body.resource_kind === 'coupon' && body.resource_id === '71') &&
+    couponNews?.method === 'sendChatMessage' && couponNews.payload.news?.desc === '点击领取优惠券' &&
+    dom.window.__sidebarTest.sendOutcomeBodies.filter((body) => body.outcome === 'client_executed').length === 2);
 
   click(dom, d.querySelector('#tabs [data-tab="materials"]'));
   await sleep(40);
@@ -3316,7 +3327,9 @@ for (const [scenario, expectedSignatureReads] of [['sdk_cache', 0], ['sdk_cache_
   const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=profile_conflict' });
   const d = dom.window.document;
   input(dom, d.querySelector('[data-profile-field="industry"]'), '教育');
-  await waitFor(() => dom.window.__sidebarTest.profileBodies.length === 1);
+  // Request capture precedes the asynchronous error response and Host render.
+  // Assert the completed conflict state rather than racing response handling.
+  await waitFor(() => dom.window.__sidebarTest.profileBodies.length === 1 && d.querySelector('#toast')?.textContent.includes('conflict'));
   ok('画像陈旧 CAS 冲突不会伪造已保存，也不会覆盖本地版本',
     dom.window.__sidebarTest.profileBodies.length === 1 &&
     dom.window.__sidebarTest.profileBodies[0].expected_profile_version === 0 &&

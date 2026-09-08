@@ -139,4 +139,35 @@ func (r *Repository) ListSidebarClaimable(ctx context.Context, customerID int64,
 	return page, err
 }
 
+// ReadSidebarClaimable is the exact-item counterpart to the paged directory.
+// It reads a definition plus the scoped claim-count fact, but has no write
+// path: sending a link cannot issue a coupon or occupy an issue slot.
+func (r *Repository) ReadSidebarClaimable(ctx context.Context, customerID int64, couponID couponport.ID) (couponapp.SidebarClaimableRecord, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return couponapp.SidebarClaimableRecord{}, err
+	}
+	if customerID < 1 || couponID < 1 {
+		return couponapp.SidebarClaimableRecord{}, couponapp.ErrInvalidCoupon
+	}
+	var record couponapp.SidebarClaimableRecord
+	var mode string
+	err = tx.QueryRow(ctx, `SELECT `+couponColumns+`,COALESCE(rule.public_slug,''),(SELECT count(*) FROM coupon_customer_claims claim WHERE claim.customer_id=$1 AND claim.coupon_id=rule.id)
+		FROM coupon_rules rule WHERE rule.id=$2 AND rule.status<>'draft'`, customerID, couponID).Scan(
+		&record.Coupon.ID, &record.Coupon.Name, &record.Coupon.DiscountAmountTotal, &record.Coupon.Currency, &record.Coupon.Status, &record.Coupon.TotalIssueLimit, &record.Coupon.PerUserIssueLimit, &record.Coupon.IssuedCount, &record.Coupon.ClaimStartsAt, &record.Coupon.ClaimEndsAt, &mode, &record.Coupon.UseStartsAt, &record.Coupon.UseEndsAt, &record.Coupon.RelativeValidityDays, &record.Coupon.Instructions, &record.Coupon.CreatedBy, &record.Coupon.UpdatedBy, &record.Coupon.Version, &record.Coupon.CreatedAt, &record.Coupon.UpdatedAt, &record.PublicSlug, &record.ClaimCount,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return couponapp.SidebarClaimableRecord{}, couponapp.ErrNotFound
+	}
+	if err != nil {
+		return couponapp.SidebarClaimableRecord{}, err
+	}
+	record.Coupon.ValidityMode = couponport.ValidityMode(mode)
+	record.Coupon.TargetRefs, err = r.targets(ctx, tx, record.Coupon.ID)
+	if err != nil {
+		return couponapp.SidebarClaimableRecord{}, err
+	}
+	return record, nil
+}
+
 var _ couponapp.SidebarClaimableCatalogStore = (*Repository)(nil)

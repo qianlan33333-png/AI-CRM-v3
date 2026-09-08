@@ -88,6 +88,19 @@ func TestComposedV1RouterRetiresEveryInventoryPathBeforeOtherOwners(t *testing.T
 	}
 }
 
+func TestPublicProductMediaRouteReachesProductOwner(t *testing.T) {
+	owner := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("X-Test-Owner", "product")
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	handler := mountPublicProduct(http.NotFoundHandler(), owner)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/h5/product-images/course-9/88/variants/original", nil))
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Test-Owner") != "product" {
+		t.Fatalf("status=%d owner=%q", response.Code, response.Header().Get("X-Test-Owner"))
+	}
+}
+
 func concreteInventoryPath(path string) string {
 	replacements := strings.NewReplacer(
 		"{package_key}", "package-1",

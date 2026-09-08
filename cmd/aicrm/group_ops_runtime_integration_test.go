@@ -629,6 +629,82 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	})
 }
 
+// TestGroupOpsOperationMemberDirectoryPersistsVerifiedNames proves the
+// profile overlay is a Group Ops-owned projection: it is restricted to the
+// source snapshot and a later provider failure keeps the last verified name
+// while reporting an unavailable state instead of clearing the picker.
+func TestGroupOpsOperationMemberDirectoryPersistsVerifiedNames(t *testing.T) {
+	native, cleanup := groupOpsIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	platformPool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer platformPool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(platformPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, second int64
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('member-one','$argon2id$member','本地一','member-one',true) RETURNING id`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('member-two','$argon2id$member','本地二','member-two',true) RETURNING id`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	groupStore, err := groupopsstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	directory := &operationMemberDirectoryJourney{items: []groupopsport.OperationMember{
+		{StaffID: first, SenderUserID: "member-one", DisplayName: "真实一", Active: true, NameSource: "wecom_profile", ProfileReadState: "unavailable", ProfileReadErrorCode: "provider_permission_denied", ProfileRefreshedAt: &now},
+		{StaffID: second, SenderUserID: "member-two", DisplayName: "本地二", Active: true, NameSource: "local_fallback", ProfileReadState: "unavailable", ProfileReadErrorCode: "provider_permission_denied"},
+	}}
+	staff := operationMemberJourneyStaff{items: []groupopsport.OperationMember{{StaffID: first, SenderUserID: "member-one", DisplayName: "本地一"}, {StaffID: second, SenderUserID: "member-two", DisplayName: "本地二"}}}
+	runtimeService := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, nil, staff, directory, journeySender{}, nil, nil)
+	page, err := runtimeService.RefreshOperationMembers(ctx, groupopsport.OperationMemberRefreshCommand{ActorID: first, PageSize: 100, IdempotencyKey: "group-ops-member-directory-0001"})
+	if err != nil || len(page.Items) != 2 || page.Items[0].DisplayName != "真实一" || page.Items[0].NameSource != "wecom_profile" || page.ProfileReadState != "unavailable" || page.ProfileReadErrorCode != "provider_permission_denied" {
+		t.Fatalf("refresh page=%+v err=%v", page, err)
+	}
+	directory.err = operationMemberDirectoryFailure{}
+	page, err = runtimeService.RefreshOperationMembers(ctx, groupopsport.OperationMemberRefreshCommand{ActorID: first, PageSize: 100, IdempotencyKey: "group-ops-member-directory-0002"})
+	if err != nil || len(page.Items) != 2 || page.Items[0].DisplayName != "真实一" || page.Items[0].NameSource != "wecom_profile" || page.ProfileReadState != "unavailable" || page.ProfileReadErrorCode != "provider_unavailable" {
+		t.Fatalf("preserved page=%+v err=%v", page, err)
+	}
+}
+
+type operationMemberDirectoryJourney struct {
+	items []groupopsport.OperationMember
+	err   error
+}
+
+func (directory *operationMemberDirectoryJourney) ListOwnedGroups(context.Context, int64, int32) (groupopsport.GroupDirectorySnapshot, error) {
+	return groupopsport.GroupDirectorySnapshot{}, errors.New("not used by operation-member journey")
+}
+
+func (directory *operationMemberDirectoryJourney) RefreshOperationMembers(context.Context, int32) ([]groupopsport.OperationMember, error) {
+	if directory.err != nil {
+		return nil, directory.err
+	}
+	return append([]groupopsport.OperationMember(nil), directory.items...), nil
+}
+
+type operationMemberJourneyStaff struct {
+	items []groupopsport.OperationMember
+}
+
+func (staff operationMemberJourneyStaff) ListEligibleStaff(context.Context) ([]groupopsport.OperationMember, error) {
+	return append([]groupopsport.OperationMember(nil), staff.items...), nil
+}
+
+type operationMemberDirectoryFailure struct{}
+
+func (operationMemberDirectoryFailure) Error() string                   { return "provider unavailable" }
+func (operationMemberDirectoryFailure) DirectoryFailureCode() string    { return "provider_unavailable" }
+func (operationMemberDirectoryFailure) DirectoryFailureRetryable() bool { return true }
+
 // TestGroupOpsPostgreSQLPausedPlanReactivation proves the frozen list's
 // enable action works after a pause against the real receipt/event owner
 // store. It is deliberately lifecycle-only: no effect is accepted or sent.
@@ -1207,7 +1283,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

@@ -28,6 +28,7 @@ type handlerStore struct {
 	groups     []domain.Group
 	tags       []domain.Tag
 	syncStatus tagport.SyncStatus
+	operations []tagport.ArchiveMutationOperation
 }
 
 func (store handlerStore) ListGroups(context.Context) ([]domain.Group, error) {
@@ -77,6 +78,9 @@ func (handlerStore) ReorderTags(context.Context, []int64) ([]domain.Tag, error) 
 func (store handlerStore) LatestSync(context.Context) (tagport.SyncStatus, error) {
 	return store.syncStatus, nil
 }
+func (store handlerStore) ListArchiveMutationOperations(context.Context, int) ([]tagport.ArchiveMutationOperation, error) {
+	return append([]tagport.ArchiveMutationOperation(nil), store.operations...), nil
+}
 func (handlerStore) ReserveSync(context.Context, tagport.SyncCommand) (tagport.SyncReceipt, error) {
 	return tagport.SyncReceipt{}, errors.New("not called")
 }
@@ -111,6 +115,7 @@ func (handlerSyncEnqueuer) EnqueueSync(context.Context, tagport.SyncJob) (tagpor
 
 var _ platformport.UnitOfWork = handlerUOW{}
 var _ tagport.CatalogStore = handlerStore{}
+var _ tagport.ArchiveMutationOperationReader = handlerStore{}
 var _ tagport.ExecutionGateReader = handlerGate{}
 
 func newHandlerForContractTest(t *testing.T) *Handler {
@@ -161,6 +166,27 @@ func TestOpaqueRequestIDIsSchemaSafe(t *testing.T) {
 	}
 }
 
+func TestMutationEnvelopeReportsOnlyPersistedProviderState(t *testing.T) {
+	local := mutationEnvelope("tag_reordered", false, "")
+	if local["source_status"] != "local_catalog" {
+		t.Fatalf("local envelope = %#v", local)
+	}
+	if _, exists := local["effect_state"]; exists {
+		t.Fatalf("local envelope claims effect state: %#v", local)
+	}
+	unknown := mutationEnvelope("tag_archived", false, "outcome_unknown")
+	if unknown["source_status"] != "provider_write_outcome_unknown" || unknown["effect_state"] != "outcome_unknown" {
+		t.Fatalf("unknown envelope = %#v", unknown)
+	}
+	validated := mutationEnvelope("tag_created", true, "queued")
+	if validated["source_status"] != "validation_only" {
+		t.Fatalf("validated envelope = %#v", validated)
+	}
+	if got := matchingProviderMutationState("queued", "outcome_unknown"); got != "" {
+		t.Fatalf("mismatched group-create state = %q", got)
+	}
+}
+
 func TestTagsCatalogUsesFrozenAliasesAndNestedGroups(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	newHandlerForContractTest(t).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/wecom/tags", nil))
@@ -183,6 +209,58 @@ func TestTagsCatalogUsesFrozenAliasesAndNestedGroups(t *testing.T) {
 	group := body["groups"].([]any)[0].(map[string]any)
 	if group["name"] != "Lifecycle" || len(group["tags"].([]any)) != 1 {
 		t.Fatalf("group nested tags = %#v", group)
+	}
+}
+
+func TestTagsCatalogExposesOnlyRecordedProviderWriteStateAndReadbackTime(t *testing.T) {
+	readback := time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC)
+	store := handlerStore{
+		groups: []domain.Group{{ID: 11, Name: "Lifecycle", SortOrder: 0, ProviderMutationState: "executed", ProviderReadbackAt: &readback}},
+		tags:   []domain.Tag{{ID: 21, GroupID: 11, GroupName: "Lifecycle", Name: "Warm", SortOrder: 0, ProviderMutationState: "outcome_unknown"}},
+	}
+	handler, err := NewHandler(tagapp.NewService(handlerUOW{}, store, nil, nil, nil), &tagapp.SyncService{}, handlerGate{}, handlerSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/wecom/tags", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body map[string]any
+	if err = json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	group := body["groups"].([]any)[0].(map[string]any)
+	tag := body["tags"].([]any)[0].(map[string]any)
+	if group["provider_write_state"] != "executed" || group["synced_at"] != readback.Format(time.RFC3339) || tag["provider_write_state"] != "outcome_unknown" || tag["synced_at"] != nil {
+		t.Fatalf("group=%#v tag=%#v", group, tag)
+	}
+}
+
+func TestTagsCatalogRetainsArchiveOutcomeRecordAfterRowIsHidden(t *testing.T) {
+	recordedAt := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	store := handlerStore{groups: []domain.Group{}, tags: []domain.Tag{}, operations: []tagport.ArchiveMutationOperation{{Operation: tagport.CatalogTagArchive, LocalID: 21, State: "outcome_unknown", RecordedAt: recordedAt}}}
+	handler, err := NewHandler(tagapp.NewService(handlerUOW{}, store, nil, nil, nil), &tagapp.SyncService{}, handlerGate{}, handlerSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/wecom/tags", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body map[string]any
+	if err = json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	operations := body["archive_operations"].([]any)
+	if body["archive_operations_status"] != "ready" || len(operations) != 1 {
+		t.Fatalf("archive operations = %#v", body)
+	}
+	operation := operations[0].(map[string]any)
+	if operation["operation"] != "tag_archive" || operation["local_id"] != float64(21) || operation["state"] != "outcome_unknown" || operation["recorded_at"] != recordedAt.Format(time.RFC3339) {
+		t.Fatalf("archive operation = %#v", operation)
 	}
 }
 
@@ -213,6 +291,17 @@ func TestTagSyncInProgressHasStableConflictCode(t *testing.T) {
 	resultError(recorder, tagport.ErrSyncInProgress)
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"detail":"sync_in_progress"`) || !strings.Contains(recorder.Body.String(), `"error_code":"sync_in_progress"`) {
 		t.Fatalf("sync conflict = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestTagProviderWriteGateHasStableUnavailableCode(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	resultError(recorder, errors.Join(tagapp.ErrUnavailable, tagapp.ErrProviderMutationUnavailable))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"detail":"tag_catalog_write_unavailable"`) || !strings.Contains(recorder.Body.String(), `"error":"tag_catalog_write_unavailable"`) {
+		t.Fatalf("write gate = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "本次未新增、修改或删除标签") {
+		t.Fatal("write gate must explain the unchanged result")
 	}
 }
 

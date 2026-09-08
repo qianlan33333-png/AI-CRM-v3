@@ -263,12 +263,14 @@ type Survey struct {
 	OAuthScope                string
 }
 
-// TagCatalogProvider is intentionally separate from outbound message/write
-// configuration. It permits only the read-only catalog adapter and remains
-// off unless both the boolean and a human permission acknowledgement exist.
+// TagCatalogProvider separates the read-only catalog projection from an
+// official directory write. Both remain disabled until their own explicit
+// authorization is present; a catalog read grant can never enable mutation.
 type TagCatalogProvider struct {
-	Enabled    bool
-	Permission string
+	Enabled            bool
+	Permission         string
+	MutationEnabled    bool
+	MutationPermission string
 }
 
 type WeChatPay struct {
@@ -368,6 +370,9 @@ func Load() (Runtime, error) {
 	if cfg.TagCatalog.Enabled, err = strictBool("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.TagCatalog.MutationEnabled, err = strictBool("AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
 	if cfg.WeChatPay.Enabled, err = strictBool("AICRM_WECHAT_PAY_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
@@ -394,6 +399,7 @@ func Load() (Runtime, error) {
 	cfg.WeChatShop.CallbackToken = os.Getenv("AICRM_WECHAT_SHOP_CALLBACK_TOKEN")
 	cfg.WeChatShop.CallbackEncodingAESKey = os.Getenv("AICRM_WECHAT_SHOP_CALLBACK_AES_KEY")
 	cfg.TagCatalog.Permission = os.Getenv("AICRM_WECOM_TAG_CATALOG_PROVIDER_PERMISSION")
+	cfg.TagCatalog.MutationPermission = os.Getenv("AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_PERMISSION")
 	if cfg.WeCom.Enabled, err = strictBool("AICRM_WECOM_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
@@ -593,6 +599,11 @@ func Load() (Runtime, error) {
 	if cfg.TagCatalog.Enabled {
 		if !cfg.WeCom.Enabled || cfg.TagCatalog.Permission != "catalog-read-authorized" {
 			return Runtime{}, errors.New("enabled tag catalog provider requires WeCom and explicit permission")
+		}
+	}
+	if cfg.TagCatalog.MutationEnabled {
+		if !cfg.TagCatalog.Enabled || !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "" || cfg.TagCatalog.MutationPermission != "catalog-write-authorized" {
+			return Runtime{}, errors.New("enabled tag catalog mutation provider requires catalog read, External Effects, WeCom contact credentials, and explicit write permission")
 		}
 	}
 	if cfg.AIAssistant.IntakeEnabled && (strings.TrimSpace(cfg.AIAssistant.IntegrationKey) != cfg.AIAssistant.IntegrationKey || cfg.AIAssistant.IntegrationKey == "" || len(cfg.AIAssistant.IntegrationSecret) < 32 || cfg.AIAssistant.IntegrationActorID < 1) {

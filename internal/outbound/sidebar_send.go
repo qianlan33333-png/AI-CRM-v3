@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -50,10 +51,21 @@ func (s *SidebarSendService) AcceptSidebarSend(ctx context.Context, in outboundp
 	intentRaw, _ := json.Marshal([]any{in.CustomerID, in.EmployeeID, in.ResourceKind, in.ResourceID, in.ContentDigest, in.Payload})
 	intentDigest := sha256.Sum256(intentRaw)
 	employeeDigest := sha256.Sum256([]byte(in.EmployeeID))
+	resourceBinding, bindingErr := sidebarSendResourceBinding(in.ResourceKind, in.ResourceID, in.Payload)
+	if bindingErr != nil {
+		return out, ErrSidebarSendConflict
+	}
 	now := s.now().UTC()
 	err = s.uow.Within(ctx, func(txctx context.Context) error {
 		tx, e := platformpostgres.RequireTransaction(txctx)
 		if e != nil {
+			return e
+		}
+		// A receipt key only protects one browser request. Serialize a complete
+		// target/resource binding too, so a reload or another WebView cannot mint
+		// a replacement effect while the earlier result is still unknown.
+		lockKey := "outbound.sidebar_send.unresolved.v1:" + strconv.FormatInt(in.CustomerID, 10) + ":" + hex.EncodeToString(employeeDigest[:]) + ":" + resourceBinding
+		if _, e = tx.Exec(txctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lockKey); e != nil {
 			return e
 		}
 		var id int64
@@ -61,25 +73,70 @@ func (s *SidebarSendService) AcceptSidebarSend(ctx context.Context, in outboundp
 		var effectID, queueID *string
 		var state string
 		var payload []byte
+		// Exact receipt replay remains the first decision: a reused browser key
+		// can only return its immutable original intent, never a newer one.
+		e = tx.QueryRow(txctx, `SELECT id,intent_digest,effect_id,queue_receipt_id,state,payload FROM outbound_sidebar_send_intents WHERE receipt_key_digest=$1 FOR UPDATE`, keyDigest[:]).Scan(&id, &priorDigest, &effectID, &queueID, &state, &payload)
+		if e == nil {
+			if subtle.ConstantTimeCompare(priorDigest, intentDigest[:]) != 1 {
+				return ErrSidebarSendConflict
+			}
+			out = sidebarSendReplay(id, effectID, state, payload)
+			return nil
+		}
+		if !errors.Is(e, pgx.ErrNoRows) {
+			return e
+		}
+
+		// Existing versions stored no explicit product type. Their immutable
+		// payload still carries the trusted /p/ or /s/ binding. An older malformed
+		// product payload is deliberately treated as a lock for both product
+		// kinds, because the server cannot prove which card may have been sent.
+		rows, e := tx.Query(txctx, `SELECT id,effect_id,state,payload FROM outbound_sidebar_send_intents WHERE customer_id=$1 AND employee_digest=$2 AND resource_kind=$3 AND resource_id=$4 AND state IN ('accepted','queued','outcome_unknown') ORDER BY CASE state WHEN 'outcome_unknown' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,id FOR UPDATE`, in.CustomerID, employeeDigest[:], in.ResourceKind, in.ResourceID)
+		if e != nil {
+			return e
+		}
+		for rows.Next() {
+			var existingID int64
+			var existingEffectID *string
+			var existingState string
+			var existingPayload []byte
+			if e = rows.Scan(&existingID, &existingEffectID, &existingState, &existingPayload); e != nil {
+				rows.Close()
+				return e
+			}
+			existingBinding, existingBindingErr := sidebarSendResourceBinding(in.ResourceKind, in.ResourceID, existingPayload)
+			if existingBindingErr != nil || existingBinding == resourceBinding {
+				rows.Close()
+				out = sidebarSendReplay(existingID, existingEffectID, existingState, existingPayload)
+				return nil
+			}
+		}
+		if e = rows.Err(); e != nil {
+			rows.Close()
+			return e
+		}
+		rows.Close()
+
 		e = tx.QueryRow(txctx, `INSERT INTO outbound_sidebar_send_intents(customer_id,employee_digest,resource_kind,resource_id,content_digest,payload,receipt_key_digest,intent_digest,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,'accepted',$9,$9) ON CONFLICT(receipt_key_digest) DO NOTHING RETURNING id,intent_digest,effect_id,queue_receipt_id,state,payload`, in.CustomerID, employeeDigest[:], in.ResourceKind, in.ResourceID, in.ContentDigest[:], in.Payload, keyDigest[:], intentDigest[:], now).Scan(&id, &priorDigest, &effectID, &queueID, &state, &payload)
 		if errors.Is(e, pgx.ErrNoRows) {
-			e = tx.QueryRow(txctx, `SELECT id,intent_digest,effect_id,queue_receipt_id,state,payload FROM outbound_sidebar_send_intents WHERE receipt_key_digest=$1`, keyDigest[:]).Scan(&id, &priorDigest, &effectID, &queueID, &state, &payload)
+			e = tx.QueryRow(txctx, `SELECT id,intent_digest,effect_id,queue_receipt_id,state,payload FROM outbound_sidebar_send_intents WHERE receipt_key_digest=$1 FOR UPDATE`, keyDigest[:]).Scan(&id, &priorDigest, &effectID, &queueID, &state, &payload)
 			if e != nil {
 				return e
 			}
 			if subtle.ConstantTimeCompare(priorDigest, intentDigest[:]) != 1 {
 				return ErrSidebarSendConflict
 			}
-			out = outboundport.SidebarSendAcceptance{IntentID: id, State: state, Payload: payload, Replayed: true}
-			if effectID != nil {
-				out.EffectID = *effectID
-			}
+			out = sidebarSendReplay(id, effectID, state, payload)
 			return nil
 		}
 		if e != nil {
 			return e
 		}
-		envelope := effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindSidebarJSSDKSend, SourceRefDigest: effectport.Hash("sidebar.send.source", in.ResourceKind, in.ResourceID), TargetRefDigest: effectport.Hash("sidebar.send.target", hex.EncodeToString(employeeDigest[:]), strconv.FormatInt(in.CustomerID, 10)), PayloadDigest: effectport.Digest("sha256:" + hex.EncodeToString(in.ContentDigest[:])), PolicyVersionHash: effectport.Hash("sidebar.send.policy.v1")}
+		// A new intent after an explicit terminal result is a new browser-owned
+		// effect. Bind EER to the durable intent ID so its immutable fingerprint
+		// cannot collide with the prior, already completed effect. Exact receipt
+		// replays return above and never create a second intent or effect.
+		envelope := effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindSidebarJSSDKSend, SourceRefDigest: effectport.Hash("sidebar.send.intent.v1", strconv.FormatInt(id, 10), in.ResourceKind, in.ResourceID), TargetRefDigest: effectport.Hash("sidebar.send.target", hex.EncodeToString(employeeDigest[:]), strconv.FormatInt(in.CustomerID, 10)), PayloadDigest: effectport.Digest("sha256:" + hex.EncodeToString(in.ContentDigest[:])), PolicyVersionHash: effectport.Hash("sidebar.send.policy.v1")}
 		projection, receipt, e := s.effects.AcceptAndQueueWithin(txctx, effectport.AcceptCommand{ReceiptKey: effectport.Hash("sidebar.send.accept", in.IdempotencyKey), Envelope: envelope, ScheduledAt: now.Add(6 * time.Minute)})
 		if e != nil {
 			return e
@@ -175,8 +232,45 @@ func (s *SidebarSendService) CompleteSidebarSend(ctx context.Context, in outboun
 	return out, err
 }
 
+func sidebarSendReplay(id int64, effectID *string, state string, payload []byte) outboundport.SidebarSendAcceptance {
+	out := outboundport.SidebarSendAcceptance{IntentID: id, State: state, Payload: payload, Replayed: true}
+	if effectID != nil {
+		out.EffectID = *effectID
+	}
+	return out
+}
+
+func sidebarSendResourceBinding(kind, resourceID string, payload []byte) (string, error) {
+	if kind != "product" {
+		return kind + ":" + resourceID, nil
+	}
+	var message struct {
+		MsgType string `json:"msgtype"`
+		News    struct {
+			Link string `json:"link"`
+		} `json:"news"`
+	}
+	if err := json.Unmarshal(payload, &message); err != nil || message.MsgType != "news" || message.News.Link == "" {
+		return "", ErrSidebarSendConflict
+	}
+	link, err := url.Parse(message.News.Link)
+	if err != nil || link.Host == "" {
+		return "", ErrSidebarSendConflict
+	}
+	productType := ""
+	switch {
+	case strings.HasPrefix(link.Path, "/p/") && strings.TrimPrefix(link.Path, "/p/") != "":
+		productType = "standard"
+	case strings.HasPrefix(link.Path, "/s/") && strings.TrimPrefix(link.Path, "/s/") != "":
+		productType = "service_period"
+	default:
+		return "", ErrSidebarSendConflict
+	}
+	return "product:" + productType + ":" + resourceID, nil
+}
+
 func validSidebarResource(v string) bool {
-	return v == "product" || v == "material" || v == "radar_link"
+	return v == "product" || v == "coupon" || v == "material" || v == "radar_link"
 }
 
 var _ outboundport.SidebarSendAccepter = (*SidebarSendService)(nil)

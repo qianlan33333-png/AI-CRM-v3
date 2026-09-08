@@ -34,6 +34,8 @@ type testCustomerStore struct {
 	lastQuery customerapp.Query
 	detail    customerapp.Detail
 	detailErr error
+	ownerIDs  []customerdomain.CustomerID
+	ownerErr  error
 }
 
 func (store *testCustomerStore) List(_ context.Context, query customerapp.Query) (customerapp.PageData, error) {
@@ -42,6 +44,21 @@ func (store *testCustomerStore) List(_ context.Context, query customerapp.Query)
 }
 func (store *testCustomerStore) Detail(context.Context, customerdomain.CustomerID) (customerapp.Detail, error) {
 	return store.detail, store.detailErr
+}
+func (store *testCustomerStore) CustomerIDsForOwner(_ context.Context, staffID int64, limit int) ([]customerdomain.CustomerID, error) {
+	if staffID < 1 || limit < 1 {
+		return nil, customerapp.ErrInvalidQuery
+	}
+	return store.ownerIDs, store.ownerErr
+}
+
+type testDirectoryTags struct {
+	ids []customerdomain.CustomerID
+	err error
+}
+
+func (tags testDirectoryTags) CustomerIDsForTag(context.Context, int64, int) ([]customerdomain.CustomerID, error) {
+	return tags.ids, tags.err
 }
 
 type testIdentities struct {
@@ -238,6 +255,47 @@ func TestPhoneSearchAcceptsOnlyStrictLocalCNFormat(t *testing.T) {
 	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?activation_status=active", nil))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("removed activation filter status=%d", response.Code)
+	}
+}
+
+func TestCustomerDirectoryOwnerAndTagFiltersReachTheirExactLocalPredicates(t *testing.T) {
+	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	store := &testCustomerStore{ownerIDs: []customerdomain.CustomerID{5, 2, 5}}
+	config := testConfig(security, store, &testIdentities{}, &testAudit{})
+	config.Directory.Tags = testDirectoryTags{ids: []customerdomain.CustomerID{8, 2, 8}}
+	handler, err := NewHandler(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?owner_staff_id=9&tag_id=12", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	filters := store.lastQuery.Filters
+	if filters.OwnerStaffID != 9 || filters.TagID != 12 || !filters.OwnerMatchNone && len(filters.OwnerCustomerIDs) != 2 || !filters.TagMatchNone && len(filters.TagCustomerIDs) != 2 {
+		t.Fatalf("filters=%+v", filters)
+	}
+	for _, raw := range []string{"0", "09", "%209", "-1", "x"} {
+		response = httptest.NewRecorder()
+		handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?owner_staff_id="+raw, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("owner=%q status=%d body=%s", raw, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestCustomerDirectoryValidFilterFailureIsRetryableServiceError(t *testing.T) {
+	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	store := &testCustomerStore{ownerErr: errors.New("owner projection unavailable")}
+	handler, err := NewHandler(testConfig(security, store, &testIdentities{}, &testAudit{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?owner_staff_id=9", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "directory_filter_unavailable") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

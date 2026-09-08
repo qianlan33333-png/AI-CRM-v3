@@ -28,6 +28,7 @@
     groupPickerSearch: "",
     groupPickerNotice: "",
     bindingGroups: false,
+    changingPlanId: 0,
     showNodeModal: false,
     editingNodeId: 0,
     activeDetailPanel: "basic",
@@ -48,6 +49,7 @@
     apiPlanNode: (id, nodeId) =>
       `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/nodes/${encodeURIComponent(nodeId)}`,
     apiWebhook: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/webhook`,
+    apiWebhookDescriptor: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/webhook-descriptor`,
     apiGroups: "/api/admin/automation-conversion/group-ops/groups",
     apiGroupsSync: "/api/admin/automation-conversion/group-ops/groups/sync",
     apiMembers: "/api/admin/common/operation-members?scope=group_ops&page_size=100",
@@ -326,14 +328,19 @@
     return displayName && displayName !== userId ? `${displayName} / ${userId}` : userId;
   }
 
+  function memberStaffId(member) {
+    return String((member || {}).staff_id || (member || {}).local_staff_id || (member || {}).user_id || "");
+  }
+
   function normalizeOwners(payload, plan) {
     const owners = new Map();
     normalizeItems(payload).forEach((member) => {
-      const userId = member.user_id || member.userid;
-      if (userId) owners.set(userId, { user_id: userId, display_name: member.display_name || member.name || userId });
+      const staffId = memberStaffId(member);
+      const userId = member.user_id || member.userid || staffId;
+      if (staffId) owners.set(staffId, { staff_id: staffId, user_id: userId, display_name: member.display_name || member.name || userId });
     });
     if (plan && plan.owner_userid && !owners.has(plan.owner_userid)) {
-      owners.set(plan.owner_userid, { user_id: plan.owner_userid, display_name: plan.owner_name || plan.owner_userid });
+      owners.set(plan.owner_userid, { staff_id: plan.owner_userid, user_id: plan.owner_userid, display_name: plan.owner_name || plan.owner_userid });
     }
     return Array.from(owners.values());
   }
@@ -341,14 +348,14 @@
   function currentMemberFor(userId) {
     const normalized = String(userId || "");
     if (!normalized) return null;
-    return state.ownerOptions.find((member) => member.user_id === normalized) || { user_id: normalized, display_name: normalized };
+    return state.ownerOptions.find((member) => memberStaffId(member) === normalized || member.user_id === normalized) || { staff_id: normalized, user_id: normalized, display_name: normalized };
   }
 
   function renderMemberField(name, currentUserId, action, label) {
     const selected = currentMemberFor(currentUserId);
     return `
       <div class="group-ops__member-field" data-member-field="${escapeHtml(name)}">
-        <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml((selected || {}).user_id || "")}">
+        <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(memberStaffId(selected))}">
         <div class="group-ops__member-current" data-member-current="${escapeHtml(name)}">${escapeHtml(selected ? memberLabel(selected) : "未选择")}</div>
         ${actionButton(label || (selected ? "更换" : "选择"), action)}
       </div>
@@ -358,7 +365,7 @@
   function setMemberField(name, member) {
     const input = app.querySelector(`[name="${name}"]`);
     const current = app.querySelector(`[data-member-current="${name}"]`);
-    if (input) input.value = member.user_id || "";
+    if (input) input.value = memberStaffId(member);
     if (current) current.textContent = memberLabel(member);
   }
 
@@ -409,6 +416,7 @@
     if (action === "cancel-node") return closeNodeModal();
     if (action === "delete-node") return deleteNode(event.currentTarget.dataset.nodeId);
     if (action === "copy-webhook") return copyWebhook();
+    if (action === "save-webhook") return saveWebhook();
     if (action === "pick-create-owner") return openMemberPicker({
       fieldName: "create_owner_userid",
       title: "选择运营人员",
@@ -423,10 +431,10 @@
       value: currentFormValue("owner_userid") || (state.plan || {}).owner_userid,
       onPicked: (member) => {
         if (state.plan) {
-          state.plan.owner_userid = member.user_id || "";
+          state.plan.owner_userid = memberStaffId(member);
           state.plan.owner_name = member.display_name || member.name || member.user_id || "";
         }
-        loadOwnerGroups(member.user_id || "").catch((error) => {
+        loadOwnerGroups(memberStaffId(member)).catch((error) => {
           state.notice = error.message || "加载群聊失败";
           renderDetail();
         });
@@ -492,15 +500,33 @@
   }
 
   async function disablePlan(planId) {
-    if (!planId) return;
-    await requestJson(routes.apiPlanDisable(planId), { method: "POST" });
-    loadListPage();
+    return changePlanState(planId, "disable");
   }
 
   async function enablePlan(planId) {
-    if (!planId) return;
-    await requestJson(routes.apiPlanEnable(planId), { method: "POST" });
-    loadListPage();
+    return changePlanState(planId, "enable");
+  }
+
+  async function changePlanState(planId, action) {
+    const id = Number(planId);
+    if (!id || state.changingPlanId) return;
+    state.changingPlanId = id;
+    state.notice = action === "enable" ? "启用中" : "停用中";
+    renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+    try {
+      const changed = await requestJson(action === "enable" ? routes.apiPlanEnable(id) : routes.apiPlanDisable(id), { method: "POST" });
+      const status = (changed.plan || changed).status;
+      if (action === "enable" && status !== "active") throw new Error("启用结果未确认，请刷新后重试");
+      if (action === "disable" && status === "active") throw new Error("停用结果未确认，请刷新后重试");
+      state.notice = action === "enable" ? "已启用" : "已停用";
+      await loadListPage();
+    } catch (error) {
+      state.changingPlanId = 0;
+      state.notice = requestErrorMessage(error, action === "enable" ? "启用失败，请重试" : "停用失败，请重试");
+      renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+    } finally {
+      state.changingPlanId = 0;
+    }
   }
 
   async function deletePlan(planId) {
@@ -692,12 +718,41 @@
 
   async function copyWebhook() {
     const url = state.webhook && state.webhook.webhook_url;
-    if (!url) return;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(url);
+    if (!url) {
+      state.notice = "尚未配置 Webhook，无法复制地址";
+      renderDetail();
+      return;
     }
-    state.notice = "已复制";
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("当前浏览器不支持复制");
+      await navigator.clipboard.writeText(url);
+      state.notice = "Webhook 地址已复制";
+    } catch (error) {
+      state.notice = requestErrorMessage(error, "复制失败，请手动复制地址");
+    }
     renderDetail();
+  }
+
+  function validWebhookReference(value) {
+    return !value || /^[A-Za-z0-9._:-]{1,128}$/.test(value);
+  }
+
+  async function saveWebhook() {
+    if (!state.plan || !state.plan.id) return;
+    const reference = String(currentFormValue("webhook_reference") || "").trim();
+    if (!validWebhookReference(reference)) {
+      state.notice = "Webhook 标识只能使用字母、数字、连字符、下划线、点号和冒号";
+      renderDetail();
+      return;
+    }
+    try {
+      await requestJson(routes.apiWebhookDescriptor(state.plan.id), { method: "PUT", body: { reference } });
+      state.notice = reference ? "Webhook 地址已保存" : "Webhook 配置已清除";
+      await loadDetailPage(state.plan.id);
+    } catch (error) {
+      state.notice = requestErrorMessage(error, "保存 Webhook 地址失败，请重试");
+      renderDetail();
+    }
   }
 
   async function loadListPage() {
@@ -750,7 +805,7 @@
               ${
                 plan.status === "active"
                   ? `<button class="group-ops__button" type="button" data-action="disable-plan" data-plan-id="${escapeHtml(plan.id)}">停用</button>`
-                  : `<button class="group-ops__button" type="button" data-action="enable-plan" data-plan-id="${escapeHtml(plan.id)}">启用</button>`
+                  : `<button class="group-ops__button" type="button" data-action="enable-plan" data-plan-id="${escapeHtml(plan.id)}"${state.changingPlanId === Number(plan.id) ? " disabled" : ""}>${state.changingPlanId === Number(plan.id) ? "启用中" : "启用"}</button>`
               }
               <button class="group-ops__button group-ops__button--danger" type="button" data-action="delete-plan" data-plan-id="${escapeHtml(plan.id)}">删除</button>
             </div>
@@ -1074,6 +1129,7 @@
         </section>
       `;
     }
+    const configured = config.configured && config.webhook_url;
     return `
       <section class="group-ops__panel${state.activeDetailPanel === "webhook" ? " is-active" : ""}" id="panel-webhook">
         <div class="group-ops__panel-title-row">
@@ -1081,6 +1137,11 @@
           <span class="group-ops__pill">Webhook 接收计划</span>
         </div>
         <div class="group-ops__webhook-panel">
+          <label class="group-ops__field group-ops__field--wide"><span>Webhook 标识</span><input name="webhook_reference" value="${escapeHtml(config.reference || "")}" placeholder="输入安全的 opaque 标识；留空可清除"></label>
+          <div class="group-ops__row-actions">${actionButton("保存地址", "save-webhook", "group-ops__button--primary")}</div>
+          ${configured ? "" : '<div class="group-ops__empty">尚未配置，无法提供可调用地址</div>'}
+          ${configured ? `
+          <div class="group-ops__notice">地址已配置；调用仍需签名配置和启用计划。请完成实际接收验证后再使用。</div>
           <div class="group-ops__webhook-line">
             <span class="group-ops__chip">POST</span>
             <div class="group-ops__url">${escapeHtml(config.webhook_url || "")}</div>
@@ -1088,8 +1149,10 @@
           </div>
           <div class="group-ops__webhook-line">
             <strong>认证方式</strong>
-            <span class="group-ops__chip group-ops__chip--ok">HTTP Message Signatures</span>
+            <span class="group-ops__chip group-ops__chip--ok">签名验证${config.signature_algorithm ? `（${escapeHtml(config.signature_algorithm)}）` : ""}</span>
           </div>
+          <details class="group-ops__webhook-guide"><summary>查看接入说明</summary><p>调用方必须以 POST 发送 JSON，并携带签名、时间戳、随机数和客户端标识请求头；复制地址不包含凭据，也不能绕过签名验证。</p><p>请求头：${escapeHtml([config.signature_header, config.timestamp_header, config.nonce_header, config.client_id_header].filter(Boolean).join(" / ") || "由服务端校验")}</p></details>
+          ` : ""}
         </div>
       </section>
     `;

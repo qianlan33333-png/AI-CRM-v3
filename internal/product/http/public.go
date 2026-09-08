@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -18,6 +19,12 @@ import (
 // products intentionally share the same 404 response.
 type PublicHandler struct {
 	catalog PublicCatalogApplication
+	media   publicProductMediaReader
+}
+
+type publicProductMediaReader interface {
+	mediaport.ImageVariantReader
+	LocalImageExists(context.Context, int64) (bool, error)
 }
 
 // PublicCatalogApplication is deliberately narrower than the admin catalog:
@@ -51,12 +58,25 @@ func NewPublicHandler(catalog PublicCatalogApplication) (*PublicHandler, error) 
 	return &PublicHandler{catalog: catalog}, nil
 }
 
+// SetPublicMediaReader supplies the existing Media read Port. The public
+// product route independently checks that an enabled Product contains the
+// exact image-library binding before it reads any bytes.
+func (h *PublicHandler) SetPublicMediaReader(media publicProductMediaReader) error {
+	if h == nil || media == nil {
+		return errors.New("public product media reader is required")
+	}
+	h.media = media
+	return nil
+}
+
 func (h *PublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.catalog == nil {
 		http.NotFound(w, r)
 		return
 	}
 	switch {
+	case strings.HasPrefix(r.URL.Path, "/api/h5/product-images/"):
+		h.detailMedia(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/public/products/"):
 		h.publicAPI(w, r)
 	case strings.HasPrefix(r.URL.Path, "/p/"):
@@ -119,19 +139,8 @@ func (h *PublicHandler) publicPage(w http.ResponseWriter, r *http.Request, payme
 }
 
 func (h *PublicHandler) enabledProduct(r *http.Request, code string) (publicProduct, bool) {
-	value, err := h.catalog.GetByCode(r.Context(), code)
-	if err != nil {
-		legacyID, isLegacyID := legacyPublicProductID(code)
-		if !isLegacyID || !errors.Is(err, productapp.ErrNotFound) {
-			return publicProduct{}, false
-		}
-		value, err = h.catalog.Get(r.Context(), legacyID)
-		if err != nil {
-			return publicProduct{}, false
-		}
-	}
-	local, err := productapp.ProjectLocalProduct(value)
-	if err != nil || local.Lifecycle != productport.LocalProductEnabled || !local.Enabled {
+	value, ok := h.enabledProductValue(r, code)
+	if !ok {
 		return publicProduct{}, false
 	}
 	var projection struct {
@@ -144,11 +153,90 @@ func (h *PublicHandler) enabledProduct(r *http.Request, code string) (publicProd
 	if strings.TrimSpace(projection.BuyButtonText) == "" {
 		projection.BuyButtonText = "立即购买"
 	}
-	heroURL := ""
-	if len(value.Images) > 0 {
-		heroURL = value.Images[0]
+	images, imageErr := productapp.PublicProductImageURLs(value)
+	if imageErr != nil {
+		return publicProduct{}, false
 	}
-	return publicProduct{ID: value.ID, Name: value.Name, Description: value.Description, PriceMinor: value.PriceMinor, Currency: value.Currency, Images: append([]string(nil), value.Images...), HeroURL: heroURL, PaymentPath: "/pay/" + url.PathEscape(value.ProductCode), BuyButtonText: projection.BuyButtonText, ProductKind: "standard", CouponTargetRef: "standard_product:" + strconv.FormatInt(int64(value.ID), 10), RequireMobile: projection.RequireMobile}, true
+	heroURL := ""
+	if len(images) > 0 {
+		heroURL = images[0]
+	}
+	return publicProduct{ID: value.ID, Name: value.Name, Description: value.Description, PriceMinor: value.PriceMinor, Currency: value.Currency, Images: images, HeroURL: heroURL, PaymentPath: "/pay/" + url.PathEscape(value.ProductCode), BuyButtonText: projection.BuyButtonText, ProductKind: "standard", CouponTargetRef: "standard_product:" + strconv.FormatInt(int64(value.ID), 10), RequireMobile: projection.RequireMobile}, true
+}
+
+func (h *PublicHandler) enabledProductValue(r *http.Request, code string) (productport.Product, bool) {
+	value, err := h.catalog.GetByCode(r.Context(), code)
+	if err != nil {
+		legacyID, isLegacyID := legacyPublicProductID(code)
+		if !isLegacyID || !errors.Is(err, productapp.ErrNotFound) {
+			return productport.Product{}, false
+		}
+		value, err = h.catalog.Get(r.Context(), legacyID)
+		if err != nil {
+			return productport.Product{}, false
+		}
+	}
+	local, err := productapp.ProjectLocalProduct(value)
+	if err != nil || local.Lifecycle != productport.LocalProductEnabled || !local.Enabled {
+		return productport.Product{}, false
+	}
+	return value, true
+}
+
+func (h *PublicHandler) detailMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || r.URL.RawQuery != "" || h.media == nil {
+		http.NotFound(w, r)
+		return
+	}
+	const prefix = "/api/h5/product-images/"
+	parts := strings.Split(strings.TrimPrefix(r.URL.EscapedPath(), prefix), "/")
+	if len(parts) != 4 || parts[2] != "variants" || parts[3] != "original" {
+		http.NotFound(w, r)
+		return
+	}
+	code, err := url.PathUnescape(parts[0])
+	id, idErr := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || code == "" || code != strings.TrimSpace(code) || len(code) > 200 || strings.ContainsRune(code, '\x00') || idErr != nil || id < 1 || strconv.FormatInt(id, 10) != parts[1] {
+		http.NotFound(w, r)
+		return
+	}
+	product, ok := h.enabledProductValue(r, code)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	ids, idsErr := productapp.PublicProductImageIDs(product)
+	if idsErr != nil || !containsImageID(ids, id) {
+		http.NotFound(w, r)
+		return
+	}
+	exists, existsErr := h.media.LocalImageExists(r.Context(), id)
+	if existsErr != nil {
+		http.Error(w, "media unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !exists {
+		http.NotFound(w, r)
+		return
+	}
+	variant, variantErr := h.media.GetImageVariant(r.Context(), id, "original")
+	if variantErr != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", variant.MediaType)
+	w.Header().Set("ETag", variant.ETag)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_, _ = w.Write(variant.Content)
+}
+
+func containsImageID(ids []int64, id int64) bool {
+	for _, candidate := range ids {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
 }
 
 // legacyPublicProductID recognizes only the numeric route format generated by

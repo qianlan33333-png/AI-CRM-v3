@@ -11,6 +11,10 @@ on:
         description: Run HXC activation and full business acceptance (manual opt-in only)
         type: boolean
         default: false
+      tag_catalog_mutation_rollout:
+        description: Activate official WeCom tag catalog writes after the release is ready (manual opt-in only)
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
   push:
@@ -83,6 +87,8 @@ jobs:
           python3 scripts/audit/test_check_new_exact_duplicates.py
           python3 scripts/audit/test_check_source_authority_changes.py
           scripts/audit/check-dedup-base-diff.sh .
+      - name: Verify controlled runtime configuration contracts
+        run: bash scripts/test-configure-wecom-tag-catalog-mutation-runtime.sh
       - name: Upload preflight evidence
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
@@ -361,5 +367,28 @@ jobs:
           scp "${ssh_flags[@]}" deploy/configure-payment-h5-oauth-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA} skip-if-provider-disabled"
+      - name: Activate official WeCom tag catalog mutations
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_catalog_mutation_rollout }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          local_config="$RUNNER_TEMP/aicrm-tag-catalog-mutation-${GITHUB_SHA}.env"
+          remote_config="/tmp/aicrm-tag-catalog-mutation-${GITHUB_SHA}.env"
+          remote_configurer="/tmp/configure-wecom-tag-catalog-mutation-runtime-${GITHUB_SHA}.sh"
+          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          cleanup() {
+            rm -f -- "$local_config"
+            ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "rm -f -- ${remote_config} ${remote_configurer}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          umask 077
+          printf 'AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_ENABLED=true\nAICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_PERMISSION=catalog-write-authorized\n' > "$local_config"
+          scp "${ssh_flags[@]}" "$local_config" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_config}"
+          scp "${ssh_flags[@]}" deploy/configure-wecom-tag-catalog-mutation-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
+          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}"
       - name: Verify the public server is running this release
         run: python3 scripts/ci/verify_deployment.py https://id-dev.youcangogogo.com "$GITHUB_SHA"

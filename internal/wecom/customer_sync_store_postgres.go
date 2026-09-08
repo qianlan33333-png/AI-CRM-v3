@@ -17,6 +17,8 @@ import (
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
+const maxProviderTagFilterCandidates = 100001
+
 type PostgreSQLCustomerSyncStore struct{}
 
 func NewPostgreSQLCustomerSyncStore() PostgreSQLCustomerSyncStore {
@@ -477,6 +479,41 @@ func (PostgreSQLCustomerSyncStore) CustomerTagObservations(ctx context.Context, 
 	}
 	return items, rows.Err()
 }
+
+// ListCustomerIDsForProviderTag is a read-only, completed-sync membership
+// lookup for the Customer directory.  It intentionally requires the exact
+// Provider tag ID; local Tag names and unbound local tags cannot broaden the
+// result.  Stale and in-progress observations do not describe a current
+// filter result.
+func (PostgreSQLCustomerSyncStore) ListCustomerIDsForProviderTag(ctx context.Context, providerTagID string, limit int) ([]customerdomain.CustomerID, error) {
+	if !validFollowText(providerTagID, 128) || limit < 1 || limit > maxProviderTagFilterCandidates {
+		return nil, ErrSyncCAS
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT DISTINCT observation.customer_id
+		FROM wecom_customer_tag_observations observation
+		JOIN wecom_customer_sync_runs run ON run.id=observation.last_seen_run_id AND run.status='succeeded'
+		WHERE observation.provider_tag_id=$1 AND observation.provider_tag_type=1 AND observation.observation_status='active'
+		ORDER BY observation.customer_id LIMIT $2`, providerTagID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]customerdomain.CustomerID, 0)
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	return result, rows.Err()
+}
+
+var _ wecomport.ProviderTagCustomerLister = PostgreSQLCustomerSyncStore{}
 
 func (PostgreSQLCustomerSyncStore) Complete(ctx context.Context, id, version, stale int64) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)

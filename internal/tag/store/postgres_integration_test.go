@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	tagapp "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/app"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag/domain"
@@ -191,13 +192,15 @@ func Test0019BackfillsLatestValidatedSnapshotIntoEmptyCatalog(t *testing.T) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	projectionSQL, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0019_tag_catalog_sync_projection.sql"))
+	base := filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations")
+	projectionSQL, err := os.ReadFile(filepath.Join(base, "0019_tag_catalog_sync_projection.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = native.Exec(ctx, string(projectionSQL)); err != nil {
 		t.Fatal(err)
 	}
+	applyTagCatalogMutationMigrations(t, native, base)
 	var state, eventType string
 	var groups, tags, groupBindings, tagBindings int
 	if err = native.QueryRow(ctx, `SELECT state FROM tag_sync_receipts WHERE id=1`).Scan(&state); err != nil {
@@ -219,6 +222,302 @@ func Test0019BackfillsLatestValidatedSnapshotIntoEmptyCatalog(t *testing.T) {
 	if state != "executed" || groups != 1 || tags != 2 || groupBindings != 1 || tagBindings != 2 || eventType != "tag.catalog_sync_backfilled" {
 		t.Fatalf("backfill state=%s groups=%d tags=%d group_bindings=%d tag_bindings=%d event=%s", state, groups, tags, groupBindings, tagBindings, eventType)
 	}
+}
+
+func TestPostgreSQLCatalogArchiveOutcomeRemainsVisibleAfterLocalArchive(t *testing.T) {
+	native, cleanup := tagIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := tagapp.NewService(uow, repository, repository, repository, repository)
+	_, tag, err := service.CreateGroup(ctx, domain.Command{Actor: 7, IdempotencyKey: "archive-visible-group-key", GroupName: "Lifecycle", FirstTagName: "Warm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id) VALUES('provider-tag-visible',$1)`, tag.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ArchiveTag(ctx, domain.Command{Actor: 7, TagID: tag.ID, IdempotencyKey: "archive-visible-tag-key-01"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.GetTag(ctx, tag.ID); !errors.Is(err, tagapp.ErrNotFound) {
+		t.Fatalf("archived tag still in active catalog: %v", err)
+	}
+	var intent tagport.CatalogMutationIntent
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var reserveErr error
+		intent, reserveErr = repository.ReserveCatalogMutation(tx, tagport.CatalogMutationPlan{Operation: tagport.CatalogTagArchive, Actor: 7, TagID: tag.ID, IdempotencyKey: "archive-visible-tag-key-01"})
+		if reserveErr != nil {
+			return reserveErr
+		}
+		return repository.AcceptCatalogMutation(tx, intent.ID, tagport.CatalogMutationEffectReceipt{EffectID: intent.ID, QueueJobID: intent.ID, EffectRef: "eer_1", EffectState: "queued", AcceptReceiptID: "eerop_1", QueueReceiptID: "eerop_1"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err := service.ArchiveOperations(ctx)
+	if err != nil || len(operations) != 1 || operations[0].Operation != tagport.CatalogTagArchive || operations[0].LocalID != tag.ID || operations[0].State != "queued" {
+		t.Fatalf("queued archive operations = %#v, %v", operations, err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		return repository.CompleteCatalogMutation(tx, tagport.CatalogMutationCompletion{EffectRef: "eer_1", State: "outcome_unknown", ResultDigest: "sha256:" + strings.Repeat("c", 64), Attempt: 1, Generation: 1, Fence: 1, CompletedAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = service.ArchiveOperations(ctx)
+	if err != nil || len(operations) != 1 || operations[0].LocalID != tag.ID || operations[0].State != "outcome_unknown" {
+		t.Fatalf("unknown archive operations = %#v, %v", operations, err)
+	}
+}
+
+func TestPostgreSQLCatalogMutationReceiptBindsOnlyConfirmedProviderCreate(t *testing.T) {
+	native, cleanup := tagIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := tagapp.NewService(uow, repository, repository, repository, repository)
+
+	unknownGroup, unknownTag, err := service.CreateGroup(ctx, domain.Command{Actor: 7, IdempotencyKey: "mutation-unknown-create", GroupName: "Unknown", FirstTagName: "Pending"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := reserveCatalogMutation(t, ctx, uow, repository, tagport.CatalogMutationPlan{Operation: tagport.CatalogGroupCreate, Actor: 7, IdempotencyKey: "mutation-unknown-create", GroupID: unknownGroup.ID, TagID: unknownTag.ID, GroupName: unknownGroup.Name, TagName: unknownTag.Name})
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		return repository.CompleteCatalogMutation(tx, tagport.CatalogMutationCompletion{EffectRef: unknown.EffectRef, State: "outcome_unknown", ResultDigest: "sha256:" + strings.Repeat("a", 64), Attempt: 1, Generation: 1, Fence: 1, CompletedAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var unknownBindings int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM tag_provider_group_bindings WHERE group_id=$1`, unknownGroup.ID).Scan(&unknownBindings); err != nil || unknownBindings != 0 {
+		t.Fatalf("unknown create bindings=%d err=%v", unknownBindings, err)
+	}
+
+	confirmedGroup, confirmedTag, err := service.CreateGroup(ctx, domain.Command{Actor: 7, IdempotencyKey: "mutation-confirmed-create", GroupName: "Confirmed", FirstTagName: "Bound"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed := reserveCatalogMutation(t, ctx, uow, repository, tagport.CatalogMutationPlan{Operation: tagport.CatalogGroupCreate, Actor: 7, IdempotencyKey: "mutation-confirmed-create", GroupID: confirmedGroup.ID, TagID: confirmedTag.ID, GroupName: confirmedGroup.Name, TagName: confirmedTag.Name})
+	readbackAt := time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC)
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		return repository.CompleteCatalogMutation(tx, tagport.CatalogMutationCompletion{EffectRef: confirmed.EffectRef, State: "executed", ResultDigest: "sha256:" + strings.Repeat("b", 64), ProviderGroupID: "provider-group-confirmed", ProviderTagID: "provider-tag-confirmed", ReadbackAt: &readbackAt, Attempt: 1, Generation: 1, Fence: 1, CompletedAt: readbackAt})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var boundGroup, boundTag int64
+	if err = native.QueryRow(ctx, `SELECT group_id FROM tag_provider_group_bindings WHERE provider_group_id='provider-group-confirmed'`).Scan(&boundGroup); err != nil || boundGroup != confirmedGroup.ID {
+		t.Fatalf("bound group=%d err=%v", boundGroup, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT tag_id FROM tag_provider_tag_bindings WHERE provider_tag_id='provider-tag-confirmed'`).Scan(&boundTag); err != nil || boundTag != confirmedTag.ID {
+		t.Fatalf("bound tag=%d err=%v", boundTag, err)
+	}
+	catalog, err := service.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range catalog.Groups {
+		if group.ID == unknownGroup.ID && (group.ProviderMutationState != "outcome_unknown" || group.ProviderReadbackAt != nil) {
+			t.Fatalf("unknown group status=%+v", group)
+		}
+		if group.ID == confirmedGroup.ID && (group.ProviderMutationState != "executed" || group.ProviderReadbackAt == nil || !group.ProviderReadbackAt.Equal(readbackAt)) {
+			t.Fatalf("confirmed group status=%+v", group)
+		}
+	}
+}
+
+type serialCatalogMutationEnqueuer struct{}
+
+func (serialCatalogMutationEnqueuer) EnqueueCatalogMutation(_ context.Context, intent tagport.CatalogMutationIntent, _ string) (tagport.CatalogMutationEffectReceipt, error) {
+	value := strconv.FormatInt(intent.ID, 10)
+	return tagport.CatalogMutationEffectReceipt{EffectID: intent.ID, QueueJobID: intent.ID, EffectRef: "eer_" + value, EffectState: "queued", AcceptReceiptID: "eerop_" + value, QueueReceiptID: "eerop_" + value}, nil
+}
+
+func TestPostgreSQLCatalogMutationSerializesPendingProviderScope(t *testing.T) {
+	native, cleanup := tagIntegrationPool(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed local catalog state before the provider-write seam is bound.
+	seed := tagapp.NewService(uow, repository, repository, repository, repository)
+	group, tag, err := seed.CreateGroup(ctx, domain.Command{Actor: 7, IdempotencyKey: "scope-seed-group-key", GroupName: "范围", FirstTagName: "初始"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `INSERT INTO tag_provider_group_bindings(provider_group_id,group_id) VALUES('provider-scope-group',$1)`, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id) VALUES('provider-scope-tag',$1)`, tag.ID); err != nil {
+		t.Fatal(err)
+	}
+	service := tagapp.NewService(uow, repository, repository, repository, repository)
+	if err = service.BindProviderMutations(serialCatalogMutationEnqueuer{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two different idempotency keys race a single tag. The parent-group lock
+	// and pending receipt let exactly one local mutation and one EER intent win.
+	start := make(chan struct{})
+	type updateResult struct{ err error }
+	results := make(chan updateResult, 2)
+	for _, name := range []string{"名称-A", "名称-B"} {
+		name := name
+		go func() {
+			<-start
+			_, updateErr := service.UpdateTag(ctx, domain.Command{Actor: 7, TagID: tag.ID, IdempotencyKey: "scope-rename-" + name, TagName: name})
+			results <- updateResult{err: updateErr}
+		}()
+	}
+	close(start)
+	successes, conflicts := 0, 0
+	for range 2 {
+		result := <-results
+		if result.err == nil {
+			successes++
+		} else if errors.Is(result.err, tagapp.ErrConflict) {
+			conflicts++
+		} else {
+			t.Fatalf("concurrent update error=%v", result.err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent updates successes=%d conflicts=%d", successes, conflicts)
+	}
+	var renameEffects, renameAudits int
+	var renameEffect string
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM tag_catalog_mutation_receipts WHERE operation='tag_update'`).Scan(&renameEffects); err != nil || renameEffects != 1 {
+		t.Fatalf("rename receipts=%d err=%v", renameEffects, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM tag_audit_events WHERE event_type='tag.catalog_tag_update'`).Scan(&renameAudits); err != nil || renameAudits != 1 {
+		t.Fatalf("rename audit rows=%d err=%v", renameAudits, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT effect_ref FROM tag_catalog_mutation_receipts WHERE operation='tag_update'`).Scan(&renameEffect); err != nil {
+		t.Fatal(err)
+	}
+
+	// An ambiguous outcome is still unresolved. A new key cannot overwrite the
+	// local name or make a second external call until a real completion arrives.
+	completeCatalogMutationForTest(t, ctx, uow, repository, renameEffect, "outcome_unknown", "", "")
+	if _, err = service.UpdateTag(ctx, domain.Command{Actor: 7, TagID: tag.ID, IdempotencyKey: "scope-rename-unknown", TagName: "未知后不得覆盖"}); !errors.Is(err, tagapp.ErrConflict) {
+		t.Fatalf("unknown prior effect update error=%v", err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM tag_catalog_mutation_receipts WHERE operation='tag_update'`).Scan(&renameEffects); err != nil || renameEffects != 1 {
+		t.Fatalf("unknown prior effect created another receipt count=%d err=%v", renameEffects, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM tag_audit_events WHERE event_type='tag.catalog_tag_update'`).Scan(&renameAudits); err != nil || renameAudits != 1 {
+		t.Fatalf("unknown prior effect created another audit count=%d err=%v", renameAudits, err)
+	}
+
+	// A terminal reconciliation releases the scope; the next mutation then
+	// queues normally and may itself receive an executed readback.
+	completeCatalogMutationForTest(t, ctx, uow, repository, renameEffect, "reconciled", "", "")
+	if _, err = service.UpdateTag(ctx, domain.Command{Actor: 7, TagID: tag.ID, IdempotencyKey: "scope-rename-after-reconcile", TagName: "确认后可改"}); err != nil {
+		t.Fatalf("terminal prior effect did not release scope: %v", err)
+	}
+	var executedRenameEffect string
+	if err = native.QueryRow(ctx, `SELECT effect_ref FROM tag_catalog_mutation_receipts WHERE operation='tag_update' ORDER BY id DESC LIMIT 1`).Scan(&executedRenameEffect); err != nil {
+		t.Fatal(err)
+	}
+	completeCatalogMutationForTest(t, ctx, uow, repository, executedRenameEffect, "executed", "", "")
+
+	// A child create owns the same parent scope. A group archive that races it
+	// must roll back entirely: no hidden archive audit, local archive, or EER.
+	child, err := service.CreateTag(ctx, domain.Command{Actor: 7, GroupID: group.ID, GroupName: group.Name, TagName: "待同步子标签", IdempotencyKey: "scope-child-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ArchiveGroup(ctx, domain.Command{Actor: 7, GroupID: group.ID, IdempotencyKey: "scope-group-archive-pending-child"}); !errors.Is(err, tagapp.ErrConflict) {
+		t.Fatalf("archive with pending child create error=%v", err)
+	}
+	if _, err = service.GetGroup(ctx, group.ID); err != nil {
+		t.Fatalf("group archive rollback lost local group: %v", err)
+	}
+	if _, err = service.GetTag(ctx, child.ID); err != nil {
+		t.Fatalf("group archive rollback lost child tag: %v", err)
+	}
+	var archiveEffects, archiveAudits int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM tag_catalog_mutation_receipts WHERE operation='group_archive'`).Scan(&archiveEffects); err != nil || archiveEffects != 0 {
+		t.Fatalf("blocked group archive receipt count=%d err=%v", archiveEffects, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM tag_audit_events WHERE event_type='tag.catalog_group_archive'`).Scan(&archiveAudits); err != nil || archiveAudits != 0 {
+		t.Fatalf("blocked group archive audit count=%d err=%v", archiveAudits, err)
+	}
+	var childEffect string
+	if err = native.QueryRow(ctx, `SELECT effect_ref FROM tag_catalog_mutation_receipts WHERE operation='tag_create' ORDER BY id DESC LIMIT 1`).Scan(&childEffect); err != nil {
+		t.Fatal(err)
+	}
+	completeCatalogMutationForTest(t, ctx, uow, repository, childEffect, "executed", "", "provider-scope-child")
+	if _, err = service.ArchiveGroup(ctx, domain.Command{Actor: 7, GroupID: group.ID, IdempotencyKey: "scope-group-archive-after-child"}); err != nil {
+		t.Fatalf("terminal child effect did not release group archive: %v", err)
+	}
+}
+
+func completeCatalogMutationForTest(t *testing.T, ctx context.Context, uow platformport.UnitOfWork, repository *Repository, effectRef, state, providerGroupID, providerTagID string) {
+	t.Helper()
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		return repository.CompleteCatalogMutation(tx, tagport.CatalogMutationCompletion{
+			EffectRef: effectRef, State: state, ResultDigest: "sha256:" + strings.Repeat("d", 64), ProviderGroupID: providerGroupID, ProviderTagID: providerTagID,
+			Attempt: 1, Generation: 1, Fence: 1, CompletedAt: time.Now().UTC(),
+		})
+	}); err != nil {
+		t.Fatalf("complete %s state=%s: %v", effectRef, state, err)
+	}
+}
+
+func reserveCatalogMutation(t *testing.T, ctx context.Context, uow platformport.UnitOfWork, repository *Repository, plan tagport.CatalogMutationPlan) tagport.CatalogMutationDispatch {
+	t.Helper()
+	var intent tagport.CatalogMutationIntent
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		intent, err = repository.ReserveCatalogMutation(tx, plan)
+		if err != nil {
+			return err
+		}
+		return repository.AcceptCatalogMutation(tx, intent.ID, tagport.CatalogMutationEffectReceipt{EffectID: intent.ID, QueueJobID: intent.ID, EffectRef: "eer_" + strconv.FormatInt(intent.ID, 10), EffectState: "queued", AcceptReceiptID: "eerop_" + strconv.FormatInt(intent.ID, 10), QueueReceiptID: "eerop_" + strconv.FormatInt(intent.ID, 10)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var dispatch tagport.CatalogMutationDispatch
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		dispatch, err = repository.ReadCatalogMutationDispatch(tx, catalogMutationSource(intent.ID))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return dispatch
 }
 
 func tagIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
@@ -282,6 +581,7 @@ func tagIntegrationPoolWithProjection(t *testing.T, includeProjection bool) (*pg
 		if _, err = pool.Exec(ctx, string(projectionSQL)); err != nil {
 			t.Fatal(err)
 		}
+		applyTagCatalogMutationMigrations(t, pool, base)
 	}
 	return pool, func() {
 		pool.Close()
@@ -289,5 +589,20 @@ func tagIntegrationPoolWithProjection(t *testing.T, includeProjection bool) (*pg
 		defer cleanupCancel()
 		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
 		admin.Close()
+	}
+}
+
+func applyTagCatalogMutationMigrations(t *testing.T, pool *pgxpool.Pool, base string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, migration := range []string{"0106_tag_catalog_mutation_effect.sql", "0107_tag_catalog_mutation_receipts.sql"} {
+		body, err := os.ReadFile(filepath.Join(base, migration))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(ctx, string(body)); err != nil {
+			t.Fatalf("apply %s: %v", migration, err)
+		}
 	}
 }

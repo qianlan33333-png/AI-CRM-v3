@@ -227,7 +227,7 @@ func (handler *Handler) list(response nethttp.ResponseWriter, request *nethttp.R
 	}
 	values := request.URL.Query()
 	for key, entries := range values {
-		if len(entries) != 1 || (key != "keyword" && key != "phone" && key != "status" && key != "cursor" && key != "limit") {
+		if len(entries) != 1 || (key != "keyword" && key != "phone" && key != "status" && key != "cursor" && key != "limit" && key != "owner_staff_id" && key != "tag_id") {
 			handler.writeError(response, customerapp.ErrInvalidQuery)
 			return
 		}
@@ -244,6 +244,18 @@ func (handler *Handler) list(response nethttp.ResponseWriter, request *nethttp.R
 	requestData := customerapp.ListRequest{Limit: limit, Cursor: values.Get("cursor"), Filters: customerapp.Filters{
 		Keyword: values.Get("keyword"), Status: values.Get("status"),
 	}}
+	for key, target := range map[string]*int64{"owner_staff_id": &requestData.Filters.OwnerStaffID, "tag_id": &requestData.Filters.TagID} {
+		raw := values.Get(key)
+		if raw == "" {
+			continue
+		}
+		parsed, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || parsed < 1 || strconv.FormatInt(parsed, 10) != raw {
+			handler.writeError(response, customerapp.ErrInvalidQuery)
+			return
+		}
+		*target = parsed
+	}
 	var page customerapp.Page
 	err = handler.uow.Within(request.Context(), func(txContext context.Context) error {
 		if phone := values.Get("phone"); phone != "" {
@@ -702,6 +714,8 @@ func (handler *Handler) writeError(response nethttp.ResponseWriter, err error) {
 		status, code = nethttp.StatusNotFound, "customer_not_found"
 	case errors.Is(err, customerapp.ErrInvalidQuery), errors.Is(err, customerapp.ErrInvalidCursor), errors.Is(err, identitydomain.ErrInvalidReference):
 		status, code = nethttp.StatusBadRequest, "invalid_request"
+	case errors.Is(err, customerapp.ErrFilterUnavailable):
+		status, code = nethttp.StatusServiceUnavailable, "directory_filter_unavailable"
 	case errors.Is(err, customerport.ErrTagCommandInvalid):
 		status, code = nethttp.StatusBadRequest, "invalid_tag_command"
 	case errors.Is(err, customerport.ErrTagCommandConflict):

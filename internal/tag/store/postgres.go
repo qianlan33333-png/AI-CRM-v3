@@ -59,7 +59,13 @@ func (r *Repository) ListGroups(ctx context.Context) ([]domain.Group, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id,group_name,sort_order FROM tag_groups WHERE archived_at IS NULL ORDER BY sort_order,id`)
+	rows, err := tx.Query(ctx, `SELECT g.id,g.group_name,g.sort_order,COALESCE(m.state,''),m.readback_at
+		FROM tag_groups g
+		LEFT JOIN LATERAL (
+			SELECT state,readback_at FROM tag_catalog_mutation_receipts
+			WHERE group_id=g.id ORDER BY id DESC LIMIT 1
+		) m ON true
+		WHERE g.archived_at IS NULL ORDER BY g.sort_order,g.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +73,7 @@ func (r *Repository) ListGroups(ctx context.Context) ([]domain.Group, error) {
 	out := []domain.Group{}
 	for rows.Next() {
 		var v domain.Group
-		if err = rows.Scan(&v.ID, &v.Name, &v.SortOrder); err != nil {
+		if err = rows.Scan(&v.ID, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -79,7 +85,13 @@ func (r *Repository) ListTags(ctx context.Context) ([]domain.Tag, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id WHERE t.archived_at IS NULL AND g.archived_at IS NULL ORDER BY g.sort_order,g.id,t.sort_order,t.id`)
+	rows, err := tx.Query(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at
+		FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id
+		LEFT JOIN LATERAL (
+			SELECT state,readback_at FROM tag_catalog_mutation_receipts
+			WHERE tag_id=t.id ORDER BY id DESC LIMIT 1
+		) m ON true
+		WHERE t.archived_at IS NULL AND g.archived_at IS NULL ORDER BY g.sort_order,g.id,t.sort_order,t.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +99,7 @@ func (r *Repository) ListTags(ctx context.Context) ([]domain.Tag, error) {
 	out := []domain.Tag{}
 	for rows.Next() {
 		var v domain.Tag
-		if err = rows.Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder); err != nil {
+		if err = rows.Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -159,13 +171,328 @@ func (r *Repository) LocalTagID(ctx context.Context, providerTagID string) (int6
 	return localID, err == nil, err
 }
 
+func catalogMutationSource(id int64) string {
+	sum := sha256.Sum256([]byte("tag.catalog.mutation.source.v1\x00" + strconv.FormatInt(id, 10)))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// GuardCatalogMutation acquires the parent group row before a local catalog
+// write. That gives group writes and child writes one lock order, then checks
+// the durable mutation receipts while the lock is held. It treats a provider
+// outcome as unresolved until it has a terminal receipt; in particular,
+// outcome_unknown never permits a new idempotency key to overtake it.
+func (r *Repository) GuardCatalogMutation(ctx context.Context, scope tagport.CatalogMutationScope) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	groupID, err := catalogMutationScopeGroupID(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	return guardCatalogMutationScope(ctx, tx, groupID, scope.TagID)
+}
+
+func catalogMutationScopeGroupID(ctx context.Context, tx pgx.Tx, scope tagport.CatalogMutationScope) (int64, error) {
+	switch scope.Operation {
+	case tagport.CatalogGroupCreate, tagport.CatalogGroupUpdate, tagport.CatalogGroupArchive, tagport.CatalogTagCreate:
+		if scope.GroupID < 1 {
+			return 0, ErrInvalid
+		}
+		return scope.GroupID, nil
+	case tagport.CatalogTagUpdate, tagport.CatalogTagArchive:
+		if scope.TagID < 1 {
+			return 0, ErrInvalid
+		}
+		var groupID int64
+		err := tx.QueryRow(ctx, `SELECT group_id FROM tag_catalog_tags WHERE id=$1`, scope.TagID).Scan(&groupID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrConflict
+		}
+		if err != nil {
+			return 0, err
+		}
+		return groupID, nil
+	default:
+		return 0, ErrInvalid
+	}
+}
+
+func guardCatalogMutationScope(ctx context.Context, tx pgx.Tx, groupID, tagID int64) error {
+	if groupID < 1 || tagID < 0 {
+		return ErrInvalid
+	}
+	var lockedGroupID int64
+	err := tx.QueryRow(ctx, `SELECT id FROM tag_groups WHERE id=$1 FOR UPDATE`, groupID).Scan(&lockedGroupID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrConflict
+	}
+	if err != nil || lockedGroupID != groupID {
+		return err
+	}
+	var pending bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM tag_catalog_mutation_receipts
+		WHERE state IN ('reserved','queued','outcome_unknown','retryable_failed')
+		  AND (group_id=$1 OR ($2 > 0 AND tag_id=$2))
+	)`, groupID, tagID).Scan(&pending)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (r *Repository) ReserveCatalogMutation(ctx context.Context, plan tagport.CatalogMutationPlan) (tagport.CatalogMutationIntent, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return tagport.CatalogMutationIntent{}, err
+	}
+	if plan.Actor < 1 || plan.IdempotencyKey == "" || !validCatalogMutationPlan(plan) {
+		return tagport.CatalogMutationIntent{}, ErrInvalid
+	}
+	intent := tagport.CatalogMutationIntent{Operation: plan.Operation, Actor: plan.Actor, GroupID: plan.GroupID, TagID: plan.TagID, GroupName: plan.GroupName, TagName: plan.TagName}
+	scope := tagport.CatalogMutationScope{Operation: plan.Operation, GroupID: plan.GroupID, TagID: plan.TagID}
+	var scopeGroupID int64
+	switch plan.Operation {
+	case tagport.CatalogTagCreate:
+		err = tx.QueryRow(ctx, `SELECT provider_group_id FROM tag_provider_group_bindings WHERE group_id=$1`, plan.GroupID).Scan(&intent.ProviderGroupID)
+	case tagport.CatalogGroupUpdate, tagport.CatalogGroupArchive:
+		err = tx.QueryRow(ctx, `SELECT provider_group_id FROM tag_provider_group_bindings WHERE group_id=$1`, plan.GroupID).Scan(&intent.ProviderGroupID)
+	case tagport.CatalogTagUpdate, tagport.CatalogTagArchive:
+		err = tx.QueryRow(ctx, `SELECT binding.provider_tag_id,tag.group_id FROM tag_provider_tag_bindings binding JOIN tag_catalog_tags tag ON tag.id=binding.tag_id WHERE binding.tag_id=$1`, plan.TagID).Scan(&intent.ProviderTagID, &scope.GroupID)
+	case tagport.CatalogGroupCreate:
+		// The Provider allocates both identifiers and returns them in its
+		// confirmed response; no name lookup is permitted.
+	default:
+		return tagport.CatalogMutationIntent{}, ErrInvalid
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tagport.CatalogMutationIntent{}, ErrConflict
+	}
+	if err != nil {
+		return tagport.CatalogMutationIntent{}, err
+	}
+	scopeGroupID, err = catalogMutationScopeGroupID(ctx, tx, scope)
+	if err != nil {
+		return tagport.CatalogMutationIntent{}, err
+	}
+	if err = guardCatalogMutationScope(ctx, tx, scopeGroupID, plan.TagID); err != nil {
+		return tagport.CatalogMutationIntent{}, err
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO tag_catalog_mutation_receipts(operation,actor_admin_user_id,group_id,tag_id,group_name,tag_name,provider_group_id,provider_tag_id,state)
+		VALUES($1,$2,NULLIF($3,0),NULLIF($4,0),$5,$6,$7,$8,'reserved') RETURNING id`,
+		intent.Operation, intent.Actor, intent.GroupID, intent.TagID, intent.GroupName, intent.TagName, intent.ProviderGroupID, intent.ProviderTagID).Scan(&intent.ID)
+	if err != nil {
+		return tagport.CatalogMutationIntent{}, err
+	}
+	source := catalogMutationSource(intent.ID)
+	result, err := tx.Exec(ctx, `UPDATE tag_catalog_mutation_receipts SET source_ref_digest=$2 WHERE id=$1 AND state='reserved'`, intent.ID, source)
+	if err != nil || result.RowsAffected() != 1 {
+		if err != nil {
+			return tagport.CatalogMutationIntent{}, err
+		}
+		return tagport.CatalogMutationIntent{}, ErrConflict
+	}
+	return intent, nil
+}
+
+func validCatalogMutationPlan(plan tagport.CatalogMutationPlan) bool {
+	if plan.GroupName != strings.TrimSpace(plan.GroupName) || plan.TagName != strings.TrimSpace(plan.TagName) {
+		return false
+	}
+	switch plan.Operation {
+	case tagport.CatalogGroupCreate:
+		return plan.GroupID > 0 && plan.TagID > 0 && domain.ValidText(plan.GroupName) && domain.ValidText(plan.TagName)
+	case tagport.CatalogTagCreate:
+		return plan.GroupID > 0 && plan.TagID > 0 && domain.ValidText(plan.TagName) && plan.GroupName == ""
+	case tagport.CatalogGroupUpdate:
+		return plan.GroupID > 0 && plan.TagID == 0 && domain.ValidText(plan.GroupName) && plan.TagName == ""
+	case tagport.CatalogTagUpdate:
+		return plan.GroupID == 0 && plan.TagID > 0 && plan.GroupName == "" && domain.ValidText(plan.TagName)
+	case tagport.CatalogGroupArchive:
+		return plan.GroupID > 0 && plan.TagID == 0 && plan.GroupName == "" && plan.TagName == ""
+	case tagport.CatalogTagArchive:
+		return plan.GroupID == 0 && plan.TagID > 0 && plan.GroupName == "" && plan.TagName == ""
+	default:
+		return false
+	}
+}
+
+func (r *Repository) AcceptCatalogMutation(ctx context.Context, id int64, effect tagport.CatalogMutationEffectReceipt) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if id < 1 || effect.EffectID < 1 || effect.QueueJobID < 1 || effect.EffectRef == "" || effect.EffectState != "queued" || effect.AcceptReceiptID == "" || effect.QueueReceiptID == "" {
+		return ErrInvalid
+	}
+	result, err := tx.Exec(ctx, `UPDATE tag_catalog_mutation_receipts SET effect_ref=$2,accept_receipt_ref=$3,queue_receipt_ref=$4,state='queued',updated_at=clock_timestamp() WHERE id=$1 AND state='reserved'`, id, effect.EffectRef, effect.AcceptReceiptID, effect.QueueReceiptID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (r *Repository) ReadCatalogMutationDispatch(ctx context.Context, source string) (tagport.CatalogMutationDispatch, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return tagport.CatalogMutationDispatch{}, err
+	}
+	var out tagport.CatalogMutationDispatch
+	var operation string
+	err = tx.QueryRow(ctx, `SELECT id,operation,actor_admin_user_id,COALESCE(group_id,0),COALESCE(tag_id,0),group_name,tag_name,provider_group_id,provider_tag_id,effect_ref,source_ref_digest
+		FROM tag_catalog_mutation_receipts WHERE source_ref_digest=$1 AND state IN ('queued','outcome_unknown','retryable_failed')`, source).Scan(&out.ID, &operation, &out.Actor, &out.GroupID, &out.TagID, &out.GroupName, &out.TagName, &out.ProviderGroupID, &out.ProviderTagID, &out.EffectRef, &out.SourceRefDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tagport.CatalogMutationDispatch{}, ErrNotFound
+	}
+	if err != nil {
+		return tagport.CatalogMutationDispatch{}, err
+	}
+	out.Operation = tagport.CatalogMutationOperation(operation)
+	if out.SourceRefDigest != catalogMutationSource(out.ID) || !validCatalogMutationPlan(tagport.CatalogMutationPlan{Operation: out.Operation, Actor: out.Actor, GroupID: out.GroupID, TagID: out.TagID, GroupName: out.GroupName, TagName: out.TagName, IdempotencyKey: "accepted-intent-key"}) {
+		return tagport.CatalogMutationDispatch{}, ErrConflict
+	}
+	return out, nil
+}
+
+func (r *Repository) CompleteCatalogMutation(ctx context.Context, c tagport.CatalogMutationCompletion) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if c.EffectRef == "" || c.Attempt < 1 || c.Generation < 1 || c.Fence < 1 || c.CompletedAt.IsZero() || !validCatalogMutationState(c.State) {
+		return ErrInvalid
+	}
+	var intent tagport.CatalogMutationIntent
+	var state, oldDigest string
+	var attempts int32
+	var generation, fence int64
+	err = tx.QueryRow(ctx, `SELECT id,operation,actor_admin_user_id,COALESCE(group_id,0),COALESCE(tag_id,0),group_name,tag_name,provider_group_id,provider_tag_id,state,COALESCE(result_digest,''),attempt_count,completion_generation,completion_fence
+		FROM tag_catalog_mutation_receipts WHERE effect_ref=$1 FOR UPDATE`, c.EffectRef).Scan(&intent.ID, &intent.Operation, &intent.Actor, &intent.GroupID, &intent.TagID, &intent.GroupName, &intent.TagName, &intent.ProviderGroupID, &intent.ProviderTagID, &state, &oldDigest, &attempts, &generation, &fence)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if generation > c.Generation || (generation == c.Generation && fence > c.Fence) {
+		return ErrConflict
+	}
+	if state == c.State && oldDigest == c.ResultDigest && generation == c.Generation && fence == c.Fence && attempts >= c.Attempt {
+		return nil
+	}
+	if state != "queued" && state != "attempted" && state != "outcome_unknown" && state != "retryable_failed" {
+		return ErrConflict
+	}
+	if c.State == "executed" {
+		if err = applyCatalogMutationBinding(ctx, tx, intent, c); err != nil {
+			return err
+		}
+	}
+	_, err = tx.Exec(ctx, `UPDATE tag_catalog_mutation_receipts SET state=$2,result_digest=$3,readback_at=$4,attempt_count=GREATEST(attempt_count,$5),completion_generation=$6,completion_fence=$7,completed_at=$8,updated_at=clock_timestamp() WHERE id=$1`, intent.ID, c.State, c.ResultDigest, c.ReadbackAt, c.Attempt, c.Generation, c.Fence, c.CompletedAt.UTC())
+	return err
+}
+
+func validCatalogMutationState(value string) bool {
+	switch value {
+	case "executed", "outcome_unknown", "retryable_failed", "final_failed", "reconciled", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyCatalogMutationBinding(ctx context.Context, tx pgx.Tx, intent tagport.CatalogMutationIntent, c tagport.CatalogMutationCompletion) error {
+	switch intent.Operation {
+	case tagport.CatalogGroupCreate:
+		if c.ProviderGroupID == "" || c.ProviderTagID == "" {
+			return ErrInvalid
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO tag_provider_group_bindings(provider_group_id,group_id) VALUES($1,$2) ON CONFLICT(provider_group_id) DO UPDATE SET group_id=EXCLUDED.group_id,updated_at=clock_timestamp()`, c.ProviderGroupID, intent.GroupID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id) VALUES($1,$2) ON CONFLICT(provider_tag_id) DO UPDATE SET tag_id=EXCLUDED.tag_id,updated_at=clock_timestamp()`, c.ProviderTagID, intent.TagID)
+		return err
+	case tagport.CatalogTagCreate:
+		if c.ProviderTagID == "" {
+			return ErrInvalid
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id) VALUES($1,$2) ON CONFLICT(provider_tag_id) DO UPDATE SET tag_id=EXCLUDED.tag_id,updated_at=clock_timestamp()`, c.ProviderTagID, intent.TagID)
+		return err
+	default:
+		return nil
+	}
+}
+
+// ListArchiveMutationOperations keeps provider outcomes visible after the
+// local catalog row has been archived and therefore no longer appears in the
+// normal catalog list. The caller gets local IDs and durable receipt state,
+// never provider identifiers or a synthetic delivery result.
+func (r *Repository) ListArchiveMutationOperations(ctx context.Context, limit int) ([]tagport.ArchiveMutationOperation, error) {
+	if limit < 1 || limit > 100 {
+		return nil, ErrInvalid
+	}
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT operation,group_id,tag_id,state,updated_at,readback_at
+		FROM tag_catalog_mutation_receipts
+		WHERE operation IN ('group_archive','tag_archive')
+		  AND state NOT IN ('executed','reconciled')
+		ORDER BY updated_at DESC,id DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	operations := []tagport.ArchiveMutationOperation{}
+	for rows.Next() {
+		var operation string
+		var groupID, tagID *int64
+		var value tagport.ArchiveMutationOperation
+		if err := rows.Scan(&operation, &groupID, &tagID, &value.State, &value.RecordedAt, &value.ReadbackAt); err != nil {
+			return nil, err
+		}
+		value.Operation = tagport.CatalogMutationOperation(operation)
+		switch value.Operation {
+		case tagport.CatalogGroupArchive:
+			if groupID == nil || *groupID < 1 || tagID != nil {
+				return nil, ErrConflict
+			}
+			value.LocalID = *groupID
+		case tagport.CatalogTagArchive:
+			if tagID == nil || *tagID < 1 || groupID != nil {
+				return nil, ErrConflict
+			}
+			value.LocalID = *tagID
+		default:
+			return nil, ErrConflict
+		}
+		operations = append(operations, value)
+	}
+	return operations, rows.Err()
+}
+
 func (r *Repository) GetGroup(ctx context.Context, id int64) (domain.Group, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
 		return domain.Group{}, err
 	}
 	var v domain.Group
-	err = tx.QueryRow(ctx, `SELECT id,group_name,sort_order FROM tag_groups WHERE id=$1 AND archived_at IS NULL`, id).Scan(&v.ID, &v.Name, &v.SortOrder)
+	err = tx.QueryRow(ctx, `SELECT g.id,g.group_name,g.sort_order,COALESCE(m.state,''),m.readback_at
+		FROM tag_groups g
+		LEFT JOIN LATERAL (
+			SELECT state,readback_at FROM tag_catalog_mutation_receipts
+			WHERE group_id=g.id ORDER BY id DESC LIMIT 1
+		) m ON true
+		WHERE g.id=$1 AND g.archived_at IS NULL`, id).Scan(&v.ID, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Group{}, ErrNotFound
 	}
@@ -177,7 +504,13 @@ func (r *Repository) GetGroupIncludingArchived(ctx context.Context, id int64) (d
 		return domain.Group{}, err
 	}
 	var v domain.Group
-	err = tx.QueryRow(ctx, `SELECT id,group_name,sort_order FROM tag_groups WHERE id=$1`, id).Scan(&v.ID, &v.Name, &v.SortOrder)
+	err = tx.QueryRow(ctx, `SELECT g.id,g.group_name,g.sort_order,COALESCE(m.state,''),m.readback_at
+		FROM tag_groups g
+		LEFT JOIN LATERAL (
+			SELECT state,readback_at FROM tag_catalog_mutation_receipts
+			WHERE group_id=g.id ORDER BY id DESC LIMIT 1
+		) m ON true
+		WHERE g.id=$1`, id).Scan(&v.ID, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Group{}, ErrNotFound
 	}
@@ -189,7 +522,13 @@ func (r *Repository) GetTag(ctx context.Context, id int64) (domain.Tag, error) {
 		return domain.Tag{}, err
 	}
 	var v domain.Tag
-	err = tx.QueryRow(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id WHERE t.id=$1 AND t.archived_at IS NULL AND g.archived_at IS NULL`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder)
+	err = tx.QueryRow(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at
+		FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id
+		LEFT JOIN LATERAL (
+			SELECT state,readback_at FROM tag_catalog_mutation_receipts
+			WHERE tag_id=t.id ORDER BY id DESC LIMIT 1
+		) m ON true
+		WHERE t.id=$1 AND t.archived_at IS NULL AND g.archived_at IS NULL`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Tag{}, ErrNotFound
 	}
@@ -201,7 +540,13 @@ func (r *Repository) GetTagIncludingArchived(ctx context.Context, id int64) (dom
 		return domain.Tag{}, err
 	}
 	var v domain.Tag
-	err = tx.QueryRow(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id WHERE t.id=$1`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder)
+	err = tx.QueryRow(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at
+		FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id
+		LEFT JOIN LATERAL (
+			SELECT state,readback_at FROM tag_catalog_mutation_receipts
+			WHERE tag_id=t.id ORDER BY id DESC LIMIT 1
+		) m ON true
+		WHERE t.id=$1`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Tag{}, ErrNotFound
 	}

@@ -29,7 +29,14 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}<script>${script}</
 });
 try {
   dom.window.document.cookie = 'aicrm_admin_csrf=runtime-csrf; path=/';
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // The real catalog request includes a PostgreSQL read. Wait for its visible
+  // result instead of assuming it finishes within a fixed 30 ms startup gap.
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const ready = dom.window.document.querySelector('#customer-tag-batch [name="add_tag_ids"] option')?.textContent === '运行时分组 / 运行时标签';
+    if (ready && dom.window.document.querySelector('input[aria-label="选择客户 1"]')) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   const checkbox = dom.window.document.querySelector('input[aria-label="选择客户 1"]');
   if (!checkbox) throw new Error('actual Host list did not render selection');
   checkbox.checked = true;

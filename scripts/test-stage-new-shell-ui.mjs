@@ -14,11 +14,11 @@ const readManifest = (root) => JSON.parse(fs.readFileSync(path.join(root, 'asset
 const sourceManifest = readManifest(source);
 const stagedManifest = readManifest(stage);
 const entryKeys = [
-  'admin', 'tokens', 'labs',
+  'admin', 'adminSessionHost', 'standardComponentsHost', 'standardComponentsStableHost', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles',
 ];
-const groupOpsSupport = ['groupops/group_chat_picker.css', 'groupops/group_chat_picker.js', 'groupops/material_picker.css', 'groupops/material_picker.js', 'groupops/send_content_composer.css', 'groupops/send_content_composer.js', 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js'];
+const groupOpsSupport = ['assets/standard-components/operation_member_picker.js', 'assets/standard-components/group_chat_picker.css', 'assets/standard-components/group_chat_picker.js', 'assets/standard-components/material_picker.css', 'assets/standard-components/material_picker.js', 'assets/standard-components/send_content_composer.css', 'assets/standard-components/send_content_composer.js', 'assets/standard-components/wecom_tag_picker.css', 'assets/standard-components/wecom_tag_picker.js', 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js'];
 const selected = new Set();
 const includeClosure = (relative) => {
   if (selected.has(relative)) return;

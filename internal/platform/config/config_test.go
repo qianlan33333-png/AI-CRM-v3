@@ -331,6 +331,21 @@ func TestTagCatalogProviderRequiresNarrowExplicitPermission(t *testing.T) {
 	if err != nil || !cfg.TagCatalog.Enabled || cfg.Effects.ProviderEnabled {
 		t.Fatalf("config=%+v err=%v", cfg.TagCatalog, err)
 	}
+	t.Setenv("AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("expected mutation without External Effects and write grant to fail")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_PERMISSION", "catalog-write-authorized")
+	cfg, err = Load()
+	if err != nil || !cfg.TagCatalog.MutationEnabled || cfg.TagCatalog.MutationPermission != "catalog-write-authorized" {
+		t.Fatalf("mutation config=%+v err=%v", cfg.TagCatalog, err)
+	}
+	t.Setenv("AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_PERMISSION", "catalog-read-authorized")
+	if _, err = Load(); err == nil {
+		t.Fatal("accepted read permission for catalog mutation")
+	}
 }
 
 func TestAutomationOperationsProviderIsIndependentAndFailClosed(t *testing.T) {

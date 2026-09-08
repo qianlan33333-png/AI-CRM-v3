@@ -89,6 +89,56 @@ func TestCustomerTagObservationRefreshPostgreSQLPersistsOnlyProviderReadback(t *
 	}
 }
 
+func TestProviderTagCustomerListerUsesOnlyActiveOfficialTagsFromCompletedRuns(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	matching := newObservationCustomer(t, ctx, pool.Native())
+	personal := newObservationCustomer(t, ctx, pool.Native())
+	stale := newObservationCustomer(t, ctx, pool.Native())
+	pending := newObservationCustomer(t, ctx, pool.Native())
+	completedRun := seedObservationRun(t, ctx, pool.Native(), "directory-filter-completed", "tag_refresh", "wecom-corp:filter", "staff-filter", now)
+	var pendingRun int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,staff_ids)
+		VALUES('directory-filter-pending','manual','queued','wecom-corp:filter',jsonb_build_array('staff-filter'::text)) RETURNING id`).Scan(&pendingRun); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(customerID customerdomain.CustomerID, providerType int16, state string, runID int64) {
+		t.Helper()
+		var staleAt any
+		if state == "stale" {
+			staleAt = now
+		}
+		if _, err = pool.Native().Exec(ctx, `INSERT INTO wecom_customer_tag_observations(customer_id,corp_scope,employee_id,provider_tag_id,provider_tag_type,observed_name,observation_status,last_seen_run_id,observed_at,stale_at)
+			VALUES($1,'wecom-corp:filter','staff-filter','official-tag',$2,'目录筛选',$3,$4,$5,$6)`, customerID, providerType, state, runID, now, staleAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(matching, 1, "active", completedRun)
+	insert(personal, 2, "active", completedRun)
+	insert(stale, 1, "stale", completedRun)
+	insert(pending, 1, "active", pendingRun)
+
+	var ids []customerdomain.CustomerID
+	err = unit.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		ids, readErr = (PostgreSQLCustomerSyncStore{}).ListCustomerIDsForProviderTag(tx, "official-tag", 10)
+		return readErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != matching {
+		t.Fatalf("directory tag customers=%v want=[%d]", ids, matching)
+	}
+}
+
 func TestCustomerTagRefreshWinsOverInProgressFullSyncAndIsHiddenFromSyncListPostgreSQL(t *testing.T) {
 	pool, cleanup := wecomIntegrationPool(t)
 	defer cleanup()

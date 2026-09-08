@@ -120,6 +120,56 @@ func TestPublicProductRejectsMalformedCodePaths(t *testing.T) {
 	}
 }
 
+func TestPublicProductMediaUsesOnlyEnabledProductImageBindings(t *testing.T) {
+	now := time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC)
+	catalog := &testCatalog{product: productport.Product{
+		ID: 8, ProductCode: "course-9", Name: "公开商品", Description: "说明", PriceMinor: 990, Currency: "CNY", StockQuantity: 1,
+		Images: []string{"/api/admin/image-library/88/variants/original"}, CreatedBy: 9, CreatedAt: now, UpdatedAt: now, Version: 1, LocalLifecycle: productport.LocalProductEnabled,
+		LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`),
+	}}
+	handler, err := NewPublicHandler(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetPublicMediaReader(servicePeriodMediaStub{}); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewRecorder()
+	handler.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/public/products/course-9", nil))
+	if api.Code != http.StatusOK || !strings.Contains(api.Body.String(), "/api/h5/product-images/course-9/88/variants/original") || strings.Contains(api.Body.String(), "/api/admin/image-library/") {
+		t.Fatalf("public product status=%d body=%s", api.Code, api.Body.String())
+	}
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/p/course-9", nil))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "/api/h5/product-images/course-9/88/variants/original") || strings.Contains(page.Body.String(), "/api/admin/image-library/") {
+		t.Fatalf("public page status=%d body=%s", page.Code, page.Body.String())
+	}
+	allowed := httptest.NewRecorder()
+	handler.ServeHTTP(allowed, httptest.NewRequest(http.MethodGet, "/api/h5/product-images/course-9/88/variants/original", nil))
+	if allowed.Code != http.StatusOK || allowed.Body.String() != "image-88" || allowed.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("allowed status=%d body=%q headers=%v", allowed.Code, allowed.Body.String(), allowed.Header())
+	}
+	for _, path := range []string{
+		"/api/h5/product-images/course-9/89/variants/original",
+		"/api/h5/product-images/course-9/88/variants/thumb_320",
+		"/api/h5/product-images/course-9/88/variants/original?download=1",
+	} {
+		denied := httptest.NewRecorder()
+		handler.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, path, nil))
+		if denied.Code != http.StatusNotFound {
+			t.Fatalf("unbound path=%s status=%d", path, denied.Code)
+		}
+	}
+
+	catalog.product.LocalLifecycle = productport.LocalProductDraft
+	catalog.product.LegacyAdminProjection = json.RawMessage(`{"schema_version":1,"status":"draft","enabled":false,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`)
+	draft := httptest.NewRecorder()
+	handler.ServeHTTP(draft, httptest.NewRequest(http.MethodGet, "/api/h5/product-images/course-9/88/variants/original", nil))
+	if draft.Code != http.StatusNotFound {
+		t.Fatalf("draft media status=%d", draft.Code)
+	}
+}
+
 type servicePeriodPublicStub struct {
 	product productport.CheckoutProduct
 	code    string

@@ -117,6 +117,9 @@ func (testProducts) ListProductOptions(context.Context, productport.ProductOptio
 func (testProducts) ReadProductTarget(context.Context, productport.ProductOptionType, productport.ID) (productport.ProductOption, error) {
 	return productport.ProductOption{}, nil
 }
+func (testProducts) ReadSidebarShareProduct(context.Context, productport.ProductOptionType, productport.ID) (productport.SidebarShareProduct, error) {
+	return productport.SidebarShareProduct{}, errors.New("product unavailable")
+}
 
 type fixedProducts struct{ product productport.ProductOption }
 
@@ -128,6 +131,12 @@ func (products fixedProducts) ReadProductTarget(_ context.Context, kind productp
 		return productport.ProductOption{}, errors.New("product unavailable")
 	}
 	return products.product, nil
+}
+func (products fixedProducts) ReadSidebarShareProduct(_ context.Context, kind productport.ProductOptionType, id productport.ID) (productport.SidebarShareProduct, error) {
+	if kind != products.product.ProductType || id != products.product.ID {
+		return productport.SidebarShareProduct{}, errors.New("product unavailable")
+	}
+	return productport.SidebarShareProduct{ID: products.product.ID, Code: products.product.Code, ProductType: products.product.ProductType, Name: products.product.Name, CoverURL: products.product.CoverURL}, nil
 }
 
 type testOrders struct{}
@@ -165,16 +174,30 @@ type testCoupons struct{}
 func (testCoupons) ListSidebarClaimable(context.Context, int64, couponport.SidebarClaimableQuery) (couponport.SidebarClaimablePage, error) {
 	return couponport.SidebarClaimablePage{Items: []couponport.SidebarClaimableItem{}}, nil
 }
+func (testCoupons) ReadSidebarClaimable(context.Context, int64, couponport.ID) (couponport.SidebarClaimableItem, error) {
+	return couponport.SidebarClaimableItem{}, errors.New("coupon unavailable")
+}
 
 type recordingCoupons struct {
 	page       couponport.SidebarClaimablePage
 	customerID int64
 	query      couponport.SidebarClaimableQuery
+	item       couponport.SidebarClaimableItem
+	readID     couponport.ID
+	readUserID int64
 }
 
 func (catalog *recordingCoupons) ListSidebarClaimable(_ context.Context, customerID int64, query couponport.SidebarClaimableQuery) (couponport.SidebarClaimablePage, error) {
 	catalog.customerID, catalog.query = customerID, query
 	return catalog.page, nil
+}
+
+func (catalog *recordingCoupons) ReadSidebarClaimable(_ context.Context, customerID int64, couponID couponport.ID) (couponport.SidebarClaimableItem, error) {
+	catalog.readUserID, catalog.readID = customerID, couponID
+	if catalog.item.CouponID != couponID {
+		return couponport.SidebarClaimableItem{}, errors.New("coupon unavailable")
+	}
+	return catalog.item, nil
 }
 
 type testMaterials struct{}
@@ -416,12 +439,12 @@ func TestCouponsExposeCouponRuleDirectoryWithoutCreatingShares(t *testing.T) {
 }
 
 func TestProductSendIntentUsesStandardNewsCardPayload(t *testing.T) {
-	products := fixedProducts{product: productport.ProductOption{ID: 9, Code: "course-9", ProductType: productport.ProductOptionStandard, Name: "标准课程", PriceMinor: 19900, Currency: "CNY"}}
+	products := fixedProducts{product: productport.ProductOption{ID: 9, Code: "course-9", ProductType: productport.ProductOptionStandard, Name: "标准课程", PriceMinor: 19900, Currency: "CNY", CoverURL: "https://assets.example.test/products/course-9.png"}}
 	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := handler.sendPayload(context.Background(), "product", "9", productport.ProductOptionStandard)
+	payload, err := handler.sendPayload(context.Background(), 42, "product", "9", productport.ProductOptionStandard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,8 +460,91 @@ func TestProductSendIntentUsesStandardNewsCardPayload(t *testing.T) {
 	if err := json.Unmarshal(payload, &news); err != nil {
 		t.Fatal(err)
 	}
-	if news.MessageType != "news" || news.News.Link != "https://crm.example.com/p/course-9" || news.News.Title != "标准课程" || news.News.Desc != "" || news.News.ImgURL != "https://crm.example.com/static/sidebar_workbench/product-card-cover.png" {
+	if news.MessageType != "news" || news.News.Link != "https://crm.example.com/p/course-9" || news.News.Title != "标准课程" || news.News.Desc != "" || news.News.ImgURL != "https://assets.example.test/products/course-9.png" {
 		t.Fatalf("standard product card payload=%s", payload)
+	}
+}
+
+func TestProductSendIntentAllowsOnlyEstablishedPublicSameOriginCovers(t *testing.T) {
+	for _, test := range []struct {
+		name, cover, wantCover, wantDescription string
+	}{
+		{"admin-preview", "/api/admin/image-library/8/variants/original", "https://crm.example.com/static/sidebar_workbench/product-card-cover.png", "商品封面暂缺"},
+		{"standard-detail-media", "/api/h5/product-images/course-9/8/variants/original", "https://crm.example.com/api/h5/product-images/course-9/8/variants/original", ""},
+		{"service-detail-media", "/api/h5/service-period-products/course-9/images/8/variants/original", "https://crm.example.com/api/h5/service-period-products/course-9/images/8/variants/original", ""},
+		{"missing", "", "https://crm.example.com/static/sidebar_workbench/product-card-cover.png", "商品封面暂缺"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			products := fixedProducts{product: productport.ProductOption{ID: 9, Code: "course-9", ProductType: productport.ProductOptionStandard, Name: "标准课程", CoverURL: test.cover}}
+			handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := handler.sendPayload(context.Background(), 42, "product", "9", productport.ProductOptionStandard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var news struct {
+				News struct {
+					ImgURL string `json:"imgUrl"`
+					Desc   string `json:"desc"`
+				} `json:"news"`
+			}
+			if err = json.Unmarshal(payload, &news); err != nil {
+				t.Fatal(err)
+			}
+			if news.News.ImgURL != test.wantCover || news.News.Desc != test.wantDescription {
+				t.Fatalf("payload=%s", payload)
+			}
+		})
+	}
+}
+
+func TestCouponSendIntentUsesExistingPublicLinkWithoutClaimOrAllocation(t *testing.T) {
+	products := testProducts{}
+	coupons := &recordingCoupons{item: couponport.SidebarClaimableItem{CouponID: 7, Name: "目录券", PublicSlug: "coupon-7", AvailabilityStatus: "active"}}
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: coupons, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := handler.sendPayload(context.Background(), 42, "coupon", "7", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coupons.readUserID != 42 || coupons.readID != 7 {
+		t.Fatalf("coupon was not read for the trusted sidebar customer: customer=%d coupon=%d", coupons.readUserID, coupons.readID)
+	}
+	var news struct {
+		MessageType string `json:"msgtype"`
+		News        struct {
+			Link   string `json:"link"`
+			Title  string `json:"title"`
+			Desc   string `json:"desc"`
+			ImgURL string `json:"imgUrl"`
+		} `json:"news"`
+	}
+	if err := json.Unmarshal(payload, &news); err != nil {
+		t.Fatal(err)
+	}
+	if news.MessageType != "news" || news.News.Link != "https://crm.example.com/c/coupon-7" || news.News.Title != "目录券" || news.News.Desc != "点击领取优惠券" || news.News.ImgURL != "https://crm.example.com/static/sidebar_workbench/product-card-cover.png" {
+		t.Fatalf("coupon card payload=%s", payload)
+	}
+	// ReadSidebarClaimable is the sole coupon call. Building a card cannot
+	// claim, reserve stock, or allocate an entitlement for this customer.
+	if coupons.customerID != 0 || coupons.query.Limit != 0 {
+		t.Fatalf("coupon share must not list, claim, or allocate: %+v", coupons)
+	}
+}
+
+func TestCouponSendIntentRejectsMissingExistingPublicLink(t *testing.T) {
+	products := testProducts{}
+	coupons := &recordingCoupons{item: couponport.SidebarClaimableItem{CouponID: 7, Name: "目录券"}}
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: coupons, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.sendPayload(context.Background(), 42, "coupon", "7", ""); err == nil {
+		t.Fatal("coupon without an explicitly created public link was sendable")
 	}
 }
 

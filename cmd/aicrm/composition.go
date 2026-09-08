@@ -559,12 +559,18 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	tagMutationCompletionSink, err := outbound.NewTagCatalogMutationCompletionSink(tagRepository)
+	if err != nil {
+		return fail(err)
+	}
 	groupOpsRepository, err := groupopsstore.NewPostgreSQL(pool.Native(), uow)
 	if err != nil {
 		return fail(err)
 	}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
-	groupOpsDirectory := &wecomGroupOpsDirectory{enabled: cfg.GroupOps.ProviderReadEnabled || cfg.GroupOps.ProviderEnabled, staff: groupOpsStaff}
+	// Directory reads have their own explicitly published capability gate. A
+	// dispatch grant cannot silently authorize a new provider-read path.
+	groupOpsDirectory := &wecomGroupOpsDirectory{uow: uow, enabled: cfg.GroupOps.ProviderReadEnabled, staff: groupOpsStaff}
 	groupOpsEvidence := groupopsport.ReconciliationEvidenceVerifier(providerDisabledGroupOpsEvidence{})
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
@@ -597,6 +603,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	outboundCompletionSink.WithCustomerTag(customerTagCompletionSink)
+	outboundCompletionSink.WithTagCatalogMutation(tagMutationCompletionSink)
 	outboundCompletionSink.WithPrivateMessage(privateCompletionSink)
 	outboundCompletionSink.WithAutomationMessage(outboundMessages)
 	sidebarExpiry := outbound.SidebarJSSDKExpiry{}
@@ -655,9 +662,21 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	tagCatalog := tagapp.NewCatalogService(uow, tagRepository, tagRepository, tagRepository, tagRepository)
+	if err = tagCatalog.RequireProviderMutations(); err != nil {
+		return fail(err)
+	}
 	tagOutbound, err := outbound.NewTagCatalogSyncAccepter(effectRepository)
 	if err != nil {
 		return fail(err)
+	}
+	tagMutationOutbound, err := outbound.NewTagCatalogMutationAccepter(effectRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if cfg.TagCatalog.MutationEnabled {
+		if err = tagCatalog.BindProviderMutations(tagMutationOutbound); err != nil {
+			return fail(err)
+		}
 	}
 	tagSync := tagapp.NewSyncService(uow, tagRepository, tagRepository, tagOutbound)
 	tagGate := tagapp.NewExecutionStatusService(uow, tagRepository)
@@ -719,6 +738,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	publicProductHandler, err := producthttp.NewPublicHandler(productCatalog)
 	if err != nil {
+		return fail(err)
+	}
+	if err = publicProductHandler.SetPublicMediaReader(mediaService); err != nil {
 		return fail(err)
 	}
 	publicServicePeriodHandler, err := producthttp.NewServicePeriodPublicHandler(productServicePeriod)
@@ -957,7 +979,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	outboundCompletionSink.WithCustomerOwnerHandoff(ownerHandoffCompletion)
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
-		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
+		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey, Tags: customerDirectoryTagFilter{bindings: tagRepository, members: customerProfileStore}}, Store: customerStore, Identities: queries, Audit: auditService,
 		Canonical:   canonicalCustomerAdapter{reader: queries},
 		Owners:      customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository, owners: ownerHandoffStore},
 		Tags:        customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
@@ -1135,6 +1157,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	groupOpsDirectory.groups = providerClient
 	groupOpsDirectory.staffs = providerClient
+	groupOpsDirectory.profiles = providerClient
 	if cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled {
 		groupOpsEvidence = wecomGroupOpsEvidence{uow: uow, receipts: groupOpsRepository, reader: providerClient}
 		groupOpsRuntime.SetEvidenceVerifier(groupOpsEvidence)
@@ -1236,6 +1259,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	var tagCatalogProvider externaleffects.ProviderAdapter
+	var tagCatalogMutationProvider externaleffects.ProviderAdapter
 	if cfg.TagCatalog.Enabled {
 		catalogReader, readerErr := outbound.NewWeComTagCatalogReader(providerClient)
 		if readerErr != nil {
@@ -1246,6 +1270,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(providerErr)
 		}
 		tagCatalogProvider = catalogProvider
+		if cfg.TagCatalog.MutationEnabled {
+			mutationProvider, mutationErr := outbound.NewTagCatalogMutationProvider(tagRepository, providerClient, catalogReader)
+			if mutationErr != nil {
+				return fail(mutationErr)
+			}
+			tagCatalogMutationProvider = mutationProvider
+		}
 	}
 	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}}, Writer: providerClient})
 	if providerErr != nil {
@@ -1259,7 +1290,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
@@ -1401,11 +1432,12 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
 	adminAPIs.Handle("/api/admin/common/operation-members", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("scope") == "owner_migration" {
+		switch r.URL.Query().Get("scope") {
+		case "owner_migration":
 			customerHandler.OwnerHandoffOperationMembersHandler().ServeHTTP(w, r)
-			return
+		default:
+			groupOpsBindings.GroupOps.ServeHTTP(w, r)
 		}
-		groupOpsBindings.GroupOps.ServeHTTP(w, r)
 	}))
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey, customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
@@ -1519,7 +1551,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if page == "groupopsDetail" {
 			endpoint = "api.admin_group_ops_plan_detail"
 		}
-		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: assets.StandardCSS, HostJS: assets.HostJS, GroupPickerCSS: assets.GroupPickerCSS, GroupPickerJS: assets.GroupPickerJS, MaterialPickerCSS: assets.MaterialPickerCSS, MaterialPickerJS: assets.MaterialPickerJS, ComposerCSS: assets.ComposerCSS, ComposerJS: assets.ComposerJS})
+		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: assets.StandardCSS, HostJS: assets.HostJS, OperationPickerJS: assets.OperationPickerJS, GroupPickerCSS: assets.GroupPickerCSS, GroupPickerJS: assets.GroupPickerJS, MaterialPickerCSS: assets.MaterialPickerCSS, MaterialPickerJS: assets.MaterialPickerJS, ComposerCSS: assets.ComposerCSS, ComposerJS: assets.ComposerJS})
 	})
 	automationUI := automationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets automation.AgentAssets, bootstrap automation.AgentPageBootstrap) error {
 		return renderer.RenderAutomation(writer, webshell.AdminPageForRequest(request, "自动化话术", "管理本地 Agent 与固定话术配置。", "api.admin_automation_agents"), page, donorTemplate, webshell.AutomationAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}, bootstrap.CreateCode)
@@ -1736,7 +1768,7 @@ func mountOrderUI(next, adminUI http.Handler, authentication accessAuthenticatio
 
 func mountPublicProduct(next, products http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/public/products/") || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/pay/") {
+		if strings.HasPrefix(r.URL.Path, "/api/public/products/") || strings.HasPrefix(r.URL.Path, "/api/h5/product-images/") || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/pay/") {
 			products.ServeHTTP(w, r)
 			return
 		}
