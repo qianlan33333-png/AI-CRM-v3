@@ -93,7 +93,8 @@ func (reader *TargetReader) ReadSidebarShareProduct(ctx context.Context, kind pr
 		if err != nil {
 			return productport.SidebarShareProduct{}, err
 		}
-		if item.LocalLifecycle != productport.LocalProductEnabled {
+		projected, projectionErr := projectLocalProduct(item)
+		if projectionErr != nil || !projected.Enabled || projected.Lifecycle != productport.LocalProductEnabled {
 			return productport.SidebarShareProduct{}, ErrNotFound
 		}
 		return productport.SidebarShareProduct{ID: item.ID, Code: item.ProductCode, ProductType: kind, Name: item.Name, CoverURL: publicProductCardCover(item)}, nil
@@ -121,7 +122,8 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if err != nil {
 			return productport.CheckoutProduct{}, classify(err)
 		}
-		if !validOrdinaryProduct(item) || item.LocalLifecycle != productport.LocalProductEnabled {
+		projected, projectionErr := projectLocalProduct(item)
+		if !validOrdinaryProduct(item) || projectionErr != nil || !projected.Enabled || projected.Lifecycle != productport.LocalProductEnabled {
 			return productport.CheckoutProduct{}, ErrNotFound
 		}
 		var projection struct {
