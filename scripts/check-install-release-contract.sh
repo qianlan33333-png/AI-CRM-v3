@@ -212,9 +212,6 @@ grep -qx 'test -x "$release_dir/bin/migrate-identity-phone-vault"' "$installer" 
 grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "release must require its immutable file manifest" >&2; exit 1; }
 for ai_assistant_asset in \
   list.html detail.html \
-  group_chat_picker.css group_chat_picker.js \
-  material_picker.css material_picker.js \
-  send_content_composer.css send_content_composer.js \
   send_content_readonly_detail.css send_content_readonly_detail.js \
   cloud_plan_review.js; do
   grep -qF 'test -f "$release_dir/web/dist/aiassistant/$ai_assistant_asset"' "$installer" || {
@@ -222,6 +219,24 @@ for ai_assistant_asset in \
     exit 1
   }
 done
+# Unified components are installed at the same paths used by the shared Host.
+grep -qF 'test -f "$release_dir/web/dist/assets/standard-components/$standard_component_asset"' "$installer" || { echo "installer must verify unified component assets" >&2; exit 1; }
+grep -qF '  operation_member_picker.js' "$installer" || { echo "installer omits unified asset operation_member_picker.js" >&2; exit 1; }
+grep -qF '  group_chat_picker.css' "$installer" || { echo "installer omits unified asset group_chat_picker.css" >&2; exit 1; }
+grep -qF '  group_chat_picker.js' "$installer" || { echo "installer omits unified asset group_chat_picker.js" >&2; exit 1; }
+grep -qF '  material_picker.css' "$installer" || { echo "installer omits unified asset material_picker.css" >&2; exit 1; }
+grep -qF '  material_picker.js' "$installer" || { echo "installer omits unified asset material_picker.js" >&2; exit 1; }
+grep -qF '  send_content_composer.css' "$installer" || { echo "installer omits unified asset send_content_composer.css" >&2; exit 1; }
+grep -qF '  send_content_composer.js' "$installer" || { echo "installer omits unified asset send_content_composer.js" >&2; exit 1; }
+grep -qF '  wecom_tag_picker.css' "$installer" || { echo "installer omits unified asset wecom_tag_picker.css" >&2; exit 1; }
+grep -qF '  wecom_tag_picker.js' "$installer" || { echo "installer omits unified asset wecom_tag_picker.js" >&2; exit 1; }
+grep -qF '  coupon_form.html' "$installer" || { echo "installer omits unified asset coupon_form.html" >&2; exit 1; }
+grep -qF '  coupon_form_runtime.js' "$installer" || { echo "installer omits unified asset coupon_form_runtime.js" >&2; exit 1; }
+grep -qF '  coupon_styles.html' "$installer" || { echo "installer omits unified asset coupon_styles.html" >&2; exit 1; }
+grep -qF '  channel_code_form.html' "$installer" || { echo "installer omits unified asset channel_code_form.html" >&2; exit 1; }
+grep -qF '  channel_admission_pages.js' "$installer" || { echo "installer omits unified asset channel_admission_pages.js" >&2; exit 1; }
+grep -qF '  standard_components_host.js' "$installer" || { echo "installer omits unified asset standard_components_host.js" >&2; exit 1; }
+
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
 grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }
 grep -qF 'sha256sum --strict --check release-files.sha256' "$release_builder" || { echo "CI must generate and verify the immutable release manifest" >&2; exit 1; }

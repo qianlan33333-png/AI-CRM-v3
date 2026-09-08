@@ -258,12 +258,30 @@ done
 test -f "$release_dir/web/dist/sidebar/index.html"
 for ai_assistant_asset in \
   list.html detail.html \
-  group_chat_picker.css group_chat_picker.js \
-  material_picker.css material_picker.js \
-  send_content_composer.css send_content_composer.js \
   send_content_readonly_detail.css send_content_readonly_detail.js \
   cloud_plan_review.js; do
   test -f "$release_dir/web/dist/aiassistant/$ai_assistant_asset"
+done
+for standard_component_asset in \
+  operation_member_picker.js \
+  group_chat_picker.css \
+  group_chat_picker.js \
+  material_picker.css \
+  material_picker.js \
+  send_content_composer.css \
+  send_content_composer.js \
+  wecom_tag_picker.css \
+  wecom_tag_picker.js \
+  coupon_form.html \
+  coupon_form_runtime.js \
+  coupon_styles.html \
+  channel_code_form.html \
+  channel_admission_pages.js \
+  standard_components_host.js; do
+  test -f "$release_dir/web/dist/assets/standard-components/$standard_component_asset" || {
+    echo "release is missing standard component: $standard_component_asset" >&2
+    exit 4
+  }
 done
 test -f "$release_dir/release-files.sha256"
 (cd "$release_dir" && sha256sum --strict --check release-files.sha256)

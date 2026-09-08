@@ -260,12 +260,28 @@ make_release() {
   : > "$release/web/dist/sidebar/index.html"
   for ai_assistant_asset in \
     list.html detail.html \
-    group_chat_picker.css group_chat_picker.js \
-    material_picker.css material_picker.js \
-    send_content_composer.css send_content_composer.js \
     send_content_readonly_detail.css send_content_readonly_detail.js \
     cloud_plan_review.js; do
     : > "$release/web/dist/aiassistant/$ai_assistant_asset"
+  done
+  mkdir -p "$release/web/dist/assets/standard-components"
+  for standard_component_asset in \
+    operation_member_picker.js \
+    group_chat_picker.css \
+    group_chat_picker.js \
+    material_picker.css \
+    material_picker.js \
+    send_content_composer.css \
+    send_content_composer.js \
+    wecom_tag_picker.css \
+    wecom_tag_picker.js \
+    coupon_form.html \
+    coupon_form_runtime.js \
+    coupon_styles.html \
+    channel_code_form.html \
+    channel_admission_pages.js \
+    standard_components_host.js; do
+    : > "$release/web/dist/assets/standard-components/$standard_component_asset"
   done
   for unit in \
     aicrm.service aicrm-migrate.service aicrm-wecom-worker.service aicrm-wecom-worker.timer \

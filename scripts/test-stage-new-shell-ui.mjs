@@ -96,6 +96,26 @@ const collectReleaseFiles = (directory) => {
 collectReleaseFiles(stage);
 assert.deepEqual(Object.keys(stagedManifest.release_files || {}).sort(), stagedReleaseFiles.sort(), 'staged release_files must describe the complete recursive release closure');
 
+// Execute the real installer's UI file checks against the actual release stage.
+// This catches an installer retaining retired paths even when manifest hashes pass.
+const installerSource = fs.readFileSync(path.join(repository, 'deploy/install-release.sh'), 'utf8');
+const installerUIChecks = installerSource.match(/for ai_assistant_asset in[\s\S]*?done\nfor standard_component_asset in[\s\S]*?done/);
+assert.ok(installerUIChecks, 'installer UI checks must include the unified components');
+const verifyInstallerUI = (directory) => spawnSync('bash', ['-ec', 'release_dir="$1"; ' + installerUIChecks[0], 'installer-ui-check', directory], { encoding: 'utf8' });
+const installerFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'aicrm-installer-ui-'));
+try {
+  fs.mkdirSync(path.join(installerFixture, 'web'), { recursive: true });
+  fs.cpSync(stage, path.join(installerFixture, 'web/dist'), { recursive: true });
+  const valid = verifyInstallerUI(installerFixture);
+  assert.equal(valid.status, 0, `installer rejected the real UI release stage: ${valid.stderr}`);
+  fs.rmSync(path.join(installerFixture, 'web/dist/assets/standard-components/group_chat_picker.js'));
+  const missing = verifyInstallerUI(installerFixture);
+  assert.notEqual(missing.status, 0, 'installer accepted a missing unified group picker');
+  assert.match(missing.stderr, /missing standard component: group_chat_picker.js/);
+} finally {
+  fs.rmSync(installerFixture, { recursive: true, force: true });
+}
+
 // A build that loses one required hashed runtime asset must be rejected before
 // the new shell step mutates its already-valid release stage.
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'aicrm-stage-new-shell-'));
