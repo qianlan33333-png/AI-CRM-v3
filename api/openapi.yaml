@@ -3200,6 +3200,15 @@ paths:
       parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseDraftRequest"}}}}
       responses: {"201": {description: Draft saved; no runtime value changed, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/runtime-releases/legacy-binary-recovery:
+    post:
+      operationId: prepareLegacyRuntimeConfigRecovery
+      tags: [Config]
+      description: Publishes only the previous binary's registered recipient-limit setting after a CAS check proves every newer runtime setting already matches its protected deployment default. Operators must call this before rolling the binary back; it never writes deployment values.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseLegacyRecoveryRequest"}}}}
+      responses: {"200": {description: One-key compatibility release published atomically; the binary rollback remains a separate deployment operation, content: {application/json: {schema: {$ref: "#/components/schemas/RuntimeConfigReleaseEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/config/runtime-releases/{runtime_release_id}:
     get:
       operationId: getRuntimeConfigRelease
@@ -4084,17 +4093,19 @@ components:
       additionalProperties: false
       required: [key, value]
       properties:
-        key: {const: automation.operations.max_recipients_per_run}
-        value: {type: integer, minimum: 1, maximum: 5000}
+        key: {type: string, enum: [automation.operations.max_recipients_per_run, automation.operations.provider_mode, ai_assistant.ui_enabled, ai_assistant.intake_enabled, ai_assistant.dispatch_enabled, wecom.enabled, wecom.corp_id, wecom.agent_id, wecom.callback_enabled, wecom.customer_sync_enabled, message_archive.enabled, message_archive.page_limit, message_archive.page_budget, sidebar.context_token_ttl_seconds, groupops.directory_read_enabled, groupops.dispatch_enabled, effects.provider_enabled, survey.completion_provider_enabled, commerce.push.provider_enabled, stability.worker_limit, wechat_pay.provider_enabled, wechat_pay.app_id, wechat_pay.app_scope, wechat_pay.h5_oauth_enabled, wechat_pay.h5_app_id, wechat_pay.h5_app_scope, wechat_pay.merchant_id, wechat_pay.merchant_serial, wechat_shop.provider_enabled, wechat_shop.app_id, survey.oauth_enabled, survey.oauth_app_id, survey.oauth_open_platform_id, survey.oauth_scope]}
+        value: {oneOf: [{type: boolean}, {type: integer, minimum: 1, maximum: 5000}, {type: string, maxLength: 256}]}
     RuntimeConfigEffectiveSnapshot:
       type: object
       additionalProperties: false
-      required: [revision, source, automation_max_recipients_per_run]
+      required: [revision, source, automation_max_recipients_per_run, settings, checksum]
       properties:
         revision: {type: integer, format: int64, minimum: 0}
         source: {type: string, enum: [environment_default, published]}
         automation_max_recipients_per_run: {type: integer, minimum: 1, maximum: 5000}
         published_at: {type: string, format: date-time}
+        settings: {type: array, minItems: 1, maxItems: 34, items: {$ref: "#/components/schemas/RuntimeConfigReleaseSetting"}}
+        checksum: {type: string, pattern: '^[a-f0-9]{64}$'}
     RuntimeConfigRelease:
       type: object
       additionalProperties: false
@@ -4104,9 +4115,9 @@ components:
         state: {type: string, enum: [draft, validated, validation_failed, published, superseded]}
         base_revision: {type: integer, format: int64, minimum: 0}
         rollback_of_release_id: {$ref: "#/components/schemas/PositiveID"}
-        settings: {type: array, minItems: 1, maxItems: 1, items: {$ref: "#/components/schemas/RuntimeConfigReleaseSetting"}}
+        settings: {type: array, minItems: 1, maxItems: 34, items: {$ref: "#/components/schemas/RuntimeConfigReleaseSetting"}}
         checksum: {type: string, pattern: '^[a-f0-9]{64}$'}
-        validation_errors: {type: array, items: {type: object, additionalProperties: false, required: [key, error], properties: {key: {const: automation.operations.max_recipients_per_run}, error: {type: string, maxLength: 200}}}}
+        validation_errors: {type: array, items: {type: object, additionalProperties: false, required: [key, error], properties: {key: {type: string, enum: [automation.operations.max_recipients_per_run, automation.operations.provider_mode, ai_assistant.ui_enabled, ai_assistant.intake_enabled, ai_assistant.dispatch_enabled, wecom.enabled, wecom.corp_id, wecom.agent_id, wecom.callback_enabled, wecom.customer_sync_enabled, message_archive.enabled, message_archive.page_limit, message_archive.page_budget, sidebar.context_token_ttl_seconds, groupops.directory_read_enabled, groupops.dispatch_enabled, effects.provider_enabled, survey.completion_provider_enabled, commerce.push.provider_enabled, stability.worker_limit, wechat_pay.provider_enabled, wechat_pay.app_id, wechat_pay.app_scope, wechat_pay.h5_oauth_enabled, wechat_pay.h5_app_id, wechat_pay.h5_app_scope, wechat_pay.merchant_id, wechat_pay.merchant_serial, wechat_shop.provider_enabled, wechat_shop.app_id, survey.oauth_enabled, survey.oauth_app_id, survey.oauth_open_platform_id, survey.oauth_scope]}, error: {type: string, maxLength: 200}}}}
         created_by: {type: string, minLength: 1, maxLength: 200}
         created_at: {type: string, format: date-time}
         validated_at: {type: string, format: date-time}
@@ -4118,7 +4129,7 @@ components:
       required: [expected_base_revision, settings, admin_action_token]
       properties:
         expected_base_revision: {type: integer, format: int64, minimum: 0}
-        settings: {type: array, minItems: 1, maxItems: 1, items: {$ref: "#/components/schemas/RuntimeConfigReleaseSetting"}}
+        settings: {type: array, minItems: 1, maxItems: 34, items: {$ref: "#/components/schemas/RuntimeConfigReleaseSetting"}}
         admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
     RuntimeConfigReleaseActionRequest:
       type: object
@@ -4140,15 +4151,22 @@ components:
       properties:
         expected_base_revision: {type: integer, format: int64, minimum: 0}
         admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
+    RuntimeConfigReleaseLegacyRecoveryRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_base_revision, admin_action_token]
+      properties:
+        expected_base_revision: {type: integer, format: int64, minimum: 0}
+        admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
     RuntimeConfigReleaseEnvelope:
       type: object
       additionalProperties: false
       required: [ok, runtime_release]
-      properties: {ok: {const: true}, runtime_release: {$ref: "#/components/schemas/RuntimeConfigRelease"}, saved: {type: boolean}, validated: {type: boolean}, published: {type: boolean}, rolled_back: {type: boolean}, published_revision: {type: integer, format: int64, minimum: 1}}
+      properties: {ok: {const: true}, runtime_release: {$ref: "#/components/schemas/RuntimeConfigRelease"}, saved: {type: boolean}, validated: {type: boolean}, published: {type: boolean}, rolled_back: {type: boolean}, legacy_binary_recovery_published: {type: boolean}, published_revision: {type: integer, format: int64, minimum: 1}}
     RuntimeConfigReleasePageEnvelope:
       type: object
       additionalProperties: false
-      required: [ok, runtime_releases, saved, published_revision, effective, admin_action_token]
+      required: [ok, runtime_releases, saved, published_revision, effective, admin_action_token, legacy_binary_recovery_action]
       properties:
         ok: {const: true}
         runtime_releases: {type: object, additionalProperties: false, required: [active_revision, effective, releases], properties: {active_revision: {type: integer, format: int64, minimum: 0}, effective: {$ref: "#/components/schemas/RuntimeConfigEffectiveSnapshot"}, releases: {type: array, items: {$ref: "#/components/schemas/RuntimeConfigRelease"}}}}
@@ -4156,6 +4174,7 @@ components:
         published_revision: {type: integer, format: int64, minimum: 0}
         effective: {$ref: "#/components/schemas/RuntimeConfigEffectiveSnapshot"}
         admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
+        legacy_binary_recovery_action: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}
     RuntimeConfigReleaseDetailEnvelope:
       type: object
       additionalProperties: false

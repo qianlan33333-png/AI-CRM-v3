@@ -21,6 +21,16 @@ const (
 	RoleAPI           Role = "api"
 	RoleWorker        Role = "worker"
 	RoleEffectsWorker Role = "effects-worker"
+
+	// These defaults are the deployment policy used when a Runtime is assembled
+	// without an environment loader, for example by an isolated composition
+	// fixture. Keep them aligned with Load: the Config Center's closed catalog
+	// must receive the same valid baseline in either construction path.
+	DefaultWorkerLimit                          = 25
+	DefaultMessageArchivePageLimit       uint32 = 100
+	DefaultMessageArchivePageBudget             = 10
+	DefaultContextTokenTTL                      = 5 * time.Minute
+	DefaultAutomationMaxRecipientsPerRun        = 1
 )
 
 type Runtime struct {
@@ -67,6 +77,7 @@ type WeCom struct {
 	CallbackAESKey                  string
 	ContextSigningKey               string
 	ChannelStateHMACKey             string
+	ContextTokenTTL                 time.Duration
 	ChannelProviderReadEnabled      bool
 	ChannelQRProviderEnabled        bool
 	ChannelMediaPrepProviderEnabled bool
@@ -92,8 +103,9 @@ type WeCom struct {
 // webhook. It is independent from WeCom/customer credentials and is never
 // exposed through a descriptor or structured log.
 type GroupOps struct {
-	WebhookSecret   string
-	ProviderEnabled bool
+	WebhookSecret       string
+	ProviderReadEnabled bool
+	ProviderEnabled     bool
 }
 
 type AutomationProviderMode string
@@ -116,6 +128,31 @@ type AutomationOperations struct {
 
 func (c AutomationOperations) ProviderEnabled() bool {
 	return c.ProviderMode == AutomationProviderProbe || c.ProviderMode == AutomationProviderLimited
+}
+
+// NormalizeRuntimePolicyDefaults fills only omitted policy values in a Runtime
+// supplied directly by a composition fixture. It does not repair malformed
+// explicit values: validation remains responsible for rejecting those values.
+func NormalizeRuntimePolicyDefaults(cfg Runtime) Runtime {
+	if cfg.WorkerLimit == 0 {
+		cfg.WorkerLimit = DefaultWorkerLimit
+	}
+	if cfg.WeCom.MessageArchivePageLimit == 0 {
+		cfg.WeCom.MessageArchivePageLimit = DefaultMessageArchivePageLimit
+	}
+	if cfg.WeCom.MessageArchivePageBudget == 0 {
+		cfg.WeCom.MessageArchivePageBudget = DefaultMessageArchivePageBudget
+	}
+	if cfg.WeCom.ContextTokenTTL == 0 {
+		cfg.WeCom.ContextTokenTTL = DefaultContextTokenTTL
+	}
+	if cfg.AutomationOperations.ProviderMode == "" {
+		cfg.AutomationOperations.ProviderMode = AutomationProviderDisabled
+	}
+	if cfg.AutomationOperations.MaxRecipientsPerRun == 0 {
+		cfg.AutomationOperations.MaxRecipientsPerRun = DefaultAutomationMaxRecipientsPerRun
+	}
+	return cfg
 }
 
 type Effects struct{ ProviderEnabled bool }
@@ -263,7 +300,7 @@ func Load() (Runtime, error) {
 		DatabaseURL:                databaseURL,
 		PublicOrigin:               valueOrDefault("AICRM_PUBLIC_ORIGIN", "https://id-dev.youcangogogo.com"),
 		WorkerOwner:                valueOrDefault("AICRM_WORKER_OWNER", "aicrm-wecom-worker"),
-		WorkerLimit:                25,
+		WorkerLimit:                DefaultWorkerLimit,
 		CustomerSyncTrigger:        os.Getenv("AICRM_CUSTOMER_SYNC_TRIGGER"),
 		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), IdentityObservationVaultKey: os.Getenv("AICRM_IDENTITY_OBSERVATION_VAULT_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
 		OperationCycleServiceToken: os.Getenv("AICRM_OPERATION_CYCLE_SERVICE_TOKEN"),
@@ -275,18 +312,19 @@ func Load() (Runtime, error) {
 		},
 		WeCom: WeCom{
 			CorpID: os.Getenv("AICRM_WECOM_CORP_ID"), AgentID: os.Getenv("AICRM_WECOM_AGENT_ID"),
-			MessageArchiveSecret: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_SECRET"), MessageArchiveRunnerPath: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_RUNNER_PATH"), MessageArchiveLibraryPath: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_LIBRARY_PATH"), MessageArchivePageLimit: 100, MessageArchivePageBudget: 10,
+			MessageArchiveSecret: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_SECRET"), MessageArchiveRunnerPath: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_RUNNER_PATH"), MessageArchiveLibraryPath: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_LIBRARY_PATH"), MessageArchivePageLimit: DefaultMessageArchivePageLimit, MessageArchivePageBudget: DefaultMessageArchivePageBudget,
 			Secret: os.Getenv("AICRM_WECOM_SECRET"), ContactSecret: os.Getenv("AICRM_WECOM_CONTACT_SECRET"), CallbackToken: os.Getenv("AICRM_WECOM_CALLBACK_TOKEN"),
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
 			ChannelStateHMACKey:           os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 			StaffDirectoryRefreshInterval: 15 * time.Minute,
+			ContextTokenTTL:               DefaultContextTokenTTL,
 		},
 		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
 		AutomationOperations: AutomationOperations{
 			WebhookSecret:       os.Getenv("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET"),
 			ProviderMode:        AutomationProviderMode(valueOrDefault("AICRM_AUTOMATION_OPS_PROVIDER_MODE", string(AutomationProviderDisabled))),
 			ProviderPermission:  os.Getenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
-			MaxRecipientsPerRun: 1,
+			MaxRecipientsPerRun: DefaultAutomationMaxRecipientsPerRun,
 		},
 		Survey:       Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
 		CommercePush: CommercePush{TargetsJSON: os.Getenv("AICRM_COMMERCE_PUSH_TARGETS_JSON"), PayloadDataKey: os.Getenv("AICRM_COMMERCE_PUSH_PAYLOAD_DATA_KEY")},
@@ -422,6 +460,16 @@ func Load() (Runtime, error) {
 	}
 	if cfg.GroupOps.ProviderEnabled, err = strictBool("AICRM_GROUP_OPS_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
+	}
+	if cfg.GroupOps.ProviderReadEnabled, err = strictBool("AICRM_GROUP_OPS_PROVIDER_READ_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if raw := os.Getenv("AICRM_SIDEBAR_CONTEXT_TOKEN_TTL_SECONDS"); raw != "" {
+		seconds, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || seconds < 60 || seconds > 86400 {
+			return Runtime{}, errors.New("invalid AICRM_SIDEBAR_CONTEXT_TOKEN_TTL_SECONDS")
+		}
+		cfg.WeCom.ContextTokenTTL = time.Duration(seconds) * time.Second
 	}
 	if raw := os.Getenv("AICRM_WORKER_LIMIT"); raw != "" {
 		cfg.WorkerLimit, err = strconv.Atoi(raw)

@@ -186,8 +186,8 @@ try {
         const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
         const visible = node => { if (!node) return false; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
         const token = value => String(value || '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
-        const dom = [document.body, ...document.querySelectorAll('.admin-main-wrap,.admin-sidebar,.admin-topbar,#stage,.order-host-layout,[data-runtime-release-host],[data-open-platform-host],.sec-funnel')].filter((node, index, all) => node instanceof Element && all.indexOf(node) === index).slice(0, 20).map(node => ({tag:node.tagName.toLowerCase(),id:token(node.id),classes:Array.from(node.classList).map(token).filter(Boolean).slice(0, 12),visible:visible(node)}));
-        return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,dom};
+        const dom = [document.body, ...document.querySelectorAll('.admin-main-wrap,.admin-sidebar,.admin-topbar,.side,#stage,.order-host-layout,[data-runtime-release-host],[data-open-platform-host],.open-platform-header,.sec-funnel')].filter((node, index, all) => node instanceof Element && all.indexOf(node) === index).slice(0, 20).map(node => ({tag:node.tagName.toLowerCase(),id:token(node.id),classes:Array.from(node.classList).map(token).filter(Boolean).slice(0, 12),visible:visible(node)}));
+        return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),static_sidebar:box('.side'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),static_header:box('.open-platform-header'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,dom};
       })()`);
       geometry = { ...measured, screenshot_captured: screenshotCaptured, responses: responses.slice(-12), runtime_exceptions: runtimeExceptions.slice(-8) };
     } catch (_) {}
@@ -484,6 +484,35 @@ try {
     }
   };
 
+  const assertConfigCenterLayout = async label => {
+    await assertLayout("standard", label, "[data-runtime-release-host] .cc-card-h h2");
+    const layout = await evaluate(cdp, `(() => {
+      const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height}; };
+      const root=document.querySelector('[data-runtime-release-host].cc-page');
+      const card=root?.querySelector('.cc-card');
+      const title=card?.querySelector('.cc-card-h h2');
+      const table=card?.querySelector('.cc-category-table');
+      const headings=table ? Array.from(table.querySelectorAll('thead th')).map(node => String(node.textContent || '').trim()) : [];
+      return {root:box('[data-runtime-release-host].cc-page'),card:box('[data-runtime-release-host].cc-page .cc-card'),title:box('[data-runtime-release-host].cc-page .cc-card-h h2'),table:box('[data-runtime-release-host].cc-page .cc-category-table'),topbar:box('.admin-topbar'),headers:document.querySelectorAll('header.admin-topbar').length,headings,rows:table?.querySelectorAll('tbody [data-category-row]').length || 0,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,titleText:String(title?.textContent || '').trim()};
+    })()`);
+    const expectedHeadings = ["类目", "是否生效", "生效开关", "配置"];
+    if (!layout.root || !layout.card || !layout.title || !layout.table || layout.titleText !== "配置类目" || !layout.topbar || layout.headers !== 1 || layout.overflow || layout.rows !== 12 || layout.headings.length !== expectedHeadings.length || layout.headings.some((heading, index) => heading !== expectedHeadings[index]) || layout.root.top + 1 < layout.topbar.bottom || layout.card.top + 1 < layout.root.top || layout.table.top + 1 < layout.card.top || layout.card.left + 1 < layout.root.left) throw new Error(label + " V3 topbar/config-center-card geometry invalid");
+  };
+  const navigateConfigCenter = async () => {
+    currentStep = "config";
+    try {
+      await cdp.call("Page.navigate", { url: baseURL + "/admin/config" });
+      await waitFor(cdp, "location.pathname === '/admin/config' && document.readyState !== 'loading'", "config center did not navigate");
+      await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-host].cc-page .cc-category-table')) && document.querySelectorAll('[data-runtime-release-host] .cc-category-table thead th').length === 4 && document.querySelectorAll('[data-runtime-release-host] [data-category-row]').length === 12", "config center Host did not become ready");
+      await waitForFonts("config");
+      await recordGeometry("config", () => assertConfigCenterLayout("config"), true);
+      return true;
+    } catch (error) {
+      await recordRouteFailure("config", error);
+      return false;
+    }
+  };
+
   const initial = "/admin/automation-conversion";
   currentStep = "automation";
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=" + encodeURIComponent(initial) });
@@ -530,13 +559,23 @@ try {
   await navigate("/admin/automation-agents", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "automation-agents", "embedded", embeddedTitle, true, true);
   const ownerMounted = await navigate("/admin/owner-migration", "Boolean(document.querySelector('[data-owner-handoff-host][data-owner-handoff-init=\"ready\"]')) && Boolean(document.querySelector('[data-owner-migration-page] .owner-migration-status-bar')) && Boolean(document.querySelector('[data-owner-migration-page] [data-owner-picker=\"source\"]'))", "owner-migration", "standard", "[data-owner-picker=\"source\"]", false, true);
   if (ownerMounted) await recordGeometry("owner-migration", () => assertOwnerHandoffLayout("owner-migration"), true);
-  await navigate("/admin/config", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "config", "embedded", embeddedTitle, true, true);
+  await navigateConfigCenter();
   await navigateRuntimeConfig();
   await navigateStandard("/admin/oneid", "Boolean(document.querySelector('[data-admin-oneid-root]'))", "oneid", true, true);
   currentStep = "api-docs";
   await clickNavigation("/admin/api-docs", "api-docs");
   await waitFor(cdp, "location.pathname === '/admin/apidocs.html' && document.readyState !== 'loading'", "api-docs did not canonicalize to its V3 Host document");
-  await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-host]') || document.querySelector('[class*=openPlatformHost]'))", "api-docs V3 Host did not become ready");
+  // The Host creates its root before its two V1 read requests settle. Do not
+  // turn that loading sentinel into a geometry-ready signal: wait for the
+  // rendered header, its control, and a populated V1 directory.
+  await waitFor(cdp, `(() => {
+    const root=document.querySelector('[data-open-platform-host="v1"]');
+    const title=root?.querySelector('.open-platform-header h1');
+    const refresh=root?.querySelector('button[data-open-platform-action="刷新"]');
+    const catalog=Array.from(root?.querySelectorAll('.open-platform-catalog') || []).find(node => node.querySelector('h2')?.textContent?.trim() === 'V1 能力目录');
+    const rows=catalog?.querySelectorAll('tbody tr') || [];
+    return Boolean(root && title?.textContent?.trim() === '开放平台调用方' && refresh && rows.length > 0);
+  })()`, "api-docs V1 header, control, and directory did not become ready");
   await waitForFonts("api-docs");
   await recordGeometry("api-docs", () => assertStaticOpenLayout("api-docs"), true);
 

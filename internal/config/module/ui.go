@@ -38,7 +38,7 @@ func (h *ui) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if isRuntimeReleasePage(page) {
+	if isRuntimeConfigHostPage(page) {
 		if e := h.render(w, r, page, runtimeReleaseHostTemplate, UIAssets{}); e != nil {
 			http.Error(w, "config UI unavailable", http.StatusInternalServerError)
 		}
@@ -70,19 +70,17 @@ func configPage(r *http.Request) (string, bool) {
 	case "/admin/config/releases/new":
 		return "runtimeReleaseNew", len(r.URL.Query()) == 0
 	case "/admin/config", "/admin/config/", "/admin/config.html":
-		return "config", len(r.URL.Query()) == 0
+		return "runtimeConfigCenter", len(r.URL.Query()) == 0
 	case "/admin/configDetail.html":
 		values := r.URL.Query()
 		cats := values["cat"]
 		if len(values) != 1 || len(cats) != 1 {
 			return "", false
 		}
-		switch cats[0] {
-		case "app-settings", "push-capabilities", "releases", "runtime-diagnostics":
-			return "configDetail", true
-		default:
-			return "", false
+		if runtimeConfigCategory(cats[0]) {
+			return "runtimeConfigCategory", true
 		}
+		return "", false
 	case "/admin/api-docs", "/admin/apidocs.html":
 		return "apidocs", len(r.URL.Query()) == 0
 	default:
@@ -96,8 +94,17 @@ func configPage(r *http.Request) (string, bool) {
 	}
 }
 
-func isRuntimeReleasePage(page string) bool {
-	return page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail"
+func isRuntimeConfigHostPage(page string) bool {
+	return page == "runtimeConfigCenter" || page == "runtimeConfigCategory" || page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail"
+}
+
+func runtimeConfigCategory(value string) bool {
+	switch value {
+	case "wecom_base", "admin_access", "sidebar_identity", "ai_automation", "open_api_key", "api_token", "webhooks_push", "reliability", "wechat_pay", "alipay", "wechat_shop", "wechat_oauth":
+		return true
+	default:
+		return false
+	}
 }
 
 func configAssets(dist string) (UIAssets, error) {

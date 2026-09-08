@@ -1,4 +1,32 @@
 {
   "schema_version": 1,
-  "approvals": []
+  "approvals": [
+    {
+      "base_commit": "7085192b0f6510ba71da119ffa2989849066e1cd",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "542ae46a708d512303f4308982141edafc115d3b0b7c0b780dbf2d221a1c616a",
+          "head_sha256": "b7c44469b69cd2212e9d2426b3de8a713ce9a87c8de328b679aa5c8dc4dca12a"
+        },
+        {
+          "path": "web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/config_center.css",
+          "base_sha256": null,
+          "head_sha256": "b0963b207fe385f8f84bb8c709aa383ed0b1ea148dec096e5e51f9a3dc4b71c4"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "19e57d8e6166bf95afa99c7e955e8546318a3bd9ca7ceb82f61631c3c9bddfab",
+          "head_sha256": "b863615c2945ac6d35ab39ec620ba92994a1ac823f5b8725046d094fc3cfbb58"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "4c6039313cad63984d9addee315559593f22e5b39e4727d9e024f1253e9461e6",
+          "head_sha256": "02b1e6ed0805db43f09fcfada5a60635d16e08ad068b047fc7496f3a18107d18"
+        }
+      ],
+      "reason": "Expand the active V3 Config runtime release contract and add the audited legacy-binary recovery operation.",
+      "review_reference": "PR #190 Config Center legacy parity review"
+    }
+  ]
 }

@@ -155,13 +155,13 @@ function expectCode(code, callback) {
   assert.throws(callback, (error) => error instanceof DonorViewError && error.code === code);
 }
 
-test('PR-4 removes every declared view from Git and prepares exact ignored replacements from the 74 canonical authorities', () => {
+test('PR-4 removes every declared view from Git and prepares exact ignored replacements from the 75 canonical authorities', () => {
   const result = verifySourceIndex(REPOSITORY);
   const plan = planMaterialization(REPOSITORY).materialized_view_targets;
-  assert.equal(result.bindings_verified, 230);
-  assert.equal(result.enabled_views, 229);
-  assert.equal(result.canonical_contents.length, 74);
-  assert.equal(plan.length, 229);
+  assert.equal(result.bindings_verified, 231);
+  assert.equal(result.enabled_views, 230);
+  assert.equal(result.canonical_contents.length, 75);
+  assert.equal(plan.length, 230);
   assert.equal(plan.includes('api/openapi.yaml'), false);
   const indexed = execFileSync('git', ['-C', REPOSITORY, 'ls-files', '-z'], { encoding: 'buffer' }).toString('utf8').split('\0').filter(Boolean);
   for (const target of plan) {
@@ -185,7 +185,7 @@ test('PR-4 removes every declared view from Git and prepares exact ignored repla
   const prepared = applyMaterialization(REPOSITORY);
   assert.deepEqual([...prepared.created, ...prepared.reused].sort(), plan);
   assert.deepEqual(prepared.tracked_views, []);
-  assert.equal(verifyMaterialization(REPOSITORY).materialized_views_verified.length, 229);
+  assert.equal(verifyMaterialization(REPOSITORY).materialized_views_verified.length, 230);
   assert.deepEqual(cleanMaterialization(REPOSITORY).removed, plan);
   assert.equal(fs.existsSync(path.join(REPOSITORY, '.aicrm-dedup', 'donor-views-receipt.json')), false);
 });
