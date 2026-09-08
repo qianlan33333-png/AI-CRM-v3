@@ -133,6 +133,11 @@ for migration_contract in \
   }
 done
 grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
+for operation_runner_binary in aicrm-operation-cycle-runner aicrm-operation-cycle-result; do
+  grep -qx "test -x \"\$release_dir/bin/${operation_runner_binary}\"" "$installer" || { echo "release must require ${operation_runner_binary}" >&2; exit 1; }
+done
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/aicrm-operation-cycle-runner ./cmd/operation-cycle-runner' "$release_builder" || { echo "release workflow must build the OperationCycle runner" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/aicrm-operation-cycle-result ./cmd/operation-cycle-result' "$release_builder" || { echo "release workflow must build the OperationCycle result client" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/wecom-archive-sdk-runner"' "$installer" || { echo "release must include the WeCom archive SDK runner" >&2; exit 1; }
 grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' "$release_builder" || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
 grep -qF 'bash scripts/run-donor-view-consumers.sh release' "$ci_workflow" || { echo "CI must invoke the reviewed release builder through safe donor-view preparation" >&2; exit 1; }

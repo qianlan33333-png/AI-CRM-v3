@@ -5,15 +5,45 @@ workspace, Codex socket, strategy, or action. An operator installs it only after
 the designated machine, HTTPS CRM endpoint, exact Codex version, managed app-server
 socket, and local binding directories have been reviewed.
 
-Build the two local binaries from the reviewed release:
+The normal release contains these two reviewed artifacts:
 
 ```sh
-go build -o aicrm-operation-cycle-runner ./cmd/operation-cycle-runner
-go build -o aicrm-operation-cycle-result ./cmd/operation-cycle-result
+bin/aicrm-operation-cycle-runner
+bin/aicrm-operation-cycle-result
 ```
 
-The `-o` names are the release artifacts referenced in the generated prompt;
-installation must place both names on the local task PATH.
+CI currently builds the release for Linux amd64. The generated
+`release-files.sha256` covers both files before they enter the release tar. Do
+not install these Linux artifacts on a machine with another operating system or
+architecture. Once the actual target is known, use the same reviewed Go build
+flow to produce and checksum artifacts for that target.
+
+Extract the exact approved release into a SHA-versioned staging directory and
+verify its complete manifest before selecting any binary:
+
+```sh
+reviewed_release=/absolute/path/to/extracted/release-SHA
+(cd "$reviewed_release" && sha256sum --strict --check release-files.sha256)
+test -x "$reviewed_release/bin/aicrm-operation-cycle-runner"
+test -x "$reviewed_release/bin/aicrm-operation-cycle-result"
+```
+
+Record the release SHA and the current installed-version link. Stop the old
+client through its existing supervisor, copy both verified files into a new
+SHA-versioned directory on the target machine, and verify their manifest hashes
+again. Atomically replace the installed-version link only after both files are
+present. Put that link's `bin` directory on the local task PATH; the artifact
+names are referenced verbatim in generated prompts. Start the client through
+the same existing supervisor and verify its reported Codex version, socket, and
+heartbeat before treating the version as active.
+
+If startup or heartbeat validation fails, stop that client, atomically restore
+the recorded previous-version link, and start the previous client through the
+same supervisor. Keep the failed release directory for digest inspection until
+the change is reconciled. These steps version and roll back files only; they do
+not choose a target machine or introduce a service manager. Until a target and
+its existing supervisor are explicitly approved, the release artifacts are
+packaged but not installed or enabled.
 
 A service manager starts `aicrm-operation-cycle-runner` with explicit absolute
 paths, a registered runner id, an HTTPS CRM URL, and each reviewed binding:
