@@ -637,9 +637,11 @@ type response struct {
 	MessageID string   `json:"msgid"`
 	FailList  []string `json:"fail_list"`
 	SendList  []struct {
-		UserID string `json:"userid"`
-		ChatID string `json:"chat_id"`
-		Status int    `json:"status"`
+		ExternalUserID string `json:"external_userid"`
+		SendTime       int64  `json:"send_time"`
+		UserID         string `json:"userid"`
+		ChatID         string `json:"chat_id"`
+		Status         int    `json:"status"`
 	} `json:"send_list"`
 	GroupChatList []struct {
 		ChatID string `json:"chat_id"`
@@ -1413,7 +1415,10 @@ func validCatalogMutation(value wecomport.TagCatalogMutation) bool {
 	}
 }
 
-type privateSendError struct{ uncertain bool }
+type privateSendError struct {
+	uncertain bool
+	code      int64
+}
 
 func (e privateSendError) Error() string {
 	if e.uncertain {
@@ -1576,7 +1581,12 @@ func (client *Client) SendPrivateMessage(ctx context.Context, target outboundpor
 	}
 	result, uncertain, err := client.privateJSON(ctx, "/cgi-bin/externalcontact/add_msg_template", url.Values{"access_token": {token}}, raw, "application/json")
 	if err != nil {
-		return outboundport.PrivateMessageProviderReceipt{}, true, privateSendError{uncertain: uncertain}
+		var coded *providerResponseError
+		code := int64(0)
+		if errors.As(err, &coded) {
+			code = coded.errCode
+		}
+		return outboundport.PrivateMessageProviderReceipt{}, true, privateSendError{uncertain: uncertain, code: code}
 	}
 	result.MessageID = strings.TrimSpace(result.MessageID)
 	if result.MessageID == "" || len(result.FailList) != 0 {
@@ -1673,7 +1683,7 @@ func (client *Client) privateJSON(ctx context.Context, path string, query url.Va
 		return response{}, true, ErrResponse
 	}
 	if !successErrCode(result.ErrCode) {
-		return response{}, false, ErrResponse
+		return response{}, false, &providerResponseError{errCode: providerErrCode(result.ErrCode)}
 	}
 	return result, false, nil
 }
@@ -1940,3 +1950,49 @@ var _ wecomport.ContactStaffProfileReader = (*Client)(nil)
 var _ wecomport.ExternalContactReader = (*Client)(nil)
 var _ wecomport.AcquisitionAssetWriter = (*Client)(nil)
 var _ wecomport.TagCatalogMutationWriter = (*Client)(nil)
+
+// GetPrivateMessageSendResult reads every page at the caller. An absent target
+// never constitutes delivery proof. msgid + sender + external_userid are matched
+// to the frozen outbound receipt before projection.
+func (client *Client) GetPrivateMessageSendResult(ctx context.Context, messageID, sender, cursor string) (outboundport.PrivateMessageDeliveryPage, error) {
+	var page outboundport.PrivateMessageDeliveryPage
+	if !client.DirectoryReady() || invalid(messageID) || invalid(sender) {
+		return page, ErrResponse
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return page, err
+	}
+	body, _ := json.Marshal(map[string]any{"msgid": messageID, "userid": sender, "cursor": cursor, "limit": 100})
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/get_groupmsg_send_result", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return page, err
+	}
+	page.NextCursor = payload.NextCursor
+	for _, item := range payload.SendList {
+		if invalid(item.ExternalUserID) || item.Status < 0 || item.Status > 4 || (item.UserID != "" && item.UserID != sender) {
+			return page, ErrResponse
+		}
+		status := item.Status
+		value := outboundport.PrivateMessageDelivery{MessageID: messageID, SenderUserID: sender, ExternalUserID: item.ExternalUserID, Status: &status, ObservedAt: time.Now().UTC()}
+		if item.SendTime > 0 {
+			t := time.Unix(item.SendTime, 0).UTC()
+			value.SentAt = &t
+		}
+		if status == 1 && value.SentAt == nil {
+			return page, ErrResponse
+		}
+		page.Items = append(page.Items, value)
+	}
+	return page, nil
+}
+
+func (e privateSendError) FailureCode() string {
+	if e.code != 0 {
+		return "wecom_errcode_" + strconv.FormatInt(e.code, 10)
+	}
+	if e.uncertain {
+		return "outcome_unknown"
+	}
+	return "provider_rejected"
+}

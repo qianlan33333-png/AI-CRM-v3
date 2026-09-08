@@ -105,3 +105,19 @@ func TestPrivateMessageProviderFailureClassification(t *testing.T) {
 		})
 	}
 }
+
+type failReceiptReader struct{ PrivateMessageIntentReader }
+
+func (f failReceiptReader) RecordPrivateMessageReceipt(context.Context, string, PrivateMessageTarget, string, string) error {
+	return errors.New("database interrupted")
+}
+func TestReceiptWriteFailureAfterProviderAcceptanceIsUnknown(t *testing.T) {
+	provider := privateProviderForTest(t, true, privateSenderFunc(func(context.Context, PrivateMessageTarget, PrivateMessagePayload) (PrivateMessageProviderReceipt, bool, error) {
+		return PrivateMessageProviderReceipt{MessageID: "accepted-task"}, true, nil
+	}))
+	provider.intents = failReceiptReader{provider.intents}
+	result, err := provider.Execute(context.Background(), privateMessageEnvelope(), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effectport.StateUnknown || !result.CallAttempted {
+		t.Fatalf("receipt loss must not retry: %#v %v", result, err)
+	}
+}

@@ -1,3 +1,4 @@
+import { mountExcelBatchPanel } from './excelBatches';
 // This is the only v3-owned browser seam for operation cycles. It supplies a
 // narrow AdminApi.loadDb implementation plus the host-side HTTP binding for
 // the donor's existing primary action. It never renders or styles controls.
@@ -204,3 +205,11 @@ api.loadDb = (context?: AdminReadContext): Promise<AdminDb> => {
 // unmodified donor entry reads document.body.dataset.page.
 // @ts-expect-error The byte-frozen donor entry is a side-effect-only script.
 void import('../src/admin/main');
+
+function mountExcelOperations(){
+ if(location.pathname==='/admin/operation-cycles'||location.pathname==='/admin/operation-cycles/'){
+  const parent=document.querySelector<HTMLElement>('main')||document.querySelector<HTMLElement>('.admin-content');
+  if(parent&&!parent.querySelector('.excel-batches')) void mountExcelBatchPanel(parent);
+ }
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mountExcelOperations);else mountExcelOperations();

@@ -384,7 +384,7 @@ func openPlatformV1AIMigrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return os.ErrNotExist
 	}
 	root := filepath.Join(filepath.Dir(source), "..", "..")
-	for _, name := range []string{"0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql"} {
+	for _, name := range []string{"0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql", "0120_excel_batches.sql"} {
 		sql, err := os.ReadFile(filepath.Join(root, "migrations", name))
 		if err != nil {
 			return err

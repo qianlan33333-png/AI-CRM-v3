@@ -48,7 +48,29 @@ const (
 	ContentAttachment  ContentKind = "attachment"
 )
 
+type ExcelCard struct {
+	AppID       string            `json:"appid"`
+	Path        string            `json:"path"`
+	Title       string            `json:"title"`
+	CoverDigest effectport.Digest `json:"cover_digest"`
+}
+
+func (c ExcelCard) Valid() bool {
+	return validLegacyReferencePart(c.AppID, 128) && validLegacyReferencePart(c.Path, 1024) && strings.HasPrefix(c.Path, "pages/") && !strings.Contains(c.Path, "://") && !strings.HasPrefix(c.Path, "//") && strings.TrimSpace(c.Title) != "" && len(c.Title) <= 512 && effectport.ValidDigest(c.CoverDigest)
+}
+
+type DeferredTarget struct {
+	UnionID      string `json:"unionid"`
+	Scope        string `json:"scope"`
+	SenderUserID string `json:"sender_userid"`
+}
+
+func (t DeferredTarget) Valid() bool {
+	return validLegacyReferencePart(t.UnionID, 256) && strings.HasPrefix(t.Scope, "wechat-open-platform:") && len(t.Scope) > len("wechat-open-platform:") && validLegacyReferencePart(t.Scope, 256) && validLegacyReferencePart(t.SenderUserID, 256)
+}
+
 type ContentBlock struct {
+	ExcelCard      *ExcelCard        `json:"excel_card,omitempty"`
 	Kind           ContentKind       `json:"kind"`
 	Text           string            `json:"text,omitempty"`
 	MaterialKind   string            `json:"material_kind,omitempty"`
@@ -62,6 +84,9 @@ type ContentBlock struct {
 }
 
 func (b ContentBlock) Valid() bool {
+	if b.ExcelCard != nil {
+		return b.Kind == ContentMiniProgram && b.ExcelCard.Valid() && b.MaterialID == 0 && b.MaterialKind == "" && b.MaterialDigest == "" && b.Text == "" && b.LegacyMaterialID == "" && b.LegacySourceSystem == ""
+	}
 	switch b.Kind {
 	case ContentText:
 		return strings.TrimSpace(b.Text) != "" && len(b.Text) <= 8000 && b.MaterialKind == "" && b.MaterialID == 0 && b.MaterialDigest == "" && b.LegacySourceSystem == "" && b.LegacyMaterialID == ""
@@ -75,6 +100,9 @@ func (b ContentBlock) Valid() bool {
 // ValidInput accepts a missing material digest at the HTTP edge. The Media
 // owner resolves and freezes the authoritative digest inside the plan UoW.
 func (b ContentBlock) ValidInput() bool {
+	if b.ExcelCard != nil {
+		return b.Valid()
+	}
 	if b.Kind == ContentText {
 		return b.Valid()
 	}
@@ -106,13 +134,18 @@ func validLegacyReferencePart(value string, maximum int) bool {
 }
 
 type RecipientCandidate struct {
-	CustomerID customerdomain.CustomerID `json:"customer_id"`
-	StaffID    int64                     `json:"staff_id"`
-	Content    []ContentBlock            `json:"content"`
+	DeferredTarget *DeferredTarget           `json:"deferred_target,omitempty"`
+	CustomerID     customerdomain.CustomerID `json:"customer_id"`
+	StaffID        int64                     `json:"staff_id"`
+	Content        []ContentBlock            `json:"content"`
 }
 
 func (r RecipientCandidate) Valid() bool {
-	if r.CustomerID < 1 || r.StaffID < 1 || len(r.Content) == 0 || len(r.Content) > MaxMessagesPerTarget {
+	targetValid := r.CustomerID > 0 && r.StaffID > 0 && r.DeferredTarget == nil
+	if r.DeferredTarget != nil {
+		targetValid = r.CustomerID == 0 && r.StaffID == 0 && r.DeferredTarget.Valid()
+	}
+	if !targetValid || len(r.Content) == 0 || len(r.Content) > MaxMessagesPerTarget {
 		return false
 	}
 	for _, block := range r.Content {

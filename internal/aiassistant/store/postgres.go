@@ -115,10 +115,11 @@ func (r *Repository) CreatePlan(ctx context.Context, aggregate aiassistantdomain
 		}
 		var recipient aiassistantport.Recipient
 		var createdAt time.Time
+		recipient.DeferredTarget = candidate.DeferredTarget
 		recipient.PlanID, recipient.CustomerID, recipient.StaffID = plan.ID, candidate.CustomerID, candidate.StaffID
-		err = tx.QueryRow(ctx, `INSERT INTO ai_assistant_plan_recipients(plan_id,customer_id,staff_id,created_at,updated_at)
-			VALUES($1,$2,$3,$4,$4) RETURNING id,review_state,execution_state,version,created_at,updated_at`,
-			plan.ID, candidate.CustomerID, candidate.StaffID, now.UTC()).Scan(&recipient.ID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &createdAt, &recipient.UpdatedAt)
+		err = tx.QueryRow(ctx, `INSERT INTO ai_assistant_plan_recipients(plan_id,customer_id,staff_id,created_at,updated_at,deferred_target)
+			VALUES($1,$2,$3,$4,$4,$5) RETURNING id,review_state,execution_state,version,created_at,updated_at`,
+			plan.ID, candidate.CustomerID, candidate.StaffID, now.UTC(), candidate.DeferredTarget).Scan(&recipient.ID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &createdAt, &recipient.UpdatedAt)
 		if err != nil {
 			if unique(err) {
 				return aiassistantport.Plan{}, nil, ErrConflict

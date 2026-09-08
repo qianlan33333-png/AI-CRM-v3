@@ -46,7 +46,7 @@ func (r *Repository) ListApprovalRecipients(ctx context.Context, planID aiassist
 	if err != nil {
 		return nil, nil, err
 	}
-	query := `SELECT r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,r.updated_at,
+	query := `SELECT r.deferred_target,r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,r.updated_at,
 		c.id,c.recipient_id,c.version,c.content_digest,c.content_payload,c.created_at
 		FROM ai_assistant_plan_recipients r JOIN ai_assistant_content_versions c ON c.id=r.current_content_version_id
 		WHERE r.plan_id=$1 AND r.review_state IN ('pending_review','approved') ORDER BY r.id`
@@ -64,7 +64,7 @@ func (r *Repository) ListApprovalRecipients(ctx context.Context, planID aiassist
 		var recipient aiassistantport.Recipient
 		var content aiassistantport.ContentVersion
 		var digest, payload []byte
-		if err = rows.Scan(&recipient.ID, &recipient.PlanID, &recipient.CustomerID, &recipient.StaffID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &recipient.ContentVersionID, &recipient.UpdatedAt,
+		if err = rows.Scan(&recipient.DeferredTarget, &recipient.ID, &recipient.PlanID, &recipient.CustomerID, &recipient.StaffID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &recipient.ContentVersionID, &recipient.UpdatedAt,
 			&content.ID, &content.RecipientID, &content.Version, &digest, &payload, &content.CreatedAt); err != nil {
 			return nil, nil, err
 		}
@@ -135,7 +135,7 @@ func (r *Repository) GetRecipientByEffect(ctx context.Context, effectID string) 
 		return aiassistantport.Recipient{}, err
 	}
 	var out aiassistantport.Recipient
-	err = tx.QueryRow(ctx, `SELECT r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,b.external_effect_id,r.updated_at FROM ai_assistant_plan_recipients r JOIN ai_assistant_effect_bindings b ON b.recipient_id=r.id WHERE b.external_effect_id=$1`, effectID).Scan(&out.ID, &out.PlanID, &out.CustomerID, &out.StaffID, &out.ReviewState, &out.ExecutionState, &out.Version, &out.ContentVersionID, &out.EffectID, &out.UpdatedAt)
+	err = tx.QueryRow(ctx, `SELECT r.deferred_target,r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,b.external_effect_id,r.updated_at FROM ai_assistant_plan_recipients r JOIN ai_assistant_effect_bindings b ON b.recipient_id=r.id WHERE b.external_effect_id=$1`, effectID).Scan(&out.DeferredTarget, &out.ID, &out.PlanID, &out.CustomerID, &out.StaffID, &out.ReviewState, &out.ExecutionState, &out.Version, &out.ContentVersionID, &out.EffectID, &out.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return aiassistantport.Recipient{}, ErrNotFound
 	}
@@ -181,7 +181,7 @@ func (r *Repository) CompleteExternalEffect(ctx context.Context, effectID string
 		return err
 	}
 	var total, terminal, failed, attention int
-	if err = tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE execution_state IN ('provider_accepted','delivery_proven','reconciled','final_failed')),count(*) FILTER(WHERE execution_state='final_failed'),count(*) FILTER(WHERE execution_state IN ('outcome_unknown','retryable_failed')) FROM ai_assistant_plan_recipients WHERE plan_id=$1 AND review_state='approved'`, planID).Scan(&total, &terminal, &failed, &attention); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE execution_state IN ('delivery_proven','final_failed') OR (deferred_target IS NULL AND execution_state IN ('provider_accepted','reconciled'))),count(*) FILTER(WHERE execution_state='final_failed'),count(*) FILTER(WHERE execution_state IN ('outcome_unknown','retryable_failed')) FROM ai_assistant_plan_recipients WHERE plan_id=$1 AND review_state='approved'`, planID).Scan(&total, &terminal, &failed, &attention); err != nil {
 		return err
 	}
 	planState := aiassistantport.PlanDispatching
@@ -205,7 +205,7 @@ func (r *Repository) ListRecipients(ctx context.Context, query aiassistantport.R
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,COALESCE(b.external_effect_id,''),r.updated_at
+	rows, err := tx.Query(ctx, `SELECT r.deferred_target,r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,COALESCE(b.external_effect_id,''),r.updated_at
 		FROM ai_assistant_plan_recipients r LEFT JOIN ai_assistant_effect_bindings b ON b.recipient_id=r.id
 		WHERE r.plan_id=$1 AND ($2::text='' OR r.review_state=$2) AND r.id>$3 ORDER BY r.id LIMIT $4`, query.PlanID, query.State, afterID, query.Limit+1)
 	if err != nil {
@@ -215,7 +215,7 @@ func (r *Repository) ListRecipients(ctx context.Context, query aiassistantport.R
 	items := make([]aiassistantport.Recipient, 0, query.Limit+1)
 	for rows.Next() {
 		var recipient aiassistantport.Recipient
-		if err = rows.Scan(&recipient.ID, &recipient.PlanID, &recipient.CustomerID, &recipient.StaffID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &recipient.ContentVersionID, &recipient.EffectID, &recipient.UpdatedAt); err != nil {
+		if err = rows.Scan(&recipient.DeferredTarget, &recipient.ID, &recipient.PlanID, &recipient.CustomerID, &recipient.StaffID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &recipient.ContentVersionID, &recipient.EffectID, &recipient.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, recipient)
@@ -228,13 +228,13 @@ func (r *Repository) GetRecipient(ctx context.Context, planID aiassistantport.Pl
 	if err != nil {
 		return aiassistantport.Recipient{}, aiassistantport.ContentVersion{}, err
 	}
-	query := `SELECT r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,COALESCE(b.external_effect_id,''),r.updated_at
+	query := `SELECT r.deferred_target,r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,COALESCE(b.external_effect_id,''),r.updated_at
 		FROM ai_assistant_plan_recipients r LEFT JOIN ai_assistant_effect_bindings b ON b.recipient_id=r.id WHERE r.plan_id=$1 AND r.id=$2`
 	if lock {
 		query += ` FOR UPDATE OF r`
 	}
 	var recipient aiassistantport.Recipient
-	err = tx.QueryRow(ctx, query, planID, recipientID).Scan(&recipient.ID, &recipient.PlanID, &recipient.CustomerID, &recipient.StaffID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &recipient.ContentVersionID, &recipient.EffectID, &recipient.UpdatedAt)
+	err = tx.QueryRow(ctx, query, planID, recipientID).Scan(&recipient.DeferredTarget, &recipient.ID, &recipient.PlanID, &recipient.CustomerID, &recipient.StaffID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &recipient.ContentVersionID, &recipient.EffectID, &recipient.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return aiassistantport.Recipient{}, aiassistantport.ContentVersion{}, ErrNotFound
 	}

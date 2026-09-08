@@ -43,12 +43,24 @@ func (p *PrivateMessageProvider) Execute(ctx context.Context, envelope effectpor
 	if err != nil {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "intent-unavailable")}, nil
 	}
-	target, err := p.targets.ResolvePrivateMessageTarget(ctx, intent.CustomerID, intent.StaffID)
+	var target PrivateMessageTarget
+	if intent.DeferredTargetReference != "" {
+		resolver, ok := p.targets.(outboundport.DeferredTargetResolver)
+		if !ok {
+			err = errors.New("deferred resolver unavailable")
+		} else {
+			target, err = resolver.ResolveDeferredPrivateMessageTarget(ctx, intent.DeferredTargetReference)
+		}
+	} else {
+		target, err = p.targets.ResolvePrivateMessageTarget(ctx, intent.CustomerID, intent.StaffID)
+	}
 	if err != nil {
+		p.record(ctx, intent.PayloadReference, target, "", failureCode(err, "target_unavailable"))
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "target-unavailable")}, nil
 	}
 	payload, err := p.payloads.LoadPrivateMessagePayload(ctx, intent.PayloadReference, intent.PayloadDigest)
 	if err != nil {
+		p.record(ctx, intent.PayloadReference, target, "", "payload_unavailable")
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "payload-unavailable")}, nil
 	}
 	receipt, attempted, err := p.sender.SendPrivateMessage(ctx, target, payload)
@@ -62,12 +74,30 @@ func (p *PrivateMessageProvider) Execute(ctx context.Context, envelope effectpor
 		} else if attempted {
 			state = effectport.StateUnknown
 		}
+		p.record(ctx, intent.PayloadReference, target, "", failureCode(err, string(state)))
 		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash(string(base), "provider-error"), CallAttempted: attempted, RealExternalCallExecuted: attempted}, nil
 	}
 	if !attempted || receipt.MessageID == "" {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "provider-rejected")}, nil
 	}
+	if err = p.record(ctx, intent.PayloadReference, target, receipt.MessageID, ""); err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "receipt-unavailable"), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", receipt.MessageID), CallAttempted: true, RealExternalCallExecuted: true}, nil
 }
 
 var _ effectport.ProviderAdapter = (*PrivateMessageProvider)(nil)
+
+func (p *PrivateMessageProvider) record(ctx context.Context, ref string, target PrivateMessageTarget, id, reason string) error {
+	if r, ok := p.intents.(outboundport.PrivateMessageReceiptRecorder); ok {
+		return r.RecordPrivateMessageReceipt(ctx, ref, target, id, reason)
+	}
+	return nil
+}
+
+func failureCode(err error, fallback string) string {
+	if coded, ok := err.(interface{ FailureCode() string }); ok {
+		return coded.FailureCode()
+	}
+	return fallback
+}
