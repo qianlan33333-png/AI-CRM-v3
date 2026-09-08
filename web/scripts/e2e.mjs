@@ -1109,6 +1109,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       let errorCallback;
       let regularConfigured = false;
       let agentConfigCalls = 0;
+      let agentAPIs = new Set();
       let externalContactCalls = 0;
       if (scenario !== 'sdk_missing') {
         window.wx = {
@@ -1139,6 +1140,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           error(callback) { window.__sidebarTest.wxStages.push({ stage: 'error' }); errorCallback = callback; },
           agentConfig(options) {
             agentConfigCalls += 1;
+            agentAPIs = new Set(Array.isArray(options.jsApiList) ? options.jsApiList : []);
             window.__sidebarTest.wxStages.push({ stage: 'agentConfig', options });
             window.setTimeout(() => {
               if (scenario === 'agent_error' || scenario === 'sdk_error' || ((scenario === 'agent_retry' || scenario === 'agent_retry_storage_failure') && agentConfigCalls === 1)) {
@@ -1149,6 +1151,10 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           invoke(method, payload, callback) {
             window.__sidebarTest.wxMessages.push({ method, payload });
             window.__sidebarTest.wxInvokes.push(method);
+            if (!agentAPIs.has(method)) {
+              callback({ errMsg: method + ':no permission' });
+              return;
+            }
             if (scenario === 'contact_error' && method === 'getCurExternalContact') {
               callback({ errMsg: 'getCurExternalContact:fail' });
               return;
@@ -1257,10 +1263,11 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           get() { throw new window.DOMException('storage disabled', 'SecurityError'); },
         });
       }
-      if (scenario === 'sdk_cache') {
+      if (scenario === 'sdk_cache' || scenario === 'sdk_cache_v2') {
         const pageURL = window.location.href.split('#', 1)[0];
-        const config = { corpID: 'ww-test', agentID: '1', url: pageURL, config: { nonce: 'cached-config-nonce', timestamp: 1, signature: 'cached-config-signature', jsApiList: [] }, agentConfig: { nonce: 'cached-agent-nonce', timestamp: 1, signature: 'cached-agent-signature', jsApiList: ['getContext', 'getCurExternalContact', 'sendChatMessage'] } };
-        window.sessionStorage.setItem('aicrm.sidebar.jssdk.config.v2', JSON.stringify({ url: pageURL, usable_until: Date.now() + 2 * 60 * 1000, config }));
+        const legacy = scenario === 'sdk_cache_v2';
+        const config = { corp_id: 'ww-test', agent_id: '1', config: { nonceStr: 'cached-config-nonce', timestamp: 1, signature: 'cached-config-signature', jsApiList: legacy ? ['getCurExternalContact'] : ['getCurExternalContact', 'sendChatMessage'] }, agent_config: { nonceStr: 'cached-agent-nonce', timestamp: 1, signature: 'cached-agent-signature', jsApiList: legacy ? ['getCurExternalContact'] : ['getCurExternalContact', 'sendChatMessage'] } };
+        window.sessionStorage.setItem(`aicrm.sidebar.jssdk.config.${legacy ? 'v2' : 'v3'}`, JSON.stringify({ url: pageURL, usable_until: Date.now() + 2 * 60 * 1000, config }));
       }
       window.fetch = async (input, init = {}) => {
         const url = String(input);
@@ -1271,7 +1278,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             corp_id: 'ww-test',
             agent_id: '1',
             config: { timestamp: 1, nonceStr: 'nonce-config', signature: 'sig-config', jsApiList: [] },
-            agent_config: { timestamp: 1, nonceStr: 'nonce', signature: 'signature', jsApiList: ['getContext', 'getCurExternalContact', 'sendChatMessage'] },
+            agent_config: { timestamp: 1, nonceStr: 'nonce', signature: 'signature', jsApiList: ['getCurExternalContact', 'sendChatMessage'] },
           });
         }
         if (url.includes('/bootstrap')) {
@@ -3149,10 +3156,11 @@ console.log('sidebar/index.html（dd8 标准 Overlay 与可信 Host）');
     d.body.textContent.includes('侧边栏测试客户') &&
     !d.body.textContent.includes('其他客服聊天') && !d.body.textContent.includes('chat_activity'));
   const stages = dom.window.__sidebarTest.wxStages.map((entry) => entry.stage);
-  ok('Host 依次取得 regular config、agentConfig、上下文和当前客户后只 bootstrap 一次',
+  ok('Host 依次取得 regular config、agentConfig 和当前客户后只 bootstrap 一次',
     stages.indexOf('config') >= 0 && stages.indexOf('ready_callback') > stages.indexOf('config') &&
     stages.indexOf('agentConfig') > stages.indexOf('ready_callback') &&
-    dom.window.__sidebarTest.wxInvokes.slice(0, 2).join('|') === 'getContext|getCurExternalContact' &&
+    JSON.stringify(dom.window.__sidebarTest.wxStages.find((entry) => entry.stage === 'agentConfig')?.options?.jsApiList) === JSON.stringify(['getCurExternalContact', 'sendChatMessage']) &&
+    dom.window.__sidebarTest.wxInvokes[0] === 'getCurExternalContact' && !dom.window.__sidebarTest.wxInvokes.includes('getContext') &&
     dom.window.__sidebarTest.requests.filter((url) => url.includes('/bootstrap')).length === 1 &&
     !dom.window.__sidebarTest.requests.some((url) => /other-staff-messages|chat-activity|chat_activity/.test(url)));
   dom.window.close();
@@ -3247,6 +3255,17 @@ for (const [scenario, expectedRequest] of [
   ok('JSSDK sessionStorage 不可用仍以当次签名启动，未降级为匿名或缓存客户',
     state.requests.filter((url) => url.includes('/jssdk-config')).length === 1 &&
     state.bootstrapBodies.length === 1 && dom.window.document.body.textContent.includes('侧边栏测试客户'));
+  dom.window.close();
+}
+for (const [scenario, expectedSignatureReads] of [['sdk_cache', 0], ['sdk_cache_v2', 1]]) {
+  const dom = await loadPage('sidebar/index.html', { q: `sidebar_case=${scenario}` });
+  const state = dom.window.__sidebarTest;
+  const agentAPIs = state.wxStages.find((entry) => entry.stage === 'agentConfig')?.options?.jsApiList;
+  ok(`${scenario} 只复用当前权限版本缓存，旧v2会重新读取正式签名`,
+    state.requests.filter((url) => url.includes('/jssdk-config')).length === expectedSignatureReads &&
+    JSON.stringify(agentAPIs) === JSON.stringify(['getCurExternalContact', 'sendChatMessage']) &&
+    state.wxInvokes[0] === 'getCurExternalContact' && !state.wxInvokes.includes('getContext') &&
+    state.bootstrapBodies.length === 1);
   dom.window.close();
 }
 {

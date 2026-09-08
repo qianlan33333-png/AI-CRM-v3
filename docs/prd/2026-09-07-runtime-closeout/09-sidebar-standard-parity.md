@@ -106,7 +106,7 @@ Customer 现有目录投影会被客户同步更新。四个运营字段采用 C
 补充当前资源核验：同一官方 URL 本次取回 27,032 字节，SHA256 `3423759cba33274c3d0f8acdf6e3e7bcae44cb532f98c66d6920b7063310f90b`，与仓库冻结样本 18,565 字节不同。仅替换测试输入和对应内容摘要、保持原握手断言不变后，当前资源同样通过 Mac/Windows/iOS/Android 四类 native bridge 合同。**版本 URL 不代表不可变字节；两组握手通过也不代表真实分享或送达已验收。** 本次保持已验证的企业 SDK 入口及双握手控制器，不因字节变化直接换版本。当前资源摘要与验证边界记录于 `sidebar-evidence/donor-test-result.json`。
 
 
-V3 config 请求与签名按当前完整 URL 去 hash，CorpID/AgentID 从受保护服务端配置；wx.config → ready → agentConfig → getContext（员工上下文不能当客户）→ getCurExternalContact → 可信 viewer/bootstrap。保留现有 URL/企业/应用/TTL 范围缓存及失效保护。
+V3 config 请求与签名按当前完整 URL 去 hash，CorpID/AgentID 从受保护服务端配置；wx.config → ready → agentConfig → getCurExternalContact → 可信 viewer/bootstrap；不调用未用于身份归属且当前应用未授权的 getContext。保留现有 URL/企业/应用/TTL 范围缓存及失效保护。
 
 401 时自动发起一次现有 OAuth start；state/next 由服务端校验，重入与循环记号绑定当前上下文，失败才显示重试。无 viewer 身份不得仅凭 query 中 owner/customer 参数提权。当前会话切换/返回可见触发有依据的重新读取，失效请求取消，前一客户旧响应不得覆盖新页面；不要自行新增周期轮询。
 

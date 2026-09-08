@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -95,7 +96,7 @@ func TestClientSignsBothTicketsCachesAndRefreshes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.CorpID != "wx corp" || config.AgentID != "10001" || config.Config.Timestamp != testNow.Unix() || config.Config.NonceStr != strings.Repeat("01", 16) || len(config.Config.JSAPIList) != 1 {
+	if config.CorpID != "wx corp" || config.AgentID != "10001" || config.Config.Timestamp != testNow.Unix() || config.Config.NonceStr != strings.Repeat("01", 16) || !reflect.DeepEqual(config.Config.JSAPIList, []string{"getCurExternalContact", "sendChatMessage"}) || !reflect.DeepEqual(config.AgentConfig.JSAPIList, []string{"getCurExternalContact", "sendChatMessage"}) {
 		t.Fatalf("config=%+v", config)
 	}
 	assertSignature(t, config.Config.Signature, "corp-ticket", config.Config.NonceStr, config.Config.Timestamp, "https://crm.example/sidebar?x=1")
@@ -112,6 +113,22 @@ func TestClientSignsBothTicketsCachesAndRefreshes(t *testing.T) {
 	}
 	if calls["/cgi-bin/gettoken"] != 2 || calls["/cgi-bin/get_jsapi_ticket"] != 2 || calls["/cgi-bin/ticket/get"] != 2 {
 		t.Fatalf("refresh calls=%v", calls)
+	}
+}
+
+func TestClientJSSDKExplicitAPIListOverridesDefault(t *testing.T) {
+	client := &Client{config: Config{JSAPIList: []string{"getCurExternalContact"}, Now: func() time.Time { return testNow }, Random: func(value []byte) error {
+		for index := range value {
+			value[index] = 1
+		}
+		return nil
+	}}}
+	signature, err := client.sign("https://crm.example/sidebar", "ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(signature.JSAPIList, []string{"getCurExternalContact"}) {
+		t.Fatalf("explicit jsApiList=%v", signature.JSAPIList)
 	}
 }
 

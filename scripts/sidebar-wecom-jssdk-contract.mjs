@@ -27,6 +27,7 @@ function node() {
 
 function runNativeBridgeJourney(name, userAgent, platform, regularFailure = false) {
   const bridgeCalls = [];
+  let agentAPIs = new Set();
   const document = {
     title: 'sidebar fixture',
     readyState: 'complete',
@@ -61,8 +62,13 @@ function runNativeBridgeJourney(name, userAgent, platform, regularFailure = fals
     WeixinJSBridge: {
       invoke(method, payload, callback) {
         bridgeCalls.push({ method, payload });
+        if (method === 'agentConfig') agentAPIs = new Set(Array.isArray(payload?.jsApiList) ? payload.jsApiList : []);
         if (method === 'preVerifyJSAPI' && regularFailure) {
           callback({ err_msg: 'preVerifyJSAPI:fail' });
+          return;
+        }
+        if (method !== 'preVerifyJSAPI' && method !== 'agentConfig' && method !== 'wwapp.initWwOpenData' && method !== 'getNetworkType' && !agentAPIs.has(method)) {
+          callback({ err_msg: `${method}:no permission` });
           return;
         }
         if (method === 'getCurExternalContact') {
@@ -123,19 +129,19 @@ function runNativeBridgeJourney(name, userAgent, platform, regularFailure = fals
     timestamp: 1,
     nonceStr: 'agent-nonce',
     signature: 'agent-signature',
-    jsApiList: ['getContext', 'getCurExternalContact', 'sendChatMessage'],
+    jsApiList: ['getCurExternalContact', 'sendChatMessage'],
     success() { agentReady = true; },
     fail(result) { throw new Error(`${name}: agentConfig failed ${result?.err_msg || result?.errMsg || ''}`); },
   });
   assert.equal(agentReady, true, `${name}: agent config did not settle`);
-  wx.invoke('getContext', {}, () => undefined);
+  assert.deepEqual([...agentAPIs], ['getCurExternalContact', 'sendChatMessage'], `${name}: agent API allowlist changed`);
   wx.invoke('getCurExternalContact', {}, (result) => { externalUserID = result?.external_userid || ''; });
   assert.equal(externalUserID, 'fixture-external', `${name}: external-contact result did not remain available`);
   const expectedBridgeCalls = name === 'Windows'
-    ? ['preVerifyJSAPI', 'agentConfig', 'wwapp.initWwOpenData', 'getContext', 'getCurExternalContact']
+    ? ['preVerifyJSAPI', 'agentConfig', 'wwapp.initWwOpenData', 'getCurExternalContact']
     : (name === 'iOS' || name === 'Android')
-      ? ['preVerifyJSAPI', 'getNetworkType', 'agentConfig', 'getContext', 'getCurExternalContact']
-      : ['preVerifyJSAPI', 'agentConfig', 'getContext', 'getCurExternalContact'];
+      ? ['preVerifyJSAPI', 'getNetworkType', 'agentConfig', 'getCurExternalContact']
+      : ['preVerifyJSAPI', 'agentConfig', 'getCurExternalContact'];
   assert.deepEqual(
     bridgeCalls.map((call) => call.method),
     expectedBridgeCalls,
