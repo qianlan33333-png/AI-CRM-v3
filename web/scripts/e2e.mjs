@@ -1160,13 +1160,17 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
               callback({ errMsg: 'getCurExternalContact:ok', external_userid: 'ext-current' });
               return;
             }
-            if ((scenario === 'contact_switch' || scenario === 'contact_switch_unknown') && method === 'getCurExternalContact') {
+            if ((scenario === 'contact_switch' || scenario === 'contact_switch_unknown' || scenario === 'send_contact_no_focus' || scenario === 'send_accept_switch' || scenario === 'send_callback_switch_ok' || scenario === 'send_callback_switch_unknown') && method === 'getCurExternalContact') {
               externalContactCalls += 1;
-              callback({ errMsg: 'getCurExternalContact:ok', external_userid: externalContactCalls === 1 ? 'ext-7' : 'ext-8' });
+              callback({ errMsg: 'getCurExternalContact:ok', external_userid: window.__sidebarTest.contactSwitched ? 'ext-8' : 'ext-7' });
               return;
             }
-            if (method === 'sendChatMessage' && scenario === 'contact_switch_unknown' && externalContactCalls === 1) {
+            if (method === 'sendChatMessage' && scenario === 'contact_switch_unknown' && !window.__sidebarTest.contactSwitched) {
               callback({});
+              return;
+            }
+            if (method === 'sendChatMessage' && (scenario === 'send_callback_switch_ok' || scenario === 'send_callback_switch_unknown')) {
+              window.__sidebarTest.releaseSend = () => callback(scenario === 'send_callback_switch_ok' ? { errMsg: 'sendChatMessage:ok' } : {});
               return;
             }
             if (method === 'sendChatMessage' && scenario === 'send_delayed') {
@@ -1232,7 +1236,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         blob: async () => new window.Blob([JSON.stringify(data)], { type: 'application/json' }),
         clone() { return this; },
       });
-      window.__sidebarTest = { remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, profileBodies: [], profileKeys: [], materialQueries: [], sendIntentKeys: [], sendOutcomeBodies: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null, releaseSend: null, oauthTargets: [], jssdkStorageReads: 0 };
+      window.__sidebarTest = { contactSwitched: false, remarkBody: null, idempotencyKey: null, phoneBody: null, phoneKey: null, phoneKeys: [], phoneAttempts: 0, profileBodies: [], profileKeys: [], materialQueries: [], sendIntentKeys: [], sendIntentTokens: [], sendOutcomeBodies: [], sendOutcomeTokens: [], wxMessages: [], wxInvokes: [], wxStages: [], requests: [], bootstrapBodies: [], releaseStaleContact: null, releaseSend: null, oauthTargets: [], jssdkStorageReads: 0 };
       window.addEventListener('aicrm-sidebar-oauth-required', (event) => window.__sidebarTest.oauthTargets.push(event.detail?.target || ''));
       if (scenario === 'agent_retry_storage_failure') {
         const values = new Map();
@@ -1273,7 +1277,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (scenario === 'viewer_session_required') return json({ state: 'viewer_session_required', safety }, 401);
           const bootstrapInput = window.__sidebarTest.bootstrapBodies.at(-1);
           const scopedCustomerID = bootstrapInput?.external_userid === 'ext-8' ? 8 : 7;
-          return json({ state: 'ready', context_token: 'sidebar-context-token-' + 'x'.repeat(52), customer_id: scopedCustomerID, workbench: { profile: { ...profile, customer_id: scopedCustomerID }, questionnaire_count: scenario === 'empty' ? 0 : 2, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
+          return json({ state: 'ready', context_token: 'sidebar-context-token-' + scopedCustomerID + '-' + 'x'.repeat(50), customer_id: scopedCustomerID, workbench: { profile: { ...profile, customer_id: scopedCustomerID }, questionnaire_count: scenario === 'empty' ? 0 : 2, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
         }
         if (url.includes('/phone-binding')) {
           window.__sidebarTest.phoneBody = JSON.parse(init.body || '{}');
@@ -1370,16 +1374,20 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         }
         if (url.includes('/send-intents') && url.includes('/outcome')) {
           window.__sidebarTest.sendOutcomeBodies.push(JSON.parse(init.body || '{}'));
+          window.__sidebarTest.sendOutcomeTokens.push(new Headers(init.headers).get('X-Sidebar-Context-Token'));
           return json({ intent_id: 51, effect_id: 'eff-1', state: 'client_executed' });
         }
         if (url.includes('/send-intents')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
           const command = JSON.parse(init.body || '{}');
           window.__sidebarTest.sendIntentKeys.push(new Headers(init.headers).get('Idempotency-Key'));
+          window.__sidebarTest.sendIntentTokens.push(new Headers(init.headers).get('X-Sidebar-Context-Token'));
           if (scenario === 'send_accept_response_lost' && window.__sidebarTest.sendIntentKeys.length === 1) throw new TypeError('accepted response lost');
           const payload = command.resource_kind === 'product'
             ? { msgtype: 'news', news: { link: 'http://localhost/p/course-ordinary', title: '普通课程', desc: '', imgUrl: 'http://localhost/static/sidebar_workbench/product-card-cover.png' } }
             : { msgtype: 'image', image: { mediaid: 'media-real-31' } };
+          if (scenario === 'send_accept_response_lost' && window.__sidebarTest.sendIntentKeys.length > 1) return json({ intent_id: 51, effect_id: 'eff-1', state: 'queued', payload, replayed: true }, 202);
+          if (scenario === 'send_accept_switch') return await new Promise((resolve) => { window.__sidebarTest.releaseAccept = () => resolve(json({ intent_id: 51, effect_id: 'eff-1', state: 'queued', grant: 'grant-token', grant_expires_at: '2026-08-28T00:00:00Z', payload, replayed: false }, 202)); });
           return json({ intent_id: 51, effect_id: 'eff-1', state: 'queued', grant: 'grant-token', grant_expires_at: '2026-08-28T00:00:00Z', payload, replayed: false }, 202);
         }
         if (url.includes('/materials/') && url.includes('/variants/')) {
@@ -3237,6 +3245,7 @@ for (const [scenario, expectedRequest] of [
 {
   const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=contact_switch' });
   const state = dom.window.__sidebarTest;
+  state.contactSwitched = true;
   dom.window.dispatchEvent(new dom.window.Event('focus'));
   await sleep(100);
   ok('窗口重新可见时重验联系人；旧 context token 不可用于新客户',
@@ -3329,17 +3338,19 @@ for (const [scenario, expectedRequest] of [
 {
   const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=send_accept_response_lost' });
   await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' }).catch(() => undefined);
-  await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' });
+  const replayError = await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' }).then(() => '', (error) => error.message);
+  const lockedError = await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' }).then(() => '', (error) => error.message);
   const state = dom.window.__sidebarTest;
-  ok('发送意图接受响应丢失后按同一客户资源重放同一幂等键',
+  ok('发送意图接受响应丢失后同键重放无 grant 时锁定且不调用 JSSDK',
     state.sendIntentKeys.length === 2 && state.sendIntentKeys[0] === state.sendIntentKeys[1] &&
-    state.wxMessages.filter((entry) => entry.method === 'sendChatMessage').length === 1 &&
-    state.sendOutcomeBodies.filter((body) => body.outcome === 'client_executed').length === 1);
+    state.wxMessages.filter((entry) => entry.method === 'sendChatMessage').length === 0 &&
+    replayError.includes('已受理') && lockedError.includes('上次发送结果未确认'));
   dom.window.close();
 }
 {
   const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=contact_switch_unknown' });
   await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' }).catch(() => undefined);
+  dom.window.__sidebarTest.contactSwitched = true;
   dom.window.dispatchEvent(new dom.window.Event('focus'));
   await waitFor(() => dom.window.__sidebarTest.bootstrapBodies.length === 2);
   await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' });
@@ -3349,6 +3360,45 @@ for (const [scenario, expectedRequest] of [
     state.sendIntentKeys.length === 2 && state.sendIntentKeys[0] !== state.sendIntentKeys[1] &&
     state.sendOutcomeBodies.filter((body) => body.outcome === 'outcome_unknown').length === 1 &&
     state.sendOutcomeBodies.filter((body) => body.outcome === 'client_executed').length === 1);
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=send_contact_no_focus' });
+  dom.window.__sidebarTest.contactSwitched = true;
+  const message = await dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' }).then(() => '', (error) => error.message);
+  ok('无 focus 或 visibility 事件的客户切换在接受意图前由 SDK 重验阻止',
+    message.includes('当前企微联系人已变化') && dom.window.__sidebarTest.sendIntentKeys.length === 0);
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=send_accept_switch' });
+  const state = dom.window.__sidebarTest;
+  const sending = dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' });
+  await waitFor(() => typeof state.releaseAccept === 'function');
+  state.contactSwitched = true;
+  state.releaseAccept();
+  const message = await sending.then(() => '', (error) => error.message);
+  ok('接受请求在途切换客户后不调用 JSSDK，并用原客户 token 关闭原 intent',
+    message.includes('当前企微联系人已变化') &&
+    state.wxMessages.filter((entry) => entry.method === 'sendChatMessage').length === 0 &&
+    state.sendIntentTokens.length === 1 && state.sendIntentTokens[0].includes('-7-') &&
+    state.sendOutcomeBodies.length === 1 && state.sendOutcomeBodies[0].outcome === 'final_failed' &&
+    state.sendOutcomeTokens[0] === state.sendIntentTokens[0]);
+  dom.window.close();
+}
+for (const scenario of ['send_callback_switch_ok', 'send_callback_switch_unknown']) {
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=' + scenario });
+  const state = dom.window.__sidebarTest;
+  const sending = dom.window.__AICRMSidebarBridge.send({ resource_kind: 'product', resource_id: '41' });
+  await waitFor(() => typeof state.releaseSend === 'function');
+  state.contactSwitched = true;
+  state.releaseSend();
+  await sending.catch(() => undefined);
+  const expected = scenario === 'send_callback_switch_ok' ? 'client_executed' : 'outcome_unknown';
+  ok(scenario + ' SDK 回调在途切换仍以原客户 token 回写原 intent',
+    state.sendIntentTokens.length === 1 && state.sendIntentTokens[0].includes('-7-') &&
+    state.sendOutcomeBodies.length === 1 && state.sendOutcomeBodies[0].outcome === expected &&
+    state.sendOutcomeTokens[0] === state.sendIntentTokens[0]);
   dom.window.close();
 }
 for (const scenario of ['send_delayed', 'invoke_errmsg_fail', 'invoke_empty']) {

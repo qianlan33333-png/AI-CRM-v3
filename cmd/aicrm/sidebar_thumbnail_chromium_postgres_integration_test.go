@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
 
 // TestPostgreSQLSidebarThumbnailChromiumJourney exercises the deployed sidebar
@@ -29,9 +31,11 @@ import (
 //
 // OneID decision: involved only through the existing scoped
 // wecom_external_userid read path; the journey never provisions or merges a
-// customer. Persistence decision: local PostgreSQL reads only after fixture
-// setup. External Effects decision: not involved; JSSDK ticket reads are
-// expected while the fixture asserts that no Provider business write occurs.
+// customer. Persistence decision: the isolated PostgreSQL fixture exercises
+// profile CAS plus existing outbound intent acceptance/completion in their
+// owning stores. External Effects decision: the journey verifies durable local
+// acceptance, replay, and completion facts without a Provider business write;
+// JSSDK ticket reads use the existing trusted read adapter.
 func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	// Linux CI requires this journey. macOS runs the same HTTPS + DevTools
 	// protocol when explicitly requested so a platform-specific startup issue is
@@ -94,6 +98,7 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	if err = seedSidebarStandardParityChromiumFacts(ctx, application, productID, serviceProductID); err != nil {
 		t.Fatal(err)
 	}
+	assertSidebarSendHTTPReplayOmitsGrant(t, ctx, application, productID)
 	// Assert the same outer route Chromium will open. This makes a missing
 	// repository-relative release artifact a deterministic test failure instead
 	// of a generic DOM timeout after the browser starts.
@@ -224,4 +229,62 @@ VALUES('sidebar-chromium','limit-claim',1,$1,'claimed',$2,$2,$3,$4,$2,$2)`, coup
 		}
 	}
 	return nil
+}
+
+func assertSidebarSendHTTPReplayOmitsGrant(t *testing.T, ctx context.Context, application *composedApplication, productID int64) {
+	t.Helper()
+	contextToken, err := (wecom.ContextTokenService{CorpID: "fixture-corp", SigningKey: []byte("sidebar-thumbnail-context-key-32")}).Issue(ctx, wecom.SidebarPrincipal{CorpID: "fixture-corp", EmployeeID: "fixture-staff"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type acceptance struct {
+		IntentID int64           `json:"intent_id"`
+		State    string          `json:"state"`
+		Grant    string          `json:"grant"`
+		Payload  json.RawMessage `json:"payload"`
+		Replayed bool            `json:"replayed"`
+	}
+	send := func() acceptance {
+		request := httptest.NewRequest(http.MethodPost, "/api/sidebar/v2/send-intents", strings.NewReader(fmt.Sprintf(`{"resource_kind":"product","resource_id":"%d","product_type":"standard"}`, productID)))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Sidebar-Context-Token", contextToken)
+		request.Header.Set("Idempotency-Key", "sidebar-chromium-replay-contract")
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("sidebar send accept status=%d body=%s", response.Code, response.Body.String())
+		}
+		var result acceptance
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first, replay := send(), send()
+	if first.IntentID < 1 || first.State != "queued" || first.Grant == "" || len(first.Payload) == 0 || first.Replayed ||
+		replay.IntentID != first.IntentID || replay.State != "queued" || replay.Grant != "" || len(replay.Payload) == 0 || !replay.Replayed {
+		t.Fatalf("sidebar real HTTP replay first=%+v replay=%+v", first, replay)
+	}
+	var intents, grants int
+	if err := application.pool.Native().QueryRow(ctx, `SELECT (SELECT count(*) FROM outbound_sidebar_send_intents WHERE id=$1),(SELECT count(*) FROM outbound_sidebar_send_grants WHERE intent_id=$1)`, first.IntentID).Scan(&intents, &grants); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 1 || grants != 1 {
+		t.Fatalf("sidebar replay durable rows intents=%d grants=%d", intents, grants)
+	}
+	outcomeRequest := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/sidebar/v2/send-intents/%d/outcome", first.IntentID), strings.NewReader(fmt.Sprintf(`{"grant":%q,"outcome":"final_failed","evidence":"replay-contract-not-executed"}`, first.Grant)))
+	outcomeRequest.Header.Set("Content-Type", "application/json")
+	outcomeRequest.Header.Set("X-Sidebar-Context-Token", contextToken)
+	outcomeResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(outcomeResponse, outcomeRequest)
+	if outcomeResponse.Code != http.StatusOK {
+		t.Fatalf("sidebar replay original-scope completion status=%d body=%s", outcomeResponse.Code, outcomeResponse.Body.String())
+	}
+	var state string
+	if err := application.pool.Native().QueryRow(ctx, `SELECT state FROM outbound_sidebar_send_intents WHERE id=$1`, first.IntentID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "final_failed" {
+		t.Fatalf("sidebar replay original-scope completion state=%q", state)
+	}
 }

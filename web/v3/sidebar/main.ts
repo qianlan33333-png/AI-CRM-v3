@@ -15,6 +15,7 @@ type WX = {
 
 type JSSDKSignature = { timestamp: number; nonceStr: string; signature: string; jsApiList?: string[] };
 type JSSDKConfig = { corp_id: string; agent_id: string; config: JSSDKSignature; agent_config: JSSDKSignature };
+type SendScope = { customerID: string; externalUserID: string; token: string; generation: number };
 
 declare global {
   interface Window {
@@ -496,51 +497,88 @@ export class SidebarBridge {
     try { window.sessionStorage?.removeItem(SDK_CACHE_KEY); } catch { /* no storage is safe */ }
   }
 
+  private async confirmSendScope(expected?: SendScope): Promise<SendScope> {
+    const generation = this.contextGeneration;
+    const externalUserID = await this.resolveWeComExternalUserID(generation);
+    this.assertGeneration(generation);
+    if (!this.token || !this.customerID || externalUserID !== this.externalUserID) {
+      this.invalidateContext();
+      throw failure("当前企微联系人已变化，已停止发送；请重新确认当前客户。");
+    }
+    const scope = { customerID: this.customerID, externalUserID, token: this.token, generation };
+    if (expected && (scope.customerID !== expected.customerID || scope.externalUserID !== expected.externalUserID || scope.token !== expected.token || scope.generation !== expected.generation)) {
+      throw failure("发送期间客户上下文已变化，已停止发送。");
+    }
+    return scope;
+  }
+
+  private async scopedForSend(path: string, options: RequestOptions, scope: SendScope): Promise<Json> {
+    const { timeoutMs: _timeout, retryCount: _retry, retryDelayMs: _delay, signal, ...init } = options;
+    const payload = await this.raw(path, { ...init, signal: anySignal([signal, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": scope.token, ...(init.headers || {}) } });
+    if (scope.generation !== this.contextGeneration || scope.token !== this.token) throw failure("发送期间客户上下文已变化，已停止发送。");
+    return payload;
+  }
+
+  private completeSendForScope(scope: SendScope, intentID: number, grant: string, outcome: "client_executed" | "outcome_unknown" | "final_failed", evidence: string): Promise<Json> {
+    return this.raw(`/api/sidebar/v2/send-intents/${intentID}/outcome`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Sidebar-Context-Token": scope.token },
+      body: JSON.stringify({ grant, outcome, evidence }),
+    });
+  }
+
   async send(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }): Promise<Json> {
     await this.start();
-    if (!this.customerID) throw failure("侧边栏客户上下文未就绪。");
-    const key = `customer:${this.customerID}:${input.resource_kind}:${String(input.resource_id)}`;
+    const scope = await this.confirmSendScope();
+    const key = `customer:${scope.customerID}:${input.resource_kind}:${String(input.resource_id)}`;
     if (this.unknownSendKeys.has(key)) throw failure("上次发送结果未确认，禁止创建新的发送意图；请等待对账或人工确认。");
     const existing = this.sendFlights.get(key);
     if (existing) return existing;
-    const flight = this.sendOnce(input, key);
+    const flight = this.sendOnce(input, key, scope);
     this.sendFlights.set(key, flight);
     try { return await flight; }
     finally { if (this.sendFlights.get(key) === flight) this.sendFlights.delete(key); }
   }
 
-  private async sendOnce(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }, key: string): Promise<Json> {
+  private async sendOnce(input: { resource_kind: "product" | "material"; resource_id: string; product_type?: string }, key: string, scope: SendScope): Promise<Json> {
     let intentKey = this.sendIdempotencyKeys.get(key);
     if (!intentKey) {
       intentKey = idempotency("sidebar-send");
       this.sendIdempotencyKeys.set(key, intentKey);
     }
-    // If the accept response is lost, this key remains attached to the same
-    // confirmed Customer/resource tuple. A retry replays the original intent.
-    const accepted = await this.scoped("/api/sidebar/v2/send-intents", {
+    const accepted = await this.scopedForSend("/api/sidebar/v2/send-intents", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": intentKey },
       body: JSON.stringify(input),
-    });
+    }, scope);
     const payload = accepted.payload || {};
     const grant = String(accepted.grant || "");
     const intentID = Number(accepted.intent_id || 0);
+    if (accepted.replayed && !grant && Number.isInteger(intentID) && intentID > 0) {
+      this.unknownSendKeys.add(key);
+      throw failure("发送意图已受理，但执行凭据未返回；已锁定本次发送，等待对账或人工确认。");
+    }
     if (!grant || !Number.isInteger(intentID) || intentID < 1 || !payload.msgtype) throw failure("发送意图未返回可执行回执。");
     try {
+      await this.confirmSendScope(scope);
+    } catch (error) {
+      try {
+        await this.completeSendForScope(scope, intentID, grant, "final_failed", "sidebar_contact_changed_before_client_execution");
+        this.sendIdempotencyKeys.delete(key);
+      } catch {
+        this.unknownSendKeys.add(key);
+      }
+      throw error;
+    }
+    try {
       const response = await this.invoke("sendChatMessage", payload);
-      await this.scoped(`/api/sidebar/v2/send-intents/${intentID}/outcome`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ grant, outcome: "client_executed", evidence: "sidebar_jssdk_client_executed" }),
-      });
+      await this.completeSendForScope(scope, intentID, grant, "client_executed", "sidebar_jssdk_client_executed");
       this.sendIdempotencyKeys.delete(key);
       return response;
     } catch (error) {
       this.unknownSendKeys.add(key);
       try {
-        await this.scoped(`/api/sidebar/v2/send-intents/${intentID}/outcome`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ grant, outcome: "outcome_unknown", evidence: "sidebar_jssdk_outcome_unknown" }),
-        });
+        await this.completeSendForScope(scope, intentID, grant, "outcome_unknown", "sidebar_jssdk_outcome_unknown");
       } catch { /* original accepted intent remains reconcilable under its grant */ }
       throw error;
     }
