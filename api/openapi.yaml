@@ -1947,6 +1947,14 @@ paths:
       security: [{operationCycleService: []}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
       responses: {"202": {description: Action claimed with fenced lease}}
+  /api/operation-cycles/action-requests/{request_id}/lease-renewals:
+    post:
+      operationId: renewOperationCycleActionLease
+      tags: [OperationCycles]
+      security: [{operationCycleService: []}]
+      parameters: [{name: request_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
+      responses: {"200": {description: Fenced action lease renewed}, "409": {$ref: "#/components/responses/Error"}}
   /api/operation-cycles/action-requests/{request_id}/events:
     post:
       operationId: recordOperationCycleActionEvent

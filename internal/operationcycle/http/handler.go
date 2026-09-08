@@ -161,10 +161,19 @@ type strategyStageBody struct {
 }
 
 type strategyDefinitionBody struct {
-	Schedule       string              `json:"schedule"`
-	IndicatorColor string              `json:"indicator_color"`
-	PrimaryAction  string              `json:"primary_action"`
-	Stages         []strategyStageBody `json:"stages"`
+	Schedule       string                 `json:"schedule"`
+	IndicatorColor string                 `json:"indicator_color"`
+	PrimaryAction  string                 `json:"primary_action"`
+	Stages         []strategyStageBody    `json:"stages"`
+	Execution      *strategyExecutionBody `json:"execution,omitempty"`
+}
+
+type strategyExecutionBody struct {
+	Title                 string         `json:"title"`
+	Objective             string         `json:"objective"`
+	CodexPrompt           string         `json:"codex_prompt"`
+	RequiredLocalBindings []string       `json:"required_local_bindings"`
+	ResultSchema          map[string]any `json:"result_schema"`
 }
 
 func (body strategyDefinitionBody) command() operationapp.StrategyDefinition {
@@ -172,7 +181,11 @@ func (body strategyDefinitionBody) command() operationapp.StrategyDefinition {
 	for _, stage := range body.Stages {
 		stages = append(stages, operationapp.StrategyStage{Key: stage.Key, Label: stage.Label, Color: stage.Color, State: stage.State})
 	}
-	return operationapp.StrategyDefinition{Schedule: body.Schedule, IndicatorColor: body.IndicatorColor, PrimaryAction: body.PrimaryAction, Stages: stages}
+	var execution *operationapp.StrategyExecution
+	if body.Execution != nil {
+		execution = &operationapp.StrategyExecution{Title: body.Execution.Title, Objective: body.Execution.Objective, CodexPrompt: body.Execution.CodexPrompt, RequiredLocalBindings: append([]string(nil), body.Execution.RequiredLocalBindings...), ResultSchema: body.Execution.ResultSchema}
+	}
+	return operationapp.StrategyDefinition{Schedule: body.Schedule, IndicatorColor: body.IndicatorColor, PrimaryAction: body.PrimaryAction, Stages: stages, Execution: execution}
 }
 
 type strategyCreateBody struct {
@@ -204,6 +217,17 @@ func (h *Handler) serveRunner(w http.ResponseWriter, r *http.Request, p []string
 		}
 		value, err := h.service.Claim(r.Context(), body.RunnerID, "operation-cycle-service")
 		writeResult(w, http.StatusAccepted, value, err)
+	case r.Method == http.MethodPost && len(p) == 3 && p[0] == "action-requests" && p[2] == "lease-renewals" && noQuery(r):
+		var body struct {
+			SchemaVersion string `json:"schema_version"`
+			LeaseToken    string `json:"lease_token"`
+		}
+		if decode(w, r, &body) != nil || body.SchemaVersion != "operation_cycle_action_lease_renewal.v1" {
+			writeError(w, http.StatusBadRequest, "malformed_request")
+			return
+		}
+		value, err := h.service.RenewActionLease(r.Context(), operationapp.ActionLeaseRenewalCommand{RequestID: p[1], LeaseToken: body.LeaseToken})
+		writeResult(w, http.StatusOK, value, err)
 	case r.Method == http.MethodPost && len(p) == 3 && p[0] == "action-requests" && p[2] == "events" && noQuery(r):
 		var body struct {
 			SchemaVersion string         `json:"schema_version"`
