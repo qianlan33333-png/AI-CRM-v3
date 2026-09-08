@@ -21,6 +21,8 @@ import (
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
 )
 
+var testCursorSigningKey = []byte("sidebar-handler-test-cursor-signing-key")
+
 type testContext struct{}
 
 func (testContext) VerifySidebarContext(context.Context, string) (Principal, customerdomain.CustomerID, error) {
@@ -46,6 +48,56 @@ func (testSurveys) CapabilityStatus() customerport.SectionStatus {
 }
 func (testSurveys) CustomerSurveys(context.Context, customerdomain.CustomerID, customerport.PageQuery) (customerport.SurveyPage, error) {
 	return customerport.SurveyPage{Items: []customerport.SurveyItem{}, Status: customerport.SectionStatus{State: customerport.SectionReady}}, nil
+}
+
+type pagedSurveys struct {
+	items []customerport.SurveyItem
+	calls []customerport.PageQuery
+}
+
+func (reader *pagedSurveys) CapabilityStatus() customerport.SectionStatus {
+	return customerport.SectionStatus{State: customerport.SectionReady}
+}
+
+func (reader *pagedSurveys) CustomerSurveys(_ context.Context, _ customerdomain.CustomerID, query customerport.PageQuery) (customerport.SurveyPage, error) {
+	reader.calls = append(reader.calls, query)
+	items := make([]customerport.SurveyItem, 0, query.Limit)
+	for _, item := range reader.items {
+		if item.SubmittedAt.After(query.Watermark) || (!query.AfterAt.IsZero() && (item.SubmittedAt.After(query.AfterAt) || (item.SubmittedAt.Equal(query.AfterAt) && item.ID >= query.AfterID))) {
+			continue
+		}
+		items = append(items, item)
+		if len(items) == query.Limit {
+			break
+		}
+	}
+	asOf := query.Watermark
+	return customerport.SurveyPage{Items: items, Total: int64(len(reader.items)), Status: customerport.SectionStatus{State: customerport.SectionReady, AsOf: &asOf}}, nil
+}
+
+type pagedTimeline struct {
+	items []customerport.TimelineItem
+	calls []customerport.PageQuery
+}
+
+func (reader *pagedTimeline) CapabilityStatus() customerport.SectionStatus {
+	return customerport.SectionStatus{State: customerport.SectionReady}
+}
+
+func (reader *pagedTimeline) CustomerTimeline(_ context.Context, _ customerdomain.CustomerID, query customerport.PageQuery) (customerport.TimelinePage, error) {
+	reader.calls = append(reader.calls, query)
+	items := make([]customerport.TimelineItem, 0, query.Limit)
+	for _, item := range reader.items {
+		if item.OccurredAt.After(query.Watermark) || (!query.AfterAt.IsZero() && (item.OccurredAt.After(query.AfterAt) || (item.OccurredAt.Equal(query.AfterAt) && item.ID >= query.AfterID))) {
+			continue
+		}
+		items = append(items, item)
+		if len(items) == query.Limit {
+			break
+		}
+	}
+	asOf := query.Watermark
+	return customerport.TimelinePage{Items: items, Status: customerport.SectionStatus{State: customerport.SectionReady, AsOf: &asOf}}, nil
 }
 
 type testTimeline struct{}
@@ -187,9 +239,13 @@ func testRoutes(t *testing.T) http.Handler {
 }
 
 func testRoutesWithCoupons(t *testing.T, coupons couponport.SidebarClaimableCatalog) http.Handler {
+	return testRoutesWithReaders(t, testProfile{}, testSurveys{}, testTimeline{}, coupons)
+}
+
+func testRoutesWithReaders(t *testing.T, profiles customerport.SidebarProfileService, surveys customerport.CustomerSurveyReader, timeline customerport.CustomerTimelineReader, coupons couponport.SidebarClaimableCatalog) http.Handler {
 	t.Helper()
 	products := testProducts{}
-	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: coupons, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com"})
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: profiles, Surveys: surveys, Timeline: timeline, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: coupons, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +285,7 @@ func TestReadyReadsExcludeRemovedCapabilitiesAndRawExternalIdentity(t *testing.T
 
 func TestMaterialSendFailsClosedWithoutProviderReadyMediaID(t *testing.T) {
 	products := testProducts{}
-	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: unreadyMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com"})
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: unreadyMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +303,7 @@ func TestMaterialSendFailsClosedWithoutProviderReadyMediaID(t *testing.T) {
 func TestMaterialVariantUsesEnabledViewerProjection(t *testing.T) {
 	products := testProducts{}
 	variants := &testImageVariants{variant: mediaport.ImageVariant{Content: []byte("png"), MediaType: "image/png", ETag: `"fixture"`}}
-	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, ImageVariants: variants, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com"})
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, ImageVariants: variants, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +370,7 @@ func TestCouponsExposeCouponRuleDirectoryWithoutCreatingShares(t *testing.T) {
 
 func TestProductSendIntentUsesStandardNewsCardPayload(t *testing.T) {
 	products := fixedProducts{product: productport.ProductOption{ID: 9, Code: "course-9", ProductType: productport.ProductOptionStandard, Name: "标准课程", PriceMinor: 19900, Currency: "CNY"}}
-	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com"})
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,5 +392,167 @@ func TestProductSendIntentUsesStandardNewsCardPayload(t *testing.T) {
 	}
 	if news.MessageType != "news" || news.News.Link != "https://crm.example.com/p/course-9" || news.News.Title != "标准课程" || news.News.Desc != "" || news.News.ImgURL != "https://crm.example.com/static/sidebar_workbench/product-card-cover.png" {
 		t.Fatalf("standard product card payload=%s", payload)
+	}
+}
+
+type fixedSidebarProfile struct{ profile customerport.SidebarProfile }
+
+func (fixture fixedSidebarProfile) ReadSidebarProfile(context.Context, customerdomain.CustomerID) (customerport.SidebarProfile, error) {
+	return fixture.profile, nil
+}
+func (fixture fixedSidebarProfile) UpdateSidebarProfile(context.Context, customerport.SidebarProfileUpdate) (customerport.SidebarProfile, error) {
+	return fixture.profile, nil
+}
+func (fixture fixedSidebarProfile) BindSidebarPhone(context.Context, customerport.SidebarPhoneBind) (customerport.SidebarPhoneResult, error) {
+	return customerport.SidebarPhoneResult{}, nil
+}
+
+func TestWorkbenchProjectionExposesFullSafeCustomerProfile(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 1, 2, 3, 0, time.UTC)
+	lastSynced := now.Add(-time.Hour)
+	profile := fixedSidebarProfile{profile: customerport.SidebarProfile{
+		CustomerID: 42, DisplayName: "客户甲", AvatarURL: "https://cdn.example/avatar.png", PhoneMasked: "138****5678", PhoneAssurance: "declared",
+		Status: "active", ActivationState: "active", Gender: 2, ContactType: 1, CorpName: "示例企业", Source: "wecom_sync",
+		ProfileSource: "活动报名", ProfileVersion: 3, Industry: "教育", IndustryDescription: "成人教育", NeedsBlockersFollowup: "回访", Version: 9,
+		LastSyncedAt: &lastSynced, UpdatedAt: now,
+	}}
+	products := testProducts{}
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: profile, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := handler.workbenchProjection(context.Background(), 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Profile struct {
+			DisplayName           string `json:"display_name"`
+			PhoneAssurance        string `json:"phone_assurance"`
+			ActivationStatus      string `json:"activation_status"`
+			ContactType           int16  `json:"contact_type"`
+			ProfileSource         string `json:"profile_source"`
+			ProfileVersion        int64  `json:"profile_version"`
+			Industry              string `json:"industry"`
+			IndustryDescription   string `json:"industry_description"`
+			NeedsBlockersFollowup string `json:"needs_blockers_followup"`
+			LastSyncedAt          string `json:"last_synced_at"`
+		} `json:"profile"`
+	}
+	if err = json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Profile.DisplayName != "客户甲" || body.Profile.PhoneAssurance != "declared" || body.Profile.ActivationStatus != "active" || body.Profile.ContactType != 1 || body.Profile.ProfileSource != "活动报名" || body.Profile.ProfileVersion != 3 || body.Profile.Industry != "教育" || body.Profile.IndustryDescription != "成人教育" || body.Profile.NeedsBlockersFollowup != "回访" || body.Profile.LastSyncedAt == "" {
+		t.Fatalf("workbench profile contract=%s", encoded)
+	}
+	for _, forbidden := range []string{"external_userid", "openid", "unionid", `"phone":"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("workbench profile leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestQuestionnaireCursorPreservesOwnerKeysetSnapshot(t *testing.T) {
+	now := time.Now().UTC().Add(-time.Hour)
+	surveys := &pagedSurveys{items: []customerport.SurveyItem{
+		{ID: 5, Title: "第五份", SubmittedAt: now.Add(-5 * time.Minute)}, {ID: 4, Title: "第四份", SubmittedAt: now.Add(-4 * time.Minute)},
+		{ID: 3, Title: "第三份", SubmittedAt: now.Add(-3 * time.Minute)}, {ID: 2, Title: "第二份", SubmittedAt: now.Add(-2 * time.Minute)},
+		{ID: 1, Title: "第一份", SubmittedAt: now.Add(-time.Minute)},
+	}}
+	// The Owner returns newest first; keep the fixture in that order so the
+	// handler must only forward the Port's AfterAt/AfterID tuple.
+	for left, right := 0, len(surveys.items)-1; left < right; left, right = left+1, right-1 {
+		surveys.items[left], surveys.items[right] = surveys.items[right], surveys.items[left]
+	}
+	routes := testRoutesWithReaders(t, testProfile{}, surveys, testTimeline{}, testCoupons{})
+	read := func(path string) struct {
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+		Total      int64  `json:"total"`
+		Limit      int    `json:"limit"`
+		HasMore    bool   `json:"has_more"`
+		NextCursor string `json:"next_cursor"`
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer signed")
+		response := httptest.NewRecorder()
+		routes.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("questionnaire page path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		var page struct {
+			Items []struct {
+				ID int64 `json:"id"`
+			} `json:"items"`
+			Total      int64  `json:"total"`
+			Limit      int    `json:"limit"`
+			HasMore    bool   `json:"has_more"`
+			NextCursor string `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+	first := read("/api/sidebar/v2/questionnaires?limit=2")
+	if len(first.Items) != 2 || first.Items[0].ID != 1 || first.Items[1].ID != 2 || first.Total != 5 || first.Limit != 2 || !first.HasMore || first.NextCursor == "" || len(surveys.calls) != 1 || surveys.calls[0].Limit != 3 {
+		t.Fatalf("first questionnaire page=%+v calls=%+v", first, surveys.calls)
+	}
+	firstWatermark := surveys.calls[0].Watermark
+	second := read("/api/sidebar/v2/questionnaires?limit=2&cursor=" + first.NextCursor)
+	if len(second.Items) != 2 || second.Items[0].ID != 3 || second.Items[1].ID != 4 || !second.HasMore || second.NextCursor == "" || len(surveys.calls) != 2 || !surveys.calls[1].Watermark.Equal(firstWatermark) || surveys.calls[1].AfterID != 2 {
+		t.Fatalf("second questionnaire page=%+v calls=%+v", second, surveys.calls)
+	}
+	third := read("/api/sidebar/v2/questionnaires?limit=2&cursor=" + second.NextCursor)
+	if len(third.Items) != 1 || third.Items[0].ID != 5 || third.HasMore || third.NextCursor != "" || len(surveys.calls) != 3 || surveys.calls[2].AfterID != 4 {
+		t.Fatalf("third questionnaire page=%+v calls=%+v", third, surveys.calls)
+	}
+	invalid := httptest.NewRecorder()
+	invalidRequest := httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/questionnaires?limit=2&cursor="+first.NextCursor+"x", nil)
+	invalidRequest.Header.Set("Authorization", "Bearer signed")
+	routes.ServeHTTP(invalid, invalidRequest)
+	if invalid.Code != http.StatusBadRequest || len(surveys.calls) != 3 {
+		t.Fatalf("tampered questionnaire cursor status=%d calls=%d body=%s", invalid.Code, len(surveys.calls), invalid.Body.String())
+	}
+}
+
+func TestTimelineCursorPreservesOwnerKeysetAndRejectsOtherSection(t *testing.T) {
+	now := time.Now().UTC().Add(-time.Hour)
+	timeline := &pagedTimeline{items: []customerport.TimelineItem{
+		{ID: 1, Title: "最新触点", OccurredAt: now.Add(-time.Minute)}, {ID: 2, Title: "次新触点", OccurredAt: now.Add(-2 * time.Minute)}, {ID: 3, Title: "较早触点", OccurredAt: now.Add(-3 * time.Minute)},
+	}}
+	routes := testRoutesWithReaders(t, testProfile{}, testSurveys{}, timeline, testCoupons{})
+	request := httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/timeline?limit=2", nil)
+	request.Header.Set("Authorization", "Bearer signed")
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, request)
+	var first struct {
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+		HasMore    bool   `json:"has_more"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &first) != nil || len(first.Items) != 2 || first.Items[0].ID != 1 || first.Items[1].ID != 2 || !first.HasMore || first.NextCursor == "" || len(timeline.calls) != 1 || timeline.calls[0].Limit != 3 {
+		t.Fatalf("first timeline response status=%d body=%s calls=%+v", response.Code, response.Body.String(), timeline.calls)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/timeline?limit=2&cursor="+first.NextCursor, nil)
+	request.Header.Set("Authorization", "Bearer signed")
+	response = httptest.NewRecorder()
+	routes.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(timeline.calls) != 2 || timeline.calls[1].AfterID != 2 || !timeline.calls[1].Watermark.Equal(timeline.calls[0].Watermark) {
+		t.Fatalf("second timeline response status=%d calls=%+v body=%s", response.Code, timeline.calls, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/questionnaires?limit=2&cursor="+first.NextCursor, nil)
+	request.Header.Set("Authorization", "Bearer signed")
+	response = httptest.NewRecorder()
+	routes.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("timeline cursor accepted by questionnaires status=%d body=%s", response.Code, response.Body.String())
 	}
 }
