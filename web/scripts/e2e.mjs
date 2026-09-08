@@ -3208,7 +3208,8 @@ for (const [scenario, expected] of [
   ok('Coupon 目录显示规则状态而不创建客户领取记录；已有链接可分享给当前会话对象',
     d.body.textContent.includes('可领取目录券') && d.body.textContent.includes('已结束目录券') &&
     d.body.textContent.includes('已达到个人领取上限') &&
-    [...d.querySelectorAll('[data-coupon-send]')].every((node) => !node.disabled) &&
+    d.querySelector('[data-coupon-send="71"]')?.disabled === false &&
+    d.querySelector('[data-coupon-send="72"]')?.disabled === true &&
     !d.body.textContent.includes('claim_id'));
 
   click(dom, d.querySelector('#tabs [data-tab="products"]'));
