@@ -71,7 +71,8 @@ class CDP {
 
 const waitForPort = async profile => {
   const active = path.join(profile, "DevToolsActivePort");
-  for (let attempt = 0; attempt < 180; attempt += 1) {
+  // A cold CI runner can take longer than nine seconds to initialize Chromium.
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     try {
       const port = String(await fs.readFile(active, "utf8")).split("\n")[0];
       if (/^\d+$/.test(port)) return "http://127.0.0.1:" + port;
