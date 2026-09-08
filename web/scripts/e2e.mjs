@@ -1346,7 +1346,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         if (url.includes('/orders')) {
           if (scenario === 'error') return json({ code: 'unavailable' }, 503);
           return json({
-            items: scenario === 'empty' ? [] : [{ id: 9, provider: 'wechat_pay', source_system: 'aicrm-production', source_key: 'k1', merchant_order_no: 'M20260826001', amount: { amount_minor: 9900, currency: 'CNY' }, refunded_minor: 9900, status: 'refunded', items: [{ line_no: 1, product_code: 'course-1', product_name: '测试课程', unit_amount_minor: 9900, quantity: 1, line_amount_minor: 9900 }], record_origin: 'native', effect_eligible: false, version: 1, created_at: '2026-08-26T00:40:00Z', updated_at: '2026-08-26T00:40:00Z' }],
+            items: scenario === 'empty' ? [] : [{ id: 9, provider: 'wechat_pay', source_system: 'aicrm-production', source_key: 'k1', merchant_order_no: 'M20260826001', amount: { amount_minor: 9900, currency: 'CNY' }, refunded_minor: scenario === 'order_refunded' ? 9900 : 0, status: scenario === 'order_refunded' ? 'refunded' : 'paid', items: [{ line_no: 1, product_code: 'course-1', product_name: '测试课程', unit_amount_minor: 9900, quantity: 1, line_amount_minor: 9900 }], record_origin: 'native', effect_eligible: false, version: 1, created_at: '2026-08-26T00:40:00Z', updated_at: '2026-08-26T00:40:00Z' }],
             next_cursor: '',
             total: scenario === 'empty' ? 0 : 1,
           });
@@ -3325,8 +3325,8 @@ for (const [scenario, expectedRequest] of [
   const d = dom.window.document;
   click(dom, d.querySelector('#tabs [data-tab="orders"]'));
   await sleep(50);
-  const regularTruthful = d.body.textContent.includes('¥99.00') && d.body.textContent.includes('已退款') &&
-    d.body.textContent.includes('退款¥99.00') && d.body.textContent.includes('创建时间') &&
+  const regularTruthful = d.body.textContent.includes('¥99.00') && d.body.textContent.includes('已支付') &&
+    d.body.textContent.includes('创建时间') && !d.body.textContent.includes('退款¥') &&
     !d.body.textContent.includes('支付时间') && !d.querySelector('[data-order-detail-url]');
   click(dom, d.querySelector('[data-order-type="periodic"]'));
   await sleep(50);
@@ -3334,6 +3334,16 @@ for (const [scenario, expectedRequest] of [
     regularTruthful && d.body.textContent.includes('生效时间') && d.body.textContent.includes('到期时间') &&
     d.body.textContent.includes('2026-08-01') && d.body.textContent.includes('2026-09-01') &&
     !d.querySelector('[data-order-detail-url]'));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=order_refunded' });
+  const d = dom.window.document;
+  click(dom, d.querySelector('#tabs [data-tab="orders"]'));
+  await sleep(50);
+  ok('订单 Owner refunded 原码经既有状态契约显示已退款与真实退款金额',
+    d.body.textContent.includes('已退款') && d.body.textContent.includes('退款¥99.00') &&
+    d.body.textContent.includes('创建时间') && !d.body.textContent.includes('支付时间'));
   dom.window.close();
 }
 {

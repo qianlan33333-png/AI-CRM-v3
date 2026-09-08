@@ -8,6 +8,7 @@ const username = process.env.AICRM_SIDEBAR_THUMBNAIL_TEST_USERNAME;
 const password = process.env.AICRM_SIDEBAR_THUMBNAIL_TEST_PASSWORD;
 const jssdkFixturePath = process.env.AICRM_SIDEBAR_JSSDK_FIXTURE;
 const weComJSSDKURL = "https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js";
+const screenshotDirectory = process.env.AICRM_SIDEBAR_SCREENSHOT_DIR || "";
 if (!/^https:\/\//.test(baseURL || "") || !username || !password || !jssdkFixturePath) throw new Error("sidebar Chromium journey requires HTTPS URL, credentials, and the official WeCom JSSDK fixture");
 const jssdkFixture = await fs.readFile(jssdkFixturePath);
 if (!jssdkFixture.includes(Buffer.from("agentConfig"))) throw new Error("sidebar Chromium journey JSSDK fixture lacks agentConfig");
@@ -79,6 +80,12 @@ async function waitFor(cdp, expression, message, stage = "wait") {
     await delay(50);
   }
   throw new Error(message);
+}
+async function captureScreenshot(cdp, name) {
+  if (!screenshotDirectory) return;
+  await fs.mkdir(screenshotDirectory, { recursive: true, mode: 0o700 });
+  const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+  await fs.writeFile(path.join(screenshotDirectory, `${name}.png`), Buffer.from(shot.data, "base64"), { mode: 0o600 });
 }
 async function browserExit(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -219,6 +226,8 @@ try {
     const geometry = JSON.parse(await evaluate(cdp, 'JSON.stringify((()=>{const t=[...document.querySelectorAll("#tabs [data-tab]")],r=t.map(n=>n.getBoundingClientRect());return {v:innerWidth,c:document.documentElement.clientWidth,s:document.documentElement.scrollWidth,n:t.length,rows:new Set(r.map(x=>Math.round(x.top))).size,cols:new Set(r.slice(0,3).map(x=>Math.round(x.left))).size,in:r.every(x=>x.left>=0&&x.right<=innerWidth+.5)}})())'));
     if (geometry.v!==width || geometry.s>geometry.c || geometry.n!==6 || geometry.rows!==2 || geometry.cols!==3 || !geometry.in) throw new Error("geometry "+width+" "+JSON.stringify(geometry));
   }
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width:375, height:900, deviceScaleFactor:1, mobile:false });
+  await captureScreenshot(cdp, "profile-375");
   await cdp.call("Emulation.setDeviceMetricsOverride", { width:430, height:900, deviceScaleFactor:1, mobile:false });
   const profileStart=requestRecords.length;
   await evaluate(cdp, '(()=>{const f=document.querySelector("[data-profile-field=source]");f.value="Chromium活动报名";f.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
@@ -253,6 +262,7 @@ try {
   await waitFor(cdp, 'document.body.textContent.includes("SIDEBAR-ORDER-001")', "order fixture");
   const regular=await evaluate(cdp, 'document.getElementById("content").textContent');
   if(!regular.includes("¥99.00")||!regular.includes("已退款")||regular.includes("支付时间")) throw new Error("order facts "+regular);
+  await captureScreenshot(cdp, "orders-430");
   await evaluate(cdp, 'document.querySelector("[data-order-type=periodic]").click();true');
   await waitFor(cdp, 'document.body.textContent.includes("31日真实服务周期")', "periodic fixture");
   const periodic=await evaluate(cdp, 'document.getElementById("content").textContent');
@@ -264,6 +274,7 @@ try {
     const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), bootstrap: resources.get("/api/sidebar/v2/bootstrap") || 0, materials: resources.get("/api/sidebar/v2/materials") || 0, thumbnail: [...resources.entries()].some(([path, status]) => /variants\/thumb_320$/.test(path) && status === 200), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
     throw new Error(`sidebar thumbnail did not render: ${diagnostic}`);
   }
+  await captureScreenshot(cdp, "materials-430");
   if (!sidebarCSP.includes("img-src 'self' data: blob:")) throw new Error("sidebar CSP did not permit its scoped thumbnail blob URL");
   if (![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarHost-/.test(pathname) && status === 200) || ![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(pathname) && status === 200) || resources.get("/api/sidebar/v2/bootstrap") !== 200 || resources.get("/api/sidebar/v2/materials") !== 200 || ![...resources.entries()].some(([pathname, status]) => /\/variants\/thumb_320$/.test(pathname) && status === 200)) throw new Error("sidebar Host/standard overlay resources did not use the actual scoped thumbnail route");
   if (requestURLs.slice(successStart).some((url) => /\/(other-staff-messages|chat-activity|chat_activity)(?:[/?]|$)/.test(new URL(url).pathname))) throw new Error("sidebar standard overlay attempted a removed chat route");
