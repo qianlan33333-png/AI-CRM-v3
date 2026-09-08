@@ -19,7 +19,10 @@ import (
 // receives a request-controlled HTML string.
 type ProductPageRenderer func(http.ResponseWriter, *http.Request, string, string, ProductAssets) error
 
-type ProductAssets struct{ TokensCSS, LabsCSS, HostJS string }
+type ProductAssets struct {
+	TokensCSS, LabsCSS, HostJS, StandardHostJS string
+	StandardCSS                                []string
+}
 
 type productUI struct {
 	dist   string
@@ -206,7 +209,22 @@ func (h *productUI) assets() (ProductAssets, error) {
 	if err != nil {
 		return ProductAssets{}, err
 	}
-	return ProductAssets{TokensCSS: tokens, LabsCSS: labs, HostJS: host}, nil
+	standardHost, err := get("standardComponentsHost")
+	if err != nil {
+		return ProductAssets{}, err
+	}
+	standardCSS := make([]string, 0, 3)
+	for _, name := range []string{"material_picker.css", "send_content_composer.css", "wecom_tag_picker.css"} {
+		relative := "assets/standard-components/" + name
+		if _, ok := manifest.Files[relative]; !ok {
+			return ProductAssets{}, errors.New("product standard component asset missing")
+		}
+		if _, err = os.Stat(filepath.Join(h.dist, relative)); err != nil {
+			return ProductAssets{}, err
+		}
+		standardCSS = append(standardCSS, "/product-assets/standard-components/"+name)
+	}
+	return ProductAssets{TokensCSS: tokens, LabsCSS: labs, HostJS: host, StandardHostJS: standardHost, StandardCSS: standardCSS}, nil
 }
 
 func (h *productUI) asset(w http.ResponseWriter, r *http.Request) {

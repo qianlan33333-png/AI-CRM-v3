@@ -12,12 +12,24 @@ func TestChannelUIUsesDedicatedHostAdapterAndCanonicalRoutes(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{"tokens.css", "labs.css", "admin.js", "channel-host.js"} {
+	for _, file := range []string{"tokens.css", "labs.css", "admin.js", "channel-host.js", "standard-host.js", "channel-standard.css"} {
 		if err := os.WriteFile(filepath.Join(dist, "assets", file), []byte(file), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","channelCenterHost":"assets/channel-host.js"}}`
+	if err := os.MkdirAll(filepath.Join(dist, "assets", "standard-components"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	standard := []string{"group_chat_picker.css", "material_picker.css", "send_content_composer.css", "wecom_tag_picker.css"}
+	for _, file := range standard {
+		if err := os.WriteFile(filepath.Join(dist, "assets", "standard-components", file), []byte(file), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","channelCenterHost":"assets/channel-host.js","standardComponentsHost":"assets/standard-host.js"},"files":{"assets/standard-components/group_chat_picker.css":{},"assets/standard-components/material_picker.css":{},"assets/standard-components/send_content_composer.css":{},"assets/standard-components/wecom_tag_picker.css":{},"assets/channelAdmissionStandard.css":{}}}`
+	if err := os.WriteFile(filepath.Join(dist, "assets", "channelAdmissionStandard.css"), []byte("channel-standard"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}

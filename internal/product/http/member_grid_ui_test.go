@@ -59,14 +59,14 @@ func TestMemberGridUIEmbedsFrozenDD8AssetsAndUsesOnlyHostSeam(t *testing.T) {
 	}
 	host := httptest.NewRecorder()
 	ui.ServeHTTP(host, httptest.NewRequest(http.MethodGet, "/service-period-member-grid-assets/member_grid_host.js", nil))
-	if host.Code != http.StatusOK || !strings.Contains(host.Body.String(), "X-CSRF-Token") || !strings.Contains(host.Body.String(), "Idempotency-Key") || !strings.Contains(host.Body.String(), "OperationMemberPicker") {
+	if host.Code != http.StatusOK || !strings.Contains(host.Body.String(), "X-CSRF-Token") || !strings.Contains(host.Body.String(), "Idempotency-Key") || !strings.Contains(host.Body.String(), "memberGridStaffURL") {
 		t.Fatalf("host=%d body=%s", host.Code, host.Body.String())
 	}
 	internal := httptest.NewRecorder()
 	if err := RenderMemberGridInternal(internal, httptest.NewRequest(http.MethodGet, "/admin/spProductData.html?id=7", nil), "7"); err != nil {
 		t.Fatal(err)
 	}
-	if internal.Code != http.StatusOK || !strings.Contains(internal.Body.String(), `id="spMemberGrid"`) || !strings.Contains(internal.Body.String(), `data-service-product-id="7"`) || !strings.Contains(internal.Body.String(), "member_grid.js") {
+	if internal.Code != http.StatusOK || !strings.Contains(internal.Body.String(), `id="spMemberGrid"`) || !strings.Contains(internal.Body.String(), `data-service-product-id="7"`) || !strings.Contains(internal.Body.String(), "operation_member_picker.js") || !strings.Contains(internal.Body.String(), "member_grid.js") {
 		t.Fatalf("internal=%d body=%s", internal.Code, internal.Body.String())
 	}
 	public := httptest.NewRecorder()

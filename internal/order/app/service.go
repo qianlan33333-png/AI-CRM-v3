@@ -55,15 +55,16 @@ type Cursor struct {
 }
 
 type ListFilter struct {
-	Offset         int32
-	Provider       domain.Provider
-	Status         domain.Status
-	OrderRef       string
-	CustomerID     int64
-	Product        string
-	CreatedFrom    *time.Time
-	CreatedTo      *time.Time
-	CreatedThrough *time.Time
+	Offset          int32
+	Provider        domain.Provider
+	Status          domain.Status
+	OrderRef        string
+	CustomerID      int64
+	Product         string
+	CreatedFrom     *time.Time
+	CreatedTo       *time.Time
+	CreatedThrough  *time.Time
+	NoCustomerMatch bool
 }
 
 type ExportReceipt struct {
@@ -741,11 +742,14 @@ func validListQuery(query orderport.ListQuery) bool {
 			return false
 		}
 	}
+	if query.NoCustomerMatch && query.CustomerID != 0 {
+		return false
+	}
 	return query.CreatedFrom == nil || query.CreatedTo == nil || !query.CreatedFrom.After(*query.CreatedTo)
 }
 
 func filterFrom(query orderport.ListQuery) ListFilter {
-	return ListFilter{Offset: query.Offset, Provider: query.Provider, Status: query.Status, OrderRef: strings.TrimSpace(query.OrderRef), CustomerID: query.CustomerID, Product: strings.TrimSpace(query.Product), CreatedFrom: query.CreatedFrom, CreatedTo: query.CreatedTo}
+	return ListFilter{Offset: query.Offset, Provider: query.Provider, Status: query.Status, OrderRef: strings.TrimSpace(query.OrderRef), CustomerID: query.CustomerID, Product: strings.TrimSpace(query.Product), CreatedFrom: query.CreatedFrom, CreatedTo: query.CreatedTo, NoCustomerMatch: query.NoCustomerMatch}
 }
 
 func encodeCSV(orders []domain.Order) []byte {

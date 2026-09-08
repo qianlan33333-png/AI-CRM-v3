@@ -4,7 +4,7 @@
 import { api } from '../src/shared/api/client';
 import { apiRequestOptions } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
-import type { AdminReadContext } from '../src/api/admin';
+import { productPageDto, type AdminReadContext } from '../src/api/admin';
 import { downloadQr, renderQr } from '../src/admin/sections/qr';
 
 type RecordValue = Record<string, unknown>;
@@ -56,6 +56,246 @@ async function readJSON(path: string): Promise<unknown> {
 }
 
 let loadedProducts: ProductProjection[] = [];
+const openedProductPayloads = new Map<number, RecordValue>();
+const purchaseActionByProduct = new Map<number, { enabled: boolean; mode: '' | 'qr' | 'redirect' }>();
+const productLifecycleKeys = new Map<string, string>();
+
+type ProductSaveContext = {
+  productID?: number;
+  opened: RecordValue | undefined;
+  subjectKey: string;
+  externalPushKey: string;
+  createdProductID?: number;
+  createdProduct?: RecordValue;
+  externalPushAttempted: boolean;
+};
+
+type PendingExternalPush = {
+  productID: number;
+  subjectFingerprint: string;
+  rawProduct: RecordValue;
+  externalPushKey: string;
+};
+
+let productSaveContext: ProductSaveContext | undefined;
+let productSaveInFlight: Promise<Product> | undefined;
+const productSaveKeys = new Map<string, { subjectKey: string; externalPushKey: string }>();
+let pendingExternalPush: PendingExternalPush | undefined;
+
+function newIdempotencyKey(scope: string): string {
+  const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${scope}-${suffix}`;
+}
+
+function productLifecycleKey(productID: number, version: number, enabled: boolean): string {
+  const operation = enabled ? 'enable' : 'disable';
+  const identity = `${productID}:${version}:${operation}`;
+  let key = productLifecycleKeys.get(identity);
+  if (!key) {
+    key = newIdempotencyKey(`product-${operation}`);
+    productLifecycleKeys.set(identity, key);
+  }
+  return key;
+}
+
+function stableProductSaveKeys(input: Parameters<typeof api.saveProduct>[0]): { subjectKey: string; externalPushKey: string } {
+  // One click and its recovery retry must keep their original keys.  The
+  // key is intentionally held only in this page runtime: it never enters a
+  // URL, log, or persisted product field.
+  const key = JSON.stringify(input);
+  let saved = productSaveKeys.get(key);
+  if (!saved) {
+    saved = { subjectKey: newIdempotencyKey('product-save'), externalPushKey: newIdempotencyKey('product-external-push') };
+    productSaveKeys.set(key, saved);
+  }
+  return saved;
+}
+
+function subjectFingerprint(input: Parameters<typeof api.saveProduct>[0]): string {
+  const { id: _id, externalPush: _externalPush, ...subject } = input;
+  return JSON.stringify(subject);
+}
+
+async function recoverExternalPush(input: Parameters<typeof api.saveProduct>[0], pending: PendingExternalPush): Promise<Product> {
+  if (!input.externalPush) throw new Error('商品主体已保存；请刷新后补充外推配置。');
+  const response = await fetch(`/api/admin/wechat-pay/products/${pending.productID}/external-push`, apiRequestOptions({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': pending.externalPushKey },
+    body: JSON.stringify({
+      enabled: input.externalPush.enabled,
+      configuration_reference: input.externalPush.enabled ? input.externalPush.configurationReference : undefined,
+    }),
+  }));
+  let payload: unknown;
+  try { payload = await response.json(); } catch { throw new Error(`商品外推配置保存失败（HTTP ${response.status}）`); }
+  if (!response.ok) throw new Error(`商品外推配置保存失败（HTTP ${response.status}）`);
+  // Product DTO validation also verifies that the response is bound to this
+  // newly created subject before the editor navigates away.
+  const product = productPageDto(pending.rawProduct, payload);
+  if (product.resourceId !== pending.productID) throw new Error('商品外推配置响应未绑定已保存商品');
+  pendingExternalPush = undefined;
+  return product;
+}
+
+const donorFetch = globalThis.fetch.bind(globalThis);
+
+type MaterialPickerItem = { library_id: number; title?: string; subtitle?: string; thumbnail_url?: string; metadata?: Record<string, unknown> };
+type StandardWindow = Window & { AdminApi?: { requestJson?: (path: string) => Promise<unknown> }; AICRMStandardComponents?: { ready?: () => Promise<void> } };
+
+async function materialPickerItems(path: string): Promise<unknown> {
+  const url = new URL(path, location.origin);
+  if (url.pathname !== '/api/admin/material-picker/items') throw new Error('素材选择请求不受支持');
+  const type = url.searchParams.get('type');
+  const endpoint = type === 'image' ? '/api/admin/image-library' : type === 'miniprogram' ? '/api/admin/miniprogram-library' : type === 'attachment' ? '/api/admin/attachment-library' : type === 'group_invite' ? '/api/admin/group-invite-library' : '';
+  if (!endpoint) throw new Error('素材类型不受支持');
+  const q = url.searchParams.get('q') || '';
+  const items: RecordValue[] = [];
+  for (let offset = 0; ; ) {
+    const source = new URL(endpoint, location.origin);
+    source.searchParams.set('limit', '100'); source.searchParams.set('offset', String(offset)); source.searchParams.set('q', q); source.searchParams.set('enabled_only', 'true');
+    const response = await donorFetch(source, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`素材目录读取失败（HTTP ${response.status}）`);
+    const page = list(object(payload).items).map(object);
+    items.push(...page);
+    const next = Number(object(payload).next_offset);
+    if (object(payload).has_more !== true || !Number.isSafeInteger(next) || next <= offset) break;
+    offset = next;
+  }
+  return { items: items.map((item) => {
+    const id = Number(item.id ?? item.library_id);
+    const originalURL = String(item.original_url ?? item.variant_url ?? (type === 'image' ? `/api/admin/image-library/${id}/variants/original` : ''));
+    return { type, library_id: id, title: String(item.name ?? item.title ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.thumbnail_url ?? item.variant_url ?? ''), enabled: item.enabled !== false, selectable: item.enabled !== false, metadata: { ...item, original_url: originalURL } };
+  }) };
+}
+
+function installMaterialPickerTransport(): void {
+  const target = window as StandardWindow;
+  const prior = target.AdminApi?.requestJson;
+  target.AdminApi ||= {};
+  target.AdminApi.requestJson = async (path: string): Promise<unknown> => {
+    if (new URL(path, location.origin).pathname === '/api/admin/material-picker/items') return materialPickerItems(path);
+    if (prior) return prior(path);
+    const response = await donorFetch(path, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
+    return payload;
+  };
+}
+installMaterialPickerTransport();
+
+globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const request = input instanceof Request ? input : undefined;
+  const url = new URL(request?.url || String(input), location.origin);
+  const method = (init?.method || request?.method || 'GET').toUpperCase();
+  const context = productSaveContext;
+
+  // The donor save helper re-reads immediately before PUT and would otherwise
+  // silently replace the version observed when this editor opened.  Replay
+  // the verified opening snapshot only during that write, so a 409 remains a
+  // real concurrent-edit signal rather than an implicit last-write-wins save.
+  if (context?.productID && method === 'GET' && url.pathname === `/api/v1/products/${context.productID}` && context.opened) {
+    return new Response(JSON.stringify(context.opened), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  let nextInit = init;
+  if (context && method !== 'GET' && method !== 'HEAD') {
+    const isSubject = url.pathname === '/api/v1/products' || url.pathname === `/api/v1/products/${context.productID}`;
+    const isExternalPush = /\/api\/admin\/wechat-pay\/products\/\d+\/external-push$/.test(url.pathname);
+    if (isSubject || isExternalPush) {
+      const headers = new Headers(request?.headers);
+      new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+      headers.set('Idempotency-Key', isSubject ? context.subjectKey : context.externalPushKey);
+      nextInit = { ...init, headers };
+      if (isExternalPush) context.externalPushAttempted = true;
+    }
+  }
+
+  if (isProductSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
+  const response = await donorFetch(input, nextInit);
+  if (context && method === 'POST' && url.pathname === '/api/v1/products' && response.ok) {
+    try {
+      const value = await response.clone().json();
+      const created = object(value);
+      const id = Number(created.id);
+      if (Number.isSafeInteger(id) && id > 0) {
+        context.createdProductID = id;
+        context.createdProduct = created;
+      }
+    } catch {
+      // The frozen DTO parser will surface the malformed create response.
+    }
+  }
+  return response;
+};
+
+const donorSaveProduct = api.saveProduct.bind(api);
+api.saveProduct = (input) => {
+  // The frozen controller does not disable its save button.  Deduplicate every
+  // in-page click until the current operation has reached a known result.
+  if (productSaveInFlight) return productSaveInFlight;
+  const recovered = pendingExternalPush;
+  if (recovered && input.id === recovered.productID && subjectFingerprint(input) === recovered.subjectFingerprint) {
+    productSaveInFlight = recoverExternalPush(input, recovered);
+    void productSaveInFlight.then(
+      () => { productSaveInFlight = undefined; },
+      () => { productSaveInFlight = undefined; },
+    );
+    return productSaveInFlight;
+  }
+  const keys = stableProductSaveKeys(input);
+  const productID = input.id;
+  const context: ProductSaveContext = {
+    productID,
+    opened: productID ? openedProductPayloads.get(productID) : undefined,
+    subjectKey: keys.subjectKey,
+    externalPushKey: keys.externalPushKey,
+    externalPushAttempted: false,
+  };
+  productSaveInFlight = (async () => {
+    productSaveContext = context;
+    try {
+      const saved = await donorSaveProduct(input);
+      // An editor may intentionally change the subject after an earlier
+      // external-push failure.  That normal PUT is still an edit of the same
+      // product, never a second create; its completed push supersedes the
+      // page-local recovery marker.
+      if (pendingExternalPush?.productID === input.id) pendingExternalPush = undefined;
+      return saved;
+    } catch (error) {
+      // Creation and the external-push configuration are separate effects.
+      // Keep the returned local ID in the editor URL only after the subject
+      // POST succeeded, allowing a single normal Save retry to finish config.
+      if (!input.id && context.createdProductID && context.createdProduct && context.externalPushAttempted) {
+        const retry = new URL(location.href);
+        retry.searchParams.set('id', String(context.createdProductID));
+        history.replaceState(null, '', retry.pathname + retry.search + retry.hash);
+        const created = productPageDto(context.createdProduct);
+        const createdVersion = created.version;
+        if (created.resourceId !== context.createdProductID || createdVersion == null || !Number.isSafeInteger(createdVersion) || createdVersion < 1) {
+          throw new Error('商品主体已保存，但响应缺少可恢复的 ID 或版本；请刷新后核对。');
+        }
+        openedProductPayloads.set(context.createdProductID, context.createdProduct);
+        pendingExternalPush = {
+          productID: context.createdProductID,
+          subjectFingerprint: subjectFingerprint(input),
+          rawProduct: context.createdProduct,
+          externalPushKey: context.externalPushKey,
+        };
+        throw new Error(`商品主体已保存（ID ${context.createdProductID}）；外推配置保存失败，可直接重试。`);
+      }
+      throw error;
+    } finally {
+      productSaveContext = undefined;
+    }
+  })();
+  void productSaveInFlight.then(
+    () => { productSaveInFlight = undefined; },
+    () => { productSaveInFlight = undefined; },
+  );
+  return productSaveInFlight;
+};
+
 const donorLoadDb = api.loadDb.bind(api);
 api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
   if (context?.page === 'productForm' && /^[1-9][0-9]*$/.test(context.id || '')) {
@@ -86,6 +326,12 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
     db.rows.channels = channelDb?.rows.channels || [];
     const base = db.rows.products.find((item) => item.resourceId === productID);
     const product = strictProjection(rawProduct, base);
+    const rawAction = object(object(rawProduct).admin_projection);
+    purchaseActionByProduct.set(productID, {
+      enabled: rawAction.purchase_action_enabled === true,
+      mode: rawAction.purchase_action_mode === 'qr' || rawAction.purchase_action_mode === 'redirect' ? rawAction.purchase_action_mode : '',
+    });
+    openedProductPayloads.set(productID, object(rawProduct));
     product.externalPush = externalPushProjection(rawExternalPush, productID);
     loadedProducts = [product];
     db.rows.products = loadedProducts;
@@ -98,6 +344,11 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
   let rawItems: unknown[];
   rawItems = list(object(await readJSON('/api/v1/products')).items);
   const byID = new Map(db.rows.products.map((item) => [item.resourceId, item]));
+  for (const item of rawItems) {
+    const raw = object(item);
+    const id = Number(raw.id);
+    if (Number.isSafeInteger(id) && id > 0) openedProductPayloads.set(id, raw);
+  }
   loadedProducts = rawItems.map((item) => strictProjection(item, byID.get(Number(object(item).id))));
   db.rows.products = loadedProducts;
   return db;
@@ -189,6 +440,51 @@ document.addEventListener('click', (event) => {
   event.stopImmediatePropagation();
   if (!product) return showMessage('商品缺少服务端 ID');
   void readShare(product).then((url) => showShare(product, url)).catch((error) => showMessage(error instanceof Error ? error.message : '分享地址读取失败'));
+}, true);
+
+async function toggleProductLifecycle(button: HTMLButtonElement, product: ProductProjection): Promise<void> {
+  const opened = openedProductPayloads.get(product.resourceId);
+  const version = Number(opened?.version ?? product.version);
+  if (!Number.isSafeInteger(version) || version < 1) throw new Error('商品缺少打开时版本，请刷新后重试');
+  const enabled = product.lifecycle !== 'enabled';
+  const action = enabled ? 'enable' : 'disable';
+  button.disabled = true;
+  button.textContent = enabled ? '正在启用…' : '正在停用…';
+  const response = await fetch(`/api/admin/wechat-pay/products/${product.resourceId}/${action}`, apiRequestOptions({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': productLifecycleKey(product.resourceId, version, enabled) },
+    body: JSON.stringify({ expected_version: version }),
+  }));
+  const payload = object(await response.json().catch(() => ({})));
+  if (!response.ok) throw new Error(`商品${enabled ? '启用' : '停用'}失败（HTTP ${response.status}）`);
+  const nextVersion = Number(payload.version);
+  const lifecycle = payload.lifecycle;
+  if (Number(payload.id) !== product.resourceId || !Number.isSafeInteger(nextVersion) || nextVersion !== version + 1 ||
+    lifecycle !== (enabled ? 'enabled' : 'disabled') || payload.enabled !== enabled) {
+    throw new Error('商品状态响应不完整，未刷新列表');
+  }
+  button.textContent = enabled ? '已启用' : '已停用';
+  showMessage(`商品已${enabled ? '启用' : '停用'}，服务端版本 ${nextVersion}`);
+  window.setTimeout(() => location.reload(), 550);
+}
+
+document.addEventListener('click', (event) => {
+  if (document.body.dataset.page !== 'products') return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest('button');
+  if (!button || (button.textContent?.trim() !== '启用' && button.textContent?.trim() !== '停用')) return;
+  const row = button.closest('tbody tr');
+  const index = Array.from(row?.parentElement?.querySelectorAll(':scope > tr') || []).indexOf(row as HTMLTableRowElement);
+  const product = loadedProducts[index];
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!product) return showMessage('商品缺少服务端 ID，未发送状态变更请求');
+  void toggleProductLifecycle(button, product).catch((error) => {
+    button.disabled = false;
+    button.textContent = product.lifecycle === 'enabled' ? '停用' : '启用';
+    showMessage(error instanceof Error ? error.message : '商品状态变更失败');
+  });
 }, true);
 
 type ExternalPushPage = {
@@ -575,5 +871,206 @@ installExternalPushTestHost();
 
 // Dynamic import is deliberate: validation and click interception must be
 // installed before the byte-frozen donor runtime reads the current page.
-// @ts-expect-error The donor entry is a side-effect-only script.
-void import('../src/admin/main');
+void (async () => {
+  await (window as StandardWindow).AICRMStandardComponents?.ready?.();
+  // @ts-ignore The frozen side-effect entry has no TypeScript export declaration.
+  await import('../src/admin/main');
+})();
+
+type StandardTag = { tag_id: string; tag_name?: string; group_name?: string; group_id?: string };
+type StandardTagWindow = Window & { AICRMWeComTagPicker?: { open(options: { title: string; mode: 'multiple'; catalog: unknown; value: StandardTag[]; allowManual: false; onConfirm(tags: StandardTag[]): void; onClear(): void }): void } };
+
+function safeTagging(input: HTMLTextAreaElement): RecordValue {
+  try { return object(JSON.parse(input.value || '{}')); } catch { return {}; }
+}
+
+async function tagCatalog(): Promise<unknown> {
+  const response = await donorFetch('/api/admin/wecom/tags', { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
+  const value = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`标签目录读取失败（HTTP ${response.status}）`);
+  const payload = object(value);
+  return { groups: list(payload.groups), items: list(payload.items) };
+}
+
+function mountProductTagPicker(): void {
+  if (typeof document === 'undefined' || !document.body) return;
+  const prefix = document.body.dataset.page === 'productForm' ? 'pf' : document.body.dataset.page === 'spProductForm' ? 'spf' : '';
+  if (!prefix) return;
+  const input = document.getElementById(`${prefix}WecomTagging`) as HTMLTextAreaElement | null;
+  const panel = document.getElementById(prefix === 'pf' ? 'product-wecom' : 'sp-wecom');
+  if (!input || !panel || panel.querySelector('[data-product-standard-tag-picker]')) return;
+  input.closest('details')?.setAttribute('hidden', '');
+  const state = safeTagging(input);
+  const selected: StandardTag[] = list(state.tags).map((item) => object(item)).map((item) => ({ tag_id: String(item.tag_id || item.id || '').trim(), tag_name: String(item.tag_name || item.name || '').trim(), group_name: String(item.group_name || item.group || '').trim() })).filter((item) => item.tag_id);
+  if (!selected.length) for (const raw of list(state.tag_ids)) { const id = String(raw || '').trim(); if (id) selected.push({ tag_id: id }); }
+  const host = document.createElement('section');
+  host.dataset.productStandardTagPicker = '';
+  host.style.cssText = 'display:grid;gap:10px;padding:12px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
+  host.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" data-product-tag-enabled> 启用购买后企微标签</label><button type="button" data-product-tag-open style="height:30px;padding:0 12px;border:1px solid #DEE0E3;border-radius:6px;background:#fff;cursor:pointer">选择标签</button></div><div data-product-tag-summary style="font-size:12px;color:#646A73"></div><p data-product-tag-error style="margin:0;font-size:12px;color:#D83931" hidden></p>';
+  panel.querySelector('div[style*="display:grid"]')?.append(host);
+  const enabled = host.querySelector<HTMLInputElement>('[data-product-tag-enabled]')!;
+  const summary = host.querySelector<HTMLElement>('[data-product-tag-summary]')!;
+  const error = host.querySelector<HTMLElement>('[data-product-tag-error]')!;
+  enabled.checked = list(state.tag_ids).length > 0;
+  const sync = (): void => {
+    const tagIDs = [...new Set(selected.map((tag) => Number(tag.tag_id)).filter((tagID) => Number.isSafeInteger(tagID) && tagID > 0))];
+    input.value = JSON.stringify({ enabled: enabled.checked, tag_ids: tagIDs }); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
+    summary.textContent = enabled.checked && selected.length ? `已选：${selected.map((tag) => `${tag.group_name ? `${tag.group_name} / ` : ''}${tag.tag_name || tag.tag_id}`).join('、')}` : '未启用购买后企微标签';
+  };
+  enabled.addEventListener('change', sync); sync();
+  host.querySelector('[data-product-tag-open]')?.addEventListener('click', () => {
+    error.hidden = true;
+    void tagCatalog().then((catalog) => {
+      const picker = (window as StandardTagWindow).AICRMWeComTagPicker;
+      if (!picker) throw new Error('标准标签选择器加载失败，请刷新后重试');
+      picker.open({ title: '选择购买后企微标签', mode: 'multiple', catalog, value: selected, allowManual: false, onConfirm: (tags) => { selected.splice(0, selected.length, ...tags); sync(); }, onClear: () => { selected.splice(0, selected.length); sync(); } });
+    }).catch((reason: unknown) => { error.textContent = reason instanceof Error ? reason.message : '标签目录读取失败'; error.hidden = false; });
+  });
+}
+
+const productStandardObserver = new MutationObserver(mountProductTagPicker);
+productStandardObserver.observe(document, { childList: true, subtree: true });
+mountProductTagPicker();
+
+type PurchaseActionMode = '' | 'qr' | 'redirect';
+
+type PurchaseActionDOM = { enabled: boolean; mode: PurchaseActionMode };
+
+function productPrefix(): 'pf' | 'spf' | '' {
+  if (typeof document === 'undefined' || !document.body) return '';
+  return document.body.dataset.page === 'productForm' ? 'pf' : document.body.dataset.page === 'spProductForm' ? 'spf' : '';
+}
+
+function productActionState(prefix: string): PurchaseActionDOM {
+  const id = Number(new URL(location.href).searchParams.get('id'));
+  const saved = Number.isSafeInteger(id) && id > 0 ? purchaseActionByProduct.get(id) : undefined;
+  return saved || { enabled: false, mode: '' };
+}
+
+function purchaseActionControls(prefix: string): HTMLElement | null {
+  const action = document.getElementById(prefix === 'pf' ? 'product-action' : 'sp-product-action');
+  if (!action || action.querySelector('[data-product-purchase-action]')) return null;
+  const host = document.createElement('section');
+  host.dataset.productPurchaseAction = '';
+  host.style.cssText = 'display:grid;gap:10px;margin:0 0 14px;padding:12px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
+  host.innerHTML = `<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#344054"><input type="checkbox" data-product-purchase-enabled> 启用购买后动作</label><div data-product-purchase-modes style="display:flex;gap:18px;align-items:center;font-size:13px;color:#4E5969"><label style="display:flex;align-items:center;gap:6px"><input type="radio" name="${prefix}PurchaseActionMode" value="qr"> 展示二维码</label><label style="display:flex;align-items:center;gap:6px"><input type="radio" name="${prefix}PurchaseActionMode" value="redirect"> 直接跳转</label></div>`;
+  const grid = action.querySelector(':scope > div[style*="grid-template-columns"]');
+  grid?.parentElement?.insertBefore(host, grid);
+  const current = productActionState(prefix);
+  const enabled = host.querySelector<HTMLInputElement>('[data-product-purchase-enabled]')!;
+  const modes = host.querySelector<HTMLElement>('[data-product-purchase-modes]')!;
+  enabled.checked = current.enabled;
+  const radio = host.querySelector<HTMLInputElement>(`input[value="${current.mode}"]`);
+  if (radio) radio.checked = true;
+
+  const fieldFor = (id: string): HTMLElement | null => document.getElementById(id)?.closest<HTMLElement>('div[style*="display:grid"]') || null;
+  const qr = [`${prefix}LeadChannelId`, `${prefix}LeadQrTitle`, `${prefix}LeadQrSubtitle`].map(fieldFor);
+  const redirect = [`${prefix}CompletionRedirectUrl`, `${prefix}CompletionTarget`].map(fieldFor);
+  const oldRedirect = fieldFor(`${prefix}CompletionRedirectEnabled`);
+  const update = (): void => {
+    const selected = host.querySelector<HTMLInputElement>(`input[name="${prefix}PurchaseActionMode"]:checked`)?.value as PurchaseActionMode | undefined;
+    modes.hidden = !enabled.checked;
+    for (const field of qr) if (field) field.hidden = !enabled.checked || selected !== 'qr';
+    for (const field of redirect) if (field) field.hidden = !enabled.checked || selected !== 'redirect';
+    if (oldRedirect) oldRedirect.hidden = true;
+    // The frozen serializer always parses this hidden JSON field. Keep it
+    // syntactically empty when redirect is not the active choice.
+    if (!enabled.checked || selected !== 'redirect') {
+      const target = document.getElementById(`${prefix}CompletionTarget`) as HTMLTextAreaElement | null;
+      if (target) target.value = '';
+    }
+  };
+  enabled.addEventListener('change', update);
+  modes.addEventListener('change', update);
+  update();
+  return host;
+}
+
+function currentPurchaseAction(): PurchaseActionDOM {
+  const prefix = productPrefix();
+  if (!prefix) return { enabled: false, mode: '' };
+  const host = document.querySelector<HTMLElement>('[data-product-purchase-action]');
+  const enabled = host?.querySelector<HTMLInputElement>('[data-product-purchase-enabled]')?.checked === true;
+  const mode = host?.querySelector<HTMLInputElement>(`input[name="${prefix}PurchaseActionMode"]:checked`)?.value;
+  return { enabled, mode: enabled && (mode === 'qr' || mode === 'redirect') ? mode : '' };
+}
+
+function isProductSubjectWrite(url: URL, method: string): boolean {
+  return (method === 'POST' && url.pathname === '/api/v1/products') || (method === 'PUT' && /^\/api\/v1\/products\/[1-9][0-9]*$/.test(url.pathname));
+}
+
+function adaptPurchaseActionWrite(init: RequestInit | undefined): RequestInit | undefined {
+  if (!init || typeof init.body !== 'string') return init;
+  let body: RecordValue;
+  try { body = object(JSON.parse(init.body)); } catch { return init; }
+  const projection = object(body.admin_projection);
+  const action = currentPurchaseAction();
+  projection.purchase_action_enabled = action.enabled;
+  projection.purchase_action_mode = action.mode;
+  if (!action.enabled || action.mode !== 'qr') {
+    projection.lead_channel_id = null;
+    projection.lead_qr_title = '';
+    projection.lead_qr_subtitle = '';
+  }
+  if (!action.enabled || action.mode !== 'redirect') {
+    projection.completion_redirect_enabled = false;
+    projection.completion_redirect_url = '';
+    projection.completion_target = null;
+  } else {
+    projection.completion_redirect_enabled = true;
+  }
+  const tagging = object(projection.wecom_tagging);
+  const rawTagIDs = list(tagging.tag_ids);
+  const tagIDs = rawTagIDs.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+  projection.wecom_tagging = { enabled: tagging.enabled === true, tag_ids: [...new Set(tagIDs)] };
+  body.admin_projection = projection;
+  return { ...init, body: JSON.stringify(body) };
+}
+
+function mountPurchaseActionControls(): void {
+  const prefix = productPrefix();
+  if (!prefix) return;
+  purchaseActionControls(prefix);
+}
+
+const purchaseActionObserver = new MutationObserver(mountPurchaseActionControls);
+purchaseActionObserver.observe(document, { childList: true, subtree: true });
+mountPurchaseActionControls();
+
+type ProductMaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: { type: 'image'; title: string; selectedIds: number[]; limit: number; onConfirm(item: MaterialPickerItem): void; onCancel(): void }): void } };
+let pendingProductMaterialObserver: MutationObserver | undefined;
+
+// The frozen product forms await their scoped page data before appending the
+// legacy generic picker.  Keep that callback path for drafts/save, while the
+// user sees the released original material picker.
+document.addEventListener('click', (event) => {
+  const button = (event.target as Element | null)?.closest('button');
+  if (!button || button.textContent?.trim() !== '从素材库选择' || !button.closest('#product-media, #sp-media')) return;
+  pendingProductMaterialObserver?.disconnect();
+  const observer = new MutationObserver((records) => {
+    for (const record of records) for (const node of record.addedNodes) {
+      if (!(node instanceof HTMLElement) || !node.classList.contains('pk-mask')) continue;
+      observer.disconnect(); if (pendingProductMaterialObserver === observer) pendingProductMaterialObserver = undefined;
+      const picker = (window as ProductMaterialPickerWindow).AICRMMaterialPicker;
+      if (!picker) return;
+      node.style.setProperty('display', 'none', 'important'); node.setAttribute('aria-hidden', 'true');
+      picker.open({ type: 'image', title: '选择页面素材', selectedIds: [], limit: 10,
+        onConfirm(item) {
+          const row = Array.from(node.querySelectorAll<HTMLElement>('[data-pk-id]')).find((candidate) => candidate.dataset.pkId === String(item.library_id));
+          if (!row) {
+            const hint = button.closest<HTMLElement>('#product-media, #sp-media')?.querySelector<HTMLElement>('[data-product-material-error]') || document.createElement('p');
+            hint.dataset.productMaterialError = ''; hint.textContent = '素材目录已变化，未改动当前草稿；请刷新页面后重新选择。'; hint.setAttribute('role', 'alert');
+            if (!hint.parentElement) button.closest<HTMLElement>('#product-media, #sp-media')?.append(hint);
+            node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click(); return;
+          }
+          row.click(); node.querySelector<HTMLElement>('[data-pk="ok"]')?.click();
+        },
+        onCancel() { node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click(); },
+      });
+      return;
+    }
+  });
+  pendingProductMaterialObserver = observer;
+  observer.observe(document.body, { childList: true, subtree: true });
+}, true);
+window.addEventListener('pagehide', () => pendingProductMaterialObserver?.disconnect(), { once: true });

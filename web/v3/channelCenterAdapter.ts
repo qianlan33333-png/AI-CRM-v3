@@ -1,9 +1,19 @@
-// This is the only v3-owned browser seam for the byte-frozen Channel Center.
-// It supplies the canonical resource id for path-based edit routes and adds
-// the server-issued CAS token to the donor's complete replacement requests.
-// It never renders, restyles, or changes donor business behavior.
+// V3-owned Channel Center seam. The list retains its byte-frozen controller;
+// the channel form mounts the standard admission page through a narrow Catalog
+// transport boundary that owns resource IDs, CAS and idempotency headers.
 
-const channelResourceID = document.body.dataset.channelResourceId || '';
+import { api } from '../src/shared/api/client';
+import type { AdminDb } from '../src/shared/api/types';
+import { startChannelAdmissionHost } from './channelAdmissionHost';
+
+// The standard admission form is a complete, persistent V3 page.  Keep the
+// older frozen-controller seam only for the list and any legacy fixture route.
+if (document.body.dataset.page === 'channelForm') {
+  void startChannelAdmissionHost();
+} else {
+
+const queryChannelResourceID = new URLSearchParams(location.search).get('id') || '';
+const channelResourceID = document.body.dataset.channelResourceId || queryChannelResourceID;
 if (document.body.dataset.page === 'channelForm' && channelResourceID) {
   if (!/^[1-9][0-9]*$/.test(channelResourceID)) throw new Error('渠道资源 ID 无效');
   const query = new URLSearchParams(location.search);
@@ -14,6 +24,10 @@ if (document.body.dataset.page === 'channelForm' && channelResourceID) {
 }
 
 const donorFetch = globalThis.fetch.bind(globalThis);
+const donorLoadDb = api.loadDb.bind(api);
+let channelFormDb: AdminDb | null = null;
+let staffPickerSource: 'common' | 'channel' | null = null;
+let staffPickerTrigger: HTMLButtonElement | null = null;
 
 function dependencyUnavailable(): Response {
   return new Response(JSON.stringify({ code: 'DEPENDENCY_UNAVAILABLE' }), {
@@ -182,6 +196,90 @@ function repairFrozenChannelUI(): void {
   labelFrozenAssetAction();
 }
 
+function showScopedStaffPickerError(): void {
+  if (!document.body) return;
+  document.getElementById('channel-staff-picker-error')?.remove();
+  const notice = document.createElement('div');
+  notice.id = 'channel-staff-picker-error';
+  notice.setAttribute('role', 'alert');
+  notice.textContent = '可分配客服目录读取失败，请稍后重试。未更改渠道客服分配。';
+  notice.style.cssText = 'margin:12px 24px;padding:10px 14px;border:1px solid #f2b8b5;border-radius:8px;background:#fff1f0;color:#b42318;font-size:13px;';
+  document.body.prepend(notice);
+}
+
+type PickerStaff = { name: string; uid: string; dept: string };
+
+async function commonChannelStaff(): Promise<PickerStaff[]> {
+  const response = await donorFetch('/api/admin/common/operation-members?scope=channel_code&page_size=100', {
+    credentials: 'same-origin', headers: { Accept: 'application/json' }, method: 'GET',
+  });
+  if (!response.ok) throw new Error(`operation-members HTTP ${response.status}`);
+  const payload = await response.json() as { items?: unknown };
+  if (!Array.isArray(payload.items)) throw new Error('operation-members 响应不完整');
+  return payload.items.flatMap((value): PickerStaff[] => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const item = value as Record<string, unknown>;
+    const uid = String(item.staff_id || item.sender_userid || '').trim();
+    const name = String(item.display_name || '').trim();
+    return uid && name && item.active !== false ? [{ name, uid, dept: '可分配客服' }] : [];
+  });
+}
+
+function renderStaffPickerFailure(): void {
+  const mask = document.querySelector<HTMLElement>('.pk-mask');
+  if (!mask || !staffPickerTrigger) { showScopedStaffPickerError(); return; }
+  mask.replaceChildren();
+  const card = document.createElement('section');
+  card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true');
+  card.style.cssText = 'width:min(520px,100%);border-radius:12px;background:#fff;box-shadow:0 24px 64px rgba(15,23,42,.22);padding:20px';
+  card.innerHTML = '<h2 style="margin:0 0 10px;font-size:16px">选择客服</h2><p role="alert" style="margin:0;color:#b42318;font-size:13px;line-height:22px">可分配客服目录读取失败，未更改渠道客服分配。</p><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px"><button type="button" data-staff-retry>重试</button><button type="button" data-staff-cancel>取消</button></div>';
+  card.querySelector<HTMLButtonElement>('[data-staff-retry]')?.addEventListener('click', () => {
+    const trigger = staffPickerTrigger; mask.remove(); if (trigger) trigger.click();
+  });
+  card.querySelector<HTMLButtonElement>('[data-staff-cancel]')?.addEventListener('click', () => mask.remove());
+  mask.appendChild(card);
+}
+
+// The donor controller owns the picker result and its private cfStaff state.
+// It incorrectly starts that picker with an unscoped loadDb() call, even after
+// the form has loaded a channel-specific directory. Substitute only that one
+// read with the exact saved channel's acquisition-staff catalog; the picker
+// then completes through the donor controller as usual.
+api.loadDb = async (context) => {
+  if (context?.page === 'channelForm') {
+    const db = await donorLoadDb(context);
+    channelFormDb = db;
+    return db;
+  }
+  if (!context && staffPickerSource && channelFormDb) {
+    const source = staffPickerSource;
+    staffPickerSource = null;
+    try {
+      const staff = source === 'channel'
+        ? (await api.listChannelAcquisitionStaff(Number(channelResourceID))).map((item) => ({ name: item.name, uid: item.staffId, dept: '企微可用客服' }))
+        : await commonChannelStaff();
+      return {
+        ...channelFormDb,
+        staff,
+      };
+    } catch (_error) {
+      window.setTimeout(renderStaffPickerFailure, 0);
+      return { ...channelFormDb, staff: [] };
+    }
+  }
+  return donorLoadDb(context);
+};
+
+document.addEventListener('click', (event) => {
+  if (document.body?.dataset.page !== 'channelForm' || !channelFormDb) return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest('button');
+  if (button?.textContent?.trim() !== '选择客服') return;
+  staffPickerTrigger = button;
+  staffPickerSource = channelResourceID ? 'channel' : 'common';
+}, true);
+
 new MutationObserver(repairFrozenChannelUI).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 repairFrozenChannelUI();
 
@@ -218,3 +316,4 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
 // unmodified donor entry reads location.search and issues mutations.
 // @ts-expect-error The byte-frozen donor entry is a side-effect-only script.
 void import('../src/admin/main');
+}

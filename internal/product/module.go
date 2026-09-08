@@ -40,7 +40,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		return errors.New("product module dependencies are required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['products','product_operation_receipts','product_external_push_configurations','product_external_push_tests','product_imported_service_period_definitions','product_service_period_member_views','product_service_period_member_collaborators','product_service_period_member_shares']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['products','product_operation_receipts','product_external_push_configurations','product_external_push_tests','product_paid_purchase_actions','product_imported_service_period_definitions','product_service_period_member_views','product_service_period_member_collaborators','product_service_period_member_shares']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)
 		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='product_external_push_configurations' AND column_name='custom_params')
 		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='product_external_push_configurations' AND column_name='expires_at_ts')
 		AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='product_external_push_configurations'::regclass AND conname='product_external_push_business_shape')`).Scan(&ready)

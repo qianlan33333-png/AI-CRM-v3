@@ -30,7 +30,7 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 		ID: 7, ProductCode: "secret-code", Name: "公开商品", Description: "描述", PriceMinor: 990, Currency: "CNY",
 		Images: []string{"https://cdn.example.test/p.png"}, CreatedBy: 99, CreatedAt: now, UpdatedAt: now, Version: 3,
 		LocalLifecycle:        productport.LocalProductEnabled,
-		LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"现在购买","require_mobile":true,"lead_program_id":23,"lead_channel_id":34,"lead_qr_title":"internal","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`),
+		LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"现在购买","require_mobile":true,"lead_program_id":23,"lead_channel_id":34,"lead_qr_title":"internal","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`),
 	}}
 	handler, err := NewPublicHandler(catalog)
 	if err != nil {
@@ -52,7 +52,7 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "我确认购买后权益归我本人") || !strings.Contains(payment.Body.String(), "beneficiary_selection:'payer_self'") || strings.Contains(payment.Body.String(), "beneficiary_customer_id") {
 		t.Fatalf("payment page status=%d body=%s", payment.Code, payment.Body.String())
 	}
-	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "clearCheckout()"} {
+	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "retainPaidCheckout(orderNo)", "restorePaidCheckout", "terminal_status!=='paid'", "再次购买", "showCompletionAction", "location.assign(action.redirect_url)", "completion-qr", "value.completion_action"} {
 		if !strings.Contains(payment.Body.String(), required) {
 			t.Fatalf("payment page missing stable checkout behaviour %q: %s", required, payment.Body.String())
 		}
@@ -84,10 +84,22 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 	}
 }
 
+func TestPublicPaymentCompletionRefreshJourney(t *testing.T) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime caller unavailable")
+	}
+	journey := filepath.Join(filepath.Dir(source), "public_payment_completion_journey.mjs")
+	command := exec.Command("node", journey)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("public payment completion refresh journey: %v\n%s", err, output)
+	}
+}
+
 func TestPublicProductDraftDisabledAndMalformedAre404(t *testing.T) {
 	for _, projection := range []json.RawMessage{
-		json.RawMessage(`{"schema_version":1,"status":"draft","enabled":false,"buy_button_text":"","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`),
-		json.RawMessage(`{"schema_version":1,"status":"disabled","enabled":false,"buy_button_text":"","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`),
+		json.RawMessage(`{"schema_version":1,"status":"draft","enabled":false,"buy_button_text":"","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`),
+		json.RawMessage(`{"schema_version":1,"status":"disabled","enabled":false,"buy_button_text":"","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`),
 		json.RawMessage(`{"status":"unknown"}`),
 	} {
 		handler, err := NewPublicHandler(&testCatalog{product: productport.Product{ID: 8, ProductCode: "p-8", Name: "hidden", PriceMinor: 100, Currency: "CNY", Version: 1, LegacyAdminProjection: projection}})
@@ -106,7 +118,7 @@ func TestPublicProductDraftDisabledAndMalformedAre404(t *testing.T) {
 
 func TestPublicProductRejectsMalformedCodePaths(t *testing.T) {
 	now := time.Date(2026, 9, 4, 1, 0, 0, 0, time.UTC)
-	catalog := &testCatalog{product: productport.Product{ID: 7, ProductCode: "course-7", Name: "公开商品", PriceMinor: 990, Currency: "CNY", CreatedBy: 99, CreatedAt: now, UpdatedAt: now, Version: 1, LocalLifecycle: productport.LocalProductEnabled, LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`)}}
+	catalog := &testCatalog{product: productport.Product{ID: 7, ProductCode: "course-7", Name: "公开商品", PriceMinor: 990, Currency: "CNY", CreatedBy: 99, CreatedAt: now, UpdatedAt: now, Version: 1, LocalLifecycle: productport.LocalProductEnabled, LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`)}}
 	handler, err := NewPublicHandler(catalog)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +137,7 @@ func TestPublicProductMediaUsesOnlyEnabledProductImageBindings(t *testing.T) {
 	catalog := &testCatalog{product: productport.Product{
 		ID: 8, ProductCode: "course-9", Name: "公开商品", Description: "说明", PriceMinor: 990, Currency: "CNY", StockQuantity: 1,
 		Images: []string{"/api/admin/image-library/88/variants/original"}, CreatedBy: 9, CreatedAt: now, UpdatedAt: now, Version: 1, LocalLifecycle: productport.LocalProductEnabled,
-		LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`),
+		LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`),
 	}}
 	handler, err := NewPublicHandler(catalog)
 	if err != nil {
@@ -162,7 +174,7 @@ func TestPublicProductMediaUsesOnlyEnabledProductImageBindings(t *testing.T) {
 	}
 
 	catalog.product.LocalLifecycle = productport.LocalProductDraft
-	catalog.product.LegacyAdminProjection = json.RawMessage(`{"schema_version":1,"status":"draft","enabled":false,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`)
+	catalog.product.LegacyAdminProjection = json.RawMessage(`{"schema_version":1,"status":"draft","enabled":false,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`)
 	draft := httptest.NewRecorder()
 	handler.ServeHTTP(draft, httptest.NewRequest(http.MethodGet, "/api/h5/product-images/course-9/88/variants/original", nil))
 	if draft.Code != http.StatusNotFound {
@@ -344,7 +356,7 @@ func TestPublicServicePeriodUsesExactCodeAndSeparateCheckoutRoute(t *testing.T) 
 	}
 	payment := httptest.NewRecorder()
 	handler.ServeHTTP(payment, httptest.NewRequest(http.MethodGet, "/s/term-31/pay", nil))
-	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "product_kind:'service_period'") || !strings.Contains(payment.Body.String(), "beneficiary_selection:'payer_self'") {
+	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "product_kind:'service_period'") || !strings.Contains(payment.Body.String(), "beneficiary_selection:'payer_self'") || !strings.Contains(payment.Body.String(), "restorePaidCheckout") || !strings.Contains(payment.Body.String(), "showCompletionAction") {
 		t.Fatalf("payment status=%d body=%s", payment.Code, payment.Body.String())
 	}
 	for _, path := range []string{"/s/71", "/s/term-31/extra", "/s/term-31/pay/extra", "/s/%2F", "/s/term-31?x=1"} {

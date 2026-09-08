@@ -175,7 +175,7 @@ async function translated(url: string, options: any = {}): Promise<JsonRecord> {
 if (root) root.querySelectorAll('.cloud-plan-field-label').forEach((node) => { if (node.textContent?.trim() === 'external_userid') node.textContent = 'OneID'; });
 
 async function bootDonor(): Promise<void> {
-  for (const source of ['/ai-assistant-assets/aiassistant/group_chat_picker.js','/ai-assistant-assets/aiassistant/material_picker.js','/ai-assistant-assets/aiassistant/send_content_composer.js','/ai-assistant-assets/aiassistant/send_content_readonly_detail.js','/ai-assistant-assets/aiassistant/cloud_plan_review.js']) {
+  for (const source of ['/ai-assistant-assets/assets/standard-components/group_chat_picker.js','/ai-assistant-assets/assets/standard-components/material_picker.js','/ai-assistant-assets/assets/standard-components/send_content_composer.js','/ai-assistant-assets/aiassistant/send_content_readonly_detail.js','/ai-assistant-assets/aiassistant/cloud_plan_review.js']) {
     await new Promise<void>((resolve, reject) => { const script = document.createElement('script'); script.src = source; script.onload = () => resolve(); script.onerror = () => reject(new Error('AI 助手组件加载失败')); document.body.append(script); });
   }
 }

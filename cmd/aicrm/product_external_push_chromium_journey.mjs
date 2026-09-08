@@ -171,7 +171,7 @@ try {
   cdp.on("Network.requestWillBeSent", (params) => {
     try {
       const pathname = new URL(String(params.request?.url || "")).pathname;
-      if (pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.includes("service-period-products") || pathname.startsWith("/assets/")) {
+      if (pathname.includes("products") || pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.includes("service-period-products") || pathname.startsWith("/assets/")) {
         requests.set(params.requestId, { pathname, method: String(params.request?.method || "GET") });
       }
     } catch (_) {}
@@ -230,6 +230,20 @@ try {
   if (!await evaluate(cdp, `(() => { const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '=')); return hasCookie('aicrm_admin_csrf') && hasCookie('aicrm_csrf'); })()`)) {
     throw new Error("product Host did not receive CSRF session bridge " + await browserSaveDiagnostic());
   }
+  // The list Host owns the lifecycle buttons. Exercise the real browser
+  // session, CSRF header and CAS endpoint once in each direction before the
+  // form journey, leaving the seeded fixture enabled for its remaining steps.
+  const productsPath = "/admin/products.html";
+  await cdp.call("Page.navigate", { url: baseURL + productsPath });
+  await waitFor(cdp, "location.pathname === '/admin/products.html' && Array.from(document.querySelectorAll('tbody tr')).some((row) => row.textContent.includes('browser-push-product') && Array.from(row.querySelectorAll('button')).some((button) => button.textContent.trim() === '停用'))", "product list lifecycle Host did not render the seeded enabled row");
+  await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='停用').click(); return true; })()");
+  await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已停用')", "product lifecycle disable did not complete through the Host");
+  await cdp.call("Page.navigate", { url: baseURL + productsPath });
+  await waitFor(cdp, "Array.from(document.querySelectorAll('tbody tr')).some((row) => row.textContent.includes('browser-push-product') && Array.from(row.querySelectorAll('button')).some((button) => button.textContent.trim() === '启用'))", "product list did not read back the disabled lifecycle");
+  await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='启用').click(); return true; })()");
+  await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已启用')", "product lifecycle enable did not complete through the Host");
+  await cdp.call("Page.navigate", { url: baseURL + productPath });
+  await waitFor(cdp, "location.pathname === '/admin/productForm.html'", "product lifecycle return did not reach frozen product form");
   // Host mounting creates the editor before its configuration GET resolves.
   // Wait for the first revision rather than racing the closure that owns the
   // configuration snapshot used for CAS in the save handler.

@@ -67,6 +67,20 @@ run_frontend_and_stage_checks() {
   node scripts/operation-cycles-shell-e2e.mjs
   node scripts/ai-assistant-shell-e2e.mjs
   TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs
+  node scripts/order-host-adapter-e2e.mjs
+  node web/v3/channelCenterAdapter.test.mjs
+  node web/v3/customerAdapter.test.mjs
+  node web/v3/adminSessionHost.test.mjs
+  node web/v3/h5AuthAdapter.test.mjs
+  node web/v3/productAdapter.save_recovery.test.mjs
+  node web/v3/productAdapter.sp_material.test.mjs
+  node web/v3/orderAdapter.test.mjs
+  node web/v3/couponAdapter.test.mjs
+  node web/v3/channelAdmissionHost.test.mjs
+  node web/v3/materialSaveAdapter.test.mjs
+  node web/v3/radarAdapter.test.mjs
+  node web/v3/sidebar_send_recovery.test.mjs
+  node internal/webshell/static/admin_console/survey_share_guard_real_host.test.mjs
 }
 
 build_release_binaries() {

@@ -798,6 +798,13 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         return;
       }
       if (productHttp) {
+        // productAdapter wraps the browser Fetch API while preserving the
+        // frozen controller. Supply the browser constructors explicitly in
+        // JSDOM so its `Request`/`Response` checks exercise the production
+        // path instead of failing before the first authoritative product GET.
+        window.Headers = Headers;
+        window.Request = Request;
+        window.Response = Response;
         const calls = [], downloads = [], opened = [];
         const projection = { schema_version: 1, status: 'active', enabled: true, buy_button_text: '立即购买', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, wecom_tagging: {}, slices: [] };
         const product = { id: 7, product_code: 'P-7', name: '真实商品', description: '公开商品', price_minor: 990, currency: 'CNY', stock_quantity: 5, images: [], admin_projection: projection, lifecycle: 'enabled', enabled: true, paid_order_count: 3, refund_order_count: 1, sold_count: 2, created_by: 9, version: 3, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:00:00Z' };
@@ -3205,10 +3212,11 @@ for (const [scenario, expected] of [
 
   click(dom, d.querySelector('#tabs [data-tab="coupons"]'));
   await sleep(40);
+  const couponSend = (id) => d.querySelector(`[data-coupon-send="${id}"]`);
   ok('Coupon 目录显示规则状态而不创建客户领取记录；已有链接可分享给当前会话对象',
     d.body.textContent.includes('可领取目录券') && d.body.textContent.includes('已结束目录券') &&
     d.body.textContent.includes('已达到个人领取上限') &&
-    [...d.querySelectorAll('[data-coupon-send]')].every((node) => !node.disabled) &&
+    couponSend('71')?.disabled === false && couponSend('72')?.disabled === true &&
     !d.body.textContent.includes('claim_id'));
 
   click(dom, d.querySelector('#tabs [data-tab="products"]'));

@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -200,5 +201,45 @@ func TestCouponShareUsesFrozenGETWithAdminAndCSRF(t *testing.T) {
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/3/share", nil))
 	if r.Code != http.StatusForbidden {
 		t.Fatalf("share csrf=%d", r.Code)
+	}
+}
+
+// Exercise the public DTO consumed by the unchanged standard picker. The two
+// product domains can use the same numeric ID; type remains part of the ref.
+func TestStandardCouponEditorReadProjection(t *testing.T) {
+	rules := &fakeRules{item: couponFixture()}
+	h, _ := NewHandler(rules, fakeOptions{}, fakeSecurity{})
+	for _, kind := range []string{"standard_product", "service_period"} {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/product-options?product_type="+kind, nil))
+		var data struct {
+			Items []struct {
+				Ref         string `json:"target_ref"`
+				Type        string `json:"product_type"`
+				Title       string `json:"title"`
+				Price       int64  `json:"price_cents"`
+				LegacyPrice int64  `json:"price_minor"`
+			} `json:"items"`
+		}
+		if r.Code != http.StatusOK || json.Unmarshal(r.Body.Bytes(), &data) != nil || len(data.Items) != 1 {
+			t.Fatalf("invalid product options: %d %s", r.Code, r.Body.String())
+		}
+		item := data.Items[0]
+		if item.Type != kind || !strings.HasPrefix(item.Ref, kind+":") || item.Title == "" || item.Price != 1000 || item.Price != item.LegacyPrice {
+			t.Fatalf("standard picker lost product identity or price: %+v", item)
+		}
+	}
+	for _, issued := range []int64{0, 1} {
+		rules.item.IssuedCount = issued
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/3", nil))
+		var data struct {
+			Coupon struct {
+				Frozen *bool `json:"rules_frozen"`
+			} `json:"coupon"`
+		}
+		if r.Code != http.StatusOK || json.Unmarshal(r.Body.Bytes(), &data) != nil || data.Coupon.Frozen == nil || *data.Coupon.Frozen != (issued > 0) {
+			t.Fatalf("standard editor freeze state mismatch: %d %s", r.Code, r.Body.String())
+		}
 	}
 }

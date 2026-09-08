@@ -103,6 +103,16 @@ async function waitFor(document, expected, label) {
 }
 
 const normalBridge = { next: () => "get_brand_wcpay_request:ok" };
+const paidWithoutCompletionAction = "支付成功，后续指引暂不可用";
+
+function requirePaidCheckpoint(storage, label) {
+  assert.equal(storage.values.size, 1, `${label} keeps exactly one paid checkpoint`);
+  const checkpoint = JSON.parse([...storage.values.values()][0]);
+  assert.equal(checkpoint.terminal_status, "paid", `${label} marks the exact checkout terminal`);
+  assert.equal(typeof checkpoint.merchant_order_no, "string", `${label} keeps its original merchant order`);
+  assert.notEqual(checkpoint.merchant_order_no, "", `${label} does not permit a new checkout`);
+  return checkpoint;
+}
 
 // The payment mutation succeeds but its first HTTP response is lost. The
 // reloaded page must replay the saved key with the original coupon/mobile,
@@ -118,9 +128,19 @@ closePage(lostResponse);
 const replayed = await runPage(replayStorage, firstSession, normalBridge);
 setPurchase(replayed, 99, "13900139000");
 replayed.window.document.getElementById("buy").click();
-await waitFor(replayed.window.document, "支付成功", "replayed checkout");
-assert.equal(replayStorage.values.size, 0, "terminal payment clears the recovery checkpoint");
+await waitFor(replayed.window.document, paidWithoutCompletionAction, "replayed checkout");
+const replayedPaid = requirePaidCheckpoint(replayStorage, "replayed checkout");
 closePage(replayed);
+
+// A terminal checkpoint is a read-only recovery record. Reloading the same
+// page may read that exact paid order, but must not call the SDK or create a
+// replacement order; starting another checkout requires the explicit button.
+const replayedReload = await runPage(replayStorage, firstSession, normalBridge);
+await waitFor(replayedReload.window.document, paidWithoutCompletionAction, "replayed terminal reload");
+assert.equal(replayedReload.window.document.getElementById("buy").disabled, true, "terminal reload cannot initiate a new checkout");
+assert.equal(replayedReload.window.document.getElementById("restart").hidden, false, "terminal reload exposes explicit repurchase");
+assert.equal(requirePaidCheckpoint(replayStorage, "replayed terminal reload").merchant_order_no, replayedPaid.merchant_order_no, "terminal reload reads the same merchant order");
+closePage(replayedReload);
 
 // A cancelled WeChat sheet leaves the same merchant order recoverable. A
 // later explicit click opens that order again and does not create another one.
@@ -133,9 +153,9 @@ cancelled.window.document.getElementById("buy").click();
 await waitFor(cancelled.window.document, "支付未完成", "cancelled checkout");
 assert.equal(cancelled.window.document.getElementById("buy").disabled, false, "cancelled order remains actionable");
 cancelled.window.document.getElementById("buy").click();
-await waitFor(cancelled.window.document, "支付成功", "resumed cancelled checkout");
+await waitFor(cancelled.window.document, paidWithoutCompletionAction, "resumed cancelled checkout");
 assert.equal(bridgeCalls, 2, "an explicit second click reopens the same WeChat payment");
-assert.equal(cancelStorage.values.size, 0, "paid resumed order clears checkpoint");
+requirePaidCheckpoint(cancelStorage, "paid resumed order");
 closePage(cancelled);
 
 // An unresolved outcome remains tied to its saved merchant order, even after
@@ -161,8 +181,8 @@ closePage(originalSession);
 const switchedSession = await runPage(switchStorage, secondSession, normalBridge);
 setPurchase(switchedSession, 13, "13800138000");
 switchedSession.window.document.getElementById("buy").click();
-await waitFor(switchedSession.window.document, "支付成功", "renewed same-payer session reads known merchant order");
-assert.equal(switchStorage.values.size, 0, "terminal known-order recovery clears the old checkpoint without a new checkout");
+await waitFor(switchedSession.window.document, paidWithoutCompletionAction, "renewed same-payer session reads known merchant order");
+requirePaidCheckpoint(switchStorage, "terminal known-order recovery");
 closePage(switchedSession);
 
 // Failing browser storage blocks the very first payment request, so an

@@ -190,6 +190,102 @@ func TestNormalizeClonesImagesWithoutCollapsingEmptySlice(t *testing.T) {
 	}
 }
 
+func TestProductWriteRejectsUnsafeEnabledPaidPurchaseActionBeforePersistence(t *testing.T) {
+	unsafe := []json.RawMessage{
+		json.RawMessage(`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"qr"}`),
+		json.RawMessage(`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"qr","lead_channel_id":null}`),
+		json.RawMessage(`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect"}`),
+		json.RawMessage(`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect","completion_redirect_url":"javascript:alert(1)"}`),
+		json.RawMessage(`{"schema_version":1,"wecom_tagging":{"enabled":true}}`),
+		json.RawMessage(`{"schema_version":1,"wecom_tagging":{"enabled":true,"tag_ids":[]}}`),
+		json.RawMessage(`{"schema_version":1,"wecom_tagging":{"enabled":true,"tag_ids":[7,7]}}`),
+		json.RawMessage(`{"schema_version":1,"wecom_tagging":{"enabled":true,"tag_ids":["7"]}}`),
+		json.RawMessage(`{"schema_version":1,"wecom_tagging":{"enabled":true,"tag_ids":[0]}}`),
+	}
+	for _, projection := range unsafe {
+		uow, store, events := &productTestUoW{}, &productTestStore{}, &productTestEvents{}
+		service := NewService(uow, store, events)
+		_, err := service.Create(context.Background(), productport.CreateCommand{
+			ProductCode: "safe-write-rejection", Name: "商品", Currency: "CNY", Actor: 7,
+			IdempotencyKey: "product-paid-action-reject", LegacyAdminProjection: projection,
+		})
+		if !errors.Is(err, ErrInvalidProduct) {
+			t.Fatalf("Create projection=%s error=%v, want invalid product", projection, err)
+		}
+		if store.createCalls != 0 || len(events.events) != 0 || uow.calls != 0 {
+			t.Fatalf("Create projection=%s persisted before validation: creates=%d events=%d transactions=%d", projection, store.createCalls, len(events.events), uow.calls)
+		}
+		_, err = service.Update(context.Background(), productport.UpdateCommand{
+			ID: 1, ExpectedVersion: 1, Name: "商品", Currency: "CNY", Actor: 7,
+			IdempotencyKey: "product-paid-action-reject", LegacyAdminProjection: projection,
+		})
+		if !errors.Is(err, ErrInvalidProduct) {
+			t.Fatalf("Update projection=%s error=%v, want invalid product", projection, err)
+		}
+		if store.createCalls != 0 || len(events.events) != 0 || uow.calls != 0 {
+			t.Fatalf("Update projection=%s persisted before validation: creates=%d events=%d transactions=%d", projection, store.createCalls, len(events.events), uow.calls)
+		}
+	}
+}
+
+func TestProductWriteKeepsDisabledAndLegacyTaggingDrafts(t *testing.T) {
+	for _, projection := range []json.RawMessage{
+		json.RawMessage(`{"schema_version":1,"wecom_tagging":{"tag_ids":["legacy-tag"]}}`),
+		json.RawMessage(`{"schema_version":1,"wecom_tagging":{"enabled":false,"tag_ids":["draft-tag"]}}`),
+	} {
+		if _, err := CanonicalLegacyAdminProjection(projection); err != nil {
+			t.Fatalf("projection=%s should remain compatible: %v", projection, err)
+		}
+	}
+}
+
+func TestExplicitPaidPurchaseTaggingEnforcesMaximumTagCount(t *testing.T) {
+	tagIDs := make([]int, 100)
+	for index := range tagIDs {
+		tagIDs[index] = index + 1
+	}
+	projection, err := json.Marshal(map[string]any{
+		"schema_version": 1,
+		"wecom_tagging":  map[string]any{"enabled": true, "tag_ids": tagIDs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = CanonicalLegacyAdminProjection(projection); err != nil {
+		t.Fatalf("100 enabled tag IDs rejected: %v", err)
+	}
+	tagIDs = append(tagIDs, 101)
+	projection, err = json.Marshal(map[string]any{
+		"schema_version": 1,
+		"wecom_tagging":  map[string]any{"enabled": true, "tag_ids": tagIDs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = CanonicalLegacyAdminProjection(projection); !errors.Is(err, ErrInvalidProduct) {
+		t.Fatalf("101 enabled tag IDs error=%v, want invalid product", err)
+	}
+}
+
+func TestLegacyProjectionMissingPostPurchaseDefaultsRemainsReadable(t *testing.T) {
+	legacyOrdinary := json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`)
+	product := validTestProduct(71)
+	product.LegacyAdminProjection = legacyOrdinary
+	product.LocalLifecycle = productport.LocalProductEnabled
+	local, err := ProjectLocalProduct(product)
+	if err != nil || !local.Enabled || local.Lifecycle != productport.LocalProductEnabled {
+		t.Fatalf("legacy ordinary local=%+v err=%v", local, err)
+	}
+	legacyServicePeriod := json.RawMessage(`{"schema_version":1,"status":"service_period_enabled","enabled":true,"buy_button_text":"","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[{"image_id":88}]}`)
+	if !IsServicePeriodProjection(legacyServicePeriod) {
+		t.Fatal("legacy service-period projection was hidden by added defaults")
+	}
+	presentation, err := publicServicePeriodPresentation(legacyServicePeriod)
+	if err != nil || len(presentation.Media) != 1 || presentation.Media[0].ImageID != 88 {
+		t.Fatalf("legacy service-period presentation=%+v err=%v", presentation, err)
+	}
+}
+
 func validServicePeriodProjection(t *testing.T, status string, enabled bool) json.RawMessage {
 	t.Helper()
 	projection, err := CanonicalLegacyAdminProjection(json.RawMessage(`{"schema_version":1,"status":"` + status + `","enabled":` + map[bool]string{false: "false", true: "true"}[enabled] + `}`))
@@ -319,6 +415,10 @@ func TestCanonicalLegacyAdminProjectionRejectsUnknownAndWrongTypes(t *testing.T)
 		`{"schema_version":1,"completion_target":3}`,
 		`{"schema_version":1,"wecom_tagging":true}`,
 		`{"schema_version":1,"lead_program_id":0}`,
+		`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"qr"}`,
+		`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"qr","lead_channel_id":null}`,
+		`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect"}`,
+		`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect","completion_redirect_url":"https://example.test/path#fragment"}`,
 		`{"schema_version":1} 42`,
 	} {
 		if _, err := CanonicalLegacyAdminProjection(json.RawMessage(raw)); !errors.Is(err, ErrInvalidProduct) {

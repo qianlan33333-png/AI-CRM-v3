@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-type UIAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type UIAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS string }
 type PageRenderer func(http.ResponseWriter, *http.Request, string, UIAssets) error
 type adminUI struct {
 	dist   string
@@ -104,5 +104,13 @@ func radarAssets(dist string) (UIAssets, error) {
 	if err != nil {
 		return UIAssets{}, err
 	}
-	return UIAssets{TokensCSS: t, LabsCSS: l, AdminJS: a}, nil
+	h, err := get("radarHost")
+	if err != nil {
+		return UIAssets{}, err
+	}
+	standard, err := get("standardComponentsStableHost")
+	if err != nil {
+		return UIAssets{}, err
+	}
+	return UIAssets{TokensCSS: t, LabsCSS: l, AdminJS: a, HostJS: h, StandardHostJS: standard}, nil
 }

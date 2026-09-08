@@ -24,7 +24,7 @@ if (fs.existsSync(stage)) fail(`refusing to overwrite an existing stage: ${stage
 if (!fs.statSync(manifestPath).isFile()) fail('missing asset-manifest.json');
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const entryNames = ['admin', 'tokens', 'labs', 'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost'];
+const entryNames = ['admin', 'tokens', 'labs', 'h5', 'operationCyclesHost', 'materialSaveHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'standardComponentsHost', 'standardComponentsStableHost', 'channelAdmissionStyles', 'aiAssistantHost'];
 const roots = entryNames.map((name) => manifest.entries?.[name]);
 if (roots.some((entry) => typeof entry !== 'string')) fail('required release entry assets are absent from manifest');
 const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports || []).find((item) =>
@@ -98,17 +98,20 @@ const privateTemplatePages = [
 const aiAssistantFiles = [
   'aiassistant/list.html',
   'aiassistant/detail.html',
-  'aiassistant/group_chat_picker.css',
-  'aiassistant/group_chat_picker.js',
-  'aiassistant/material_picker.css',
-  'aiassistant/material_picker.js',
-  'aiassistant/send_content_composer.css',
-  'aiassistant/send_content_composer.js',
   'aiassistant/send_content_readonly_detail.css',
   'aiassistant/send_content_readonly_detail.js',
   'aiassistant/cloud_plan_review.js',
 ];
-const fetchable = new Set([...selected, ...aiAssistantFiles]);
+const standardComponentFiles = [
+  'assets/standard-components/operation_member_picker.js',
+  'assets/standard-components/group_chat_picker.css', 'assets/standard-components/group_chat_picker.js',
+  'assets/standard-components/material_picker.css', 'assets/standard-components/material_picker.js',
+  'assets/standard-components/send_content_composer.css', 'assets/standard-components/send_content_composer.js',
+  'assets/standard-components/wecom_tag_picker.css', 'assets/standard-components/wecom_tag_picker.js',
+  'assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html',
+  'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js',
+];
+const fetchable = new Set([...selected, ...aiAssistantFiles, ...standardComponentFiles]);
 const releaseRoot = new Set([...fetchable, ...privateTemplatePages.map((page) => `admin/${page}.html`), 'admin/tags.html']);
 const releaseMetadataFor = (relative) => {
   const sourceRelative = relative === 'admin/tags.html' ? 'admin/wecom-tags.html' : relative;
@@ -154,6 +157,7 @@ for (const page of ['radar', 'radarDetail', 'radarForm']) copy(`admin/${page}.ht
 // the manifest dependency closure above; these stable files must travel with
 // it or the live route fails closed with a 503.
 for (const relative of aiAssistantFiles) copy(relative);
+for (const relative of standardComponentFiles) copy(relative);
 // Tags also runs through the frozen donor admin entry. Keep the generated
 // donor page only as a release-private template source under a non-routable
 // filename; the Go adapter extracts template#tpl and mounts it in PR10's sole
@@ -185,7 +189,7 @@ const allowedHTML = [...privateTemplatePages.map((page) => `admin/${page}.html`)
 for (const relative of stagedFiles) {
   const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || allowedHTML.includes(relative) || aiAssistantFiles.includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
-  if (relative.endsWith('.html') && !allowedHTML.includes(relative) && !aiAssistantFiles.includes(relative)) fail(`unapproved HTML surface: ${relative}`);
+  if (relative.endsWith('.html') && !allowedHTML.includes(relative) && !aiAssistantFiles.includes(relative) && !standardComponentFiles.includes(relative)) fail(`unapproved HTML surface: ${relative}`);
   if (/(^|\/)(h5|sidebar|public)(\/|$)/.test(relative)) fail(`unapproved public surface: ${relative}`);
 }
 for (const relative of selected) {

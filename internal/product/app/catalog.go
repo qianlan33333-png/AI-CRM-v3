@@ -492,7 +492,11 @@ func normalize(c productport.CreateCommand) (productport.CreateCommand, [32]byte
 }
 func validProduct(p productport.Product) bool {
 	normalized, _, e := normalize(productport.CreateCommand{ProductCode: p.ProductCode, Name: p.Name, Description: p.Description, Currency: p.Currency, PriceMinor: p.PriceMinor, StockQuantity: p.StockQuantity, Images: p.Images, LegacyAdminProjection: p.LegacyAdminProjection, Actor: p.CreatedBy, IdempotencyKey: strings.Repeat("v", 16)})
-	return e == nil && jsonEquivalent(normalized.LegacyAdminProjection, p.LegacyAdminProjection) && p.ID > 0 && p.Version > 0 && !p.CreatedAt.IsZero() && !p.UpdatedAt.IsZero() && !p.UpdatedAt.Before(p.CreatedAt)
+	// New disabled projection keys may be introduced after an existing Product
+	// was persisted. Canonicalization is lossless for those rows, and 0117
+	// backfills this particular pair on upgrade. Do not make an already-paid
+	// event fail merely because its old JSON has not yet been rewritten.
+	return e == nil && len(normalized.LegacyAdminProjection) > 0 && p.ID > 0 && p.Version > 0 && !p.CreatedAt.IsZero() && !p.UpdatedAt.IsZero() && !p.UpdatedAt.Before(p.CreatedAt)
 }
 func validProducts(ps []productport.Product) bool {
 	var prev productport.ID
@@ -559,6 +563,8 @@ func CanonicalLegacyAdminProjection(raw json.RawMessage) (json.RawMessage, error
 		"completion_redirect_enabled": json.RawMessage(`false`),
 		"completion_redirect_url":     json.RawMessage(`""`),
 		"completion_target":           json.RawMessage(`null`),
+		"purchase_action_enabled":     json.RawMessage(`false`),
+		"purchase_action_mode":        json.RawMessage(`""`),
 		"wecom_tagging":               json.RawMessage(`{}`),
 		"slices":                      json.RawMessage(`[]`),
 	}
@@ -578,13 +584,13 @@ func CanonicalLegacyAdminProjection(raw json.RawMessage) (json.RawMessage, error
 	if json.Unmarshal(defaults["schema_version"], &schemaVersion) != nil || schemaVersion != 1 {
 		return nil, ErrInvalidProduct
 	}
-	for _, key := range []string{"status", "buy_button_text", "lead_qr_title", "lead_qr_subtitle", "completion_redirect_url"} {
+	for _, key := range []string{"status", "buy_button_text", "lead_qr_title", "lead_qr_subtitle", "completion_redirect_url", "purchase_action_mode"} {
 		var value string
 		if json.Unmarshal(defaults[key], &value) != nil || len(value) > 2048 || key == "status" && (strings.TrimSpace(value) == "" || len(value) > 64) {
 			return nil, ErrInvalidProduct
 		}
 	}
-	for _, key := range []string{"enabled", "require_mobile", "completion_redirect_enabled"} {
+	for _, key := range []string{"enabled", "require_mobile", "completion_redirect_enabled", "purchase_action_enabled"} {
 		var value bool
 		if json.Unmarshal(defaults[key], &value) != nil {
 			return nil, ErrInvalidProduct
@@ -602,11 +608,79 @@ func CanonicalLegacyAdminProjection(raw json.RawMessage) (json.RawMessage, error
 	if !jsonKind(defaults["completion_target"], "object", "null") || !jsonKind(defaults["wecom_tagging"], "object", "array", "null") || !jsonKind(defaults["slices"], "array") {
 		return nil, ErrInvalidProduct
 	}
+	if !validExplicitPaidPurchaseTagging(defaults["wecom_tagging"]) {
+		return nil, ErrInvalidProduct
+	}
+	var purchaseEnabled bool
+	var purchaseMode string
+	if json.Unmarshal(defaults["purchase_action_enabled"], &purchaseEnabled) != nil || json.Unmarshal(defaults["purchase_action_mode"], &purchaseMode) != nil ||
+		(purchaseMode != "" && purchaseMode != string(productport.PaidPurchaseActionQR) && purchaseMode != string(productport.PaidPurchaseActionRedirect)) ||
+		(purchaseEnabled && purchaseMode == "") {
+		return nil, ErrInvalidProduct
+	}
+	// A paid event freezes this configuration after settlement.  Validate every
+	// enabled presentation here, at the Product write boundary, so an accepted
+	// Product cannot later turn a valid payment fact into a configuration error.
+	if purchaseEnabled {
+		switch purchaseMode {
+		case string(productport.PaidPurchaseActionQR):
+			var leadChannelID int64
+			if json.Unmarshal(defaults["lead_channel_id"], &leadChannelID) != nil || leadChannelID < 1 {
+				return nil, ErrInvalidProduct
+			}
+		case string(productport.PaidPurchaseActionRedirect):
+			var redirectURL string
+			if json.Unmarshal(defaults["completion_redirect_url"], &redirectURL) != nil || !validPaidPurchaseRedirect(redirectURL) {
+				return nil, ErrInvalidProduct
+			}
+		}
+	}
 	canonical, err := json.Marshal(defaults)
 	if err != nil {
 		return nil, ErrInvalidProduct
 	}
 	return canonical, nil
+}
+
+// validExplicitPaidPurchaseTagging only applies the new paid-action contract
+// when a configuration explicitly enables tagging. Older projections did not
+// carry that switch, so they remain readable and retain their prior semantics.
+// A disabled draft may retain selected IDs without making them executable.
+func validExplicitPaidPurchaseTagging(raw json.RawMessage) bool {
+	var values map[string]json.RawMessage
+	if json.Unmarshal(raw, &values) != nil || values == nil {
+		return true
+	}
+	enabledRaw, explicit := values["enabled"]
+	if !explicit {
+		return true
+	}
+	var enabled bool
+	if json.Unmarshal(enabledRaw, &enabled) != nil {
+		return false
+	}
+	if !enabled {
+		return true
+	}
+	tagIDsRaw, present := values["tag_ids"]
+	if !present {
+		return false
+	}
+	var tagIDs []int64
+	if json.Unmarshal(tagIDsRaw, &tagIDs) != nil || len(tagIDs) == 0 || len(tagIDs) > 100 {
+		return false
+	}
+	seen := make(map[int64]struct{}, len(tagIDs))
+	for _, id := range tagIDs {
+		if id < 1 {
+			return false
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	return true
 }
 
 func jsonKind(raw json.RawMessage, allowed ...string) bool {

@@ -863,9 +863,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = orderService.SetCheckoutCouponCoordinator(couponCheckout); err != nil {
 		return fail(err)
 	}
-	if err = orderService.SetPaidEventConsumer(commercePushService); err != nil {
-		return fail(err)
-	}
 	if cfg.WeChatPay.H5OAuthEnabled {
 		contactCipher, cipherErr := ordersecure.NewContactCipher(cfg.WeChatPay.OrderContactDataKey)
 		if cipherErr != nil {
@@ -953,6 +950,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = channelEntrantActions.SetTagCommandSubmitter(customerTagCommands); err != nil {
 		return fail(err)
 	}
+	paidPurchaseActions, err := productapp.NewPaidPurchaseActionService(uow, productRepository, customerTagCommands)
+	if err != nil {
+		return fail(err)
+	}
+	if err = orderService.SetPaidEventConsumer(orderPaidEventFanout{commerce: commercePushService, purchase: paidPurchaseActions}); err != nil {
+		return fail(err)
+	}
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	ownerHandoffCipher, cipherErr := customer.NewOwnerHandoffCipher(cfg.Survey.DataKey)
 	if cipherErr != nil {
@@ -994,6 +998,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore})
 	if err != nil {
+		return fail(err)
+	}
+	if err = orderHandler.SetCustomerFilterResolver(orderCustomerFilterAdapter{uow: uow, oneID: oneID, corpID: cfg.WeCom.CorpID}); err != nil {
 		return fail(err)
 	}
 	orderRuns := ordermigration.PostgreSQLRuns{Pool: pool.Native()}
@@ -1077,6 +1084,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	if err = paymentHandler.SetCommercePushDeliveryReaders(orderService, commercePushService); err != nil {
+		return fail(err)
+	}
+	if err = paymentHandler.SetPaidPurchaseActionReader(paidPurchaseActions, channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
 		return fail(err)
 	}
 	if cfg.WeChatPay.Enabled {
@@ -1435,6 +1445,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		switch r.URL.Query().Get("scope") {
 		case "owner_migration":
 			customerHandler.OwnerHandoffOperationMembersHandler().ServeHTTP(w, r)
+		case "channel_code":
+			channelOperationMemberPicker{directory: channelAcquisitionService, security: requestSecurity}.ServeHTTP(w, r)
 		default:
 			groupOpsBindings.GroupOps.ServeHTTP(w, r)
 		}
@@ -1531,7 +1543,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品", "spProductData": "周期商品 · 会员数据"}
 		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page", "spProductData": "api.admin_service_period_member_grid"}
-		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
+		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS, StandardCSS: assets.StandardCSS})
 	})
 	orderUI := orderui.NewUIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets orderui.PageAssets) error {
 		title := map[string]string{"orders": "交易管理", "orderDetail": "订单详情"}[page]
@@ -1540,11 +1552,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	couponUI := couponModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets coupon.Assets) error {
 		titles := map[string]string{"coupons": "优惠券", "couponForm": "优惠券", "couponData": "优惠券 · 领取数据"}
 		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page", "couponData": "api.admin_coupon_claims"}
-		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地优惠券规则、领取事实与核销快照。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地优惠券规则、领取事实与核销快照。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, HostJS: assets.HostJS})
 	})
 	radarUI := radarModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page string, assets radarmodule.UIAssets) error {
 		titles := map[string]string{"radar": "内容雷达", "radarDetail": "雷达详情", "radarForm": "雷达配置"}
-		return renderer.RenderRadar(writer, webshell.AdminPageForRequest(request, titles[page], "UnionID 经 OneID 解析后形成可审计访问归因。", "api.admin_radar_links"), page, webshell.RadarAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		return renderer.RenderRadar(writer, webshell.AdminPageForRequest(request, titles[page], "UnionID 经 OneID 解析后形成可审计访问归因。", "api.admin_radar_links"), page, webshell.RadarAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS})
 	})
 	groupOpsUI := groupOpsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets groupops.GroupOpsAssets) error {
 		endpoint := "api.admin_group_ops_ui"
@@ -1558,7 +1570,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	})
 	surveyUI := surveyModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets surveymodule.UIAssets) error {
 		titles := map[string]string{"questionnaires": "问卷管理", "questionnaireDetail": "问卷编辑", "questionnaireOps": "问卷运营"}
-		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, titles[page], "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donorTemplate, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS})
+		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, titles[page], "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donorTemplate, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS, StandardHostJS: assets.StandardHostJS, StandardCSS: assets.StandardCSS})
 	})
 	surveyPublicUI := surveyModule.PublicUIBinding("web/dist")
 	operationUI := operationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets operationcycle.UIAssets) error {
@@ -1591,7 +1603,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	channelUI := channelModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, resourceID, donorTemplate string, assets channelstore.UIAssets) error {
 		title := map[string]string{"channels": "渠道码中心", "channelForm": "渠道配置"}[page]
 		endpoint := map[string]string{"channels": "api.admin_channels_page", "channelForm": "api.admin_channel_new_page"}[page]
-		return renderer.RenderChannels(writer, webshell.AdminPageForRequest(request, title, "管理渠道定义、客服分配、资产状态与安全历史归因。", endpoint), page, resourceID, donorTemplate, webshell.ChannelAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		return renderer.RenderChannels(writer, webshell.AdminPageForRequest(request, title, "管理渠道定义、客服分配、资产状态与安全历史归因。", endpoint), page, resourceID, donorTemplate, webshell.ChannelAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, StandardHostJS: assets.StandardHostJS, StandardCSS: assets.StandardCSS})
 	})
 	aiUI := aiModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets aiassistant.Assets) error {
 		return renderer.RenderAIAssistant(writer, webshell.AdminPageForRequest(request, "AI 助手", "AI 计划审阅与可对账执行结果。", "api.admin_ai_assistant"), page, donorTemplate, webshell.AIAssistantAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, GroupCSS: assets.GroupCSS, MaterialCSS: assets.MaterialCSS, ComposerCSS: assets.ComposerCSS, ReadonlyCSS: assets.ReadonlyCSS, HostJS: assets.HostJS})
@@ -2049,6 +2061,9 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	// module Host above: the new shell must not replace approved product, tag,
 	// operation-cycle or configuration workflows with a generic document.
 	mux.Handle(webshell.LoginAccessPath, requireAdminSession(authentication, shell))
+	// OneID remains a backend Port/API foundation; its former admin screen is deliberately unavailable.
+	mux.Handle("/admin/oneid", http.NotFoundHandler())
+	mux.Handle("/admin/oneid.html", http.NotFoundHandler())
 	// The staged Tags donor document is a private template carrier. Only the
 	// canonical PR10-mounted route above is public; neither its private staging
 	// name nor the donor document name may fall through to a generic 200 shell.
@@ -2086,7 +2101,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/automation-conversion/group-ops/plans/", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/admin/groupops.html", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/admin/groupopsDetail.html", requireAdminSession(authentication, groupOpsUI))
-	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html", "/admin/couponData.html"} {
+	for _, path := range []string{"/admin/coupons", "/admin/coupons/", "/admin/coupons.html", "/admin/couponForm.html", "/admin/couponData.html"} {
 		mux.Handle(path, requireAdminSession(authentication, couponUI))
 	}
 	for _, path := range []string{"/admin/automation-agents", "/admin/automation-agents/", "/admin/agents.html", "/admin/agentEdit.html"} {
@@ -2175,7 +2190,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		tagsPage := request.URL.Path == "/admin/wecom-tags"
 		productPage := isProductShellPath(request.URL.Path)
 		orderPage := request.URL.Path == "/admin/orders" || request.URL.Path == "/admin/orders.html" || request.URL.Path == "/admin/orderDetail.html"
-		couponPage := request.URL.Path == "/admin/coupons" || request.URL.Path == "/admin/coupons.html" || request.URL.Path == "/admin/couponForm.html"
+		couponPage := request.URL.Path == "/admin/coupons" || strings.HasPrefix(request.URL.Path, "/admin/coupons/") || request.URL.Path == "/admin/coupons.html" || request.URL.Path == "/admin/couponForm.html"
 		groupOpsPage := request.URL.Path == "/admin/automation-conversion/group-ops/ui" || request.URL.Path == "/admin/automation-conversion/group-ops/groups/ui" || request.URL.Path == "/admin/groupops.html" || request.URL.Path == "/admin/groupopsDetail.html" || strings.HasPrefix(request.URL.Path, "/admin/automation-conversion/group-ops/plans/")
 		automationPage := request.URL.Path == "/admin/automation-agents" || strings.HasPrefix(request.URL.Path, "/admin/automation-agents/") || request.URL.Path == "/admin/agents.html" || request.URL.Path == "/admin/agentEdit.html"
 		surveyPage := request.URL.Path == "/admin/questionnaires" || request.URL.Path == "/admin/questionnaires.html" || request.URL.Path == "/admin/questionnaireDetail.html" || request.URL.Path == "/admin/questionnaireOps.html" || strings.HasPrefix(request.URL.Path, "/h5/")

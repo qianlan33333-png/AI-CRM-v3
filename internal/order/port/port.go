@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 )
 
@@ -32,6 +33,41 @@ type ListQuery struct {
 	Product     string
 	CreatedFrom *time.Time
 	CreatedTo   *time.Time
+	// NoCustomerMatch is set only after a read-only Customer/Identity Port
+	// could not resolve a requested identity.  It keeps the resulting empty
+	// page inside Order's Count/List predicate instead of dropping the filter
+	// and accidentally returning every order.
+	NoCustomerMatch bool
+}
+
+// CustomerFilter is the small composition seam used by the admin order list.
+// Exactly one declared value is accepted.  It neither provisions a Customer
+// nor attaches or merges an identity.
+type CustomerFilter struct {
+	Phone          string
+	ExternalUserID string
+}
+
+type CustomerFilterStatus string
+
+const (
+	CustomerFilterFound       CustomerFilterStatus = "found"
+	CustomerFilterNotFound    CustomerFilterStatus = "not_found"
+	CustomerFilterConflict    CustomerFilterStatus = "conflict"
+	CustomerFilterInvalid     CustomerFilterStatus = "invalid"
+	CustomerFilterUnavailable CustomerFilterStatus = "unavailable"
+)
+
+type CustomerFilterResolution struct {
+	Status     CustomerFilterStatus
+	CustomerID customerdomain.CustomerID
+}
+
+// CustomerFilterResolver resolves only an existing canonical Customer for an
+// order-list predicate.  The implementation belongs at composition and must
+// use a trusted Identity Port; it must not create or mutate identity state.
+type CustomerFilterResolver interface {
+	ResolveOrderCustomerFilter(context.Context, CustomerFilter) (CustomerFilterResolution, error)
 }
 
 type Page struct {

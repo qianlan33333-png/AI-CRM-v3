@@ -10,6 +10,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
@@ -18,11 +19,13 @@ import (
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
 type appStub struct {
 	createCalls int
 	create      paymentport.CreateCommand
+	handoff     paymentport.Handoff
 }
 
 func (stub *appStub) Create(_ context.Context, command paymentport.CreateCommand) (domain.Payment, error) {
@@ -37,8 +40,28 @@ func (*appStub) CheckoutSessionBinding(_ context.Context, token string) (string,
 	}
 	return binding, nil
 }
-func (*appStub) GetCheckout(context.Context, string, string) (paymentport.Handoff, error) {
+func (stub *appStub) GetCheckout(context.Context, string, string) (paymentport.Handoff, error) {
+	if stub.handoff.Status != "" {
+		return stub.handoff, nil
+	}
 	return paymentport.Handoff{PaymentID: 7, MerchantOrder: "M-7", Status: domain.StatusAwaitingPayment, Payload: []byte(`{"appId":"wx-test","package":"prepay_id=safe"}`), ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+
+type paidPurchaseActionReaderStub struct {
+	action productport.PaidPurchaseAction
+	order  int64
+	err    error
+}
+
+func (stub *paidPurchaseActionReaderStub) ReadPaidPurchaseAction(_ context.Context, orderID int64) (productport.PaidPurchaseAction, error) {
+	stub.order = orderID
+	return stub.action, stub.err
+}
+
+type paidPurchaseLeadQRStub struct{ value channelport.PublicLeadQRCode }
+
+func (stub paidPurchaseLeadQRStub) ReadPublicLeadQRCode(context.Context, int64) (channelport.PublicLeadQRCode, error) {
+	return stub.value, nil
 }
 func (*appStub) RequestRefund(context.Context, paymentport.RefundCommand) (domain.Refund, error) {
 	return domain.Refund{}, nil
@@ -243,6 +266,33 @@ func TestCheckoutHandoffPollingKeepsIdentityOpaqueAndSessionUntilTerminalStatus(
 	}
 	if cookies := response.Result().Cookies(); len(cookies) != 0 {
 		t.Fatalf("unexpected terminal cookie clear=%+v", cookies)
+	}
+}
+
+func TestCheckoutStatusExposesFrozenPurchaseActionOnlyAfterAuthorizedPaidCheckout(t *testing.T) {
+	application := &appStub{handoff: paymentport.Handoff{PaymentID: 7, OrderID: 31, MerchantOrder: "M-paid-7", Status: domain.StatusPaid}}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := &paidPurchaseActionReaderStub{action: productport.PaidPurchaseAction{OrderPaidEventID: 9, OrderID: 31, ProductID: 4, ProductVersion: 2, Enabled: true, Mode: productport.PaidPurchaseActionRedirect, RedirectURL: "/after-paid", TagState: "not_configured", CreatedAt: time.Now()}}
+	if err = handler.SetPaidPurchaseActionReader(actions, paidPurchaseLeadQRStub{}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/M-paid-7", nil)
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusAccepted || actions.order != 31 || !strings.Contains(body, `"completion_action":{"mode":"redirect","redirect_url":"/after-paid","state":"available"}`) || strings.Contains(body, `"tag_state"`) || len(response.Result().Cookies()) != 0 {
+		t.Fatalf("code=%d order=%d body=%s cookies=%+v", response.Code, actions.order, body, response.Result().Cookies())
+	}
+	// A reload is still bound to the same trusted payer session and order. It
+	// can recover the immutable action but cannot mint a second checkout.
+	retry := httptest.NewRecorder()
+	handler.ServeHTTP(retry, request)
+	if retry.Code != http.StatusAccepted || !strings.Contains(retry.Body.String(), `"completion_action":{"mode":"redirect","redirect_url":"/after-paid","state":"available"}`) || len(retry.Result().Cookies()) != 0 {
+		t.Fatalf("reload code=%d body=%s cookies=%+v", retry.Code, retry.Body.String(), retry.Result().Cookies())
 	}
 }
 

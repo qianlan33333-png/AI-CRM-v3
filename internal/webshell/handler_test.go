@@ -19,7 +19,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 		t.Fatalf("group count=%d, want 4", len(ADMIN_NAV_GROUPS))
 	}
 	wantTitles := []string{"运营", "交易", "素材", "配置及后台"}
-	wantCounts := []int{10, 4, 3, 5}
+	wantCounts := []int{10, 4, 3, 4}
 	for index, group := range ADMIN_NAV_GROUPS {
 		if group.Title != wantTitles[index] || len(group.Items) != wantCounts[index] {
 			t.Fatalf("group %d=%+v, want title=%q count=%d", index, group, wantTitles[index], wantCounts[index])
@@ -265,50 +265,6 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			notContain: []string{"session_version", "password_hash", "digest"},
 		},
 		{
-			name:   "oneid page",
-			method: http.MethodGet,
-			path:   OneIDPagePath,
-			status: http.StatusOK,
-			contains: []string{
-				"OneID 身份中心",
-				"data-admin-oneid-root",
-				"/api/admin/oneid/resolve",
-				"/api/admin/oneid/customers/",
-				"/api/admin/oneid/conflicts",
-				"/api/admin/oneid/merge-candidates",
-				"name=\"kind\"",
-				"name=\"scope\"",
-				"name=\"value\"",
-				"admin_oneid.js",
-			},
-			notContain: []string{
-				"name=\"assurance\"",
-				"localStorage",
-				"sessionStorage",
-				"/api/v3/",
-				"fixture",
-			},
-		},
-		{
-			name:   "oneid javascript",
-			method: http.MethodGet,
-			path:   "/static/admin_console/admin_oneid.js",
-			status: http.StatusOK,
-			contains: []string{
-				"/api/admin/oneid/resolve",
-				"JSON.stringify({ kind: kind, scope: scope, value: value })",
-				"credentials: \"same-origin\"",
-				"textContent",
-			},
-			notContain: []string{
-				"assurance",
-				"localStorage",
-				"sessionStorage",
-				"innerHTML",
-				"console.",
-			},
-		},
-		{
 			name:       "customer directory page",
 			method:     http.MethodGet,
 			path:       "/admin/customers",
@@ -339,16 +295,6 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			status:     http.StatusOK,
 			contains:   []string{"客户档案", "admin-module-banner", "admin-profile-grid", "admin-split-grid admin-customer-detail-layout", "admin-customer-detail-main", "admin-customer-detail-sidebar", "customer-360-sections"},
 			notContain: []string{"external_userid", "UnionID", "unionid", "declared", "verified", "+8613812345678", "揭示理由", "customer-list-filters", "customer-sync-start", "跟进成员", "聊天记录", "data-profile-section"},
-		},
-		{
-			name:   "oneid css asset",
-			method: http.MethodGet,
-			path:   "/static/admin_console/admin_oneid.css",
-			status: http.StatusOK,
-			contains: []string{
-				".admin-oneid-query-grid",
-				".admin-oneid-detail",
-			},
 		},
 		{
 			name:   "admin shell javascript",
@@ -585,7 +531,7 @@ func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	err = renderer.RenderProducts(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wechat-pay/products", nil), "普通商品", "", "api.admin_products_page"), "products", `<section data-page="products">frozen donor product fragment</section>`, ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", HostJS: "/product-assets/product-host.js"})
+	err = renderer.RenderProducts(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wechat-pay/products", nil), "普通商品", "", "api.admin_products_page"), "products", `<section data-page="products">frozen donor product fragment</section>`, ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", HostJS: "/product-assets/product-host.js", StandardHostJS: "/product-assets/standard-components-host.js", StandardCSS: []string{"/product-assets/standard-components/material_picker.css", "/product-assets/standard-components/send_content_composer.css", "/product-assets/standard-components/wecom_tag_picker.css"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +565,7 @@ func TestRenderCouponsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	err = renderer.RenderCoupons(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/coupons", nil), "优惠券", "", "api.admin_coupons_page"), "coupons", `<section data-page="coupons">frozen donor coupon fragment</section>`, CouponAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js"})
+	err = renderer.RenderCoupons(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/coupons", nil), "优惠券", "", "api.admin_coupons_page"), "coupons", `<section data-page="coupons">frozen donor coupon fragment</section>`, CouponAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", HostJS: "/assets/coupon-host.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +903,7 @@ func TestRenderGroupOpsInjectsManifestVerifiedReadonlyContentRenderer(t *testing
 	if err := renderer.RenderGroupOps(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "", "api.admin_group_ops_ui"), "groupops", `<section></section>`, GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}); err == nil {
 		t.Fatal("group ops shell accepted missing read-only content assets")
 	}
-	standardAssets := GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: "/groupops-assets/assets/groupops.css", HostJS: "/groupops-assets/assets/groupops.js", GroupPickerCSS: "/groupops-assets/groupops/group_chat_picker.css", GroupPickerJS: "/groupops-assets/groupops/group_chat_picker.js", MaterialPickerCSS: "/groupops-assets/groupops/material_picker.css", MaterialPickerJS: "/groupops-assets/groupops/material_picker.js", ComposerCSS: "/groupops-assets/groupops/send_content_composer.css", ComposerJS: "/groupops-assets/groupops/send_content_composer.js"}
+	standardAssets := GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: "/groupops-assets/assets/groupops.css", HostJS: "/groupops-assets/assets/groupops.js", OperationPickerJS: "/groupops-assets/assets/standard-components/operation_member_picker.js", GroupPickerCSS: "/groupops-assets/assets/standard-components/group_chat_picker.css", GroupPickerJS: "/groupops-assets/assets/standard-components/group_chat_picker.js", MaterialPickerCSS: "/groupops-assets/assets/standard-components/material_picker.css", MaterialPickerJS: "/groupops-assets/assets/standard-components/material_picker.js", ComposerCSS: "/groupops-assets/assets/standard-components/send_content_composer.css", ComposerJS: "/groupops-assets/assets/standard-components/send_content_composer.js"}
 	standardResponse := httptest.NewRecorder()
 	if err = renderer.RenderGroupOps(standardResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "管理本地群计划。", "api.admin_group_ops_ui"), "groupops", `<div id="group-ops-app" data-group-ops-standard-host="true"></div>`, standardAssets); err != nil {
 		t.Fatal(err)

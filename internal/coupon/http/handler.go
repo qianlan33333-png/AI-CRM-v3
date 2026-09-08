@@ -459,7 +459,7 @@ func (h *Handler) productOptions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 503, "unavailable")
 			return
 		}
-		out = append(out, map[string]any{"id": item.ID, "target_ref": prefix + ":" + strconv.FormatInt(int64(item.ID), 10), "name": item.Name, "price_minor": item.PriceMinor, "currency": "CNY"})
+		out = append(out, map[string]any{"id": item.ID, "target_ref": prefix + ":" + strconv.FormatInt(int64(item.ID), 10), "name": item.Name, "title": item.Name, "product_type": prefix, "price_minor": item.PriceMinor, "price_cents": item.PriceMinor, "currency": "CNY"})
 	}
 	if page.Total < 0 || page.Limit != int32(limit) || page.Offset != int32(offset) {
 		writeError(w, 503, "unavailable")
@@ -469,7 +469,7 @@ func (h *Handler) productOptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func legacyCoupon(c couponport.Coupon) map[string]any {
-	return map[string]any{"id": c.ID, "resource_id": c.ID, "name": c.Name, "discount_amount_total": c.DiscountAmountTotal, "currency": "CNY", "status": c.Status, "availability_status": c.AvailabilityStatus, "total_issue_limit": c.TotalIssueLimit, "per_user_issue_limit": c.PerUserIssueLimit, "issued_count": c.IssuedCount, "claim_starts_at": c.ClaimStartsAt.Format(time.RFC3339), "claim_ends_at": c.ClaimEndsAt.Format(time.RFC3339), "validity_mode": c.ValidityMode, "use_starts_at": nullableTime(c.UseStartsAt), "use_ends_at": nullableTime(c.UseEndsAt), "relative_validity_days": c.RelativeValidityDays, "instructions": c.Instructions, "target_refs": c.TargetRefs, "created_by": c.CreatedBy, "updated_by": c.UpdatedBy, "version": c.Version, "created_at": c.CreatedAt.Format(time.RFC3339), "updated_at": c.UpdatedAt.Format(time.RFC3339)}
+	return map[string]any{"id": c.ID, "resource_id": c.ID, "name": c.Name, "discount_amount_total": c.DiscountAmountTotal, "currency": "CNY", "status": c.Status, "availability_status": c.AvailabilityStatus, "total_issue_limit": c.TotalIssueLimit, "per_user_issue_limit": c.PerUserIssueLimit, "issued_count": c.IssuedCount, "rules_frozen": c.IssuedCount > 0, "claim_starts_at": c.ClaimStartsAt.Format(time.RFC3339), "claim_ends_at": c.ClaimEndsAt.Format(time.RFC3339), "validity_mode": c.ValidityMode, "use_starts_at": nullableTime(c.UseStartsAt), "use_ends_at": nullableTime(c.UseEndsAt), "relative_validity_days": c.RelativeValidityDays, "instructions": c.Instructions, "target_refs": c.TargetRefs, "created_by": c.CreatedBy, "updated_by": c.UpdatedBy, "version": c.Version, "created_at": c.CreatedAt.Format(time.RFC3339), "updated_at": c.UpdatedAt.Format(time.RFC3339)}
 }
 func couponList(items []couponport.Coupon) []any {
 	out := make([]any, 0, len(items))

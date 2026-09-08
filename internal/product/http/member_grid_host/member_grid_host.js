@@ -19,14 +19,37 @@
   // the frozen renderer consumes it, so both internal and public pages retain
   // the explicit unavailable renewal marker.
   const nativeFetch = typeof window.fetch === "function" ? window.fetch.bind(window) : null;
+  const memberGridRoot = () => document.getElementById("spMemberGrid");
+  const memberGridStaffURL = () => {
+    const productID = String(memberGridRoot()?.dataset?.serviceProductId || "");
+    if (!/^[1-9][0-9]*$/.test(productID)) return null;
+    return `/api/admin/service-period-products/${encodeURIComponent(productID)}/member-grid/staff`;
+  };
   if (nativeFetch) {
     window.fetch = async (...args) => {
+      const raw = typeof window.Request === "function" && args[0] instanceof window.Request ? args[0].url : String(args[0]);
+      const target = new URL(raw, window.location.origin);
+      // Map the original component's common read to this product's Access-scoped staff directory.
+      if (target.pathname === "/api/admin/common/operation-members") {
+        const scoped = memberGridStaffURL();
+        if (!scoped) return new Response(JSON.stringify({items: []}), {status: 400, headers: {"Content-Type": "application/json"}});
+        const response = await nativeFetch(scoped, {headers: {Accept: "application/json"}, credentials: "same-origin", cache: "no-store"});
+        if (response.ok) {
+          try { remember(await response.clone().json()); } catch (_error) { /* non-JSON response */ }
+        }
+        return response;
+      }
       const response = await nativeFetch(...args);
       if (response.ok) {
         try { remember(await response.clone().json()); } catch (_error) { /* non-JSON response */ }
       }
       return response;
     };
+  }
+  // Preserve the original component; only suppress its unrelated global refresh action.
+  if (window.OperationMemberPicker?.open) {
+    const standardPicker = window.OperationMemberPicker;
+    window.OperationMemberPicker = {...standardPicker, open(options = {}) { return standardPicker.open({...options, allowRefresh: false}); }};
   }
   const requestJson = async (path, options) => {
     const settings = options || {};
@@ -72,20 +95,5 @@
     if (recordID && unavailableRenewalByMember.has(recordID) && cell.textContent.trim() === "0") cell.textContent = "—";
   });
   new MutationObserver(renderUnavailableRenewals).observe(document.documentElement, {childList:true, subtree:true});
-  window.OperationMemberPicker = {
-    async open(options) {
-      const root = document.getElementById("spMemberGrid"); const productID = String(root?.dataset?.serviceProductId || "");
-      if (!/^[1-9][0-9]*$/.test(productID)) throw new Error("周期商品不存在");
-      const payload = await requestJson(`/api/admin/service-period-products/${encodeURIComponent(productID)}/member-grid/staff`);
-      const disabled = new Set((options?.disabledUserIds || []).map(String));
-      const dialog = document.createElement("dialog"); dialog.className = "sp-dialog";
-      dialog.innerHTML = '<form method="dialog" class="sp-dialog__surface"><header><h2>选择企微员工</h2></header><div class="sp-picker-list"></div><footer><button class="sp-secondary-button" value="cancel">取消</button></footer></form>';
-      const list = dialog.querySelector(".sp-picker-list");
-      (Array.isArray(payload.items) ? payload.items : []).filter((member) => !disabled.has(String(member.user_id || ""))).forEach((member) => {
-        const button = document.createElement("button"); button.type = "button"; button.className = "sp-menu-item"; button.textContent = String(member.display_name || member.user_id || "员工");
-        button.addEventListener("click", async () => { dialog.close(); dialog.remove(); await options?.onSelect?.(member); }); list.appendChild(button);
-      });
-      document.body.appendChild(dialog); dialog.addEventListener("close", () => dialog.remove(), {once:true}); dialog.showModal();
-    },
-  };
+
 })(window, document);

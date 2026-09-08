@@ -69,7 +69,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		t.Fatalf("admin layout navigation status=%d", navigation.Code)
 	}
 	for _, href := range []string{
-		"/admin/automation-conversion", "/admin/operation-cycles", "/admin/automation-conversion/group-ops/ui", "/admin/channels", "/admin/cloud-orchestrator/plans", "/admin/customers", "/admin/hxc-dashboard", "/admin/questionnaires", "/admin/radar-links", "/admin/wecom-tags", "/admin/orders", "/admin/wechat-pay/products", "/admin/service-period-products", "/admin/coupons", "/admin/image-library", "/admin/miniprogram-library", "/admin/attachment-library", "/admin/automation-agents", "/admin/owner-migration", "/admin/config", "/admin/oneid", "/admin/api-docs",
+		"/admin/automation-conversion", "/admin/operation-cycles", "/admin/automation-conversion/group-ops/ui", "/admin/channels", "/admin/cloud-orchestrator/plans", "/admin/customers", "/admin/hxc-dashboard", "/admin/questionnaires", "/admin/radar-links", "/admin/wecom-tags", "/admin/orders", "/admin/wechat-pay/products", "/admin/service-period-products", "/admin/coupons", "/admin/image-library", "/admin/miniprogram-library", "/admin/attachment-library", "/admin/automation-agents", "/admin/owner-migration", "/admin/config", "/admin/api-docs",
 	} {
 		if !strings.Contains(navigation.Body.String(), `href="`+href+`"`) {
 			t.Fatalf("admin layout navigation href=%q is absent from the actual Webshell menu", href)
@@ -116,7 +116,6 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/owner-migration", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/config", marker: `data-runtime-release-host`, expectTopbar: true},
 		{path: "/admin/config/releases", marker: `data-runtime-release-host`, expectTopbar: true},
-		{path: "/admin/oneid", marker: `class="admin-topbar"`, expectTopbar: true},
 		// Open Platform is an authenticated V3 Host injected into the built
 		// apidocs document. The vanity route must canonicalize before that
 		// document loads; do not mistake the deliberate 303 for a missing Host.

@@ -35,9 +35,22 @@ type Application interface {
 }
 
 type Handler struct {
-	app       Application
-	security  RequestSecurity
-	customers customerport.DirectoryDisplayNameReader
+	app             Application
+	security        RequestSecurity
+	customers       customerport.DirectoryDisplayNameReader
+	customerFilters orderport.CustomerFilterResolver
+}
+
+// SetCustomerFilterResolver installs the composition-owned OneID read bridge
+// for the optional phone/external-contact list filters.  Absence of this
+// bridge fails closed for those filters; it never turns them into an
+// unfiltered order query.
+func (h *Handler) SetCustomerFilterResolver(resolver orderport.CustomerFilterResolver) error {
+	if h == nil || resolver == nil {
+		return errors.New("order customer filter resolver is required")
+	}
+	h.customerFilters = resolver
+	return nil
 }
 
 func NewHandler(app Application, security RequestSecurity, customers ...customerport.DirectoryDisplayNameReader) (*Handler, error) {
@@ -85,6 +98,10 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, path string) {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	query, resolved := h.resolveCustomerFilter(w, r, query)
+	if !resolved {
+		return
+	}
 	if path == "/api/admin/wechat-pay/orders" {
 		query.Provider = domain.ProviderWeChatPay
 	}
@@ -102,6 +119,45 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, path string) {
 		items = append(items, responseFrom(item, names))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "orders": items, "total": page.Total, "limit": query.Limit, "offset": query.Offset, "has_more": page.NextCursor != "", "next_cursor": page.NextCursor})
+}
+
+func (h *Handler) resolveCustomerFilter(w http.ResponseWriter, r *http.Request, query orderport.ListQuery) (orderport.ListQuery, bool) {
+	filter := orderport.CustomerFilter{Phone: r.URL.Query().Get("phone"), ExternalUserID: r.URL.Query().Get("external_userid")}
+	if filter.Phone == "" && filter.ExternalUserID == "" {
+		return query, true
+	}
+	if filter.Phone != "" && filter.ExternalUserID != "" || query.CustomerID != 0 || h.customerFilters == nil {
+		if h.customerFilters == nil && filter.Phone != "" || h.customerFilters == nil && filter.ExternalUserID != "" {
+			writeError(w, http.StatusServiceUnavailable, "identity_filter_unavailable")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+		}
+		return orderport.ListQuery{}, false
+	}
+	result, err := h.customerFilters.ResolveOrderCustomerFilter(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "identity_filter_unavailable")
+		return orderport.ListQuery{}, false
+	}
+	switch result.Status {
+	case orderport.CustomerFilterFound:
+		if result.CustomerID < 1 {
+			writeError(w, http.StatusServiceUnavailable, "identity_filter_unavailable")
+			return orderport.ListQuery{}, false
+		}
+		query.CustomerID = int64(result.CustomerID)
+		return query, true
+	case orderport.CustomerFilterNotFound:
+		query.NoCustomerMatch = true
+		return query, true
+	case orderport.CustomerFilterConflict:
+		writeError(w, http.StatusConflict, "identity_filter_conflict")
+	case orderport.CustomerFilterInvalid:
+		writeError(w, http.StatusBadRequest, "invalid_request")
+	default:
+		writeError(w, http.StatusServiceUnavailable, "identity_filter_unavailable")
+	}
+	return orderport.ListQuery{}, false
 }
 
 func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string) {
@@ -240,7 +296,9 @@ func decodeExport(r *http.Request) (orderport.ListQuery, bool) {
 			values.Set(key, fmt.Sprint(value))
 		}
 	}
-	if values.Get("identity") != "" || values.Get("mobile") != "" {
+	// Export has no composition-owned Identity resolver.  Do not let a list-only
+	// identity predicate parse successfully and then disappear from an export.
+	if values.Get("identity") != "" || values.Get("mobile") != "" || values.Get("phone") != "" || values.Get("external_userid") != "" {
 		return orderport.ListQuery{}, false
 	}
 	if values.Get("transaction_id") != "" {
@@ -253,7 +311,7 @@ func decodeExport(r *http.Request) (orderport.ListQuery, bool) {
 }
 
 func parseListQuery(values url.Values) (orderport.ListQuery, bool) {
-	allowed := map[string]bool{"cursor": true, "limit": true, "offset": true, "provider": true, "status": true, "payment_status": true, "order_ref": true, "customer_id": true, "product": true, "created_from": true, "created_to": true, "transaction_id": true, "product_code": true}
+	allowed := map[string]bool{"cursor": true, "limit": true, "offset": true, "provider": true, "status": true, "payment_status": true, "order_ref": true, "customer_id": true, "product": true, "created_from": true, "created_to": true, "transaction_id": true, "product_code": true, "phone": true, "external_userid": true}
 	for key := range values {
 		if !allowed[key] || len(values[key]) != 1 {
 			return orderport.ListQuery{}, false

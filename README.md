@@ -51,7 +51,7 @@ curl http://127.0.0.1:8080/readyz
 
 `AICRM_WECOM_ENABLED=false` 和 `AICRM_WECOM_CUSTOMER_SYNC_ENABLED=false` 是安全默认值。客户同步还必须单独提供 `AICRM_WECOM_CONTACT_SECRET`；它不复用 OAuth 应用 Secret。
 
-企微标签目录读取另有最窄的独立开关：`AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED=false`。`id-dev` 保持关闭；只有同时明确配置 `catalog-read-authorized` 权限时才允许启用，只读取企业标签目录，不包含客户打标或去标。
+企微标签目录读取另有最窄的独立开关：`AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED=false`。`id-dev` 保持关闭；只有同时明确配置 `catalog-read-authorized` 权限时才允许启用，只读取企业标签目录，不包含客户打标或去标。目录创建、改名和归档另需 `AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_ENABLED=true`、`AICRM_OUTBOUND_PROVIDER_ENABLED=true`、可用企微通讯录凭据以及独立的 `catalog-write-authorized` 确认；读取授权永远不会开启写入。
 
 ## 验证
 
