@@ -54,7 +54,10 @@ run_frontend_and_stage_checks() {
   npm run typecheck
   npx tsc -p web/v3/tsconfig.json --noEmit
   node scripts/sidebar-wecom-jssdk-contract.mjs
-  if [[ "$mode" == check ]]; then npm test; else npm run build; fi
+  if [[ "$mode" == check ]]; then npm test; fi
+  # Some frontend journeys install Hosts into dist. Rebuild the inexpensive
+  # raw frontend before staging so the final package cannot contain test edits.
+  npm run build
   node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
   node --test internal/webshell/chromium_launch.test.mjs
   node internal/webshell/owner_handoff_host.test.mjs
