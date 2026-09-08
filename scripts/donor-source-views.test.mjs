@@ -155,12 +155,12 @@ function expectCode(code, callback) {
   assert.throws(callback, (error) => error instanceof DonorViewError && error.code === code);
 }
 
-test('PR-4 removes every declared view from Git and prepares exact ignored replacements from the 75 canonical authorities', () => {
+test('PR-4 removes every declared view from Git and prepares exact ignored replacements from the 76 canonical authorities', () => {
   const result = verifySourceIndex(REPOSITORY);
   const plan = planMaterialization(REPOSITORY).materialized_view_targets;
   assert.equal(result.bindings_verified, 231);
   assert.equal(result.enabled_views, 230);
-  assert.equal(result.canonical_contents.length, 75);
+  assert.equal(result.canonical_contents.length, 76);
   assert.equal(plan.length, 230);
   assert.equal(plan.includes('api/openapi.yaml'), false);
   const indexed = execFileSync('git', ['-C', REPOSITORY, 'ls-files', '-z'], { encoding: 'buffer' }).toString('utf8').split('\0').filter(Boolean);
