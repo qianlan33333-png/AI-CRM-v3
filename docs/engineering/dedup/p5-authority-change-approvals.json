@@ -29,7 +29,7 @@
       "review_reference": "PR #190 Config Center legacy parity review"
     },
     {
-      "base_commit": "a20a8b94b4dbde3041ba2131e274be1f04f240c6",
+      "base_commit": "d59183c7235089c5bd147ed0a6caf0718ec9a8f3",
       "changes": [
         {
           "path": "api/openapi.yaml",
