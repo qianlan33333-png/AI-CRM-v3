@@ -70,6 +70,30 @@ func TestPostgreSQLSidebarBootstrapUsesBoundedSurveyReadAndActualTotal(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Exercise the normal Customer-owned annotation CAS through the Sidebar
+	// adapter. This creates no identity and makes the bootstrap profile's
+	// version/assurance contract observable from the real Composition root.
+	if _, err = application.pool.Native().Exec(ctx, `UPDATE customer_directory_projection SET phone_masked='138****5678',phone_assurance='declared',contact_type=1 WHERE customer_id=1`); err != nil {
+		t.Fatal(err)
+	}
+	profileUpdate := httptest.NewRequest(http.MethodPut, "/api/sidebar/v2/profile", strings.NewReader(`{"source":"sidebar-fixture","industry":"education","industry_description":"profile contract","needs_blockers_followup":"follow up","expected_profile_version":0}`))
+	profileUpdate.Header.Set("Content-Type", "application/json")
+	profileUpdate.Header.Set("X-Sidebar-Context-Token", contextToken)
+	profileUpdate.Header.Set("Idempotency-Key", "sidebar-profile-annotations-0001")
+	profileUpdateResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(profileUpdateResponse, profileUpdate)
+	if profileUpdateResponse.Code != http.StatusOK {
+		t.Fatalf("sidebar profile first annotation status=%d body=%s", profileUpdateResponse.Code, profileUpdateResponse.Body.String())
+	}
+	staleProfileUpdate := httptest.NewRequest(http.MethodPut, "/api/sidebar/v2/profile", strings.NewReader(`{"source":"must-not-overwrite","expected_profile_version":0}`))
+	staleProfileUpdate.Header.Set("Content-Type", "application/json")
+	staleProfileUpdate.Header.Set("X-Sidebar-Context-Token", contextToken)
+	staleProfileUpdate.Header.Set("Idempotency-Key", "sidebar-profile-annotations-0002")
+	staleProfileUpdateResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(staleProfileUpdateResponse, staleProfileUpdate)
+	if staleProfileUpdateResponse.Code != http.StatusConflict {
+		t.Fatalf("sidebar profile stale annotation status=%d body=%s", staleProfileUpdateResponse.Code, staleProfileUpdateResponse.Body.String())
+	}
 	for _, path := range []string{"/api/sidebar/v2/workbench", "/api/sidebar/v2/questionnaires", "/api/sidebar/v2/orders", "/api/sidebar/v2/periodic-orders", "/api/sidebar/v2/materials"} {
 		sectionRequest := httptest.NewRequest(http.MethodGet, path, nil)
 		sectionRequest.Header.Set("X-Sidebar-Context-Token", contextToken)
@@ -78,6 +102,53 @@ func TestPostgreSQLSidebarBootstrapUsesBoundedSurveyReadAndActualTotal(t *testin
 		if sectionResponse.Code != http.StatusOK {
 			t.Fatalf("sidebar section %s status=%d body=%s", path, sectionResponse.Code, sectionResponse.Body.String())
 		}
+	}
+	readQuestionnairePage := func(path string) struct {
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+		Total      int64  `json:"total"`
+		Limit      int    `json:"limit"`
+		HasMore    bool   `json:"has_more"`
+		NextCursor string `json:"next_cursor"`
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("X-Sidebar-Context-Token", contextToken)
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("sidebar questionnaire page path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		var page struct {
+			Items []struct {
+				ID int64 `json:"id"`
+			} `json:"items"`
+			Total      int64  `json:"total"`
+			Limit      int    `json:"limit"`
+			HasMore    bool   `json:"has_more"`
+			NextCursor string `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+	firstPage := readQuestionnairePage("/api/sidebar/v2/questionnaires?limit=50")
+	secondPage := readQuestionnairePage("/api/sidebar/v2/questionnaires?limit=50&cursor=" + firstPage.NextCursor)
+	thirdPage := readQuestionnairePage("/api/sidebar/v2/questionnaires?limit=50&cursor=" + secondPage.NextCursor)
+	seen := map[int64]bool{}
+	for _, items := range [][]struct {
+		ID int64 `json:"id"`
+	}{firstPage.Items, secondPage.Items, thirdPage.Items} {
+		for _, item := range items {
+			if seen[item.ID] {
+				t.Fatalf("sidebar questionnaire cursor repeated submission id=%d", item.ID)
+			}
+			seen[item.ID] = true
+		}
+	}
+	if firstPage.Total != 102 || firstPage.Limit != 50 || len(firstPage.Items) != 50 || !firstPage.HasMore || firstPage.NextCursor == "" || len(secondPage.Items) != 50 || !secondPage.HasMore || secondPage.NextCursor == "" || len(thirdPage.Items) != 2 || thirdPage.HasMore || thirdPage.NextCursor != "" || len(seen) != 102 {
+		t.Fatalf("sidebar questionnaire cursor pages first=%+v second=%+v third=%+v unique=%d", firstPage, secondPage, thirdPage, len(seen))
 	}
 
 	issued, err := application.authentication.LoginWithWeComUserID(ctx, accessapp.WeComLoginCommand{WeComUserID: "fixture-staff", Remote: "sidebar-bootstrap-survey-total"})
@@ -96,12 +167,21 @@ func TestPostgreSQLSidebarBootstrapUsesBoundedSurveyReadAndActualTotal(t *testin
 		State     string `json:"state"`
 		Workbench struct {
 			QuestionnaireCount int64 `json:"questionnaire_count"`
+			Profile            struct {
+				PhoneAssurance        string `json:"phone_assurance"`
+				ContactType           int16  `json:"contact_type"`
+				ProfileSource         string `json:"profile_source"`
+				ProfileVersion        int64  `json:"profile_version"`
+				Industry              string `json:"industry"`
+				IndustryDescription   string `json:"industry_description"`
+				NeedsBlockersFollowup string `json:"needs_blockers_followup"`
+			} `json:"profile"`
 		} `json:"workbench"`
 	}
 	if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.State != "ready" || body.Workbench.QuestionnaireCount != 102 {
+	if body.State != "ready" || body.Workbench.QuestionnaireCount != 102 || body.Workbench.Profile.PhoneAssurance != "declared" || body.Workbench.Profile.ContactType != 1 || body.Workbench.Profile.ProfileSource != "sidebar-fixture" || body.Workbench.Profile.ProfileVersion != 1 || body.Workbench.Profile.Industry != "education" || body.Workbench.Profile.IndustryDescription != "profile contract" || body.Workbench.Profile.NeedsBlockersFollowup != "follow up" {
 		t.Fatalf("sidebar bootstrap=%+v", body)
 	}
 	writes, reads := provider.Counts()
