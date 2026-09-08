@@ -107,8 +107,8 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	// of a generic DOM timeout after the browser starts.
 	outerSidebar := httptest.NewRecorder()
 	application.handler.ServeHTTP(outerSidebar, httptest.NewRequest(http.MethodGet, "/sidebar/bind-mobile", nil))
-	if outerSidebar.Code != http.StatusOK || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarStandardOverlay-`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js`)) {
-		t.Fatalf("outer composed sidebar status=%d sidebar_host=%t standard_overlay=%t tabs=%t jssdk=%t", outerSidebar.Code, bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarStandardOverlay-`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js`)))
+	if outerSidebar.Code != http.StatusOK || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarStandardOverlay-`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarImageResourceLoader-`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)) || !bytes.Contains(outerSidebar.Body.Bytes(), []byte(`https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js`)) {
+		t.Fatalf("outer composed sidebar status=%d sidebar_host=%t standard_overlay=%t image_loader=%t tabs=%t jssdk=%t", outerSidebar.Code, bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarHost-`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarStandardOverlay-`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`/sidebar-assets/sidebarImageResourceLoader-`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`id="tabs"`)), bytes.Contains(outerSidebar.Body.Bytes(), []byte(`https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js`)))
 	}
 	server.Config.Handler = application.handler
 	server.StartTLS()
@@ -175,8 +175,12 @@ func seedSidebarThumbnailChromiumJourney(ctx context.Context, application *compo
 	if _, err = pool.Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, digest, len(content), content); err != nil {
 		return err
 	}
-	_, err = pool.Exec(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,'sidebar-thumbnail.png','sidebar thumbnail','','fixture','sidebar-fixture','image/png',$2,1,1,true,1,1)`, digest, len(content))
-	return err
+	for index := 1; index <= 7; index++ {
+		if _, err = pool.Exec(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'Chromium pagination fixture','Chromium fixture','sidebar-fixture','image/png',$4,1,1,true,1,1)`, digest, fmt.Sprintf("sidebar-thumbnail-%02d.png", index), fmt.Sprintf("Chromium sidebar thumbnail %02d", index), len(content)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func seedSidebarStandardParityChromiumFacts(ctx context.Context, application *composedApplication, productID, serviceProductID int64) error {

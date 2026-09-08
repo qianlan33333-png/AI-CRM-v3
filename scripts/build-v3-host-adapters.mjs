@@ -58,6 +58,20 @@ const metadataFor = (contents) => ({
   gzip_bytes: gzipSync(contents, { level: 9 }).byteLength,
   sha256: crypto.createHash('sha256').update(contents).digest('hex'),
 });
+// Keep the standard renderer's paging helper as an audited byte-for-byte
+// release asset. It owns the established scroll/observer behavior; the V3 Host
+// only supplies the scoped request and thumbnail adapters.
+const imageResourceLoaderSource = 'web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js';
+const imageResourceLoaderPath = path.join(repository, imageResourceLoaderSource);
+const imageResourceLoaderContents = fs.readFileSync(imageResourceLoaderPath);
+const imageResourceLoaderMetadata = metadataFor(imageResourceLoaderContents);
+const expectedImageResourceLoaderSHA256 = '38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d';
+if (imageResourceLoaderMetadata.sha256 !== expectedImageResourceLoaderSHA256) throw new Error('sidebar image resource loader differs from the audited dd8 donor asset');
+const imageResourceLoaderEntry = `assets/sidebarImageResourceLoader-${expectedImageResourceLoaderSHA256.slice(0, 16)}.js`;
+fs.writeFileSync(path.join(dist, imageResourceLoaderEntry), imageResourceLoaderContents);
+manifest.files[imageResourceLoaderEntry] = { ...imageResourceLoaderMetadata, entry_point: imageResourceLoaderSource, imports: [], inputs: [imageResourceLoaderSource] };
+manifest.release_files[imageResourceLoaderEntry] = imageResourceLoaderMetadata;
+manifest.entries.sidebarImageResourceLoader = imageResourceLoaderEntry;
 const entries = new Map();
 for (const [output, metadata] of Object.entries(result.metafile.outputs)) {
   const relative = normalizeOutput(output);
@@ -143,11 +157,13 @@ for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.end
 const sidebarHost = manifest.entries.sidebarHost;
 const sidebarOverlay = manifest.entries.sidebarStandardOverlay;
 const sidebarStyles = manifest.entries.sidebarStandardStyles;
+const sidebarImageResourceLoader = manifest.entries.sidebarImageResourceLoader;
 const weComJSSDK = 'https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js';
-if (typeof sidebarHost !== 'string' || typeof sidebarOverlay !== 'string' || typeof sidebarStyles !== 'string') throw new Error('sidebar Host, overlay, or standard stylesheet is absent from manifest');
+if (typeof sidebarHost !== 'string' || typeof sidebarOverlay !== 'string' || typeof sidebarStyles !== 'string' || typeof sidebarImageResourceLoader !== 'string') throw new Error('sidebar Host, overlay, image loader, or standard stylesheet is absent from manifest');
 if (manifest.files[sidebarHost]?.entry_point !== 'web/v3/sidebar/main.ts') throw new Error('sidebar Host must be the V3 trusted bridge entry');
 if (manifest.files[sidebarOverlay]?.entry_point !== 'web/dist/sidebar/sidebar_workbench_v3_overlay.js') throw new Error('sidebar standard overlay was not generated into the release manifest');
 const sidebarHostScript = `<script type="module" src="../${sidebarHost}"></script>`;
+const imageResourceLoaderScript = `<script src="../${sidebarImageResourceLoader}"></script>`;
 const sidebarStylesheet = `<link rel="stylesheet" href="../${sidebarStyles}">`;
 const sidebarTemplate = fs.readFileSync(path.join(repository, 'internal', 'webshell', 'static', 'sidebar_workbench', 'sidebar_customer_workbench_dd8d60d.html'), 'utf8');
 let sidebarHTML = sidebarTemplate
@@ -156,9 +172,9 @@ let sidebarHTML = sidebarTemplate
   .replace('    data-other-staff-messages-url="/api/sidebar/v2/other-staff-messages"\n', '')
   .replace('    data-workbench-url="/api/sidebar/v2/workbench"\n', `    data-workbench-url="/api/sidebar/v2/workbench"\n    data-overlay-url="../${sidebarOverlay}"\n`)
   .replace('            <div class="meta" id="customer-external-userid"></div>\n', '')
-  .replace('  <script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>\n  <script src="/static/admin_console/image_resource_loader.js?v=resource-governance-v2-pending-retry"></script>\n  <script src="/static/sidebar_workbench/sidebar_workbench.js?v=20260805-context-bootstrap"></script>', `  <script src="${weComJSSDK}"></script>\n  ${sidebarHostScript}`);
+  .replace('  <script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>\n  <script src="/static/admin_console/image_resource_loader.js?v=resource-governance-v2-pending-retry"></script>\n  <script src="/static/sidebar_workbench/sidebar_workbench.js?v=20260805-context-bootstrap"></script>', `  <script src="${weComJSSDK}"></script>\n  ${imageResourceLoaderScript}\n  ${sidebarHostScript}`);
 if (sidebarHTML.includes('other-staff-messages') || sidebarHTML.includes('jweixin-1.6.0.js') || sidebarHTML.includes('sidebar_workbench.js')) throw new Error('standard sidebar overlay retained removed chat or retired runtime');
-if (!sidebarHTML.includes(weComJSSDK) || !sidebarHTML.includes(sidebarHostScript) || !sidebarHTML.includes(sidebarStylesheet) || !sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`)) throw new Error('standard sidebar overlay did not retain V3 bridge, generated renderer, and stylesheet closure');
+if (!sidebarHTML.includes(weComJSSDK) || !sidebarHTML.includes(imageResourceLoaderScript) || !sidebarHTML.includes(sidebarHostScript) || !sidebarHTML.includes(sidebarStylesheet) || !sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`)) throw new Error('standard sidebar overlay did not retain V3 bridge, image loader, generated renderer, and stylesheet closure');
 const sidebarDocument = path.join(dist, 'sidebar', 'index.html');
 fs.writeFileSync(sidebarDocument, sidebarHTML);
 manifest.release_files['sidebar/index.html'] = metadataFor(Buffer.from(sidebarHTML));

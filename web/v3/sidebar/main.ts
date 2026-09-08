@@ -23,7 +23,10 @@ declare global {
   interface Window {
     wx?: WX;
     __AICRMSidebarBridge?: SidebarBridge;
-    ImageResourceLoader?: { loadInto(image: HTMLImageElement, url: string, options?: { signal?: AbortSignal; onState?: (state: string) => void }): Promise<void> };
+    ImageResourceLoader?: {
+      loadInto(image: HTMLImageElement, url: string, options?: { signal?: AbortSignal; onState?: (state: string) => void }): Promise<void>;
+      createPager?: (options: Json) => Json;
+    };
   }
 }
 
@@ -594,6 +597,13 @@ export class SidebarBridge {
     const url = new URL(input, window.location.origin);
     const path = url.pathname;
     if (path.includes("other-staff") || path.includes("chat")) throw failure("聊天能力不属于侧边栏。");
+    if (path === "/api/sidebar/v2/materials" && url.searchParams.has("type")) {
+      const types = url.searchParams.getAll("type");
+      if (types.length !== 1 || types[0] !== "image") throw failure("素材类型不受支持。");
+      // The frozen standard renderer names its image-only tab explicitly. The
+      // V3 endpoint is already image-only and rejects that legacy query key.
+      url.searchParams.delete("type");
+    }
     if (path === "/api/sidebar/v2/workbench") return this.legacyWorkbench();
     if (path === "/api/sidebar/bind-mobile") return this.bindMobile(options);
     if (path === "/api/sidebar/v2/profile" && String(options.method || "GET").toUpperCase() === "PUT") return this.saveProfile(options);
@@ -775,7 +785,15 @@ export class SidebarBridge {
       };
     }
     if (path === "/api/sidebar/v2/materials") {
-      return { materials: (payload.items || []).map((item: Json) => ({ id: item.id, tags: item.tags || [], thumbnail_url: `/api/sidebar/v2/materials/${encodeURIComponent(String(item.id))}/variants/thumb_320` })), total: payload.total || 0, limit: payload.limit, offset: payload.offset, has_more: Boolean(payload.has_more), quick_keywords: [] };
+      const sourceItems = Array.isArray(payload.items) ? payload.items : [];
+      const total = Number(payload.total);
+      const offset = Number(payload.offset);
+      const limit = Number(payload.limit);
+      if (!Number.isSafeInteger(total) || total < 0 || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || sourceItems.length > limit) throw failure("素材分页响应无效。");
+      const materials = sourceItems.map((item: Json) => ({ id: item.id, tags: item.tags || [], thumbnail_url: `/api/sidebar/v2/materials/${encodeURIComponent(String(item.id))}/variants/thumb_320` }));
+      const nextOffset = offset + materials.length;
+      if (!Number.isSafeInteger(nextOffset) || nextOffset < offset) throw failure("素材分页响应无效。");
+      return { materials, total, limit, offset, has_more: materials.length > 0 && nextOffset < total, next_offset: nextOffset, quick_keywords: [] };
     }
     if (path === "/api/sidebar/v2/radar-links") return { items: (payload.items || []).map((item: Json) => ({ title: item.title || item.name, url: item.url, type_label: item.content_type || "追踪链接" })) };
     if (path === "/api/sidebar/v2/coupons") return { ...payload, items: (payload.items || []).map((item: Json) => ({ ...item, discount_label: formatMoney(item.discount_minor, item.currency), products: item.targets || [], claim_ends_at: date(item.claim_ends_at) })) };
@@ -788,7 +806,7 @@ function start(): void {
   if (!root) return;
   const bridge = new SidebarBridge();
   window.__AICRMSidebarBridge = bridge;
-  window.ImageResourceLoader = { loadInto: (image, input, options = {}) => bridge.loadThumbnail(image, input, options) };
+  window.ImageResourceLoader = { ...window.ImageResourceLoader, loadInto: (image, input, options = {}) => bridge.loadThumbnail(image, input, options) };
   const overlay = String(root.dataset.overlayUrl || "").trim();
   if (!overlay) { root.textContent = "侧边栏资源未就绪。"; return; }
   const script = document.createElement("script");

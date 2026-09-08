@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -22,7 +23,7 @@ const stagedManifest = readJSON(stagedManifestPath);
 const entryKeys = [
   'admin', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
-  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles',
+  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {
@@ -72,7 +73,10 @@ const releaseMetadata = (relative) => {
 for (const relative of [...selected, ...groupOpsSupport, ...documents]) {
   const sourcePath = sourceFile(relative);
   if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) fail(`expected source release file is absent: ${relative}`);
-  releaseMetadata(relative);
+  const expected = releaseMetadata(relative);
+  const contents = fs.readFileSync(sourcePath);
+  const actualSHA256 = crypto.createHash("sha256").update(contents).digest("hex");
+  if (expected.bytes !== contents.byteLength || expected.sha256 !== actualSHA256) fail(`source release file differs from declared metadata: ${relative}`);
 }
 for (const relative of [...selected, ...groupOpsSupport].sort()) copyUnchanged(relative);
 for (const relative of documents) copyUnchanged(relative);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -7,6 +8,9 @@ import { execFileSync } from "node:child_process";
 execFileSync(process.execPath, ["scripts/build-sidebar-standard-overlay.mjs"], { stdio: "inherit" });
 const overlay = fs.readFileSync("web/dist/sidebar/sidebar_workbench_v3_overlay.js", "utf8");
 const bridge = fs.readFileSync("web/v3/sidebar/main.ts", "utf8");
+const imageLoader = fs.readFileSync("web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js");
+assert.equal(crypto.createHash("sha256").update(imageLoader).digest("hex"), "38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d", "standard image loader must retain audited dd8 bytes");
+assert.match(imageLoader.toString("utf8"), /createPager:\s*createPager/, "standard image loader must provide the frozen pager");
 
 for (const renderer of ["renderProfile", "renderQuestionnaires", "renderProducts", "renderOrders", "renderCoupons", "renderMaterials", "renderRadarLinks"]) {
   assert.match(overlay, new RegExp(`function ${renderer}\\(`), `${renderer} must remain donor-rendered`);

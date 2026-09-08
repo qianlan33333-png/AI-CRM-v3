@@ -190,6 +190,16 @@ func (testMaterials) ReadSidebarImageForSend(context.Context, int64, time.Time) 
 	return mediaport.SidebarImageSendMaterial{ImageID: 1, MediaID: "media-1", ReadyUntil: time.Now().Add(time.Hour)}, nil
 }
 
+type recordingMaterials struct {
+	testMaterials
+	queries []mediaport.ImageListQuery
+}
+
+func (materials *recordingMaterials) ListImages(_ context.Context, query mediaport.ImageListQuery) (mediaport.ImageListPage, error) {
+	materials.queries = append(materials.queries, query)
+	return mediaport.ImageListPage{Items: []mediaport.ImageListItem{}, Total: 0, Limit: query.Limit, Offset: query.Offset}, nil
+}
+
 type testImageVariants struct {
 	variant mediaport.ImageVariant
 	err     error
@@ -297,6 +307,43 @@ func TestMaterialSendFailsClosedWithoutProviderReadyMediaID(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"capability_not_ready"`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMaterialsUseBoundedV3QueryAndRejectLegacyType(t *testing.T) {
+	materials := &recordingMaterials{}
+	products := testProducts{}
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: materials, MaterialSend: materials, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com", CursorSigningKey: testCursorSigningKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := handler.Routes()
+	request := httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/materials?limit=5&offset=0&q=%E6%B5%B7%E6%8A%A5", nil)
+	request.Header.Set("Authorization", "Bearer signed")
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(materials.queries) != 1 {
+		t.Fatalf("bounded materials status=%d queries=%+v body=%s", response.Code, materials.queries, response.Body.String())
+	}
+	query := materials.queries[0]
+	if query.Limit != 5 || query.Offset != 0 || !query.EnabledOnly || query.Search != "海报" || query.Category != "" || query.Tags != "" || len(query.TagGroups) != 0 || query.OnlyUnlabeled {
+		t.Fatalf("bounded materials query=%+v", query)
+	}
+	for _, path := range []string{
+		"/api/sidebar/v2/materials?type=image&limit=5&offset=0",
+		"/api/sidebar/v2/materials?type=video&limit=5&offset=0",
+		"/api/sidebar/v2/materials?type=image&type=image&limit=5&offset=0",
+	} {
+		request = httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer signed")
+		response = httptest.NewRecorder()
+		routes.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_request"`) {
+			t.Fatalf("legacy materials query path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	if len(materials.queries) != 1 {
+		t.Fatalf("rejected material queries reached owner: %+v", materials.queries)
 	}
 }
 

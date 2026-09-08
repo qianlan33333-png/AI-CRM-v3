@@ -16,7 +16,7 @@ const stagedManifest = readManifest(stage);
 const entryKeys = [
   'admin', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
-  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles',
+  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles',
 ];
 const groupOpsSupport = ['groupops/group_chat_picker.css', 'groupops/group_chat_picker.js', 'groupops/material_picker.css', 'groupops/material_picker.js', 'groupops/send_content_composer.css', 'groupops/send_content_composer.js', 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js'];
 const selected = new Set();
@@ -63,13 +63,16 @@ const sidebarHost = sourceManifest.entries?.sidebarHost;
 const weComJSSDK = 'https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js';
 assert.equal(sourceManifest.files?.[sidebarHost]?.entry_point, 'web/v3/sidebar/main.ts', 'sidebar Host must use the V3 sidebar entry');
 const sidebarOverlay = sourceManifest.entries?.sidebarStandardOverlay;
+const sidebarImageResourceLoader = sourceManifest.entries?.sidebarImageResourceLoader;
 const sidebarStandardStyles = sourceManifest.entries?.sidebarStandardStyles;
 assert.equal(sourceManifest.files?.[sidebarHost]?.entry_point, 'web/v3/sidebar/main.ts', 'sidebar Host must be the V3 trusted bridge entry');
 assert.equal(sourceManifest.files?.[sidebarOverlay]?.entry_point, 'web/dist/sidebar/sidebar_workbench_v3_overlay.js', 'sidebar release manifest must contain the generated dd8 overlay');
+assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.entry_point, 'web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js', 'sidebar release manifest must contain the audited standard image loader');
+assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.sha256, '38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d', 'sidebar image loader must retain its audited dd8 bytes');
 assert.equal(sourceManifest.files?.[sidebarStandardStyles]?.entry_point, 'internal/webshell/static/sidebar_workbench/sidebar_workbench.css', 'sidebar release manifest must contain the standard stylesheet');
 const sidebarHTML = fs.readFileSync(path.join(stage, 'sidebar', 'index.html'), 'utf8');
 const sidebarScripts = [...sidebarHTML.matchAll(/<script(?: type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
-assert.deepEqual(sidebarScripts, [weComJSSDK, `../${sidebarHost}`], 'staged sidebar document must load only the WeCom JSSDK followed by its V3 Host');
+assert.deepEqual(sidebarScripts, [weComJSSDK, `../${sidebarImageResourceLoader}`, `../${sidebarHost}`], 'staged sidebar document must preserve JSSDK, standard image loader, and V3 Host order');
 assert.ok(sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`), 'staged sidebar document must pass the hashed dd8 overlay only to the V3 Host');
 assert.ok(sidebarHTML.includes(`<link rel="stylesheet" href="../${sidebarStandardStyles}">`), 'staged sidebar document must load the hashed standard stylesheet');
 assert.ok(!sidebarHTML.includes('https://res.wx.qq.com/open/js/jweixin-1.6.0.js'), 'staged sidebar document still loads the generic JSSDK that blocks agentConfig');
@@ -101,7 +104,7 @@ try {
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-pr01-effects-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-survey-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   const before = fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json'));
-  for (const [entryKey, label] of [['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarStandardStyles', 'sidebar standard stylesheet']]) {
+  for (const [entryKey, label] of [['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet']]) {
     const missing = sourceManifest.entries?.[entryKey];
     assert.equal(typeof missing, 'string', `${label} entry must be declared before staging`);
     assert.ok(selected.has(missing), `${label} must be included in the staged recursive closure`);
@@ -112,6 +115,12 @@ try {
     assert.ok(fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json')).equals(before), `missing ${label} asset mutated the existing release stage`);
     fs.copyFileSync(path.join(source, missing), path.join(fixtureSource, missing));
   }
+  const loaderPath = path.join(fixtureSource, sidebarImageResourceLoader);
+  fs.appendFileSync(loaderPath, "\n// tampered fixture\n");
+  const tampered = spawnSync(process.execPath, [path.join(repository, 'scripts/stage-new-shell-ui.mjs'), fixtureSource, fixtureStage], { encoding: 'utf8' });
+  assert.notEqual(tampered.status, 0, 'new shell stage accepted a tampered sidebar image loader');
+  assert.match(`${tampered.stdout}\n${tampered.stderr}`, /source release file differs from declared metadata/, 'new shell stage did not report the tampered image loader safely');
+  assert.ok(fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json')).equals(before), 'tampered sidebar image loader mutated the existing release stage');
 } finally {
   fs.rmSync(sandbox, { recursive: true, force: true });
 }

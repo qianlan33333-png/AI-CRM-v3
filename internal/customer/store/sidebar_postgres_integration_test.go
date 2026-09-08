@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -163,6 +164,44 @@ func TestSidebarProfilePostgreSQLAnnotationCASReplayAndFacts(t *testing.T) {
 	fields, ok := facts["changed_fields"].([]any)
 	if !ok || len(fields) != 1 || fields[0] != "industry" {
 		t.Fatalf("changed fields=%#v", facts["changed_fields"])
+	}
+}
+
+func TestSidebarProfilePostgreSQLReceiptReplayCanonicalizesNonNilTimes(t *testing.T) {
+	ctx := context.Background()
+	service, pool, cleanup := newSidebarProfilePostgreSQLService(t, platformaudit.NewPostgreSQLStore())
+	defer cleanup()
+	seedSidebarProfileCustomer(t, ctx, pool, 104, 9)
+
+	lastSyncedAt := time.Date(2026, time.September, 8, 12, 34, 56, 123456000, time.FixedZone("fixture-offset", 8*60*60))
+	if _, err := pool.Native().Exec(ctx, `UPDATE customer_directory_projection SET last_synced_at=$2 WHERE customer_id=$1`, 104, lastSyncedAt); err != nil {
+		t.Fatal(err)
+	}
+	command := profileAnnotationCommand(104, "sidebar-profile-non-nil-time-replay", 0, "非空时间回放")
+	first, err := service.UpdateSidebarProfile(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.UpdateSidebarProfile(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var storedUpdatedAt time.Time
+	if err = pool.Native().QueryRow(ctx, `SELECT GREATEST(d.updated_at,s.updated_at) FROM customer_directory_projection d JOIN customer_sidebar_profiles s USING(customer_id) WHERE d.customer_id=$1`, 104).Scan(&storedUpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if first.LastSyncedAt == nil || replayed.LastSyncedAt == nil || !first.LastSyncedAt.Equal(lastSyncedAt) || !replayed.LastSyncedAt.Equal(lastSyncedAt) {
+		t.Fatalf("last synced first=%v replay=%v want=%v", first.LastSyncedAt, replayed.LastSyncedAt, lastSyncedAt)
+	}
+	if !first.UpdatedAt.Equal(storedUpdatedAt) || !replayed.UpdatedAt.Equal(storedUpdatedAt) {
+		t.Fatalf("updated first=%v replay=%v stored=%v", first.UpdatedAt, replayed.UpdatedAt, storedUpdatedAt)
+	}
+	if first.LastSyncedAt.Location() != time.UTC || replayed.LastSyncedAt.Location() != time.UTC || first.UpdatedAt.Location() != time.UTC || replayed.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("non-canonical locations first_last=%v replay_last=%v first_updated=%v replay_updated=%v", first.LastSyncedAt.Location(), replayed.LastSyncedAt.Location(), first.UpdatedAt.Location(), replayed.UpdatedAt.Location())
+	}
+	if !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("complete replay mismatch replay=%+v first=%+v", replayed, first)
 	}
 }
 

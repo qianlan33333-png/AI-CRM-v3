@@ -900,6 +900,18 @@
       "content_sha256": "eaf724ac7935510015ce7fb4cdd0dc59e4d6b8a06d50195e1c0ac44afc00998d",
       "bytes": 480424,
       "mode": "100644"
+    },
+    {
+      "id": "production-1da6a57139ade71f33de45e818e5e6fb3199f3ea",
+      "library_id": "production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f",
+      "canonical_path": "web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js",
+      "source_path": "aicrm_next/app/admin_console/static/admin_console/image_resource_loader.js",
+      "source_git_blob_sha": "1da6a57139ade71f33de45e818e5e6fb3199f3ea",
+      "content_sha256": "38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d",
+      "bytes": 14096,
+      "mode": "100644",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM.git",
+      "source_commit": "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f"
     }
   ]
 }

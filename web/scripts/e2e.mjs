@@ -26,6 +26,7 @@ const TEST_BUNDLES = {
 };
 const OWNER_HANDOFF_DONOR = fs.readFileSync(path.resolve(ROOT, '../internal/webshell/static/admin_console/owner_migration_dd8d60d.html'), 'utf8');
 const OWNER_HANDOFF_HOST = fs.readFileSync(path.resolve(ROOT, '../internal/webshell/static/admin_console/owner_handoff_host.js'), 'utf8');
+const SIDEBAR_IMAGE_RESOURCE_LOADER = fs.readFileSync(path.resolve(ROOT, '../web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js'), 'utf8');
 
 let pass = 0;
 let fail = 0;
@@ -159,6 +160,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     const bundle = name.startsWith('sidebar') ? TEST_BUNDLES.sidebar : TEST_BUNDLES[name];
     return `<script>${productHttp ? TEST_BUNDLES.productHost : bundle}</script>`;
   });
+  if (rel === 'sidebar/index.html') html = html.replace(/<script src="[^"]*assets\/sidebarImageResourceLoader-[^"]+\.js"><\/script>/, `<script>${SIDEBAR_IMAGE_RESOURCE_LOADER}</script>`);
   // ownerMig's Host is a separately served V3 adapter. Inline the exact built
   // adapter here so this regression executes the frozen donor mount rather
   // than asserting against only the empty Webshell stage.
@@ -3132,11 +3134,13 @@ console.log('sidebar/index.html（dd8 标准 Overlay 与可信 Host）');
   const sidebarHTML = fs.readFileSync(path.join(DIST, 'sidebar/index.html'), 'utf8');
   const sidebarHost = sidebarManifest.entries.sidebarHost;
   const sidebarOverlay = sidebarManifest.entries.sidebarStandardOverlay;
+  const sidebarImageResourceLoader = sidebarManifest.entries.sidebarImageResourceLoader;
   const scripts = [...sidebarHTML.matchAll(/<script(?: type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
   ok('最终 Sidebar 文档以企微 SDK、V3 Host 和哈希 dd8 Overlay 组成单一运行链',
     sidebarManifest.files[sidebarHost]?.entry_point === 'web/v3/sidebar/main.ts' &&
     sidebarManifest.files[sidebarOverlay]?.entry_point === 'web/dist/sidebar/sidebar_workbench_v3_overlay.js' &&
-    JSON.stringify(scripts) === JSON.stringify(['https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js', `../${sidebarHost}`]) &&
+    sidebarManifest.files[sidebarImageResourceLoader]?.entry_point === 'web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js' &&
+    JSON.stringify(scripts) === JSON.stringify(['https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js', `../${sidebarImageResourceLoader}`, `../${sidebarHost}`]) &&
     sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`) &&
     !sidebarHTML.includes('jweixin-1.6.0.js') && !sidebarHTML.includes('sidebar_workbench.js'));
   ok('标准 Overlay 保留六个业务菜单、统一壳和画像首屏，且不含聊天菜单',
@@ -3213,9 +3217,12 @@ for (const [scenario, expected] of [
   click(dom, d.querySelector('[data-material-send]'));
   await sleep(40);
   const image = dom.window.__sidebarTest.wxMessages.find((entry) => entry.payload?.msgtype === 'image');
+  const materialRead = new URL(dom.window.__sidebarTest.materialQueries[0], dom.window.location.origin);
   ok('图片素材经过接受回执后才调用 JSSDK；缩略图保持受 scope 的 blob 加载',
     image?.method === 'sendChatMessage' && image.payload.image?.mediaid === 'media-real-31' &&
-    !!d.querySelector('img[data-material-preview="ready"]'));
+    materialRead.pathname === '/api/sidebar/v2/materials' && !materialRead.searchParams.has('type') &&
+    materialRead.searchParams.get('limit') === '5' && materialRead.searchParams.get('offset') === '0' &&
+    !materialRead.searchParams.has('q') && typeof dom.window.ImageResourceLoader?.createPager === 'function' && !!d.querySelector('img[data-material-preview="ready"]'));
   dom.window.close();
 }
 

@@ -165,7 +165,7 @@ try {
       const status = Number(params.response?.status) || 0;
       if (pathname === "/sidebar/bind-mobile") sidebarCSP = String(params.response?.headers?.["content-security-policy"] || params.response?.headers?.["Content-Security-Policy"] || "");
       if (pathname === "/login" || pathname === "/admin" || pathname === "/admin/customers.html") loginResponses.set(pathname, status);
-      if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/sidebar-assets\/(sidebarHost|sidebarStandardOverlay)-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, status);
+      if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/sidebar-assets\/(sidebarHost|sidebarStandardOverlay|sidebarImageResourceLoader)-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, status);
     } catch (_) {}
   });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin` });
@@ -267,16 +267,25 @@ try {
   await waitFor(cdp, 'document.body.textContent.includes("31日真实服务周期")', "periodic fixture");
   const periodic=await evaluate(cdp, 'document.getElementById("content").textContent');
   if(!periodic.includes("浏览器周期外推商品")||!periodic.includes("生效时间")||!periodic.includes("到期时间")) throw new Error("periodic facts "+periodic);
+  const materialStart = requestRecords.length;
   await evaluate(cdp, "document.querySelector('#tabs button[data-tab=\"materials\"]')?.click(); true");
-  const ready = "(() => { const image=document.querySelector('img[data-material-preview=\"ready\"]'); return Boolean(image && image.src.startsWith('blob:') && image.complete && image.naturalWidth === 1 && image.naturalHeight === 1); })()";
-  try { await waitFor(cdp, ready, "sidebar thumbnail did not load through a blob URL"); }
+  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5', "material first page did not render five standard cards");
+  await evaluate(cdp, '(()=>{const old=document.querySelector(".material-page-sentinel");if(!old)throw new Error("initial material pager missing");old.dataset.preSearchPager="true";const input=document.querySelector("[data-material-search-input]");input.value="Chromium";document.querySelector("[data-material-search-form]").requestSubmit();return true})()');
+  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5&&Boolean(document.querySelector(".material-page-sentinel:not([data-pre-search-pager])"))', "filtered material first page did not replace the standard pager");
+  await cdp.call("Input.dispatchMouseEvent", { type: "mouseWheel", x: 215, y: 820, deltaX: 0, deltaY: 700 });
+  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===7', "standard image loader did not append material offset 5");
+  const materialReads=requestRecords.slice(materialStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/materials").map(r=>new URL(r.url));
+  const filteredReads=materialReads.filter(url=>url.searchParams.get("q")==="Chromium");
+  if(filteredReads.length!==2||filteredReads[0].searchParams.get("offset")!=="0"||filteredReads[1].searchParams.get("offset")!=="5"||filteredReads.some(url=>url.searchParams.get("limit")!=="5"||url.searchParams.has("type"))) throw new Error("material standard pager query "+JSON.stringify(materialReads.map(url=>url.pathname+url.search)));
+  const ready = "(() => { const images=[...document.querySelectorAll('img[data-material-preview=\"ready\"]')]; return images.length===7 && images.every(image => image.src.startsWith('blob:') && image.complete && image.naturalWidth === 1 && image.naturalHeight === 1); })()";
+  try { await waitFor(cdp, ready, "sidebar thumbnails did not load through blob URLs for both standard pages"); }
   catch (_) {
     const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), bootstrap: resources.get("/api/sidebar/v2/bootstrap") || 0, materials: resources.get("/api/sidebar/v2/materials") || 0, thumbnail: [...resources.entries()].some(([path, status]) => /variants\/thumb_320$/.test(path) && status === 200), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
     throw new Error(`sidebar thumbnail did not render: ${diagnostic}`);
   }
   await captureScreenshot(cdp, "materials-430");
   if (!sidebarCSP.includes("img-src 'self' data: blob:")) throw new Error("sidebar CSP did not permit its scoped thumbnail blob URL");
-  if (![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarHost-/.test(pathname) && status === 200) || ![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(pathname) && status === 200) || resources.get("/api/sidebar/v2/bootstrap") !== 200 || resources.get("/api/sidebar/v2/materials") !== 200 || ![...resources.entries()].some(([pathname, status]) => /\/variants\/thumb_320$/.test(pathname) && status === 200)) throw new Error("sidebar Host/standard overlay resources did not use the actual scoped thumbnail route");
+  if (![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarHost-/.test(pathname) && status === 200) || ![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(pathname) && status === 200) || ![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarImageResourceLoader-/.test(pathname) && status === 200) || resources.get("/api/sidebar/v2/bootstrap") !== 200 || resources.get("/api/sidebar/v2/materials") !== 200 || ![...resources.entries()].some(([pathname, status]) => /\/variants\/thumb_320$/.test(pathname) && status === 200)) throw new Error("sidebar Host/standard overlay resources did not use the actual scoped thumbnail route");
   if (requestURLs.slice(successStart).some((url) => /\/(other-staff-messages|chat-activity|chat_activity)(?:[/?]|$)/.test(new URL(url).pathname))) throw new Error("sidebar standard overlay attempted a removed chat route");
   await evaluate(cdp, '(()=>{localStorage.setItem("sidebar_tab","chat_activity");sessionStorage.setItem("sidebar_active_tab","other_staff_messages");return true})()');
   const negativeStart=requestURLs.length;
