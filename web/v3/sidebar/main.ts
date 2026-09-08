@@ -2,6 +2,8 @@
 // V3 production controller's identity, JSSDK, generation, OAuth, and durable
 // send-receipt controls; the overlay can only call this narrow boundary.
 
+import { orderStatusLabel } from "./tabs/local-contract";
+
 type Json = Record<string, any>;
 type RequestOptions = RequestInit & { timeoutMs?: number; retryCount?: number; retryDelayMs?: number };
 
@@ -750,7 +752,7 @@ export class SidebarBridge {
             id: item.merchant_order_no || item.id,
             title: item.items?.[0]?.product_name || "订单",
             amount_label: formatMoney(amount.amount_minor, amount.currency),
-            status_label: item.status,
+            status_label: orderStatusLabel(String(item.status || "")),
             // Snapshot has no paid_at field. Keep creation time truthfully
             // labeled by the renderer rather than presenting it as payment.
             paid_at: item.paid_at ? date(item.paid_at) : "",
