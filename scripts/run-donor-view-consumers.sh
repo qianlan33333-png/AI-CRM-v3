@@ -48,12 +48,15 @@ run_frozen_consumer_gates() {
 }
 
 run_frontend_and_stage_checks() {
-  make radar-check
+  make radar-donor-check
+  bash scripts/check-radar-boundaries.sh
   node scripts/generate-ai-assistant-client.mjs
   npm run typecheck
   npx tsc -p web/v3/tsconfig.json --noEmit
   node scripts/sidebar-wecom-jssdk-contract.mjs
   if [[ "$mode" == check ]]; then npm test; fi
+  # Some frontend journeys install Hosts into dist. Rebuild the inexpensive
+  # raw frontend before staging so the final package cannot contain test edits.
   npm run build
   node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
   node --test internal/webshell/chromium_launch.test.mjs
@@ -90,10 +93,15 @@ build_release_binaries() {
   go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations
 }
 
-case "$mode" in
-  check)
-    run_frozen_consumer_gates
-    run_frontend_and_stage_checks
+# Pure compilation/staging is reusable by CI and deployment. Regression belongs
+# to PR jobs, not the main-to-server path. Structural package checks stay here.
+build_frontend() {
+  node scripts/generate-ai-assistant-client.mjs
+  npm run build
+  node scripts/build-v3-host-adapters.mjs
+}
+
+stage_frontend() {
     mkdir -p release
     node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
     node scripts/test-stage-pr01-effects-ui.mjs
@@ -102,6 +110,31 @@ case "$mode" in
     node scripts/test-stage-survey-ui.mjs web/dist release/web/dist
     node scripts/stage-new-shell-ui.mjs web/dist release/web/dist
     node scripts/test-stage-new-shell-ui.mjs web/dist release/web/dist
+}
+
+case "$mode" in
+  stage)
+    build_frontend
+    stage_frontend
+    ;;
+  release-fast)
+    build_release_binaries
+    build_frontend
+    stage_frontend
+    cp -R migrations deploy release/
+    (
+      cd release
+      LC_ALL=C find . -type f ! -name release-files.sha256 -print0 \
+        | sort -z \
+        | xargs -0 sha256sum > release-files.sha256
+      sha256sum --strict --check release-files.sha256
+    )
+    tar -C release -czf "aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz" .
+    ;;
+  check)
+    run_frozen_consumer_gates
+    run_frontend_and_stage_checks
+    stage_frontend
     scripts/check-install-release-contract.sh
     ;;
   release)
@@ -126,7 +159,7 @@ case "$mode" in
     tar -C release -czf "aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz" .
     ;;
   *)
-    echo "usage: scripts/run-donor-view-consumers.sh check|release" >&2
+    echo "usage: scripts/run-donor-view-consumers.sh check|stage|release|release-fast" >&2
     exit 2
     ;;
 esac

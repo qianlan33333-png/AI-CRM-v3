@@ -2,6 +2,8 @@
 set -euo pipefail
 
 release_sha="${1:-}"
+rollout_mode="${2:-full}"
+[[ "$rollout_mode" == full || "$rollout_mode" == ensure ]] || { echo "invalid HXC rollout mode" >&2; exit 2; }
 runtime_env=/etc/aicrm/aicrm.env
 current_link=/opt/aicrm/current
 rollout_lock=/opt/aicrm/hxc-identity-v2-rollout.lock
@@ -129,6 +131,19 @@ verify_current_published_projection() {
   ((unmatched_count == pending_count + invalid_count)) || return 1
 }
 
+# Routine code releases need effective-state readback, not another inspect/apply
+# cycle. A missing activation or a new rule version still takes the full path.
+verify_existing_rollout() {
+  local response
+  grep -qx 'AICRM_HXC_IDENTITY_WRITE_ENABLED=true' "$runtime_env" || return 1
+  verify_current_published_projection || return 1
+  systemctl is-active --quiet aicrm-effects-worker.service || return 1
+  systemctl is-active --quiet aicrm-hxc-dashboard-refresh.timer || return 1
+  systemctl is-enabled --quiet aicrm-hxc-dashboard-refresh.timer || return 1
+  response="$(curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/readyz 2>/dev/null)" || return 1
+  [[ "$response" == *"\"release_sha\":\"${release_sha}\""* && "$response" == *'"status":"ready"'* ]]
+}
+
 trigger_run() {
   local mode="$1"
   systemctl reset-failed aicrm-hxc-dashboard-rollout.service >/dev/null 2>&1 || true
@@ -140,6 +155,14 @@ for migration in 0063 0064; do
   [[ "$(run_sql "SELECT count(*) FROM platform_schema_migrations WHERE version='${migration}'")" == 1 ]]
 done
 [[ "$(run_sql "SELECT count(*) FROM (SELECT kind,scope_key,normalized_value_digest,normalized_value FROM customer_identities WHERE status='active' GROUP BY kind,scope_key,normalized_value_digest,normalized_value HAVING count(DISTINCT customer_id)>1) duplicate_keys")" == 0 ]]
+
+if [[ "$rollout_mode" == ensure ]] && verify_existing_rollout; then
+  rollout_complete=true
+  unset database_url
+  trap - EXIT
+  echo "HXC current rule already active; effective state verified without replaying rollout"
+  exit 0
+fi
 
 set_write_mode false
 restart_runtime
