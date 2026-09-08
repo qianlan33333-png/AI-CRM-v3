@@ -27,6 +27,28 @@
       ],
       "reason": "Expand the active V3 Config runtime release contract and add the audited legacy-binary recovery operation.",
       "review_reference": "PR #190 Config Center legacy parity review"
+    },
+    {
+      "base_commit": "d59183c7235089c5bd147ed0a6caf0718ec9a8f3",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b7c44469b69cd2212e9d2426b3de8a713ce9a87c8de328b679aa5c8dc4dca12a",
+          "head_sha256": "eaf724ac7935510015ce7fb4cdd0dc59e4d6b8a06d50195e1c0ac44afc00998d"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "b863615c2945ac6d35ab39ec620ba92994a1ac823f5b8725046d094fc3cfbb58",
+          "head_sha256": "a2a71c2c77e426a6519f6696b2e31e9e176a7967999070ce87e3df27d2790259"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "02b1e6ed0805db43f09fcfada5a60635d16e08ad068b047fc7496f3a18107d18",
+          "head_sha256": "b07c0ecf5a9ab3c1346040e0a94bd98ba5e92d93f98e15d69caa5ca73199d01f"
+        }
+      ],
+      "reason": "OperationCycle Runner adds the fenced action-lease renewal API contract while preserving the merged Config Center contract.",
+      "review_reference": "PR #193 OperationCycle Runner closeout review"
     }
   ]
 }

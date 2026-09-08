@@ -20,6 +20,14 @@ import (
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
+func executableDefinition() operationapp.StrategyDefinition {
+	return operationapp.StrategyDefinition{
+		Schedule: "每周一 09:00", IndicatorColor: "#2EA121", PrimaryAction: "start_review",
+		Stages:    []operationapp.StrategyStage{{Key: "review", Label: "复盘", Color: "#2EA121", State: "current"}},
+		Execution: &operationapp.StrategyExecution{Title: "冻结复盘", Objective: "完成冻结复盘", CodexPrompt: "仅处理冻结上下文", RequiredLocalBindings: []string{"weekly.review"}, ResultSchema: map[string]any{"type": "object"}},
+	}
+}
+
 // The cycle domain is local-only: this Journey verifies report persistence,
 // receipt replay/drift, runner lease and terminal evidence on a real PG16
 // schema. No identity, recipient or Provider table is used by the commands.
@@ -47,6 +55,9 @@ func TestPostgreSQLOperationCycleReportToTerminalActionJourney(t *testing.T) {
 	if _, err = service.Report(ctx, report); err != nil {
 		t.Fatalf("report: %v", err)
 	}
+	if _, err = service.UpdateStrategy(ctx, operationapp.UpdateStrategyCommand{StrategyKey: "weekly.review", ExpectedVersion: 1, Title: "每周复盘", Definition: executableDefinition(), IdempotencyKey: "operation-cycle-execution-config", ActorID: "7"}); err != nil {
+		t.Fatalf("configure executable strategy: %v", err)
+	}
 	if _, err = service.Report(ctx, report); err != nil {
 		t.Fatalf("report replay: %v", err)
 	}
@@ -62,7 +73,7 @@ func TestPostgreSQLOperationCycleReportToTerminalActionJourney(t *testing.T) {
 	if _, err = service.Heartbeat(ctx, operationapp.RunnerHeartbeatCommand{RunnerID: "cycle-runner", PrincipalID: "operation-cycle-service", ConnectorVersion: "v1", CodexVersion: "v1", AppServerProtocol: "v1", CompatibilityStatus: "ready", BindingKeys: []string{"weekly.review"}}); err != nil {
 		t.Fatalf("runner heartbeat: %v", err)
 	}
-	start := operationapp.StartCommand{StrategyKey: "weekly.review", RunKey: "weekly.review.001", ActionKey: "review", IdempotencyKey: "operation-cycle-start-key-0001", ActorID: "7"}
+	start := operationapp.StartCommand{StrategyKey: "weekly.review", RunKey: "weekly.review.001", ActionKey: "start_review", IdempotencyKey: "operation-cycle-start-key-0001", ActorID: "7"}
 	queued, err := service.Start(ctx, start)
 	if err != nil || queued["status"] != "queued" {
 		t.Fatalf("queue action=%#v err=%v", queued, err)
@@ -101,8 +112,61 @@ func TestPostgreSQLOperationCycleReportToTerminalActionJourney(t *testing.T) {
 		(SELECT count(*) FROM outbox_events WHERE aggregate_type='operation_cycle')`).Scan(&reports, &actions, &events, &audits, &outbox); err != nil {
 		t.Fatal(err)
 	}
-	if reports != 1 || actions != 1 || events != 3 || audits != 7 || outbox != 7 {
+	if reports != 1 || actions != 1 || events != 3 || audits != 8 || outbox != 8 {
 		t.Fatalf("local facts reports/actions/events/audits/outbox=%d/%d/%d/%d/%d", reports, actions, events, audits, outbox)
+	}
+}
+
+// Runner selection uses the immutable execution's local capabilities. The
+// strategy key identifies business configuration and is deliberately unrelated
+// to a reviewed local binding such as an Excel workspace.
+func TestPostgreSQLOperationCycleStartSelectsRunnerByEveryRequiredBinding(t *testing.T) {
+	native, cleanup := operationCycleIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := operationapp.NewService(uow, NewRepository(), NewEventJournal(), NewEventJournal())
+	strategyKey := "binding.selection.review"
+	runKey := strategyKey + ".001"
+	snapshot := map[string]any{
+		"schema_version": "operation_cycle_snapshot.v1", "strategy_key": strategyKey, "run_key": runKey,
+		"revision": 1, "strategy_version": 1, "status": "active", "title": "binding selection",
+		"name": "binding selection", "cron": "weekly", "dot": "#2EA121", "action": "review", "steps": []any{},
+	}
+	if _, err = service.Report(ctx, operationapp.ReportCommand{Snapshot: snapshot, IdempotencyKey: "binding-selection-report", ReporterID: "cycle-runner", ClientID: "v3-runner"}); err != nil {
+		t.Fatal(err)
+	}
+	definition := executableDefinition()
+	definition.Execution.RequiredLocalBindings = []string{"excel_workspace", "review_templates"}
+	if _, err = service.UpdateStrategy(ctx, operationapp.UpdateStrategyCommand{StrategyKey: strategyKey, ExpectedVersion: 1, Title: "binding selection", Definition: definition, IdempotencyKey: "binding-selection-config", ActorID: "7"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, heartbeat := range []operationapp.RunnerHeartbeatCommand{
+		{RunnerID: "runner-missing-binding", PrincipalID: "operation-cycle-service", ConnectorVersion: "v1", CodexVersion: "v1", AppServerProtocol: "v1", CompatibilityStatus: "ready", BindingKeys: []string{strategyKey, "excel_workspace"}},
+		{RunnerID: "runner-with-bindings", PrincipalID: "operation-cycle-service", ConnectorVersion: "v1", CodexVersion: "v1", AppServerProtocol: "v1", CompatibilityStatus: "ready", BindingKeys: []string{"review_templates", "excel_workspace"}},
+	} {
+		if _, err = service.Heartbeat(ctx, heartbeat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queued, err := service.Start(ctx, operationapp.StartCommand{StrategyKey: strategyKey, RunKey: runKey, ActionKey: "start_review", IdempotencyKey: "binding-selection-start", ActorID: "7"})
+	if err != nil {
+		t.Fatalf("start with exactly one capable runner: %v", err)
+	}
+	if missing, claimErr := service.Claim(ctx, "runner-missing-binding", "operation-cycle-service"); claimErr != nil || missing["claimed"] != false {
+		t.Fatalf("runner missing a frozen binding claimed action: %#v err=%v", missing, claimErr)
+	}
+	claimed, err := service.Claim(ctx, "runner-with-bindings", "operation-cycle-service")
+	if err != nil || claimed["claimed"] != true || claimed["request_id"] != queued["request_id"] {
+		t.Fatalf("runner with all frozen bindings did not receive action: %#v err=%v", claimed, err)
 	}
 }
 
@@ -399,7 +463,7 @@ func operationCycleIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	files := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > "0023_operation_cycle_admin_history.sql" {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > "0023_operation_cycle_admin_history.sql" && entry.Name() != "0104_operation_cycle_action_execution_snapshots.sql" {
 			continue
 		}
 		files = append(files, entry.Name())
@@ -420,5 +484,184 @@ func operationCycleIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		defer cleanupCancel()
 		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
 		admin.Close(cleanupCtx)
+	}
+}
+
+// This verifies the action Owner's restart path with a real PostgreSQL
+// transaction. It never contacts a Codex socket or any business Provider.
+func TestPostgreSQLOperationCycleLeaseRenewalAndExpiredRecoveryAreFenced(t *testing.T) {
+	native, cleanup := operationCycleIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := operationapp.NewService(uow, NewRepository(), NewEventJournal(), NewEventJournal())
+	snapshot := map[string]any{"schema_version": "operation_cycle_snapshot.v1", "strategy_key": "restart.review", "run_key": "restart.review.001", "revision": 1, "strategy_version": 1, "status": "active", "title": "restart", "name": "restart", "cron": "weekly", "dot": "#2EA121", "action": "review", "steps": []any{}}
+	if _, err = service.Report(ctx, operationapp.ReportCommand{Snapshot: snapshot, IdempotencyKey: "restart-report-key", ReporterID: "cycle-runner", ClientID: "v3-runner"}); err != nil {
+		t.Fatal(err)
+	}
+	definition := executableDefinition()
+	definition.Execution.RequiredLocalBindings = []string{"restart.review"}
+	if _, err = service.UpdateStrategy(ctx, operationapp.UpdateStrategyCommand{StrategyKey: "restart.review", ExpectedVersion: 1, Title: "restart", Definition: definition, IdempotencyKey: "restart-execution-config", ActorID: "7"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Heartbeat(ctx, operationapp.RunnerHeartbeatCommand{RunnerID: "restart-runner", PrincipalID: "operation-cycle-service", ConnectorVersion: "v1", CodexVersion: "v1", AppServerProtocol: "v1", CompatibilityStatus: "ready", BindingKeys: []string{"restart.review"}}); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := service.Start(ctx, operationapp.StartCommand{StrategyKey: "restart.review", RunKey: "restart.review.001", ActionKey: "start_review", IdempotencyKey: "restart-start-key", ActorID: "7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.Claim(ctx, "restart-runner", "operation-cycle-service")
+	if err != nil || first["claimed"] != true {
+		t.Fatalf("first claim=%#v err=%v", first, err)
+	}
+	requestID, oldLease := first["request_id"].(string), first["lease_token"].(string)
+	if _, err = service.RecordActionEvent(ctx, operationapp.ActionEventCommand{RequestID: requestID, EventID: "restart-thread", EventType: "thread_bound", LeaseToken: oldLease, ThreadID: "thread-persisted"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.RecordActionEvent(ctx, operationapp.ActionEventCommand{RequestID: requestID, EventID: "restart-turn", EventType: "turn_started", LeaseToken: oldLease, ThreadID: "thread-persisted", TurnID: "turn-persisted"}); err != nil {
+		t.Fatal(err)
+	}
+	if renewed, renewErr := service.RenewActionLease(ctx, operationapp.ActionLeaseRenewalCommand{RequestID: requestID, LeaseToken: oldLease}); renewErr != nil || renewed["request_id"] != requestID {
+		t.Fatalf("renewed=%#v err=%v", renewed, renewErr)
+	}
+	if _, err = native.Exec(ctx, `UPDATE operation_cycle_action_requests SET lease_expires_at=now()-interval '1 second' WHERE request_id=$1`, requestID); err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan map[string]any, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			value, claimErr := service.Claim(ctx, "restart-runner", "operation-cycle-service")
+			results <- value
+			errs <- claimErr
+		}()
+	}
+	var recovered map[string]any
+	for range 2 {
+		value, claimErr := <-results, <-errs
+		if claimErr != nil {
+			t.Fatal(claimErr)
+		}
+		if value["claimed"] == true {
+			if recovered != nil {
+				t.Fatalf("two reclaimers: %#v and %#v", recovered, value)
+			}
+			recovered = value
+		}
+	}
+	if recovered == nil || recovered["recovered"] != true || recovered["status"] != "turn_started" || recovered["thread_id"] != "thread-persisted" || recovered["turn_id"] != "turn-persisted" {
+		t.Fatalf("recovered=%#v queued=%#v", recovered, queued)
+	}
+	newLease := recovered["lease_token"].(string)
+	if newLease == oldLease {
+		t.Fatal("reclaim reused its expired lease token")
+	}
+	if _, err = service.RecordActionEvent(ctx, operationapp.ActionEventCommand{RequestID: requestID, EventID: "old-lease-terminal", EventType: "completed", LeaseToken: oldLease, Result: map[string]any{"outcome": "outcome_unknown"}}); !errors.Is(err, operationapp.ErrLeaseInvalid) {
+		t.Fatalf("old lease result=%v", err)
+	}
+	completed := operationapp.ActionEventCommand{RequestID: requestID, EventID: "restart-completed", EventType: "completed", LeaseToken: newLease, Result: map[string]any{"outcome": "outcome_unknown"}}
+	if _, err = service.RecordActionEvent(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.RecordActionEvent(ctx, completed); err != nil {
+		t.Fatalf("exact event replay=%v", err)
+	}
+	completed.Result = map[string]any{"outcome": "executed"}
+	if _, err = service.RecordActionEvent(ctx, completed); !errors.Is(err, operationapp.ErrConflict) {
+		t.Fatalf("payload drift=%v", err)
+	}
+	terminal, err := service.GetActionResult(ctx, requestID)
+	if err != nil || terminal["status"] != "completed" {
+		t.Fatalf("terminal=%#v err=%v", terminal, err)
+	}
+}
+
+func TestPostgreSQLOperationCycleExecutionSnapshotFreezesVersionsAndBlocksLegacyActions(t *testing.T) {
+	native, cleanup := operationCycleIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := operationapp.NewService(uow, NewRepository(), NewEventJournal(), NewEventJournal())
+	report := func(revision int, title, key string) {
+		snapshot := map[string]any{"schema_version": "operation_cycle_snapshot.v1", "strategy_key": "frozen.review", "run_key": "frozen.review.001", "revision": revision, "strategy_version": revision, "status": "active", "title": title, "name": title, "cron": "weekly", "dot": "#2EA121", "action": "开始复盘", "steps": []any{}}
+		if _, reportErr := service.Report(ctx, operationapp.ReportCommand{Snapshot: snapshot, IdempotencyKey: key, ReporterID: "cycle-runner", ClientID: "v3-runner"}); reportErr != nil {
+			t.Fatal(reportErr)
+		}
+	}
+	report(1, "run one", "frozen-report-one")
+	report(2, "run two", "frozen-report-two")
+	firstDefinition := executableDefinition()
+	firstDefinition.Execution.Title = "frozen v3"
+	firstDefinition.Execution.Objective = "objective from frozen version"
+	firstDefinition.Execution.CodexPrompt = "prompt from frozen version"
+	firstDefinition.Execution.RequiredLocalBindings = []string{"frozen.review"}
+	if _, err = service.UpdateStrategy(ctx, operationapp.UpdateStrategyCommand{StrategyKey: "frozen.review", ExpectedVersion: 2, Title: "configured", Definition: firstDefinition, IdempotencyKey: "frozen-config-v3", ActorID: "7"}); err != nil {
+		t.Fatal(err)
+	}
+	// A later report is live run data. It must not erase the Owner-managed
+	// execution DTO or replace its strategy version with a source snapshot.
+	liveReport := map[string]any{"schema_version": "operation_cycle_snapshot.v1", "strategy_key": "frozen.review", "run_key": "frozen.review.live", "revision": 1, "strategy_version": 99, "status": "active", "title": "source-owned title", "name": "live report", "cron": "weekly", "dot": "#2EA121", "action": "开始复盘", "steps": []any{}}
+	if _, err = service.Report(ctx, operationapp.ReportCommand{Snapshot: liveReport, IdempotencyKey: "frozen-live-report", ReporterID: "cycle-runner", ClientID: "v3-runner"}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := service.GetStrategy(ctx, "frozen.review")
+	if err != nil || persisted["version"] != int32(3) {
+		t.Fatalf("report rewrote configured strategy version: %#v err=%v", persisted, err)
+	}
+	persistedDefinition, definitionOK := persisted["definition"].(map[string]any)
+	persistedExecution, executionOK := persistedDefinition["execution"].(map[string]any)
+	if !definitionOK || !executionOK || persistedExecution["objective"] != "objective from frozen version" {
+		t.Fatalf("report erased configured execution: %#v", persisted)
+	}
+	if _, err = service.Heartbeat(ctx, operationapp.RunnerHeartbeatCommand{RunnerID: "frozen-runner", PrincipalID: "operation-cycle-service", ConnectorVersion: "v1", CodexVersion: "v1", AppServerProtocol: "v1", CompatibilityStatus: "ready", BindingKeys: []string{"frozen.review"}}); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := service.Start(ctx, operationapp.StartCommand{StrategyKey: "frozen.review", RunKey: "frozen.review.001", ActionKey: "start_review", IdempotencyKey: "frozen-start", ActorID: "7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDefinition := firstDefinition
+	secondDefinition.Execution = &operationapp.StrategyExecution{Title: "later v4", Objective: "later objective", CodexPrompt: "later prompt", RequiredLocalBindings: []string{"later.binding"}, ResultSchema: map[string]any{"type": "object"}}
+	if _, err = service.UpdateStrategy(ctx, operationapp.UpdateStrategyCommand{StrategyKey: "frozen.review", ExpectedVersion: 3, Title: "later", Definition: secondDefinition, IdempotencyKey: "frozen-config-v4", ActorID: "7"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := service.Claim(ctx, "frozen-runner", "operation-cycle-service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, ok := claimed["execution"].(map[string]any)
+	contextSummary, contextOK := claimed["context_summary"].(map[string]any)
+	if !ok || !contextOK || execution["objective"] != "objective from frozen version" || execution["codex_prompt"] != "prompt from frozen version" || contextSummary["snapshot_revision"] != float64(2) || claimed["request_id"] != queued["request_id"] {
+		t.Fatalf("claim did not retain immutable execution/run snapshot: %#v", claimed)
+	}
+	if _, err = native.Exec(ctx, `DELETE FROM operation_cycle_action_execution_snapshots WHERE request_id=$1`, queued["request_id"]); err != nil {
+		t.Fatal(err)
+	}
+	// A legacy row must not be rebuilt from the now-current v4 definition. Force
+	// a new fenced claim and require the explicit manual-review block instead.
+	if _, err = native.Exec(ctx, `UPDATE operation_cycle_action_requests SET lease_expires_at=now()-interval '1 second' WHERE request_id=$1`, queued["request_id"]); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := service.Claim(ctx, "frozen-runner", "operation-cycle-service")
+	if err != nil || legacy["recovered"] != true || legacy["blocked_code"] != "missing_execution_snapshot" || legacy["execution"] != nil {
+		t.Fatalf("legacy action was silently rebuilt: %#v err=%v", legacy, err)
 	}
 }

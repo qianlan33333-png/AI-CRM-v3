@@ -17,10 +17,22 @@ type StrategyStage struct {
 }
 
 type StrategyDefinition struct {
-	Schedule       string          `json:"schedule"`
-	IndicatorColor string          `json:"indicator_color"`
-	PrimaryAction  string          `json:"primary_action"`
-	Stages         []StrategyStage `json:"stages"`
+	Schedule       string             `json:"schedule"`
+	IndicatorColor string             `json:"indicator_color"`
+	PrimaryAction  string             `json:"primary_action"`
+	Stages         []StrategyStage    `json:"stages"`
+	Execution      *StrategyExecution `json:"execution,omitempty"`
+}
+
+// StrategyExecution is the Owner-managed task material that may be frozen
+// into a newly created action. It is optional for legacy display-only
+// strategies, but an action cannot start without it.
+type StrategyExecution struct {
+	Title                 string         `json:"title"`
+	Objective             string         `json:"objective"`
+	CodexPrompt           string         `json:"codex_prompt"`
+	RequiredLocalBindings []string       `json:"required_local_bindings"`
+	ResultSchema          map[string]any `json:"result_schema"`
 }
 
 type CreateStrategyCommand struct {
@@ -159,7 +171,31 @@ func validDefinition(definition StrategyDefinition) bool {
 			current++
 		}
 	}
+	if definition.Execution != nil && !validExecution(*definition.Execution) {
+		return false
+	}
 	return current <= 1
+}
+
+func validExecution(value StrategyExecution) bool {
+	if strings.TrimSpace(value.Title) != value.Title || len(value.Title) < 1 || len(value.Title) > 160 ||
+		strings.TrimSpace(value.Objective) != value.Objective || len(value.Objective) < 1 || len(value.Objective) > 2000 ||
+		strings.TrimSpace(value.CodexPrompt) != value.CodexPrompt || len(value.CodexPrompt) < 1 || len(value.CodexPrompt) > 80000 ||
+		len(value.RequiredLocalBindings) < 1 || len(value.RequiredLocalBindings) > 50 || containsForbidden([]any{value.Title, value.Objective, value.CodexPrompt, value.ResultSchema}) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(value.RequiredLocalBindings))
+	for _, key := range value.RequiredLocalBindings {
+		if !validKey(key, 160) {
+			return false
+		}
+		if _, exists := seen[key]; exists {
+			return false
+		}
+		seen[key] = struct{}{}
+	}
+	_, err := Digest(value.ResultSchema)
+	return err == nil
 }
 
 func validColor(value string) bool {

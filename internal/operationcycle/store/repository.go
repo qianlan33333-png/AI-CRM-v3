@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +82,21 @@ func (repository *Repository) Report(ctx context.Context, command operationapp.R
 	if err != nil {
 		return nil, false, operationapp.ErrUnavailable
 	}
+	// A report may advance a display-only strategy. Once an Owner-managed
+	// executable definition exists, however, reports carry live run facts only:
+	// they must not reconstruct the title, lifecycle or task material from a
+	// later source snapshot and erase what Start needs to freeze.
+	recordStrategyVersion := true
+	stored, storedErr := queries.GetOperationCycleStrategy(ctx, strategyKey)
+	if storedErr == nil {
+		var storedDefinition operationapp.StrategyDefinition
+		if json.Unmarshal(stored.Definition, &storedDefinition) == nil && storedDefinition.Execution != nil {
+			title, status, version, definition = stored.Title, stored.Status, stored.Version, stored.Definition
+			recordStrategyVersion = false
+		}
+	} else if !errors.Is(storedErr, pgx.ErrNoRows) {
+		return nil, false, storeError(storedErr)
+	}
 	pgNow := pgTime(now)
 	if err = queries.UpsertOperationCycleStrategy(ctx, operationcycledb.UpsertOperationCycleStrategyParams{
 		StrategyKey: strategyKey, Title: title, Status: status, Version: version,
@@ -96,7 +112,7 @@ func (repository *Repository) Report(ctx context.Context, command operationapp.R
 	if err = refreshCurrentStrategySnapshot(ctx, strategyKey, version); err != nil {
 		return nil, false, err
 	}
-	if err = recordReportHistory(ctx, command.Snapshot, strategyKey, runKey, title, status, version, revision, definition, snapshot, now); err != nil {
+	if err = recordReportHistory(ctx, command.Snapshot, strategyKey, runKey, title, status, version, revision, definition, snapshot, recordStrategyVersion, now); err != nil {
 		return nil, false, err
 	}
 	receiptID, err := operationapp.NewID("ocrep_")
@@ -268,6 +284,21 @@ func (repository *Repository) Start(ctx context.Context, command operationapp.St
 	if strategy.Status != "active" {
 		return nil, false, operationapp.ErrActionUnavailable
 	}
+	// Freeze task material from the immutable strategy version and run revision
+	// before reserving the action. A later admin edit must never rewrite the
+	// work that this request asks Codex to perform.
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	var definitionJSON []byte
+	if err = tx.QueryRow(ctx, `SELECT definition FROM operation_cycle_strategy_versions WHERE strategy_key=$1 AND version=$2`, command.StrategyKey, strategy.Version).Scan(&definitionJSON); err != nil {
+		return nil, false, storeError(err)
+	}
+	var definition operationapp.StrategyDefinition
+	if json.Unmarshal(definitionJSON, &definition) != nil || definition.Execution == nil || command.ActionKey != definition.PrimaryAction {
+		return nil, false, operationapp.ErrActionUnavailable
+	}
 	run, err := queries.GetOperationCycleRun(ctx, command.RunKey)
 	if err != nil {
 		return nil, false, storeError(err)
@@ -275,13 +306,43 @@ func (repository *Repository) Start(ctx context.Context, command operationapp.St
 	if run.StrategyKey != command.StrategyKey {
 		return nil, false, operationapp.ErrConflict
 	}
+	var runSnapshotJSON []byte
+	if err = tx.QueryRow(ctx, `SELECT snapshot FROM operation_cycle_run_versions WHERE run_key=$1 AND snapshot_revision=$2`, command.RunKey, run.SnapshotRevision).Scan(&runSnapshotJSON); err != nil {
+		return nil, false, storeError(err)
+	}
+	var runSnapshot map[string]any
+	if json.Unmarshal(runSnapshotJSON, &runSnapshot) != nil {
+		return nil, false, operationapp.ErrActionUnavailable
+	}
+	contextJSON, err := reportStrategySnapshot(runSnapshot)
+	if err != nil {
+		return nil, false, operationapp.ErrActionUnavailable
+	}
+	var contextSummary map[string]any
+	if json.Unmarshal(contextJSON, &contextSummary) != nil {
+		return nil, false, operationapp.ErrUnavailable
+	}
+	contextSummary["run_key"] = command.RunKey
+	contextSummary["snapshot_revision"] = run.SnapshotRevision
+	execution := map[string]any{"schema_version": "operation_cycle_execution.v1", "strategy_key": command.StrategyKey, "strategy_version": strategy.Version, "action_key": command.ActionKey, "title": definition.Execution.Title, "objective": definition.Execution.Objective, "codex_prompt": definition.Execution.CodexPrompt, "required_local_bindings": definition.Execution.RequiredLocalBindings, "result_schema": definition.Execution.ResultSchema}
+	executionDigest, err := operationapp.Digest(execution)
+	if err != nil {
+		return nil, false, operationapp.ErrInvalid
+	}
+	contextDigest, err := operationapp.Digest(contextSummary)
+	if err != nil {
+		return nil, false, operationapp.ErrInvalid
+	}
 	runners, err := queries.ListFreshOperationCycleRunners(ctx, pgTime(now.Add(-operationapp.RunnerOfflineAfter)))
 	if err != nil {
 		return nil, false, storeError(err)
 	}
 	matchedRunners := make([]operationcycledb.OperationCycleRunner, 0, len(runners))
 	for _, runner := range runners {
-		if runnerMatchesStrategy(runner.BindingKeys, command.StrategyKey) {
+		// A runner is eligible only when its heartbeat advertises every
+		// frozen execution binding. The strategy key is business identity,
+		// not a local workspace capability, so it must not select a runner.
+		if runnerHasRequiredBindings(runner.BindingKeys, definition.Execution.RequiredLocalBindings) {
 			matchedRunners = append(matchedRunners, runner)
 		}
 	}
@@ -294,7 +355,7 @@ func (repository *Repository) Start(ctx context.Context, command operationapp.St
 	}
 	reserved, err := queries.ReserveOperationCycleAction(ctx, operationcycledb.ReserveOperationCycleActionParams{
 		RequestID: requestID, StrategyKey: command.StrategyKey, RunKey: command.RunKey, ActionKey: command.ActionKey,
-		ActionTitle: command.ActionKey, StrategyVersion: strategy.Version, RunnerID: matchedRunners[0].RunnerID,
+		ActionTitle: definition.Execution.Title, StrategyVersion: strategy.Version, RunnerID: matchedRunners[0].RunnerID,
 		Column8: command.ParentRequest, CreatedBy: command.ActorID, CreatedAt: pgTime(now), IdempotencyKeyDigest: keyDigest[:],
 	})
 	if err != nil {
@@ -302,6 +363,19 @@ func (repository *Repository) Start(ctx context.Context, command operationapp.St
 	}
 	if !reserved.Inserted && !sameActionCommand(reserved.StrategyKey, reserved.RunKey, reserved.ActionKey, pgTextValue(reserved.ParentRequestID), reserved.CreatedBy, command) {
 		return nil, false, operationapp.ErrConflict
+	}
+	if reserved.Inserted {
+		executionJSON, marshalErr := json.Marshal(execution)
+		if marshalErr != nil {
+			return nil, false, operationapp.ErrInvalid
+		}
+		contextStoredJSON, marshalErr := json.Marshal(contextSummary)
+		if marshalErr != nil {
+			return nil, false, operationapp.ErrInvalid
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO operation_cycle_action_execution_snapshots(request_id,execution,context_summary,execution_hash,context_hash,created_at) VALUES($1,$2,$3,$4,$5,$6)`, reserved.RequestID, executionJSON, contextStoredJSON, executionDigest[:], contextDigest[:], now); err != nil {
+			return nil, false, storeError(err)
+		}
 	}
 	return actionResult(reserved), !reserved.Inserted, nil
 }
@@ -354,6 +428,50 @@ func (repository *Repository) Claim(ctx context.Context, runnerID, principalID s
 	if runner.PrincipalID != principalID || runner.CompatibilityStatus != "ready" || !runner.LastHeartbeatAt.Valid || runner.LastHeartbeatAt.Time.Before(now.Add(-operationapp.RunnerOfflineAfter)) {
 		return nil, false, operationapp.ErrActionUnavailable
 	}
+	leaseToken, err := operationapp.NewID("lease_")
+	if err != nil {
+		return nil, false, operationapp.ErrUnavailable
+	}
+	leaseDigest := sha256.Sum256([]byte(leaseToken))
+	leaseExpiresAt := now.Add(lease)
+
+	// A restarted runner must continue an existing Codex thread/turn. Reclaim
+	// only its own expired active action, under the row lock, before taking a
+	// new queued action. A live lease is never displaced.
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	var reclaimedID string
+	err = tx.QueryRow(ctx, `WITH candidate AS (
+		SELECT request_id FROM operation_cycle_action_requests
+		WHERE runner_id=$1 AND status IN ('claimed','thread_bound','turn_started')
+		  AND lease_expires_at IS NOT NULL AND lease_expires_at <= $2
+		ORDER BY updated_at, request_id LIMIT 1 FOR UPDATE SKIP LOCKED
+	)
+	UPDATE operation_cycle_action_requests AS action
+	SET lease_token_hash=$3, lease_expires_at=$4, updated_at=$2
+	FROM candidate WHERE action.request_id=candidate.request_id
+	RETURNING action.request_id`, runnerID, now, leaseDigest[:], leaseExpiresAt).Scan(&reclaimedID)
+	if err == nil {
+		action, getErr := queries.GetOperationCycleAction(ctx, reclaimedID)
+		if getErr != nil {
+			return nil, false, storeError(getErr)
+		}
+		result, snapshotErr := actionClaimResult(ctx, action.RequestID, actionResult(action))
+		if snapshotErr != nil {
+			return nil, false, snapshotErr
+		}
+		result["lease_token"] = leaseToken
+		result["lease_expires_at"] = leaseExpiresAt.UTC().Format(time.RFC3339Nano)
+		result["claimed"] = true
+		result["recovered"] = true
+		return result, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, storeError(err)
+	}
+
 	action, err := queries.GetQueuedOperationCycleActionForRunner(ctx, runnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return map[string]any{"claimed": false}, false, nil
@@ -361,13 +479,8 @@ func (repository *Repository) Claim(ctx context.Context, runnerID, principalID s
 	if err != nil {
 		return nil, false, storeError(err)
 	}
-	leaseToken, err := operationapp.NewID("lease_")
-	if err != nil {
-		return nil, false, operationapp.ErrUnavailable
-	}
-	leaseDigest := sha256.Sum256([]byte(leaseToken))
 	updated, err := queries.ClaimOperationCycleAction(ctx, operationcycledb.ClaimOperationCycleActionParams{
-		RequestID: action.RequestID, LeaseTokenHash: leaseDigest[:], LeaseExpiresAt: pgTime(now.Add(lease)), UpdatedAt: pgTime(now),
+		RequestID: action.RequestID, LeaseTokenHash: leaseDigest[:], LeaseExpiresAt: pgTime(leaseExpiresAt), UpdatedAt: pgTime(now),
 	})
 	if err != nil {
 		return nil, false, storeError(err)
@@ -375,12 +488,70 @@ func (repository *Repository) Claim(ctx context.Context, runnerID, principalID s
 	if updated != 1 {
 		return map[string]any{"claimed": false}, false, nil
 	}
-	result := actionResult(action)
+	result, snapshotErr := actionClaimResult(ctx, action.RequestID, actionResult(action))
+	if snapshotErr != nil {
+		return nil, false, snapshotErr
+	}
 	result["status"] = "claimed"
 	result["lease_token"] = leaseToken
-	result["lease_expires_at"] = now.Add(lease).UTC().Format(time.RFC3339Nano)
+	result["lease_expires_at"] = leaseExpiresAt.UTC().Format(time.RFC3339Nano)
 	result["claimed"] = true
 	return result, true, nil
+}
+
+// actionClaimResult supplies the only execution material a local runner may
+// use. It is read from the action's immutable snapshot, never reconstructed
+// from the current strategy or run. Pre-0104 actions intentionally remain
+// claimable only so the runner can record a visible manual-review stop fact.
+func actionClaimResult(ctx context.Context, requestID string, result map[string]any) (map[string]any, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	var executionJSON, contextJSON, executionHash, contextHash []byte
+	err = tx.QueryRow(ctx, `SELECT execution,context_summary,execution_hash,context_hash
+		FROM operation_cycle_action_execution_snapshots WHERE request_id=$1`, requestID).Scan(&executionJSON, &contextJSON, &executionHash, &contextHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		result["blocked_code"] = "missing_execution_snapshot"
+		return result, nil
+	}
+	if err != nil {
+		return nil, storeError(err)
+	}
+	var execution, contextSummary map[string]any
+	if json.Unmarshal(executionJSON, &execution) != nil || json.Unmarshal(contextJSON, &contextSummary) != nil || len(executionHash) != sha256.Size || len(contextHash) != sha256.Size {
+		return nil, operationapp.ErrUnavailable
+	}
+	result["execution"] = execution
+	result["context_summary"] = contextSummary
+	result["execution_hash"] = hex.EncodeToString(executionHash)
+	result["context_hash"] = hex.EncodeToString(contextHash)
+	return result, nil
+}
+
+func (repository *Repository) RenewActionLease(ctx context.Context, command operationapp.ActionLeaseRenewalCommand, now time.Time, lease time.Duration) (map[string]any, error) {
+	if lease <= 0 {
+		return nil, operationapp.ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	digest := sha256.Sum256([]byte(command.LeaseToken))
+	expiresAt := now.Add(lease)
+	var requestID string
+	err = tx.QueryRow(ctx, `UPDATE operation_cycle_action_requests
+		SET lease_expires_at=$3, updated_at=$2
+		WHERE request_id=$1 AND status IN ('claimed','thread_bound','turn_started')
+		  AND lease_token_hash=$4 AND lease_expires_at > $2
+		RETURNING request_id`, command.RequestID, now, expiresAt, digest[:]).Scan(&requestID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, operationapp.ErrLeaseInvalid
+	}
+	if err != nil {
+		return nil, storeError(err)
+	}
+	return map[string]any{"request_id": requestID, "lease_expires_at": expiresAt.UTC().Format(time.RFC3339Nano)}, nil
 }
 
 func (repository *Repository) RecordActionEvent(ctx context.Context, command operationapp.ActionEventCommand, now time.Time) (map[string]any, bool, error) {
@@ -615,31 +786,33 @@ func operationCycleQueries(ctx context.Context) (*operationcycledb.Queries, erro
 	return operationcycledb.New(tx), nil
 }
 
-func recordReportHistory(ctx context.Context, report map[string]any, strategyKey, runKey, title, status string, version, revision int32, definition, snapshot []byte, now time.Time) error {
+func recordReportHistory(ctx context.Context, report map[string]any, strategyKey, runKey, title, status string, version, revision int32, definition, snapshot []byte, recordStrategyVersion bool, now time.Time) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return storeError(err)
 	}
-	strategySnapshot, err := reportStrategySnapshot(report)
-	if err != nil {
-		return operationapp.ErrInvalid
-	}
-	inserted, err := tx.Exec(ctx, `INSERT INTO operation_cycle_strategy_versions(strategy_key,version,title,status,definition,snapshot,created_by,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,'runner-report',$7) ON CONFLICT DO NOTHING`, strategyKey, version, title, status, definition, strategySnapshot, now)
-	if err != nil {
-		return storeError(err)
-	}
-	if inserted.RowsAffected() == 0 {
-		var storedTitle, storedStatus string
-		var storedDefinition, storedSnapshot []byte
-		if err = tx.QueryRow(ctx, `SELECT title,status,definition,snapshot FROM operation_cycle_strategy_versions WHERE strategy_key=$1 AND version=$2`, strategyKey, version).Scan(&storedTitle, &storedStatus, &storedDefinition, &storedSnapshot); err != nil {
+	if recordStrategyVersion {
+		strategySnapshot, err := reportStrategySnapshot(report)
+		if err != nil {
+			return operationapp.ErrInvalid
+		}
+		inserted, err := tx.Exec(ctx, `INSERT INTO operation_cycle_strategy_versions(strategy_key,version,title,status,definition,snapshot,created_by,created_at)
+			VALUES($1,$2,$3,$4,$5,$6,'runner-report',$7) ON CONFLICT DO NOTHING`, strategyKey, version, title, status, definition, strategySnapshot, now)
+		if err != nil {
 			return storeError(err)
 		}
-		if storedTitle != title || storedStatus != status || !jsonEqual(storedDefinition, definition) || !jsonEqual(storedSnapshot, strategySnapshot) {
-			return operationapp.ErrConflict
+		if inserted.RowsAffected() == 0 {
+			var storedTitle, storedStatus string
+			var storedDefinition, storedSnapshot []byte
+			if err = tx.QueryRow(ctx, `SELECT title,status,definition,snapshot FROM operation_cycle_strategy_versions WHERE strategy_key=$1 AND version=$2`, strategyKey, version).Scan(&storedTitle, &storedStatus, &storedDefinition, &storedSnapshot); err != nil {
+				return storeError(err)
+			}
+			if storedTitle != title || storedStatus != status || !jsonEqual(storedDefinition, definition) || !jsonEqual(storedSnapshot, strategySnapshot) {
+				return operationapp.ErrConflict
+			}
 		}
 	}
-	inserted, err = tx.Exec(ctx, `INSERT INTO operation_cycle_run_versions(run_key,snapshot_revision,strategy_key,snapshot,received_at)
+	inserted, err := tx.Exec(ctx, `INSERT INTO operation_cycle_run_versions(run_key,snapshot_revision,strategy_key,snapshot,received_at)
 		VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, runKey, revision, strategyKey, snapshot, now)
 	if err != nil {
 		return storeError(err)
@@ -716,17 +889,21 @@ func validActionTransition(current, next string) bool {
 	}
 }
 
-func runnerMatchesStrategy(bindingKeys []byte, strategyKey string) bool {
+func runnerHasRequiredBindings(bindingKeys []byte, required []string) bool {
 	var bindings []string
 	if json.Unmarshal(bindingKeys, &bindings) != nil {
 		return false
 	}
+	available := make(map[string]struct{}, len(bindings))
 	for _, binding := range bindings {
-		if binding == strategyKey {
-			return true
+		available[binding] = struct{}{}
+	}
+	for _, binding := range required {
+		if _, ok := available[binding]; !ok {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func receiptResult(strategyKey, runKey string, revision int32, projectionMade bool) map[string]any {

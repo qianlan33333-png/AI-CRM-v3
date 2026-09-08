@@ -66,6 +66,11 @@ type ActionEventCommand struct {
 	FailureCode string
 }
 
+type ActionLeaseRenewalCommand struct {
+	RequestID  string
+	LeaseToken string
+}
+
 type RunnerHeartbeatCommand struct {
 	RunnerID            string
 	ConnectorVersion    string
@@ -96,6 +101,7 @@ type Store interface {
 	GetActionResult(context.Context, string) (map[string]any, error)
 	Claim(context.Context, string, string, time.Time, time.Duration) (map[string]any, bool, error)
 	RecordActionEvent(context.Context, ActionEventCommand, time.Time) (map[string]any, bool, error)
+	RenewActionLease(context.Context, ActionLeaseRenewalCommand, time.Time, time.Duration) (map[string]any, error)
 	Heartbeat(context.Context, RunnerHeartbeatCommand, time.Time) (map[string]any, error)
 	ContextIndex(context.Context, int32, int32) (map[string]any, error)
 	StrategyContext(context.Context, string, string, int32, int32, map[string]string) (map[string]any, error)
@@ -220,7 +226,20 @@ func (s *Service) Claim(ctx context.Context, runnerID, principalID string) (map[
 		if err != nil || !claimed {
 			return err
 		}
-		return s.append(txCtx, "operation_cycle.action_claimed", resultString(result, "request_id"), result)
+		// A recovery issues another fenced lease for the same request. The
+		// audit/outbox key therefore includes a digest of that transient lease,
+		// while the raw token never enters the persisted local fact.
+		leaseDigest, digestErr := Digest(resultString(result, "lease_token"))
+		if digestErr != nil {
+			return ErrUnavailable
+		}
+		fact := make(map[string]any, len(result))
+		for key, value := range result {
+			if key != "lease_token" {
+				fact[key] = value
+			}
+		}
+		return s.append(txCtx, "operation_cycle.action_claimed", resultString(result, "request_id")+":"+hex.EncodeToString(leaseDigest[:8]), fact)
 	})
 	return result, err
 }
@@ -240,6 +259,19 @@ func (s *Service) RecordActionEvent(ctx context.Context, command ActionEventComm
 	})
 	return result, err
 }
+func (s *Service) RenewActionLease(ctx context.Context, command ActionLeaseRenewalCommand) (map[string]any, error) {
+	if s == nil || s.uow == nil || s.store == nil || !validActionLeaseRenewal(command) {
+		return nil, ErrInvalid
+	}
+	var result map[string]any
+	err := s.uow.Within(ctx, func(txCtx context.Context) error {
+		var err error
+		result, err = s.store.RenewActionLease(txCtx, command, s.now().UTC(), ActionLease)
+		return err
+	})
+	return result, err
+}
+
 func (s *Service) Heartbeat(ctx context.Context, command RunnerHeartbeatCommand) (map[string]any, error) {
 	if s == nil || s.uow == nil || s.store == nil || s.events == nil || s.deliveries == nil || !validHeartbeat(command) {
 		return nil, ErrInvalid
@@ -362,6 +394,10 @@ func validActionEvent(command ActionEventCommand) bool {
 		return false
 	}
 }
+func validActionLeaseRenewal(command ActionLeaseRenewalCommand) bool {
+	return validKey(command.RequestID, 64) && validKey(command.LeaseToken, 200)
+}
+
 func validHeartbeat(command RunnerHeartbeatCommand) bool {
 	return validKey(command.RunnerID, 160) && validKey(command.PrincipalID, 240) && validKey(command.ConnectorVersion, 120) && validKey(command.CodexVersion, 120) && (command.CompatibilityStatus == "ready" || command.CompatibilityStatus == "incompatible" || command.CompatibilityStatus == "unavailable") && len(command.BindingKeys) <= 32
 }

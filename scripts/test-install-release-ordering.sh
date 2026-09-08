@@ -56,6 +56,9 @@ sha_missing_0097=9797979797979797979797979797979797979797
 sha_missing_0098=8282828282828282828282828282828282828282
 sha_missing_0099=8383838383838383838383838383838383838383
 sha_missing_0100=8484848484848484848484848484848484848484
+sha_missing_operation_runner=8585858585858585858585858585858585858585
+sha_missing_operation_result=8686868686868686868686868686868686868686
+sha_tampered_operation_runner=8787878787878787878787878787878787878787
 
 mkdir -p "$test_root/bin" "$test_root/aicrm" "$test_root/etc-aicrm" "$test_root/systemd"
 printf 'AICRM_SURVEY_DATA_KEY=%043d\n' 0 > "$test_root/etc-aicrm/aicrm.env"
@@ -142,10 +145,11 @@ chmod 0755 "$test_root/install-release.sh"
 make_release() {
   local sha="$1"
   local missing_release_file="${2:-}"
+  local tampered_release_file="${3:-}"
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/sidebar" "$release/web/dist/aiassistant" "$release/deploy"
-  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-v2-runtime-config-releases migrate-v2-commerce-external-push-history migrate-open-platform migrate-media-legacy-materials migrate-channel-history migrate-v2-customer-tag-history migrate-radar-v2 migrate-sidebar-history migrate-owner-handoff-history bootstrap-automation-operations; do
+  for binary in aicrm aicrm-operation-cycle-runner aicrm-operation-cycle-result wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-v2-runtime-config-releases migrate-v2-commerce-external-push-history migrate-open-platform migrate-media-legacy-materials migrate-channel-history migrate-v2-customer-tag-history migrate-radar-v2 migrate-sidebar-history migrate-owner-handoff-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -278,6 +282,9 @@ make_release() {
     cd "$release"
     LC_ALL=C find . -type f ! -name release-files.sha256 -print0 | sort -z | xargs -0 sha256sum > release-files.sha256
   )
+  if [[ -n "$tampered_release_file" ]]; then
+    printf 'tampered-after-manifest\n' >> "$release/$tampered_release_file"
+  fi
   tar -C "$release" -czf "$archive" .
   archives+=("$archive")
 }
@@ -299,6 +306,8 @@ run_release() {
 
 for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second" "$sha_recovered" "$sha_orphan_only"; do make_release "$sha"; done
 for missing_release in \
+  "$sha_missing_operation_runner:bin/aicrm-operation-cycle-runner" \
+  "$sha_missing_operation_result:bin/aicrm-operation-cycle-result" \
   "$sha_missing_commerce:bin/migrate-commerce-history" \
   "$sha_missing_archive:bin/migrate-message-archive" \
   "$sha_missing_0066:migrations/0066_channel_welcome_intents.sql" \
@@ -334,6 +343,15 @@ for missing_release in \
   fi
 done
 
+make_release "$sha_tampered_operation_runner" "" "bin/aicrm-operation-cycle-runner"
+if run_release "$sha_tampered_operation_runner" 98 tampered-operation-runner; then
+  fail "installer accepted a release whose OperationCycle runner differed from the manifest"
+fi
+[[ ! -L "$test_root/aicrm/current" ]] || fail "tampered OperationCycle runner activated a release"
+if [[ -f "$test_root/install.log" ]] && grep -Fqx 'migration:tampered-operation-runner' "$test_root/install.log"; then
+  fail "tampered OperationCycle runner ran migrations"
+fi
+
 run_release "$sha_one" 100 initial 1
 [[ "$(<"$test_root/effects-readlink-${sha_one}")" == 2 ]] || fail "effects worker executable readiness was not retried"
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "successful run did not persist its run number"
@@ -360,6 +378,7 @@ if PATH="$test_root/bin:$PATH" \
 fi
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "failed run advanced the deployment marker"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_manual" ]] || fail "failed run did not roll back"
+[[ -x "$test_root/aicrm/current/bin/aicrm-operation-cycle-runner" && -x "$test_root/aicrm/current/bin/aicrm-operation-cycle-result" ]] || fail "rollback did not retain the previous OperationCycle runner artifacts"
 
 PATH="$test_root/bin:$PATH" \
   AICRM_TEST_LOCK_DIR="$test_root/install.lock" \

@@ -99,6 +99,8 @@ else
   trap - EXIT
 fi
 test -x "$release_dir/bin/aicrm"
+test -x "$release_dir/bin/aicrm-operation-cycle-runner"
+test -x "$release_dir/bin/aicrm-operation-cycle-result"
 test -x "$release_dir/bin/wecom-archive-sdk-runner"
 test -x "$release_dir/bin/migrate-platform"
 test -x "$release_dir/bin/migrate-river"

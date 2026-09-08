@@ -41,6 +41,7 @@ func (deliveries *operationCycleTestDeliveries) Accept(_ context.Context, eventI
 
 type operationCycleStoreStub struct {
 	report           func(context.Context, ReportCommand, time.Time) (map[string]any, bool, error)
+	claim            func(context.Context, string, string, time.Time, time.Duration) (map[string]any, bool, error)
 	event            func(context.Context, ActionEventCommand, time.Time) (map[string]any, bool, error)
 	createStrategy   func(context.Context, CreateStrategyCommand, time.Time) (map[string]any, bool, error)
 	updateStrategy   func(context.Context, UpdateStrategyCommand, time.Time) (map[string]any, bool, error)
@@ -82,14 +83,20 @@ func (*operationCycleStoreStub) CurrentAction(context.Context, string) (map[stri
 func (*operationCycleStoreStub) GetActionResult(context.Context, string) (map[string]any, error) {
 	return nil, ErrUnavailable
 }
-func (*operationCycleStoreStub) Claim(context.Context, string, string, time.Time, time.Duration) (map[string]any, bool, error) {
-	return nil, false, ErrUnavailable
+func (stub *operationCycleStoreStub) Claim(ctx context.Context, runnerID, principalID string, now time.Time, lease time.Duration) (map[string]any, bool, error) {
+	if stub.claim == nil {
+		return nil, false, ErrUnavailable
+	}
+	return stub.claim(ctx, runnerID, principalID, now, lease)
 }
 func (stub *operationCycleStoreStub) RecordActionEvent(ctx context.Context, command ActionEventCommand, now time.Time) (map[string]any, bool, error) {
 	if stub.event == nil {
 		return nil, false, ErrUnavailable
 	}
 	return stub.event(ctx, command, now)
+}
+func (*operationCycleStoreStub) RenewActionLease(context.Context, ActionLeaseRenewalCommand, time.Time, time.Duration) (map[string]any, error) {
+	return nil, ErrUnavailable
 }
 func (*operationCycleStoreStub) Heartbeat(context.Context, RunnerHeartbeatCommand, time.Time) (map[string]any, error) {
 	return nil, ErrUnavailable
@@ -327,5 +334,22 @@ func TestAdminAuditKeyIsBoundedScopedAndDoesNotExposeRawIdempotencyKey(t *testin
 	}
 	if key == adminEventKey("operation_cycle.strategy_updated", "7", raw) || key == adminEventKey("operation_cycle.strategy_created", "8", raw) {
 		t.Fatal("admin audit key is not operation/actor scoped")
+	}
+}
+
+func TestClaimFactNeverPersistsRawLeaseToken(t *testing.T) {
+	uow := &operationCycleTestUOW{}
+	events := &operationCycleTestEvents{}
+	service := NewService(uow, &operationCycleStoreStub{claim: func(context.Context, string, string, time.Time, time.Duration) (map[string]any, bool, error) {
+		return map[string]any{"claimed": true, "request_id": "ocact_0123456789012345678901234567", "lease_token": "lease-private-value"}, true, nil
+	}}, events, &operationCycleTestDeliveries{})
+	if _, err := service.Claim(context.Background(), "runner-a", "operation-cycle-service"); err != nil {
+		t.Fatal(err)
+	}
+	if len(events.events) != 1 {
+		t.Fatalf("events=%d", len(events.events))
+	}
+	if bytes.Contains(events.events[0].Payload, []byte("lease-private-value")) {
+		t.Fatalf("lease token leaked into persisted event: %s", events.events[0].Payload)
 	}
 }
