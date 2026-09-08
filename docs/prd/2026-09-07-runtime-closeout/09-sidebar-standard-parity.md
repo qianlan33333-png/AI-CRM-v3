@@ -114,7 +114,7 @@ V3 config 请求与签名按当前完整 URL 去 hash，CorpID/AgentID 从受保
 
 客户端结果判定保留 err_msg/errMsg/error/cancel/timeout 区分，不能复制旧“缺 err_msg 也算成功”的宽松判断。常规反馈如“已提交到当前会话，请在会话中确认”；取消/未确认如实显示。既有证据模型仍区分 client callback、client executed、delivery unknown，诊断不堆在主界面。不自动重发、不调用服务端群发替代。
 
-当前会话分享文档参考：企业微信开发者中心 `/document/path/94797`。本次网页读取返回不可打开，**尚未取得当前分享文档正文，不声称已完成其当前文档复核**。SDK 版本及握手已由上节官方资源字节和实际 VM 合同核准；执行者发布前须补分享协议依据与测试，真实客户端的分享结果另列验收。上述消息载荷已由固定旧源与已有 V3 协议源码核对。
+当前会话分享协议已于 2026-09-08 补核：[企业微信官方文档](https://developer.work.weixin.qq.com/document/path/94797) 的直接 HTML 请求返回 200，正文标注更新日期 2025-04-21。网页提取工具失败后已通过公开页面正文核对，未引用第三方博客替代。官方仍保留 jweixin 调用章节，确认应用身份、当前会话入口限制、news 的 link/title/desc/imgUrl、图片 mediaid 以及明确成功回调字段与本 PR 合同一致；素材须为企微素材。摘要与取回字节哈希见 [官方协议核验](sidebar-evidence/official-sendchat-verification.json)，不提交整页官方正文。本次不切换已正常识别客户的 SDK；该核验不代表真实企微分享或客户送达通过。
 
 ## 8. 验收矩阵与门禁
 

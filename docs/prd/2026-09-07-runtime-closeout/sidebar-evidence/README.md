@@ -32,7 +32,7 @@
 3. old source/industry/industry_description/needs_blockers_followup → 旧 unionid 画像表；V3 Customer SidebarProfileRead/Update 仅目录字段，目录同步会覆写 source，需独立画像业务字段。
 4. old Questionnaire answer query by canonical UnionID → V3 CustomerSurveyAdapter → Survey CustomerHistory/Window；生产同客户记录有无及作用域已单独检查。
 5. old claimable Coupon definitions → V3 CustomerCouponReader 领取记录：确认不是相同读取语义；领取副作用本 PR 不改。
-6. old sendChatMessage news/image、封面与 Media thumbnail → V3 商品/素材会话动作；旧 JS 回调不等于外部送达，SDK官方现文仍待补证。
+6. old sendChatMessage news/image、封面与 Media thumbnail → V3 商品/素材会话动作；旧 JS 回调不等于外部送达，SDK 官方分享协议已由直接公开 HTML 正文补核（见 official-sendchat-verification.json），真实客户端另验。
 7. old order/refund labels、periodic remarks、非聊天 timeline → V3 Order/Entitlement/readers；已按截图完整订单号匹配同一订单，确认 V3 历史记录退款事实缺失，不用前端猜测状态。
 8. V3 chat_activity/other_staff_messages 的 tab 恢复、请求、渲染路径：正式 PRD 要求删除侧边栏完整链，不删 archive owner。
 
@@ -40,7 +40,7 @@
 
 - 本次未逐页运行旧仓全部 781 路由，也未宣称 V3 全仓业务等价。动态注册路由与测试候选仍须对应能力执行任务补运行证据。
 - 截图订单已按完整订单号核准：旧全额退款 9900 分，V3 历史订单 refunded_minor=0。当前证据能确定事实缺口，尚未完成历史导入来源/时间截面追溯；此处不执行数据修复或退款。
-- 官方 SDK 文档网页打开失败，URL仅作后续核查索引；客户端商品分享真实行为尚待协议和受控企微验收。
+- 官方分享文档提取工具失败后，2026-09-08 已直接读取公开 HTML 正文完成协议核对；客户端商品分享真实行为尚待受控企微验收。
 - 不执行历史数据导入；旧 8 份答卷缺失与手机号 verified/declared 来源差异已隔离说明。
 
 ## 可复核文件
