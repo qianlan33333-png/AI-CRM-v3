@@ -111,7 +111,7 @@ def main():
                 and os.environ.get("FORCE_FULL") != "true"):
             try:
                 verified_run = find_verified_run(repo, sha, git("HEAD^{tree}"))
-            except (subprocess.SubprocessError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
+            except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
                 # Do not disclose raw API responses; uncertainty means run tests.
                 print("PR verification unavailable or invalid; running full checks")
         full = verified_run is None

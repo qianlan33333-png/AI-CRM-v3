@@ -57,6 +57,10 @@ runs:
     - name: Prepare non-destructive source views
       shell: bash
       run: |
+        if ! command -v rg >/dev/null; then
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+        fi
         command -v rg
         node scripts/check-donor-source-view-ignore.mjs
         node scripts/prepare-donor-source-views.mjs
