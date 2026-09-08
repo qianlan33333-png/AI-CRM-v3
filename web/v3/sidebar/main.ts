@@ -33,9 +33,9 @@ declare global {
 const SDK_TIMEOUT_MS = 5_000;
 const SDK_CACHE_MAX_MS = 5 * 60 * 1000;
 const SDK_CACHE_SAFETY_MS = 30 * 1000;
-const SDK_CACHE_KEY = "aicrm.sidebar.jssdk.config.v2";
+const SDK_CACHE_KEY = "aicrm.sidebar.jssdk.config.v3";
 const REGULAR_APIS = ["getCurExternalContact", "sendChatMessage"];
-const AGENT_APIS = ["getContext", "getCurExternalContact", "sendChatMessage"];
+const AGENT_APIS = ["getCurExternalContact", "sendChatMessage"];
 
 function failure(message: string, status?: number, payload?: Json): Error & { status?: number; payload?: Json } {
   const error = new Error(message) as Error & { status?: number; payload?: Json };
@@ -322,8 +322,6 @@ export class SidebarBridge {
     this.assertGeneration(generation);
     const wx = window.wx;
     if (!wx || typeof wx.invoke !== "function") throw failure("企微 SDK 未载入，请从企微客户侧边栏重新打开。");
-    await this.invoke("getContext", {});
-    this.assertGeneration(generation);
     const contact = await this.invoke("getCurExternalContact", {});
     this.assertGeneration(generation);
     const externalUserID = oneString(contact, ["external_userid", "externalUserid", "externalUserId", "userId", "user_id"]);

@@ -479,7 +479,7 @@ func (client *Client) sign(signedURL, ticket string) (wecom.JSSDKSignature, erro
 	sum := sha1.Sum([]byte(plain))
 	apis := append([]string(nil), client.config.JSAPIList...)
 	if len(apis) == 0 {
-		apis = []string{"getCurExternalContact"}
+		apis = []string{"getCurExternalContact", "sendChatMessage"}
 	}
 	return wecom.JSSDKSignature{Timestamp: timestamp, NonceStr: nonce, Signature: hex.EncodeToString(sum[:]), JSAPIList: apis}, nil
 }

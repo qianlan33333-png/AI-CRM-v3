@@ -115,8 +115,10 @@ try {
   let jssdkResourceMode = "serve";
   await cdp.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
     const calls = [];
+    const agentAPIs = [];
     let agentCalls = 0;
     Object.defineProperty(globalThis, "__sidebarNativeBridgeCalls", { value: calls, configurable: false });
+    Object.defineProperty(globalThis, "__sidebarAgentAPIs", { value: agentAPIs, configurable: false });
     Object.defineProperty(globalThis, "__sidebarClipboardWrites", { value: [], configurable: false });
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText(value) { globalThis.__sidebarClipboardWrites.push(String(value)); return Promise.resolve(); } } });
     Object.defineProperty(globalThis, "WeixinJSBridge", { configurable: false, value: {
@@ -126,8 +128,10 @@ try {
         if (method === "preVerifyJSAPI" && scenario === "regular_error") return setTimeout(() => callback({ err_msg: "preVerifyJSAPI:fail" }), 0);
         if (method === "agentConfig") {
           agentCalls += 1;
+          agentAPIs.splice(0, agentAPIs.length, ...(Array.isArray(payload?.jsApiList) ? payload.jsApiList : []));
           if (scenario === "agent_error" || (scenario === "agent_retry" && agentCalls === 1)) return setTimeout(() => callback({ err_msg: "agentConfig:fail" }), 0);
         }
+        if (method !== "preVerifyJSAPI" && method !== "agentConfig" && !agentAPIs.includes(method)) return setTimeout(() => callback({ err_msg: method + ":no permission" }), 0);
         if (method === "getCurExternalContact") {
           if (scenario === "contact_error") return setTimeout(() => callback({ err_msg: "getCurExternalContact:fail" }), 0);
           return setTimeout(() => callback({ err_msg: "getCurExternalContact:ok", external_userid: "sidebar-thumbnail-external" }), 0);
@@ -220,7 +224,8 @@ try {
     throw new Error(`sidebar standard overlay did not complete official JSSDK handshake: ${diagnostic}`);
   }
   const successCalls = await bridgeCalls();
-  if (successCalls.join("|") !== "preVerifyJSAPI|agentConfig|getContext|getCurExternalContact" || bootstrapCountSince(successStart) !== 1) throw new Error(`official JSSDK success order mismatch: ${JSON.stringify(successCalls)}`);
+  const successAgentAPIs = JSON.parse(await evaluate(cdp, "JSON.stringify(globalThis.__sidebarAgentAPIs || [])"));
+  if (successCalls.join("|") !== "preVerifyJSAPI|agentConfig|getCurExternalContact" || JSON.stringify(successAgentAPIs) !== JSON.stringify(["getCurExternalContact", "sendChatMessage"]) || bootstrapCountSince(successStart) !== 1) throw new Error(`official JSSDK success order/API mismatch: ${JSON.stringify({ calls: successCalls, agentAPIs: successAgentAPIs })}`);
   for (const width of [320, 375, 430, 768]) {
     await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
     const geometry = JSON.parse(await evaluate(cdp, 'JSON.stringify((()=>{const t=[...document.querySelectorAll("#tabs [data-tab]")],r=t.map(n=>n.getBoundingClientRect());return {v:innerWidth,c:document.documentElement.clientWidth,s:document.documentElement.scrollWidth,n:t.length,rows:new Set(r.map(x=>Math.round(x.top))).size,cols:new Set(r.slice(0,3).map(x=>Math.round(x.left))).size,in:r.every(x=>x.left>=0&&x.right<=innerWidth+.5)}})())'));

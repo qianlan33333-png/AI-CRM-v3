@@ -41,16 +41,16 @@ web/scripts/build.mjs
 | regular 签名 | `GET /api/sidebar/jssdk-config?url=<actual-no-fragment-url>` 的 `config` → `wx.config` → `wx.ready` | `internal/wecom/handler.go`、签名 adapter、OAuth/JSSDK 协议测试 | 不跳过 regular 阶段或把 agent 签名给 regular |
 | agent 签名 | 同一响应 `agent_config` → `wx.agentConfig` | 侧边栏 API adapter 保留双签名；真实 SDK 原码 bridge 合同 | 不在 `wx.ready` 前调用，不拿 regular 签名代替 |
 | OAuth | `/api/sidebar/oauth/start?next=…`，`/api/sidebar/oauth/callback?code=…&state=…` | 当前 Go handler 和协议旅程 | 不要求或传递 `external_userid` 来创建员工 OAuth 会话 |
-| ContextToken / 客户读取 | `getContext` + `getCurExternalContact` 成功后才 bootstrap | 当前 sidebar bootstrap 与 OneID/员工关系验证 | 不以后台 session、URL 值或 HTTP 自报身份替代可信 tuple |
+| ContextToken / 客户读取 | `getCurExternalContact` 成功后才 bootstrap | 当前 sidebar bootstrap 与 OneID/员工关系验证 | 不以后台 session、URL 值或 HTTP 自报身份替代可信 tuple |
 | 兼容 query 候选 | 带 `external_userid` 查询参数可保留既有只读降级入口 | 当前 V3 initialize 与服务端关系校验 | 不把候选参数当已验证客户，也不删除合法本地只读降级 |
 
-SDK 合同的真实 bridge 顺序为 regular `preVerifyJSAPI`、`agentConfig`、`getContext`、`getCurExternalContact`；Windows 还会调用 `wwapp.initWwOpenData`，iOS/Android 还会调用 `getNetworkType`。这些由官方 SDK UA 分支决定，测试只将它们作为资源兼容性证据。
+SDK 合同的真实 bridge 顺序为 regular `preVerifyJSAPI`、`agentConfig`、`getCurExternalContact`；Windows 还会调用 `wwapp.initWwOpenData`，iOS/Android 还会调用 `getNetworkType`。这些由官方 SDK UA 分支决定，测试只将它们作为资源兼容性证据。
 
 ## 修复行为
 
 1. 最终 Host 在 module 之前只插入上述企微专用 SDK；stage 测试检查唯一脚本、顺序、V3 Host entry 与 adapter 闭包。
 2. API adapter 保留 regular 和 agent 两套签名、原始 agent ID 和 exact no-fragment URL。
-3. 初始化遵循 `wx.config -> wx.ready -> wx.agentConfig -> getContext -> getCurExternalContact -> bootstrap`。
+3. 初始化遵循 `wx.config -> wx.ready -> wx.agentConfig -> getCurExternalContact -> bootstrap`。
 4. 同一 URL regular 成功后，显式 agentConfig 失败可只重试 agent；每次重试直接从正式接口取得并校验新的双签名，不依赖 sessionStorage 清除成功，且必须匹配已确认的 corp、agent、URL。regular 成功的全局 SDK 状态不被错误重配；缓存被禁用或抛出 SecurityError 时只退化为网络读取。
 5. regular 或任一 SDK 超时会令当前 document 状态不确定，真实 UI 只提供“重新打开 Sidebar”，不让旧回调跨轮改变状态。正常失败显示单一阶段与真实“重试读取”入口；请求中的“重新读取”也递增初始化代际，迟到外部联系人回调不会发 bootstrap。
 6. 无 query 首访只有 SDK 成功后才读取外部联系人并 bootstrap；401 展示已有 OAuth 入口。带 query 的兼容候选仍可由服务端验证后保留只读 `degraded_ready`，发送保持禁用。
