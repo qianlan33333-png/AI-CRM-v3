@@ -18,7 +18,66 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  check:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version: '24.18.0'}
+      - name: Run shared local and CI fast preflight
+        run: python3 scripts/dev_preflight.py fast --report-dir "$RUNNER_TEMP/preflight/fast"
+      - name: Verify duplicate-source governance gates
+        env:
+          AICRM_DEDUP_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          # Checkout tests GitHub's merge commit: compare that same tree to its
+          # base, including when main has advanced beyond the branch fork.
+          AICRM_DEDUP_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/audit/test_scan_exact_duplicates.py
+          python3 scripts/audit/test_check_new_exact_duplicates.py
+          python3 scripts/audit/test_check_source_authority_changes.py
+          scripts/audit/check-dedup-base-diff.sh .
+      - name: Compile all Go packages and tests before expensive integration
+        run: python3 scripts/dev_preflight.py compile --report-dir "$RUNNER_TEMP/preflight/compile"
+      - name: Upload preflight execution evidence
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: preflight-${{ github.sha }}
+          path: ${{ runner.temp }}/preflight
+          if-no-files-found: warn
+          retention-days: 14
+
+  archive-sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version: '24.18.0'}
+      - name: Verify official WeCom archive SDK ABI in isolation
+        run: scripts/check-wecom-message-archive-sdk.sh
+
+  integration:
+    # Failed prerequisites prevent expensive integration setup.
+    needs: [preflight, archive-sdk]
     runs-on: ubuntu-latest
     # Full PostgreSQL/race/browser verification can approach thirty minutes; keep
     # every gate and give the final race phase a bounded completion margin.
@@ -79,19 +138,6 @@ jobs:
           rg --version
           command -v google-chrome >/dev/null
           google-chrome --version
-      - name: Verify duplicate-source governance gates
-        env:
-          AICRM_DEDUP_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          AICRM_DEDUP_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: |
-          set -euo pipefail
-          python3 scripts/audit/test_scan_exact_duplicates.py
-          python3 scripts/audit/test_check_new_exact_duplicates.py
-          python3 scripts/audit/test_check_source_authority_changes.py
-          scripts/audit/check-dedup-base-diff.sh .
-      - name: Verify official WeCom archive SDK ABI in isolation
-        run: scripts/check-wecom-message-archive-sdk.sh
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build and stage frozen External Effects workspace
@@ -115,7 +161,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v google-chrome
-          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^(TestPostgreSQLSidebarThumbnailChromiumJourney|TestPostgreSQLAdminShellLayoutChromiumJourney)$' ./cmd/aicrm
+          python3 scripts/dev_preflight.py browser --group shell --report-dir "$RUNNER_TEMP/browser-evidence/shell"
       - name: Upload admin shell layout Chromium evidence
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
@@ -145,18 +191,35 @@ jobs:
         run: |
           set -euo pipefail
           command -v google-chrome
-          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^(TestPostgreSQLCustomerTagCommandChromiumJourney|TestPostgreSQLOpenPlatformV1ChromiumJourney|TestPostgreSQLProductExternalPushChromiumJourney)$' ./cmd/aicrm
-      - name: Run owner handoff Chromium journey
-        # This journey covers the frozen legacy page through the v3 Host, CSRF,
-        # PostgreSQL/River, and both local and WeCom transfer modes.
-        env:
-          AICRM_REQUIRE_CHROMIUM_JOURNEY: "1"
-        run: |
-          set -euo pipefail
-          command -v google-chrome
-          scripts/run-go-with-donor-views.sh go test -p 1 -count=1 -run '^TestPostgreSQLOwnerHandoffChromiumJourney$' ./cmd/aicrm
+          python3 scripts/dev_preflight.py browser --group business --report-dir "$RUNNER_TEMP/browser-evidence/business"
+      - name: Upload required browser execution evidence
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: required-browser-tests-${{ github.sha }}
+          path: ${{ runner.temp }}/browser-evidence
+          if-no-files-found: warn
+          retention-days: 14
       - name: Race-check security and identity boundaries
         run: scripts/run-go-with-donor-views.sh go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-v2-commerce-external-push-history ./cmd/migrate-open-platform ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-owner-handoff-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+
+  check:
+    # A skipped job can satisfy branch protection. Keep the original required
+    # name as a fail-closed aggregate, not a potentially skipped dependency.
+    if: always()
+    needs: [preflight, archive-sdk, integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every verification phase to succeed
+        env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          SDK_RESULT: ${{ needs.archive-sdk.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+        run: |
+          test "$PREFLIGHT_RESULT" = success
+          test "$SDK_RESULT" = success
+          test "$INTEGRATION_RESULT" = success
 
   deploy:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
