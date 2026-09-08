@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -83,6 +84,16 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	if err = seedSidebarThumbnailChromiumJourney(ctx, application); err != nil {
 		t.Fatal(err)
 	}
+	if err = seedSidebarBootstrapSurveySubmissions(ctx, application); err != nil {
+		t.Fatal(err)
+	}
+	productID, serviceProductID, _, err := seedProductExternalPushChromiumJourney(ctx, application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = seedSidebarStandardParityChromiumFacts(ctx, application, productID, serviceProductID); err != nil {
+		t.Fatal(err)
+	}
 	// Assert the same outer route Chromium will open. This makes a missing
 	// repository-relative release artifact a deterministic test failure instead
 	// of a generic DOM timeout after the browser starts.
@@ -109,7 +120,7 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 		t.Fatalf("sidebar thumbnail Chromium journey did not report success: %q", output)
 	}
 	writes, businessReads := provider.Counts()
-	if writes != 0 || businessReads != 0 || provider.JSSDKReads() != 3 {
+	if writes != 0 || businessReads != 0 || provider.JSSDKReads() != 4 {
 		t.Fatalf("sidebar handshake writes=%d business_reads=%d jssdk_ticket_reads=%d", writes, businessReads, provider.JSSDKReads())
 	}
 }
@@ -150,4 +161,59 @@ func seedSidebarThumbnailChromiumJourney(ctx context.Context, application *compo
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,'sidebar-thumbnail.png','sidebar thumbnail','','fixture','sidebar-fixture','image/png',$2,1,1,true,1,1)`, digest, len(content))
 	return err
+}
+
+func seedSidebarStandardParityChromiumFacts(ctx context.Context, application *composedApplication, productID, serviceProductID int64) error {
+	pool := application.pool.Native()
+	now := time.Now().UTC().Truncate(time.Second)
+	orderDigest := sha256.Sum256([]byte("sidebar-standard-order"))
+	var orderID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,provider_transaction_no,payer_customer_id,beneficiary_customer_id,amount_minor,refunded_minor,currency,status,record_origin,effect_eligible,source_row_digest,version,created_at,updated_at)
+VALUES('wechat_pay','sidebar-chromium','customer-order','SIDEBAR-ORDER-001','',1,1,9900,9900,'CNY','refunded','history',FALSE,$1,1,$2,$2) RETURNING id`, orderDigest[:], now.Add(-48*time.Hour)).Scan(&orderID); err != nil {
+		return err
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_code,product_name,unit_amount_minor,quantity,line_amount_minor)
+VALUES($1,1,$2,'browser-push-product','浏览器外推商品',9900,1,9900)`, orderID, productID); err != nil {
+		return err
+	}
+	entitlementDigest := sha256.Sum256([]byte("sidebar-standard-entitlement"))
+	if _, err := pool.Exec(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at)
+VALUES('sidebar-chromium','customer-entitlement',1,$1,'浏览器周期外推商品','active',$2,$3,'31日真实服务周期',$4,$2,$2)`, serviceProductID, now.Add(-24*time.Hour), now.AddDate(0, 0, 30), entitlementDigest[:]); err != nil {
+		return err
+	}
+	type couponSeed struct {
+		name, slug    string
+		starts, ends  time.Time
+		limit, issued int
+	}
+	seeds := []couponSeed{
+		{"Chromium可领取券", "chromium-active", now.Add(-time.Hour), now.Add(24 * time.Hour), 2, 0},
+		{"Chromium未开始券", "chromium-future", now.Add(time.Hour), now.Add(24 * time.Hour), 2, 0},
+		{"Chromium已结束券", "chromium-expired", now.Add(-48 * time.Hour), now.Add(-time.Hour), 2, 0},
+		{"Chromium已领完券", "chromium-soldout", now.Add(-time.Hour), now.Add(24 * time.Hour), 2, 2},
+		{"Chromium个人上限券", "chromium-limit", now.Add(-time.Hour), now.Add(24 * time.Hour), 1, 1},
+		{"Chromium无链接券", "", now.Add(-time.Hour), now.Add(24 * time.Hour), 2, 0},
+	}
+	for index, seed := range seeds {
+		var couponID int64
+		var slug any
+		if seed.slug != "" {
+			slug = seed.slug
+		}
+		if err := pool.QueryRow(ctx, `INSERT INTO coupon_rules(name,discount_amount_total,currency,status,total_issue_limit,per_user_issue_limit,issued_count,claim_starts_at,claim_ends_at,validity_mode,relative_validity_days,instructions,created_by,updated_by,created_at,updated_at,public_slug)
+VALUES($1,1000,'CNY','published',$2,$2,$3,$4,$5,'relative_days',30,'Chromium sidebar fixture',1,1,$6,$6,$7) RETURNING id`, seed.name, seed.limit, seed.issued, seed.starts, seed.ends, now.Add(time.Duration(index)*time.Second), slug).Scan(&couponID); err != nil {
+			return err
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO coupon_rule_targets(coupon_id,target_ref,position) VALUES($1,$2,0)`, couponID, fmt.Sprintf("standard_product:%d", productID)); err != nil {
+			return err
+		}
+		if seed.name == "Chromium个人上限券" {
+			claimDigest := sha256.Sum256([]byte(seed.name))
+			if _, err := pool.Exec(ctx, `INSERT INTO coupon_customer_claims(source_system,source_key,customer_id,coupon_id,status,claimed_at,valid_from,valid_until,source_digest,created_at,updated_at)
+VALUES('sidebar-chromium','limit-claim',1,$1,'claimed',$2,$2,$3,$4,$2,$2)`, couponID, now.Add(-time.Minute), now.AddDate(0, 0, 30), claimDigest[:]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

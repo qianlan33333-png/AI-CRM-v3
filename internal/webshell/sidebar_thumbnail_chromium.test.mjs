@@ -110,6 +110,8 @@ try {
     const calls = [];
     let agentCalls = 0;
     Object.defineProperty(globalThis, "__sidebarNativeBridgeCalls", { value: calls, configurable: false });
+    Object.defineProperty(globalThis, "__sidebarClipboardWrites", { value: [], configurable: false });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText(value) { globalThis.__sidebarClipboardWrites.push(String(value)); return Promise.resolve(); } } });
     Object.defineProperty(globalThis, "WeixinJSBridge", { configurable: false, value: {
       invoke(method, payload, callback) {
         calls.push(method);
@@ -144,9 +146,12 @@ try {
     })().catch(() => undefined);
   });
 
-  const resources = new Map(); const requestURLs = []; const exceptions = []; const loginResponses = new Map(); let sidebarCSP = "";
+  const resources = new Map(); const requestURLs = []; const requestRecords = []; const exceptions = []; const loginResponses = new Map(); let sidebarCSP = "";
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
-  cdp.on("Network.requestWillBeSent", (params) => { requestURLs.push(String(params.request?.url || "")); });
+  cdp.on("Network.requestWillBeSent", (params) => {
+    requestURLs.push(String(params.request?.url || ""));
+    requestRecords.push({ url: String(params.request?.url || ""), postData: String(params.request?.postData || "") });
+  });
   cdp.on("Network.responseReceived", (params) => {
     try {
       const pathname = new URL(String(params.response?.url || "")).pathname;
@@ -209,6 +214,49 @@ try {
   }
   const successCalls = await bridgeCalls();
   if (successCalls.join("|") !== "preVerifyJSAPI|agentConfig|getContext|getCurExternalContact" || bootstrapCountSince(successStart) !== 1) throw new Error(`official JSSDK success order mismatch: ${JSON.stringify(successCalls)}`);
+  for (const width of [320, 375, 430, 768]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    const geometry = JSON.parse(await evaluate(cdp, 'JSON.stringify((()=>{const t=[...document.querySelectorAll("#tabs [data-tab]")],r=t.map(n=>n.getBoundingClientRect());return {v:innerWidth,c:document.documentElement.clientWidth,s:document.documentElement.scrollWidth,n:t.length,rows:new Set(r.map(x=>Math.round(x.top))).size,cols:new Set(r.slice(0,3).map(x=>Math.round(x.left))).size,in:r.every(x=>x.left>=0&&x.right<=innerWidth+.5)}})())'));
+    if (geometry.v!==width || geometry.s>geometry.c || geometry.n!==6 || geometry.rows!==2 || geometry.cols!==3 || !geometry.in) throw new Error("geometry "+width+" "+JSON.stringify(geometry));
+  }
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width:430, height:900, deviceScaleFactor:1, mobile:false });
+  const profileStart=requestRecords.length;
+  await evaluate(cdp, '(()=>{const f=document.querySelector("[data-profile-field=source]");f.value="Chromium活动报名";f.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
+  for(let n=0;n<140&&requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile").length<1;n++) await delay(50);
+  let writes=requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile"), body=JSON.parse(writes[0]?.postData||"{}");
+  if(writes.length!==1||body.expected_profile_version!==0||body.source!=="Chromium活动报名") throw new Error("profile CAS 0 "+JSON.stringify(writes));
+  await evaluate(cdp, '(()=>{const f=document.querySelector("[data-profile-field=industry]");f.value="教育";f.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
+  for(let n=0;n<140&&requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile").length<2;n++) await delay(50);
+  writes=requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile");body=JSON.parse(writes[1]?.postData||"{}");
+  if(writes.length!==2||body.expected_profile_version!==1||body.industry!=="教育") throw new Error("profile CAS 1 "+JSON.stringify(writes));
+  const surveyStart=requestRecords.length;
+  await evaluate(cdp, 'document.querySelector("#tabs [data-tab=questionnaires]").click();true');
+  await waitFor(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length===20', "survey page 1");
+  while(await evaluate(cdp, 'Boolean(document.querySelector("[data-load-more-questionnaires]"))')){
+    const before=await evaluate(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length');
+    await evaluate(cdp, 'document.querySelector("[data-load-more-questionnaires]").click();true');
+    await waitFor(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length>'+before, "survey cursor append");
+  }
+  const surveyCount=await evaluate(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length');
+  const surveyReads=requestRecords.slice(surveyStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/questionnaires");
+  if(surveyCount!==102||surveyReads.length!==6||surveyReads.slice(1).some(r=>!new URL(r.url).searchParams.get("cursor"))||surveyReads.some(r=>new URL(r.url).searchParams.has("offset"))) throw new Error("survey 102 cursor "+surveyCount+" "+JSON.stringify(surveyReads));
+  await evaluate(cdp, 'document.querySelector("#tabs [data-tab=coupons]").click();true');
+  await waitFor(cdp, 'document.body.textContent.includes("Chromium无链接券")', "coupon fixtures");
+  const coupons=JSON.parse(await evaluate(cdp, 'JSON.stringify({buttons:[...document.querySelectorAll("[data-copy-url]")].map(b=>({disabled:b.disabled,url:b.dataset.copyUrl,text:b.closest(".card")?.textContent||""})),text:document.body.textContent})'));
+  for(const x of ["可前往领取页确认","未到领取时间","领取已截止","已领完","已达到个人领取上限"]) if(!coupons.text.includes(x)) throw new Error("coupon state "+x);
+  const active=coupons.buttons.find(x=>x.text.includes("Chromium可领取券"));
+  if(!active||active.disabled||!active.url.endsWith("/c/chromium-active")||coupons.buttons.filter(x=>!x.disabled).length!==1) throw new Error("coupon buttons "+JSON.stringify(coupons));
+  await evaluate(cdp, 'document.querySelector("[data-copy-url]:not([disabled])").click();true');
+  await waitFor(cdp, 'globalThis.__sidebarClipboardWrites.length===1', "coupon clipboard");
+  if(await evaluate(cdp, 'globalThis.__sidebarClipboardWrites[0]')!==active.url) throw new Error("coupon URL");
+  await evaluate(cdp, 'document.querySelector("#tabs [data-tab=orders]").click();true');
+  await waitFor(cdp, 'document.body.textContent.includes("SIDEBAR-ORDER-001")', "order fixture");
+  const regular=await evaluate(cdp, 'document.getElementById("content").textContent');
+  if(!regular.includes("¥99.00")||!regular.includes("已退款")||regular.includes("支付时间")) throw new Error("order facts "+regular);
+  await evaluate(cdp, 'document.querySelector("[data-order-type=periodic]").click();true');
+  await waitFor(cdp, 'document.body.textContent.includes("31日真实服务周期")', "periodic fixture");
+  const periodic=await evaluate(cdp, 'document.getElementById("content").textContent');
+  if(!periodic.includes("浏览器周期外推商品")||!periodic.includes("生效时间")||!periodic.includes("到期时间")) throw new Error("periodic facts "+periodic);
   await evaluate(cdp, "document.querySelector('#tabs button[data-tab=\"materials\"]')?.click(); true");
   const ready = "(() => { const image=document.querySelector('img[data-material-preview=\"ready\"]'); return Boolean(image && image.src.startsWith('blob:') && image.complete && image.naturalWidth === 1 && image.naturalHeight === 1); })()";
   try { await waitFor(cdp, ready, "sidebar thumbnail did not load through a blob URL"); }
@@ -219,6 +267,12 @@ try {
   if (!sidebarCSP.includes("img-src 'self' data: blob:")) throw new Error("sidebar CSP did not permit its scoped thumbnail blob URL");
   if (![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarHost-/.test(pathname) && status === 200) || ![...resources.entries()].some(([pathname, status]) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(pathname) && status === 200) || resources.get("/api/sidebar/v2/bootstrap") !== 200 || resources.get("/api/sidebar/v2/materials") !== 200 || ![...resources.entries()].some(([pathname, status]) => /\/variants\/thumb_320$/.test(pathname) && status === 200)) throw new Error("sidebar Host/standard overlay resources did not use the actual scoped thumbnail route");
   if (requestURLs.slice(successStart).some((url) => /\/(other-staff-messages|chat-activity|chat_activity)(?:[/?]|$)/.test(new URL(url).pathname))) throw new Error("sidebar standard overlay attempted a removed chat route");
+  await evaluate(cdp, '(()=>{localStorage.setItem("sidebar_tab","chat_activity");sessionStorage.setItem("sidebar_active_tab","other_staff_messages");return true})()');
+  const negativeStart=requestURLs.length;
+  await cdp.call("Page.navigate",{url:baseURL+"/sidebar/bind-mobile?sidebar_case=success&tab=chat_activity&view=other_staff_messages#other-staff-messages"});
+  await waitFor(cdp, 'Boolean(document.querySelector("#tabs button[data-tab=materials]:not([disabled])"))', "chat deeplink ready");
+  const negative=JSON.parse(await evaluate(cdp, 'JSON.stringify({tabs:[...document.querySelectorAll("#tabs [data-tab]")].map(n=>n.dataset.tab),text:document.body.textContent})'));
+  if(negative.tabs.join("|")!=="profile|questionnaires|products|orders|coupons|materials"||/其他客服聊天|聊天动态/.test(negative.text)||requestURLs.slice(negativeStart).some(url=>{const pathname=new URL(url).pathname;return pathname.includes("other-staff-messages")||pathname.includes("chat-activity")||pathname.includes("chat_activity")})) throw new Error("chat deeplink "+JSON.stringify(negative));
   if (exceptions.length) throw new Error(`sidebar Host emitted runtime exceptions: ${exceptions.join(",")}`);
   console.log("sidebar_thumbnail_chromium: PASS");
 } catch (error) { failed = true; throw error; }
