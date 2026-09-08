@@ -1,0 +1,66 @@
+name: CI toolchain and frozen source views
+description: Install pinned tools and restore lane-specific incremental Go compilation.
+inputs:
+  lane:
+    required: true
+    description: Cache namespace (race, frontend, browser, release, sdk).
+  donors:
+    default: 'true'
+    description: Check out the frozen donor references.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version-file: go.mod
+        cache: false
+    - id: go-paths
+      shell: bash
+      run: |
+        echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+        echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "version=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: |
+          ${{ steps.go-paths.outputs.build }}
+          ${{ steps.go-paths.outputs.modules }}
+        key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-paths.outputs.version }}-${{ inputs.lane }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          go-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-paths.outputs.version }}-${{ inputs.lane }}-${{ hashFiles('go.sum') }}-
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      with:
+        node-version: '24.18.0'
+        cache: npm
+    - name: Install pinned npm and dependencies
+      shell: bash
+      run: |
+        npm install --global npm@11.12.1
+        npm ci --no-audit --no-fund
+        npm run version:check
+    - name: Checkout frozen v2 donor
+      if: inputs.donors == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: qianlan33333-png/AI-CRM-v2
+        ref: 6bfbe5816bb89913c70adaca87d6a486260e016e
+        path: .ci-donor-v2
+        persist-credentials: false
+    - name: Checkout frozen sidebar donor
+      if: inputs.donors == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: qianlan33333-png/AI-CRM
+        ref: dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f
+        path: .ci-donor-sidebar
+        persist-credentials: false
+    - name: Prepare non-destructive source views
+      shell: bash
+      run: |
+        if ! command -v rg >/dev/null; then
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+        fi
+        command -v rg
+        node scripts/check-donor-source-view-ignore.mjs
+        node scripts/prepare-donor-source-views.mjs
