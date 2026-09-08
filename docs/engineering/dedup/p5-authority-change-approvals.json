@@ -2,7 +2,7 @@
   "schema_version": 1,
   "approvals": [
     {
-      "base_commit": "8580f2767eace3ca2a49e30d011a2c62b48a5264",
+      "base_commit": "7085192b0f6510ba71da119ffa2989849066e1cd",
       "changes": [
         {
           "path": "api/openapi.yaml",
