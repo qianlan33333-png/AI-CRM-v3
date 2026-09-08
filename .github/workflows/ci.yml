@@ -245,10 +245,10 @@ jobs:
     if: ${{ !cancelled() && needs.check.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     needs: check
     runs-on: ubuntu-latest
-    # Cross-region upload to the mainland deployment host can exceed 30 minutes.
-    # Keep a bounded 60-minute margin so a slow transfer is not cancelled after
-    # all server-side checks pass.
-    timeout-minutes: 60
+    # Cross-region upload to the mainland deployment host can make steady
+    # progress for longer than 60 minutes. Keep a bounded three-hour ceiling so
+    # that active chunk transfers can finish without weakening per-chunk limits.
+    timeout-minutes: 180
     permissions:
       contents: read
     steps:

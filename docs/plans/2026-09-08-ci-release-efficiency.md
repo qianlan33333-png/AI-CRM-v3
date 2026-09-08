@@ -41,6 +41,10 @@ main checkout, verifies the file manifest and package structure, then uses the
 existing chunk uploader and installer. It does not repeat PR regression, vet,
 typechecks or governance self-tests. Keep host locking, stale release protection,
 migration failure rollback, worker readiness, bootstrap and config activation.
+The deploy job allows up to three hours for a cross-region link that continues
+to upload chunks. Per-chunk timeouts, checksums, installation locking and all
+post-upload health gates remain unchanged, so the larger ceiling does not turn
+a stalled transfer into an unbounded deployment.
 Routine deployment does not invoke HXC business acceptance or automatically
 fall back to inspect/apply/scheduled refresh. Keep the existing HXC source
 configuration step, but run the full rollout only on an explicit manual
