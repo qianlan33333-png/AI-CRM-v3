@@ -94,6 +94,7 @@ wait_for_run() {
     if [[ -n "$record" ]]; then
       IFS='|' read -r status run_source_count run_processed_count run_replay_count run_projection_id run_error_code <<< "$record"
       if [[ "$status" == succeeded ]]; then
+        run_key_for_projection="$run_key"
         return 0
       fi
       if [[ "$status" == failed ]]; then
@@ -105,6 +106,27 @@ wait_for_run() {
   done
   echo "HXC ${mode} timed out" >&2
   return 1
+}
+
+verify_run_projection() {
+  local counts
+  counts="$(run_sql "SELECT v.total_count||'|'||v.matched_count||'|'||v.unmatched_count||'|'||v.conflict_count||'|'||v.matched_by_unionid_count||'|'||v.matched_by_phone_count||'|'||v.matched_by_both_count||'|'||v.pending_observation_count||'|'||v.invalid_identity_count FROM hxc_dashboard_versions v JOIN hxc_dashboard_refresh_runs r ON r.projection_id=v.id WHERE r.run_key='${run_key_for_projection}' AND r.status='succeeded' AND r.source_count=${run_source_count} AND r.projection_id=${run_projection_id} AND v.rule_version='${hxc_projection_rule_version}' AND v.status IN ('published','superseded')")"
+  [[ -n "$counts" ]] || return 1
+  IFS='|' read -r total_count matched_count unmatched_count conflict_count matched_union matched_phone matched_both pending_count invalid_count <<< "$counts"
+  ((total_count == matched_count + unmatched_count + conflict_count)) || return 1
+  ((matched_count == matched_union + matched_phone + matched_both)) || return 1
+  ((unmatched_count == pending_count + invalid_count)) || return 1
+  ((total_count == run_source_count)) || return 1
+}
+
+verify_current_published_projection() {
+  local counts
+  counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE rule_version='${hxc_projection_rule_version}' AND status='published'")"
+  [[ -n "$counts" ]] || return 1
+  IFS='|' read -r total_count matched_count unmatched_count conflict_count matched_union matched_phone matched_both pending_count invalid_count <<< "$counts"
+  ((total_count == matched_count + unmatched_count + conflict_count)) || return 1
+  ((matched_count == matched_union + matched_phone + matched_both)) || return 1
+  ((unmatched_count == pending_count + invalid_count)) || return 1
 }
 
 trigger_run() {
@@ -123,12 +145,7 @@ set_write_mode false
 restart_runtime
 trigger_run inspect
 [[ "$run_source_count" == "$run_processed_count" && "$run_replay_count" == 0 && "$run_projection_id" =~ ^[1-9][0-9]*$ ]]
-inspect_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='${hxc_projection_rule_version}' AND status='published'")"
-IFS='|' read -r total_count matched_count unmatched_count conflict_count matched_union matched_phone matched_both pending_count invalid_count <<< "$inspect_counts"
-((total_count == matched_count + unmatched_count + conflict_count))
-((matched_count == matched_union + matched_phone + matched_both))
-((unmatched_count == pending_count + invalid_count))
-((total_count == run_source_count))
+verify_run_projection
 
 customer_count_before="$(run_sql 'SELECT count(*) FROM customers')"
 subjects_before="$(run_sql 'SELECT count(*) FROM identity_source_subjects')"
@@ -142,12 +159,7 @@ trigger_run apply
 [[ "$run_source_count" == "$run_processed_count" && "$run_replay_count" == "$run_source_count" && "$run_projection_id" =~ ^[1-9][0-9]*$ ]]
 apply_replay_count="$run_replay_count"
 [[ "$(run_sql 'SELECT count(*) FROM customers')" == "$customer_count_before" ]]
-apply_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='${hxc_projection_rule_version}' AND status='published'")"
-IFS='|' read -r total_count matched_count unmatched_count conflict_count matched_union matched_phone matched_both pending_count invalid_count <<< "$apply_counts"
-((total_count == matched_count + unmatched_count + conflict_count))
-((matched_count == matched_union + matched_phone + matched_both))
-((unmatched_count == pending_count + invalid_count))
-((total_count == run_source_count))
+verify_run_projection
 [[ "$(run_sql "SELECT count(*) FROM identity_source_subjects WHERE source_system='hxc' AND status<>'retired'")" == "$run_source_count" ]]
 
 systemctl enable --now aicrm-hxc-dashboard-refresh.timer
@@ -162,13 +174,9 @@ systemctl start aicrm-hxc-dashboard-refresh.service
 wait_for_run apply "$scheduled_key"
 [[ "$run_source_count" == "$run_processed_count" && "$run_replay_count" == "$run_source_count" && "$run_projection_id" =~ ^[1-9][0-9]*$ ]]
 [[ "$(run_sql 'SELECT count(*) FROM customers')" == "$customer_count_before" ]]
-scheduled_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='${hxc_projection_rule_version}' AND status='published'")"
-IFS='|' read -r total_count matched_count unmatched_count conflict_count matched_union matched_phone matched_both pending_count invalid_count <<< "$scheduled_counts"
-((total_count == matched_count + unmatched_count + conflict_count))
-((matched_count == matched_union + matched_phone + matched_both))
-((unmatched_count == pending_count + invalid_count))
-((total_count == run_source_count))
+verify_run_projection
 [[ "$(run_sql "SELECT count(*) FROM identity_source_subjects WHERE source_system='hxc' AND status<>'retired'")" == "$run_source_count" ]]
+verify_current_published_projection
 
 subjects_after="$(run_sql 'SELECT count(*) FROM identity_source_subjects')"
 observations_after="$(run_sql 'SELECT count(*) FROM identity_source_observations')"
