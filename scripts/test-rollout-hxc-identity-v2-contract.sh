@@ -16,11 +16,52 @@ grep -qxF "hxc_projection_rule_version=$rule_version" "$script" || {
   exit 1
 }
 
-rule_predicate="rule_version='\${hxc_projection_rule_version}'"
-[[ "$(grep -cF "$rule_predicate" "$script")" == 3 ]] || {
-  echo 'HXC rollout must use its current rule version for inspect, apply, and scheduled projections' >&2
+rule_predicate="v.rule_version='\${hxc_projection_rule_version}'"
+[[ "$(grep -cF "$rule_predicate" "$script")" == 1 ]] || {
+  echo 'HXC rollout must validate every successful run against its current immutable projection rule' >&2
   exit 1
 }
+grep -qF "v.status IN ('published','superseded')" "$script" || {
+  echo 'HXC rollout must accept a successful run projection superseded by a later successful snapshot' >&2
+  exit 1
+}
+grep -qF "rule_version='\${hxc_projection_rule_version}' AND status='published'" "$script" || {
+  echo 'HXC rollout must independently validate the current published projection' >&2
+  exit 1
+}
+
+# Exercise the production verification function itself with deterministic SQL
+# output. A same-hour scheduled run remains a valid immutable success after a
+# later apply supersedes its projection, and the same stable run key can be
+# checked again. A real count mismatch must still fail closed.
+eval "$(sed -n '/^verify_run_projection() {/,/^}/p' "$script")"
+hxc_projection_rule_version="$rule_version"
+run_key_for_projection='scheduled:2026-09-08T09:hxc-dashboard-v2:apply'
+run_source_count=7
+run_projection_id=52
+mock_projection_status=published
+mock_counts='7|4|2|1|2|1|1|1|1'
+run_sql() {
+  local query="$1"
+  [[ "$query" == *"r.run_key='${run_key_for_projection}'"* ]]
+  [[ "$query" == *"r.source_count=${run_source_count}"* ]]
+  [[ "$query" == *"r.projection_id=${run_projection_id}"* ]]
+  [[ "$query" == *"v.rule_version='${hxc_projection_rule_version}'"* ]]
+  [[ "$query" == *"v.status IN ('published','superseded')"* ]]
+  case "$mock_projection_status" in
+    published|superseded) printf '%s\n' "$mock_counts" ;;
+    *) printf '\n' ;;
+  esac
+}
+verify_run_projection
+mock_projection_status=superseded
+verify_run_projection
+verify_run_projection
+mock_counts='6|4|1|1|2|1|1|1|0'
+if verify_run_projection; then
+  echo 'HXC rollout accepted a successful run whose immutable projection count differs from its source' >&2
+  exit 1
+fi
 
 # The durable trigger keys predate the v3 projection and deliberately retain
 # their v2 namespace. The rollout gate must wait for those exact runtime keys.
