@@ -7,6 +7,7 @@ const baseURL = process.env.AICRM_GROUPOPS_TEST_URL;
 const username = process.env.AICRM_GROUPOPS_TEST_USERNAME;
 const password = process.env.AICRM_GROUPOPS_TEST_PASSWORD;
 const planID = process.env.AICRM_GROUPOPS_TEST_PLAN_ID;
+const replacementStaffID = process.env.AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID;
 if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(planID || "")) throw new Error("Group Ops Chromium journey requires HTTPS URL, credentials, and plan ID");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const browserBinary = () => {
@@ -62,12 +63,12 @@ try {
   if (!persisted) throw new Error("Group Ops node API did not return browser-persisted schedule");
   await evaluate(cdp, "document.querySelector('[data-action=\"switch-detail-panel\"][data-panel=\"basic\"]').click(); document.querySelector('[data-action=\"pick-plan-owner\"]').click(); true");
   await waitFor(cdp, "document.querySelectorAll('[data-operation-member-picker]:not([hidden]) [data-operation-member-row]').length >= 2", "standard owner picker did not load local employees");
-  const ownerChanged = await evaluate(cdp, "(() => { const owner=document.querySelector('[name=\"owner_userid\"]').value; const row=Array.from(document.querySelectorAll('[data-operation-member-picker] [data-operation-member-row]')).find((item)=>item.dataset.userId!==owner); if(!row)return false; row.querySelector('[data-operation-member-row-select]').click(); document.querySelector('[data-operation-member-picker] [data-operation-member-confirm]').click(); return true; })()");
+  const ownerChanged = await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('[data-operation-member-picker] [data-operation-member-row]')).find((item)=>item.dataset.userId===\"chromium-replacement\"); if(!row)return false; row.querySelector('[data-operation-member-row-select]').click(); document.querySelector('[data-operation-member-picker] [data-operation-member-confirm]').click(); return true; })()");
   if (!ownerChanged) throw new Error("standard owner picker had no replacement employee");
-  await waitFor(cdp, "document.querySelector('[name=\"owner_userid\"]').value !== ''", "standard owner picker did not set an owner");
+  await waitFor(cdp, `document.querySelector('[name="owner_userid"]').value === ${JSON.stringify(replacementStaffID)}`, "standard owner picker did not set an owner");
   await evaluate(cdp, "document.querySelector('[data-action=\"save-plan\"]').click(); true");
   await waitFor(cdp, "document.body.textContent.includes('saved') || document.body.textContent.includes('已保存')", "browser owner save did not return persisted detail");
-  const ownerPersisted = await evaluate(cdp, `fetch("/api/admin/automation-conversion/group-ops/plans/${planID}",{credentials:"same-origin"}).then((response)=>response.json()).then((body)=>body.members?.length===1)`);
+  const ownerPersisted = await evaluate(cdp, `fetch("/api/admin/automation-conversion/group-ops/plans/${planID}",{credentials:"same-origin"}).then((response)=>response.json()).then((body)=>body.members?.length===1 && String(body.members[0].staff_id)===${JSON.stringify(replacementStaffID)})`);
   if (!ownerPersisted) throw new Error("Group Ops plan API did not return browser-persisted owner replacement");
   console.log("group_ops_chromium: PASS");
 } catch (error) {
