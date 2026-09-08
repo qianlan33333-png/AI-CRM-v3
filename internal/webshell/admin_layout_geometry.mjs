@@ -582,8 +582,26 @@ try {
   await navigate("/admin/orders", "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "orders", "embedded", embeddedTitle, true, true);
   await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "products", "embedded", frozenListToolbarTitle, true, true);
   await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "service-period-products", "embedded", frozenListToolbarTitle, true, true);
-  await navigate("/admin/productForm.html?id=" + productID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#pfExternalPushEnabled'))", "product", "embedded", embeddedTitle, true);
-  await navigate("/admin/spProductForm.html?id=" + serviceProductID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#spfExternalPushEnabled'))", "service-period-product", "embedded", embeddedTitle, true);
+  const assertProductDimensions = async (prefix) => {
+    const result = await evaluate(cdp, `(${function(prefix) {
+      const ids = ['sale', 'media', 'action', 'wecom', 'push'].map(key => `${prefix}-${key}`);
+      const input = document.getElementById(prefix === 'product' ? 'pfName' : 'spfName');
+      const original = input.value; input.value = '未保存维度草稿';
+      const visible = () => ids.filter(id => { const node = document.getElementById(id); return node && getComputedStyle(node).display !== 'none'; });
+      const failures = [];
+      for (const id of ids) {
+        document.querySelector(`a[href="#${id}"]`)?.click();
+        if (visible().join() !== id || input.value !== '未保存维度草稿') failures.push(id);
+      }
+      input.value = original; document.querySelector(`a[href="#${prefix}-sale"]`)?.click();
+      return { failures, action: Boolean(document.querySelector(`#${prefix}-action [data-product-purchase-enabled]`)), tags: Boolean(document.querySelector(`#${prefix}-wecom [data-product-tag-open]`)) };
+    }.toString()})(${JSON.stringify(prefix)})`);
+    if (result.failures.length || !result.action || !result.tags) throw new Error(`product dimension switching: ${JSON.stringify(result)}`);
+  };
+  await navigate("/admin/productForm.html?id=" + productID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#pfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#product-sale\"][aria-current=\"step\"]'))", "product", "embedded", embeddedTitle, true);
+  await assertProductDimensions('product');
+  await navigate("/admin/spProductForm.html?id=" + serviceProductID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#spfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#sp-sale\"][aria-current=\"step\"]'))", "service-period-product", "embedded", embeddedTitle, true);
+  await assertProductDimensions('sp');
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "image-library", "embedded", frozenListToolbarTitle, true, true);

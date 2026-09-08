@@ -89,8 +89,8 @@ const actionEnabled = dom.window.document.querySelector('[data-product-purchase-
 actionEnabled.checked = true; actionEnabled.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
 const qr = dom.window.document.querySelector('input[name="pfPurchaseActionMode"][value="qr"]');
 qr.checked = true; qr.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-assert.equal(dom.window.document.getElementById('pfLeadQrTitle').closest('div[style*=\"display:grid\"]')?.hidden, false, 'QR fields must appear only for QR mode');
-assert.equal(dom.window.document.getElementById('pfCompletionRedirectUrl').closest('div[style*=\"display:grid\"]')?.hidden, true, 'redirect fields must stay hidden in QR mode');
+assert.notEqual(dom.window.getComputedStyle(dom.window.document.getElementById('pfLeadQrTitle').parentElement).display, 'none', 'QR fields must appear only for QR mode');
+assert.equal(dom.window.getComputedStyle(dom.window.document.getElementById('pfCompletionRedirectUrl').parentElement).display, 'none', 'redirect fields must stay hidden in QR mode');
 for (const [id, value] of [['pfName', '恢复商品'], ['pfCode', 'recovery-product'], ['pfPrice', '0.02'], ['pfStock', '1'], ['pfExternalPushReference', 'recovery.push']]) {
   const field = dom.window.document.getElementById(id);
   field.value = value;

@@ -213,6 +213,17 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
 
   if (isProductSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
   const response = await donorFetch(input, nextInit);
+  if (method === 'GET' && /^\/api\/admin\/service-period-products\/[1-9][0-9]*$/.test(url.pathname) && response.ok) {
+    const value = object(await response.clone().json());
+    const product = object(value.product || value);
+    const id = Number(product.service_product_id || product.id);
+    const action = object(product.admin_projection);
+    if (Number.isSafeInteger(id) && id > 0) purchaseActionByProduct.set(id, {
+      enabled: action.purchase_action_enabled === true,
+      mode: action.purchase_action_mode === 'qr' || action.purchase_action_mode === 'redirect' ? action.purchase_action_mode : '',
+    });
+  }
+
   if (context && method === 'POST' && url.pathname === '/api/v1/products' && response.ok) {
     try {
       const value = await response.clone().json();
@@ -896,6 +907,7 @@ function mountProductTagPicker(): void {
   if (typeof document === 'undefined' || !document.body) return;
   const prefix = document.body.dataset.page === 'productForm' ? 'pf' : document.body.dataset.page === 'spProductForm' ? 'spf' : '';
   if (!prefix) return;
+  if (prefix === 'spf') mountPeriodicTagDimension();
   const input = document.getElementById(`${prefix}WecomTagging`) as HTMLTextAreaElement | null;
   const panel = document.getElementById(prefix === 'pf' ? 'product-wecom' : 'sp-wecom');
   if (!input || !panel || panel.querySelector('[data-product-standard-tag-picker]')) return;
@@ -911,7 +923,7 @@ function mountProductTagPicker(): void {
   const enabled = host.querySelector<HTMLInputElement>('[data-product-tag-enabled]')!;
   const summary = host.querySelector<HTMLElement>('[data-product-tag-summary]')!;
   const error = host.querySelector<HTMLElement>('[data-product-tag-error]')!;
-  enabled.checked = list(state.tag_ids).length > 0;
+  enabled.checked = typeof state.enabled === 'boolean' ? state.enabled : list(state.tag_ids).length > 0;
   const sync = (): void => {
     const tagIDs = [...new Set(selected.map((tag) => Number(tag.tag_id)).filter((tagID) => Number.isSafeInteger(tagID) && tagID > 0))];
     input.value = JSON.stringify({ enabled: enabled.checked, tag_ids: tagIDs }); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -948,7 +960,7 @@ function productActionState(prefix: string): PurchaseActionDOM {
 }
 
 function purchaseActionControls(prefix: string): HTMLElement | null {
-  const action = document.getElementById(prefix === 'pf' ? 'product-action' : 'sp-product-action');
+  const action = document.getElementById(prefix === 'pf' ? 'product-action' : 'sp-action');
   if (!action || action.querySelector('[data-product-purchase-action]')) return null;
   const host = document.createElement('section');
   host.dataset.productPurchaseAction = '';
@@ -963,16 +975,16 @@ function purchaseActionControls(prefix: string): HTMLElement | null {
   const radio = host.querySelector<HTMLInputElement>(`input[value="${current.mode}"]`);
   if (radio) radio.checked = true;
 
-  const fieldFor = (id: string): HTMLElement | null => document.getElementById(id)?.closest<HTMLElement>('div[style*="display:grid"]') || null;
+  const fieldFor = (id: string): HTMLElement | null => document.getElementById(id)?.closest<HTMLElement>('div') || null;
   const qr = [`${prefix}LeadChannelId`, `${prefix}LeadQrTitle`, `${prefix}LeadQrSubtitle`].map(fieldFor);
   const redirect = [`${prefix}CompletionRedirectUrl`, `${prefix}CompletionTarget`].map(fieldFor);
   const oldRedirect = fieldFor(`${prefix}CompletionRedirectEnabled`);
   const update = (): void => {
     const selected = host.querySelector<HTMLInputElement>(`input[name="${prefix}PurchaseActionMode"]:checked`)?.value as PurchaseActionMode | undefined;
-    modes.hidden = !enabled.checked;
-    for (const field of qr) if (field) field.hidden = !enabled.checked || selected !== 'qr';
-    for (const field of redirect) if (field) field.hidden = !enabled.checked || selected !== 'redirect';
-    if (oldRedirect) oldRedirect.hidden = true;
+    setProductVisible(modes, enabled.checked);
+    for (const field of qr) if (field) setProductVisible(field, enabled.checked && selected === 'qr');
+    for (const field of redirect) if (field) setProductVisible(field, enabled.checked && selected === 'redirect');
+    if (oldRedirect) setProductVisible(oldRedirect, false);
     // The frozen serializer always parses this hidden JSON field. Keep it
     // syntactically empty when redirect is not the active choice.
     if (!enabled.checked || selected !== 'redirect') {
@@ -1074,3 +1086,59 @@ document.addEventListener('click', (event) => {
   observer.observe(document.body, { childList: true, subtree: true });
 }, true);
 window.addEventListener('pagehide', () => pendingProductMaterialObserver?.disconnect(), { once: true });
+
+
+// Preserve the frozen form nodes and serializer while switching only the visible
+// dimension, as in the standard product editor. Inactive drafts stay in the DOM.
+function setProductVisible(node: HTMLElement, visible: boolean): void {
+  if (node.dataset.productOriginalDisplay === undefined) node.dataset.productOriginalDisplay = node.style.display;
+  node.hidden = !visible;
+  node.style.setProperty('display', visible ? node.dataset.productOriginalDisplay : 'none', visible ? '' : 'important');
+}
+
+function mountPeriodicTagDimension(): void {
+  if (document.getElementById('sp-wecom')) return;
+  const action = document.getElementById('sp-action');
+  const input = document.getElementById('spfWecomTagging');
+  const group = input?.closest('details')?.parentElement;
+  const navLink = document.querySelector<HTMLAnchorElement>('a[href="#sp-action"]');
+  if (!action || !group || !navLink) return;
+  const panel = document.createElement('div');
+  panel.id = 'sp-wecom'; panel.style.cssText = action.style.cssText;
+  const heading = action.firstElementChild!.cloneNode(true) as HTMLElement;
+  heading.querySelector('h3')!.textContent = '企微标签';
+  panel.append(heading, group); action.after(panel);
+  const link = navLink.cloneNode(true) as HTMLAnchorElement;
+  link.href = '#sp-wecom'; link.lastElementChild!.textContent = '企微标签'; navLink.after(link);
+  Array.from(navLink.parentElement!.querySelectorAll('a')).forEach((item, index) => { item.firstElementChild!.textContent = String(index + 1); });
+}
+
+function mountProductDimensions(): void {
+  const prefix = productPrefix();
+  if (!prefix) return;
+  const first = prefix === 'pf' ? 'product-sale' : 'sp-sale';
+  const nav = document.querySelector<HTMLAnchorElement>(`a[href="#${first}"]`)?.parentElement;
+  if (!nav) return;
+  const links = Array.from(nav.querySelectorAll<HTMLAnchorElement>('a[href^="#"]'));
+  const select = (id: string): void => {
+    nav.dataset.productDimension = id;
+    for (const link of links) {
+      const active = link.hash === `#${id}`;
+      const panel = document.getElementById(link.hash.slice(1));
+      if (panel) setProductVisible(panel, active);
+      link.setAttribute('aria-current', active ? 'step' : 'false');
+      link.style.background = active ? '#EFF4FF' : '#fff'; link.style.color = active ? 'var(--accent,#3370ff)' : '#4E5969';
+      const badge = link.firstElementChild as HTMLElement | null;
+      if (badge) { badge.style.background = active ? 'var(--accent,#3370ff)' : '#EEF2F7'; badge.style.color = active ? '#fff' : '#667085'; }
+    }
+  };
+  for (const link of links) {
+    if (link.dataset.productDimensionBound) continue;
+    link.dataset.productDimensionBound = 'true';
+    link.addEventListener('click', event => { event.preventDefault(); select(link.hash.slice(1)); });
+  }
+  select(nav.dataset.productDimension || first);
+}
+const productDimensionsObserver = new MutationObserver(mountProductDimensions);
+productDimensionsObserver.observe(document, { childList: true, subtree: true });
+mountProductDimensions();
