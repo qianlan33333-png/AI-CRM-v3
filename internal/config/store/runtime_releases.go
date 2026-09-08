@@ -322,6 +322,40 @@ func (r *Repository) ListRuntimeUsage(ctx context.Context, revision int64, limit
 	return out, rows.Err()
 }
 
+func (r *Repository) InsertRuntimeApplication(ctx context.Context, application configport.RuntimeApplication) error {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO config_runtime_applications(revision,source,role,release_sha,snapshot_checksum,applied_at)
+VALUES($1,$2,$3,$4,$5,$6)
+ON CONFLICT(revision,source,role,release_sha,snapshot_checksum) DO NOTHING`, application.Revision, application.Source, application.Role, application.ReleaseSHA, application.SnapshotChecksum, application.AppliedAt.UTC())
+	return err
+}
+
+func (r *Repository) ListRuntimeApplications(ctx context.Context, limit int) ([]configport.RuntimeApplication, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT revision,source,role,release_sha,snapshot_checksum,applied_at
+FROM config_runtime_applications ORDER BY applied_at DESC,revision DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []configport.RuntimeApplication{}
+	for rows.Next() {
+		var item configport.RuntimeApplication
+		if err = rows.Scan(&item.Revision, &item.Source, &item.Role, &item.ReleaseSHA, &item.SnapshotChecksum, &item.AppliedAt); err != nil {
+			return nil, err
+		}
+		item.AppliedAt = item.AppliedAt.UTC()
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func scanRuntimeRelease(row pgx.Row) (configport.RuntimeRelease, error) {
 	var out configport.RuntimeRelease
 	var rollback *int64
@@ -366,4 +400,6 @@ var _ interface {
 	CompleteRuntimeReleaseCommand(context.Context, int64, int64, time.Time) error
 	InsertRuntimeUsage(context.Context, configport.RuntimeUsage) error
 	ListRuntimeUsage(context.Context, int64, int) ([]configport.RuntimeUsage, error)
+	InsertRuntimeApplication(context.Context, configport.RuntimeApplication) error
+	ListRuntimeApplications(context.Context, int) ([]configport.RuntimeApplication, error)
 } = (*Repository)(nil)

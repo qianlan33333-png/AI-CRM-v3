@@ -28,6 +28,7 @@ import (
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
 	configmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/config/module"
+	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 	configstore "github.com/qianlan33333-png/AI-CRM-v3/internal/config/store"
 	coupon "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon"
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
@@ -138,13 +139,23 @@ type composedApplication struct {
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
-	return composeWithWeComClientFactory(ctx, cfg, wecomadapter.New)
+	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, wecomadapter.New, nil)
 }
 
 func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error)) (*composedApplication, error) {
+	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, providerFactory, nil)
+}
+
+// composeWithWeComClientFactoryAndSurveyCompletionHTTPClient keeps a supplied
+// HTTPS client inside test Composition only. Production Composition passes nil
+// and therefore retains the outbound provider's locked default transport.
+func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error), surveyCompletionHTTPClient *http.Client) (*composedApplication, error) {
 	if providerFactory == nil {
 		return nil, errors.New("WeCom client factory is required")
 	}
+	// Direct composition fixtures omit policy values that Load supplies. Apply
+	// the same documented defaults before the closed Config baseline is built.
+	cfg = platformconfig.NormalizeRuntimePolicyDefaults(cfg)
 	var hxcSource *hxcprovider.MySQL
 	pool, err := platformpostgres.Open(ctx, platformpostgres.Config{URL: cfg.DatabaseURL, MaxConnections: 20, MinConnections: 1})
 	if err != nil {
@@ -159,6 +170,36 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	}
 	uow, err := platformpostgres.NewUnitOfWork(pool)
 	if err != nil {
+		return fail(err)
+	}
+	// Config is applied before any business adapter is constructed. The active
+	// immutable release is therefore the startup snapshot for every role; no
+	// HTTP action mutates a process environment or invokes a Provider.
+	configRepository, err := configstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	runtimeDefaults, err := runtimeConfigDefaults(cfg)
+	if err != nil {
+		return fail(err)
+	}
+	runtimeDefaultLimit := cfg.AutomationOperations.MaxRecipientsPerRun
+	if runtimeDefaultLimit < 1 {
+		runtimeDefaultLimit = 1
+	}
+	runtimeReleaseService, err := configapp.NewRuntimeReleaseService(uow, configRepository, configRepository, runtimeDefaultLimit, configapp.WithRuntimeDefaults(runtimeDefaults), configapp.WithProtectedReferencePresence(runtimeConfigProtectedReferencePresence(cfg)), configapp.WithRuntimeActivationGuards(runtimeConfigActivationGuards(cfg)))
+	if err != nil {
+		return fail(err)
+	}
+	runtimeSnapshot, err := runtimeReleaseService.EffectiveSnapshot(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	cfg, err = applyRuntimeConfig(cfg, runtimeSnapshot)
+	if err != nil {
+		return fail(err)
+	}
+	if err = validateAppliedRuntimeConfig(cfg); err != nil {
 		return fail(err)
 	}
 	auditService, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
@@ -579,7 +620,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if err != nil {
 		return fail(err)
 	}
-	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Identities: queries})
+	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Client: surveyCompletionHTTPClient, Identities: queries})
 	if err != nil {
 		return fail(err)
 	}
@@ -608,7 +649,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return fail(err)
 	}
 	surveyOAuth := surveyapp.NewOAuthService(uow, surveyRepository, surveyOAuthProvider, oneID)
-	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled)
+	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled).SetCompletionTargetCatalog(surveyCompletionProvider)
 	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
 	if err != nil {
 		return fail(err)
@@ -713,15 +754,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	// PR09 config has no OneID, Provider-write, or worker dependency. Its
 	// local settings, audit rows, and idempotency receipts share this UOW.
 	configModule := configmodule.NewRegistration()
-	configRepository, err := configstore.NewPostgreSQL(pool.Native(), uow)
-	if err != nil {
-		return fail(err)
-	}
 	configManager := configapp.NewManager(uow, configRepository, configRepository)
-	runtimeReleaseService, err := configapp.NewRuntimeReleaseService(uow, configRepository, configRepository, automationRecipientLimit)
-	if err != nil {
-		return fail(err)
-	}
 	if err = automationRuntime.SetRuntimeConfig(runtimeReleaseService, runtimeReleaseService); err != nil {
 		return fail(err)
 	}
@@ -1265,7 +1298,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
-	sidebarContextTokens := wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey), TTL: 5 * time.Minute}
+	sidebarContextTokens := wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey), TTL: cfg.WeCom.ContextTokenTTL}
 	callbackDispatcher := wecom.CallbackEventDispatcher{ExternalContact: wecom.ExternalContactCallbackDispatcher{StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition}}
 	if cfg.WeCom.MessageArchiveEnabled {
 		callbackDispatcher.Archive = wecom.ArchiveCallbackDispatcher{Inbox: inboxService, UOW: uow}
@@ -1509,11 +1542,15 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		}
 	})
 	configUI := configModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets configmodule.UIAssets) error {
-		if page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail" {
+		if page == "runtimeConfigCenter" || page == "runtimeConfigCategory" || page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail" {
+			title := "配置发布"
+			if page == "runtimeConfigCenter" || page == "runtimeConfigCategory" {
+				title = "配置中心"
+			}
 			// Runtime releases are a V3-owned Host rather than a frozen AdminOps
 			// document. The Config module sends its small host template through
 			// this renderer callback, so preserve that page class here.
-			return renderer.RenderRuntimeConfig(writer, webshell.AdminPageForRequest(request, "配置发布", "发布受控运行时配置。", "api.admin_runtime_config_releases"), page, donorTemplate)
+			return renderer.RenderRuntimeConfig(writer, webshell.AdminPageForRequest(request, title, "保存草稿、校验、发布并按进程 revision 确认受控应用。", "api.admin_runtime_config_releases"), page, donorTemplate)
 		}
 		title := map[string]string{"config": "配置", "configDetail": "配置", "apidocs": "API 文档"}[page]
 		endpoint := map[string]string{"config": "api.admin_config", "configDetail": "api.admin_config", "apidocs": "api.admin_api_docs"}[page]
@@ -1582,6 +1619,12 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		if _, err = diagnostics.Record(ctx, adminopsport.DiagnosticSnapshot{Key: "channel.effects_worker", Status: "ok"}); err != nil {
 			return fail(err)
 		}
+	}
+	// Record only after every configuration-dependent Adapter and route has
+	// been constructed successfully. A failed startup therefore leaves no
+	// application fact that could be mistaken for a running process.
+	if err = runtimeReleaseService.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: runtimeSnapshot.Revision, Source: runtimeSnapshot.Source, Role: string(cfg.Role), ReleaseSHA: cfg.ReleaseSHA, SnapshotChecksum: runtimeSnapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
+		return fail(err)
 	}
 	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }

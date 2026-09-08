@@ -21,7 +21,7 @@ const root = path.resolve(process.argv[2] || repository);
 if (process.argv.length > 3) fail('usage: node scripts/check-donor-source-view-ignore.mjs [REPOSITORY]');
 const index = JSON.parse(fs.readFileSync(path.join(root, 'web/donor-sources/source-index.json'), 'utf8'));
 const targets = index.views.filter((view) => view.enabled).map((view) => view.target_path).sort();
-if (targets.length !== 229 || new Set(targets).size !== targets.length) fail('source index must declare exactly 229 unique enabled view targets');
+if (targets.length !== 230 || new Set(targets).size !== targets.length) fail('source index must declare exactly 230 unique enabled view targets');
 const postP4 = index.bindings.filter((binding) => binding.current_path_state === 'untracked_post_p4').map((binding) => binding.logical_path).sort();
 if (JSON.stringify(postP4) !== JSON.stringify(targets)) fail('only declared source views may be post-P4 untracked');
 const retained = index.bindings.filter((binding) => binding.current_path_state !== 'untracked_post_p4').map((binding) => binding.logical_path).sort();

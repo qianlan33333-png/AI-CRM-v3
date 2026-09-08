@@ -421,13 +421,16 @@ func (failingProjections) ListDiagnosticSnapshots(context.Context) ([]configport
 }
 
 type testRuntimeReleases struct {
-	page      configport.RuntimeReleasePage
-	releases  map[int64]configport.RuntimeRelease
-	usage     []configport.RuntimeUsage
-	created   []configport.RuntimeReleaseDraftCommand
-	validated []configport.RuntimeReleaseMutationCommand
-	published []configport.RuntimeReleasePublishCommand
-	rolled    []configport.RuntimeReleaseRollbackCommand
+	page           configport.RuntimeReleasePage
+	releases       map[int64]configport.RuntimeRelease
+	usage          []configport.RuntimeUsage
+	applications   []configport.RuntimeApplication
+	protected      []configport.ProtectedReferenceStatus
+	created        []configport.RuntimeReleaseDraftCommand
+	validated      []configport.RuntimeReleaseMutationCommand
+	published      []configport.RuntimeReleasePublishCommand
+	rolled         []configport.RuntimeReleaseRollbackCommand
+	legacyRecovery []configport.RuntimeReleaseLegacyRecoveryCommand
 }
 
 func (s *testRuntimeReleases) ListRuntimeReleases(context.Context, int) (configport.RuntimeReleasePage, error) {
@@ -478,8 +481,21 @@ func (s *testRuntimeReleases) RollbackRuntimeRelease(_ context.Context, command 
 	}
 	return out, nil
 }
+func (s *testRuntimeReleases) PrepareLegacyRuntimeRecovery(_ context.Context, command configport.RuntimeReleaseLegacyRecoveryCommand) (configport.RuntimeRelease, error) {
+	s.legacyRecovery = append(s.legacyRecovery, command)
+	return configport.RuntimeRelease{ID: 2, State: configport.RuntimeReleasePublished, BaseRevision: command.ExpectedBaseRevision, Settings: []configport.RuntimeSetting{{Key: configport.AutomationOperationsMaxRecipientsPerRun, Value: []byte("1")}}}, nil
+}
 func (s *testRuntimeReleases) ListRuntimeUsage(context.Context, int64, int) ([]configport.RuntimeUsage, error) {
 	return s.usage, nil
+}
+func (s *testRuntimeReleases) RecordRuntimeApplication(context.Context, configport.RuntimeApplication) error {
+	return nil
+}
+func (s *testRuntimeReleases) ListRuntimeApplications(context.Context, int) ([]configport.RuntimeApplication, error) {
+	return s.applications, nil
+}
+func (s *testRuntimeReleases) ProtectedReferenceStatuses(context.Context) ([]configport.ProtectedReferenceStatus, error) {
+	return s.protected, nil
 }
 
 func TestRuntimeReleaseHTTPJourneyKeepsDraftPublishAndUsageSeparate(t *testing.T) {
@@ -496,10 +512,11 @@ func TestRuntimeReleaseHTTPJourneyKeepsDraftPublishAndUsageSeparate(t *testing.T
 		t.Fatalf("list=%d %s", list.Code, list.Body.String())
 	}
 	var listBody struct {
-		Action string `json:"admin_action_token"`
+		Action         string `json:"admin_action_token"`
+		LegacyRecovery string `json:"legacy_binary_recovery_action"`
 	}
-	if err = json.Unmarshal(list.Body.Bytes(), &listBody); err != nil || len(listBody.Action) != 43 {
-		t.Fatalf("list token=%q err=%v", listBody.Action, err)
+	if err = json.Unmarshal(list.Body.Bytes(), &listBody); err != nil || len(listBody.Action) != 43 || len(listBody.LegacyRecovery) != 43 {
+		t.Fatalf("list tokens=%q/%q err=%v", listBody.Action, listBody.LegacyRecovery, err)
 	}
 
 	createBody := `{"expected_base_revision":0,"settings":[{"key":"automation.operations.max_recipients_per_run","value":2}],"admin_action_token":"` + listBody.Action + `"}`
@@ -548,6 +565,30 @@ func TestRuntimeReleaseHTTPJourneyKeepsDraftPublishAndUsageSeparate(t *testing.T
 	}
 }
 
+func TestRuntimeReleaseLegacyBinaryRecoveryRequiresBoundAdminToken(t *testing.T) {
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	runtime := &testRuntimeReleases{page: configport.RuntimeReleasePage{ActiveRevision: 9, Effective: configport.EffectiveSnapshot{Revision: 9, Source: configport.RuntimeSourcePublished, AutomationMaxRecipients: 5000}}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: principal}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := httptest.NewRecorder()
+	h.ServeHTTP(list, adminSessionRequest(http.MethodGet, "/api/admin/config/runtime-releases", nil))
+	var body struct {
+		Action string `json:"legacy_binary_recovery_action"`
+	}
+	if err = json.Unmarshal(list.Body.Bytes(), &body); err != nil || len(body.Action) != 43 {
+		t.Fatalf("recovery action token=%q err=%v", body.Action, err)
+	}
+	response := httptest.NewRecorder()
+	request := adminSessionRequest(http.MethodPost, "/api/admin/config/runtime-releases/legacy-binary-recovery", strings.NewReader(`{"expected_base_revision":9,"admin_action_token":"`+body.Action+`"}`))
+	request.Header.Set("Idempotency-Key", "legacy-runtime-recovery-0001")
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(runtime.legacyRecovery) != 1 || runtime.legacyRecovery[0].ExpectedBaseRevision != 9 || runtime.legacyRecovery[0].Actor != "7" || !strings.Contains(response.Body.String(), `"legacy_binary_recovery_published":true`) {
+		t.Fatalf("recovery=%d body=%s commands=%#v", response.Code, response.Body.String(), runtime.legacyRecovery)
+	}
+}
+
 func TestRuntimeReleaseMutationRequiresAdminAndNeverElevatesViewer(t *testing.T) {
 	viewer := accessdomain.Principal{InternalID: 8, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
 	runtime := &testRuntimeReleases{}
@@ -561,5 +602,23 @@ func TestRuntimeReleaseMutationRequiresAdminAndNeverElevatesViewer(t *testing.T)
 	h.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden || len(runtime.created) != 0 {
 		t.Fatalf("viewer mutation=%d created=%#v", response.Code, runtime.created)
+	}
+}
+
+func TestRuntimeCatalogHTTPReturnsTwelveCategoriesAndApplicationFactsSeparately(t *testing.T) {
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	runtime := &testRuntimeReleases{
+		page:         configport.RuntimeReleasePage{ActiveRevision: 9, Effective: configport.EffectiveSnapshot{Revision: 9, Source: configport.RuntimeSourcePublished, AutomationMaxRecipients: 1, Checksum: strings.Repeat("a", 64)}},
+		applications: []configport.RuntimeApplication{{Revision: 9, Source: configport.RuntimeSourcePublished, Role: "api", ReleaseSHA: "test", SnapshotChecksum: strings.Repeat("a", 64), AppliedAt: time.Now().UTC()}},
+		protected:    []configport.ProtectedReferenceStatus{{Reference: "environment://AICRM_WECOM_SECRET", Configured: true}},
+	}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: principal}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, adminSessionRequest(http.MethodGet, "/api/admin/config/runtime-catalog", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"categories"`) || !strings.Contains(response.Body.String(), "企业微信基础") || !strings.Contains(response.Body.String(), `"configured":true`) || strings.Contains(response.Body.String(), "runtime_applied") {
+		t.Fatalf("catalog status=%d body=%s", response.Code, response.Body.String())
 	}
 }

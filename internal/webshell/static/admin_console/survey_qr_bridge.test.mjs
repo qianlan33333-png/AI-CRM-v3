@@ -57,7 +57,7 @@ dom.window.fetch = async (url, options = {}) => {
     {test_run_id:'questionnaire-test-unknown',status:'outcome_unknown',attempt_count:2,provider_result_received:false,updated_at:'2026-09-05T00:00:01Z'},
     {test_run_id:9,status:'disabled',updated_at:'2026-08-01T00:00:00Z',read_only_legacy:true},
   ]})};
-  return {ok:true,json:async()=>({items:[{source_pk:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'queued',occurred_at:'2026-09-05T00:00:00Z'}],configuration_version:3,external_push:{enabled:true,configuration_reference:'push.v1',metadata:{type:'old',custom_params:{legacy:'yes'}}}})};
+  return {ok:true,json:async()=>({items:[{source_pk:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'queued',occurred_at:'2026-09-05T00:00:00Z'}],target_catalog_available:true,available_configuration_references:['push.v1','push.v2'],configuration_version:3,external_push:{enabled:true,configuration_reference:'push.v1',metadata:{type:'old',custom_params:{legacy:'yes'}}}})};
 };
 dom.window.eval(adapter); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 await wait(40);
@@ -67,9 +67,11 @@ if (!frozenPayload.local_only || frozenPayload.items.length !== 0 || rawCalls.so
 if (!dom.window.document.querySelector('#preserved-submit-actions') || !dom.window.document.querySelector('#legacy-save') || !dom.window.document.querySelector('[data-survey-push-metadata]')) throw new Error('Host removed existing questionnaire operations controls');
 let navClicks = 0; dom.window.document.querySelector('#completion-nav').addEventListener('click', () => { navClicks += 1; }); dom.window.document.querySelector('#completion-nav').click();
 if (navClicks !== 1 || !dom.window.document.querySelector('#completion-channel')) throw new Error('submit actions navigation was not preserved');
-const oldTest = dom.window.document.querySelector('#legacy-test'); oldTest.click(); await wait(40); oldTest.click(); await wait(40); oldTest.click(); await wait(40);
-if (!oldTest.textContent.includes('创建测试失败')) throw new Error('failed test did not report its failure'); oldTest.click(); await wait(40);
-if (rawPosts !== 4 || !oldTest.textContent.includes('测试已创建') || !dom.window.document.body.textContent.includes('等待处理')) throw new Error('original test button was not taken over for every click');
+const oldTest = dom.window.document.querySelector('#legacy-test');
+async function confirmControlledTest() { oldTest.click(); await wait(5); const confirm = dom.window.document.querySelector('[data-survey-host-test-confirmation] [data-survey-host-test-confirm]'); if (!confirm) throw new Error('controlled test did not require Host confirmation'); confirm.click(); await wait(40); }
+await confirmControlledTest(); await confirmControlledTest(); await confirmControlledTest();
+if (!oldTest.textContent.includes('创建受控测试失败')) throw new Error('failed controlled test did not report its failure'); await confirmControlledTest();
+if (rawPosts !== 4 || !oldTest.textContent.includes('受控外推测试已创建') || !dom.window.document.body.textContent.includes('等待处理') || dom.window.document.body.textContent.includes('仅本地记录')) throw new Error('Host controlled test was not confirmed or did not report the honest receipt boundary');
 dom.window.document.querySelector('[data-survey-log-scope="global"]').click(); await wait(5);
 const allText = dom.window.document.body.textContent;
 if (!allText.includes('已收到处理结果') || !allText.includes('处理结果待确认（不会自动重复发送）') || !allText.includes('当时未启用外推配置') || !allText.includes('尝试 2 次')) throw new Error('global true statuses and legacy attempt count were not rendered');

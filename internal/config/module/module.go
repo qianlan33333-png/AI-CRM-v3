@@ -29,7 +29,7 @@ func (m *Registration) Readiness(ctx context.Context, pool *pgxpool.Pool) error 
 		return errors.New("config module dependencies are required")
 	}
 	var ready bool
-	e := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['config_settings','config_audits','config_outbox','config_command_receipts','config_runtime_releases','config_runtime_release_values','config_runtime_active_release','config_runtime_release_command_receipts','config_runtime_release_audits','config_runtime_usage','config_runtime_release_history_batches','config_runtime_release_history_rows']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	e := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['config_settings','config_audits','config_outbox','config_command_receipts','config_runtime_releases','config_runtime_release_values','config_runtime_active_release','config_runtime_release_command_receipts','config_runtime_release_audits','config_runtime_usage','config_runtime_release_history_batches','config_runtime_release_history_rows','config_runtime_applications']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if e != nil {
 		return e
 	}

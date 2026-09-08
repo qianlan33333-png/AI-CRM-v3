@@ -551,7 +551,7 @@ func (renderer *Renderer) RenderOperationCycles(writer http.ResponseWriter, data
 // frozen AdminOps JavaScript: that DTO neither owns nor understands the closed
 // runtime-release catalog.
 func (renderer *Renderer) RenderRuntimeConfig(writer http.ResponseWriter, data AdminPageData, page, hostTemplate string) error {
-	if renderer == nil || renderer.templates == nil || hostTemplate == "" || (page != "runtimeReleaseList" && page != "runtimeReleaseNew" && page != "runtimeReleaseDetail") {
+	if renderer == nil || renderer.templates == nil || hostTemplate == "" || (page != "runtimeConfigCenter" && page != "runtimeConfigCategory" && page != "runtimeReleaseList" && page != "runtimeReleaseNew" && page != "runtimeReleaseDetail") {
 		return errors.New("runtime config shell is required")
 	}
 	normalizeAdminPage(&data)

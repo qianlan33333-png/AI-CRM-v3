@@ -94,6 +94,13 @@ type CompletionPolicyResolver interface {
 	CompletionPolicy(context.Context, string) (CompletionPolicy, bool, error)
 }
 
+// CompletionTargetCatalog exposes only Composition's configured opaque target
+// references to Survey's administrative binding surface. It must never expose
+// endpoint, signing material, or identity policy.
+type CompletionTargetCatalog interface {
+	CompletionTargetReferences(context.Context) ([]string, error)
+}
+
 type CompletionIdentitySnapshotter interface {
 	SnapshotCompletionIdentity(context.Context, int64, CompletionPolicy) (string, bool, error)
 }
