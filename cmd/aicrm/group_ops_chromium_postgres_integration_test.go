@@ -75,7 +75,7 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	}
 	fixture := newGroupOpsChromiumFixture(t)
 	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
-	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10))
+	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10), "AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID="+strconv.FormatInt(fixture.replacementStaffID, 10))
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "group_ops_chromium: SKIP_DEVTOOLS") {
 		t.Fatalf("Group Ops Chromium DevTools unexpectedly unavailable: %s", strings.TrimSpace(string(output)))
