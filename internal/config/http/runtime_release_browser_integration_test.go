@@ -318,6 +318,10 @@ func TestConfigCenterHostKeepsNativeStringSettingsOnActualPostgreSQLHTTP(t *test
 		setting(configport.MessageArchivePageLimit, 1),
 		setting(configport.MessageArchivePageBudget, 1),
 		setting(configport.SidebarContextTokenTTLSeconds, 60),
+		setting(configport.SurveyOAuthEnabled, false),
+		setting(configport.SurveyOAuthAppID, "oauth-app-preserved"),
+		setting(configport.SurveyOAuthOpenPlatformID, "oauth-platform-preserved"),
+		setting(configport.SurveyOAuthScope, "snsapi_base"),
 	}))
 	if err != nil {
 		t.Fatal(err)
