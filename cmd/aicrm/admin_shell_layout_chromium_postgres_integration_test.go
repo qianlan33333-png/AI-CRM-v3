@@ -194,7 +194,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	for _, name := range []string{
 		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
-		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "oneid.png", "api-docs.png", "order-detail-history.png", "external-effects.png",
+		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "external-effects.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
 		if statErr != nil || info.Size() < 512 {

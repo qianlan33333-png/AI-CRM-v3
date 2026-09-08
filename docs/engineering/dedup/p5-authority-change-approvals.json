@@ -137,6 +137,28 @@
       ],
       "reason": "Register the user-approved optional Product paid-action contract and preserve byte-exact standard UI sources for the commerce release block.",
       "review_reference": "2026-09-08 user-approved fast-launch execution plan, commerce block; stacked on PR #200"
+    },
+    {
+      "base_commit": "baffd7b89d7b90c80c71a01132485eb391d8e17d",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "e604c5f39fc0b1d4f9a6797c641d992379504cffc72ef79d15907b72a215119a",
+          "head_sha256": "249ce8aa28030e0796b73541a882367fad2fd331b234e97f333e93f763c6d702"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "b578369301c98da27d653693ac0b41d8df7ed6fe3aa152712efb3c78768f2218",
+          "head_sha256": "3c7521a4ec7f28d99749ade68ae2b351a999cf49f0aa87553f2610a3823fde9e"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "5ed6f33116aa3def302ab20867193ffb0f3705a1f134140a4f33d37eeb698fe4",
+          "head_sha256": "208d5130dddfc6cc00c651583a320d9c64ac445b1df22601d9379c274c26d762"
+        }
+      ],
+      "reason": "Register the user-approved optional Product paid-action contract and preserve byte-exact standard UI sources for the commerce release block.",
+      "review_reference": "2026-09-08 user-approved fast-launch execution plan, commerce block; stacked on PR #200"
     }
   ]
 }
