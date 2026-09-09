@@ -147,8 +147,15 @@ func TestPostgreSQLExcelImportReviewDeferredSendAndReceiptJourney(t *testing.T) 
 		t.Fatalf("cover change retained approval: %v", err)
 	}
 	excludedAfter, _, err := service.GetRecipient(ctx, current.ID, exclude.ID)
-	if err != nil || excludedAfter.ReviewState != ai.ReviewRejected {
-		t.Fatalf("cover change restored excluded row: %v", err)
+	if err != nil || excludedAfter.ReviewState != ai.ReviewPending {
+		t.Fatalf("cover change did not invalidate rejected row: state=%s err=%v", excludedAfter.ReviewState, err)
+	}
+	if _, err = service.ReviewRecipient(ctx, ai.ReviewRecipientCommand{Actor: who, PlanID: current.ID, RecipientID: excludedAfter.ID, ExpectedVersion: excludedAfter.Version, Decision: ai.ReviewRejected, IdempotencyKey: "exclude-row-after-cover"}); err != nil {
+		t.Fatalf("re-review excluded row after cover: %v", err)
+	}
+	current, err = service.GetPlan(ctx, current.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
 	preview, err := service.PreviewApproval(ctx, ai.PreviewApprovalCommand{Actor: who, PlanID: current.ID, ExpectedVersion: current.Version})
 	if err != nil {

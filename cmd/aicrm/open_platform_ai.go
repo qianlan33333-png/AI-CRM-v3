@@ -124,7 +124,7 @@ func v1AIError(err error) error {
 		return openplatformport.NewError(openplatformport.ErrorAuthentication, "machine subject is invalid")
 	case errors.Is(err, aiassistantapp.ErrInvalid):
 		return openplatformport.NewError(openplatformport.ErrorValidation, "AI review plan input is invalid")
-	case errors.Is(err, aiassistantapp.ErrConflict):
+	case errors.Is(err, aiassistantapp.ErrConflict), errors.Is(err, aiassistantapp.ErrIdempotencyConflict):
 		return openplatformport.NewError(openplatformport.ErrorConflict, "AI review plan conflicts with the idempotency receipt")
 	case errors.Is(err, aiassistantapp.ErrNotFound):
 		return openplatformport.NewError(openplatformport.ErrorNotFound, "operation was not found")
