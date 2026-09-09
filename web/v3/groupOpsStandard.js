@@ -739,7 +739,7 @@
 
   async function saveWebhook() {
     if (!state.plan || !state.plan.id) return;
-    const reference = String(currentFormValue("webhook_reference") || "").trim();
+    const reference = String(state.webhook?.reference || `groupops-${crypto.randomUUID()}`);
     if (!validWebhookReference(reference)) {
       state.notice = "Webhook 标识只能使用字母、数字、连字符、下划线、点号和冒号";
       renderDetail();
@@ -1137,9 +1137,8 @@
           <span class="group-ops__pill">Webhook 接收计划</span>
         </div>
         <div class="group-ops__webhook-panel">
-          <label class="group-ops__field group-ops__field--wide"><span>Webhook 标识</span><input name="webhook_reference" value="${escapeHtml(config.reference || "")}" placeholder="输入安全的 opaque 标识；留空可清除"></label>
-          <div class="group-ops__row-actions">${actionButton("保存地址", "save-webhook", "group-ops__button--primary")}</div>
-          ${configured ? "" : '<div class="group-ops__empty">尚未配置，无法提供可调用地址</div>'}
+          ${configured ? "" : `<div class="group-ops__row-actions">${actionButton("生成 Webhook 地址", "save-webhook", "group-ops__button--primary")}</div>`}
+          ${configured ? "" : '<div class="group-ops__empty">点击生成地址，即可复制本计划的接收网址。</div>'}
           ${configured ? `
           <div class="group-ops__notice">地址已配置；调用仍需签名配置和启用计划。请完成实际接收验证后再使用。</div>
           <div class="group-ops__webhook-line">

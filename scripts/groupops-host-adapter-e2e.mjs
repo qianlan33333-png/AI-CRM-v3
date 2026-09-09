@@ -285,9 +285,9 @@ webhookWindow.fetch = async (input, init = {}) => {
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52/webhook-descriptor" && method === "PUT") {
     const body = JSON.parse(String(init.body));
     assert.equal(body.expected_revision, 2, "Webhook save must use the current plan revision");
-    assert.equal(body.reference, "hook-52", "Webhook save must persist the opaque reference only");
+    assert.match(body.reference, /^groupops-[0-9a-f-]{36}$/, "Webhook must generate its own opaque reference");
     webhookPlan = { ...webhookPlan, revision: 3 };
-    webhookDescriptor = { ...webhookDescriptor, configured: true, reference: "hook-52", path: "/api/automation/group-ops/webhooks/hook-52" };
+    webhookDescriptor = { ...webhookDescriptor, configured: true, reference: body.reference, path: `/api/automation/group-ops/webhooks/${body.reference}` };
     return response({ plan: clone(webhookPlan) });
   }
   throw new Error(`unexpected webhook request ${method} ${url.pathname}`);
@@ -296,11 +296,10 @@ try {
   webhookWindow.eval(pickerSource);
   webhookWindow.eval(bundle.outputFiles[0].text);
   await waitFor(() => webhookWindow.document.querySelector('[data-action="save-webhook"]'), "unconfigured webhook did not render its configuration action");
-  assert(webhookWindow.document.body.textContent.includes("尚未配置，无法提供可调用地址"), "unconfigured webhook must not fabricate a callable address");
-  webhookWindow.document.querySelector('[name="webhook_reference"]').value = "hook-52";
+  assert.equal(webhookWindow.document.querySelector('[name="webhook_reference"]'), null, "users must not enter technical webhook references");
   webhookWindow.document.querySelector('[data-action="save-webhook"]').click();
   await waitFor(() => webhookWindow.document.querySelector('[data-action="copy-webhook"]'), "saved webhook did not reread and render its copy action");
-  const expectedWebhookURL = "https://groupops.test/api/automation/group-ops/webhooks/hook-52";
+  const expectedWebhookURL = `https://groupops.test${webhookDescriptor.path}`;
   assert.equal(webhookWindow.document.querySelector(".group-ops__url")?.textContent, expectedWebhookURL, "Webhook presentation must show the configured callable URL");
   assert(webhookWindow.document.body.textContent.includes("地址已配置；调用仍需签名配置和启用计划") && webhookWindow.document.body.textContent.includes("签名验证（HMAC-SHA256）") && webhookWindow.document.querySelector(".group-ops__webhook-guide")?.textContent.includes("复制地址不包含凭据，也不能绕过签名验证") && webhookWindow.document.body.textContent.includes("X-Signature / X-Timestamp / X-Nonce / X-Client-ID"), "Webhook presentation must explain the descriptor headers and signing requirement without claiming readiness or exposing a secret");
   webhookWindow.document.querySelector('[data-action="copy-webhook"]').click();

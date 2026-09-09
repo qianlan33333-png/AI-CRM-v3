@@ -77,7 +77,7 @@ type RuntimeApplication interface {
 	ProjectExecutionOutcome(context.Context, groupopsport.ExecutionOutcomeCommand) (groupopsport.Execution, error)
 	ManualReconcile(context.Context, groupopsport.ManualReconcileCommand) (groupopsport.Execution, error)
 	ReadProviderDelivery(context.Context, groupopsport.ProviderDeliveryReadCommand) (groupopsport.Execution, error)
-	ListOperationMembers(context.Context, int32) (groupopsport.OperationMemberPage, error)
+	ListOperationMembers(context.Context, int32, string) (groupopsport.OperationMemberPage, error)
 	RefreshOperationMembers(context.Context, groupopsport.OperationMemberRefreshCommand) (groupopsport.OperationMemberPage, error)
 	ListGroups(context.Context, int64, int32, int32) (groupopsport.GroupDirectoryPage, error)
 	RefreshGroups(context.Context, groupopsport.GroupRefreshCommand) (groupopsport.GroupDirectoryPage, error)
@@ -1151,7 +1151,7 @@ func (h *Handler) operationMembers(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		}
 		pageSize = int32(value)
 	}
-	value, err := h.runtime.ListOperationMembers(r.Context(), pageSize)
+	value, err := h.runtime.ListOperationMembers(r.Context(), pageSize, r.URL.Query().Get("q"))
 	h.respond(w, value, err)
 }
 

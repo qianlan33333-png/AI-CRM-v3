@@ -30,10 +30,18 @@ function pickerMembersPayload(source: Json): Json | null {
       // plan commands write through the Host.
       user_id: String(value.sender_userid || staffID),
       staff_id: String(staffID),
-      display_name: String(value.display_name || `员工 #${staffID}`),
+      display_name: memberDisplayName(value),
     }];
   });
   return { scope: "group_ops", page_size: source.page_size, items };
+}
+
+function memberDisplayName(value: Json): string {
+  const name = String(value.display_name || "").trim();
+  const userID = String(value.sender_userid || "").trim();
+  // Imported placeholder names are not real WeCom profile names.
+  if (!name || (value.name_source !== "wecom_profile" && (name === `企微客服 ${userID}` || name === userID))) return "姓名待同步";
+  return name;
 }
 
 // The frozen picker reads this endpoint directly instead of AdminApi.requestJson.
@@ -222,14 +230,20 @@ async function revision(id: number): Promise<number> {
   return revisions.get(id) || 0;
 }
 async function directory(): Promise<Json[]> {
-  let data: Json;
+  const items: Json[] = [];
+  let offset = 0;
   try {
-    data = await nativeRequest(`${base}/groups?limit=200&offset=0`);
+    for (;;) {
+      const data = await nativeRequest(`${base}/groups?limit=200&offset=${offset}`);
+      if (!Array.isArray(data.items)) throw new Error("invalid directory page");
+      items.push(...data.items);
+      if (!data.has_more) return items;
+      if (!data.items.length) throw new Error("directory pagination did not advance");
+      offset += data.items.length;
+    }
   } catch {
     throw new Error("群目录读取失败，请重试");
   }
-  if (!Array.isArray(data.items)) throw new Error("群目录读取失败，请重试");
-  return data.items || [];
 }
 async function groupsForPlan(id: number): Promise<Json[]> {
   const [value, directoryItems] = await Promise.all([detail(id), directory()]);
@@ -244,7 +258,7 @@ async function groupsForPlan(id: number): Promise<Json[]> {
     const knownTotal = total !== null && total !== undefined && Number.isFinite(Number(total));
     return {
       chat_id: asset.asset_reference,
-      group_name: found.display_name || asset.asset_reference,
+      group_name: found.display_name || "群名称待同步",
       owner_userid: found.owner_staff_id ? String(found.owner_staff_id) : "",
       // The provider directory has a total and (when member types are complete)
       // an external count. Internal count is derived only from both facts.
