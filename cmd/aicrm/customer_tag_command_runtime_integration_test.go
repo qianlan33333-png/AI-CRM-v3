@@ -113,6 +113,22 @@ func TestCustomerTagCommandCompositionHTTPPostgreSQL(t *testing.T) {
 	mountSurveyAPIs(mux, http.NotFoundHandler(), handler.TagCommandRoutes())
 	server := httptest.NewServer(mux)
 	defer server.Close()
+	// The Host depends on this real catalog projection, including its provider
+	// binding schema. Fail at the HTTP boundary instead of timing out in the UI.
+	catalogResponse, err := server.Client().Get(server.URL + "/api/admin/wecom/tags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var catalog struct {
+		Items []struct {
+			Name string `json:"tag_name"`
+		} `json:"items"`
+	}
+	decodeErr := json.NewDecoder(catalogResponse.Body).Decode(&catalog)
+	catalogResponse.Body.Close()
+	if catalogResponse.StatusCode != http.StatusOK || decodeErr != nil || len(catalog.Items) != 1 || catalog.Items[0].Name != "运行时标签" {
+		t.Fatalf("catalog status=%d decode=%v items=%+v", catalogResponse.StatusCode, decodeErr, catalog.Items)
+	}
 
 	body := []byte(`{"customer_ids":[2],"add_tag_ids":[1],"idempotency_key":"runtime-tag-command-key"}`)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/customer-tag-commands/preview", bytesReader(body))
@@ -1012,7 +1028,7 @@ func customerTagRuntimePool(t *testing.T, ctx context.Context, url string) (*pla
 		t.Fatal(err)
 	}
 	root := filepath.Clean(filepath.Join("..", ".."))
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0008_tag_catalog.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0093_customer_tag_commands.sql", "0107_tag_catalog_mutation_receipts.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0008_tag_catalog.sql", "0009_customer_activation.sql", "0019_tag_catalog_sync_projection.sql", "0022_customer_profile_sections.sql", "0093_customer_tag_commands.sql", "0107_tag_catalog_mutation_receipts.sql"} {
 		body, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

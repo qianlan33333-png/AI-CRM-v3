@@ -161,3 +161,22 @@ func TestTagCatalogMutationProviderUnknownCreateDoesNotGuessOrRetry(t *testing.T
 		t.Fatalf("result=%+v err=%v calls=%d", result, err, called)
 	}
 }
+
+func TestTagCatalogMutationRejectedPreservesAttemptEvidence(t *testing.T) {
+	intent := tagport.CatalogMutationIntent{ID: 8, Operation: tagport.CatalogTagArchive, Actor: 7, TagID: 34, ProviderTagID: "provider-tag"}
+	envelope := mutationEnvelope(intent)
+	dispatch := tagport.CatalogMutationDispatch{CatalogMutationIntent: intent, EffectRef: "eer_9", SourceRefDigest: string(envelope.SourceRefDigest)}
+	provider, err := NewTagCatalogMutationProvider(catalogMutationDispatchStore{dispatch: dispatch}, catalogMutationWriterFunc(func(context.Context, wecomport.TagCatalogMutation) (wecomport.TagCatalogMutationResult, error) {
+		return wecomport.TagCatalogMutationResult{}, wecomport.WrapProviderWriteDisposition(errors.New("rejected"), true, false, false)
+	}), catalogReaderFunc(func(context.Context) (CatalogSnapshot, error) {
+		t.Fatal("rejected mutation should not read back")
+		return CatalogSnapshot{}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Execute(context.Background(), envelope, effect.Attempt{EffectID: "eer_9", Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effect.StateFinalFailed || !result.CallAttempted || result.RealExternalCallExecuted || result.ReceiptDigest != effect.Hash("wecom.tag.catalog.mutation.rejected", "eer_9", "1") {
+		t.Fatalf("rejection evidence=%+v err=%v", result, err)
+	}
+}

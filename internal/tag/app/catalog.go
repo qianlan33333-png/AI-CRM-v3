@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	"reflect"
 	"strings"
 	"time"
@@ -36,6 +37,7 @@ var (
 // customer target, mark or unmark method. A later outbound adapter may use a
 // separate effect contract for provider writes.
 type Service struct {
+	retrier                   effectport.TagCatalogMutationRetrier
 	uow                       platformport.UnitOfWork
 	store                     tagport.CatalogStore
 	receipts                  tagport.MutationReceiptStore

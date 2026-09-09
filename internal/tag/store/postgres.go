@@ -85,8 +85,9 @@ func (r *Repository) ListTags(ctx context.Context) ([]domain.Tag, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at
+	rows, err := tx.Query(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at,COALESCE(b.provider_tag_id,'')
 		FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id
+		LEFT JOIN tag_provider_tag_bindings b ON b.tag_id=t.id
 		LEFT JOIN LATERAL (
 			SELECT state,readback_at FROM tag_catalog_mutation_receipts
 			WHERE tag_id=t.id ORDER BY id DESC LIMIT 1
@@ -99,7 +100,7 @@ func (r *Repository) ListTags(ctx context.Context) ([]domain.Tag, error) {
 	out := []domain.Tag{}
 	for rows.Next() {
 		var v domain.Tag
-		if err = rows.Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt); err != nil {
+		if err = rows.Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt, &v.ProviderTagID); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -387,6 +388,15 @@ func (r *Repository) CompleteCatalogMutation(ctx context.Context, c tagport.Cata
 	if state == c.State && oldDigest == c.ResultDigest && generation == c.Generation && fence == c.Fence && attempts >= c.Attempt {
 		return nil
 	}
+	// A queued completion is only the fenced EER retry of the same immutable
+	// effect. Final/unknown writes cannot be reopened by a generic completion.
+	if c.State == "queued" {
+		if (state != "final_failed" && state != "retryable_failed") || c.Generation != generation+1 || c.Fence != fence || c.Attempt != attempts {
+			return ErrConflict
+		}
+		_, err = tx.Exec(ctx, `UPDATE tag_catalog_mutation_receipts SET state='queued',result_digest=$2,completion_generation=$3,completed_at=NULL,updated_at=clock_timestamp() WHERE id=$1`, intent.ID, c.ResultDigest, c.Generation)
+		return err
+	}
 	if state != "queued" && state != "attempted" && state != "outcome_unknown" && state != "retryable_failed" {
 		return ErrConflict
 	}
@@ -401,7 +411,7 @@ func (r *Repository) CompleteCatalogMutation(ctx context.Context, c tagport.Cata
 
 func validCatalogMutationState(value string) bool {
 	switch value {
-	case "executed", "outcome_unknown", "retryable_failed", "final_failed", "reconciled", "cancelled":
+	case "queued", "executed", "outcome_unknown", "retryable_failed", "final_failed", "reconciled", "cancelled":
 		return true
 	default:
 		return false
@@ -522,13 +532,14 @@ func (r *Repository) GetTag(ctx context.Context, id int64) (domain.Tag, error) {
 		return domain.Tag{}, err
 	}
 	var v domain.Tag
-	err = tx.QueryRow(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at
+	err = tx.QueryRow(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at,COALESCE(b.provider_tag_id,'')
 		FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id
+		LEFT JOIN tag_provider_tag_bindings b ON b.tag_id=t.id
 		LEFT JOIN LATERAL (
 			SELECT state,readback_at FROM tag_catalog_mutation_receipts
 			WHERE tag_id=t.id ORDER BY id DESC LIMIT 1
 		) m ON true
-		WHERE t.id=$1 AND t.archived_at IS NULL AND g.archived_at IS NULL`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt)
+		WHERE t.id=$1 AND t.archived_at IS NULL AND g.archived_at IS NULL`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt, &v.ProviderTagID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Tag{}, ErrNotFound
 	}
@@ -540,13 +551,14 @@ func (r *Repository) GetTagIncludingArchived(ctx context.Context, id int64) (dom
 		return domain.Tag{}, err
 	}
 	var v domain.Tag
-	err = tx.QueryRow(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at
+	err = tx.QueryRow(ctx, `SELECT t.id,t.group_id,g.group_name,t.tag_name,t.sort_order,COALESCE(m.state,''),m.readback_at,COALESCE(b.provider_tag_id,'')
 		FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id
+		LEFT JOIN tag_provider_tag_bindings b ON b.tag_id=t.id
 		LEFT JOIN LATERAL (
 			SELECT state,readback_at FROM tag_catalog_mutation_receipts
 			WHERE tag_id=t.id ORDER BY id DESC LIMIT 1
 		) m ON true
-		WHERE t.id=$1`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt)
+		WHERE t.id=$1`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder, &v.ProviderMutationState, &v.ProviderReadbackAt, &v.ProviderTagID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Tag{}, ErrNotFound
 	}

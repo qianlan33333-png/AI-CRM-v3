@@ -335,6 +335,14 @@ func TestPostgreSQLCatalogMutationReceiptBindsOnlyConfirmedProviderCreate(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, tag := range catalog.Tags {
+		if tag.ID == confirmedTag.ID && tag.ProviderTagID != "provider-tag-confirmed" {
+			t.Fatalf("confirmed Provider tag ID missing: %+v", tag)
+		}
+		if tag.ID == unknownTag.ID && tag.ProviderTagID != "" {
+			t.Fatal("unknown create fabricated Provider tag ID")
+		}
+	}
 	for _, group := range catalog.Groups {
 		if group.ID == unknownGroup.ID && (group.ProviderMutationState != "outcome_unknown" || group.ProviderReadbackAt != nil) {
 			t.Fatalf("unknown group status=%+v", group)
