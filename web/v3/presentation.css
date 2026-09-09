@@ -61,8 +61,10 @@ body[data-ui-surface] button:disabled { cursor: not-allowed; }
 body[data-ui-surface] :is(button, .btn, .admin-button) svg { flex-shrink: 0; vertical-align: middle; }
 body[data-ui-surface] :is([role="alert"], [data-share-read-error]) { overflow-wrap: anywhere; }
 
-/* These are mobile-first surfaces even in a desktop WeCom side panel. */
-body:is([data-ui-surface="h5"], [data-ui-surface="sidebar"], [data-ui-surface="share"]) {
+/* H5 and public share pages use touch-first sizing. The WeCom sidebar keeps
+   the compact donor scale because it already runs inside a narrow desktop
+   panel and its own stylesheet defines the intended 11–16px hierarchy. */
+body:is([data-ui-surface="h5"], [data-ui-surface="share"]) {
   --ui-body: 16px;
   --ui-caption: 14px;
   --ui-section: 18px;
@@ -70,21 +72,18 @@ body:is([data-ui-surface="h5"], [data-ui-surface="sidebar"], [data-ui-surface="s
   --ui-line: 24px;
   --ui-control: 44px;
 }
-body[data-ui-surface="sidebar"] #sidebar-workbench-root { max-width: 100%; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
-body[data-ui-surface="sidebar"] :is(#sidebar-workbench-root, .profile-card, .content, .panel, .modal-card) { font-size: 16px; line-height: 24px; }
-body[data-ui-surface="sidebar"] :is(.name, .title, .row-title, .item-title, .head h2, .panel h3, .modal-head h2) { font-size: 18px; line-height: 26px; font-weight: 600; overflow-wrap: anywhere; }
-body[data-ui-surface="sidebar"] :is(.meta, .sub, .desc, .hint, .muted, .label, .row-sub, .item-sub, .field label, .modal-field > span, .phone-state, .toast) { font-size: 14px; line-height: 20px; font-weight: 400; overflow-wrap: anywhere; }
-body[data-ui-surface="sidebar"] :is(.badge, .pill, .tag, .time) { font-size: 12px; line-height: 18px; font-weight: 500; }
-body[data-ui-surface="sidebar"] :is(button:not(.icon-btn), .btn, .tab, .seg button, input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea) {
-  min-height: 44px;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 500;
+body[data-ui-surface="sidebar"] {
+  --ui-body: 13px;
+  --ui-caption: 11px;
+  --ui-section: 16px;
+  --ui-title: 18px;
+  --ui-line: 20px;
+  --ui-control: 34px;
 }
-body[data-ui-surface="sidebar"] :is(.close, .modal-close, .icon-btn, button[aria-label="关闭"]) { min-width: 44px; min-height: 44px; }
-body[data-ui-surface="sidebar"] .tabs { gap: 8px; overflow-x: auto; }
-body[data-ui-surface="sidebar"] .tab { padding: 8px 6px; }
-body[data-ui-surface="sidebar"] :is(.row-actions, .actions, .modal-actions, .head) { flex-wrap: wrap; gap: 8px; }
+body[data-ui-surface="sidebar"] #sidebar-workbench-root { max-width: 100%; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+body[data-ui-surface="sidebar"] :is(.name, .title, .row-title, .item-title, .head h2, .panel h3, .modal-head h2, .meta, .sub, .desc, .hint, .muted, .label, .row-sub, .item-sub, .field label, .modal-field > span, .phone-state, .toast) { overflow-wrap: anywhere; }
+body[data-ui-surface="sidebar"] .tabs { overflow-x: auto; }
+body[data-ui-surface="sidebar"] :is(.row-actions, .actions, .modal-actions, .head) { flex-wrap: wrap; }
 body[data-ui-surface="sidebar"] :is(.modal-panel, .modal-card, .modal-content) { max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; }
 body[data-ui-surface="sidebar"] :is(.row, .item, .card, .field) { min-width: 0; }
 
