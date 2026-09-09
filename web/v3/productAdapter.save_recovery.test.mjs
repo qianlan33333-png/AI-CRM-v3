@@ -24,6 +24,7 @@ async function waitFor(check, message) {
 const projection = { schema_version: 1, status: 'active', enabled: true, buy_button_text: '立即购买', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, purchase_action_enabled: false, purchase_action_mode: '', wecom_tagging: {}, slices: [] };
 const created = { id: 101, product_code: 'recovery-product', name: '恢复商品', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z' };
 const calls = [];
+let savedVersion = 1;
 let externalAttempts = 0;
 const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', () => undefined);
@@ -43,6 +44,10 @@ const dom = new JSDOM(page, {
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
       calls.push({ path: url.pathname, method, key: new Headers(init.headers || (input instanceof Request ? input.headers : undefined)).get('Idempotency-Key') || '', body: typeof init.body === 'string' ? init.body : '' });
       const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/v1/products/101') {
+        if (method === 'PUT') { assert.equal(JSON.parse(init.body).expected_version, savedVersion); savedVersion++; }
+        return reply({ ...created, version: savedVersion });
+      }
       if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [], next_cursor: '' });
       if (url.pathname === '/api/v1/products' && method === 'POST') return reply(created);
       if (url.pathname === '/api/admin/wechat-pay/products/101/external-push' && (method === 'POST' || method === 'PUT')) {
@@ -130,6 +135,12 @@ assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101');
 const actionLink = dom.window.document.querySelector('a[href="#product-action"]');
 actionLink.click();
 assert.equal(actionLink.getAttribute('aria-current'), 'step', 'saved editor must retain working dimension navigation');
+for (const expected of [2, 3]) {
+  [...dom.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '保存当前维度').click();
+  await waitFor(() => savedVersion === expected, 'consecutive save must advance opened CAS version');
+  await wait(80);
+  assert.match(dom.window.document.querySelector('#product-v3-toast').textContent, /已保存当前维度/);
+}
 assert.equal(navigationErrors.length, 0, 'successful saves must not navigate to the list');
 [...dom.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '返回商品管理').click();
 await wait(30);
