@@ -40,7 +40,7 @@ function busy(target: Element, options: BusyOptions = {}) {
   node.setAttribute('aria-live', 'polite');
   node.append(spinner(), document.createTextNode(options.label || '正在加载…'));
   target.replaceChildren(node);
-  if (options.initial) watchInitial(node);
+  if (options.initial && target.matches(roots)) watchInitial(node);
   return { clear: () => { clearedRoots.add(target); node.remove(); } };
 }
 function inspect(root: Element): void {
@@ -97,7 +97,7 @@ function install(): void {
   if (window.__AICRMSurfaceFeedback) return;
   window.__AICRMSurfaceFeedback = { busy };
   document.querySelectorAll(roots).forEach(inspect);
-  document.querySelectorAll('.surface-feedback__busy--initial').forEach(watchInitial);
+  document.querySelectorAll(roots).forEach(root => root.querySelectorAll(':scope > .surface-feedback__busy--initial').forEach(watchInitial));
   if (resourceFailed) resourceFailure();
   const observer = new MutationObserver(records => {
     const changed = new Set<Element>();

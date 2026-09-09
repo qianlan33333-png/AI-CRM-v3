@@ -54,6 +54,11 @@ try {
   rootHandle.clear();
   await new Promise(resolve => dom.window.setTimeout(resolve, 0));
   assert.equal(stage.children.length, 0, 'explicit root clear must not respawn the spinner');
+  const pageTimerCount = slowPageTimers.length;
+  stage.innerHTML = '<div id="config-extension-host">正在读取配置…</div>';
+  await new Promise(resolve => dom.window.setTimeout(resolve, 0));
+  assert.ok(stage.querySelector('.surface-feedback__spinner'));
+  assert.equal(slowPageTimers.length, pageTimerCount, 'local readers retain their own retry and draft lifecycle; no generic reload timeout');
 
   const local = dom.window.document.createElement('div');
   dom.window.document.body.append(local);
