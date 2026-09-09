@@ -89,7 +89,7 @@ func TestSidebarImagePreparationPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0120_outbound_sidebar_image_preparation.sql"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0122_outbound_sidebar_image_preparation.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
