@@ -826,7 +826,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	channelCatalogService := channelstore.NewCatalogService(uow, channelCatalogStore, channelCatalogStore, channelEvents,
-		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository})
+		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository, profiles: groupOpsRepository})
 	segmentBindings.Handler.BindAudienceChannelReferences(audienceChannelReferenceAdapter{channels: channelCatalogService})
 	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Summaries: channelstore.NewPostgreSQLCatalogSummaryReader(uow), Security: requestSecurity, CursorSigningKey: channelCursorKey})
 	if err != nil {
@@ -997,7 +997,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		Surveys:     customerSurveyAdapter{reader: surveySubmissions},
 		Timeline:    openPlatformTimeline, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey,
 		OwnerHandoff: ownerHandoffService, OwnerHandoffReader: ownerHandoffStore, OwnerHandoffTransfers: ownerHandoffService,
-		OwnerHandoffStaff: customerOwnerHandoffStaffDirectory{uow: uow, staff: accessRepository}, OwnerHandoffCorpScope: "wecom-corp:" + cfg.WeCom.CorpID, OwnerHandoffIdentity: oneID, OwnerHandoffPresentation: customerOwnerHandoffPreviewPresenter{uow: uow, display: customerStore, identities: queries, staff: accessRepository}})
+		OwnerHandoffStaff: customerOwnerHandoffStaffDirectory{uow: uow, staff: accessRepository, profiles: groupOpsRepository}, OwnerHandoffCorpScope: "wecom-corp:" + cfg.WeCom.CorpID, OwnerHandoffIdentity: oneID, OwnerHandoffPresentation: customerOwnerHandoffPreviewPresenter{uow: uow, display: customerStore, identities: queries, staff: accessRepository}})
 	if err != nil {
 		return fail(err)
 	}
@@ -1197,7 +1197,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = channelAssetService.SetProvider(channelFollowUserGate{enabled: cfg.WeCom.ChannelProviderReadEnabled, source: providerClient}); err != nil {
 		return fail(err)
 	}
-	channelAcquisitionService := channelstore.NewAcquisitionService(uow, channelCatalogService, channelStaffReferenceAdapter{users: accessRepository}, channelFollowUserGate{enabled: cfg.WeCom.ChannelProviderReadEnabled, source: providerClient})
+	channelAcquisitionService := channelstore.NewAcquisitionService(uow, channelCatalogService, channelStaffReferenceAdapter{users: accessRepository, profiles: groupOpsRepository}, channelFollowUserGate{enabled: cfg.WeCom.ChannelProviderReadEnabled, source: providerClient})
 	if err = channelAssetService.SetPublishValidator(channelAcquisitionService); err != nil {
 		return fail(err)
 	}

@@ -56,12 +56,13 @@ function createPage({ saved = channel(), mutations = [], creates = [], resourceI
       window.AICRMStandardComponents = { ready: async () => undefined };
       window.AICRMSendContentComposer = { mount(_container, options) { window.__channelComposerOptions = options; } };
       window.AICRMWeComTagPicker = { open() {} };
-      window.OperationMemberPicker = { open({ onConfirm }) { onConfirm([{ user_id: '12', display_name: '测试客服' }]); } };
+      window.OperationMemberPicker = { open(options) { window.__pickerOptions = options; const { onConfirm } = options; onConfirm([{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }]); } };
       window.fetch = async (input, init = {}) => {
         const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
         const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method)).toUpperCase();
         const headers = new Headers(init.headers || (typeof input === 'string' ? undefined : input.headers));
         calls.push({ path: url.pathname, method, headers, body: init.body || '' });
+        if (method === 'GET' && url.pathname === '/api/admin/common/operation-members') return response({ items: [{staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服'}] });
         if (method === 'GET' && url.pathname === '/assets/standard-components/channel_code_form.html') return new Response(donorForm, { status: 200 });
         if (method === 'GET' && url.pathname === '/api/admin/channels/17') return response({ ok: true, channel: saved }, 200, { ETag: '"7"' });
         if (method === 'PATCH' && url.pathname === '/api/admin/channels/17') {
@@ -153,6 +154,8 @@ try {
   document.querySelector('[name="channel_code"]').value = 'new-channel';
   document.querySelector('[data-add-channel-assignee]').click();
   await waitFor(() => document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), 'new channel picker result must enter assignment state');
+  document.querySelector('[data-add-channel-assignee]').click();
+  await waitFor(() => created.dom.window.__pickerOptions.disabledUserIds?.includes('wecom-alice'), 'existing local assignee IDs must disable the corresponding real WeCom ID in the shared picker');
   document.querySelector('[data-save-channel]').click();
   await waitFor(() => created.calls.some((call) => call.method === 'POST' && call.path === '/api/admin/channels'), 'new channel must submit one Catalog create');
   const post = created.calls.find((call) => call.method === 'POST' && call.path === '/api/admin/channels');
@@ -160,7 +163,7 @@ try {
   const payload = JSON.parse(post.body);
   assert.equal(payload.channel_name, '新渠道');
   assert.equal(payload.channel_code, 'new-channel');
-  assert.deepEqual(payload.assignment_config_json.assignees.map((item) => item.staff_id), [12], 'new channel must persist the picked staff owner ID');
+  assert.deepEqual(payload.assignment_config_json.assignees.map((item) => item.staff_id), [12], 'a non-numeric WeCom user ID must retain its separate local staff ID through the frozen donor callback');
   assert.equal(created.calls.filter((call) => call.method === 'POST' && call.path === '/api/admin/channels').length, 1, 'a single save must never double-create');
 } finally { created.dom.window.close(); }
 

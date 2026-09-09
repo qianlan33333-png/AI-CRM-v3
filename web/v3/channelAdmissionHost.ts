@@ -269,6 +269,36 @@ async function currentChannel(): Promise<Channel | null> {
   return channel;
 }
 
+// The frozen donor uses user_id as its persisted staff key. Keep the shared
+// picker payload untouched for display, and adapt only its channel callback.
+function installChannelPickerIdentityAdapter(): void {
+  type PickerOptions = Json & { onConfirm?: (members: Json[]) => void };
+  const picker = (window as Window & { OperationMemberPicker?: { open: (options: PickerOptions) => unknown } }).OperationMemberPicker;
+  if (!picker) return;
+  const open = picker.open.bind(picker);
+  picker.open = async (options) => {
+    if (options.scope !== 'channel_code' || typeof options.onConfirm !== 'function') return open(options);
+    const confirm = options.onConfirm;
+    const disabled = Array.isArray(options.disabledUserIds) ? options.disabledUserIds.map(String) : [];
+    let disabledUserIds: string[] = [];
+    if (disabled.length) {
+      const response = await nativeFetch('/api/admin/common/operation-members?scope=channel_code&page_size=100', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error('客服目录读取失败，请重试');
+      const payload = await response.json() as Json;
+      if (!Array.isArray(payload.items)) throw new Error('客服目录响应不完整，请重试');
+      disabledUserIds = payload.items.flatMap((member: Json) => disabled.includes(String(member.staff_id)) && member.user_id ? [String(member.user_id)] : []);
+    }
+    return open({ ...options, disabledUserIds, onConfirm: (members) => {
+      const mapped = members.map((member) => {
+        const staffID = Number(member.staff_id);
+        if (!Number.isSafeInteger(staffID) || staffID < 1) throw new Error('客服本地标识缺失，请刷新客服后重试');
+        return { ...member, user_id: String(staffID) };
+      });
+      confirm(mapped);
+    } });
+  };
+}
+
 export async function startChannelAdmissionHost(): Promise<void> {
   installCatalogTransport();
   try {
@@ -278,6 +308,7 @@ export async function startChannelAdmissionHost(): Promise<void> {
     const root = mount.querySelector<HTMLElement>('[data-channel-admission-page]'); if (!root) throw new Error('标准渠道表单挂载失败');
     hydrateChannelDonor(root, channel);
     await (window as Window & { AICRMStandardComponents?: { ready?: () => Promise<void> } }).AICRMStandardComponents?.ready?.();
+    installChannelPickerIdentityAdapter();
     await executeChannelDonorScript();
   } catch (error) {
     const message = error instanceof Error ? error.message : '渠道读取失败';
