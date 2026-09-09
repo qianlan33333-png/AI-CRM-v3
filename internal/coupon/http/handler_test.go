@@ -37,9 +37,10 @@ func (fakeOptions) ListProductOptions(_ context.Context, query productport.Produ
 }
 
 type fakeRules struct {
-	created couponport.UpsertCommand
-	page    couponport.Page
-	item    couponport.Coupon
+	created    couponport.UpsertCommand
+	page       couponport.Page
+	item       couponport.Coupon
+	publishKey string
 }
 
 type fakeClaims struct {
@@ -95,7 +96,8 @@ func (f *fakeRules) Update(context.Context, couponport.UpsertCommand) (couponpor
 func (f *fakeRules) UpdateDraft(context.Context, couponport.UpsertCommand) (couponport.Coupon, error) {
 	return f.item, nil
 }
-func (f *fakeRules) Publish(context.Context, couponport.ID, int64, string) (couponport.Coupon, error) {
+func (f *fakeRules) Publish(_ context.Context, _ couponport.ID, _ int64, key string) (couponport.Coupon, error) {
+	f.publishKey = key
 	return f.item, nil
 }
 func (f *fakeRules) Stop(context.Context, couponport.ID, int64, string) (couponport.Coupon, error) {
@@ -150,6 +152,27 @@ func TestCouponWriteCSRFAndUnknownFieldsFailClosed(t *testing.T) {
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/api/admin/coupons", strings.NewReader(`{"unknown":1}`)))
 	if r.Code != 400 {
 		t.Fatalf("unknown=%d", r.Code)
+	}
+}
+
+// The generated browser client sends POST with no JSON body. The Host supplies
+// its idempotency key; preserve that contract without weakening missing-key or
+// CSRF rejection (the original publish HTTP 400 failure mode).
+func TestGeneratedCouponPublishEmptyBodyWithHostKey(t *testing.T) {
+	rules := &fakeRules{item: couponFixture()}
+	h, _ := NewHandler(rules, fakeOptions{}, fakeSecurity{})
+	for _, key := range []string{"", "coupon-publish-browser-key"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/coupons/3/publish", nil)
+		req.Header.Set("Idempotency-Key", key)
+		res := httptest.NewRecorder()
+		h.ServeHTTP(res, req)
+		if key == "" {
+			if res.Code != http.StatusBadRequest || rules.publishKey != "" {
+				t.Fatalf("missing key: %d", res.Code)
+			}
+		} else if res.Code != http.StatusOK || rules.publishKey != key || !strings.Contains(res.Body.String(), `"id":3`) {
+			t.Fatalf("publish receipt: status=%d key=%q body=%s", res.Code, rules.publishKey, res.Body.String())
+		}
 	}
 }
 func TestCouponProductOptionsAndExcludedClaims(t *testing.T) {

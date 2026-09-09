@@ -184,6 +184,12 @@ function installAdminAPI(): void {
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(responseMessage(payload, `请求失败（HTTP ${response.status}）`));
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('保存结果无法确认；请保持内容不变后重试或先返回列表核对。');
+    if (couponMutation(absolute, method)) {
+      const receipt = (payload as Json).coupon as Json | undefined;
+      const receiptID = Number(receipt?.id);
+      const expectedID = absolute.pathname.match(/^\/api\/admin\/coupons\/([1-9][0-9]*)$/)?.[1];
+      if (!Number.isSafeInteger(receiptID) || receiptID <= 0 || expectedID && receiptID !== Number(expectedID)) throw new Error('保存结果无法确认；请保持内容不变后重试或先返回列表核对。');
+    }
     return payload as Json;
   };
 }
@@ -216,6 +222,19 @@ async function executeDonorScript(): Promise<void> {
   const handler = ready as EventListener | null;
   if (!handler) throw new Error('标准优惠券交互脚本未注册初始化函数');
   handler.call(document, new Event('DOMContentLoaded'));
+  // Only the controls wired by this exact donor runtime are owned. Register
+  // them after initialization succeeds so shared feedback cannot claim that
+  // a real save is unavailable; unrelated actions retain its normal guard.
+  const markOwned = () => {
+    document.querySelector('#stage')?.querySelectorAll<HTMLElement>('#saveCoupon,#openProductSelector,#couponProductSearchButton,#couponProductPrev,#couponProductNext,#confirmProductSelection,[data-close-product-dialog],[data-product-type],#selectedProductList [data-remove-product]').forEach((node) => {
+      (node as HTMLElement & { __dcBound?: boolean }).__dcBound = true;
+      node.dataset.capabilityState = 'real';
+      node.removeAttribute('aria-description');
+    });
+  };
+  markOwned();
+  const selected = document.getElementById('selectedProductList');
+  if (selected) new MutationObserver(markOwned).observe(selected, { childList: true, subtree: true });
 }
 
 async function mountCouponEditor(): Promise<void> {
@@ -230,7 +249,7 @@ async function mountCouponEditor(): Promise<void> {
     await installStyles(); installAdminAPI(); stage.innerHTML = contentFromDonor(raw, initial, id); await executeDonorScript();
   } catch (error) {
     mounted = false; mountFailed = true; const message = error instanceof Error ? error.message : '标准优惠券表单加载失败'; const notice = document.createElement('div'); notice.setAttribute('role', 'alert'); notice.textContent = `${message}；未提交任何保存。`;
-    const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试加载'; retry.addEventListener('click', () => { mountFailed = false; notice.remove(); void mountCouponEditor(); }); notice.append(' ', retry); stage.prepend(notice);
+    const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试加载'; retry.addEventListener('click', () => { mountFailed = false; notice.remove(); void mountCouponEditor(); }); (retry as HTMLButtonElement & { __dcBound?: boolean }).__dcBound = true; notice.append(' ', retry); stage.prepend(notice);
   }
 }
 new MutationObserver(() => { void mountCouponEditor(); }).observe(document.documentElement, { childList: true, subtree: true });
