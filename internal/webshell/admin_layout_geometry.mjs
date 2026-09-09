@@ -268,16 +268,20 @@ try {
     if (layout.headers !== 0 || !layout.stage || layout.renderedRootCount < 1 || !layout.innerBar || !layout.innerBarText || !layout.title || layout.titleCount > 1 || Math.abs(layout.stage.left - layout.main.left) > 1 || Math.abs(layout.stage.top - layout.main.top) > 1 || Math.abs(layout.innerBar.left - layout.stage.left) > 1 || Math.abs(layout.innerBar.top - layout.stage.top) > 1 || Math.abs(layout.innerBar.right - layout.main.right) > 1 || layout.stage.paddingLeft !== "0px" || layout.stage.paddingTop !== "0px") throw new Error(`${label} embedded workspace/header geometry invalid`);
   };
   const assertHXCLayout = async label => {
-    await assertLayout("standard", label, ".sec-funnel .page-head");
+    await assertLayout("standard", label, "#hxcStats");
     const hxc = await evaluate(cdp, `(() => {
       const stage=document.querySelector('#stage.labs.sec-funnel');
       const crumb=stage?.querySelector(':scope > .crumb');
       const title=stage?.querySelector(':scope > .page-head > :first-child');
-      const refresh=stage?.querySelector('#hxcRefresh');
+      const refresh=document.querySelector('.admin-topbar #hxcRefresh');
+      const refreshBox=refresh?.getBoundingClientRect();
+      const topbarBox=document.querySelector('.admin-topbar')?.getBoundingClientRect();
+      const pageTitle=document.querySelector('.admin-topbar h1');
+      const pageTitleVisible=Boolean(pageTitle && pageTitle.textContent?.trim() === '漏斗 / 数据看板' && pageTitle.getBoundingClientRect().height > 0);
       const style=stage ? getComputedStyle(stage) : null;
-      return {stage: Boolean(stage), paddingLeft: style?.paddingLeft || '', paddingTop: style?.paddingTop || '', crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', titleHidden: Boolean(title) && getComputedStyle(title).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none'};
+      return {pageTitleVisible, stage: Boolean(stage), paddingLeft: style?.paddingLeft || '', paddingTop: style?.paddingTop || '', crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', titleHidden: Boolean(title) && getComputedStyle(title).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', refreshInTopbar: Boolean(refreshBox && topbarBox && refreshBox.top >= topbarBox.top && refreshBox.bottom <= topbarBox.bottom)};
     })()`);
-    if (!hxc?.stage || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible) throw new Error(label + " HXC title/padding/action layout invalid");
+    if (!hxc?.stage || !hxc.pageTitleVisible || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible || !hxc.refreshInTopbar) throw new Error(label + " HXC title/padding/action layout invalid");
   };
   const assertRadarLayout = async (label, actionSelector, contentSelector = ".sec-radar .page-head") => {
     await assertLayout("standard", label, contentSelector);
@@ -569,7 +573,7 @@ try {
   await navigateAIAssistant("/admin/cloud-orchestrator/plans", "ai", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] .cloud-plan-toolbar [data-plan-refresh]')) && document.querySelector('[data-plan-list]')?.textContent?.includes('AI layout detail fixture')", false, true);
   await navigateAIAssistant("/admin/cloud-orchestrator/plans/" + aiPlanID, "ai-detail", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] [data-plan-approve]')) && Boolean(document.querySelector('[data-plan-reject]')) && Boolean(document.querySelector('a[href=\"/admin/cloud-orchestrator/plans\"]')) && document.querySelector('[data-plan-detail-state]')?.textContent?.trim().length > 0 && document.querySelector('[data-plan-name]')?.textContent?.includes('AI layout detail fixture')", true);
   await navigateStandard("/admin/customers", "Boolean(document.querySelector('[data-customer-directory-root]'))", "customers", true, true);
-  const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel'))", "hxc", "standard", ".sec-funnel .page-head", false, true);
+  const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel'))", "hxc", "standard", "#hxcStats", false, true);
   if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
   await navigate("/admin/questionnaires", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "questionnaires", "embedded", questionnaireTitle, true, true);
   const radarMounted = await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#btnNew'))", "radar", "standard", ".sec-radar .page-head", false, true);

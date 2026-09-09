@@ -16,11 +16,14 @@ var (
 	ErrInvalidGroupOpsMaterialPreparation  = errors.New("invalid group ops material preparation")
 	ErrGroupOpsMaterialPreparationConflict = errors.New("group ops material preparation conflict")
 	ErrSidebarMaterialNotReady             = errors.New("sidebar material is not provider ready")
+	ErrSidebarMaterialPreparing            = errors.New("sidebar material preparation pending")
+	ErrSidebarMaterialOutcomeUnknown       = errors.New("sidebar material upload outcome unknown")
+	ErrSidebarMaterialPreparationFailed    = errors.New("sidebar material preparation failed")
 )
 
 // SidebarImageSendMaterial is the Provider-ready, lease-bound projection used
-// by WeCom's sendChatMessage image contract. It is read from Media-owned
-// preparation receipts and never manufactures a media ID from a local ID.
+// by WeCom's sendChatMessage image contract. Its preparation reader must use
+// a Provider receipt and never manufacture a media ID from a local ID.
 type SidebarImageSendMaterial struct {
 	ImageID    int64
 	MediaID    string

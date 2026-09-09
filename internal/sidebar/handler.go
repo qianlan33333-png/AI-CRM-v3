@@ -601,6 +601,19 @@ func (h *Handler) createSendIntent(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, err := h.sendPayload(r.Context(), int64(customerID), body.ResourceKind, body.ResourceID, body.ProductType)
 	if err != nil {
+		if errors.Is(err, mediaport.ErrSidebarMaterialPreparing) {
+			w.Header().Set("Retry-After", "1")
+			h.writeJSON(w, http.StatusAccepted, map[string]any{"state": "material_preparing"})
+			return
+		}
+		if errors.Is(err, mediaport.ErrSidebarMaterialOutcomeUnknown) {
+			writeError(w, http.StatusConflict, "material_upload_outcome_unknown")
+			return
+		}
+		if errors.Is(err, mediaport.ErrSidebarMaterialPreparationFailed) {
+			writeError(w, http.StatusServiceUnavailable, "material_upload_failed")
+			return
+		}
 		if errors.Is(err, mediaport.ErrSidebarMaterialNotReady) {
 			writeError(w, http.StatusServiceUnavailable, "capability_not_ready")
 			return

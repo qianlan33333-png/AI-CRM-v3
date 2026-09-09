@@ -246,8 +246,9 @@ export async function mountFunnelGrid(
     currentCursor = history.pop() || "";
     void loadRows();
   });
-  $("#hxcRefresh").addEventListener("click", async () => {
-    const button = $("#hxcRefresh") as HTMLButtonElement;
+  const refreshButton = $("#hxcRefresh") as HTMLButtonElement;
+  refreshButton.addEventListener("click", async () => {
+    const button = refreshButton;
     button.disabled = true;
     button.textContent = "正在创建刷新任务…";
     try {
@@ -274,5 +275,13 @@ export async function mountFunnelGrid(
       button.textContent = "立即刷新";
     }
   });
+  // The V3 shell owns the page title. Move the existing action with its bound
+  // handler into that same top row; standalone mounts retain their local bar.
+  const topbar = root.closest(".admin-main-wrap")?.querySelector(".admin-topbar");
+  if (topbar) {
+    topbar.querySelector("#hxcRefresh")?.remove();
+    refreshButton.className = "admin-button admin-button--primary";
+    topbar.appendChild(refreshButton);
+  }
   await reload();
 }

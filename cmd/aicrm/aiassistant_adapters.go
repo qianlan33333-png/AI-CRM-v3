@@ -16,10 +16,12 @@ import (
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
 
@@ -136,6 +138,11 @@ type aiFollowReader interface {
 	IsActive(context.Context, string, string, customerdomain.CustomerID) (bool, error)
 }
 type aiPrivateTargetResolver struct {
+	deferred interface {
+		LoadDeferredTarget(context.Context, string) (aiassistantport.DeferredTarget, error)
+	}
+	resolver      identityport.Resolver
+	trusted       identityport.ExternalIdentityValueReader
 	uow           platformport.UnitOfWork
 	identities    identityport.OutboundWeComIdentityReader
 	access        accessport.Repository
@@ -175,6 +182,9 @@ type aiAttachmentReader interface {
 	Attachment(context.Context, int64) (map[string]any, []byte, error)
 }
 type aiPrivatePayloadReader struct {
+	excel interface {
+		LoadExcelCard(context.Context, aiassistantport.ExcelCard) (outbound.PrivateMessageAttachment, error)
+	}
 	content     aiassistantport.OutboundPayloadReader
 	images      aiImageReader
 	materials   aiMaterialDetails
@@ -335,6 +345,17 @@ func (a aiPrivatePayloadReader) verifyFrozenMaterial(ctx context.Context, block 
 func (a aiPrivatePayloadReader) prepareBlocks(ctx context.Context, blocks []aiassistantport.ContentBlock) (outbound.PrivateMessagePayload, error) {
 	result := outbound.PrivateMessagePayload{}
 	for _, block := range blocks {
+		if block.ExcelCard != nil {
+			if a.excel == nil {
+				return result, errors.New("excel card reader unavailable")
+			}
+			card, err := a.excel.LoadExcelCard(ctx, *block.ExcelCard)
+			if err != nil {
+				return result, err
+			}
+			result.Attachments = append(result.Attachments, card)
+			continue
+		}
 		switch block.Kind {
 		case aiassistantport.ContentText:
 			if result.Text != "" {
@@ -463,4 +484,34 @@ func number(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func (a aiPrivateTargetResolver) ResolveDeferredPrivateMessageTarget(ctx context.Context, ref string) (outbound.PrivateMessageTarget, error) {
+	if a.deferred == nil || a.resolver == nil || a.trusted == nil {
+		return outbound.PrivateMessageTarget{}, errors.New("deferred identity unavailable")
+	}
+	target, err := a.deferred.LoadDeferredTarget(ctx, ref)
+	if err != nil {
+		return outbound.PrivateMessageTarget{}, err
+	}
+	var result outbound.PrivateMessageTarget
+	err = a.uow.Within(ctx, func(tx context.Context) error {
+		resolved, e := a.resolver.Resolve(tx, identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: target.Scope, Value: target.UnionID, Assurance: identitydomain.AssuranceDeclared, Source: "aiassistant.excel"})
+		if e != nil || resolved.Status != identityport.ResolveFound {
+			return outboundport.TargetResolutionError("unionid_not_unique")
+		}
+		trusted, found, e := a.trusted.VerifiedExternalIdentityValue(tx, resolved.CustomerID, identitydomain.KindUnionID, target.Scope)
+		if e != nil || !found || trusted != target.UnionID {
+			return outboundport.TargetResolutionError("unionid_unverified")
+		}
+		external, found, e := a.identities.VerifiedWeComIdentityForCustomer(tx, resolved.CustomerID, a.corpID)
+		if e != nil || !found {
+			return outboundport.TargetResolutionError("wecom_identity_unavailable")
+		}
+		// User explicitly selected the sender userid. Provider determines reachability;
+		// this import lane does not override it with an owner or precheck follow relations.
+		result = outbound.PrivateMessageTarget{ExternalUserID: external, StaffUserID: target.SenderUserID}
+		return nil
+	})
+	return result, err
 }

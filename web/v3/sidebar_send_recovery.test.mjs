@@ -137,7 +137,7 @@ function backend(customerID) {
   };
 }
 
-function createBridge(customerID, priorSession = []) {
+function createBridge(customerID, priorSession = [], options = {}) {
   const dom = new JSDOM('<div id="sidebar-workbench-root"></div>', {
     url: `https://sidebar.test.invalid/sidebar/bind-mobile?external_userid=external-${customerID}`,
     runScripts: "outside-only",
@@ -145,7 +145,7 @@ function createBridge(customerID, priorSession = []) {
     beforeParse(window) {
       window.Response = Response;
       window.Headers = Headers;
-      window.fetch = backend(customerID);
+      window.fetch = options.fetch || backend(customerID);
       window.wx = {
         config() {
           queueMicrotask(() => ready?.());
@@ -162,14 +162,14 @@ function createBridge(customerID, priorSession = []) {
             queueMicrotask(() =>
               callback({
                 err_msg: "getCurExternalContact:ok",
-                external_userid: `external-${customerID}`,
+                external_userid: options.currentContact ? options.currentContact() : `external-${customerID}`,
               }),
             );
             return;
           }
           if (method === "sendChatMessage") {
             sendInvocations += 1;
-            queueMicrotask(() => callback({ err_msg: "sendChatMessage:fail" }));
+            queueMicrotask(() => callback({ err_msg: options.sdkSuccess ? "sendChatMessage:ok" : "sendChatMessage:fail" }));
             return;
           }
           queueMicrotask(() => callback({ err_msg: `${method}:fail` }));
@@ -264,7 +264,66 @@ assert.equal(
   "the separate product binding may invoke its own SDK attempt",
 );
 
-for (const fixture of [first, reloaded, switchedCustomer])
+// Exercise the actual Host's 202 preparation polling, with no executable
+// grant until the durable material upload has completed.
+function preparingBackend(customerID, onPending) {
+  const readyBackend = backend(customerID);
+  const keys = [];
+  let requests = 0;
+  return {
+    keys,
+    fetch: async (input, init = {}) => {
+      const url = new URL(typeof input === "string" ? input : input.url, "https://sidebar.test.invalid");
+      if (url.pathname === "/api/sidebar/v2/send-intents") {
+        keys.push(requestHeaders(init).get("Idempotency-Key"));
+        requests += 1;
+        if (requests === 1) {
+          onPending?.();
+          return response({ state: "material_preparing" }, 202);
+        }
+      }
+      return readyBackend(input, init);
+    },
+  };
+}
+const materialCard = { resource_kind: "material", resource_id: "image:91" };
+const beforePreparedSends = sendInvocations;
+const beforePreparedAccepts = accepts;
+let pendingObserved;
+const pending = new Promise((resolve) => { pendingObserved = resolve; });
+const preparation = preparingBackend(3, pendingObserved);
+const preparedCustomer = createBridge(3, [], { fetch: preparation.fetch, sdkSuccess: true });
+const preparedSend = preparedCustomer.bridge.send(materialCard);
+await pending;
+assert.equal(sendInvocations, beforePreparedSends, "preparing response must not invoke the SDK");
+assert.equal(accepts, beforePreparedAccepts, "preparing response must not create a chat intent");
+await preparedSend;
+assert.equal(preparation.keys.length, 2, "the Host polls after pending until ready");
+assert.ok(preparation.keys[0], "preparation must use an idempotency key");
+assert.equal(new Set(preparation.keys).size, 1, "pending and ready requests retain the same logical key");
+assert.equal(accepts, beforePreparedAccepts + 1, "only ready material creates one chat intent");
+assert.equal(sendInvocations, beforePreparedSends + 1, "pending then ready invokes the SDK exactly once");
+
+let contact = "external-4";
+let switchedPendingObserved;
+const switchedPending = new Promise((resolve) => { switchedPendingObserved = resolve; });
+const switchingPreparation = preparingBackend(4, switchedPendingObserved);
+const switchingCustomer = createBridge(4, [], {
+  fetch: switchingPreparation.fetch,
+  currentContact: () => contact,
+  sdkSuccess: true,
+});
+const beforeSwitchSends = sendInvocations;
+const beforeSwitchAccepts = accepts;
+const switchingSend = switchingCustomer.bridge.send(materialCard);
+await switchedPending;
+contact = "external-5";
+await assert.rejects(() => switchingSend, /客户|上下文|切换/);
+assert.equal(switchingPreparation.keys.length, 1, "a contact switch stops preparation before another request");
+assert.equal(sendInvocations, beforeSwitchSends, "a contact switch during polling must never invoke the SDK");
+assert.equal(accepts, beforeSwitchAccepts, "a contact switch cannot create a chat intent from prepared material");
+
+for (const fixture of [first, reloaded, switchedCustomer, preparedCustomer, switchingCustomer])
   fixture.dom.window.close();
 console.log(
   "sidebar Host reload, duplicate-send, and customer-scope recovery: PASS",

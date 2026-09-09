@@ -66,6 +66,7 @@ type Plan struct {
 }
 
 type Recipient struct {
+	DeferredTarget   *DeferredTarget           `json:"deferred_target,omitempty"`
 	ID               RecipientID               `json:"id"`
 	PlanID           PlanID                    `json:"plan_id"`
 	CustomerID       customerdomain.CustomerID `json:"customer_id"`

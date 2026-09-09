@@ -20,6 +20,7 @@ import (
 	adminopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/store"
 	aiassistant "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant"
 	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
+	aiexcel "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/excel"
 	aiassistanthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/http"
 	aiassistantstore "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/store"
 	automation "github.com/qianlan33333-png/AI-CRM-v3/internal/automation"
@@ -305,6 +306,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = river.AddWorkerSafely[customer.OwnerHandoffBatchJobArgs](effectWorkers, ownerHandoffBatchWorker); err != nil {
 		return fail(err)
 	}
+	excelClient, err := aiexcel.NewClient(cfg.AIAssistant.ExcelBatchURL, cfg.AIAssistant.ExcelBatchToken)
+	if err != nil {
+		return fail(err)
+	}
+	excelWorker := &aiexcel.Worker{}
+	if err = river.AddWorkerSafely[aiexcel.RefreshArgs](effectWorkers, excelWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
@@ -334,6 +343,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	periodicJobs := []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}
+	if excelClient != nil {
+		periodicJobs = append(periodicJobs, aiexcel.Periodic())
+	}
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
@@ -609,6 +621,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	outboundCompletionSink.WithAutomationMessage(outboundMessages)
 	sidebarExpiry := outbound.SidebarJSSDKExpiry{}
 	outboundCompletionSink.WithSidebarJSSDK(sidebarExpiry)
+	sidebarMediaPreparation, err := outbound.NewSidebarMediaPreparationService(uow, effectRepository, pool.Native())
+	if err != nil {
+		return fail(err)
+	}
+	outboundCompletionSink.WithSidebarMedia(sidebarMediaPreparation)
 	generationCompletionSink, err := automationprovider.NewGenerationCompletionSink(automationRuntime)
 	if err != nil {
 		return fail(err)
@@ -1272,7 +1289,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}, providerClient)
+	excelBridge := &aiexcel.Bridge{Client: excelClient, App: aiService, Repo: aiRepository, Receipts: privateWriter, Provider: providerClient, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Scope: "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}
+	excelWorker.Bridge = excelBridge
+	aiService.ExcelSnapshot = excelBridge.PrepareSnapshot
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{deferred: aiRepository, resolver: oneID, trusted: queries, uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{excel: excelClient, content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}, providerClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -1321,7 +1341,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = automationRuntime.SetDynamicGenerationDependencies(effectRepository, generationContext, automationService, generationProvider); err != nil {
 		return fail(err)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
+	var sidebarMediaProvider externaleffects.ProviderAdapter
+	if cfg.WeCom.Enabled && cfg.Effects.ProviderEnabled {
+		sidebarMediaProvider, err = outbound.NewSidebarMediaPreparationProvider(sidebarMediaPreparation, providerClient)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(sidebarMediaProvider).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter, automation: generationProvider}); err != nil {
 		return fail(err)
 	}
@@ -1391,7 +1418,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		},
 		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: customerTimelineAdapter{uow: uow, reader: customerStore},
 		Products: productCatalog, ProductByID: productTargets, Orders: orderService, Entitlements: entitlements,
-		Coupons: sidebarCouponCatalog, Materials: mediaLibrary, MaterialSend: mediaLibrary, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin, CursorSigningKey: cursorSigningKey,
+		Coupons: sidebarCouponCatalog, Materials: mediaLibrary, MaterialSend: sidebarImagePreparation{images: mediaService, preparer: sidebarMediaPreparation, scope: cfg.WeCom.CorpID + ":" + cfg.WeCom.AgentID, enabled: cfg.WeCom.Enabled && cfg.Effects.ProviderEnabled}, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin, CursorSigningKey: cursorSigningKey,
 	})
 	if err != nil {
 		return fail(err)
@@ -1459,6 +1486,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/admin/channels/", channelCenter)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
+	adminAPIs.Handle("/api/admin/operation-batches", excelBridge)
+	adminAPIs.Handle("/api/admin/operation-batches/", excelBridge)
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
 	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
@@ -1481,7 +1510,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 		var complete bool
 		checkErr := pool.Native().QueryRow(readinessContext, `SELECT
-			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089','0092','0093','0094']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
+			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089','0092','0093','0094','0120','0121','0122','0123']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
 			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='order_service_entitlements' AND column_name='alliance')`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
@@ -1649,7 +1678,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
+	aiReviewAPIs := http.NewServeMux()
+	aiReviewAPIs.Handle("/api/admin/operation-batches", excelBridge)
+	aiReviewAPIs.Handle("/api/admin/operation-batches/", excelBridge)
+	aiReviewAPIs.Handle("/", aiHandler.Routes())
+	handler = mountAIAssistant(handler, aiReviewAPIs, aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
 	handler = securityHeaders(mountPublicCoupon(mountPublicServicePeriod(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler), publicServicePeriodHandler), couponPublicHandler))
 	handler = redirectH5EntryOrigin(handler, cfg.PublicOrigin, h5PublicOrigin(cfg))
 	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
@@ -1769,7 +1802,7 @@ func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthenticat
 func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
 	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
+		if r.URL.Path == "/api/admin/operation-batches" || strings.HasPrefix(r.URL.Path, "/api/admin/operation-batches/") || strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
 			api.ServeHTTP(w, r)
 			return
 		}

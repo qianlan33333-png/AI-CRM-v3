@@ -258,6 +258,7 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // CompletionRouter keeps EER's single completion-sink slot while routing
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
+	sidebarMedia effectport.CompletionSink
 	tag          *TagCatalogCompletionSink
 	tagMutation  effectport.CompletionSink
 	group        *GroupMessageCompletionSink
@@ -350,6 +351,13 @@ func (r *CompletionRouter) WithPrivateMessage(private *PrivateMessageCompletionS
 func (r *CompletionRouter) WithAutomationMessage(message effectport.CompletionSink) *CompletionRouter {
 	if r != nil {
 		r.automation = message
+	}
+	return r
+}
+
+func (r *CompletionRouter) WithSidebarMedia(sink effectport.CompletionSink) *CompletionRouter {
+	if r != nil {
+		r.sidebarMedia = sink
 	}
 	return r
 }
@@ -455,6 +463,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("private message completion sink is unavailable")
 		}
 		return r.private.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindOutboundMedia:
+		if r.sidebarMedia == nil {
+			return errors.New("sidebar media completion sink unavailable")
+		}
+		return r.sidebarMedia.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	case effectport.KindSidebarJSSDKSend:
 		if r.sidebar == nil {
 			return errors.New("sidebar JSSDK completion sink is unavailable")

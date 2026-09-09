@@ -147,6 +147,8 @@ case "$mode" in
     build_frontend
     stage_frontend
     cp -R migrations deploy release/
+    mkdir -p release/components/excel-batches
+    cp components/excel-batches/batches.py components/excel-batches/requirements.txt components/excel-batches/aicrm-excel-batches.service release/components/excel-batches/
     (
       cd release
       LC_ALL=C find . -type f ! -name release-files.sha256 -print0 \
@@ -167,6 +169,8 @@ case "$mode" in
     run_frozen_consumer_gates
     run_frontend_and_stage_checks
     cp -R migrations deploy release/
+    mkdir -p release/components/excel-batches
+    cp components/excel-batches/batches.py components/excel-batches/requirements.txt components/excel-batches/aicrm-excel-batches.service release/components/excel-batches/
     node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
     node scripts/test-stage-pr01-effects-ui.mjs
     node scripts/test-groupops-history-release.mjs web/dist release/web/dist

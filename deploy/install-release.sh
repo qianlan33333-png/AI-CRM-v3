@@ -415,6 +415,11 @@ elif [[ -z "$release_run_number" ]]; then
   echo "installing release ${release_sha} without a CI run number; serialized but not stale-run guarded" >&2
 fi
 
+# Prepare optional component dependencies before switching the active release.
+if [[ -f /etc/aicrm-excel/config.json && -f /etc/aicrm-excel/service.env ]]; then
+  bash "$release_dir/deploy/prepare-excel-component.sh" "$release_dir"
+fi
+
 previous=""
 if [[ -L "$current_link" ]]; then
 	previous="$(readlink -f "$current_link")"
@@ -439,6 +444,13 @@ rollback() {
   if [[ -n "$previous" && -d "$previous" ]]; then
     ln -sfn "$previous" "${current_link}.rollback"
     mv -Tf "${current_link}.rollback" "$current_link"
+    if [[ -f /etc/aicrm-excel/config.json ]]; then
+      if [[ -f "$previous/components/excel-batches/batches.py" ]]; then
+        systemctl restart aicrm-excel-batches.service || true
+      else
+        systemctl stop aicrm-excel-batches.service || true
+      fi
+    fi
     systemctl restart aicrm.service || true
     systemctl restart aicrm-wecom-worker.timer || true
     systemctl restart aicrm-effects-worker.service || true
@@ -446,6 +458,30 @@ rollback() {
     systemctl restart aicrm-hxc-dashboard-refresh.timer || true
   fi
 }
+
+if [[ -f /etc/aicrm-excel/config.json ]]; then
+  if ! systemctl enable aicrm-excel-batches.service || ! systemctl restart aicrm-excel-batches.service; then
+    rollback
+    exit 16
+  fi
+  if ! python3 - <<'CHECK_EXCEL'
+import json,time,urllib.request
+from pathlib import Path
+token = next(line.split('=',1)[1] for line in Path('/etc/aicrm-excel/service.env').read_text().splitlines() if line.startswith('EXCEL_BATCH_TOKEN='))
+for attempt in range(30):
+    try:
+        request=urllib.request.Request('http://127.0.0.1:8791/health',headers={'Authorization':'Bearer '+token})
+        with urllib.request.urlopen(request,timeout=2) as response:
+            if json.load(response).get('ok'): break
+    except Exception: pass
+    time.sleep(1)
+else: raise SystemExit('Excel component failed readiness')
+CHECK_EXCEL
+  then
+    rollback
+    exit 16
+  fi
+fi
 
 if ! systemctl start aicrm-migrate.service; then
   rollback

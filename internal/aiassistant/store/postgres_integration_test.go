@@ -715,7 +715,7 @@ func integrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	for _, name := range []string{"0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql"} {
+	for _, name := range []string{"0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql", "0120_excel_batches.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
