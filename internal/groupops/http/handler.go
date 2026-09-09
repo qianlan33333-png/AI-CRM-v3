@@ -1388,6 +1388,11 @@ func (h *Handler) respond(w stdhttp.ResponseWriter, value any, err error) {
 }
 func (h *Handler) respondStatus(w stdhttp.ResponseWriter, status int, value any, err error) {
 	if err != nil {
+		var diagnostic *groupopsapp.GroupDirectoryReadError
+		if errors.As(err, &diagnostic) {
+			writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]any{"ok": false, "message": diagnostic.Message(), "error": map[string]string{"code": diagnostic.Error()}, "provider_execution_eligible": false, "real_external_call_executed": false})
+			return
+		}
 		writeError(w, errorStatus(err), errorCode(err))
 		return
 	}
