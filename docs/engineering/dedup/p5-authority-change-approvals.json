@@ -232,20 +232,20 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "249ce8aa28030e0796b73541a882367fad2fd331b234e97f333e93f763c6d702",
-          "head_sha256": "b4d865655f75ddf1bcf6a0c7258c1850f2ee06e171a3a1ae21bf5555c3af7985"
+          "head_sha256": "ebeba9dacb58fd6c8383ceba28b8ec7eac27064f452d8e3e734a6b1552fd9293"
         },
         {
           "path": "web/donor-sources/source-index.json",
           "base_sha256": "3c7521a4ec7f28d99749ade68ae2b351a999cf49f0aa87553f2610a3823fde9e",
-          "head_sha256": "9dc7c81ca7fd24eca3e80b7fac33e82eb2c939b65c06274089817aa93ec800d3"
+          "head_sha256": "a2f38107097c39a6c54c28c492359df74cd7700e70665e857432b7f32acfb62f"
         },
         {
           "path": "web/donor-sources/source-lock.json",
           "base_sha256": "208d5130dddfc6cc00c651583a320d9c64ac445b1df22601d9379c274c26d762",
-          "head_sha256": "c3fc434aa84206881256d9c3e4510935d948099f79e28ede4fdcf61013b649b7"
+          "head_sha256": "16eaa92bcd2587b54efeba38b016dc063eb2bf95c9f36dcf199484c90f8f7142"
         }
       ],
-      "reason": "User-authorized Excel batch integration adds active V3 OpenAPI routes and response fields; frozen legacy payloads are unchanged.",
+      "reason": "Implement authorized Excel batch import, uploaded cover and review/receipt API under the active V3 owner; frozen donor payloads remain unchanged.",
       "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/218"
     }
   ]
