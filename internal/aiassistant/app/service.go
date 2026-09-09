@@ -149,6 +149,7 @@ type IdentityTargetDisposition struct {
 }
 
 type Service struct {
+	ExcelSnapshot   func(context.Context, aiassistantport.PlanID, int64) (string, error)
 	uow             platformport.UnitOfWork
 	store           Store
 	customers       CustomerReader
@@ -532,6 +533,21 @@ func (s *Service) UpdateContent(ctx context.Context, command aiassistantport.Upd
 	}
 	var content aiassistantport.ContentVersion
 	err := s.uow.Within(ctx, func(tx context.Context) error {
+		current, priorContent, readErr := s.store.GetRecipient(tx, command.PlanID, command.RecipientID, false)
+		if readErr != nil {
+			return readErr
+		}
+		if current.DeferredTarget != nil {
+			if len(command.Blocks) != 2 || command.Blocks[0].Kind != aiassistantport.ContentText || command.Blocks[1].ExcelCard == nil || len(priorContent.Blocks) != 2 || priorContent.Blocks[1].ExcelCard == nil || command.Blocks[1].ExcelCard.AppID != priorContent.Blocks[1].ExcelCard.AppID || command.Blocks[1].ExcelCard.CoverDigest != priorContent.Blocks[1].ExcelCard.CoverDigest {
+				return ErrInvalid
+			}
+		} else {
+			for _, block := range command.Blocks {
+				if block.ExcelCard != nil {
+					return ErrInvalid
+				}
+			}
+		}
 		resolved, materialErr := s.resolveBlocks(tx, command.Blocks)
 		if materialErr != nil {
 			return materialErr
@@ -707,6 +723,24 @@ func (s *Service) ApprovePlan(ctx context.Context, command aiassistantport.Appro
 	if !command.Actor.Valid() || command.PlanID < 1 || command.ExpectedVersion < 1 || !validKey(command.IdempotencyKey) || !effectport.ValidDigest(command.PreviewDigest) {
 		return aiassistantport.Plan{}, ErrInvalid
 	}
+	excelSnapshotKey := ""
+	planBefore, readErr := s.GetPlan(ctx, command.PlanID)
+	if readErr != nil {
+		return aiassistantport.Plan{}, readErr
+	}
+	if planBefore.SourceKind == "excel_batch" && (planBefore.State == aiassistantport.PlanPendingReview || planBefore.State == aiassistantport.PlanPartiallyApproved) {
+		if planBefore.Version != command.ExpectedVersion {
+			return aiassistantport.Plan{}, ErrConflict
+		}
+		if s.ExcelSnapshot == nil {
+			return aiassistantport.Plan{}, ErrUnavailable
+		}
+		var snapshotErr error
+		excelSnapshotKey, snapshotErr = s.ExcelSnapshot(ctx, command.PlanID, command.ExpectedVersion)
+		if snapshotErr != nil {
+			return aiassistantport.Plan{}, snapshotErr
+		}
+	}
 	var result aiassistantport.Plan
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		receipt, owned, err := s.store.Reserve(tx, reservation("plan_approve", command.Actor, command.IdempotencyKey, digestJSON(command), s.nowUTC()))
@@ -749,9 +783,15 @@ func (s *Service) ApprovePlan(ctx context.Context, command aiassistantport.Appro
 		intents := make([]outboundport.PrivateMessageIntentResult, 0, len(recipients))
 		for i, recipient := range recipients {
 			sourceRef := "aiassistant:" + strconv.FormatInt(int64(plan.ID), 10) + ":" + strconv.FormatInt(int64(recipient.ID), 10) + ":" + strconv.FormatInt(int64(contents[i].ID), 10)
+			deferredRef := ""
+			targetDigest := effectport.Hash("aiassistant.target", strconv.FormatInt(int64(recipient.CustomerID), 10), strconv.FormatInt(recipient.StaffID, 10))
+			if recipient.DeferredTarget != nil {
+				deferredRef = sourceRef
+				targetDigest = effectport.Hash("aiassistant.excel.target", recipient.DeferredTarget.Scope, recipient.DeferredTarget.UnionID, recipient.DeferredTarget.SenderUserID)
+			}
 			intent, writeErr := s.outbound.WritePrivateMessageIntentWithin(tx, outboundport.PrivateMessageIntentCommand{
-				SourceReference: sourceRef, CustomerID: recipient.CustomerID, StaffID: recipient.StaffID, PayloadReference: sourceRef,
-				SourceDigest: effectport.Hash("aiassistant.source", sourceRef), TargetDigest: effectport.Hash("aiassistant.target", strconv.FormatInt(int64(recipient.CustomerID), 10), strconv.FormatInt(recipient.StaffID, 10)), PayloadDigest: contents[i].Digest,
+				DeferredTargetReference: deferredRef, SourceReference: sourceRef, CustomerID: recipient.CustomerID, StaffID: recipient.StaffID, PayloadReference: sourceRef,
+				SourceDigest: effectport.Hash("aiassistant.source", sourceRef), TargetDigest: targetDigest, PayloadDigest: contents[i].Digest,
 				PolicyHash: effectport.Hash("aiassistant.private-message.policy", "v1"), ReceiptKey: effectport.Hash("aiassistant.approval", strconv.FormatInt(int64(plan.ID), 10), strconv.FormatInt(int64(recipient.ID), 10), strconv.FormatInt(plan.Version, 10), string(contents[i].Digest))})
 			if writeErr != nil {
 				return writeErr
@@ -761,6 +801,17 @@ func (s *Service) ApprovePlan(ctx context.Context, command aiassistantport.Appro
 		decisionDigest := sha256.Sum256([]byte(command.IdempotencyKey))
 		if err = s.store.SavePlanApproval(tx, aggregate.Projection, recipients, contents, intents, command.Actor.ID, decisionDigest, s.nowUTC()); err != nil {
 			return err
+		}
+		if excelSnapshotKey != "" {
+			recorder, ok := s.store.(interface {
+				SaveExcelSnapshot(context.Context, aiassistantport.PlanID, string) error
+			})
+			if !ok {
+				return ErrUnavailable
+			}
+			if err = recorder.SaveExcelSnapshot(tx, plan.ID, excelSnapshotKey); err != nil {
+				return err
+			}
 		}
 		result = aggregate.Projection
 		payload, _ := json.Marshal(map[string]any{"plan_id": plan.ID, "eligible_count": len(recipients), "preview_digest": preview.PreviewDigest})
@@ -822,12 +873,33 @@ func (s *Service) ReconcileEffect(ctx context.Context, command aiassistantport.R
 }
 
 func (s *Service) validateApprovalFacts(ctx context.Context, recipients []aiassistantport.Recipient, contents []aiassistantport.ContentVersion) error {
+	var excelCover effectport.Digest
 	if len(recipients) != len(contents) {
 		return ErrConflict
 	}
 	for i, r := range recipients {
 		if r.ExecutionState != aiassistantport.ExecutionNotAccepted || r.ContentVersionID != contents[i].ID {
 			return ErrConflict
+		}
+		if r.DeferredTarget != nil {
+			if !r.DeferredTarget.Valid() {
+				return ErrInvalid
+			}
+			for _, b := range contents[i].Blocks {
+				if !b.Valid() {
+					return ErrInvalid
+				}
+				if b.ExcelCard != nil {
+					if !effectport.ValidDigest(b.ExcelCard.CoverDigest) {
+						return ErrInvalid
+					}
+					if excelCover != "" && excelCover != b.ExcelCard.CoverDigest {
+						return ErrInvalid
+					}
+					excelCover = b.ExcelCard.CoverDigest
+				}
+			}
+			continue
 		}
 		customer, err := s.customers.CustomerSnapshot(ctx, r.CustomerID)
 		if err != nil || customer.CanonicalID != r.CustomerID || customer.Status != customerdomain.StatusActive {
@@ -861,8 +933,13 @@ func approvalPreview(plan aiassistantport.Plan, recipients []aiassistantport.Rec
 func (s *Service) validateCanonicalRecipients(ctx context.Context, candidates []aiassistantport.RecipientCandidate) ([]aiassistantport.RecipientCandidate, error) {
 	items := append([]aiassistantport.RecipientCandidate(nil), candidates...)
 	for i := range items {
-		if !items[i].Valid() {
+		if !items[i].Valid() || items[i].DeferredTarget != nil {
 			return nil, ErrInvalid
+		}
+		for _, block := range items[i].Content {
+			if block.ExcelCard != nil {
+				return nil, ErrInvalid
+			}
 		}
 		customer, err := s.customers.CustomerSnapshot(ctx, items[i].CustomerID)
 		if err != nil || customer.CanonicalID != items[i].CustomerID || customer.Status != customerdomain.StatusActive {
@@ -896,7 +973,7 @@ func (s *Service) resolveBlocks(ctx context.Context, blocks []aiassistantport.Co
 		if !block.ValidInput() {
 			return nil, ErrInvalid
 		}
-		if block.Kind == aiassistantport.ContentText {
+		if block.Kind == aiassistantport.ContentText || block.ExcelCard != nil {
 			continue
 		}
 		value, err := s.materials.ResolveMaterial(ctx, block)
@@ -919,7 +996,7 @@ func (s *Service) registerContentReferences(ctx context.Context, versionID aiass
 		return ErrInvalid
 	}
 	for index, block := range blocks {
-		if block.Kind == aiassistantport.ContentText {
+		if block.Kind == aiassistantport.ContentText || block.ExcelCard != nil {
 			continue
 		}
 		reference := effectport.Hash("aiassistant.content-version", strconv.FormatInt(int64(versionID), 10), strconv.Itoa(index), block.MaterialKind, strconv.FormatInt(block.MaterialID, 10), string(block.MaterialDigest))
@@ -932,6 +1009,12 @@ func (s *Service) registerContentReferences(ctx context.Context, versionID aiass
 
 func (s *Service) enrich(ctx context.Context, recipients []aiassistantport.Recipient) error {
 	for index := range recipients {
+		if target := recipients[index].DeferredTarget; target != nil {
+			recipients[index].CustomerName = target.UnionID
+			recipients[index].OneIDLabel = "UnionID"
+			recipients[index].StaffDisplayName = target.SenderUserID
+			continue
+		}
 		customer, err := s.customers.CustomerSnapshot(ctx, recipients[index].CustomerID)
 		if err != nil || customer.CanonicalID != recipients[index].CustomerID {
 			return ErrUnavailable
