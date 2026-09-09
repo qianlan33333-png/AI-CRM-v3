@@ -523,7 +523,12 @@ func (r *Repository) UpdateServicePeriodProduct(ctx context.Context, update prod
 	if update.ID < 1 || update.ExpectedVersion < 1 || update.Name == "" || len(update.LegacyAdminProjection) == 0 || now.IsZero() {
 		return productport.Product{}, ErrInvalid
 	}
-	images, err := json.Marshal(update.Images)
+	// A zero-image product must persist a JSON array, never JSON null.
+	imageList := update.Images
+	if imageList == nil {
+		imageList = []string{}
+	}
+	images, err := json.Marshal(imageList)
 	if err != nil {
 		return productport.Product{}, ErrInvalid
 	}
