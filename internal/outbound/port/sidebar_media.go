@@ -35,3 +35,14 @@ type SidebarImageUploadReceipt struct {
 type SidebarImageUploader interface {
 	UploadSidebarImage(context.Context, SidebarImagePreparationSource) (SidebarImageUploadReceipt, bool, error)
 }
+
+// SidebarImageUploadError separates an attempted upload from an uncertain
+// result. Only an explicit Provider rejection may return OutcomeUnknown false
+// after an attempt. Codes and HTTP status are safe diagnostics, never raw text.
+type SidebarImageUploadError interface {
+	error
+	OutcomeUnknown() bool
+	FailureCode() string
+	ProviderErrorCode() int64
+	HTTPStatusCode() int
+}
