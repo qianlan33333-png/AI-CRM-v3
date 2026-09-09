@@ -547,11 +547,16 @@ func TestRenderOrdersMountsFrozenTransactionPageAndHostImportControl(t *testing.
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	err = renderer.RenderOrders(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/orders", nil), "交易管理", "", "api.admin_orders_page"), "orders", `<section data-page="orders">frozen donor orders</section>`, OrderAssets{TokensCSS: "/order-assets/tokens.css", LabsCSS: "/order-assets/labs.css", AdminJS: "/order-assets/admin.js"})
+	err = renderer.RenderOrders(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/orders", nil), "交易管理", "", "api.admin_orders_page"), "orders", `<section data-page="orders">frozen donor orders</section>`, OrderAssets{TokensCSS: "/order-assets/tokens.css", LabsCSS: "/order-assets/labs.css", AdminJS: "/order-assets/admin.js", HostJS: "/order-assets/order-host.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
+	hostAt := strings.Index(body, `<script type="module" src="/order-assets/order-host.js"></script>`)
+	donorAt := strings.Index(body, `<script type="module" src="/order-assets/admin.js"></script>`)
+	if hostAt < 0 || donorAt >= 0 {
+		t.Fatal("Order Host must be the sole bootstrap on the real /admin/orders route")
+	}
 	stageAt := strings.Index(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`)
 	panelAt := strings.Index(body, `data-order-import`)
 	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="orders">frozen donor orders</section></template>`) || panelAt < 0 || !strings.Contains(body, `/static/admin_console/order_import.js`) || stageAt < 0 || stageAt > panelAt {

@@ -14,7 +14,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/donortemplate"
 )
 
-type PageAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type PageAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 type PageRenderer func(http.ResponseWriter, *http.Request, string, string, PageAssets) error
 
 type uiBinding struct {
@@ -132,7 +132,11 @@ func (h *uiBinding) assets() (PageAssets, error) {
 	if err != nil {
 		return PageAssets{}, err
 	}
-	return PageAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin}, nil
+	host, err := get("orderHost")
+	if err != nil {
+		return PageAssets{}, err
+	}
+	return PageAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin, HostJS: host}, nil
 }
 
 func (h *uiBinding) asset(w http.ResponseWriter, r *http.Request) {

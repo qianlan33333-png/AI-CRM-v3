@@ -51,6 +51,7 @@ function memberDisplayName(value: Json): string {
 // here without changing the donor picker.
 window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = requestURL(input);
+  if (url.origin !== window.location.origin) return nativeFetch(input, init);
   const method = requestMethod(input, init);
   if (method === "POST" && url.pathname === `${operationMembersPath}/sync`) {
     const headers = new Headers(init?.headers || (typeof input === "string" || input instanceof URL ? undefined : input.headers));
@@ -118,7 +119,7 @@ function errorMessage(error: unknown, fallback = "请求失败"): string {
   return message && message !== "[object Object]" ? message : fallback;
 }
 function responseMessage(data: Json, fallback: string): string {
-  if (data?.code === "operations_conflict" || (data?.error as Json)?.code === "operations_conflict") return "计划配置未完成，无法启用";
+  if (data?.code === "operations_conflict" || (data?.error as Json)?.code === "operations_conflict") return "计划状态、版本或配置不满足要求，请刷新后检查";
   const candidates = [data?.error_message, data?.message, data?.error, data?.code];
   for (const candidate of candidates) {
     if (typeof candidate !== "string") continue;
@@ -431,7 +432,19 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     const value = await detail(id);
     const projected = plan(value.plan);
     const owner = (value.members || [])[0];
-    if (owner?.staff_id) { projected.owner_userid = String(owner.staff_id); projected.owner_name = `员工 #${owner.staff_id}`; }
+    if (owner?.staff_id) {
+      // The saved local key is authoritative even if the presentation directory
+      // is unavailable or no longer contains this member.
+      projected.owner_userid = String(owner.staff_id);
+      projected.owner_name = "姓名待同步";
+      try {
+        const directory = await nativeRequest(`${operationMembersPath}?scope=group_ops&page_size=100`);
+        const member = (directory.items || []).find((item: Json) => String(item.staff_id) === projected.owner_userid);
+        if (member) projected.owner_name = memberDisplayName(member);
+      } catch {
+        // A profile read failure must not erase an existing owner binding.
+      }
+    }
     return { ...projected, groups_summary: await summary(id) };
   }
   if (id && url === `${base}/plans/${id}` && method === "DELETE")

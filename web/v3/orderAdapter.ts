@@ -1,8 +1,25 @@
 // V3-owned request shim for the byte-frozen Orders renderer.  It only maps
-// filters that the current Order HTTP contract actually owns; it never turns
-// an unbounded client-side search into a guessed provider query.
+// server-owned filters, read presentation and donor controller bootstrap.
+// Identity matching remains in the existing Order / OneID port.
 
-export {};
+// @ts-ignore The frozen controller is materialized by prepare-donor-views.
+import { AdminController } from '../src/admin/controller';
+
+type OrderController = { page: string; api: { mode: string }; state: { orderFilters: Record<string, string> } };
+const orderPrototype = AdminController.prototype as unknown as { renderVals(this: OrderController): Record<string, any> };
+const donorRenderOrders = orderPrototype.renderVals;
+orderPrototype.renderVals = function () {
+  if (this.page !== 'orders' || this.api.mode !== 'http') return donorRenderOrders.call(this);
+  const filters = this.state.orderFilters;
+  // The server has already filtered the whole result set. The frozen donor's
+  // old payer/name filter would discard resolved phone/contact matches again.
+  this.state.orderFilters = { ...filters, transactionId: '', payer: '', product: '' };
+  try {
+    const values = donorRenderOrders.call(this);
+    if (values.orderPage) values.orderPage.filters = filters;
+    return values;
+  } finally { this.state.orderFilters = filters; }
+};
 
 const originalFetch = globalThis.fetch.bind(globalThis);
 
@@ -91,6 +108,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   const method = (init?.method || request?.method || 'GET').toUpperCase();
   if (method !== 'GET') return originalFetch(input, init);
   const url = new URL(request?.url || String(input), location.origin);
+  if (url.origin !== location.origin) return originalFetch(input, init);
   orderQuery(url);
   const response = await originalFetch(url.toString(), init);
   if (url.pathname !== '/api/admin/orders' || !response.ok) return response;
@@ -156,7 +174,11 @@ function applyOrderPresentation(): void {
 function applyOrderContractCopy(): void {
   const payer = document.getElementById('orderMobile');
   if (payer instanceof HTMLInputElement && payer.placeholder !== '手机号或外部联系人 ID') payer.placeholder = '手机号或外部联系人 ID';
-  const copy = '单号、商品、手机号和外部联系人 ID 均由服务端过滤并分页；付款人只显示姓名。';
+  const payerLabel = payer?.closest('label')?.querySelector('span');
+  if (payerLabel && payerLabel.textContent !== '手机号 / 外部联系人 ID') payerLabel.textContent = '手机号 / 外部联系人 ID';
+  const copy = '支持按单号、商品、手机号或外部联系人 ID 查询。';
+  const oldNote = Array.from(document.querySelectorAll('p')).find((item) => item.textContent?.includes('OpenAPI 暂不支持这三项的跨页检索'));
+  if (oldNote) { oldNote.dataset.orderContractNote = ''; oldNote.textContent = copy; }
   const note = document.querySelector<HTMLElement>('[data-order-contract-note]');
   if (note) {
     if (note.textContent !== copy) note.textContent = copy;
@@ -179,3 +201,9 @@ observer.observe(document, { childList: true, subtree: true });
 window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
 applyOrderContractCopy();
 applyOrderPresentation();
+
+// Own the donor bootstrap so this Host and the renderer share one controller.
+if (document.getElementById('stage') && ['orders', 'orderDetail'].includes(document.body.dataset.page || '')) {
+  // @ts-ignore Byte-frozen side-effect entry.
+  void import('../src/admin/main');
+}
