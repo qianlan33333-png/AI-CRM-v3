@@ -51,10 +51,12 @@ function inspect(root: Element): void {
   }
   // Restrict matching to literal, leaf status placeholders. Never search
   // rendered business text globally or replace containers holding controls.
-  const nodes = [root, ...root.querySelectorAll<HTMLElement>('div, p, span')];
+  const nodes = [root, ...root.querySelectorAll<HTMLElement>('div, p, span, td[colspan]')];
   for (const node of nodes) {
     if (node.children.length || node.closest('.surface-feedback__busy, template, [contenteditable], [class*="preview"]')) continue;
-    if (loadingText.test(node.textContent?.trim() || '')) {
+    const isStatus = node.matches(roots + ', #config-extension-host, [data-external-push-configuration-status], .group-ops__empty, td[colspan], [role="status"]') ||
+      (root.ownerDocument.body?.dataset.uiSurface === 'share' && node.matches('#stage > main > p') && node.parentElement?.children.length === 2);
+    if (isStatus && loadingText.test(node.textContent?.trim() || '')) {
       busy(node, { initial: node.matches('#stage, #screen') || /读取页面|读取汇总|读取配置|加载页面/.test(node.textContent || ''), label: '正在加载…' });
     }
   }

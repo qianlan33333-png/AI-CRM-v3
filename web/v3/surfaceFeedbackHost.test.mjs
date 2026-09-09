@@ -46,6 +46,9 @@ try {
   stage.replaceChildren(dom.window.document.createElement('section'));
   await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
   assert.equal(stage.querySelector('.surface-feedback__busy'), null, 'real content clears only its own initial spinner');
+  stage.firstChild.innerHTML = '<span>加载中</span><div>正在读取页面数据…</div>';
+  await new Promise(resolve => dom.window.setTimeout(resolve, 0));
+  assert.equal(stage.querySelector('.surface-feedback__spinner'), null, 'business values that resemble status text are never replaced');
 
   const rootHandle = dom.window.__AICRMSurfaceFeedback.busy(stage);
   rootHandle.clear();

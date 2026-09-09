@@ -80,7 +80,7 @@ assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.entry_point, 'w
 assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.sha256, '38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d', 'sidebar image loader must retain its audited dd8 bytes');
 assert.equal(sourceManifest.files?.[sidebarStandardStyles]?.entry_point, 'internal/webshell/static/sidebar_workbench/sidebar_workbench.css', 'sidebar release manifest must contain the standard stylesheet');
 const sidebarHTML = fs.readFileSync(path.join(stage, 'sidebar', 'index.html'), 'utf8');
-const sidebarScripts = [...sidebarHTML.matchAll(/<script(?: type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
+const sidebarScripts = [...sidebarHTML.matchAll(/<script(?: async| type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
 assert.deepEqual(sidebarScripts, [`../${surfaceFeedbackHost}`, weComJSSDK, `../${sidebarImageResourceLoader}`, `../${sidebarHost}`], 'staged sidebar document must preserve feedback, JSSDK, standard image loader, and V3 Host order');
 assert.ok(sidebarHTML.includes('data-ui-surface="sidebar"'), 'staged sidebar document does not identify its UI surface');
 assert.ok(sidebarHTML.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), 'staged sidebar document does not load surface feedback styles');

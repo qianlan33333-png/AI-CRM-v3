@@ -38,6 +38,8 @@ body[data-ui-surface="admin"] :is(.admin-card, .labs, #stage, .admin-main-wrap) 
 body[data-ui-surface="admin"] :is(.admin-card, .labs, #stage, .admin-main-wrap) :is(button, .btn, .admin-button, input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]), select):not(:is([class*="preview"] *, .qe-editor *, [role="switch"])) {
   min-height: 36px;
 }
+body[data-ui-surface="admin"] :is(#stage, .admin-main-wrap) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]), select):not(:is([class*="preview"] *, .qe-editor *)) { box-sizing: border-box; height: 36px !important; padding-top: 6px !important; padding-bottom: 6px !important; }
+body[data-ui-surface="admin"] :is(#stage, .admin-main-wrap) :is(button, .btn, .admin-button):not(:is([class*="preview"] *, .qe-editor *, [role="switch"], .icon-btn)) { box-sizing: border-box; height: auto; padding-top: 6px; padding-bottom: 6px; }
 body[data-ui-surface="admin"] :is(table, .tbl) { font-size: 14px; line-height: 22px; }
 body[data-ui-surface="admin"] :is(table, .tbl) th { font-size: 12px; font-weight: 500; line-height: 18px; }
 body[data-ui-surface="admin"] :is(table, .tbl) :is(button, .btn, .admin-button) { min-height: 32px; }
@@ -126,4 +128,5 @@ body[data-ui-surface="share"] [data-share-read-error] { margin: 12px 0; color: #
   body[data-ui-surface="admin"] .admin-brand { flex-shrink: 0; }
   body[data-ui-surface="admin"] .admin-nav { flex: 0 1 auto; max-height: 40vh; }
   body[data-ui-surface="admin"] .admin-topbar { position: relative; }
+  body[data-ui-surface="admin"] .admin-main-wrap { padding-top: 12px; }
 }

@@ -29,7 +29,7 @@ export async function verifyPresentation({ cdp, evaluate, waitFor, capture, base
   const value = await evaluate(cdp, `(() => { const input=document.querySelector('#pfName'); return {font:getComputedStyle(input).fontSize, surface:document.body.dataset.uiSurface, controlHeight:input.getBoundingClientRect().height}; })()`);
   assert.equal(value.surface, 'admin');
   assert.equal(value.font, '14px');
-  assert.ok(value.controlHeight >= 36);
+  assert.equal(value.controlHeight, 36);
   metrics.push({page:'product', ...value});
   await capture('product-after-1440');
   // The unchanged donor/Host DOM with only the new typography sheet disabled
