@@ -80,7 +80,9 @@ func (p *TagCatalogMutationProvider) Execute(ctx context.Context, envelope effec
 			state = effectport.StateFinalFailed
 		}
 		if state == effectport.StateFinalFailed {
-			return tagCatalogMutationFinal("provider_rejected", effectport.Hash("wecom.tag.catalog.mutation.rejected", dispatch.EffectRef, strconv.Itoa(int(attempt.Number)))), nil
+			rejected := tagCatalogMutationFinal("provider_rejected", effectport.Hash("wecom.tag.catalog.mutation.rejected", dispatch.EffectRef, strconv.Itoa(int(attempt.Number))))
+			rejected.CallAttempted = attempted
+			return rejected, nil
 		}
 		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("wecom.tag.catalog.mutation.error", dispatch.EffectRef, strconv.Itoa(int(attempt.Number))), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
 	}

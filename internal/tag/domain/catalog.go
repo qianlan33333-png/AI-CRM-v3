@@ -30,8 +30,10 @@ type Group struct {
 	ProviderReadbackAt    *time.Time `json:"-"`
 }
 
-// Tag is one active local catalog tag.
+// Tag is one active local catalog tag. ProviderTagID is a read-only binding;
+// management commands continue to use the local ID.
 type Tag struct {
+	ProviderTagID         string     `json:"provider_tag_id,omitempty"`
 	ID                    int64      `json:"tag_id"`
 	GroupID               int64      `json:"group_id"`
 	GroupName             string     `json:"group_name"`

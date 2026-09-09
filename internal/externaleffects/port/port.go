@@ -243,3 +243,18 @@ func (a ResultArtifact) Valid() bool {
 type CompletionSink interface {
 	CompleteEffect(context.Context, string, Envelope, Attempt, AdapterResult) error
 }
+
+// TagCatalogMutationRetryCommand identifies an existing owner intent. It cannot
+// assert whether a Provider call occurred; the implementation checks evidence.
+type TagCatalogMutationRetryCommand struct {
+	EffectID         string
+	SourceRefDigest  Digest
+	ActorAdminUserID int64
+	ReceiptKey       Digest
+}
+
+// TagCatalogMutationRetrier retries only provably unexecuted catalog mutations
+// in the caller's PostgreSQL Unit of Work, preserving the original effect ID.
+type TagCatalogMutationRetrier interface {
+	RetryTagCatalogMutationWithin(context.Context, TagCatalogMutationRetryCommand) (Projection, error)
+}
