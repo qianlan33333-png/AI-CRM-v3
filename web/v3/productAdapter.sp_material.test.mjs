@@ -23,11 +23,11 @@ const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.htm
   window.fetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href); const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
     calls.push({ path: url.pathname, method, body: typeof init.body === 'string' ? init.body : '' }); const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
-    if (url.pathname === '/api/admin/service-period-products' && method === 'POST') return json({ product: { service_product_id: 201, product_code: 'sp-media', name: '周期素材', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: ['/api/admin/image-library/39/variants/original'], admin_projection: projection, version: 1 } }, 201);
+    if (url.pathname === '/api/admin/service-period-products' && method === 'POST') return json({ product: { duration_days: 90, service_product_id: 201, product_code: 'sp-media', name: '周期素材', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: ['/api/admin/image-library/39/variants/original'], admin_projection: projection, version: 1 } }, 201);
     if (url.pathname === '/api/admin/service-period-products/201/external-push') return json({ product_id: 201, product_kind: 'service_period', enabled: false, configuration_reference: '', updated_at: '2026-09-08T00:00:00Z' });
     if (url.pathname === '/api/admin/service-period-products/201') {
-      if (method === 'PUT') { assert.equal(JSON.parse(init.body).expected_version, version); version += 1; }
-      return json({ product: { service_product_id: 201, product_code: 'sp-media', name: '周期素材', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, version } });
+      if (method === 'PUT') { assert.equal(JSON.parse(init.body).duration_days, 90, 'preserve persisted duration required by backend'); assert.equal(JSON.parse(init.body).expected_version, version); version += 1; }
+      return json({ product: { duration_days: 90, service_product_id: 201, product_code: 'sp-media', name: '周期素材', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, version } });
     }
     if (url.pathname === '/api/admin/service-period-products' || url.pathname === '/api/v1/products') return json({ items: [], total: 0, has_more: false });
     if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return json({ items: [{ id: 38, name: '首页素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true }], has_more: true, next_offset: 1 });
@@ -81,6 +81,10 @@ assert.equal(document.querySelector('a[href="#sp-action"]').getAttribute('aria-c
 save.click();
 await waitFor(() => version === 2, 'next dimension save must update the created product');
 await wait(80);
+assert.match(document.querySelector('#product-v3-toast').textContent, /已保存当前维度/);
+save.click();
+await waitFor(() => version === 3, 'consecutive save must use committed version');
+await wait(80);
 assert.equal(calls.filter((call) => call.path === '/api/admin/service-period-products' && call.method === 'POST').length, 1, 'dimension save may not create another product');
 assert.equal(document.querySelector('a[href="#sp-action"]').getAttribute('aria-current'), 'step', 'successful save must retain the current dimension');
 assert.equal(navigationErrors.length, 0, 'successful saves must not navigate to the list');
@@ -92,7 +96,7 @@ const reopened = new JSDOM(page, { url: 'https://test.invalid/admin/spProductFor
   window.__AICRM_TEST_MOCK__ = false; window.Request = Request; window.Response = Response; window.Headers = Headers;
   window.fetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
-    if (url.pathname === '/api/admin/service-period-products/201') return new Response(JSON.stringify({product:{service_product_id:201,product_code:'sp-media',name:'已保存周期',price_minor:2,currency:'CNY',stock_quantity:1,images:[],admin_projection:savedProjection,version:2}}), {headers:{'Content-Type':'application/json'}});
+    if (url.pathname === '/api/admin/service-period-products/201') return new Response(JSON.stringify({product:{duration_days:90,service_product_id:201,product_code:'sp-media',name:'已保存周期',price_minor:2,currency:'CNY',stock_quantity:1,images:[],admin_projection:savedProjection,version:2}}), {headers:{'Content-Type':'application/json'}});
     if (url.pathname.startsWith('/api/admin/service-period-products/201/')) return new Response(JSON.stringify({items:[],enabled:false,configuration_reference:'',service_product_id:201}), {headers:{'Content-Type':'application/json'}});
     return fixtureFetch(input, init);
   };

@@ -49,13 +49,13 @@ func (a *TagCatalogMutationAccepter) EnqueueCatalogMutation(ctx context.Context,
 }
 
 type TagCatalogMutationProvider struct {
-	dispatch tagport.CatalogMutationStore
+	dispatch tagport.CatalogMutationDispatchReader
 	writer   wecomport.TagCatalogMutationWriter
 	reader   CatalogReader
 	now      func() time.Time
 }
 
-func NewTagCatalogMutationProvider(dispatch tagport.CatalogMutationStore, writer wecomport.TagCatalogMutationWriter, reader CatalogReader) (*TagCatalogMutationProvider, error) {
+func NewTagCatalogMutationProvider(dispatch tagport.CatalogMutationDispatchReader, writer wecomport.TagCatalogMutationWriter, reader CatalogReader) (*TagCatalogMutationProvider, error) {
 	if dispatch == nil || writer == nil || reader == nil {
 		return nil, errors.New("tag catalog mutation provider dependencies are required")
 	}

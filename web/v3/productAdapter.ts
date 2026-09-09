@@ -104,7 +104,7 @@ function stableProductSaveKeys(input: Parameters<typeof api.saveProduct>[0]): { 
   // One click and its recovery retry must keep their original keys.  The
   // key is intentionally held only in this page runtime: it never enters a
   // URL, log, or persisted product field.
-  const key = JSON.stringify(input);
+  const key = JSON.stringify([input, input.id ? openedProductPayloads.get(input.id)?.version : undefined]);
   let saved = productSaveKeys.get(key);
   if (!saved) {
     saved = { subjectKey: newIdempotencyKey('product-save'), externalPushKey: newIdempotencyKey('product-external-push') };
@@ -186,11 +186,14 @@ function installMaterialPickerTransport(): void {
 }
 installMaterialPickerTransport();
 
+const periodicSnapshots = new Map<number, RecordValue>();
+
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const request = input instanceof Request ? input : undefined;
   const url = new URL(request?.url || String(input), location.origin);
   const method = (init?.method || request?.method || 'GET').toUpperCase();
   const context = productSaveContext;
+  const periodicMatch = url.origin === location.origin && url.pathname.match(/^\/api\/admin\/service-period-products\/([1-9][0-9]*)$/);
 
   // The donor save helper re-reads immediately before PUT and would otherwise
   // silently replace the version observed when this editor opened.  Replay
@@ -213,12 +216,20 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     }
   }
 
+  if (periodicMatch && method === 'PUT') {
+    const prior = periodicSnapshots.get(Number(periodicMatch[1]));
+    const duration = Number(prior?.duration_days);
+    if (!Number.isSafeInteger(duration) || duration < 1) throw new Error('周期商品缺少已保存的服务天数，请刷新后重试');
+    const body = JSON.parse(String(nextInit?.body || '{}'));
+    nextInit = { ...nextInit, body: JSON.stringify({ ...body, duration_days: duration, expected_version: prior?.version }) };
+  }
   if (isProductSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
   const response = await donorFetch(input, nextInit);
-  if (method === 'GET' && /^\/api\/admin\/service-period-products\/[1-9][0-9]*$/.test(url.pathname) && response.ok) {
+  if (periodicMatch && (method === 'GET' || method === 'PUT') && response.ok) {
     const value = object(await response.clone().json());
     const product = object(value.product || value);
     const id = Number(product.service_product_id || product.id);
+    if (method === 'PUT' || !periodicSnapshots.has(id)) periodicSnapshots.set(id, product);
     const action = object(product.admin_projection);
     if (Number.isSafeInteger(id) && id > 0) purchaseActionByProduct.set(id, {
       enabled: action.purchase_action_enabled === true,
@@ -226,6 +237,14 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     });
   }
 
+  if (url.origin === location.origin && method === 'PUT' && /^\/api\/v1\/products\/[1-9][0-9]*$/.test(url.pathname) && response.ok) {
+    const saved = object(await response.clone().json());
+    const id = Number(url.pathname.split('/').pop());
+    if (Number(saved.id) === id && Number.isSafeInteger(Number(saved.version))) {
+      openedProductPayloads.set(id, saved);
+      if (context?.productID === id) { context.createdProductID = id; context.createdProduct = saved; }
+    }
+  }
   if (context && method === 'POST' && url.pathname === '/api/v1/products' && response.ok) {
     try {
       const value = await response.clone().json();
@@ -276,10 +295,10 @@ api.saveProduct = (input) => {
       if (pendingExternalPush?.productID === input.id) pendingExternalPush = undefined;
       return saved;
     } catch (error) {
-      // Creation and the external-push configuration are separate effects.
-      // Keep the returned local ID in the editor URL only after the subject
-      // POST succeeded, allowing a single normal Save retry to finish config.
-      if (!input.id && context.createdProductID && context.createdProduct && context.externalPushAttempted) {
+      // Subject creation/update and external-push configuration are separate writes.
+      // Recover the confirmed subject rather than submitting it again when
+      // the later configuration write fails. Keep the original push key.
+      if (context.createdProductID && context.createdProduct && context.externalPushAttempted) {
         const retry = new URL(location.href);
         retry.searchParams.set('id', String(context.createdProductID));
         history.replaceState(null, '', retry.pathname + retry.search + retry.hash);
@@ -391,7 +410,7 @@ function button(label: string, ownerDocument: Document = document): HTMLButtonEl
   return node;
 }
 
-function showMessage(message: string): void {
+function showMessage(message: string, success = false): void {
   const previous = document.getElementById('product-v3-toast');
   previous?.remove();
   const toast = document.createElement('div');
@@ -399,6 +418,7 @@ function showMessage(message: string): void {
   toast.setAttribute('role', 'alert');
   toast.textContent = message;
   toast.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:10002;padding:12px 16px;border-radius:8px;background:#D83931;color:#fff;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,.18)';
+  if (success) toast.style.background = '#16803C';
   document.body.appendChild(toast);
   window.setTimeout(() => toast.remove(), 5000);
 }
@@ -1153,7 +1173,7 @@ for (const method of ['saveProduct', 'saveServiceProduct'] as const) {
   api[method] = (input) => original(input).then((saved) => {
     if (['productForm', 'spProductForm'].includes(document.body.dataset.page || '')) completedEditorSaves.push(saved);
     return saved;
-  });
+  }).catch((error) => { showMessage(error instanceof Error ? error.message : '商品保存失败'); throw error; });
 }
 type ProductController = {
   page: string;
@@ -1176,4 +1196,9 @@ productController.goto = function (page, query = '') {
   // unsaved DOM controls and the active dimension in this same editor.
   if (this.page === 'productForm') this.db.rows.products = [saved];
   else this.db.rows.spProducts = [saved];
+  const stage = document.getElementById('stage') || document.body;
+  for (const node of stage.querySelectorAll<HTMLElement>('div,span,p')) {
+    if (node.children.length === 0 && node.textContent?.startsWith('服务端版本：')) node.textContent = `服务端版本：${saved.version} · 生命周期：${saved.lifecycle || ''}`;
+  }
+  showMessage(`已保存当前维度，服务端版本 ${saved.version}`, true);
 };

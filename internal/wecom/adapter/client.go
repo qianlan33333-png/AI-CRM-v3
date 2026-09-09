@@ -223,32 +223,70 @@ func (client *Client) ReadContactStaffProfiles(ctx context.Context, userIDs []st
 	if err != nil {
 		return wecomport.ContactStaffProfileSnapshot{}, classifyDirectoryReadError(err)
 	}
+	// Bound concurrency as well as elapsed time: sequential reads repeatedly
+	// exhausted the page budget before reaching employees later in the list.
+	type profileResult struct {
+		profile wecomport.ContactStaffProfile
+		err     error
+	}
+	results := make([]profileResult, len(ids))
+	jobs := make(chan int)
+	var tokenMu sync.Mutex
+	var workers sync.WaitGroup
+	for worker := 0; worker < min(4, len(ids)); worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				id := ids[index]
+				tokenMu.Lock()
+				readToken := token
+				tokenMu.Unlock()
+				payload, readErr := client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {readToken}, "userid": {id}})
+				if directoryTokenExpired(readErr) {
+					tokenMu.Lock()
+					if token == readToken {
+						readToken, readErr = client.refreshDirectoryToken(readCtx)
+						if readErr == nil {
+							token = readToken
+						}
+					} else {
+						readToken, readErr = token, nil
+					}
+					tokenMu.Unlock()
+					if readErr == nil {
+						payload, readErr = client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {readToken}, "userid": {id}})
+					}
+					if readErr != nil {
+						readErr = classifyDirectoryRefreshError(readErr)
+					}
+				}
+				if readErr != nil {
+					results[index].err = readErr
+					continue
+				}
+				returnedID := strings.TrimSpace(payload.UserIDLower)
+				name := strings.TrimSpace(payload.Name)
+				if (returnedID != "" && returnedID != id) || !validDisplayName(name) {
+					results[index].err = ErrResponse
+					continue
+				}
+				results[index].profile = wecomport.ContactStaffProfile{UserID: id, DisplayName: name}
+			}
+		}()
+	}
+	for index := range ids {
+		jobs <- index
+	}
+	close(jobs)
+	workers.Wait()
 	snapshot := wecomport.ContactStaffProfileSnapshot{Items: make([]wecomport.ContactStaffProfile, 0, len(ids)), ProfileReadState: "ready"}
-	for _, id := range ids {
-		payload, readErr := client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {id}})
-		if directoryTokenExpired(readErr) {
-			token, readErr = client.refreshDirectoryToken(readCtx)
-			if readErr == nil {
-				payload, readErr = client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {id}})
-			}
-			if readErr != nil {
-				readErr = classifyDirectoryRefreshError(readErr)
-			}
-		}
-		if readErr != nil {
-			recordProfileReadFailure(&snapshot, readErr)
-			if readCtx.Err() != nil {
-				break
-			}
+	for _, result := range results {
+		if result.err != nil {
+			recordProfileReadFailure(&snapshot, result.err)
 			continue
 		}
-		returnedID := strings.TrimSpace(payload.UserIDLower)
-		name := strings.TrimSpace(payload.Name)
-		if (returnedID != "" && returnedID != id) || !validDisplayName(name) {
-			recordProfileReadFailure(&snapshot, ErrResponse)
-			continue
-		}
-		snapshot.Items = append(snapshot.Items, wecomport.ContactStaffProfile{UserID: id, DisplayName: name})
+		snapshot.Items = append(snapshot.Items, result.profile)
 	}
 	return snapshot, nil
 }
