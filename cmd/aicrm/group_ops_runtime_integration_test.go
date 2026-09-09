@@ -602,6 +602,20 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 		_, pauseErr := planService.Pause(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-paused-0001"})
 		return pauseErr
 	})
+	assertPreCallBlock("paused-basic-save", func(blockedPlanID int64) error {
+		paused, err := planService.Pause(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-save-pause"})
+		if err != nil {
+			return err
+		}
+		saved, err := planService.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: blockedPlanID, ExpectedRevision: paused.Plan.Revision, Name: "saved while paused", OwnerStaffID: actorID, OwnerStaffIDSet: true, Actor: actorID, IdempotencyKey: "river-precall-save-basic"})
+		if err != nil {
+			return err
+		}
+		if saved.Plan.Status != groupopsport.PlanPaused || saved.Plan.Revision != paused.Plan.Revision+1 {
+			return fmt.Errorf("basic save changed lifecycle or missed revision")
+		}
+		return nil
+	})
 	assertPreCallBlock("paused-reactivated", func(blockedPlanID int64) error {
 		paused, pauseErr := planService.Pause(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-resume-pause"})
 		if pauseErr != nil {
