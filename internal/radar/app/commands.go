@@ -203,7 +203,10 @@ func (service *Service) SetStatus(ctx context.Context, command radarport.SetStat
 	if service == nil || !command.RadarID.Valid() || !command.Expected.Valid() || command.ActorID < 1 || !validIdempotencyKey(command.IdempotencyKey) || !command.Target.Valid() || command.Target == radar.StatusDraft {
 		return radarport.LinkDetail{}, radar.ErrInvalidArgument
 	}
-	operation := string(command.Target)
+	operation := "enable"
+	if command.Target == radar.StatusDisabled {
+		operation = "disable"
+	}
 	payloadDigest, err := digest(struct {
 		RadarID  radar.RadarID     `json:"radar_id"`
 		Expected radar.LinkVersion `json:"expected_version"`

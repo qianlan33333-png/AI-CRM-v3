@@ -80,16 +80,10 @@ try {
   const { document } = dom.window;
   if (document.querySelectorAll('aside.admin-sidebar').length !== 1 || document.querySelectorAll('main#stage').length !== 1 || document.querySelector('.side,.shell,.side-nav')) fail('workspace did not remain in the sole PR10 shell');
   if (!await waitFor(() => document.querySelectorAll('[data-tag-group-card]').length === 5)) fail('frozen tag groups did not mount from the staged fragment');
-  const archiveNotice = await waitFor(() => document.querySelector('[data-tag-archive-outcomes]'));
-  if (!archiveNotice?.textContent?.includes('标签 #21：企微结果待确认') || archiveNotice.querySelector('button')) fail('archived tag outcome was not visibly retained without an unsafe retry action');
-  const writeStatus = await waitFor(() => document.querySelector('[data-tag-catalog-write-status]'));
-  if (!writeStatus?.textContent?.includes('标签目录已保存，部分企微写入尚未确认') || !writeStatus.textContent.includes('标签组「生命周期」：本地已受理，等待企微执行') || !writeStatus.textContent.includes('标签「待跟进」：企微已读回：2026-09-08T11:30:00Z') || writeStatus.querySelector('button')) fail('catalog write states were hidden or misrepresented as success');
-  // The frozen controller may replace the stage after the durable archive
-  // record was first read. The Host must restore the same fact rather than
-  // silently dropping it because the response signature did not change.
-  archiveNotice.remove();
-  const restoredArchiveNotice = await waitFor(() => document.querySelector('[data-tag-archive-outcomes]'));
-  if (!restoredArchiveNotice?.textContent?.includes('标签 #21：企微结果待确认') || restoredArchiveNotice.querySelector('button')) fail('archived outcome was lost after frozen controller redraw');
+  // Provider receipt fields must not add Host status banners above the normal
+  // catalog, including after its frozen controller replaces stage content.
+  await sleep(600);
+  if (document.querySelector('[data-tag-archive-outcomes], [data-tag-catalog-write-status]')) fail('catalog rendered a removed provider-status banner');
 
   const create = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.trim() === '新增标签');
   create?.click();

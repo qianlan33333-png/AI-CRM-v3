@@ -3485,8 +3485,8 @@ body.admin-shell {
 }
 
 /* HXC is the one main-navigation dynamic page without a donor toolbar.  Its
- * Webshell topbar supplies the unique title; retain the V3 refresh action in
- * the content action row instead of showing a second page title. The frozen
+ * Webshell topbar supplies the unique title and the V3 refresh action in
+ * one row. Hide the now-empty content heading. The frozen
  * Funnel mount deliberately replaces #stage's marker class at runtime, so
  * scope this final rule by the V3 route and the mounted root rather than a
  * marker that no longer exists after a successful mount. */
@@ -3501,8 +3501,7 @@ body.admin-shell[data-page="funnel"] .admin-main-wrap > .admin-topbar + #stage.l
 }
 
 body.admin-shell[data-page="funnel"] .admin-main-wrap > .admin-topbar + #stage.labs.sec-funnel > .page-head {
-  min-height: 30px;
-  justify-content: flex-end;
+  display: none;
 }
 
 
