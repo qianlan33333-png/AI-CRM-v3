@@ -70,7 +70,7 @@
   border-radius: 8px;
   background: #ecfdf3;
   color: #067647;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .channel-save-feedback.is-error {
@@ -146,7 +146,7 @@
   background: #ffffff;
   color: #4e5969;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -289,7 +289,7 @@
   margin-bottom: 4px;
   color: var(--channel-v3-muted2);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .channel-form-v3 h1 {
@@ -323,7 +323,7 @@
 .channel-form-v3 .summary-head h2 {
   margin: 0;
   font-size: 20px;
-  font-weight: 900;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
@@ -346,7 +346,7 @@
   color: #344054;
   cursor: pointer;
   font: inherit;
-  font-weight: 850;
+  font-weight: 500;
   padding: 8px 14px;
   text-decoration: none;
   white-space: nowrap;
@@ -398,13 +398,13 @@
 .channel-form-v3 .mini .label {
   color: #8a94a6;
   font-size: 13px;
-  font-weight: 850;
+  font-weight: 500;
 }
 
 .channel-form-v3 .mini .value {
   color: var(--channel-v3-text);
   font-size: 20px;
-  font-weight: 900;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
@@ -455,7 +455,7 @@
   border-radius: 999px;
   background: #eef2f7;
   color: var(--channel-v3-muted);
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .channel-form-v3 .side-nav button.active .index {
@@ -465,7 +465,7 @@
 
 .channel-form-v3 .nav-label {
   font-size: 16px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .channel-form-v3 .channel-panel-card {
@@ -496,7 +496,7 @@
 .channel-form-v3 .panel-title-row h3 {
   margin: 0;
   font-size: 22px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .channel-form-v3 .pill {
@@ -510,7 +510,7 @@
   color: #067647;
   padding: 4px 12px;
   font-size: 13px;
-  font-weight: 850;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -542,7 +542,7 @@
   display: grid;
   gap: 8px;
   font-size: 14px;
-  font-weight: 850;
+  font-weight: 500;
 }
 
 .channel-form-v3 .field.full {
@@ -553,7 +553,7 @@
 .channel-form-v3 .field label {
   color: var(--channel-v3-muted);
   font-size: 13px;
-  font-weight: 850;
+  font-weight: 500;
 }
 
 .channel-form-v3 input,
@@ -609,7 +609,7 @@
 
 .channel-form-v3 .type-title {
   font-size: 17px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .channel-form-v3 .auto-pass-card {
@@ -619,7 +619,7 @@
   border: 1px solid var(--channel-v3-line);
   border-radius: 14px;
   background: #fff;
-  font-weight: 850;
+  font-weight: 500;
   padding: 16px 18px;
 }
 
@@ -646,7 +646,7 @@
   background: var(--channel-v3-brand-soft);
   color: #1456f0;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   padding: 6px 10px;
 }
 
@@ -691,7 +691,7 @@
   padding-left: 0;
   color: var(--channel-v3-muted);
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 400;
   line-height: 1.6;
 }
 
@@ -709,7 +709,7 @@
   justify-content: space-between;
   border-bottom: 1px solid var(--channel-v3-line2);
   font-size: 18px;
-  font-weight: 900;
+  font-weight: 600;
   padding: 0 18px;
 }
 
@@ -745,7 +745,7 @@
 .channel-form-v3 .assignee-name small {
   color: var(--channel-v3-muted);
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 400;
   overflow-wrap: anywhere;
 }
 
@@ -759,7 +759,7 @@
   padding: 22px 18px;
   color: var(--channel-v3-muted);
   font-size: 16px;
-  font-weight: 850;
+  font-weight: 500;
 }
 
 .channel-form-v3 .assignee-footer {
@@ -770,7 +770,7 @@
   border-top: 1px solid var(--channel-v3-line2);
   color: var(--channel-v3-muted);
   font-size: 16px;
-  font-weight: 850;
+  font-weight: 500;
   padding: 16px 18px;
 }
 
@@ -815,7 +815,7 @@
   border-radius: 12px;
   background: var(--channel-v3-success-soft);
   color: #067647;
-  font-weight: 850;
+  font-weight: 500;
   padding: 10px 12px;
 }
 
@@ -867,5 +867,47 @@
 .channel-form-v3 .save-feedback { border-color: #b7e6b1; border-radius: 6px; background: #ebf9ec; color: #2ea121; }
 
 @media (max-width: 860px) {
+  body[data-ui-surface="admin"] .channel-form-v3 :is(.assignee-row, .assignee-footer) { grid-template-columns: minmax(0, 1fr); }
+  body[data-ui-surface="admin"] .channel-form-v3 .assignee-row > * { min-width: 0; }
   .channel-form-v3 .workspace { grid-template-columns: 1fr; }
+}
+
+/* V3 comfortable type scale; donor form structure and business states stay
+   intact. This overrides the former 850/900-weight large-screen typography. */
+body[data-ui-surface="admin"] .channel-form-v3 { min-width: 0; width: 100%; padding: 16px 20px 32px; font-size: 14px; line-height: 22px; font-weight: 400; }
+body[data-ui-surface="admin"] .channel-form-v3 h1 { font-size: 20px; line-height: 28px; font-weight: 600; }
+body[data-ui-surface="admin"] .channel-form-v3 .summary-head h2 { font-size: 16px; line-height: 24px; font-weight: 600; }
+body[data-ui-surface="admin"] .channel-form-v3 .summary-head { flex-wrap: wrap; gap: 12px; }
+body[data-ui-surface="admin"] .channel-form-v3 .btn { min-height: 36px; font-size: 14px; line-height: 22px; font-weight: 500; }
+body[data-ui-surface="admin"] .channel-form-v3 .summary-grid .label { font-size: 12px; line-height: 18px; font-weight: 500; }
+body[data-ui-surface="admin"] .channel-form-v3 .summary-grid .value { font-size: 24px; line-height: 32px; font-weight: 600; }
+body[data-ui-surface="admin"] .channel-form-v3 .side-nav button { min-height: 40px; font-weight: 500; }
+body[data-ui-surface="admin"] .channel-form-v3 .nav-label { font-size: 14px; line-height: 22px; font-weight: 500; }
+body[data-ui-surface="admin"] .channel-form-v3 .side-nav button.is-active .nav-label { font-weight: 600; }
+body[data-ui-surface="admin"] .channel-form-v3 .index { font-size: 14px; font-weight: 500; }
+body[data-ui-surface="admin"] .channel-form-v3 .panel-title-row h3 { font-size: 16px; line-height: 24px; font-weight: 600; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(.field, .field label) { font-size: 14px; line-height: 22px; font-weight: 400; }
+body[data-ui-surface="admin"] .channel-form-v3 .field label { font-size: 12px; line-height: 18px; font-weight: 500; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(input, select, textarea) { min-height: 36px; font-size: 14px; line-height: 22px; font-weight: 400; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(input:not([type="checkbox"]):not([type="radio"]), select) { height: 36px; padding: 6px 10px; }
+body[data-ui-surface="admin"] .channel-form-v3 .summary-grid .mini:nth-child(-n+2) .value { font-size: 16px; line-height: 24px; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(.type-title, .strategy-title, .assignee-name) { font-size: 14px; line-height: 22px; font-weight: 600; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(.strategy-card strong, .assignee-head strong) { font-size: 16px; line-height: 24px; font-weight: 600; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(.strategy-card small, .assignee-sub, .hint, .help) { font-size: 12px; line-height: 18px; font-weight: 400; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(.assignee-empty, .assignee-footer, .save-feedback, .panel-description) { font-size: 14px; line-height: 22px; font-weight: 400; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(.panel, .summary-box, .card, .field, .summary-grid > *) { min-width: 0; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(.panel-title-row, .assignee-head, .assignee-footer) { flex-wrap: wrap; gap: 8px; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(h1, h2, h3) { overflow-wrap: anywhere; }
+body[data-ui-surface="admin"] .channel-form-v3 :is(button, a):focus-visible { outline: 2px solid #3370ff; outline-offset: 3px; }
+body[data-ui-surface="admin"] .channel-drawer__panel { max-height: 100dvh; overflow-y: auto; }
+@media (max-width: 1100px) {
+  body[data-ui-surface="admin"] .channel-form-v3 { padding: 12px; }
+  body[data-ui-surface="admin"] .channel-form-v3 .workspace { grid-template-columns: 180px minmax(0, 1fr); }
+  body[data-ui-surface="admin"] .channel-form-v3 .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  body[data-ui-surface="admin"] .channel-form-v3 .workspace { grid-template-columns: minmax(0, 1fr); }
+  body[data-ui-surface="admin"] .channel-form-v3 .side-nav { display: flex; overflow-x: auto; gap: 6px; }
+  body[data-ui-surface="admin"] .channel-form-v3 .side-nav button { flex: 0 0 auto; }
+  body[data-ui-surface="admin"] .channel-form-v3 :is(.form-grid, .grid-2) { grid-template-columns: minmax(0, 1fr); }
 }

@@ -74,6 +74,9 @@ func (h *adminUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func extractQuestionnaireEditor(raw string) (string, error) {
 	const bodyOpen = `<body data-page="questionnaireDetail">`
+	// The V3 build adds only this presentation marker to the frozen document.
+	// Normalize that known variant without relaxing the editor/body contract.
+	raw = strings.Replace(raw, `<body data-ui-surface="admin" data-page="questionnaireDetail">`, bodyOpen, 1)
 	start := strings.Index(raw, bodyOpen)
 	end := strings.LastIndex(raw, `</body>`)
 	if start < 0 || end <= start+len(bodyOpen) {

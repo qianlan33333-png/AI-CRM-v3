@@ -8,6 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildTestBrowserBundle } from './test-browser-bundle.mjs';
+import { build } from 'esbuild';
+import { memberGridPresentationPlugin } from '../../scripts/member-grid-presentation-source.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
@@ -23,7 +25,7 @@ const TEST_BUNDLES = {
   questionnaireEditor: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/sections/questionnaireEditor.ts')),
   h5: await buildTestBrowserBundle(path.join(ROOT, 'src/h5/main.ts')),
   sidebar: await buildTestBrowserBundle(path.join(ROOT, 'v3/sidebar/main.ts')),
-  memberGridShare: await buildTestBrowserBundle(path.join(ROOT, 'src/public/main.ts')),
+  memberGridShare: (await build({ entryPoints: [path.join(ROOT, 'v3/memberGridFeedbackHost.ts')], bundle: true, write: false, format: 'iife', plugins: [memberGridPresentationPlugin] })).outputFiles[0].text,
 };
 const OWNER_HANDOFF_DONOR = fs.readFileSync(path.resolve(ROOT, '../internal/webshell/static/admin_console/owner_migration_dd8d60d.html'), 'utf8');
 const OWNER_HANDOFF_HOST = fs.readFileSync(path.resolve(ROOT, '../internal/webshell/static/admin_console/owner_handoff_host.js'), 'utf8');
@@ -61,7 +63,7 @@ async function loadMemberGridShare({ token, response, responses, status = 200 } 
   });
   const file = path.join(DIST, 'member-grid-share/index.html');
   let html = fs.readFileSync(file, 'utf8');
-  html = html.replace(/<script type="module" src="\.\.\/assets\/memberGridShare-[^"]+\.js"><\/script>/, () => `<script>${TEST_BUNDLES.memberGridShare}</script>`);
+  html = html.replace(/<script type="module" src="\.\.\/assets\/memberGridFeedbackHost-[^"]+\.js"><\/script>/, () => `<script>${TEST_BUNDLES.memberGridShare}</script>`);
   const dom = new JSDOM(html, {
     url: 'http://localhost/member-grid-share/index.html#' + (token || ''),
     runScripts: 'dangerously',
@@ -3747,9 +3749,9 @@ console.log('member-grid-share/index.html（公开会员网格 token fragment）
   const leaked = await loadMemberGridShare({ token, response: { buckets: [{ state: 'active', count: 8 }, { state: 'expired', count: 2 }, { state: 'removed', count: 1 }], rows: [], limit: 50, next_cursor: '', has_more: false, as_of: '2026-08-27T10:00:00Z', customer_id: 7 } });
   const invalid = await loadMemberGridShare({ token: 'bad', response: {} });
   ok('公开页拒绝额外字段，失败统一收敛且不回退 Mock/本地数据',
-    failed.dom.window.document.querySelector('#stage')?.textContent === 'Member Grid 公开会员网格暂时无法读取分享网格。' &&
-    leaked.dom.window.document.querySelector('#stage')?.textContent === 'Member Grid 公开会员网格暂时无法读取分享网格。' &&
-    invalid.dom.window.document.querySelector('#stage')?.textContent === 'Member Grid 公开会员网格暂时无法读取分享网格。' &&
+    failed.dom.window.document.querySelector('#stage')?.textContent.includes('Member Grid 公开会员网格暂时无法读取分享网格。') &&
+    leaked.dom.window.document.querySelector('#stage')?.textContent.includes('Member Grid 公开会员网格暂时无法读取分享网格。') &&
+    invalid.dom.window.document.querySelector('#stage')?.textContent.includes('Member Grid 公开会员网格暂时无法读取分享网格。') &&
     failed.trace.filter((entry) => entry.kind === 'fetch').length === 1 && leaked.trace.filter((entry) => entry.kind === 'fetch').length === 1 && invalid.trace.filter((entry) => entry.kind === 'fetch').length === 0 &&
     failed.trace[0]?.kind === 'replace' && leaked.trace[0]?.kind === 'replace' && invalid.trace[0]?.kind === 'replace');
   failed.dom.window.close();

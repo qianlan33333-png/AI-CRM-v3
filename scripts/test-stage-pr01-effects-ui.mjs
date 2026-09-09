@@ -94,7 +94,7 @@ try {
     ...standardComponentFiles.map((file) => `assets/standard-components/${file}`),
   ].map((relative) => [relative, { sha256: relative }]));
   fs.writeFileSync(path.join(source, 'asset-manifest.json'), JSON.stringify({
-    entries: { admin: 'assets/admin.js', h5: 'assets/labs.css', tokens: 'assets/tokens.css', labs: 'assets/labs.css', operationCyclesHost: 'assets/cycles-host.js', materialSaveHost: 'assets/material-host.js', orderHost: 'assets/order-host.js', productHost: 'assets/product-host.js', couponHost: 'assets/order-host.js', channelCenterHost: 'assets/channel-host.js', standardComponentsHost: 'assets/standard-host.js', standardComponentsStableHost: 'assets/standard-host.js', channelAdmissionStyles: 'assets/labs.css', aiAssistantHost: 'assets/ai-host.js' }, files, release_files: releaseFiles,
+    entries: { admin: 'assets/admin.js', h5: 'assets/labs.css', tokens: 'assets/tokens.css', labs: 'assets/labs.css', operationCyclesHost: 'assets/cycles-host.js', materialSaveHost: 'assets/material-host.js', orderHost: 'assets/order-host.js', productHost: 'assets/product-host.js', couponHost: 'assets/order-host.js', channelCenterHost: 'assets/channel-host.js', standardComponentsHost: 'assets/standard-host.js', standardComponentsStableHost: 'assets/standard-host.js', channelAdmissionStyles: 'assets/labs.css', aiAssistantHost: 'assets/ai-host.js', surfaceFeedbackHost: 'assets/standard-host.js', surfaceFeedbackStyles: 'assets/labs.css', presentationStyles: 'assets/labs.css', actionFeedbackStyles: 'assets/labs.css' }, files, release_files: releaseFiles,
   }));
 
   for (const passive of ['coupon_form.html', 'coupon_form_runtime.js', 'coupon_styles.html', 'channel_code_form.html', 'channel_admission_pages.js']) {

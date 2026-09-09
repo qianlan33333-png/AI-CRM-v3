@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { verifyPresentation } from './presentation_geometry.mjs';
 
 const baseURL = process.env.AICRM_ADMIN_LAYOUT_TEST_URL;
 const username = process.env.AICRM_ADMIN_LAYOUT_TEST_USERNAME;
@@ -669,6 +670,7 @@ try {
     await recordRouteFailure("hxc-refresh", error);
     interactionFailures.push("hxc-refresh:" + String(error instanceof Error ? error.message : "refresh assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160));
   }
+  await verifyPresentation({ cdp, evaluate, waitFor, capture, baseURL, productID, screenshotDirectory });
   if (runtimeExceptions.length) interactionFailures.push("runtime-exception:" + runtimeExceptions.join(","));
   if (geometryFailures.length || interactionFailures.length) throw new Error("admin layout failures=" + [...geometryFailures, ...interactionFailures].join(","));
   console.log("admin_shell_layout_chromium: PASS routes=" + responses.filter(value => value.includes("/admin/") || value.includes("/api/admin/hxc-dashboard")).length);

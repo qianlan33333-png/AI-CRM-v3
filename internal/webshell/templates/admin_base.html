@@ -2,6 +2,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
+  {{with presentationAssets}}{{if .Script}}<script async src="{{.Script}}"></script>{{end}}{{end}}
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.PageTitle}} · 客户管理后台</title>
@@ -153,8 +154,9 @@
   <link rel="stylesheet" href="{{.AIAssistantAssets.GroupCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.MaterialCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.ComposerCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.ReadonlyCSS}}">
   <script type="module" src="{{.AIAssistantAssets.HostJS}}"></script>
   {{end}}
+  {{with presentationAssets}}{{range .Styles}}<link rel="stylesheet" href="{{.}}">{{end}}{{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .OwnerHandoff}} data-page="owner-handoff"{{end}}{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .Radar}} data-page="{{.RadarPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .RuntimeConfig}} data-runtime-config-page="{{.RuntimeConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}>
+<body data-ui-surface="admin" class="admin-shell" data-admin-shell-source="v3_webshell"{{if .OwnerHandoff}} data-page="owner-handoff"{{end}}{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .Radar}} data-page="{{.RadarPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .RuntimeConfig}} data-runtime-config-page="{{.RuntimeConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -227,12 +229,12 @@
       {{end}}
 
       {{if or .ExternalEffects .HXC .Media .Tags .Product .Order .Coupons .Radar .GroupOps .Automation .Survey .OperationCycles .Config .RuntimeConfig .Channel .OwnerHandoff .AIAssistant}}
-      {{.Content}}
+      {{presentationContent .Content}}
       {{else}}
       <main class="admin-page">
         {{if .PageNotice}}<section class="admin-alert admin-alert--success">{{.PageNotice}}</section>{{end}}
         {{if .PageError}}<section class="admin-alert admin-alert--error">{{.PageError}}</section>{{end}}
-        {{.Content}}
+        {{presentationContent .Content}}
       </main>
       {{end}}
     </div>

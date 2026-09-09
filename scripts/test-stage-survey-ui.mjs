@@ -9,8 +9,10 @@ const stage = path.resolve(stageArg);
 const readManifest = (root) => JSON.parse(fs.readFileSync(path.join(root, 'asset-manifest.json'), 'utf8'));
 const sourceManifest = readManifest(source);
 const stagedManifest = readManifest(stage);
+const surfaceFeedbackHost = sourceManifest.entries?.surfaceFeedbackHost;
+const surfaceFeedbackStyles = sourceManifest.entries?.surfaceFeedbackStyles;
 
-const requiredEntries = ['h5', 'questionnaireEditor', 'questionnaireEditorStyles'];
+const requiredEntries = ['h5', 'questionnaireEditor', 'questionnaireEditorStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
 for (const key of requiredEntries) {
   assert.equal(stagedManifest.entries?.[key], sourceManifest.entries?.[key], `staged manifest omits Survey entry ${key}`);
 }
@@ -49,6 +51,10 @@ for (const page of expectedH5) {
   const relative = path.join('h5', page);
   assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged H5 page drifted for ${relative}`);
+  const html = fs.readFileSync(path.join(stage, relative), 'utf8');
+  assert.ok(html.includes('data-ui-surface="h5"'), `staged ${relative} does not identify its UI surface`);
+  assert.ok(html.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), `staged ${relative} does not load surface feedback styles`);
+  assert.ok(html.includes(`<script async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host`);
 }
 assert.equal(stagedManifest.entries?.sidebar, undefined, 'Survey stage exposed the donor sidebar entry');
 assert.equal(stagedManifest.entries?.memberGridShare, undefined, 'Survey stage exposed an unrelated public entry');

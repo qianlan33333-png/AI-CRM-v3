@@ -1161,7 +1161,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 	}
 
-	renderer, err := webshell.NewRenderer()
+	renderer, err := webshell.NewRenderer("web/dist")
 	if err != nil {
 		return fail(err)
 	}

@@ -8,6 +8,7 @@ import { apiRequestOptions } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
 import { productPageDto, type AdminReadContext } from '../src/api/admin';
 import { downloadQr, renderQr } from '../src/admin/sections/qr';
+import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 
 type RecordValue = Record<string, unknown>;
 type ProductProjection = Product & { resourceId: number };
@@ -1168,13 +1169,27 @@ mountProductDimensions();
 // A successful dimension save updates this editor rather than invoking the
 // frozen controller's list redirect. Explicit Back navigation is unaffected.
 const completedEditorSaves: Product[] = [];
+const takeProductSaveButton = rememberActionClicks((button) => {
+  const page = document.body.dataset.page || '';
+  return (page === 'productForm' || page === 'spProductForm') && /保存/.test(button.textContent || '');
+});
+const takeProductUploadButton = rememberActionClicks((button) => {
+  const page = document.body.dataset.page || '';
+  return (page === 'productForm' || page === 'spProductForm') && /上传/.test(button.textContent || '');
+});
+const takeProductUploadInput = rememberActionInputs((input) => {
+  const page = document.body.dataset.page || '';
+  return (page === 'productForm' || page === 'spProductForm') && Boolean(input.files?.length);
+});
 for (const method of ['saveProduct', 'saveServiceProduct'] as const) {
   const original = api[method].bind(api);
-  api[method] = (input) => original(input).then((saved) => {
+  api[method] = (input) => runAction(takeProductSaveButton(), () => original(input).then((saved) => {
     if (['productForm', 'spProductForm'].includes(document.body.dataset.page || '')) completedEditorSaves.push(saved);
     return saved;
-  }).catch((error) => { showMessage(error instanceof Error ? error.message : '商品保存失败'); throw error; });
+  }).catch((error) => { showMessage(error instanceof Error ? error.message : '商品保存失败'); throw error; }), '保存中…');
 }
+const originalSaveImageItem = api.saveImageItem.bind(api);
+api.saveImageItem = (originalName, patch) => runAction(takeProductUploadInput() || takeProductUploadButton(), () => originalSaveImageItem(originalName, patch), '上传中…');
 type ProductController = {
   page: string;
   db: AdminDb;

@@ -31,9 +31,18 @@ type Renderer struct {
 }
 
 // NewRenderer parses the embedded shell templates and prepares the embedded
-// static filesystem.  No network, database, or configuration lookup occurs.
-func NewRenderer() (*Renderer, error) {
-	templates, err := template.New("webshell").ParseFS(embeddedWebAssets, "templates/*.html")
+// static filesystem, optionally reading the local presentation asset manifest.
+// No network or database lookup occurs.
+func NewRenderer(distDirectories ...string) (*Renderer, error) {
+	distDir := ""
+	if len(distDirectories) > 0 {
+		distDir = distDirectories[0]
+	}
+	functions, err := presentationFunctions(distDir)
+	if err != nil {
+		return nil, err
+	}
+	templates, err := template.New("webshell").Funcs(functions).ParseFS(embeddedWebAssets, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
