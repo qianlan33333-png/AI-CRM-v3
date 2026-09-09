@@ -16,6 +16,15 @@
   padding: 24px;
 }
 
+/* Only full-page placeholders occupy the workspace. Local readers keep
+ * their compact height, including configuration dialogs and pickers. */
+[data-ui-surface="admin"] #stage > .surface-feedback__busy--initial {
+  min-height: calc(100dvh - 96px);
+}
+[data-ui-surface="h5"] #screen > .surface-feedback__busy--initial {
+  min-height: min(60dvh, 480px);
+}
+
 .surface-feedback__spinner {
   animation: surface-feedback-spin 720ms linear infinite;
   border: 2px solid currentColor;

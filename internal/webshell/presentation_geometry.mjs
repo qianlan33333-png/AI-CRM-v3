@@ -15,6 +15,8 @@ export async function verifyPresentation({ cdp, evaluate, waitFor, capture, base
   await cdp.call('Page.navigate', { url: baseURL + '/admin/productForm.html?id=' + productID });
   await waitFor(cdp, 'Boolean(window.__AICRMSurfaceFeedback) && Boolean(document.querySelector("#stage .surface-feedback__spinner"))', 'static loading did not appear while the page script was held');
   assert.ok(pausedScript, 'product entry was not intercepted');
+  const loadingPosition = await evaluate(cdp, `(() => {const r=document.querySelector('#stage .surface-feedback__spinner').getBoundingClientRect();return (r.top+r.height/2)/innerHeight})()`);
+  assert.ok(loadingPosition > .3 && loadingPosition < .7, 'page loading should be centered in the content area');
   await capture('page-loading-slow-script');
   await cdp.call('Fetch.failRequest', { requestId: pausedScript, errorReason: 'Failed' });
   await waitFor(cdp, 'Boolean(document.querySelector("[data-surface-resource-error] button"))', 'failed page script has no reload action');
