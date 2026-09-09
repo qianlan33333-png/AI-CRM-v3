@@ -46,6 +46,10 @@ type CatalogMutationIntent struct {
 	ProviderTagID      string
 }
 
+type CatalogMutationDispatchReader interface {
+	ReadCatalogMutationDispatch(context.Context, string) (CatalogMutationDispatch, error)
+}
+
 // CatalogMutationStore is Tag-owned persistence for its frozen provider
 // dispatch snapshot and terminal outcome. It has no network dependency.
 type CatalogMutationStore interface {

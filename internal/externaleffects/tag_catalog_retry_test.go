@@ -23,6 +23,10 @@ func TestTagCatalogRetryEvidenceFailsClosed(t *testing.T) {
 		receipt                           Digest
 		called, executed, completed, want bool
 	}{
+		{"dispatch read blocked", StateFinalFailed, Hash("wecom.tag.catalog.mutation.dispatch_changed", string(Hash("envelope"))), false, false, true, true},
+		{"dispatch hash mismatch", StateFinalFailed, Hash("wecom.tag.catalog.mutation.dispatch_changed", string(Hash("other"))), false, false, true, false},
+		{"dispatch called", StateFinalFailed, Hash("wecom.tag.catalog.mutation.dispatch_changed", string(Hash("envelope"))), true, false, true, false},
+		{"dispatch unknown", StateUnknown, Hash("wecom.tag.catalog.mutation.dispatch_changed", string(Hash("envelope"))), false, false, true, false},
 		{"disabled", StateFinalFailed, disabled, false, false, true, true},
 		{"router disabled", StateFinalFailed, Hash("outbound.provider.not-configured", string(KindWeComTagCatalogMutation)), false, false, true, true},
 		{"explicit rejection", StateFinalFailed, rejected, true, false, true, true},
@@ -37,7 +41,7 @@ func TestTagCatalogRetryEvidenceFailsClosed(t *testing.T) {
 		{"retryable called", StateRetryable, Hash("precall"), true, false, true, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := safeTagCatalogRetryAttempt(7, "eer_7", 1, tt.state, tt.receipt, tt.called, tt.executed, tt.completed); got != tt.want {
+			if got := safeTagCatalogRetryAttempt(7, "eer_7", Hash("envelope"), 1, tt.state, tt.receipt, tt.called, tt.executed, tt.completed); got != tt.want {
 				t.Fatalf("safe=%v want=%v", got, tt.want)
 			}
 		})
