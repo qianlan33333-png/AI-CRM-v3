@@ -584,6 +584,51 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   responseErrorMessage: (_response: unknown, data: Json, fallback: string) =>
     responseMessage(data, fallback),
 };
+// Keep the frozen save flow intact, but observe the promise its DOM listener
+// returns. Only this root's two save controls are bridged; no global event
+// prototype or unrelated business action is changed.
+function installSaveFailureFeedback(): void {
+  const app = document.getElementById("group-ops-app");
+  if (!app) return;
+  const query = app.querySelectorAll.bind(app);
+  const decorated = new WeakSet<Element>();
+  const clear = () => app.querySelector('[data-groupops-save-error]')?.remove();
+  const report = (error: unknown) => {
+    let alert = app.querySelector<HTMLElement>('[data-groupops-save-error]');
+    if (!alert) {
+      alert = document.createElement("div");
+      alert.dataset.groupopsSaveError = "1";
+      alert.setAttribute("role", "alert");
+      alert.className = "group-ops__notice";
+      alert.style.color = "#b42318";
+      alert.style.backgroundColor = "#fff1f0";
+      alert.style.borderColor = "#fda29b";
+      app.prepend(alert);
+    }
+    alert.textContent = `保存失败：${errorMessage(error, "请重试")}；当前填写内容已保留。`;
+  };
+  app.querySelectorAll = ((selector: string) => {
+    const nodes = query(selector);
+    if (selector === "[data-action]") for (const element of nodes) {
+      if (!element.matches('[data-action="save-plan"],[data-action="save-active-detail-panel"]') || decorated.has(element)) continue;
+      decorated.add(element);
+      const add = element.addEventListener.bind(element);
+      element.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) => {
+        if (!listener) return;
+        if (type !== "click") return add(type, listener, options);
+        add(type, (event: Event) => {
+          clear();
+          try {
+            const result = typeof listener === "function" ? listener.call(element, event) : listener.handleEvent(event);
+            void Promise.resolve(result).catch(report);
+          } catch (error) { report(error); }
+        }, options);
+      }) as typeof element.addEventListener;
+    }
+    return nodes;
+  }) as typeof app.querySelectorAll;
+}
+installSaveFailureFeedback();
 // @ts-expect-error The standard donor script is intentionally JavaScript.
 void import("./groupOpsStandard.js");
 export {};
