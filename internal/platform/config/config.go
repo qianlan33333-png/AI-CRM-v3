@@ -39,6 +39,7 @@ type Runtime struct {
 	Role                       Role
 	DatabaseURL                string
 	PublicOrigin               string
+	H5PublicOrigin             string
 	Bootstrap                  Bootstrap
 	WeCom                      WeCom
 	GroupOps                   GroupOps
@@ -548,6 +549,10 @@ func Load() (Runtime, error) {
 	}
 	if !validPublicOrigin(cfg.PublicOrigin) {
 		return Runtime{}, errors.New("invalid AICRM_PUBLIC_ORIGIN")
+	}
+	cfg.H5PublicOrigin = valueOrDefault("AICRM_H5_PUBLIC_ORIGIN", cfg.PublicOrigin)
+	if !validPublicOrigin(cfg.H5PublicOrigin) {
+		return Runtime{}, errors.New("invalid AICRM_H5_PUBLIC_ORIGIN")
 	}
 	if strings.TrimSpace(cfg.WorkerOwner) != cfg.WorkerOwner || cfg.WorkerOwner == "" || len(cfg.WorkerOwner) > 120 {
 		return Runtime{}, errors.New("invalid AICRM_WORKER_OWNER")
