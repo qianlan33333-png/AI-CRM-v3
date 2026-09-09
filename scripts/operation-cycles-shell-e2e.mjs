@@ -69,8 +69,8 @@ const dom = new JSDOM(`<!doctype html><html><body class="admin-shell" data-page=
         { strategy_key: 'paused.review', title: '暂停复盘', status: 'paused', version: 2, snapshot: { ...snapshot, name: '暂停复盘', run_key: '' } },
       ] });
       if (url.pathname === '/api/admin/operation-batches/legacy') return json({ items: [] });
-      if (url.pathname === '/api/admin/operation-batches/strategies/weekly.review') return json({ strategy: { strategy_key: 'weekly.review', title: '每周复盘' }, items: [excelBatch, historyBatch] });
-      if (url.pathname === '/api/admin/operation-batches/strategies/paused.review') return json({ strategy: { strategy_key: 'paused.review', title: '暂停复盘' }, items: [] });
+      if (url.pathname === '/api/admin/operation-batches/strategies/weekly.review') return json({ strategy: { strategy_key: 'weekly.review' }, items: [excelBatch, historyBatch] });
+      if (url.pathname === '/api/admin/operation-batches/strategies/paused.review') return json({ strategy: { strategy_key: 'paused.review' }, items: [] });
       if (url.pathname === '/api/admin/operation-batches/918') return json({ batch: excelBatch, rows: [excelRow], next_cursor: '' });
       if (url.pathname === '/api/admin/operation-batches/917') return json({ batch: historyBatch, rows: [historyRow], next_cursor: '' });
       if (url.pathname.endsWith('/actions/start_review/start') && init.method === 'POST') return json({ request_id: 'ocact_0123456789012345678901234567', status: 'queued' }, 202);
@@ -88,7 +88,7 @@ try {
   buttons[0].click();
   await new Promise((resolve) => setTimeout(resolve, 80));
   const tabs = Array.from(dom.window.document.querySelectorAll('.xeb-detail-nav button')).map((button) => button.textContent?.trim());
-  if (tabs.length !== 2 || tabs[0] !== '内容准备与发送' || tabs[1] !== '发送效果与复盘' || !workspace.textContent?.includes('当前批次 #918') || !workspace.textContent?.includes('待审核话术')) throw new Error(`Excel detail did not preserve its two-dimension workspace: ${workspace?.innerHTML} requests=${JSON.stringify(requests)}`);
+  if (tabs.length !== 2 || tabs[0] !== '内容准备与发送' || tabs[1] !== '发送效果与复盘' || dom.window.document.querySelector('.xeb-detail-main h2')?.textContent?.trim() !== '每周复盘' || !workspace.textContent?.includes('当前批次 #918') || !workspace.textContent?.includes('待审核话术')) throw new Error(`Excel detail did not preserve its plan title and two-dimension workspace: ${workspace?.innerHTML} requests=${JSON.stringify(requests)}`);
   const history = dom.window.document.querySelector('select[aria-label="历史批次"]');
   if (!history) throw new Error('Excel detail did not render the batch history selector');
   history.value = '917';
