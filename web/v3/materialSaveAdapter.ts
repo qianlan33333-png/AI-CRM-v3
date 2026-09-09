@@ -3,6 +3,7 @@
 // prevents a second click while that write or its mandatory readback is live.
 
 export {};
+import { clearActionBusy, setActionBusy } from './actionFeedback';
 
 type SaveState = {
   button: HTMLButtonElement;
@@ -83,8 +84,7 @@ function message(text: string): void {
 
 function release(state: SaveState): void {
   if (activeSave !== state) return;
-  state.button.disabled = false;
-  state.button.textContent = state.label;
+  clearActionBusy(state.button);
   activeSave = undefined;
 }
 
@@ -220,8 +220,7 @@ document.addEventListener('click', (event) => {
   }
   const state: SaveState = { button, label: button.textContent.trim(), mutationStarted: false, mutationAccepted: false, pendingPreflight: 0, readbackStarted: false, pendingReadbacks: 0 };
   activeSave = state;
-  button.disabled = true;
-  button.textContent = '保存中…';
+  setActionBusy(button, '保存中…');
   // Validation may reject before it sends a request. That is not a save
   // failure and must leave the editor usable with its values intact. A
   // microtask runs after the frozen click handler, without creating a

@@ -1,4 +1,14 @@
 export {};
+import { api } from '../src/shared/api/client';
+import { rememberActionInputs, runAction } from './actionFeedback';
+
+const takeRadarUploadInput = rememberActionInputs((input) =>
+  document.body.dataset.page === 'radarForm' && Boolean(input.files?.length),
+);
+for (const method of ['uploadRadarImage', 'uploadRadarPdf'] as const) {
+  const original = api[method].bind(api);
+  api[method] = (file) => runAction(takeRadarUploadInput(), () => original(file), '上传中…');
+}
 
 type MaterialItem = { type: 'image' | 'attachment'; library_id: number; title?: string; subtitle?: string; thumbnail_url?: string; metadata?: Record<string, unknown> };
 type StandardWindow = Window & {

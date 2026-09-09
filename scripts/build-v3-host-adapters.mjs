@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
+import { memberGridPresentationPlugin } from './member-grid-presentation-source.mjs';
 
 const repository = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const dist = path.join(repository, 'web', 'dist');
@@ -42,6 +43,11 @@ const entryPoints = {
   groupopsHost: path.join(repository, 'web', 'v3', 'groupOpsHostAdapter.ts'),
   groupopsStyles: path.join(repository, 'web', 'v3', 'groupOpsStandard.css'),
   h5AuthHost: path.join(repository, 'web', 'v3', 'h5AuthAdapter.ts'),
+  surfaceFeedbackHost: path.join(repository, 'web', 'v3', 'surfaceFeedbackHost.ts'),
+  surfaceFeedbackStyles: path.join(repository, 'web', 'v3', 'surfaceFeedback.css'),
+  presentationStyles: path.join(repository, 'web', 'v3', 'presentation.css'),
+  actionFeedbackStyles: path.join(repository, 'web', 'v3', 'actionFeedback.css'),
+  memberGridFeedbackHost: path.join(repository, 'web', 'v3', 'memberGridFeedbackHost.ts'),
 };
 const result = await build({
   entryPoints,
@@ -56,6 +62,7 @@ const result = await build({
   minify: true,
   metafile: true,
   logLevel: 'warning',
+  plugins: [memberGridPresentationPlugin],
 });
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -182,7 +189,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
+  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
@@ -322,6 +329,45 @@ if (!sidebarHTML.includes(weComJSSDK) || !sidebarHTML.includes(imageResourceLoad
 const sidebarDocument = path.join(dist, 'sidebar', 'index.html');
 fs.writeFileSync(sidebarDocument, sidebarHTML);
 manifest.release_files['sidebar/index.html'] = metadataFor(Buffer.from(sidebarHTML));
+
+// The frozen documents remain their own authorities.  The V3 feedback layer
+// is added only to the generated release views, after the donor build, so it
+// can provide a scoped initial spinner and navigation hint without changing
+// any donor bytes or business runtime.
+const surfaceFeedbackHost = manifest.entries.surfaceFeedbackHost;
+const surfaceFeedbackStyles = manifest.entries.surfaceFeedbackStyles;
+const memberGridFeedbackHost = manifest.entries.memberGridFeedbackHost;
+const memberGridShare = manifest.entries.memberGridShare;
+if (typeof surfaceFeedbackHost !== 'string' || typeof surfaceFeedbackStyles !== 'string' || typeof memberGridFeedbackHost !== 'string' || typeof memberGridShare !== 'string') {
+  throw new Error('surface feedback or member-grid Host entry is absent from manifest');
+}
+const injectSurfaceFeedback = (relative, surface) => {
+  const documentPath = path.join(dist, relative);
+  let documentHTML = fs.readFileSync(documentPath, 'utf8');
+  const stylesheet = ['surfaceFeedbackStyles', 'actionFeedbackStyles', 'presentationStyles'].map((entry) => `<link rel="stylesheet" href="../${manifest.entries[entry]}">`).join('\n');
+  const host = `<script async src="../${surfaceFeedbackHost}"></script>`;
+  if (!documentHTML.includes('</head>') || !documentHTML.includes('<body')) throw new Error(`${relative} has no HTML shell for surface feedback`);
+  if (documentHTML.includes(stylesheet) || documentHTML.includes(host)) throw new Error(`${relative} already contains surface feedback`);
+  documentHTML = documentHTML.replace('<head>', `<head>\n${host}`).replace('</head>', `${stylesheet}\n</head>`);
+  documentHTML = documentHTML.replace(/<body(\s|>)/, `<body data-ui-surface="${surface}"$1`);
+  const placeholder = '<div class="surface-feedback__busy surface-feedback__busy--initial" data-surface-placeholder role="status" aria-live="polite"><span class="surface-feedback__spinner" aria-hidden="true"></span><span>正在加载页面…</span></div>';
+  documentHTML = documentHTML.replace(/(<(?:main|div)[^>]*\bid="(?:stage|screen)"[^>]*>)(\s*)(<\/(?:main|div)>)/, `$1${placeholder}$3`);
+  if (!documentHTML.includes(`data-ui-surface="${surface}"`)) throw new Error(`${relative} did not receive its surface marker`);
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[relative] = metadataFor(Buffer.from(documentHTML));
+};
+for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.endsWith('.html'))) injectSurfaceFeedback(`admin/${documentName}`, 'admin');
+for (const documentName of fs.readdirSync(path.join(dist, 'h5')).filter((name) => name.endsWith('.html'))) injectSurfaceFeedback(`h5/${documentName}`, 'h5');
+injectSurfaceFeedback('sidebar/index.html', 'sidebar');
+injectSurfaceFeedback('member-grid-share/index.html', 'share');
+const memberGridShareDocument = path.join(dist, 'member-grid-share', 'index.html');
+let memberGridShareHTML = fs.readFileSync(memberGridShareDocument, 'utf8');
+const frozenMemberGridShareScript = `<script type="module" src="../${memberGridShare}"></script>`;
+const memberGridFeedbackScript = `<script type="module" src="../${memberGridFeedbackHost}"></script>`;
+if (!memberGridShareHTML.includes(frozenMemberGridShareScript) || memberGridShareHTML.includes(memberGridFeedbackScript)) throw new Error('member-grid share document does not have exactly one replaceable frozen entry');
+memberGridShareHTML = memberGridShareHTML.replace(frozenMemberGridShareScript, memberGridFeedbackScript);
+fs.writeFileSync(memberGridShareDocument, memberGridShareHTML);
+manifest.release_files['member-grid-share/index.html'] = metadataFor(Buffer.from(memberGridShareHTML));
 
 const donor = path.join(repository, 'web', 'donors', 'ai-assistant-production');
 const donorOut = path.join(dist, 'aiassistant');

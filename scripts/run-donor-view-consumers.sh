@@ -79,6 +79,11 @@ run_frontend_and_stage_checks() {
   node web/v3/channelAdmissionHost.test.mjs
   node web/v3/standardComponentsRefresh.test.mjs
   node web/v3/materialSaveAdapter.test.mjs
+  node web/v3/actionFeedback.test.mjs
+  node web/v3/productAdapter.upload_feedback.test.mjs
+  node web/v3/radarAdapter.upload_feedback.test.mjs
+  node web/v3/surfaceFeedbackHost.test.mjs
+  node web/v3/memberGridFeedbackHost.test.mjs
   node web/v3/radarAdapter.test.mjs
   node web/v3/sidebar_send_recovery.test.mjs
   node internal/webshell/static/admin_console/tag_sync_bridge.test.mjs
