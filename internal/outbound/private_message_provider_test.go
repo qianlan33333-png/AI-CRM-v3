@@ -3,6 +3,7 @@ package outbound
 import (
 	"context"
 	"errors"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"testing"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -103,5 +104,47 @@ func TestPrivateMessageProviderFailureClassification(t *testing.T) {
 				t.Fatal("disabled provider performed a network call")
 			}
 		})
+	}
+}
+
+type failReceiptReader struct{ PrivateMessageIntentReader }
+
+func (f failReceiptReader) RecordPrivateMessageReceipt(context.Context, string, PrivateMessageTarget, string, string) error {
+	return errors.New("database interrupted")
+}
+func TestReceiptWriteFailureAfterProviderAcceptanceIsUnknown(t *testing.T) {
+	provider := privateProviderForTest(t, true, privateSenderFunc(func(context.Context, PrivateMessageTarget, PrivateMessagePayload) (PrivateMessageProviderReceipt, bool, error) {
+		return PrivateMessageProviderReceipt{MessageID: "accepted-task"}, true, nil
+	}))
+	provider.intents = failReceiptReader{provider.intents}
+	result, err := provider.Execute(context.Background(), privateMessageEnvelope(), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effectport.StateUnknown || !result.CallAttempted {
+		t.Fatalf("receipt loss must not retry: %#v %v", result, err)
+	}
+}
+
+type captureReasonReader struct {
+	PrivateMessageIntentReader
+	reason *string
+}
+
+func (r captureReasonReader) RecordPrivateMessageReceipt(_ context.Context, _ string, _ PrivateMessageTarget, _ string, reason string) error {
+	*r.reason = reason
+	return nil
+}
+func TestMissingExcelTitleFailsWithoutProviderTask(t *testing.T) {
+	called := false
+	provider := privateProviderForTest(t, true, privateSenderFunc(func(context.Context, PrivateMessageTarget, PrivateMessagePayload) (PrivateMessageProviderReceipt, bool, error) {
+		called = true
+		return PrivateMessageProviderReceipt{}, false, nil
+	}))
+	reason := ""
+	provider.intents = captureReasonReader{provider.intents, &reason}
+	provider.payloads = privatePayloadReaderFunc(func(context.Context, string, effectport.Digest) (PrivateMessagePayload, error) {
+		return PrivateMessagePayload{}, outboundport.PayloadPreparationError("title_missing")
+	})
+	result, err := provider.Execute(context.Background(), privateMessageEnvelope(), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	if err != nil || called || result.Completion != effectport.StateFinalFailed || result.CallAttempted || reason != "title_missing" {
+		t.Fatalf("empty title created task or lost reason: %#v %s %v", result, reason, err)
 	}
 }

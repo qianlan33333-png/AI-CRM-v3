@@ -240,6 +240,8 @@ func LoadChannelHistoryMigration() (ChannelHistoryMigration, error) {
 }
 
 type AIAssistant struct {
+	ExcelBatchURL                             string
+	ExcelBatchToken                           string
 	UIEnabled, IntakeEnabled, DispatchEnabled bool
 	IntegrationKey, IntegrationSecret         string
 	IntegrationActorID                        int64
@@ -336,7 +338,7 @@ func Load() (Runtime, error) {
 		CustomerSyncTrigger:        os.Getenv("AICRM_CUSTOMER_SYNC_TRIGGER"),
 		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), IdentityObservationVaultKey: os.Getenv("AICRM_IDENTITY_OBSERVATION_VAULT_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
 		OperationCycleServiceToken: os.Getenv("AICRM_OPERATION_CYCLE_SERVICE_TOKEN"),
-		AIAssistant:                AIAssistant{UIEnabled: true, IntegrationKey: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY"), IntegrationSecret: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET"), ProviderPermission: os.Getenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION")},
+		AIAssistant:                AIAssistant{ExcelBatchURL: os.Getenv("EXCEL_BATCH_URL"), ExcelBatchToken: os.Getenv("EXCEL_BATCH_TOKEN"), UIEnabled: true, IntegrationKey: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY"), IntegrationSecret: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET"), ProviderPermission: os.Getenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION")},
 		AIGeneration:               AIGeneration{BaseURL: os.Getenv("AICRM_AI_GENERATION_BASE_URL"), APIKey: os.Getenv("AICRM_AI_GENERATION_API_KEY"), Model: os.Getenv("AICRM_AI_GENERATION_MODEL"), Timeout: 30 * time.Second},
 		OpenPlatform:               OpenPlatform{JWTSigningKey: os.Getenv("AICRM_OPEN_PLATFORM_JWT_SIGNING_KEY"), TrustedProxyCIDRs: splitCommaSeparated("AICRM_OPEN_PLATFORM_TRUSTED_PROXY_CIDRS")},
 		Bootstrap: Bootstrap{

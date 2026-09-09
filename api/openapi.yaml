@@ -6,6 +6,89 @@ info:
 servers:
   - url: https://id-dev.youcangogogo.com
 paths:
+  /api/admin/operation-batches:
+    get:
+      operationId: listExcelOperationBatches
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: "Existing AI review plans created from Excel", content: {application/json: {schema: {type: object, properties: {items: {type: array, items: {$ref: "#/components/schemas/AIAssistantPlan"}}}}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/operation-batches/imports:
+    post:
+      operationId: importExcelOperationBatch
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {name: new, in: query, schema: {type: string, enum: ["1"]}, description: "Explicitly create a new batch even for an identical file"}
+      requestBody: {required: true, content: {application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {schema: {type: string, format: binary}}}}
+      responses:
+        "200": {description: "Created or replayed native AI review plan; no identity resolution or send", content: {application/json: {schema: {type: object, properties: {plan: {$ref: "#/components/schemas/AIAssistantPlan"}, replayed: {type: boolean}}}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/operation-batches/{plan_id}:
+    get:
+      operationId: getExcelOperationBatch
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{name: plan_id, in: path, required: true, schema: {type: integer, minimum: 1}}]
+      responses:
+        "200": {description: "Native review plan and per-user frozen text, card, deferred identity and current execution evidence"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/operation-batches/{plan_id}/approve:
+    post:
+      operationId: approveExcelOperationBatch
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: plan_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [expected_version], properties: {expected_version: {type: integer, minimum: 1}}}}}}
+      responses:
+        "200": {description: "Approval and existing Outbound effects accepted atomically. Employees still execute official tasks in WeCom."}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/operation-batches/{plan_id}/report:
+    get:
+      operationId: getExcelOperationBatchReport
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{name: plan_id, in: path, required: true, schema: {type: integer, minimum: 1}}]
+      responses:
+        "200": {description: "Last durable observation, per-user receipts and cumulative 12/24/48-hour group metrics. Null rate means unavailable evidence or no matured recipients."}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/operation-batches/{plan_id}/cover:
+    post:
+      operationId: uploadExcelOperationCover
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: plan_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+        - {name: expected_version, in: query, required: true, schema: {type: integer, minimum: 1}}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      requestBody: {required: true, content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}}}
+      responses:
+        "200": {description: "Freeze one uploaded cover across all batch rows atomically; prior row approvals require review again. No default cover."}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/operation-batches/covers/{digest}:
+    get:
+      operationId: getExcelOperationCover
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{name: digest, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: "Immutable PNG or JPEG cover"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
   /healthz:
     get:
       operationId: getHealth
@@ -3815,11 +3898,21 @@ components:
     AIAssistantReviewState: {type: string, enum: [pending_review, approved, rejected, ineligible]}
     AIAssistantExecutionState: {type: string, enum: [not_accepted, accepted, queued, attempted, provider_accepted, retryable_failed, outcome_unknown, reconciled, final_failed, delivery_proven]}
     AIAssistantContentKind: {type: string, enum: [text, image, mini_program, attachment, link]}
+    ExcelOperationCard:
+      type: object
+      additionalProperties: false
+      required: [appid, path, title, cover_digest]
+      properties:
+        appid: {type: string, maxLength: 128}
+        path: {type: string, maxLength: 1024}
+        title: {type: string, maxLength: 512}
+        cover_digest: {type: string, pattern: "^(sha256:[a-f0-9]{64})?$", description: "Empty until an operator uploads the batch cover; approval requires a valid digest"}
     AIAssistantContentBlock:
       type: object
       additionalProperties: false
       required: [kind]
       properties:
+        excel_card: {$ref: "#/components/schemas/ExcelOperationCard"}
         kind: {$ref: "#/components/schemas/AIAssistantContentKind"}
         text: {type: string, maxLength: 8000}
         material_kind: {type: string, maxLength: 64}
@@ -3886,10 +3979,11 @@ components:
       properties:
         id: {$ref: "#/components/schemas/PositiveID"}
         plan_id: {$ref: "#/components/schemas/PositiveID"}
-        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        customer_id: {type: integer, minimum: 0, description: "Zero only for a deferred Excel target"}
+        deferred_target: {type: object, additionalProperties: false, required: [unionid, scope, sender_userid], properties: {unionid: {type: string, maxLength: 256}, scope: {type: string, maxLength: 256}, sender_userid: {type: string, maxLength: 256}}}
         customer_name: {type: string, maxLength: 200}
         oneid_label: {type: string, maxLength: 200}
-        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        staff_id: {type: integer, minimum: 0, description: "Zero only for a deferred Excel target"}
         staff_display_name: {type: string, maxLength: 200}
         review_state: {$ref: "#/components/schemas/AIAssistantReviewState"}
         execution_state: {$ref: "#/components/schemas/AIAssistantExecutionState"}
