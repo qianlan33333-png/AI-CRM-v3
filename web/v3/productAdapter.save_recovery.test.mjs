@@ -27,8 +27,11 @@ const calls = [];
 let externalAttempts = 0;
 const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', () => undefined);
+const navigationErrors = [];
+const editorConsole = new VirtualConsole();
+editorConsole.on('jsdomError', error => { if (String(error.message).includes('navigation')) navigationErrors.push(error.message); });
 const dom = new JSDOM(page, {
-  url: 'https://test.invalid/admin/productForm.html', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole,
+  url: 'https://test.invalid/admin/productForm.html', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: editorConsole,
   beforeParse(window) {
     window.__AICRM_TEST_MOCK__ = false;
     window.Request = Request;
@@ -63,7 +66,7 @@ const dom = new JSDOM(page, {
 dom.window.eval(standardTagPicker);
 dom.window.eval(standardMaterialPicker);
 dom.window.eval(host);
-dom.window.eval(admin);
+
 dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 await waitFor(() => dom.window.document.getElementById('pfName'), 'frozen product form must mount through the real Admin client');
 const materialOpen = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.trim() === '从素材库选择');
@@ -122,5 +125,14 @@ const external = calls.filter((call) => call.path === '/api/admin/wechat-pay/pro
 assert.equal(external[0].key, external[1].key, 'external-push recovery must reuse its original idempotency key');
 
 await wait(300);
+assert.equal(dom.window.location.pathname, '/admin/productForm.html', 'successful recovery must remain in the ordinary editor');
+assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101');
+const actionLink = dom.window.document.querySelector('a[href="#product-action"]');
+actionLink.click();
+assert.equal(actionLink.getAttribute('aria-current'), 'step', 'saved editor must retain working dimension navigation');
+assert.equal(navigationErrors.length, 0, 'successful saves must not navigate to the list');
+[...dom.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '返回商品管理').click();
+await wait(30);
+assert.equal(navigationErrors.length, 1, 'explicit Back must still invoke list navigation');
 dom.window.close();
 console.log('product Host duplicate-save and partial-recovery journey: PASS');

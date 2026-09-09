@@ -223,7 +223,7 @@ for (const documentName of ['orders.html', 'orderDetail.html']) {
   let documentHTML = fs.readFileSync(documentPath, 'utf8');
   if (!documentHTML.includes(frozenAdminReference)) throw new Error(`${documentName} does not reference the declared frozen admin entry`);
   if (documentHTML.includes(orderHostReference)) throw new Error(`${documentName} already contains the Order Host`);
-  documentHTML = documentHTML.replace(frozenAdminReference, `<script type="module" src="${orderHostReference}"></script>\n${frozenAdminReference}`);
+  documentHTML = documentHTML.replace(frozenAdminReference, `<script type="module" src="${orderHostReference}"></script>`);
   fs.writeFileSync(documentPath, documentHTML);
   manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
 }
