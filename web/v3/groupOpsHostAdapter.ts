@@ -4,6 +4,9 @@
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";
 const revisions = new Map<number, number>();
+const planGroupViews = new Map<number, Json[]>();
+const planSummaryViews = new Map<number, Json>();
+let refreshedGroupTotal: number | null = null;
 const operationMembersPath = "/api/admin/common/operation-members";
 const nativeFetch = window.fetch.bind(window);
 
@@ -100,6 +103,12 @@ function key(): string {
   return `groupops-${Date.now()}-${crypto.randomUUID()}`;
 }
 function html(value: unknown): string {
+  // The donor expects legacy new/updated counters; V3 returns a snapshot total.
+  // Translate only the next notice belonging to a completed refresh/readback.
+  if (refreshedGroupTotal !== null && value === "已刷新：新增 0 个，更新 0 个") {
+    value = `已刷新 ${refreshedGroupTotal} 个群聊`;
+    refreshedGroupTotal = null;
+  }
   return String(value ?? "").replace(
     /[&<>"']/g,
     (c) =>
@@ -269,7 +278,9 @@ async function groupsForPlan(id: number): Promise<Json[]> {
   });
 }
 async function summary(id: number): Promise<Json> {
-  const rows = await groupsForPlan(id);
+  return summarizeGroups(await groupsForPlan(id));
+}
+function summarizeGroups(rows: Json[]): Json {
   const known =
     rows.length > 0 &&
     rows.every((item) =>
@@ -344,8 +355,14 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
       method: "POST",
       body: { expected_revision: await revision(id) },
     });
-  if (id && /\/groups$/.test(url) && method === "GET")
-    return { items: await groupsForPlan(id), ...(await summary(id)) };
+  if (id && /\/groups$/.test(url) && method === "GET") {
+    const items = await groupsForPlan(id);
+    planGroupViews.set(id, items);
+    const view = planSummaryViews.get(id) || {};
+    Object.assign(view, summarizeGroups(items));
+    planSummaryViews.set(id, view);
+    return { items, summary: view };
+  }
   if (id && /\/groups$/.test(url) && method === "POST")
     return nativeRequest(`${base}/plans/${id}/groups`, {
       method,
@@ -445,7 +462,11 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
         // A profile read failure must not erase an existing owner binding.
       }
     }
-    return { ...projected, groups_summary: await summary(id) };
+    const values = await summary(id);
+    const view = planSummaryViews.get(id) || {};
+    Object.assign(view, values);
+    planSummaryViews.set(id, view);
+    return { ...projected, groups_summary: view };
   }
   if (id && url === `${base}/plans/${id}` && method === "DELETE")
     return nativeRequest(url, {
@@ -489,6 +510,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     try {
       data = await nativeRequest(url);
     } catch {
+      refreshedGroupTotal = null;
       throw new Error("群目录读取失败，请重试");
     }
     if (!Array.isArray(data.items)) throw new Error("群目录读取失败，请重试");
@@ -509,14 +531,32 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
       }),
     };
   }
-  if (url === `${base}/groups/sync`)
-    return nativeRequest(url, {
+  if (url === `${base}/groups/sync`) {
+    refreshedGroupTotal = null;
+    const result = await nativeRequest(url, {
       method,
       body: {
         owner_staff_id: Number(body.owner_userid),
         limit: Number(body.limit || 100),
       },
     });
+    const planID = Number(document.getElementById("group-ops-app")?.dataset.planId);
+    if (planID > 0) {
+      try {
+        // Update only read projections held by the donor. Do not reload its
+        // plan or form: an unsaved owner/name/dimension remains a draft.
+        const rows = await groupsForPlan(planID);
+        const view = planGroupViews.get(planID);
+        if (view) view.splice(0, view.length, ...rows);
+        const counts = planSummaryViews.get(planID);
+        if (counts) Object.assign(counts, summarizeGroups(rows));
+      } catch {
+        throw new Error("群聊已刷新，但页面读回失败，请重新打开页面查看");
+      }
+    }
+    if (Number.isSafeInteger(result.total) && result.total >= 0) refreshedGroupTotal = result.total;
+    return result;
+  }
   if (url.startsWith(operationMembersPath)) {
     const data = await nativeRequest(url);
     return {
