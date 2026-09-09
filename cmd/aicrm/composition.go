@@ -1289,7 +1289,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 		tagCatalogProvider = catalogProvider
 		if cfg.TagCatalog.MutationEnabled {
-			mutationProvider, mutationErr := outbound.NewTagCatalogMutationProvider(tagRepository, providerClient, catalogReader)
+			mutationProvider, mutationErr := outbound.NewTagCatalogMutationProvider(tagCatalogDispatchReader{uow: uow, reader: tagRepository}, providerClient, catalogReader)
 			if mutationErr != nil {
 				return fail(mutationErr)
 			}

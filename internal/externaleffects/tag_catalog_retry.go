@@ -28,9 +28,9 @@ func (r *Repository) RetryTagCatalogMutationWithin(ctx context.Context, c port.T
 	}
 	// The owner may already hold its rows. Never wait on a worker holding
 	// the effect lock while it projects completion back into those rows.
-	var owner, kind, source, state string
+	var owner, kind, source, state, fingerprint string
 	var count int32
-	err = tx.QueryRow(ctx, `SELECT owner,kind,source_ref_digest,state,attempt_count FROM external_effects WHERE id=$1 FOR UPDATE NOWAIT`, id).Scan(&owner, &kind, &source, &state, &count)
+	err = tx.QueryRow(ctx, `SELECT owner,kind,source_ref_digest,state,attempt_count,envelope_fingerprint FROM external_effects WHERE id=$1 FOR UPDATE NOWAIT`, id).Scan(&owner, &kind, &source, &state, &count, &fingerprint)
 	var lockError *pgconn.PgError
 	if errors.As(err, &lockError) && lockError.Code == "55P03" {
 		return Projection{}, port.ErrReconciliationConflict
@@ -67,7 +67,7 @@ func (r *Repository) RetryTagCatalogMutationWithin(ctx context.Context, c port.T
 				return Projection{}, e
 			}
 			seen++
-			if number != seen || !safeTagCatalogRetryAttempt(id, c.EffectID, number, State(attemptState), Digest(receipt), called, executed, completed) {
+			if number != seen || !safeTagCatalogRetryAttempt(id, c.EffectID, Digest(fingerprint), number, State(attemptState), Digest(receipt), called, executed, completed) {
 				safe = false
 			}
 		}
@@ -92,7 +92,7 @@ func (r *Repository) RetryTagCatalogMutationWithin(ctx context.Context, c port.T
 	return p, err
 }
 
-func safeTagCatalogRetryAttempt(id int64, ref string, number int32, state State, receipt Digest, called, executed, completed bool) bool {
+func safeTagCatalogRetryAttempt(id int64, ref string, fingerprint Digest, number int32, state State, receipt Digest, called, executed, completed bool) bool {
 	if !completed || executed || !ValidDigest(receipt) {
 		return false
 	}
@@ -106,5 +106,5 @@ func safeTagCatalogRetryAttempt(id int64, ref string, number int32, state State,
 	if receipt == Hash("wecom.tag.catalog.mutation.rejected", ref, n) {
 		return true
 	}
-	return !called && (receipt == Hash("provider-disabled", strconv.FormatInt(id, 10), n) || receipt == Hash("outbound.provider.not-configured", string(KindWeComTagCatalogMutation)))
+	return !called && (receipt == Hash("provider-disabled", strconv.FormatInt(id, 10), n) || receipt == Hash("outbound.provider.not-configured", string(KindWeComTagCatalogMutation)) || (ValidDigest(fingerprint) && receipt == Hash("wecom.tag.catalog.mutation.dispatch_changed", string(fingerprint))))
 }
