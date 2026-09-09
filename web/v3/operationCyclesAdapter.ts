@@ -212,10 +212,12 @@ function mountExcelOperations(): void {
   if (!stage) return;
   const mount = () => {
     if (!stage.children.length || stage.querySelector('.operation-excel-workspace')) return;
-    // The frozen donor first supplies the familiar list shell. Replace its
-    // mutable table with the V3-owned list/detail host so Excel remains in
-    // this workspace and never routes through AI Assistant.
-    void mountOperationExcelWorkspace(stage);
+    // Keep the frozen shell's embedded header intact. The scroll region holds
+    // the mutable donor table and is the V3-owned list/detail mount point.
+    const parent = Array.from(stage.querySelectorAll<HTMLElement>('div')).find(
+      node => node.style.overflow === 'auto',
+    );
+    if (parent) void mountOperationExcelWorkspace(parent);
   };
   // The frozen donor renders asynchronously and may replace its stage on refresh.
   new MutationObserver(mount).observe(stage, { childList: true, subtree: true });
