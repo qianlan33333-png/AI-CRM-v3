@@ -15,6 +15,10 @@ on:
         description: Activate official WeCom tag catalog writes after the release is ready (manual opt-in only)
         type: boolean
         default: false
+      groupops_directory_rollout:
+        description: Activate WeCom staff and group directory reads without enabling message dispatch
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
   push:
@@ -390,5 +394,17 @@ jobs:
           scp "${ssh_flags[@]}" deploy/configure-wecom-tag-catalog-mutation-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}"
+      - name: Activate requested Group Ops directory reads
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.groupops_directory_rollout }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          remote_script="/tmp/configure-groupops-directory-${GITHUB_SHA}.py"
+          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          scp "${ssh_flags[@]}" deploy/configure-groupops-directory-runtime.py "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_script}"
+          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "trap 'sudo rm -f -- ${remote_script}' EXIT; sudo python3 ${remote_script} ${GITHUB_SHA}"
       - name: Verify the public server is running this release
         run: python3 scripts/ci/verify_deployment.py https://id-dev.youcangogogo.com "$GITHUB_SHA"

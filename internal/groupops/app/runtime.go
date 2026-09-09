@@ -550,7 +550,7 @@ func (s *RuntimeService) ReadProviderDelivery(ctx context.Context, command group
 	return result, nil
 }
 
-func (s *RuntimeService) ListOperationMembers(ctx context.Context, pageSize int32) (groupopsport.OperationMemberPage, error) {
+func (s *RuntimeService) ListOperationMembers(ctx context.Context, pageSize int32, query string) (groupopsport.OperationMemberPage, error) {
 	if s == nil || s.uow == nil || s.staff == nil || pageSize < 1 || pageSize > 100 {
 		return groupopsport.OperationMemberPage{}, invalidOrUnavailableRuntime(s)
 	}
@@ -577,6 +577,16 @@ func (s *RuntimeService) ListOperationMembers(ctx context.Context, pageSize int3
 	})
 	if err != nil {
 		return groupopsport.OperationMemberPage{}, classify(err)
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query != "" {
+		matched := make([]groupopsport.OperationMember, 0, len(items))
+		for _, item := range items {
+			if strings.Contains(strings.ToLower(item.DisplayName), query) || strings.Contains(strings.ToLower(item.SenderUserID), query) {
+				matched = append(matched, item)
+			}
+		}
+		items = matched
 	}
 	if len(items) > int(pageSize) {
 		items = items[:pageSize]
