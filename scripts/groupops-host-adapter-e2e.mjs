@@ -148,6 +148,8 @@ fullJourneyConsole.on("jsdomError", (error) => fullJourneyErrors.push(String(err
 const calls = [];
 let memberRefreshAttempts = 0;
 let ownerDirectoryFailures = 0;
+let groupSyncAttempts = 0;
+let failGroupReadback = false;
 const state = {
   revision: 4,
   plan: { plan_id: 41, name: "标准群运营计划", revision: 4, status: "draft", plan_type: "standard", updated_at: "2026-09-08T00:00:00Z" },
@@ -230,7 +232,16 @@ fullWindow.fetch = async (input, init = {}) => {
     state.plan.revision = state.revision;
     return response({ plan: clone(state.plan) });
   }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups/sync" && method === "POST") {
+    groupSyncAttempts++;
+    assert.equal(body.owner_staff_id, 7, "refresh uses unsaved selected local member, not the saved owner");
+    state.directory[0].display_name = `同步群名${groupSyncAttempts}`;
+    state.directory[0].member_count = 300 + groupSyncAttempts;
+    state.directory[0].external_member_count = 230 + groupSyncAttempts;
+    return response({ items: clone(state.directory), total: 1, limit: 100, offset: 0, has_more: false });
+  }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") {
+    if (failGroupReadback) return response({ code: "directory_unavailable" }, 503);
     if (url.searchParams.get("owner_userid") === "9" && ownerDirectoryFailures++ === 0) return response({ error: { code: "provider_read_unavailable" } }, 503);
     return response({ items: clone(state.directory), total: state.directory.length, limit: 200, offset: 0, has_more: false });
   }
@@ -292,6 +303,29 @@ try {
   assert.equal(state.nodes[0].action_title, "节点结果");
   assert(calls.some((item) => item.path.endsWith("/enable") && item.method === "POST"), "standard enable action did not call the V3 command");
   assert(fullWindow.document.body.textContent.includes("wecom-replacement"), "selected owner must show the trusted WeCom user ID");
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();
+  fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-owner"]'), "draft owner picker missing");
+  fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-owner"] [data-operation-member-row-select]').click();
+  fullWindow.document.querySelector('[data-operation-member-confirm]').click();
+  await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "7", "draft owner missing");
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  const writesBeforeRefresh = calls.filter(item => item.method !== "GET" && !item.path.endsWith("/sync")).length;
+  fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
+  await waitFor(() => fullWindow.document.body.textContent.includes("已刷新 1 个群聊"), "snapshot total notice missing");
+  assert(fullWindow.document.querySelector('.group-ops__group-name').textContent.includes("同步群名1"), "bound group name must refresh without a page reload");
+  assert(fullWindow.document.body.textContent.includes("231"), "external contact overview must read back the new snapshot");
+  assert.equal(fullWindow.document.querySelector('[name="owner_userid"]').value, "7", "refresh must preserve unsaved owner");
+  assert.deepEqual(state.members, [{ staff_id: 9 }], "refresh must not save the draft owner");
+  assert.equal(calls.filter(item => item.method !== "GET" && !item.path.endsWith("/sync")).length, writesBeforeRefresh, "refresh must not save or enable the plan");
+  failGroupReadback = true;
+  fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
+  await waitFor(() => fullWindow.document.body.textContent.includes("群聊已刷新，但页面读回失败"), "readback failure must not claim UI completion");
+  assert(fullWindow.document.querySelector('.group-ops__group-name').textContent.includes("同步群名1"), "failed readback preserves displayed snapshot");
+  assert.equal(fullWindow.document.body.textContent.includes("新增 0"), false);
+  failGroupReadback = false;
+  fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
+  await waitFor(() => fullWindow.document.querySelector('.group-ops__group-name')?.textContent.includes("同步群名3"), "retry must update the bound projection");
   if (fullJourneyErrors.length) throw new Error(`Group Ops standard DOM errors: ${JSON.stringify(fullJourneyErrors)}`);
   console.log("groupops-standard-dom: PASS");
 } finally {
