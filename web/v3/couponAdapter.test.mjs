@@ -4,12 +4,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import jsdom from 'jsdom';
+import { build } from 'esbuild';
 import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
 
 const { JSDOM, VirtualConsole, requestInterceptor } = jsdom;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const host = await buildTestBrowserBundle(path.join(root, 'web/v3/couponAdapter.ts'));
+const feedback = (await build({ stdin: { contents: 'import {initFeedback} from "./web/src/shared/ui/feedback.ts"; initFeedback();', resolveDir: root }, bundle: true, format: 'iife', write: false })).outputFiles[0].text;
+const publishAction = (await build({ stdin: { contents: `import {walkChildren} from './web/src/shared/ui/runtime.ts'; import {confirmBox} from './web/src/shared/ui/feedback.ts'; import {publishLegacyCoupon} from './web/src/api/generated/p4-coupon-compat/p4-coupon-compat.ts'; const stage=document.createElement('div');stage.innerHTML='<button id="publishActual" onclick="{{ publish }}">发布</button>';document.body.append(stage);walkChildren(stage,{publish:()=>confirmBox('发布优惠券','确认发布？','确认发布',true,()=>publishLegacyCoupon(21).then(r=>window.publishReceipt=r))});`, resolveDir: root }, bundle: true, format: 'iife', write: false })).outputFiles[0].text;
 const donorForm = await fs.readFile(path.join(root, 'web/donors/standard-components-production/coupons/coupon_form.html'), 'utf8');
 const donorStyle = await fs.readFile(path.join(root, 'web/donors/standard-components-production/coupons/coupon_styles.html'), 'utf8');
 const runtimeBlock = donorForm.indexOf('{% block scripts_extra %}'); const runtimeOpen = donorForm.indexOf('<script>', runtimeBlock); const runtimeClose = donorForm.indexOf('</script>', runtimeOpen);
@@ -42,6 +45,7 @@ const dom = new JSDOM('<!doctype html><body data-page="couponForm"><main id="sta
   },
 });
 try {
+  dom.window.eval(feedback);
   dom.window.eval(host);
   const document = dom.window.document;
   await waitFor(() => document.querySelector('#couponForm'), 'actual standard coupon form must replace the frozen target_ref textarea');
@@ -56,8 +60,15 @@ try {
   document.querySelector('#couponName').value = '0.01 验收券'; document.querySelector('#couponAmount').value = '0.01'; document.querySelector('#couponIssueLimit').value = '1'; document.querySelector('#couponPerUserLimit').value = '1'; document.querySelector('#couponClaimStart').value = '2026-09-08T10:00'; document.querySelector('#couponClaimEnd').value = '2026-09-08T12:00'; document.querySelector('#couponUseStart').value = '2026-09-08T10:00'; document.querySelector('#couponUseEnd').value = '2026-09-08T13:00';
   document.querySelector('#saveCoupon').click(); await waitFor(() => calls.some((call) => call.method === 'POST' && call.url.pathname === '/api/admin/coupons'), 'standard form save must create through the V3 Coupon HTTP contract');
   const create = calls.find((call) => call.method === 'POST' && call.url.pathname === '/api/admin/coupons'); assert.match(create.headers.get('Idempotency-Key'), /^coupon-/); await waitFor(() => document.querySelector('#couponFormToast').textContent.includes('优惠券已保存'), 'the original donor save handler must receive the V3 create receipt');
+  assert.equal(document.querySelector('#fb-toast').textContent, '', 'the real global capture handler must not report an unavailable backend for the actual donor save');
+  assert.equal(document.querySelector('#saveCoupon').dataset.capabilityState, 'real');
+  dom.window.eval(publishAction); document.querySelector('#publishActual').click();
+  assert.equal(document.querySelector('#fb-mask').hidden, false, 'the real bound publish action opens confirmation');
+  document.querySelector('#fb-ok').click();
+  await waitFor(() => dom.window.publishReceipt, 'confirmed publish must use the actual generated HTTP client');
+  assert.equal(dom.window.publishReceipt.status, 200); assert.equal(document.querySelector('#fb-toast').textContent, '', 'publish confirmation must not emit the unbound-action error');
   await dom.window.fetch('/api/admin/coupons/21/publish', { method: 'POST', body: '' }); await dom.window.fetch('/api/admin/coupons/21/stop', { method: 'POST', body: '' }); await dom.window.fetch('/api/admin/coupons/21/publish', { method: 'POST', body: '' }); await dom.window.fetch('/api/admin/coupons/21', { method: 'DELETE' });
-  const publish = calls.filter((call) => call.url.pathname.endsWith('/publish')); const stop = calls.find((call) => call.url.pathname.endsWith('/stop')); assert.match(publish[0].headers.get('Idempotency-Key'), /^coupon-/, 'publish must include the server-required idempotency receipt'); assert.match(publish[1].headers.get('Idempotency-Key'), /^coupon-/, 'republishing after a confirmed stop must include a fresh receipt'); assert.notEqual(publish[0].headers.get('Idempotency-Key'), publish[1].headers.get('Idempotency-Key'), 'a confirmed publish -> stop -> publish is a new lifecycle intent'); assert.match(stop.headers.get('Idempotency-Key'), /^coupon-/, 'stop has its own lifecycle key'); assert.match(calls.find((call) => call.method === 'DELETE').headers.get('Idempotency-Key'), /^coupon-/, 'delete must have a lifecycle idempotency key');
+  const publish = calls.filter((call) => call.url.pathname.endsWith('/publish')); const stop = calls.find((call) => call.url.pathname.endsWith('/stop')); assert.match(publish[0].headers.get('Idempotency-Key'), /^coupon-/, 'publish must include the server-required idempotency receipt'); assert.match(publish[2].headers.get('Idempotency-Key'), /^coupon-/, 'republishing after a confirmed stop must include a fresh receipt'); assert.notEqual(publish[1].headers.get('Idempotency-Key'), publish[2].headers.get('Idempotency-Key'), 'a confirmed publish -> stop -> publish is a new lifecycle intent'); assert.match(stop.headers.get('Idempotency-Key'), /^coupon-/, 'stop has its own lifecycle key'); assert.match(calls.find((call) => call.method === 'DELETE').headers.get('Idempotency-Key'), /^coupon-/, 'delete must have a lifecycle idempotency key');
   assert.equal(createAttempts, 1, 'one completed submit must create exactly once');
   const unknownBody = '{"name":"unknown-create"}';
   await assert.rejects(() => dom.window.fetch('/api/admin/coupons', { method: 'POST', body: unknownBody }), /response lost/);
@@ -66,6 +77,49 @@ try {
   const unknownCalls = calls.filter((call) => call.method === 'POST' && call.url.pathname === '/api/admin/coupons' && call.body === unknownBody); assert.equal(unknownCalls.length, 2, 'only the original logical create is retried'); assert.equal(unknownCalls[0].headers.get('Idempotency-Key'), unknownCalls[1].headers.get('Idempotency-Key'), 'unknown retry retains its original key'); assert.equal(unknownCreateAttempts, 2);
   const malformed = await dom.window.fetch('/api/admin/coupons', { method: 'POST', body: '{"name":"empty-receipt"}' }); assert.equal(malformed.status, 503, '200 without a coupon ID remains create outcome unknown and cannot show a false saved state');
 } finally { dom.window.close(); }
+
+// Existing draft: real donor submit plus real global feedback, with a durable
+// receipt-shaped response. A failed or malformed save must never show success.
+let savedDraft = { id: 18, name: '验收草稿', status: 'draft', discount_amount_total: 1, total_issue_limit: 3, per_user_issue_limit: 1, claim_starts_at: '2026-09-08T00:00:00Z', claim_ends_at: '2026-09-15T00:00:00Z', validity_mode: 'relative_days', relative_validity_days: 7, target_refs: ['standard_product:32'], instructions: '' };
+let editOutcome = 'success'; const edits = [];
+const editDom = new JSDOM('<body data-page="couponForm"><main id="stage"><textarea id="coupon-target-refs"></textarea></main><button id="unowned">发布未接入功能</button></body>', {
+  url: 'https://test.invalid/admin/couponForm.html?id=18', runScripts: 'dangerously', virtualConsole: new VirtualConsole(),
+  resources: { interceptors: [requestInterceptor(async (request) => request.url.endsWith('/coupon_form_runtime.js') ? new Response(donorRuntime, { headers: { 'Content-Type': 'application/javascript' } }) : undefined)] },
+  beforeParse(window) {
+    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(String(input), window.location.href);
+      if (url.pathname.endsWith('/coupon_form.html')) return new Response(donorForm);
+      if (url.pathname.endsWith('/coupon_styles.html')) return new Response(donorStyle);
+      if (url.pathname.endsWith('/product-options')) return Response.json({ total: 1, items: [{ target_ref: 'standard_product:32', name: '适用商品', price_minor: 100 }] });
+      if (init.method === 'PUT') {
+        edits.push({ body: JSON.parse(init.body), headers: new Headers(init.headers) });
+        if (editOutcome === 'rejected') return Response.json({ error: 'coupon_invalid', message: '规则校验失败' }, { status: 400 });
+        if (editOutcome === 'malformed') return Response.json({});
+        savedDraft = { ...savedDraft, ...JSON.parse(init.body) };
+      }
+      return Response.json({ coupon: savedDraft });
+    };
+  },
+});
+try {
+  editDom.window.eval(feedback); editDom.window.eval(host);
+  const d = editDom.window.document;
+  await waitFor(() => d.querySelector('#saveCoupon')?.__dcBound, 'existing draft runtime must own the save action');
+  d.querySelector('#couponName').value = '已修改草稿';
+  d.querySelector('#saveCoupon').click();
+  await waitFor(() => d.querySelector('#couponFormToast').textContent.includes('优惠券已保存'), 'draft PUT must receive a confirmed saved receipt');
+  assert.equal(savedDraft.name, '已修改草稿'); assert.equal(savedDraft.discount_amount_total, 1); assert.deepEqual(savedDraft.target_refs, ['standard_product:32']);
+  assert.equal(edits.length, 1); assert.match(edits[0].headers.get('Idempotency-Key'), /^coupon-/);
+  assert.equal(d.querySelector('#fb-toast').textContent, '', 'confirmed save must not have a simultaneous unavailable-backend toast');
+  for (const outcome of ['rejected', 'malformed']) {
+    editOutcome = outcome; d.querySelector('#saveCoupon').click();
+    await waitFor(() => !d.querySelector('#saveCoupon').disabled, 'failed save must restore the submit button');
+    assert.doesNotMatch(d.querySelector('#couponFormToast').textContent, /已保存/);
+    assert.match(d.querySelector('#couponFormToast').textContent, outcome === 'malformed' ? /无法确认/ : /规则校验失败/);
+  }
+  d.querySelector('#unowned').click(); assert.match(d.querySelector('#fb-toast').textContent, /后端能力未就绪/, 'unrelated unbound actions must remain guarded');
+} finally { editDom.window.close(); }
 
 // An external donor runtime failure occurs after the standard form has been
 // mounted. Keep that form intact, make the error visible, and allow the same
