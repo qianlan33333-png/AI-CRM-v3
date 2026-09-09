@@ -26,16 +26,31 @@ Object.defineProperty(window, "crypto", { configurable: true, value: crypto });
 window.document.cookie = "aicrm_admin_csrf=test-csrf";
 
 const mutations = [];
+const foreignRequests = [];
+const foreignPayload = { items: [{ staff_id: 5, sender_userid: "external-user", display_name: "External name" }] };
 let nodes = [];
+let savedOwner = [];
+let memberDirectory = [];
+let memberDirectoryStatus = 200;
 const detail = () => ({
   plan: { plan_id: 41, name: "浏览器计划", revision: 7, status: "draft", plan_type: "standard" },
   nodes,
-  members: [],
+  members: savedOwner,
 });
 window.fetch = async (input, init = {}) => {
   const url = new URL(String(input), window.location.href);
+  if (url.origin !== window.location.origin) {
+    foreignRequests.push({ input, init });
+    return new Response(JSON.stringify(foreignPayload), { status: 200 });
+  }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && (!init.method || init.method === "GET")) {
     return new Response(JSON.stringify(detail()), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (url.pathname === "/api/admin/common/operation-members") {
+    return new Response(JSON.stringify({ items: memberDirectory }), { status: memberDirectoryStatus });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups") {
+    return new Response(JSON.stringify({ items: [], has_more: false }), { status: 200 });
   }
   if (/\/plans\/41\/nodes(?:\/\d+)?$/.test(url.pathname) && (init.method === "POST" || init.method === "PUT")) {
     mutations.push(JSON.parse(String(init.body || "{}")));
@@ -44,6 +59,15 @@ window.fetch = async (input, init = {}) => {
   throw new Error(`unexpected request ${init.method || "GET"} ${url.pathname}`);
 };
 window.eval(bundle.outputFiles[0].text);
+
+const foreignOptions = { method: "POST", headers: { "X-Original": "preserved" }, body: "original body" };
+await window.fetch("https://external.test/api/admin/common/operation-members/sync", foreignOptions);
+assert.equal(foreignRequests[0].init, foreignOptions, "foreign requests must retain the original options unchanged");
+assert.equal(new Headers(foreignRequests[0].init.headers).has("X-CSRF-Token"), false);
+assert.equal(new Headers(foreignRequests[0].init.headers).has("Idempotency-Key"), false);
+assert.equal(foreignRequests[0].init.body, "original body");
+const foreignResult = await (await window.fetch("https://external.test/api/admin/common/operation-members?scope=group_ops")).json();
+assert.deepEqual(foreignResult, foreignPayload, "foreign same-path GET payload must not be projected");
 
 const host = window.AdminApi;
 assert.equal(typeof host?.requestJson, "function", "Group Ops Host bridge must expose requestJson");
@@ -87,6 +111,22 @@ await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41/node
 assert.equal(mutations[1].position, 2, "out-of-range donor edit order must retain the persisted V3 position");
 assert.equal(mutations[1].expected_revision, 7);
 assert.equal(mutations[1].action_title, "编辑保留位置");
+savedOwner = [{ staff_id: 7 }];
+memberDirectory = [
+  { staff_id: 9, sender_userid: "7", display_name: "不能按外部 ID 误匹配" },
+  { staff_id: 7, sender_userid: "real-owner", display_name: "真实昵称 · 完整姓名", name_source: "wecom_profile" },
+];
+let projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+assert.equal(projectedOwner.owner_userid, "7");
+assert.equal(projectedOwner.owner_name, "真实昵称 · 完整姓名", "overview resolves the saved local staff key to its real display name");
+memberDirectory = [];
+projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+assert.equal(projectedOwner.owner_userid, "7", "missing profile must preserve the saved owner binding");
+assert.equal(projectedOwner.owner_name, "姓名待同步");
+memberDirectoryStatus = 503;
+projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+assert.equal(projectedOwner.owner_userid, "7", "directory outage must preserve the saved owner binding");
+assert.equal(projectedOwner.owner_name, "姓名待同步");
 console.log("groupops-host-adapter: PASS");
 dom.window.close();
 
@@ -352,7 +392,7 @@ try {
   await waitFor(() => listWindow.document.querySelector('[data-action="enable-plan"]'), "disabled plan did not render its enable control");
   const enable = () => listWindow.document.querySelector('[data-action="enable-plan"]');
   enable().click();
-  await waitFor(() => listWindow.document.body.textContent.includes("计划配置未完成，无法启用") && !enable()?.disabled, "failed enable must keep a retryable control and visible error");
+  await waitFor(() => listWindow.document.body.textContent.includes("计划状态、版本或配置不满足要求，请刷新后检查") && !enable()?.disabled, "failed enable must keep a retryable control and visible error");
   enable().click();
   enable().click();
   await waitFor(() => enableCalls === 2 && enable()?.disabled && enable()?.textContent === "启用中", "enable must lock repeat clicks and show progress");
