@@ -415,7 +415,10 @@ func (s *Service) mutate(ctx context.Context, operation string, planID, expected
 		if detail.Plan.Revision != expectedRevision {
 			return groupopsport.Detail{}, ErrConflict
 		}
-		if detail.Plan.Status != groupopsport.PlanDraft && operation != "plan_pause" && operation != "plan_archive" && !((operation == "plan_activate" || operation == "webhook_descriptor_put") && detail.Plan.Status == groupopsport.PlanPaused) {
+		// A paused plan can repair its basic definition without activating it.
+		// Keep other configuration mutations draft-only and retain revision fences
+		// so previously accepted executions cannot use the changed definition.
+		if detail.Plan.Status != groupopsport.PlanDraft && operation != "plan_pause" && operation != "plan_archive" && !((operation == "plan_activate" || operation == "plan_update" || operation == "webhook_descriptor_put") && detail.Plan.Status == groupopsport.PlanPaused) {
 			return groupopsport.Detail{}, ErrStateConflict
 		}
 		if err := change(tx, &detail, now); err != nil {

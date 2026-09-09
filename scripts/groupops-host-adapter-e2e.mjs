@@ -150,9 +150,10 @@ let memberRefreshAttempts = 0;
 let ownerDirectoryFailures = 0;
 let groupSyncAttempts = 0;
 let failGroupReadback = false;
+let saveFailure = "";
 const state = {
   revision: 4,
-  plan: { plan_id: 41, name: "标准群运营计划", revision: 4, status: "draft", plan_type: "standard", updated_at: "2026-09-08T00:00:00Z" },
+  plan: { plan_id: 41, name: "标准群运营计划", revision: 4, status: "paused", plan_type: "standard", updated_at: "2026-09-08T00:00:00Z" },
   members: [{ staff_id: 7 }],
   group_assets: [],
   nodes: [],
@@ -203,6 +204,8 @@ fullWindow.fetch = async (input, init = {}) => {
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "GET") return response(detailPayload());
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "PUT") {
+    if (saveFailure === "network") throw new Error("网络连接中断");
+    if (saveFailure) return response({ code: saveFailure === "409" ? "revision_conflict" : "service_unavailable" }, Number(saveFailure));
     if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
     state.plan.name = body.name;
     state.plan.plan_type = body.plan_type;
@@ -274,10 +277,38 @@ try {
   fullWindow.document.querySelector("[data-operation-member-confirm]").click();
   await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "9", "owner picker did not retain the selected local staff id");
   await waitFor(() => fullWindow.document.body.textContent.includes("群目录读取失败，请重试"), "owner directory failure must remain explicit rather than appear as an empty group list");
+  const draftName = fullWindow.document.querySelector('[name="plan_name"]');
+  draftName.value = "失败重试保留草稿";
+  for (const failure of ["409", "503", "network"]) {
+    saveFailure = failure;
+    const writesBefore = calls.filter((call) => call.method === "PUT").length;
+    const action = failure === "503" ? "save-active-detail-panel" : "save-plan";
+    fullWindow.document.querySelector(`[data-action="${action}"]`).click();
+    await waitFor(() => calls.filter((call) => call.method === "PUT").length > writesBefore && fullWindow.document.querySelector('[data-groupops-save-error]'), "real save rejection must be visible");
+    assert.equal(fullWindow.document.querySelectorAll('[data-groupops-save-error][role="alert"]').length, 1, "repeated failures reuse one alert");
+    const saveAlert = fullWindow.document.querySelector('[data-groupops-save-error]');
+    assert.match(saveAlert.textContent, /^保存失败：/);
+    assert.equal(saveAlert.style.color, "rgb(180, 35, 24)", "failure feedback must not inherit the green standard notice color");
+    assert.equal(fullWindow.document.querySelector('[name="plan_name"]'), draftName, "failure must not rerender the draft form");
+    assert.equal(draftName.value, "失败重试保留草稿");
+    assert.equal(fullWindow.document.querySelector('[name="owner_userid"]').value, "9");
+    assert.equal(state.plan.name, "标准群运营计划", "failed save must not pretend the server changed");
+    assert.equal(fullWindow.document.body.textContent.includes("已保存"), false);
+  }
+  saveFailure = "";
+  assert.equal(fullWindow.document.querySelector('[name="status"]').value, "disabled", "paused server state must remain stopped in the frozen form");
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => state.plan.name === "失败重试保留草稿" && fullWindow.document.querySelector('[name="plan_name"]') !== draftName, "successful paused save must persist then reload the original form");
+  assert.equal(state.plan.status, "paused", "saving paused configuration must not activate the plan");
+  assert.deepEqual(state.members, [{ staff_id: 9 }], "paused save must persist the chosen owner");
+  assert.equal(calls.some((call) => call.method === "POST" && /\/(enable|disable)$/.test(call.path)), false, "paused save must not trigger a lifecycle command");
+  assert.equal(fullWindow.document.querySelector('[data-groupops-save-error]'), null);
   fullWindow.document.querySelector('[name="status"]').value = "active";
   fullWindow.document.querySelector('[data-action="save-plan"]').click();
   await waitFor(() => state.plan.status === "active", "saving the selected owner did not enable the existing plan");
   assert.deepEqual(state.members, [{ staff_id: 9 }], "Host must write the selected staff id as owner_staff_id");
+  assert.equal(state.plan.name, "失败重试保留草稿", "successful retry must submit the retained draft");
+  assert.equal(fullWindow.document.querySelector('[data-groupops-save-error]'), null, "successful retry clears the prior failure");
 
   await waitFor(() => fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]'), "detail did not reload after owner save");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
