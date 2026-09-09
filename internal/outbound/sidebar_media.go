@@ -66,13 +66,13 @@ func (s *SidebarMediaPreparationService) PrepareSidebarImage(ctx context.Context
 		var ready *time.Time
 		e = tx.QueryRow(txctx, `SELECT id,source_digest,COALESCE(effect_id,''),state,media_id,ready_until FROM outbound_sidebar_image_preparations WHERE scope_digest=$1 AND image_id=$2 ORDER BY id DESC LIMIT 1 FOR UPDATE`, scope, source.ImageID).Scan(&id, &oldDigest, &effectID, &state, &mediaID, &ready)
 		if e == nil {
-			// A changed source cannot replace an unresolved upload. Only confirmed
-			// success permits a new content generation or a lease renewal.
-			if state != "executed" {
+			// A changed source cannot replace an unresolved upload. Confirmed
+			// success or explicitly audited abandonment permits a new generation.
+			if state != "executed" && state != "reconciled" {
 				out = outboundport.SidebarImagePreparation{State: state, EffectID: effectID}
 				return nil
 			}
-			if hex.EncodeToString(oldDigest) == hex.EncodeToString(source.SourceDigest[:]) && ready != nil && ready.After(requiredThrough) && mediaID != nil {
+			if state == "executed" && hex.EncodeToString(oldDigest) == hex.EncodeToString(source.SourceDigest[:]) && ready != nil && ready.After(requiredThrough) && mediaID != nil {
 				out = outboundport.SidebarImagePreparation{State: "ready", EffectID: effectID, MediaID: *mediaID, ReadyUntil: *ready}
 				return nil
 			}
@@ -146,7 +146,21 @@ func (p *SidebarMediaPreparationProvider) Execute(ctx context.Context, envelope 
 	receipt, attempted, err := p.uploader.UploadSidebarImage(ctx, source)
 	if err != nil {
 		if attempted {
-			return fail(effectport.StateUnknown, true, "upload_unknown"), nil
+			out := fail(effectport.StateUnknown, true, "upload_unknown")
+			diagnostic := sidebarImageFailureDiagnostic{FailureCode: "upload_unknown"}
+			var typed outboundport.SidebarImageUploadError
+			if errors.As(err, &typed) {
+				diagnostic = safeSidebarImageFailure(typed)
+				if !typed.OutcomeUnknown() && diagnostic.ProviderErrorCode != 0 {
+					out.Completion = effectport.StateFinalFailed
+					out.RealExternalCallExecuted = false
+				}
+			}
+			out.ReceiptDigest = effectport.Hash("sidebar.image.upload.result.v1", attempt.EffectID, diagnostic.FailureCode, strconv.Itoa(diagnostic.HTTPStatusCode))
+			raw, _ := json.Marshal(diagnostic)
+			out.Artifact = effectport.ResultArtifact{Kind: "outbound.sidebar_image.failure.v1", Payload: raw}
+			out.Artifact.Digest = effectport.Hash("external-effect.artifact.v1", out.Artifact.Kind, string(raw))
+			return out, nil
 		}
 		return fail(effectport.StateRetryable, false, "upload_unavailable"), err
 	}
@@ -198,9 +212,116 @@ func (s *SidebarMediaPreparationService) CompleteEffect(ctx context.Context, eff
 	if _, err = tx.Exec(ctx, `UPDATE outbound_sidebar_image_preparations SET state=$2,media_id=$3,ready_until=$4,updated_at=$5 WHERE id=$1`, id, state, mediaID, ready, s.now().UTC()); err != nil {
 		return err
 	}
-	return sidebarImageEvent(ctx, tx, id, state, string(result.ReceiptDigest), s.now().UTC())
+	if err = sidebarImageEvent(ctx, tx, id, state, string(result.ReceiptDigest), s.now().UTC()); err != nil {
+		return err
+	}
+	if result.Completion != effectport.StateExecuted && result.Artifact.Kind == "outbound.sidebar_image.failure.v1" {
+		var diagnostic sidebarImageFailureDiagnostic
+		if !result.Artifact.Valid() || json.Unmarshal(result.Artifact.Payload, &diagnostic) != nil || !diagnostic.valid() {
+			return ErrSidebarImagePreparation
+		}
+		raw, _ := json.Marshal(diagnostic)
+		if _, err = tx.Exec(ctx, `UPDATE outbound_sidebar_image_events SET diagnostics=$3 WHERE preparation_id=$1 AND operation=$2 AND evidence_digest=$4`, id, state, raw, string(result.ReceiptDigest)); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE outbound_sidebar_image_outbox SET payload=payload||$3::jsonb WHERE preparation_id=$1 AND event_type=$2 AND evidence_digest=$4`, id, "outbound.sidebar_image."+state+".v1", raw, string(result.ReceiptDigest)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var _ outboundport.SidebarImagePreparer = (*SidebarMediaPreparationService)(nil)
 var _ effectport.ProviderAdapter = (*SidebarMediaPreparationProvider)(nil)
 var _ effectport.CompletionSink = (*SidebarMediaPreparationService)(nil)
+
+type sidebarImageFailureDiagnostic struct {
+	FailureCode       string `json:"failure_code"`
+	ProviderErrorCode int64  `json:"provider_error_code"`
+	HTTPStatusCode    int    `json:"http_status_code"`
+}
+
+func (d sidebarImageFailureDiagnostic) valid() bool {
+	if d.HTTPStatusCode != 0 && (d.HTTPStatusCode < 100 || d.HTTPStatusCode > 599) {
+		return false
+	}
+	if d.ProviderErrorCode != 0 {
+		return d.FailureCode == "wecom_errcode_"+strconv.FormatInt(d.ProviderErrorCode, 10)
+	}
+	switch d.FailureCode {
+	case "upload_unknown", "upload_request_invalid", "upload_transport_unknown", "upload_response_unreadable", "upload_http_unknown", "upload_response_invalid", "upload_response_conflict", "upload_receipt_missing":
+		return true
+	}
+	return false
+}
+func safeSidebarImageFailure(e outboundport.SidebarImageUploadError) sidebarImageFailureDiagnostic {
+	d := sidebarImageFailureDiagnostic{e.FailureCode(), e.ProviderErrorCode(), e.HTTPStatusCode()}
+	if !d.valid() {
+		return sidebarImageFailureDiagnostic{FailureCode: "upload_unknown"}
+	}
+	return d
+}
+
+// AbandonUnknownSidebarImage explicitly abandons an unconfirmed temporary
+// upload. It does not assert Provider failure and never uploads or sends.
+// The original outcome_unknown event remains immutable evidence. Reconciliation
+// and the owner's audited release of the resource share one PostgreSQL UoW.
+func (s *SidebarMediaPreparationService) AbandonUnknownSidebarImage(ctx context.Context, effectID string, actor int64, evidence effectport.Digest) error {
+	if s == nil || effectID == "" || actor < 1 || !effectport.ValidDigest(evidence) {
+		return ErrSidebarImagePreparation
+	}
+	reconciler, ok := s.effects.(effectport.TransactionalReconciler)
+	if !ok {
+		return ErrSidebarImagePreparation
+	}
+	return s.uow.Within(ctx, func(txctx context.Context) error {
+		tx, err := platformpostgres.RequireTransaction(txctx)
+		if err != nil {
+			return err
+		}
+		var id int64
+		var state string
+		if err = tx.QueryRow(txctx, `SELECT id,state FROM outbound_sidebar_image_preparations WHERE effect_id=$1 FOR UPDATE`, effectID).Scan(&id, &state); err != nil {
+			return err
+		}
+		if state == "reconciled" {
+			var matches bool
+			err = tx.QueryRow(txctx, `SELECT EXISTS(SELECT 1 FROM outbound_sidebar_image_events WHERE preparation_id=$1 AND operation='abandoned_unconfirmed' AND evidence_digest=$2 AND actor_admin_user_id=$3)`, id, string(evidence), actor).Scan(&matches)
+			if err != nil {
+				return err
+			}
+			if !matches {
+				return ErrSidebarImagePreparation
+			}
+			return nil
+		}
+		if state != "outcome_unknown" {
+			return ErrSidebarImagePreparation
+		}
+		candidate, err := reconciler.ReconciliationCandidate(txctx, effectID)
+		if err != nil {
+			return err
+		}
+		if candidate.Owner != effectport.OwnerOutbound || candidate.Kind != effectport.KindOutboundMedia || candidate.State != effectport.StateUnknown || candidate.LeaseExpiresAt.After(s.now().UTC()) {
+			return ErrSidebarImagePreparation
+		}
+		projection, err := reconciler.ReconcileEffectWithin(txctx, effectport.ReconcileCommand{EffectID: effectID, ActorAdminUserID: actor, EvidenceDigest: evidence, ReceiptKey: effectport.Hash("sidebar.image.abandon.unconfirmed.v1", effectID, strconv.FormatInt(actor, 10), string(evidence)), Generation: candidate.Generation, Fence: candidate.Fence, LeaseExpiresAt: candidate.LeaseExpiresAt})
+		if err != nil {
+			return err
+		}
+		if projection.State != effectport.StateReconciled {
+			return ErrSidebarImagePreparation
+		}
+		if _, err = tx.Exec(txctx, `UPDATE outbound_sidebar_image_preparations SET state='reconciled',updated_at=$2 WHERE id=$1 AND state='outcome_unknown'`, id, s.now().UTC()); err != nil {
+			return err
+		}
+		if err = sidebarImageEvent(txctx, tx, id, "abandoned_unconfirmed", string(evidence), s.now().UTC()); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(txctx, `UPDATE outbound_sidebar_image_events SET actor_admin_user_id=$3 WHERE preparation_id=$1 AND operation='abandoned_unconfirmed' AND evidence_digest=$2`, id, string(evidence), actor); err != nil {
+			return err
+		}
+		_, err = tx.Exec(txctx, `UPDATE outbound_sidebar_image_outbox SET payload=payload||jsonb_build_object('actor_admin_user_id',$3::bigint,'resolution','abandoned_unconfirmed','provider_outcome','unconfirmed') WHERE preparation_id=$1 AND event_type='outbound.sidebar_image.abandoned_unconfirmed.v1' AND evidence_digest=$2`, id, string(evidence), actor)
+		return err
+	})
+}

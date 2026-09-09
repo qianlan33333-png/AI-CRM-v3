@@ -96,6 +96,13 @@ func TestSidebarImagePreparationPostgreSQL(t *testing.T) {
 	if _, err = pool.Exec(ctx, string(raw)); err != nil {
 		t.Fatal(err)
 	}
+	recovery, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0123_outbound_sidebar_image_recovery.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, string(recovery)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = pool.Exec(ctx, `CREATE TABLE image_test_effects(id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,envelope JSONB NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
