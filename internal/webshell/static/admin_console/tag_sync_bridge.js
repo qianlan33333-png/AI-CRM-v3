@@ -29,7 +29,36 @@
     );
   };
 
+  // The donor uses local IDs for its commands. Preserve that key separately
+  // before showing the authoritative read-only Provider ID in its detail view.
+  const paintDetailProviderID = () => {
+    if (typeof document === "undefined" || !document?.querySelectorAll) return;
+    for (const code of document.querySelectorAll("#stage code")) {
+      const field = code.parentElement;
+      if (
+        field?.previousElementSibling?.textContent.trim() !== "tag_id" ||
+        !Array.from(field.querySelectorAll("button")).some(
+          (button) => button.textContent.trim() === "复制",
+        )
+      )
+        continue;
+      if (!code.dataset.localTagId) {
+        const localID = code.textContent.trim();
+        if (!/^[1-9][0-9]*$/.test(localID)) continue;
+        code.dataset.localTagId = localID;
+      }
+      const matches = catalogTags.filter(
+        (tag) => String(tag.id || tag.tag_id) === code.dataset.localTagId,
+      );
+      const providerID =
+        matches.length === 1 ? String(matches[0].provider_tag_id || "") : "";
+      const label = providerID || "未同步（尚未取得企微 tag_id）";
+      if (code.textContent !== label) code.textContent = label;
+    }
+  };
+
   const paint = () => {
+    paintDetailProviderID();
     const button = syncButton();
     if (!button) return;
     button.dataset.tagSyncButton = "1";
@@ -400,6 +429,7 @@
       const payload = await response.json();
       catalogTags = Array.isArray(payload.tags) ? payload.tags : [];
       catalogGroups = Array.isArray(payload.groups) ? payload.groups : [];
+      paintDetailProviderID();
       catalogNeedsRefresh = [
         ...catalogTags,
         ...catalogGroups,

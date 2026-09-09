@@ -20,7 +20,7 @@ const code = readFileSync(
   "utf8",
 );
 const dom = new JSDOM(
-  `<main id="stage"><button data-tag-group-card aria-pressed="true"><span>Group</span></button><table><tr><td>Known</td><td><button>复制 tag_id</button></td></tr><tr><td>Pending</td><td><button>复制 tag_id</button></td></tr></table><div><code>22</code><button>复制</button></div></main>`,
+  `<main id="stage"><button data-tag-group-card aria-pressed="true"><span>Group</span></button><table><tr><td>Known</td><td><button>复制 tag_id</button></td></tr><tr><td>Pending</td><td><button>复制 tag_id</button></td></tr></table><div><span>tag_id</span><span><code>22</code><button>复制</button></span></div></main>`,
   { url: "https://test.invalid/admin/wecom-tags", runScripts: "outside-only" },
 );
 const { window } = dom;
@@ -83,6 +83,9 @@ window.eval(feedback.outputFiles[0].text + "\ntagFeedback.initFeedback();");
 window.eval(code);
 window.document.dispatchEvent(new window.Event("DOMContentLoaded"));
 await new Promise((resolve) => setTimeout(resolve, 30));
+const detail = window.document.querySelector("#stage code");
+assert.equal(detail.textContent, "provider-real-tag");
+assert.equal(detail.dataset.localTagId, "22");
 const buttons = window.document.querySelectorAll("tr button");
 buttons[0].click();
 await Promise.resolve();
@@ -95,6 +98,30 @@ assert.equal(copies.length, 1, "unbound local ID must never be copied");
   .click();
 await Promise.resolve();
 assert.deepEqual(copies, ["provider-real-tag", "provider-real-tag"]);
+// A newly opened unbound detail must not display/copy the local command ID.
+const detailParent = detail.parentElement.parentElement;
+detailParent.innerHTML =
+  "<span>tag_id</span><span><code>23</code><button>复制</button></span>";
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(detailParent.querySelector("code").dataset.localTagId, "23");
+assert.match(detailParent.querySelector("code").textContent, /未同步/);
+detailParent.querySelector("button").__dcBound = true;
+detailParent.querySelector("button").click();
+await Promise.resolve();
+assert.equal(copies.length, 2);
+// Reopening the bound detail is painted by the same observer and still copies
+// its real Provider ID, never the rendered label or the local command key.
+detailParent.innerHTML =
+  "<span>tag_id</span><span><code>22</code><button>复制</button></span>";
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(
+  detailParent.querySelector("code").textContent,
+  "provider-real-tag",
+);
+detailParent.querySelector("button").__dcBound = true;
+detailParent.querySelector("button").click();
+await Promise.resolve();
+assert.deepEqual(copies, Array(3).fill("provider-real-tag"));
 const recover = window.document.querySelectorAll(
   "[data-tag-mutation-recovery] button",
 );
