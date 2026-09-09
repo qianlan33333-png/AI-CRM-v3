@@ -19,6 +19,10 @@ on:
         description: Activate WeCom staff and group directory reads without enabling message dispatch
         type: boolean
         default: false
+      h5_domain_rollout:
+        description: Configure www.qianlan333.cloud HTTPS and user-authorized H5 OAuth callbacks
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
   push:
@@ -406,5 +410,17 @@ jobs:
           scp "${ssh_flags[@]}" deploy/configure-groupops-directory-runtime.py "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_script}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "trap 'sudo rm -f -- ${remote_script}' EXIT; sudo python3 ${remote_script} ${GITHUB_SHA}"
+      - name: Configure requested H5 authorization domain
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.h5_domain_rollout }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          remote_script="/tmp/configure-h5-domain-${GITHUB_SHA}.sh"
+          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          scp "${ssh_flags[@]}" deploy/configure-h5-domain.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_script}"
+          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "trap 'sudo rm -f -- ${remote_script}' EXIT; sudo bash ${remote_script} ${GITHUB_SHA}"
       - name: Verify the public server is running this release
         run: python3 scripts/ci/verify_deployment.py https://id-dev.youcangogogo.com "$GITHUB_SHA"

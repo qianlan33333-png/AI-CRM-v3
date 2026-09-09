@@ -656,7 +656,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	outboundCompletionSink.WithSurveyCompletion(surveyCompletionSink)
-	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback", cfg.Survey.OAuthScope)
+	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, h5PublicOrigin(cfg)+"/api/h5/surveys/oauth/callback", cfg.Survey.OAuthScope)
 	if err != nil {
 		return fail(err)
 	}
@@ -1103,7 +1103,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(err)
 		}
 	}
-	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, cfg.PublicOrigin+"/api/h5/wechat-pay/oauth/callback")
+	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, h5PublicOrigin(cfg)+"/api/h5/wechat-pay/oauth/callback")
 	if err != nil {
 		return fail(err)
 	}
