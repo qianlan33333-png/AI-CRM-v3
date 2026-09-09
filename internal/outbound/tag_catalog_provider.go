@@ -151,6 +151,7 @@ var _ effect.ProviderAdapter = (*TagCatalogProvider)(nil)
 // different outbound kind. Unsupported intents fail closed without a network
 // call; their own future adapters can be added explicitly by composition.
 type ProviderRouter struct {
+	sidebarMedia       effect.ProviderAdapter
 	tagCatalog         effect.ProviderAdapter
 	tagCatalogMutation effect.ProviderAdapter
 	groupMessage       effect.ProviderAdapter
@@ -182,6 +183,13 @@ func (r *ProviderRouter) WithPrivateMessage(privateMessage effect.ProviderAdapte
 func (r *ProviderRouter) WithAutomationMessage(message effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.automationMessage = message
+	}
+	return r
+}
+
+func (r *ProviderRouter) WithSidebarMedia(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.sidebarMedia = provider
 	}
 	return r
 }
@@ -290,6 +298,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindOutboundMessage:
 			if r.privateMessage != nil {
 				return r.privateMessage.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindOutboundMedia:
+			if r.sidebarMedia != nil {
+				return r.sidebarMedia.Execute(ctx, envelope, attempt)
 			}
 		case effect.KindSidebarJSSDKSend:
 			if r.sidebarJSSDK != nil {

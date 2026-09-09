@@ -575,11 +575,20 @@ export class SidebarBridge {
 
   private async sendOnce(input: { resource_kind: "product" | "coupon" | "material"; resource_id: string; product_type?: string }, key: string, scope: SendScope, allowTerminalReplay = true): Promise<Json> {
     const intentKey = this.sendIdempotencyKey(key);
-    const accepted = await this.scopedForSend("/api/sidebar/v2/send-intents", {
+    // Preparation is a separate durable upload. Poll the same logical request;
+    // no chat intent or SDK invocation exists until its real media ID is ready.
+    let accepted: Json = {};
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await this.confirmSendScope(scope);
+      accepted = await this.scopedForSend("/api/sidebar/v2/send-intents", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": intentKey },
       body: JSON.stringify(input),
-    }, scope);
+      }, scope);
+      if (accepted.state !== "material_preparing") break;
+      if (attempt === 29) throw failure("图片正在准备，请稍后再次点击发送。");
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
     const payload = accepted.payload || {};
     const grant = String(accepted.grant || "");
     const intentID = Number(accepted.intent_id || 0);
@@ -647,7 +656,15 @@ export class SidebarBridge {
     // Bootstrap must expose its viewer_session_required state before HTTP error
     // handling so OAuth recovery cannot be bypassed by a generic 401 throw.
     if (contract.allowViewerSessionState && payload.state === "viewer_session_required") return payload;
-    if (!response.ok) throw failure(String(payload?.error?.code || payload?.code || payload?.error || "请求失败"), response.status, payload);
+    if (!response.ok) {
+      const code = String(payload?.error?.code || payload?.code || payload?.error || "请求失败");
+      const labels: Record<string, string> = {
+        capability_not_ready: "图片发送暂不可用，请稍后重试。",
+        material_upload_failed: "图片上传到企微失败，请联系管理员检查素材或应用权限。",
+        material_upload_outcome_unknown: "图片上传结果尚未确认，请稍后核对；当前未发送消息。",
+      };
+      throw failure(labels[code] || code, response.status, payload);
+    }
     return payload;
   }
 

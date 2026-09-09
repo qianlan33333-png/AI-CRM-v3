@@ -609,6 +609,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	outboundCompletionSink.WithAutomationMessage(outboundMessages)
 	sidebarExpiry := outbound.SidebarJSSDKExpiry{}
 	outboundCompletionSink.WithSidebarJSSDK(sidebarExpiry)
+	sidebarMediaPreparation, err := outbound.NewSidebarMediaPreparationService(uow, effectRepository, pool.Native())
+	if err != nil {
+		return fail(err)
+	}
+	outboundCompletionSink.WithSidebarMedia(sidebarMediaPreparation)
 	generationCompletionSink, err := automationprovider.NewGenerationCompletionSink(automationRuntime)
 	if err != nil {
 		return fail(err)
@@ -1321,7 +1326,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = automationRuntime.SetDynamicGenerationDependencies(effectRepository, generationContext, automationService, generationProvider); err != nil {
 		return fail(err)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
+	var sidebarMediaProvider externaleffects.ProviderAdapter
+	if cfg.WeCom.Enabled && cfg.Effects.ProviderEnabled {
+		sidebarMediaProvider, err = outbound.NewSidebarMediaPreparationProvider(sidebarMediaPreparation, providerClient)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(sidebarMediaProvider).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter, automation: generationProvider}); err != nil {
 		return fail(err)
 	}
@@ -1391,7 +1403,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		},
 		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: customerTimelineAdapter{uow: uow, reader: customerStore},
 		Products: productCatalog, ProductByID: productTargets, Orders: orderService, Entitlements: entitlements,
-		Coupons: sidebarCouponCatalog, Materials: mediaLibrary, MaterialSend: mediaLibrary, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin, CursorSigningKey: cursorSigningKey,
+		Coupons: sidebarCouponCatalog, Materials: mediaLibrary, MaterialSend: sidebarImagePreparation{images: mediaService, preparer: sidebarMediaPreparation, scope: cfg.WeCom.CorpID + ":" + cfg.WeCom.AgentID, enabled: cfg.WeCom.Enabled && cfg.Effects.ProviderEnabled}, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin, CursorSigningKey: cursorSigningKey,
 	})
 	if err != nil {
 		return fail(err)
