@@ -69,13 +69,28 @@ export async function verifyPresentation({ cdp, evaluate, waitFor, capture, base
   for (const [surface, body] of Object.entries(fixtures)) {
     const { frameTree } = await cdp.call('Page.getFrameTree');
     await cdp.call('Page.setDocumentContent', { frameId: frameTree.frame.id, html: `<!doctype html><html><head><meta charset="utf-8">${surface==='sidebar'?sidebarStyles:''}${styles}</head><body data-ui-surface="${surface}">${body}</body></html>` });
-    await waitFor(cdp, `getComputedStyle(document.querySelector('button')).fontSize === '16px'`, surface + ' styles did not load');
+    const expectedButtonFont = surface === 'sidebar' ? '12px' : '16px';
+    const expectedControlHeight = surface === 'sidebar' ? 32 : 44;
+    const controlSelector = surface === 'sidebar' ? '.tab' : 'button';
+    const expectedStylesheetCount = surface === 'sidebar' ? 5 : 4;
+    await waitFor(cdp, `document.styleSheets.length === ${expectedStylesheetCount}`, surface + ' styles did not load');
     for (const width of [320,375,390,414]) {
       await resize(width,844);
-      const mobile = await evaluate(cdp, `(() => {const b=document.querySelector('button');return {width:innerWidth, font:getComputedStyle(b).fontSize, height:b.getBoundingClientRect().height, overflow:document.documentElement.scrollWidth>innerWidth+1};})()`);
-      assert.equal(mobile.font,'16px'); assert.ok(mobile.height>=44); assert.equal(mobile.overflow,false);
+      const mobile = await evaluate(cdp, `(() => {const b=document.querySelector('${controlSelector}');return {width:innerWidth, font:getComputedStyle(b).fontSize, height:b.getBoundingClientRect().height, overflow:document.documentElement.scrollWidth>innerWidth+1};})()`);
+      assert.equal(mobile.font, expectedButtonFont); assert.ok(mobile.height>=expectedControlHeight); assert.equal(mobile.overflow,false);
       metrics.push({page:surface+'-fixture',...mobile});
       if (width===390) await capture(surface+'-after-390');
+    }
+    if (surface === 'sidebar') {
+      const sidebarType = await evaluate(cdp, `(() => ({
+        name:getComputedStyle(document.querySelector('.name')).fontSize,
+        meta:getComputedStyle(document.querySelector('.meta')).fontSize,
+        tab:getComputedStyle(document.querySelector('.tab')).fontSize,
+        heading:getComputedStyle(document.querySelector('.head h2')).fontSize,
+        button:getComputedStyle(document.querySelector('.btn')).fontSize
+      }))()`);
+      assert.deepEqual(sidebarType, { name:'16px', meta:'11px', tab:'12px', heading:'16px', button:'12px' });
+      metrics.push({page:'sidebar-type-scale', ...sidebarType});
     }
   }
   await fs.writeFile(path.join(screenshotDirectory,'presentation-metrics.json'), JSON.stringify(metrics,null,2));
