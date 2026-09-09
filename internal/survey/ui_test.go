@@ -89,3 +89,30 @@ func TestSurveyPublicUIServesOnlyH5AndImmutableAssets(t *testing.T) {
 		t.Fatalf("traversal=%d", response.Code)
 	}
 }
+
+func TestSurveyEditorAcceptsGeneratedPresentationMarker(t *testing.T) {
+	dist := surveyTestDist(t)
+	file := filepath.Join(dist, "admin", "questionnaireDetail.html")
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decorated := strings.Replace(string(raw), `<body data-page=`, `<body data-ui-surface="admin" data-page=`, 1)
+	if err := os.WriteFile(file, []byte(decorated), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rendered := false
+	h := NewModuleRegistration().UIBinding(dist, func(w http.ResponseWriter, _ *http.Request, page, body string, _ UIAssets) error {
+		rendered = page == "questionnaireDetail" && strings.Contains(body, `id="questionnaire-editor-config"`) && !strings.Contains(body, "<script")
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/questionnaireDetail.html", nil))
+	if response.Code != http.StatusOK || !rendered {
+		t.Fatalf("presentation-marked editor: status=%d rendered=%t", response.Code, rendered)
+	}
+	if _, err := extractQuestionnaireEditor(strings.Replace(decorated, `data-ui-surface="admin"`, `data-ui-surface="other"`, 1)); err == nil {
+		t.Fatal("unrecognized body variant was accepted")
+	}
+}
