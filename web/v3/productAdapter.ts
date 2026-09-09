@@ -2,6 +2,8 @@
 // It validates the authoritative lifecycle/sales projection, supplies Chinese
 // display labels, and replaces only the ordinary-product share interaction.
 import { api } from '../src/shared/api/client';
+// @ts-ignore Byte-frozen controller; navigation is adapted only at the Host.
+import { AdminController } from '../src/admin/controller';
 import { apiRequestOptions } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
 import { productPageDto, type AdminReadContext } from '../src/api/admin';
@@ -1142,3 +1144,36 @@ function mountProductDimensions(): void {
 const productDimensionsObserver = new MutationObserver(mountProductDimensions);
 productDimensionsObserver.observe(document, { childList: true, subtree: true });
 mountProductDimensions();
+
+// A successful dimension save updates this editor rather than invoking the
+// frozen controller's list redirect. Explicit Back navigation is unaffected.
+const completedEditorSaves: Product[] = [];
+for (const method of ['saveProduct', 'saveServiceProduct'] as const) {
+  const original = api[method].bind(api);
+  api[method] = (input) => original(input).then((saved) => {
+    if (['productForm', 'spProductForm'].includes(document.body.dataset.page || '')) completedEditorSaves.push(saved);
+    return saved;
+  });
+}
+type ProductController = {
+  page: string;
+  db: AdminDb;
+  goto(page: string, query?: string): void;
+};
+const productController = AdminController.prototype as unknown as ProductController;
+const donorGotoProduct = productController.goto;
+productController.goto = function (page, query = '') {
+  const expected = this.page === 'productForm' ? 'products' : this.page === 'spProductForm' ? 'spProducts' : '';
+  const saved = completedEditorSaves[0];
+  if (!saved || page !== expected || query) return donorGotoProduct.call(this, page, query);
+  completedEditorSaves.shift();
+  const id = saved.resourceId;
+  if (!id || !Number.isSafeInteger(id) || id < 1) { showMessage('已保存，但返回的商品 ID 无效，请刷新核对'); return; }
+  const next = new URL(location.href);
+  next.searchParams.set('id', String(id));
+  history.replaceState(null, '', next.pathname + next.search + next.hash);
+  // Keep the server version for the next dimension save, while retaining all
+  // unsaved DOM controls and the active dimension in this same editor.
+  if (this.page === 'productForm') this.db.rows.products = [saved];
+  else this.db.rows.spProducts = [saved];
+};

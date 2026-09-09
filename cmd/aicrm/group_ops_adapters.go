@@ -190,19 +190,25 @@ func (adapter *wecomGroupOpsDirectory) ListOwnedGroups(ctx context.Context, owne
 	for {
 		page, pageErr := adapter.groups.ListGroupChats(ctx, owner.WeComUserID, cursor, 100)
 		if pageErr != nil {
-			return groupopsport.GroupDirectorySnapshot{}, pageErr
+			return groupopsport.GroupDirectorySnapshot{}, groupOpsDirectoryFailure("list", pageErr)
 		}
 		for _, summary := range page.Items {
 			if summary.Status != 0 {
 				continue
 			}
 			if _, duplicate := seenChat[summary.ChatID]; duplicate {
-				return groupopsport.GroupDirectorySnapshot{}, errors.New("WeCom group directory returned duplicate chat")
+				return groupopsport.GroupDirectorySnapshot{}, groupopsapp.NewGroupDirectoryReadError("pagination", "provider_response_invalid")
 			}
 			seenChat[summary.ChatID] = struct{}{}
 			detail, detailErr := adapter.groups.GetGroupChat(ctx, summary.ChatID)
-			if detailErr != nil || detail.ChatID != summary.ChatID || detail.OwnerUserID != owner.WeComUserID {
-				return groupopsport.GroupDirectorySnapshot{}, errors.New("WeCom group directory detail is incomplete")
+			if detailErr != nil {
+				return groupopsport.GroupDirectorySnapshot{}, groupOpsDirectoryFailure("detail", detailErr)
+			}
+			if detail.ChatID != summary.ChatID {
+				return groupopsport.GroupDirectorySnapshot{}, groupopsapp.NewGroupDirectoryReadError("detail", "provider_response_invalid")
+			}
+			if detail.OwnerUserID != owner.WeComUserID {
+				return groupopsport.GroupDirectorySnapshot{}, groupopsapp.NewGroupDirectoryReadError("detail", "owner_mismatch")
 			}
 			items = append(items, groupopsport.GroupDirectoryItem{ChatReference: detail.ChatID, OwnerStaffID: ownerID, DisplayName: detail.Name, MemberCount: int32(detail.MemberCount), ExternalMemberCount: detail.ExternalMemberCount, RefreshedAt: now})
 		}
@@ -210,13 +216,25 @@ func (adapter *wecomGroupOpsDirectory) ListOwnedGroups(ctx context.Context, owne
 			break
 		}
 		if _, repeated := seenCursor[page.NextCursor]; repeated {
-			return groupopsport.GroupDirectorySnapshot{}, errors.New("WeCom group directory cursor repeated")
+			return groupopsport.GroupDirectorySnapshot{}, groupopsapp.NewGroupDirectoryReadError("pagination", "provider_response_invalid")
 		}
 		seenCursor[page.NextCursor] = struct{}{}
 		cursor = page.NextCursor
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].ChatReference < items[j].ChatReference })
 	return groupopsport.GroupDirectorySnapshot{Items: items, Complete: true}, nil
+}
+
+func groupOpsDirectoryFailure(stage string, err error) error {
+	code := "provider_unavailable"
+	var failure wecomport.DirectoryFailure
+	if errors.As(err, &failure) {
+		code = failure.DirectoryFailureCode()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		code = "provider_timeout"
+	}
+	return groupopsapp.NewGroupDirectoryReadError(stage, code)
 }
 
 func (adapter *wecomGroupOpsDirectory) RefreshOperationMembers(ctx context.Context, pageSize int32) ([]groupopsport.OperationMember, error) {

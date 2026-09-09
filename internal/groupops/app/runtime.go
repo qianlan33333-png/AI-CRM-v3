@@ -779,6 +779,10 @@ func (s *RuntimeService) RefreshGroups(ctx context.Context, command groupopsport
 	// paging or transport failure from deleting existing group bindings.
 	snapshot, readErr := s.directory.ListOwnedGroups(ctx, command.OwnerStaffID, command.Limit)
 	if readErr != nil {
+		var diagnostic *GroupDirectoryReadError
+		if errors.As(readErr, &diagnostic) {
+			return groupopsport.GroupDirectoryPage{}, diagnostic
+		}
 		return groupopsport.GroupDirectoryPage{}, classify(readErr)
 	}
 	if !snapshot.Complete {

@@ -40,13 +40,15 @@ const radarEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/ad
 const operationHost = manifest.entries.operationCyclesHost;
 const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
 const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
+const orderMainEntry = dynamicOutputForInput(manifest.entries.orderHost, 'web/src/admin/main.ts');
+const orderLegacyEntry = orderMainEntry && dynamicOutputForInput(orderMainEntry, 'web/src/admin/legacy.ts');
 const productHost = manifest.entries.productHost;
 const productMainEntry = dynamicOutputForInput(productHost, 'web/src/admin/main.ts');
 const productLegacyEntry = productMainEntry && dynamicOutputForInput(productMainEntry, 'web/src/admin/legacy.ts');
 const channelHost = manifest.entries.channelCenterHost;
 const channelMainEntry = dynamicOutputForInput(channelHost, 'web/src/admin/main.ts');
 const channelLegacyEntry = channelMainEntry && dynamicOutputForInput(channelMainEntry, 'web/src/admin/legacy.ts');
-if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !radarEntry || !operationMainEntry || !operationLegacyEntry || !productMainEntry || !productLegacyEntry || !channelMainEntry || !channelLegacyEntry) fail('required admin runtime chunks are absent from manifest');
+if (!orderMainEntry || !orderLegacyEntry || !legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !radarEntry || !operationMainEntry || !operationLegacyEntry || !productMainEntry || !productLegacyEntry || !channelMainEntry || !channelLegacyEntry) fail('required admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -78,6 +80,8 @@ includeStatic(funnelEntry);
 includeStatic(radarEntry);
 includeStatic(operationMainEntry);
 includeStatic(operationLegacyEntry);
+includeStatic(orderMainEntry);
+includeStatic(orderLegacyEntry);
 includeStatic(productMainEntry);
 includeStatic(productLegacyEntry);
 includeStatic(channelMainEntry);

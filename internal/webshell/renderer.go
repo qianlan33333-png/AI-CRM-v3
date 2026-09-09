@@ -133,7 +133,7 @@ type ProductAssets struct {
 }
 
 // OrderAssets are release-manifest URLs for the frozen transaction UI.
-type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 
 // CouponAssets are verified manifest paths for the frozen coupon workspaces.
 type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
@@ -358,7 +358,7 @@ func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminP
 // v3 shell. The host-owned import panel is deliberately separate from donor
 // markup and can only call the narrow order-only migration API.
 func (renderer *Renderer) RenderOrders(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets OrderAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "orders" && page != "orderDetail") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.HostJS == "" || (page != "orders" && page != "orderDetail") {
 		return errors.New("order shell assets are required")
 	}
 	normalizeAdminPage(&data)

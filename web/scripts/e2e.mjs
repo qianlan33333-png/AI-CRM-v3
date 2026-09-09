@@ -19,6 +19,7 @@ const TEST_BUNDLES = {
   admin: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/main.ts')),
   customerHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/customerAdapter.ts')),
   productHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/productAdapter.ts')),
+  orderHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/orderAdapter.ts')),
   questionnaireEditor: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/sections/questionnaireEditor.ts')),
   h5: await buildTestBrowserBundle(path.join(ROOT, 'src/h5/main.ts')),
   sidebar: await buildTestBrowserBundle(path.join(ROOT, 'v3/sidebar/main.ts')),
@@ -155,7 +156,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     ? '<!doctype html><html><head></head><body><main data-owner-handoff-host></main></body></html>'
     : fs.readFileSync(file, 'utf8');
   // 用 jsdom 执行内联脚本：把 bundle 内联进去，避免资源加载配置
-  html = html.replace(/<script type="module" src="[^"]*assets\/(admin|h5|sidebar(?:Host)?)-[^"]+\.js"><\/script>/, (_m, name) => {
+  html = html.replace(/<script type="module" src="[^"]*assets\/(admin|orderHost|h5|sidebar(?:Host)?)-[^"]+\.js"><\/script>/, (_m, name) => {
     if (customerListHttp || customerDetailHttp) return `<script>${TEST_BUNDLES.customerHost}</script><script>${TEST_BUNDLES.admin}</script>`;
     const bundle = name.startsWith('sidebar') ? TEST_BUNDLES.sidebar : TEST_BUNDLES[name];
     return `<script>${productHttp ? TEST_BUNDLES.productHost : bundle}</script>`;
@@ -171,6 +172,16 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     beforeParse(window) {
+      if (rel === 'admin/orders.html' || rel === 'admin/orderDetail.html') {
+        window.Request = Request;
+        window.Response = Response;
+        window.Headers = Headers;
+        window.fetch = async () => { throw new Error('Unexpected HTTP request in mock order fixture'); };
+        // jsdom.close does not emit browser pagehide; exercise Host cleanup
+        // before it removes the document and delivers pending mutations.
+        const close = window.close.bind(window);
+        window.close = () => { window.dispatchEvent(new window.Event('pagehide')); close(); };
+      }
       if (h5WeChat) Object.defineProperty(window.navigator, 'userAgent', { value: 'MicroMessenger/8.0', configurable: true });
       // Mock 仅由 DOM 回归测试显式注入；浏览器默认运行态不会走此路径。
       window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || customerDetailHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp || ownerHandoffHttp);
@@ -1837,6 +1848,10 @@ console.log('admin/orders.html（筛选后微信支付 CSV 导出）');
   input(dom, d.querySelector('#orderCreatedFrom'), '2026-08-01');
   input(dom, d.querySelector('#orderCreatedTo'), '2026-08-31');
   d.querySelector('#orderStatus').value = 'paid';
+  click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.includes('导出微信支付 CSV')));
+  await sleep(350);
+  ok('身份筛选时阻止无筛选导出并说明原因', !dom.window.__orderDownload && d.querySelector('#order-v3-query-error')?.textContent.includes('暂不支持导出'));
+  input(dom, d.querySelector('#orderMobile'), '');
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.includes('导出微信支付 CSV')));
   await sleep(350);
   ok('微信支付交易导出生成 CSV 下载', dom.window.__orderDownload?.href === 'blob:wechat-order-export' && dom.window.__orderDownload?.download === 'wechat-pay-orders.csv');

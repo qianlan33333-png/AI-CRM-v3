@@ -657,7 +657,8 @@ type response struct {
 // ListGroupChats and GetGroupChat are the narrow, read-only group directory
 // protocol used by Group Ops. They use the customer-contact token and do not
 // mutate any provider record.
-func (client *Client) ListGroupChats(ctx context.Context, ownerUserID, cursor string, limit int) (wecomport.GroupChatPage, error) {
+func (client *Client) ListGroupChats(ctx context.Context, ownerUserID, cursor string, limit int) (result wecomport.GroupChatPage, err error) {
+	defer func() { err = classifyGroupDirectoryReadError(err) }()
 	if !client.DirectoryReady() || invalid(ownerUserID) || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
 		return wecomport.GroupChatPage{}, wecomport.ErrDirectoryDisabled
 	}
@@ -689,7 +690,8 @@ func (client *Client) ListGroupChats(ctx context.Context, ownerUserID, cursor st
 	return page, nil
 }
 
-func (client *Client) GetGroupChat(ctx context.Context, chatID string) (wecomport.GroupChat, error) {
+func (client *Client) GetGroupChat(ctx context.Context, chatID string) (result wecomport.GroupChat, err error) {
+	defer func() { err = classifyGroupDirectoryReadError(err) }()
 	if !client.DirectoryReady() || invalid(chatID) {
 		return wecomport.GroupChat{}, wecomport.ErrDirectoryDisabled
 	}
@@ -715,7 +717,9 @@ func (client *Client) GetGroupChat(ctx context.Context, chatID string) (wecompor
 	if knownTypes {
 		value.ExternalMemberCount = &externalCount
 	}
-	if invalid(value.ChatID) || invalid(value.OwnerUserID) || value.Name == "" || strings.TrimSpace(value.Name) != value.Name || value.MemberCount < 0 {
+	// An unnamed group is still a valid directory record. Keep its name empty
+	// rather than inventing a title from the chat ID or rejecting the snapshot.
+	if invalid(value.ChatID) || invalid(value.OwnerUserID) || strings.TrimSpace(value.Name) != value.Name || value.MemberCount < 0 {
 		return wecomport.GroupChat{}, ErrResponse
 	}
 	return value, nil
@@ -1664,6 +1668,12 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, quer
 	}
 	resp, err := client.http.Do(req)
 	if err != nil {
+		if path == "/cgi-bin/externalcontact/groupchat/list" || path == "/cgi-bin/externalcontact/groupchat/get" {
+			var timeout interface{ Timeout() bool }
+			if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
+				return response{}, &directoryReadError{cause: ErrUnavailable, code: "provider_timeout", retryable: true}
+			}
+		}
 		return response{}, ErrUnavailable
 	}
 	defer resp.Body.Close()
@@ -1719,6 +1729,14 @@ func providerErrCode(raw json.RawMessage) int64 {
 		return value
 	}
 	return 0
+}
+
+func classifyGroupDirectoryReadError(cause error) error {
+	var failure wecomport.DirectoryFailure
+	if errors.As(cause, &failure) {
+		return cause
+	}
+	return classifyDirectoryReadError(cause)
 }
 
 func classifyDirectoryReadError(cause error) error {

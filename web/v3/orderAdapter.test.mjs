@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import { build } from 'esbuild';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const host = await buildTestBrowserBundle(path.join(root, 'web/v3/orderAdapter.ts'));
+const bundle = await build({ stdin: { contents: "import './web/v3/orderAdapter'; import {AdminController} from './web/src/admin/controller'; window.OrderControllerFixture = AdminController;", resolveDir: root, loader: 'ts' }, bundle: true, format: 'iife', write: false, platform: 'browser', logLevel: 'silent' });
+const host = bundle.outputFiles[0].text;
 const pause = () => new Promise((resolve) => setTimeout(resolve, 15));
 
 const calls = [];
@@ -36,6 +38,16 @@ try {
   // completed display text as a new UTC instant under a non-Shanghai browser.
   document.querySelector('tbody tr').append(document.createElement('span')); await pause();
   assert.equal(document.querySelector('tbody td:first-child').textContent, '2026-09-08 08:00:00', 'repeated DOM presentation must not shift Beijing time');
+
+  const controller = new dom.window.OrderControllerFixture({ mode: 'http' }, 'orders');
+  controller.state.orderFilters = { transactionId: 'server-platform-reference', payer: '13800138000', product: 'server-product-code', status: '', createdFrom: '', createdTo: '' };
+  controller.db.rows.orders = [{ no: 'merchant-returned', payer: '实际客户姓名', uid: 'customer:7', product: '实际商品名', time: '2026-09-08', tone: 'ok' }];
+  controller.db.orderList = { total: 51, hasMore: true };
+  controller.state.orderOffset = 50;
+  const values = controller.renderVals();
+  assert.equal(values.rows.orders.length, 1, 'server-resolved phone/contact matches must not be discarded by donor local name filtering');
+  assert.equal(values.orderPage.filters.payer, '13800138000', 'rendering must retain the user query');
+  assert.match(values.orderPage.summary, /51/, 'server paging must retain the returned total and offset');
 
   document.getElementById('orderMobile').value = '138 0013 8000';
   document.querySelector('button').click(); await pause();
