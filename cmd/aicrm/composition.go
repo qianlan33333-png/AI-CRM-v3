@@ -683,6 +683,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(err)
 		}
 	}
+	if err := tagCatalog.BindMutationRecovery(effectRepository); err != nil {
+		return fail(err)
+	}
 	tagSync := tagapp.NewSyncService(uow, tagRepository, tagRepository, tagOutbound)
 	tagGate := tagapp.NewExecutionStatusService(uow, tagRepository)
 	tagBindings, err := tagModule.Bind(tagCatalog, tagSync, tagGate, requestSecurity)

@@ -236,6 +236,10 @@ func parseID(raw string) (int64, bool) {
 	return n, e == nil && n > 0 && strconv.FormatInt(n, 10) == raw
 }
 func (h *Handler) tags(w http.ResponseWriter, r *http.Request, tail string) {
+	if strings.HasPrefix(tail, "mutations/") && strings.HasSuffix(tail, "/retry") {
+		h.recoverMutation(w, r, tail)
+		return
+	}
 	if tail == "sync-status" {
 		if r.Method != http.MethodGet {
 			method(w, http.MethodGet)
@@ -636,6 +640,11 @@ func (h *Handler) catalogList(w http.ResponseWriter, r *http.Request) {
 		resultError(w, operationErr)
 		return
 	}
+	recoveries, recoveryErr := h.catalog.MutationRecoveries(r.Context())
+	if recoveryErr != nil {
+		resultError(w, recoveryErr)
+		return
+	}
 	providerState := tagport.SyncIdle
 	var syncedAt any
 	if status, err := h.sync.Status(r.Context()); err == nil {
@@ -644,7 +653,7 @@ func (h *Handler) catalogList(w http.ResponseWriter, r *http.Request) {
 			syncedAt = status.CompletedAt.UTC()
 		}
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "items": tags, "tags": tags, "groups": legacyGroups(c.Groups, c.Tags), "count": len(tags), "total_tags": len(tags), "tag_limit": domain.TagLimit, "synced_at": syncedAt, "provider_sync_state": providerState, "archive_operations": operations, "archive_operations_status": operationStatus, "source_status": "local_catalog", "read_model_status": "ready", "route_owner": "ai_crm_next", "fallback_used": false, "real_external_call_executed": false, "sync_executed": providerState == tagport.SyncExecuted, "fixture_used": false})
+	writeJSON(w, 200, map[string]any{"ok": true, "items": tags, "tags": tags, "groups": legacyGroups(c.Groups, c.Tags), "count": len(tags), "total_tags": len(tags), "tag_limit": domain.TagLimit, "synced_at": syncedAt, "provider_sync_state": providerState, "mutation_recoveries": recoveries, "archive_operations": operations, "archive_operations_status": operationStatus, "source_status": "local_catalog", "read_model_status": "ready", "route_owner": "ai_crm_next", "fallback_used": false, "real_external_call_executed": false, "sync_executed": providerState == tagport.SyncExecuted, "fixture_used": false})
 }
 
 func (h *Handler) archiveOperations(ctx context.Context) ([]map[string]any, string, error) {
@@ -671,7 +680,7 @@ func (h *Handler) archiveOperations(ctx context.Context) ([]map[string]any, stri
 }
 
 func legacyTag(tag domain.Tag) map[string]any {
-	return map[string]any{"tag_id": tag.ID, "id": tag.ID, "group_id": tag.GroupID, "group_name": tag.GroupName, "tag_name": tag.Name, "name": tag.Name, "sort_order": tag.SortOrder, "provider_write_state": tag.ProviderMutationState, "provider_readback_at": tag.ProviderReadbackAt, "synced_at": tag.ProviderReadbackAt}
+	return map[string]any{"tag_id": tag.ID, "id": tag.ID, "provider_tag_id": tag.ProviderTagID, "group_id": tag.GroupID, "group_name": tag.GroupName, "tag_name": tag.Name, "name": tag.Name, "sort_order": tag.SortOrder, "provider_write_state": tag.ProviderMutationState, "provider_readback_at": tag.ProviderReadbackAt, "synced_at": tag.ProviderReadbackAt}
 }
 
 func legacyTags(tags []domain.Tag) []map[string]any {

@@ -13,6 +13,11 @@
   let archiveRefreshing = false;
   let archiveSignature = "";
   let catalogWriteSignature = "";
+  let catalogTags = [];
+  let catalogGroups = [];
+  let catalogNeedsRefresh = false;
+  let recoverySignature = "";
+  const retryKeys = new Map();
 
   const syncButton = () => {
     if (typeof document === "undefined" || !document?.querySelectorAll)
@@ -264,6 +269,101 @@
     stage.prepend(panel);
   };
 
+  const paintRecoveries = (items) => {
+    const rows = Array.isArray(items)
+      ? items.filter(
+          (item) =>
+            Number(item.id) > 0 &&
+            ["final_failed", "retryable_failed"].includes(item.state),
+        )
+      : [];
+    const signature = JSON.stringify(rows);
+    const existing = document.querySelector("[data-tag-mutation-recovery]");
+    if (signature === recoverySignature && existing) return;
+    recoverySignature = signature;
+    existing?.remove();
+    if (!rows.length) return;
+    const panel = document.createElement("section");
+    panel.dataset.tagMutationRecovery = "1";
+    Object.assign(panel.style, {
+      margin: "12px 0",
+      padding: "12px 14px",
+      border: "1px solid #f2c94c",
+      borderRadius: "8px",
+      background: "#fffbe6",
+      color: "#614700",
+      fontSize: "13px",
+      lineHeight: "1.8",
+    });
+    const title = document.createElement("strong");
+    title.textContent = "企微写入恢复";
+    panel.appendChild(title);
+    const labels = {
+      group_create: "创建标签组",
+      group_update: "修改标签组",
+      group_archive: "删除标签组",
+      tag_create: "创建标签",
+      tag_update: "修改标签",
+      tag_archive: "删除标签",
+    };
+    for (const item of rows) {
+      const row = document.createElement("div");
+      row.textContent = `${labels[item.operation] || "标签操作"}「${item.name || "未命名"}」 `;
+      const button = document.createElement("button");
+      button.textContent = "重试企微同步";
+      button.type = "button";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        if (!retryKeys.has(item.id))
+          retryKeys.set(item.id, "tag-retry-" + crypto.randomUUID());
+        const cookie = document.cookie
+          .split(";")
+          .map((part) => part.trim())
+          .find(
+            (part) =>
+              part.startsWith("aicrm_admin_csrf=") ||
+              part.startsWith("aicrm_csrf="),
+          );
+        const csrf = cookie
+          ? decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1))
+          : "";
+        try {
+          const response = await fetch(
+            `${catalogURL}/mutations/${item.id}/retry`,
+            {
+              method: "POST",
+              credentials: "same-origin",
+              headers: {
+                "X-CSRF-Token": csrf,
+                "Idempotency-Key": retryKeys.get(item.id),
+              },
+            },
+          );
+          if (!response.ok) {
+            notice(
+              response.status === 409
+                ? "当前结果不能安全重试，请先核对企微"
+                : response.status === 503
+                  ? "企微标签写入尚不可用，请联系管理员"
+                  : "重试未受理，请刷新后再试",
+              true,
+            );
+            return;
+          }
+          notice("原企微任务已重新受理，等待执行");
+          scheduleArchiveRefresh(100);
+        } catch (_) {
+          notice("请求结果待确认，再次点击将查询同一次受理", true);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      row.appendChild(button);
+      panel.appendChild(row);
+    }
+    document.getElementById("stage")?.prepend(panel);
+  };
+
   const refreshArchiveOperations = async () => {
     if (archiveRefreshing) return;
     archiveRefreshing = true;
@@ -276,7 +376,21 @@
       });
       if (!response.ok) return;
       const payload = await response.json();
+      catalogTags = Array.isArray(payload.tags) ? payload.tags : [];
+      catalogGroups = Array.isArray(payload.groups) ? payload.groups : [];
+      catalogNeedsRefresh = [
+        ...catalogTags,
+        ...catalogGroups,
+        ...(Array.isArray(payload.archive_operations)
+          ? payload.archive_operations
+          : []),
+      ].some((item) =>
+        ["queued", "attempted"].includes(
+          item.provider_write_state || item.state,
+        ),
+      );
       paintCatalogWriteStates(payload);
+      paintRecoveries(payload.mutation_recoveries);
       if (payload?.archive_operations_status === "ready") {
         paintArchiveOperations(payload.archive_operations);
       }
@@ -285,12 +399,16 @@
       // replace its data with a fabricated archive outcome.
     } finally {
       archiveRefreshing = false;
+      if (catalogNeedsRefresh) scheduleArchiveRefresh(1500);
     }
   };
 
   const scheduleArchiveRefresh = (delay = 300) => {
     window.clearTimeout(archiveTimer);
-    archiveTimer = window.setTimeout(() => void refreshArchiveOperations(), delay);
+    archiveTimer = window.setTimeout(
+      () => void refreshArchiveOperations(),
+      delay,
+    );
   };
 
   const poll = async () => {
@@ -391,6 +509,63 @@
         scheduleArchiveRefresh(300);
         window.setTimeout(() => scheduleArchiveRefresh(300), 1200);
       }
+    },
+    true,
+  );
+
+  // Preserve the frozen controller's local command IDs. Only clipboard reads
+  // use the authoritative Tag-owned Provider binding; never copy a local ID.
+  document.addEventListener(
+    "click",
+    (event) => {
+      const button =
+        event.target instanceof Element ? event.target.closest("button") : null;
+      if (!button) return;
+      const label = button.textContent.trim();
+      const row = button.closest("tr");
+      const detailCode =
+        label === "复制" ? button.parentElement?.querySelector("code") : null;
+      if (label !== "复制 tag_id" && !detailCode) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      let matches = [];
+      if (detailCode) {
+        const localID = Number(
+          detailCode.dataset.localTagId || detailCode.textContent,
+        );
+        matches = catalogTags.filter(
+          (tag) => Number(tag.id || tag.tag_id) === localID,
+        );
+      } else if (row) {
+        const name = row.cells[0]?.textContent.trim();
+        const groupName = document
+          .querySelector('[data-tag-group-card][aria-pressed="true"] span')
+          ?.textContent.trim();
+        const groups = catalogGroups.filter(
+          (group) => String(group.group_name || group.name) === groupName,
+        );
+        if (groups.length === 1) {
+          matches = catalogTags.filter(
+            (tag) =>
+              Number(tag.group_id) === Number(groups[0].group_id) &&
+              String(tag.tag_name || tag.name) === name,
+          );
+        }
+      }
+      const providerID =
+        matches.length === 1 ? String(matches[0].provider_tag_id || "") : "";
+      if (!providerID) {
+        notice("尚未取得企微 tag_id，请先确认企微同步完成", true);
+        return;
+      }
+      if (!navigator.clipboard?.writeText) {
+        notice("浏览器暂不支持复制，请在安全连接中重试", true);
+        return;
+      }
+      void navigator.clipboard.writeText(providerID).then(
+        () => notice("企微 tag_id 已复制"),
+        () => notice("复制失败，请重试", true),
+      );
     },
     true,
   );

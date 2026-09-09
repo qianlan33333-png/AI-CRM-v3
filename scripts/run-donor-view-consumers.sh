@@ -81,6 +81,7 @@ run_frontend_and_stage_checks() {
   node web/v3/materialSaveAdapter.test.mjs
   node web/v3/radarAdapter.test.mjs
   node web/v3/sidebar_send_recovery.test.mjs
+  node internal/webshell/static/admin_console/tag_sync_bridge.test.mjs
   node internal/webshell/static/admin_console/survey_share_guard_real_host.test.mjs
 }
 
