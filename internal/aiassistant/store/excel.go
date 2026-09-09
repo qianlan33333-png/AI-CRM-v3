@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/jackc/pgx/v5"
+	aiassistantdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/domain"
 	ai "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	outbound "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
@@ -33,8 +34,385 @@ func (r *Repository) BindExcelPlan(ctx context.Context, key, digest string, id a
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_imports(batch_key,plan_id,file_digest) VALUES($1,$2,$3)`, key, id, digest)
+	_, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_imports(batch_key,plan_id,file_digest,created_at) VALUES($1,$2,$3,clock_timestamp())`, key, id, digest)
 	return err
+}
+
+// BindOperationExcelBatch makes a newly created review plan visible in the
+// operation-cycle detail without making operationcycle own, or write, an AI
+// Assistant table. It is deliberately transaction-only.
+func (r *Repository) BindOperationExcelBatch(ctx context.Context, key, digest, strategyKey string, id ai.PlanID, actor int64, now time.Time, rows []ai.ExcelBatchRow) error {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	if id < 1 || actor < 1 || strategyKey == "" || now.IsZero() || len(rows) == 0 {
+		return ErrInvalid
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_imports(batch_key,plan_id,file_digest,operation_cycle_strategy_key,source_origin,content_revision,created_at)
+		VALUES($1,$2,$3,$4,'excel',1,$5)`, key, id, digest, strategyKey, now.UTC()); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET excel_batch_content_revision=1
+		WHERE plan_id=$1 AND excel_batch_content_revision IS NULL`, id); err != nil {
+		return err
+	}
+	segments := make([]string, 0, len(rows))
+	for _, row := range rows {
+		segments = append(segments, row.Segment)
+	}
+	if _, err = tx.Exec(ctx, `WITH ordered AS (
+		SELECT id,row_number() OVER (ORDER BY id) AS ordinal
+		FROM ai_assistant_plan_recipients WHERE plan_id=$1 AND excel_batch_content_revision=1
+	), supplied AS (SELECT segment,ordinal FROM unnest($2::text[]) WITH ORDINALITY AS values(segment,ordinal))
+		UPDATE ai_assistant_plan_recipients recipient SET excel_segment=supplied.segment
+		FROM ordered JOIN supplied USING (ordinal) WHERE recipient.id=ordered.id`, id, segments); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_versions(plan_id,content_revision,file_digest,created_by,created_at)
+		VALUES($1,1,$2,$3,$4)`, id, digest, actor, now.UTC())
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_version_covers(plan_id,content_revision,cover_digest,created_by,created_at)
+		VALUES($1,1,'',$2,$3)`, id, actor, now.UTC())
+	return err
+}
+
+func (r *Repository) ExcelBatch(ctx context.Context, id ai.PlanID, lock bool) (ai.ExcelBatchMeta, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return ai.ExcelBatchMeta{}, err
+	}
+	query := `SELECT plan_id,batch_key,COALESCE(operation_cycle_strategy_key,''),source_origin,file_digest,content_revision,
+		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),created_at
+		FROM ai_assistant_excel_imports WHERE plan_id=$1`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var value ai.ExcelBatchMeta
+	err = tx.QueryRow(ctx, query, id).Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ai.ExcelBatchMeta{}, ErrNotFound
+	}
+	return value, err
+}
+
+func (r *Repository) ExcelBatchByKey(ctx context.Context, key string) (ai.ExcelBatchMeta, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return ai.ExcelBatchMeta{}, err
+	}
+	var value ai.ExcelBatchMeta
+	err = tx.QueryRow(ctx, `SELECT plan_id,batch_key,COALESCE(operation_cycle_strategy_key,''),source_origin,file_digest,content_revision,
+		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),created_at
+		FROM ai_assistant_excel_imports WHERE batch_key=$1`, key).Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ai.ExcelBatchMeta{}, ErrNotFound
+	}
+	return value, err
+}
+
+func (r *Repository) ListOperationExcelBatches(ctx context.Context, strategyKey string, limit int) ([]ai.ExcelBatchMeta, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if strategyKey == "" || limit < 1 || limit > 100 {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `SELECT plan_id,batch_key,COALESCE(operation_cycle_strategy_key,''),source_origin,file_digest,content_revision,
+		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),created_at
+		FROM ai_assistant_excel_imports WHERE operation_cycle_strategy_key=$1 ORDER BY created_at DESC,plan_id DESC LIMIT $2`, strategyKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ai.ExcelBatchMeta{}
+	for rows.Next() {
+		var value ai.ExcelBatchMeta
+		if err = rows.Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, value)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) LinkExcelBatch(ctx context.Context, id ai.PlanID, strategyKey string) error {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE ai_assistant_excel_imports SET operation_cycle_strategy_key=$2
+		WHERE plan_id=$1 AND operation_cycle_strategy_key IS NULL`, id, strategyKey)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (r *Repository) ExcelBatchRowAttributes(ctx context.Context, planID ai.PlanID, recipientID ai.RecipientID, lock bool) (ai.ExcelBatchRowAttributes, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return ai.ExcelBatchRowAttributes{}, err
+	}
+	query := `SELECT excel_batch_content_revision,excel_segment,excel_excluded
+		FROM ai_assistant_plan_recipients WHERE plan_id=$1 AND id=$2`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var value ai.ExcelBatchRowAttributes
+	err = tx.QueryRow(ctx, query, planID, recipientID).Scan(&value.ContentRevision, &value.Segment, &value.Excluded)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ai.ExcelBatchRowAttributes{}, ErrNotFound
+	}
+	return value, err
+}
+
+func (r *Repository) PatchExcelBatchRowAttributes(ctx context.Context, planID ai.PlanID, recipientID ai.RecipientID, revision int, segment string, excluded bool, now time.Time) error {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	if revision < 1 || (segment != "" && segment != "A" && segment != "B" && segment != "C" && segment != "D") {
+		return ErrInvalid
+	}
+	tag, err := tx.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET excel_segment=$4,excel_excluded=$5,updated_at=$6
+		WHERE plan_id=$1 AND id=$2 AND excel_batch_content_revision=$3`, planID, recipientID, revision, segment, excluded, now.UTC())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// ResetOperationExcelReview invalidates every current row review after any
+// mutable content, segment, exclusion, or cover change. Historical revisions
+// are deliberately excluded from this projection.
+func (r *Repository) ResetOperationExcelReview(ctx context.Context, planID ai.PlanID, revision int, now time.Time) (ai.Plan, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return ai.Plan{}, err
+	}
+	if revision < 1 || now.IsZero() {
+		return ai.Plan{}, ErrInvalid
+	}
+	if _, err = tx.Exec(ctx, `UPDATE ai_assistant_plan_recipients
+		SET review_state=CASE WHEN excel_excluded THEN 'rejected' ELSE 'pending_review' END,
+		    version=version+1,updated_at=$3
+		WHERE plan_id=$1 AND excel_batch_content_revision=$2`, planID, revision, now.UTC()); err != nil {
+		return ai.Plan{}, err
+	}
+	var total, excluded int
+	if err = tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE excel_excluded)
+		FROM ai_assistant_plan_recipients WHERE plan_id=$1 AND excel_batch_content_revision=$2`, planID, revision).Scan(&total, &excluded); err != nil {
+		return ai.Plan{}, err
+	}
+	if total < 1 {
+		return ai.Plan{}, ErrConflict
+	}
+	return scanPlan(tx.QueryRow(ctx, `UPDATE ai_assistant_plans
+		SET state='pending_review',version=version+1,target_count=$2,pending_count=$3,approved_count=0,rejected_count=$4,ineligible_count=0,needs_attention_count=0,rejected_reason=NULL,updated_at=$5
+		WHERE id=$1 RETURNING `+planColumns, planID, total, total-excluded, excluded, now.UTC()))
+}
+
+func (r *Repository) ExcelBatchSummary(ctx context.Context, planID ai.PlanID, revision int) (ai.ExcelBatchSummary, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return ai.ExcelBatchSummary{}, err
+	}
+	var summary ai.ExcelBatchSummary
+	err = tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE excel_excluded),
+		count(*) FILTER (WHERE COALESCE(content.content_payload->1->'excel_card'->>'title','')=''),
+		count(*) FILTER (WHERE NOT excel_excluded AND COALESCE(content.content_payload->1->'excel_card'->>'title','')<>'')
+		FROM ai_assistant_plan_recipients recipient
+		JOIN ai_assistant_content_versions content ON content.id=recipient.current_content_version_id
+		WHERE recipient.plan_id=$1 AND recipient.excel_batch_content_revision=$2`, planID, revision).Scan(&summary.TotalRows, &summary.ExcludedRows, &summary.EmptyTitleRows, &summary.ExpectedTasks)
+	if err != nil {
+		return ai.ExcelBatchSummary{}, err
+	}
+	return summary, nil
+}
+
+func (r *Repository) ListOperationExcelBatchVersions(ctx context.Context, planID ai.PlanID, limit int) ([]ai.ExcelBatchVersion, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if planID < 1 || limit < 1 || limit > 100 {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `SELECT version.plan_id,version.content_revision,version.file_digest,
+		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover
+		 WHERE cover.plan_id=version.plan_id AND cover.content_revision=version.content_revision
+			 ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),version.cover_digest),version.created_by,version.created_at
+		FROM ai_assistant_excel_batch_versions version WHERE version.plan_id=$1
+		ORDER BY version.content_revision DESC LIMIT $2`, planID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ai.ExcelBatchVersion{}
+	for rows.Next() {
+		var item ai.ExcelBatchVersion
+		if err = rows.Scan(&item.PlanID, &item.ContentRevision, &item.FileDigest, &item.CoverDigest, &item.CreatedBy, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) ListOperationExcelBatchRecipients(ctx context.Context, planID ai.PlanID, revision int, afterID int64, limit int) ([]ai.Recipient, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if planID < 1 || revision < 1 || afterID < 0 || limit < 1 || limit > 50 {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `SELECT r.deferred_target,r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,COALESCE(b.external_effect_id,''),r.updated_at
+		FROM ai_assistant_plan_recipients r LEFT JOIN ai_assistant_effect_bindings b ON b.recipient_id=r.id
+		WHERE r.plan_id=$1 AND r.excel_batch_content_revision=$2 AND r.id>$3 ORDER BY r.id LIMIT $4`, planID, revision, afterID, limit+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ai.Recipient{}
+	for rows.Next() {
+		var recipient ai.Recipient
+		if err = rows.Scan(&recipient.DeferredTarget, &recipient.ID, &recipient.PlanID, &recipient.CustomerID, &recipient.StaffID, &recipient.ReviewState, &recipient.ExecutionState, &recipient.Version, &recipient.ContentVersionID, &recipient.EffectID, &recipient.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, recipient)
+	}
+	return items, rows.Err()
+}
+
+// AppendOperationExcelCover records the effective cover separately from the
+// immutable upload row. One content revision can legitimately have several
+// cover edits; no historical read has to inspect mutable current content.
+func (r *Repository) AppendOperationExcelCover(ctx context.Context, planID ai.PlanID, revision int, cover effect.Digest, actor int64, now time.Time) error {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	if planID < 1 || revision < 1 || actor < 1 || now.IsZero() || !effect.ValidDigest(cover) {
+		return ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_version_covers(plan_id,content_revision,cover_digest,created_by,created_at)
+		VALUES($1,$2,$3,$4,$5)`, planID, revision, string(cover), actor, now.UTC())
+	return err
+}
+
+func (r *Repository) ListUnlinkedExcelPlans(ctx context.Context, limit int) ([]ai.Plan, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > 100 {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `SELECT p.id,p.name,p.source_kind,p.source_digest,p.state,p.version,p.target_count,p.pending_count,p.approved_count,p.rejected_count,p.ineligible_count,p.needs_attention_count,p.created_by,p.created_actor_kind,p.created_actor_ref,p.created_at,p.updated_at FROM ai_assistant_plans p
+		JOIN ai_assistant_excel_imports i ON i.plan_id=p.id
+		WHERE i.operation_cycle_strategy_key IS NULL ORDER BY p.created_at DESC,p.id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ai.Plan{}
+	for rows.Next() {
+		value, scanErr := scanPlan(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, value)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) ReplaceOperationExcelBatch(ctx context.Context, plan ai.Plan, batch ai.ExcelBatchMeta, scope string, nextDigest effect.Digest, rows []ai.ExcelBatchRow, actor int64, now time.Time) (ai.Plan, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return ai.Plan{}, err
+	}
+	if plan.ID < 1 || batch.PlanID != plan.ID || batch.Revision < 1 || !strings.HasPrefix(scope, "wechat-open-platform:") || !effect.ValidDigest(nextDigest) || len(rows) == 0 || len(rows) > ai.MaxRecipients || actor < 1 || now.IsZero() {
+		return ai.Plan{}, ErrInvalid
+	}
+	var cover string
+	err = tx.QueryRow(ctx, `SELECT COALESCE((content.content_payload->1->'excel_card'->>'cover_digest'), '')
+		FROM ai_assistant_plan_recipients recipient
+		JOIN ai_assistant_content_versions content ON content.id=recipient.current_content_version_id
+		WHERE recipient.plan_id=$1 AND recipient.excel_batch_content_revision=$2 ORDER BY recipient.id LIMIT 1`, plan.ID, batch.Revision).Scan(&cover)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return ai.Plan{}, err
+	}
+	for index := range rows {
+		rows[index].Card.CoverDigest = effect.Digest(cover)
+	}
+	if err = insertExcelRows(ctx, tx, plan.ID, batch.Revision+1, scope, rows, actor, now); err != nil {
+		return ai.Plan{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE ai_assistant_excel_imports SET content_revision=content_revision+1,file_digest=$2
+		WHERE plan_id=$1 AND content_revision=$3`, plan.ID, string(nextDigest), batch.Revision); err != nil {
+		return ai.Plan{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_versions(plan_id,content_revision,file_digest,cover_digest,created_by,created_at)
+		VALUES($1,$2,$3,$4,$5,$6)`, plan.ID, batch.Revision+1, string(nextDigest), cover, actor, now.UTC()); err != nil {
+		return ai.Plan{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_version_covers(plan_id,content_revision,cover_digest,created_by,created_at)
+		VALUES($1,$2,$3,$4,$5)`, plan.ID, batch.Revision+1, cover, actor, now.UTC()); err != nil {
+		return ai.Plan{}, err
+	}
+	digest, err := digestBytes(nextDigest)
+	if err != nil {
+		return ai.Plan{}, err
+	}
+	updated, err := scanPlan(tx.QueryRow(ctx, `UPDATE ai_assistant_plans
+		SET source_digest=$2,state='pending_review',version=version+1,target_count=$3,pending_count=$3,approved_count=0,rejected_count=0,ineligible_count=0,needs_attention_count=0,rejected_reason=NULL,updated_at=$4
+		WHERE id=$1 AND version=$5
+		RETURNING `+planColumns, plan.ID, digest, len(rows), now.UTC(), plan.Version))
+	if err != nil {
+		return ai.Plan{}, err
+	}
+	return updated, nil
+}
+
+func insertExcelRows(ctx context.Context, tx pgx.Tx, planID ai.PlanID, revision int, scope string, rows []ai.ExcelBatchRow, actor int64, now time.Time) error {
+	for _, row := range rows {
+		if !row.Valid() {
+			return ErrInvalid
+		}
+		var recipientID ai.RecipientID
+		if err := tx.QueryRow(ctx, `INSERT INTO ai_assistant_plan_recipients(plan_id,customer_id,staff_id,deferred_target,excel_batch_content_revision,excel_segment,created_at,updated_at)
+			VALUES($1,0,0,$2,$3,$4,$5,$5) RETURNING id`, planID, ai.DeferredTarget{UnionID: row.UnionID, Scope: scope, SenderUserID: row.SenderUserID}, revision, row.Segment, now.UTC()).Scan(&recipientID); err != nil {
+			return err
+		}
+		payload, digest, err := aiassistantdomain.FreezeContent([]ai.ContentBlock{{Kind: ai.ContentText, Text: row.Text}, {Kind: ai.ContentMiniProgram, ExcelCard: &row.Card}})
+		if err != nil {
+			return ErrInvalid
+		}
+		digestRaw, err := digestBytes(digest)
+		if err != nil {
+			return err
+		}
+		var contentID ai.ContentVersionID
+		if err = tx.QueryRow(ctx, `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_at)
+			VALUES($1,1,$2,$3::jsonb,$4,$5) RETURNING id`, recipientID, digestRaw, payload, actor, now.UTC()).Scan(&contentID); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET current_content_version_id=$2 WHERE id=$1`, recipientID, contentID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func (r *Repository) LoadDeferredTarget(ctx context.Context, ref string) (ai.DeferredTarget, error) {
 	parts := strings.Split(ref, ":")

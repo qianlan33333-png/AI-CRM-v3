@@ -120,7 +120,8 @@ for migration_contract in \
   '0097_segment_audience_mutation_actor.sql:Segment audience mutation actors' \
   '0098_message_archive_historical_projection.sql:Archive historical external projection' \
   '0099_survey_historical_external_projection.sql:Survey historical external projection' \
-  '0100_ai_assistant_machine_actor.sql:AI Assistant machine actor'; do
+  '0100_ai_assistant_machine_actor.sql:AI Assistant machine actor' \
+  '0124_operation_excel_batch_lifecycle.sql:Excel operation batch lifecycle'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

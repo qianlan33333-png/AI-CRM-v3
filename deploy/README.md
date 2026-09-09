@@ -11,6 +11,7 @@ PostgreSQL 16 is the only runtime data dependency.
 - secrets and runtime settings: `/etc/aicrm/aicrm.env` (`0640`, never in Git)
 - API: `aicrm.service`
 - migrations: `aicrm-migrate.service` (oneshot before a release restart)
+- Excel preparation and observation (only when both pre-provisioned component files exist): `aicrm-excel-batches.service`, bound to `127.0.0.1:8791`
 - Automation Operations defaults: `aicrm-automation-bootstrap.service` (idempotent oneshot after API and River readiness)
 - WeCom inbox: `aicrm-wecom-worker.service` plus external systemd timer
 - durable River jobs: `aicrm-effects-worker.service` (External Effects and customer directory queues)
@@ -36,8 +37,17 @@ WeCom, outbound, or credential prerequisites itself.
 
 The `deploy` job runs only after the required `check` job succeeds on `main`.
 It builds static Linux binaries, uploads one archive over pinned-host SSH and
-runs `install-release.sh`. The installer applies forward-only migrations,
-atomically switches `/opt/aicrm/current`, restarts the API and checks `/readyz`.
+runs `install-release.sh`. The installer requires every release-owned migration,
+including `0124_operation_excel_batch_lifecycle.sql`, applies forward-only
+migrations, atomically switches `/opt/aicrm/current`, restarts the API and
+checks `/readyz`. When `/etc/aicrm-excel/config.json` and
+`/etc/aicrm-excel/service.env` were already provisioned together, it also
+restarts the loopback Excel component and verifies its authenticated `/health`
+endpoint before applying the migration. The installer never invents component
+configuration, source SQL, or provider permissions. A configured component
+must use `EXCEL_BATCH_URL=http://127.0.0.1:8791` and a token exactly matching
+the component service file; the installer compares them without logging either
+value and rejects an unconditional `coverage_sql` query.
 If migration, restart or readiness fails, the active symlink and service return
 to the previous binary. Database migrations are forward-compatible and are not
 destructively rolled back.

@@ -454,7 +454,7 @@ func TestPostgreSQLMachinePlanActorScopesReceiptsFactsAndStatus(t *testing.T) {
 	if err != nil || !replay.Replayed || replay.Plan.ID != first.Plan.ID {
 		t.Fatalf("replay=%+v first=%+v err=%v", replay, first, err)
 	}
-	if _, err = service.CreateMachinePlan(context.Background(), command(machineA, "changed request")); !errors.Is(err, aiassistantapp.ErrConflict) {
+	if _, err = service.CreateMachinePlan(context.Background(), command(machineA, "changed request")); !errors.Is(err, aiassistantapp.ErrIdempotencyConflict) {
 		t.Fatalf("same-machine drift err=%v", err)
 	}
 	second, err := service.CreateMachinePlan(context.Background(), command(machineB, "client B review"))
@@ -715,7 +715,7 @@ func integrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	for _, name := range []string{"0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql", "0120_excel_batches.sql"} {
+	for _, name := range []string{"0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql", "0120_excel_batches.sql", "0124_operation_excel_batch_lifecycle.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

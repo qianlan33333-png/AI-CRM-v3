@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,81 +45,220 @@ type Bridge struct {
 	Scope      string
 }
 type row struct {
-	ID      ai.RecipientID    `json:"id"`
-	UnionID string            `json:"unionid"`
-	Sender  string            `json:"sender_userid"`
-	Text    string            `json:"text"`
-	Path    string            `json:"path"`
-	State   string            `json:"state"`
-	Reason  string            `json:"reason"`
-	SentAt  *time.Time        `json:"sent_at"`
-	Version int64             `json:"version"`
-	Content []ai.ContentBlock `json:"content"`
-	Review  string            `json:"review_state"`
+	ID       ai.RecipientID    `json:"id"`
+	UnionID  string            `json:"unionid"`
+	Sender   string            `json:"sender_userid"`
+	Text     string            `json:"text"`
+	Path     string            `json:"path"`
+	Title    string            `json:"title"`
+	Card     *ai.ExcelCard     `json:"card,omitempty"`
+	Segment  string            `json:"segment"`
+	Excluded bool              `json:"excluded"`
+	State    string            `json:"delivery_state"`
+	Reason   string            `json:"failure_reason"`
+	SentAt   *time.Time        `json:"sent_at"`
+	Version  int64             `json:"version"`
+	Content  []ai.ContentBlock `json:"-"`
+	Review   string            `json:"review_state"`
+}
+
+func deliveryState(value ai.ExecutionState) string {
+	switch value {
+	case ai.ExecutionNotAccepted:
+		return "pending_submission"
+	case ai.ExecutionAccepted, ai.ExecutionQueued, ai.ExecutionAttempted, ai.ExecutionProviderAccepted, ai.ExecutionReconciled:
+		return "task_created_waiting_employee"
+	case ai.ExecutionRetryableFailed, ai.ExecutionOutcomeUnknown:
+		return "outcome_unknown"
+	case ai.ExecutionFinalFailed:
+		return "final_failed"
+	case ai.ExecutionDeliveryProven:
+		return "delivery_proven"
+	default:
+		return "outcome_unknown"
+	}
+}
+
+type preparedImport struct {
+	FileDigest effect.Digest `json:"file_digest"`
+	Rows       []struct {
+		UnionID string       `json:"unionid"`
+		Text    string       `json:"text"`
+		Sender  string       `json:"sender_userid"`
+		Card    ai.ExcelCard `json:"card"`
+		Segment string       `json:"segment"`
+	} `json:"rows"`
+}
+
+func (p preparedImport) batchRows() []ai.ExcelBatchRow {
+	items := make([]ai.ExcelBatchRow, 0, len(p.Rows))
+	for _, item := range p.Rows {
+		items = append(items, ai.ExcelBatchRow{UnionID: item.UnionID, SenderUserID: item.Sender, Text: item.Text, Card: item.Card, Segment: item.Segment})
+	}
+	return items
+}
+
+func batchJSON(plan ai.Plan, meta ai.ExcelBatchMeta, summary ai.ExcelBatchSummary) map[string]any {
+	segmentSource := meta.SourceOrigin
+	if segmentSource == "" {
+		segmentSource = "legacy_snapshot"
+	}
+	return map[string]any{
+		"id":                           plan.ID,
+		"batch_key":                    meta.BatchKey,
+		"operation_cycle_strategy_key": meta.StrategyKey,
+		"state":                        plan.State,
+		"version":                      plan.Version,
+		"file_digest":                  meta.FileDigest,
+		"cover_digest":                 meta.CoverDigest,
+		"current_content_version":      meta.Revision,
+		"source_kind":                  plan.SourceKind,
+		"segment_source":               segmentSource,
+		"created_at":                   meta.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"summary":                      summary,
+	}
+}
+
+// prepareImport delegates only syntax and workbook validation to the component.
+// It deliberately uses /prepare: import rows, version history and deduplication
+// are authoritative PostgreSQL facts owned by AI Assistant.
+func (b *Bridge) prepareImport(ctx context.Context, raw []byte) (preparedImport, error) {
+	var prepared preparedImport
+	err := b.Client.Raw(ctx, http.MethodPost, "/prepare", "", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", raw, &prepared)
+	if err != nil {
+		return preparedImport{}, err
+	}
+	if !effect.ValidDigest(prepared.FileDigest) || len(prepared.Rows) == 0 {
+		return preparedImport{}, app.ErrInvalid
+	}
+	return prepared, nil
+}
+
+func batchKeyForPrepared(prepared preparedImport, idempotencyKey string, explicitNew bool) string {
+	seed := string(prepared.FileDigest)
+	if explicitNew {
+		seed += "\x00" + idempotencyKey
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return "xlsx-" + hex.EncodeToString(sum[:])
+}
+
+func validIdempotencyKey(key string) bool { return len(key) >= 8 && len(key) <= 200 }
+
+func pageRequest(r *http.Request) (string, int, error) {
+	limit := app.MaximumPageSize
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > app.MaximumPageSize {
+			return "", 0, app.ErrInvalid
+		}
+		limit = value
+	}
+	return r.URL.Query().Get("cursor"), limit, nil
 }
 
 func fmtInt(n int64) string { return strconv.FormatInt(n, 10) }
+
+// RowsPage is the Host's bounded projection. Detail endpoints must use this
+// rather than building an unbounded JSON body for a 5,000-row workbook.
+func (b *Bridge) RowsPage(ctx context.Context, id ai.PlanID, cursor string, limit int, poll bool) ([]row, string, error) {
+	if limit < 1 || limit > app.MaximumPageSize {
+		return nil, "", app.ErrInvalid
+	}
+	page, err := b.App.ListRecipients(ctx, ai.RecipientPageQuery{PlanID: id, Cursor: cursor, Limit: limit})
+	if err != nil {
+		return nil, "", err
+	}
+	items, err := b.rowsFromRecipients(ctx, id, page.Items, poll)
+	return items, page.NextCursor, err
+}
+
+func (b *Bridge) RowsPageForRevision(ctx context.Context, id ai.PlanID, revision int, cursor string, limit int) ([]row, string, error) {
+	if limit < 1 || limit > app.MaximumPageSize || revision < 1 {
+		return nil, "", app.ErrInvalid
+	}
+	page, err := b.App.OperationExcelBatchRecipients(ctx, id, revision, cursor, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	items, err := b.rowsFromRecipients(ctx, id, page.Items, false)
+	return items, page.NextCursor, err
+}
+
 func (b *Bridge) Rows(ctx context.Context, id ai.PlanID, poll bool) ([]row, error) {
 	result := []row{}
 	cursor := ""
 	for {
-		page, err := b.App.ListRecipients(ctx, ai.RecipientPageQuery{PlanID: id, Cursor: cursor, Limit: 50})
+		items, next, err := b.RowsPage(ctx, id, cursor, app.MaximumPageSize, poll)
 		if err != nil {
 			return nil, err
 		}
-		for _, recipient := range page.Items {
-			if recipient.DeferredTarget == nil {
-				return nil, app.ErrInvalid
-			}
-			r, content, err := b.App.GetRecipient(ctx, id, recipient.ID)
-			if err != nil {
-				return nil, err
-			}
-			item := row{ID: r.ID, UnionID: r.DeferredTarget.UnionID, Sender: r.DeferredTarget.SenderUserID, State: string(r.ExecutionState), Version: r.Version, Content: content.Blocks, Review: string(r.ReviewState)}
-			for _, block := range content.Blocks {
-				if block.Kind == ai.ContentText {
-					item.Text = block.Text
-				}
-				if block.ExcelCard != nil {
-					item.Path = block.ExcelCard.Path
-				}
-			}
-			ref := fmt.Sprintf("aiassistant:%d:%d:%d", id, r.ID, content.ID)
-			receipt, found, readErr := b.Receipts.PrivateMessageReceipt(ctx, ref)
-			if readErr != nil {
-				return nil, readErr
-			}
-			if poll && found && receipt.MessageID != "" && (r.ExecutionState == ai.ExecutionProviderAccepted || r.ExecutionState == ai.ExecutionOutcomeUnknown) && (receipt.Status == nil || *receipt.Status == 0) {
-				updated, err := b.pollReceipt(ctx, receipt)
-				if err == nil && updated.Status != nil {
-					if err = b.Receipts.SavePrivateMessageDelivery(ctx, ref, updated); err == nil {
-						receipt = updated
-					}
-				} // read failures leave prior truth intact
-			}
-			if found {
-				item.Reason = receipt.Reason
-				if receipt.Status != nil {
-					if *receipt.Status == 1 && receipt.SentAt != nil {
-						item.State = "delivery_proven"
-						item.SentAt = receipt.SentAt
-					} else if *receipt.Status > 1 {
-						item.State = "final_failed"
-						item.Reason = fmt.Sprintf("wecom_status_%d", *receipt.Status)
-					}
-					if poll && item.State != string(r.ExecutionState) && item.State != "provider_accepted" {
-						if err = b.Repo.RecordExcelDelivery(ctx, r, receipt); err != nil {
-							return nil, err
-						}
-					}
-				}
-			}
-			result = append(result, item)
-		}
-		if page.NextCursor == "" {
+		result = append(result, items...)
+		if next == "" {
 			break
 		}
-		cursor = page.NextCursor
+		cursor = next
+	}
+	return result, nil
+}
+
+func (b *Bridge) rowsFromRecipients(ctx context.Context, id ai.PlanID, recipients []ai.Recipient, poll bool) ([]row, error) {
+	result := make([]row, 0, len(recipients))
+	for _, recipient := range recipients {
+		if recipient.DeferredTarget == nil {
+			return nil, app.ErrInvalid
+		}
+		r, content, err := b.App.GetRecipient(ctx, id, recipient.ID)
+		if err != nil {
+			return nil, err
+		}
+		attributes, attributesErr := b.App.OperationExcelBatchRowAttributes(ctx, id, r.ID)
+		if attributesErr != nil {
+			return nil, attributesErr
+		}
+		item := row{ID: r.ID, UnionID: r.DeferredTarget.UnionID, Sender: r.DeferredTarget.SenderUserID, State: deliveryState(r.ExecutionState), Version: r.Version, Content: content.Blocks, Review: string(r.ReviewState), Segment: attributes.Segment, Excluded: attributes.Excluded}
+		for _, block := range content.Blocks {
+			if block.Kind == ai.ContentText {
+				item.Text = block.Text
+			}
+			if block.ExcelCard != nil {
+				item.Path = block.ExcelCard.Path
+				item.Title = block.ExcelCard.Title
+				card := *block.ExcelCard
+				item.Card = &card
+			}
+		}
+		ref := fmt.Sprintf("aiassistant:%d:%d:%d", id, r.ID, content.ID)
+		receipt, found, readErr := b.Receipts.PrivateMessageReceipt(ctx, ref)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if poll && found && receipt.MessageID != "" && (r.ExecutionState == ai.ExecutionProviderAccepted || r.ExecutionState == ai.ExecutionOutcomeUnknown) && (receipt.Status == nil || *receipt.Status == 0) {
+			updated, err := b.pollReceipt(ctx, receipt)
+			if err == nil && updated.Status != nil {
+				if err = b.Receipts.SavePrivateMessageDelivery(ctx, ref, updated); err == nil {
+					receipt = updated
+				}
+			} // read failures leave prior truth intact
+		}
+		if found {
+			item.Reason = receipt.Reason
+			if receipt.Status != nil {
+				if *receipt.Status == 1 && receipt.SentAt != nil {
+					item.State = "delivery_proven"
+					item.SentAt = receipt.SentAt
+				} else if *receipt.Status > 1 {
+					item.State = "final_failed"
+					item.Reason = fmt.Sprintf("wecom_status_%d", *receipt.Status)
+				}
+				if poll && item.State != string(r.ExecutionState) && item.State != "provider_accepted" {
+					if err = b.Repo.RecordExcelDelivery(ctx, r, receipt); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		result = append(result, item)
 	}
 	return result, nil
 }
@@ -158,9 +298,22 @@ func (b *Bridge) PrepareSnapshot(ctx context.Context, id ai.PlanID, version int6
 	if b.Client == nil {
 		return "", ErrUnavailable
 	}
+	batch, err := b.App.OperationExcelBatch(ctx, id)
+	if err != nil {
+		return "", err
+	}
 	rows, err := b.Rows(ctx, id, false)
 	if err != nil {
 		return "", err
+	}
+	// Rows are loaded in bounded pages. Reject rather than publish a mixed
+	// snapshot when a replacement wins between two reads.
+	after, err := b.App.OperationExcelBatch(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if batch.Revision != after.Revision || batch.FileDigest != after.FileDigest {
+		return "", app.ErrConflict
 	}
 	var random [16]byte
 	if _, err = rand.Read(random[:]); err != nil {
@@ -168,10 +321,21 @@ func (b *Bridge) PrepareSnapshot(ctx context.Context, id ai.PlanID, version int6
 	}
 	key := snapshotKey(id, version) + ":" + hex.EncodeToString(random[:])
 	targets := make([]map[string]any, 0, len(rows))
-	for _, r := range rows {
-		targets = append(targets, map[string]any{"id": r.ID, "unionid": r.UnionID})
+	componentSource := "unavailable"
+	hasSegments := false
+	if batch.SourceOrigin == "excel" {
+		componentSource = "excel"
+		for _, item := range rows {
+			if item.Segment != "" {
+				hasSegments = true
+				break
+			}
+		}
 	}
-	err = b.Client.JSON(ctx, "/snapshots", map[string]any{"snapshot_key": key, "rows": targets}, nil)
+	for _, r := range rows {
+		targets = append(targets, map[string]any{"id": r.ID, "unionid": r.UnionID, "segment": r.Segment, "segment_source": componentSource, "excluded": r.Excluded})
+	}
+	err = b.Client.JSON(ctx, "/snapshots", map[string]any{"snapshot_key": key, "rows": targets, "segment_source": componentSource, "has_segments": hasSegments, "version": version}, nil)
 	return key, err
 }
 func (b *Bridge) Refresh(ctx context.Context) error {
@@ -223,50 +387,127 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, 403, map[string]any{"error": "permission_denied"})
 		return
 	}
+	if r.Method != http.MethodGet && !validIdempotencyKey(r.Header.Get("Idempotency-Key")) {
+		respond(w, http.StatusBadRequest, map[string]any{"error": "invalid_input", "message": "Idempotency-Key 必须为 8–200 字符"})
+		return
+	}
 	if b.Client == nil && (r.Method != "GET" || strings.HasSuffix(r.URL.Path, "/report") || strings.Contains(r.URL.Path, "/covers/")) {
 		respond(w, 503, map[string]any{"error": "component_disabled"})
 		return
 	}
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/operation-batches"), "/"), "/")
 	var output any
+	responseStatus := http.StatusOK
 	switch {
-	case r.Method == "POST" && len(parts) == 1 && parts[0] == "imports":
-		raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
-		if e != nil {
+	case r.Method == http.MethodGet && len(parts) == 1 && parts[0] == "legacy":
+		var plans []ai.Plan
+		plans, err = b.App.ListUnlinkedOperationExcelPlans(r.Context(), 100)
+		if err == nil {
+			items := make([]map[string]any, 0, len(plans))
+			for _, plan := range plans {
+				items = append(items, map[string]any{"id": plan.ID, "name": plan.Name, "state": plan.State, "created_at": plan.CreatedAt.UTC().Format(time.RFC3339Nano), "linkable": true})
+			}
+			output = map[string]any{"items": items}
+		}
+	case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "strategies":
+		var items []ai.ExcelBatchMeta
+		items, err = b.App.ListOperationExcelBatches(r.Context(), parts[1], 100)
+		if err == nil {
+			values := make([]map[string]any, 0, len(items))
+			for _, item := range items {
+				plan, readErr := b.App.GetPlan(r.Context(), item.PlanID)
+				if readErr != nil {
+					err = readErr
+					break
+				}
+				summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), item.PlanID, item.Revision)
+				if summaryErr != nil {
+					err = summaryErr
+					break
+				}
+				values = append(values, batchJSON(plan, item, summary))
+			}
+			output = map[string]any{"strategy": map[string]any{"strategy_key": parts[1]}, "items": values}
+		}
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[0] == "strategies" && parts[2] == "imports":
+		raw, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
+		if readErr != nil {
 			err = app.ErrInvalid
 			break
 		}
-		key := r.Header.Get("Idempotency-Key")
-		path := "/imports"
-		if r.URL.Query().Get("new") == "1" {
-			path += "?new=1"
-		}
-		var prepared struct {
-			BatchKey   string        `json:"batch_key"`
-			FileDigest effect.Digest `json:"file_digest"`
-			CreatedAt  time.Time     `json:"created_at"`
-			Rows       []struct {
-				UnionID string       `json:"unionid"`
-				Text    string       `json:"text"`
-				Sender  string       `json:"sender_userid"`
-				Card    ai.ExcelCard `json:"card"`
-			} `json:"rows"`
-		}
-		err = b.Client.Call(r.Context(), "POST", path, key, raw, &prepared)
-		if err != nil {
+		explicitNew := r.URL.Query().Get("new") == "1"
+		prepared, prepareErr := b.prepareImport(r.Context(), raw)
+		if prepareErr != nil {
+			err = prepareErr
 			break
 		}
-		command := ai.CreatePlanCommand{Actor: ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, IdempotencyKey: "excel-" + prepared.BatchKey, Name: "Excel 群发批次 " + prepared.CreatedAt.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04"), SourceKind: "excel_batch", SourceDigest: prepared.FileDigest, OccurredAt: prepared.CreatedAt}
-		for _, v := range prepared.Rows {
-			card := v.Card
-			command.Recipients = append(command.Recipients, ai.RecipientCandidate{DeferredTarget: &ai.DeferredTarget{UnionID: v.UnionID, Scope: b.Scope, SenderUserID: v.Sender}, Content: []ai.ContentBlock{{Kind: ai.ContentText, Text: v.Text}, {Kind: ai.ContentMiniProgram, ExcelCard: &card}}})
+		batchKey := batchKeyForPrepared(prepared, r.Header.Get("Idempotency-Key"), explicitNew)
+		now := time.Now().UTC()
+		created, createErr := b.App.CreateOperationExcelBatch(r.Context(), ai.ExcelBatchCommand{Actor: ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, IdempotencyKey: r.Header.Get("Idempotency-Key"), BatchKey: batchKey, StrategyKey: parts[1], Name: "Excel 群发批次 " + now.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04"), Scope: b.Scope, FileDigest: prepared.FileDigest, Rows: prepared.batchRows(), OccurredAt: now})
+		if createErr != nil {
+			if errors.Is(createErr, app.ErrIdempotencyConflict) {
+				err = &ComponentError{Status: http.StatusConflict, Code: "idempotency_conflict", Body: json.RawMessage(`{"error":"idempotency_conflict"}`)}
+				break
+			}
+			if errors.Is(createErr, app.ErrConflict) {
+				if existing, lookupErr := b.App.OperationExcelBatchByKey(r.Context(), batchKey); lookupErr == nil {
+					body, _ := json.Marshal(map[string]any{"error": "duplicate_file", "existing_batch": map[string]any{"id": existing.PlanID, "operation_cycle_strategy_key": existing.StrategyKey}})
+					err = &ComponentError{Status: http.StatusConflict, Code: "duplicate_file", Body: body}
+					break
+				}
+			}
+			err = createErr
+			break
 		}
-		var created ai.CreatePlanResult
-		created, err = b.App.CreateExcelPlan(r.Context(), prepared.BatchKey, command)
-		if err == nil {
-			_ = b.Client.JSON(r.Context(), "/link", map[string]any{"batch_key": prepared.BatchKey, "plan_id": created.Plan.ID}, nil)
-			output = map[string]any{"plan": created.Plan, "replayed": created.Replayed}
+		meta, metaErr := b.App.OperationExcelBatch(r.Context(), created.Plan.ID)
+		if metaErr != nil {
+			err = metaErr
+			break
 		}
+		summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), created.Plan.ID, meta.Revision)
+		if summaryErr != nil {
+			err = summaryErr
+			break
+		}
+		output = map[string]any{"batch": batchJSON(created.Plan, meta, summary), "replayed": created.Replayed}
+		if !created.Replayed {
+			responseStatus = http.StatusCreated
+		}
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[0] == "legacy" && parts[2] == "link":
+		planID, parseErr := strconv.ParseInt(parts[1], 10, 64)
+		if parseErr != nil || planID < 1 {
+			err = app.ErrInvalid
+			break
+		}
+		var input struct {
+			StrategyKey     string `json:"strategy_key"`
+			ExpectedVersion int64  `json:"expected_version"`
+		}
+		if decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input); decodeErr != nil {
+			err = app.ErrInvalid
+			break
+		}
+		plan, linkErr := b.App.LinkLegacyOperationExcelBatch(r.Context(), ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, ai.PlanID(planID), input.ExpectedVersion, input.StrategyKey, r.Header.Get("Idempotency-Key"))
+		if linkErr != nil {
+			err = linkErr
+			break
+		}
+		meta, metaErr := b.App.OperationExcelBatch(r.Context(), plan.ID)
+		if metaErr != nil {
+			err = metaErr
+			break
+		}
+		summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), plan.ID, meta.Revision)
+		if summaryErr != nil {
+			err = summaryErr
+			break
+		}
+		output = map[string]any{"batch": batchJSON(plan, meta, summary)}
+	case r.Method == "POST" && len(parts) == 1 && parts[0] == "imports":
+		// The former unscoped uploader created an Excel plan without a long-plan
+		// association. Keep the path observable but make new writes impossible.
+		respond(w, http.StatusGone, map[string]any{"error": "legacy_write_disabled", "message": "请从长期计划详情上传 Excel"})
+		return
 	case r.Method == "GET" && len(parts) == 1 && parts[0] == "":
 		var ids []ai.PlanID
 		ids, err = b.Repo.ExcelPlans(r.Context())
@@ -303,10 +544,150 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		switch {
+		case r.Method == "GET" && len(parts) == 2 && parts[1] == "versions":
+			versions, versionsErr := b.App.OperationExcelBatchVersions(r.Context(), id, 100)
+			if versionsErr != nil {
+				err = versionsErr
+				break
+			}
+			output = map[string]any{"batch_id": id, "items": versions}
+		case r.Method == "GET" && len(parts) == 3 && parts[1] == "versions":
+			revision, parseErr := strconv.Atoi(parts[2])
+			if parseErr != nil || revision < 1 {
+				err = app.ErrInvalid
+				break
+			}
+			versions, versionsErr := b.App.OperationExcelBatchVersions(r.Context(), id, 100)
+			if versionsErr != nil {
+				err = versionsErr
+				break
+			}
+			var selected *ai.ExcelBatchVersion
+			for index := range versions {
+				if versions[index].ContentRevision == revision {
+					selected = &versions[index]
+					break
+				}
+			}
+			if selected == nil {
+				err = app.ErrNotFound
+				break
+			}
+			cursor, limit, pageErr := pageRequest(r)
+			if pageErr != nil {
+				err = pageErr
+				break
+			}
+			rows, nextCursor, rowsErr := b.RowsPageForRevision(r.Context(), id, revision, cursor, limit)
+			if rowsErr != nil {
+				err = rowsErr
+				break
+			}
+			summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), id, revision)
+			if summaryErr != nil {
+				err = summaryErr
+				break
+			}
+			output = map[string]any{"batch_id": id, "content_version": selected, "summary": summary, "rows": rows, "next_cursor": nextCursor, "read_only": true}
 		case r.Method == "GET" && len(parts) == 1:
-			var rows []row
-			rows, err = b.Rows(r.Context(), id, false)
-			output = map[string]any{"plan": plan, "rows": rows}
+			meta, metaErr := b.App.OperationExcelBatch(r.Context(), id)
+			if metaErr != nil {
+				err = metaErr
+				break
+			}
+			cursor, limit, pageErr := pageRequest(r)
+			if pageErr != nil {
+				err = pageErr
+				break
+			}
+			rows, nextCursor, rowsErr := b.RowsPage(r.Context(), id, cursor, limit, false)
+			if rowsErr != nil {
+				err = rowsErr
+				break
+			}
+			after, afterErr := b.App.OperationExcelBatch(r.Context(), id)
+			if afterErr != nil {
+				err = afterErr
+				break
+			}
+			if after.Revision != meta.Revision || after.FileDigest != meta.FileDigest {
+				err = app.ErrConflict
+				break
+			}
+			summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), id, meta.Revision)
+			if summaryErr != nil {
+				err = summaryErr
+				break
+			}
+			output = map[string]any{"batch": batchJSON(plan, meta, summary), "rows": rows, "next_cursor": nextCursor}
+		case r.Method == "GET" && len(parts) == 2 && parts[1] == "receipts":
+			meta, metaErr := b.App.OperationExcelBatch(r.Context(), id)
+			if metaErr != nil {
+				err = metaErr
+				break
+			}
+			cursor, limit, pageErr := pageRequest(r)
+			if pageErr != nil {
+				err = pageErr
+				break
+			}
+			rows, nextCursor, rowsErr := b.RowsPage(r.Context(), id, cursor, limit, true)
+			if rowsErr != nil {
+				err = rowsErr
+				break
+			}
+			after, afterErr := b.App.OperationExcelBatch(r.Context(), id)
+			if afterErr != nil {
+				err = afterErr
+				break
+			}
+			if after.Revision != meta.Revision || after.FileDigest != meta.FileDigest {
+				err = app.ErrConflict
+				break
+			}
+			output = map[string]any{"batch_id": id, "content_version": meta.Revision, "items": rows, "next_cursor": nextCursor}
+		case r.Method == http.MethodPut && len(parts) == 2 && parts[1] == "import":
+			version, parseErr := strconv.ParseInt(r.URL.Query().Get("expected_version"), 10, 64)
+			if parseErr != nil || version < 1 {
+				err = app.ErrInvalid
+				break
+			}
+			raw, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
+			if readErr != nil {
+				err = app.ErrInvalid
+				break
+			}
+			prepared, prepareErr := b.prepareImport(r.Context(), raw)
+			if prepareErr != nil {
+				err = prepareErr
+				break
+			}
+			updated, replaceErr := b.App.ReplaceOperationExcelBatch(r.Context(), ai.ReplaceExcelBatchCommand{Actor: ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, PlanID: id, ExpectedVersion: version, IdempotencyKey: r.Header.Get("Idempotency-Key"), Scope: b.Scope, FileDigest: prepared.FileDigest, Rows: prepared.batchRows(), OccurredAt: time.Now().UTC()})
+			if replaceErr != nil {
+				err = replaceErr
+				break
+			}
+			meta, metaErr := b.App.OperationExcelBatch(r.Context(), id)
+			if metaErr != nil {
+				err = metaErr
+				break
+			}
+			summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), id, meta.Revision)
+			if summaryErr != nil {
+				err = summaryErr
+				break
+			}
+			output = map[string]any{"batch": batchJSON(updated, meta, summary)}
+		case r.Method == "GET" && len(parts) == 2 && parts[1] == "report.csv":
+			var csv []byte
+			err = b.Client.Raw(r.Context(), http.MethodGet, "/reports/"+fmtInt(n)+".csv", "", "application/json", nil, &csv)
+			if err == nil {
+				w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+				w.Header().Set("Content-Disposition", "attachment; filename=operation-batch-"+fmtInt(n)+".csv")
+				w.Header().Set("Cache-Control", "no-store")
+				_, _ = w.Write(csv)
+				return
+			}
 		case r.Method == "GET" && len(parts) == 2 && parts[1] == "report":
 			var report json.RawMessage
 			err = b.Client.Call(r.Context(), "GET", "/reports/"+fmtInt(n), "", nil, &report)
@@ -335,38 +716,134 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			plan, err = b.App.ApplyExcelCover(r.Context(), ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, id, version, r.Header.Get("Idempotency-Key"), saved.Digest)
-			output = map[string]any{"plan": plan, "cover_digest": saved.Digest}
-		case r.Method == "POST" && len(parts) == 2 && parts[1] == "approve":
+			if err != nil {
+				break
+			}
+			meta, metaErr := b.App.OperationExcelBatch(r.Context(), id)
+			if metaErr != nil {
+				err = metaErr
+				break
+			}
+			summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), id, meta.Revision)
+			if summaryErr != nil {
+				err = summaryErr
+				break
+			}
+			output = map[string]any{"batch": batchJSON(plan, meta, summary), "cover_digest": saved.Digest}
+		case r.Method == http.MethodPatch && len(parts) == 3 && parts[1] == "rows":
+			rowID, parseErr := strconv.ParseInt(parts[2], 10, 64)
+			if parseErr != nil || rowID < 1 {
+				err = app.ErrInvalid
+				break
+			}
+			var input struct {
+				ExpectedVersion int64  `json:"expected_version"`
+				Text            string `json:"text"`
+				Path            string `json:"path"`
+				Title           string `json:"title"`
+				Segment         string `json:"segment"`
+				Excluded        bool   `json:"excluded"`
+			}
+			if decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&input); decodeErr != nil {
+				err = app.ErrInvalid
+				break
+			}
+			updated, updateErr := b.App.UpdateOperationExcelRow(r.Context(), ai.UpdateExcelRowCommand{Actor: ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, PlanID: id, RecipientID: ai.RecipientID(rowID), ExpectedVersion: input.ExpectedVersion, IdempotencyKey: r.Header.Get("Idempotency-Key"), Text: input.Text, Path: input.Path, Title: input.Title, Segment: input.Segment, Excluded: input.Excluded})
+			if updateErr != nil {
+				err = updateErr
+				break
+			}
+			meta, metaErr := b.App.OperationExcelBatch(r.Context(), id)
+			if metaErr != nil {
+				err = metaErr
+				break
+			}
+			summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), id, meta.Revision)
+			if summaryErr != nil {
+				err = summaryErr
+				break
+			}
+			output = map[string]any{"batch": batchJSON(updated, meta, summary)}
+		case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "preview-approval":
 			var input struct {
 				Version int64 `json:"expected_version"`
+			}
+			if decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input); decodeErr != nil {
+				err = app.ErrInvalid
+				break
+			}
+			preview, previewErr := b.App.PreviewOperationExcelBatch(r.Context(), ai.PreviewApprovalCommand{Actor: ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, PlanID: id, ExpectedVersion: input.Version})
+			if previewErr != nil {
+				err = previewErr
+				break
+			}
+			meta, metaErr := b.App.OperationExcelBatch(r.Context(), id)
+			if metaErr != nil {
+				err = metaErr
+				break
+			}
+			summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), id, meta.Revision)
+			if summaryErr != nil {
+				err = summaryErr
+				break
+			}
+			output = map[string]any{"preview_digest": preview.PreviewDigest, "eligible_count": preview.EligibleCount, "summary": summary}
+		case r.Method == "POST" && len(parts) == 2 && parts[1] == "approve":
+			var input struct {
+				Version       int64         `json:"expected_version"`
+				PreviewDigest effect.Digest `json:"preview_digest"`
 			}
 			err = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input)
 			if err != nil {
 				break
 			}
-			if plan.State != "pending_review" && plan.State != "partially_approved" {
-				output = map[string]any{"plan": plan}
-				break
-			}
-			var preview ai.ApprovalPreview
 			who := ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}
-			preview, err = b.App.PreviewApproval(r.Context(), ai.PreviewApprovalCommand{Actor: who, PlanID: id, ExpectedVersion: input.Version})
+			// ApproveOperationExcelBatch repeats the preview-digest validation
+			// inside its receipt-owning UoW. Do not preflight here: an HTTP retry
+			// after a committed approval must replay its receipt instead of being
+			// rejected because the plan has already moved to dispatching.
+			plan, err = b.App.ApproveOperationExcelBatch(r.Context(), ai.ApprovePlanCommand{Actor: who, PlanID: id, ExpectedVersion: input.Version, PreviewDigest: input.PreviewDigest, IdempotencyKey: r.Header.Get("Idempotency-Key")})
 			if err != nil {
 				break
 			}
-			plan, err = b.App.ApprovePlan(r.Context(), ai.ApprovePlanCommand{Actor: who, PlanID: id, ExpectedVersion: input.Version, PreviewDigest: preview.PreviewDigest, IdempotencyKey: r.Header.Get("Idempotency-Key")})
-			output = map[string]any{"plan": plan}
+			meta, metaErr := b.App.OperationExcelBatch(r.Context(), id)
+			if metaErr != nil {
+				err = metaErr
+				break
+			}
+			summary, summaryErr := b.App.OperationExcelBatchSummary(r.Context(), id, meta.Revision)
+			if summaryErr != nil {
+				err = summaryErr
+				break
+			}
+			output = map[string]any{"batch": batchJSON(plan, meta, summary)}
 		default:
 			err = app.ErrNotFound
 		}
 	}
 	if err != nil {
+		var componentError *ComponentError
+		if errors.As(err, &componentError) {
+			if json.Valid(componentError.Body) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(componentError.Status)
+				_, _ = w.Write(componentError.Body)
+				return
+			}
+			respond(w, componentError.Status, map[string]any{"error": componentError.Code, "message": componentError.Message})
+			return
+		}
 		var inputError *InputError
 		if errors.As(err, &inputError) {
 			respond(w, 400, map[string]any{"error": "invalid_input", "message": inputError.Message})
 			return
 		}
 		status := 503
+		if errors.Is(err, app.ErrIdempotencyConflict) {
+			respond(w, http.StatusConflict, map[string]any{"error": "idempotency_conflict"})
+			return
+		}
 		if errors.Is(err, app.ErrInvalid) {
 			status = 400
 		}
@@ -379,7 +856,7 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, status, map[string]any{"error": "batch_request_failed"})
 		return
 	}
-	respond(w, 200, output)
+	respond(w, responseStatus, output)
 }
 func respond(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")

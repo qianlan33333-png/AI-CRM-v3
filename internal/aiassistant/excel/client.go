@@ -25,6 +25,17 @@ type InputError struct{ Message string }
 
 func (e *InputError) Error() string { return "invalid excel input" }
 
+// ComponentError retains safe, user-actionable component validation details.
+// Callers must not flatten a rejected import or duplicate into a 503.
+type ComponentError struct {
+	Status  int
+	Code    string
+	Message string
+	Body    json.RawMessage
+}
+
+func (e *ComponentError) Error() string { return "excel component rejected request" }
+
 type Client struct {
 	Base, Token string
 	HTTP        *http.Client
@@ -41,6 +52,14 @@ func NewClient(base, token string) (*Client, error) {
 	return &Client{Base: base, Token: token, HTTP: &http.Client{Timeout: 2 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 func (c *Client) Call(ctx context.Context, method, path, key string, body []byte, out any) error {
+	return c.call(ctx, method, path, key, "application/json", body, out)
+}
+
+func (c *Client) Raw(ctx context.Context, method, path, key, contentType string, body []byte, out any) error {
+	return c.call(ctx, method, path, key, contentType, body, out)
+}
+
+func (c *Client) call(ctx context.Context, method, path, key, contentType string, body []byte, out any) error {
 	if c == nil {
 		return ErrUnavailable
 	}
@@ -49,7 +68,7 @@ func (c *Client) Call(ctx context.Context, method, path, key string, body []byte
 		return ErrUnavailable
 	}
 	r.Header.Set("Authorization", "Bearer "+c.Token)
-	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Type", contentType)
 	if key != "" {
 		r.Header.Set("Idempotency-Key", key)
 	}
@@ -58,17 +77,25 @@ func (c *Client) Call(ctx context.Context, method, path, key string, body []byte
 		return ErrUnavailable
 	}
 	defer response.Body.Close()
-	if response.StatusCode == 400 {
+	if response.StatusCode >= 400 && response.StatusCode < 500 {
+		raw, readErr := readBounded(response.Body, 128<<10)
+		if readErr != nil {
+			return ErrUnavailable
+		}
 		var input struct {
+			Code    string `json:"error"`
 			Message string `json:"message"`
 		}
-		_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&input)
-		return &InputError{Message: input.Message}
+		_ = json.Unmarshal(raw, &input)
+		if input.Code == "" {
+			input.Code = "invalid_input"
+		}
+		return &ComponentError{Status: response.StatusCode, Code: input.Code, Message: input.Message, Body: raw}
 	}
-	if response.StatusCode != 200 {
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return ErrUnavailable
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 32<<20))
+	raw, err := readBounded(response.Body, 32<<20)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -83,6 +110,17 @@ func (c *Client) Call(ctx context.Context, method, path, key string, body []byte
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func readBounded(reader io.Reader, maximum int64) ([]byte, error) {
+	if maximum < 1 {
+		return nil, ErrUnavailable
+	}
+	raw, err := io.ReadAll(io.LimitReader(reader, maximum+1))
+	if err != nil || int64(len(raw)) > maximum {
+		return nil, ErrUnavailable
+	}
+	return raw, nil
 }
 func (c *Client) JSON(ctx context.Context, path string, input, out any) error {
 	raw, err := json.Marshal(input)

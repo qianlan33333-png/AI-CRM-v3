@@ -1,4 +1,3 @@
-import { mountExcelDetailIfNeeded } from './excelBatches';
 import {
   approveAIAssistantPlan,
   getAIAssistantPlan,
@@ -180,7 +179,4 @@ async function bootDonor(): Promise<void> {
     await new Promise<void>((resolve, reject) => { const script = document.createElement('script'); script.src = source; script.onload = () => resolve(); script.onerror = () => reject(new Error('AI 助手组件加载失败')); document.body.append(script); });
   }
 }
-void (async()=>{
- try {if(await mountExcelDetailIfNeeded())return;} catch(error) {if(root){root.textContent='Excel 批次读取失败，请刷新重试';}return;}
- await bootDonor();
-})();
+void bootDonor();

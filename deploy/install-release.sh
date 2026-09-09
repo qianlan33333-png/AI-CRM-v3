@@ -186,6 +186,7 @@ test -f "$release_dir/migrations/0097_segment_audience_mutation_actor.sql"
 test -f "$release_dir/migrations/0098_message_archive_historical_projection.sql"
 test -f "$release_dir/migrations/0099_survey_historical_external_projection.sql"
 test -f "$release_dir/migrations/0100_ai_assistant_machine_actor.sql"
+test -f "$release_dir/migrations/0124_operation_excel_batch_lifecycle.sql"
 test -f "$release_dir/migrations/0068_payment_session_beneficiary_selection.sql"
 test -f "$release_dir/migrations/0069_coupon_claim_redemption_lifecycle.sql"
 test -f "$release_dir/migrations/0070_service_period_entitlement_fulfillment.sql"
@@ -415,8 +416,57 @@ elif [[ -z "$release_run_number" ]]; then
   echo "installing release ${release_sha} without a CI run number; serialized but not stale-run guarded" >&2
 fi
 
-# Prepare optional component dependencies before switching the active release.
-if [[ -f /etc/aicrm-excel/config.json && -f /etc/aicrm-excel/service.env ]]; then
+# The component is optional, but a partial provisioning must never activate a
+# release against stale or missing credentials. Initial provisioning stays a
+# separate, controlled operation: this installer only uses a complete existing
+# configuration and never supplies source SQL or coverage evidence itself.
+excel_config=/etc/aicrm-excel/config.json
+excel_env=/etc/aicrm-excel/service.env
+if [[ -e "$excel_config" || -e "$excel_env" ]]; then
+  if [[ ! -f "$excel_config" || ! -f "$excel_env" ]]; then
+    echo "Excel component configuration is incomplete" >&2
+    exit 16
+  fi
+  api_excel_url_lines="$(grep -c '^EXCEL_BATCH_URL=' /etc/aicrm/aicrm.env || true)"
+  api_excel_token_lines="$(grep -c '^EXCEL_BATCH_TOKEN=' /etc/aicrm/aicrm.env || true)"
+  component_excel_token_lines="$(grep -c '^EXCEL_BATCH_TOKEN=' "$excel_env" || true)"
+  if [[ "$api_excel_url_lines" != 1 || "$api_excel_token_lines" != 1 || "$component_excel_token_lines" != 1 ]] || ! grep -qxF 'EXCEL_BATCH_URL=http://127.0.0.1:8791' /etc/aicrm/aicrm.env; then
+    echo "Excel component API configuration is incomplete" >&2
+    exit 16
+  fi
+  api_excel_token="$(sed -n 's/^EXCEL_BATCH_TOKEN=//p' /etc/aicrm/aicrm.env)"
+  component_excel_token="$(sed -n 's/^EXCEL_BATCH_TOKEN=//p' "$excel_env")"
+  if [[ ${#api_excel_token} -lt 32 || "$api_excel_token" != "$component_excel_token" ]]; then
+    unset api_excel_token component_excel_token
+    echo "Excel component API token does not match" >&2
+    exit 16
+  fi
+  unset api_excel_token component_excel_token
+  if ! python3 - "$excel_config" <<'CHECK_EXCEL_CONFIG'
+import json
+import re
+import sys
+
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+source = config.get("source")
+if not isinstance(source, dict):
+    raise SystemExit("Excel component source configuration is invalid")
+coverage = source.get("coverage_sql")
+mysql = source.get("mysql")
+if coverage is None and isinstance(mysql, dict):
+    # The current adapter reads source.coverage_sql. Check the nested spelling
+    # too so an ignored legacy-shaped value cannot slip through as a fake
+    # coverage assertion if a future adapter accepts it.
+    coverage = mysql.get("coverage_sql")
+if coverage is not None and not isinstance(coverage, str):
+    raise SystemExit("Excel component coverage configuration is invalid")
+normalized = re.sub(r"\s+", " ", coverage.strip()).rstrip(";").strip() if coverage else ""
+if re.fullmatch(r"SELECT (?:1|TRUE)(?: AS [A-Za-z_][A-Za-z0-9_]*)?", normalized, re.IGNORECASE):
+    raise SystemExit("Excel component coverage query must not be unconditional")
+CHECK_EXCEL_CONFIG
+  then
+    exit 16
+  fi
   bash "$release_dir/deploy/prepare-excel-component.sh" "$release_dir"
 fi
 
@@ -444,7 +494,7 @@ rollback() {
   if [[ -n "$previous" && -d "$previous" ]]; then
     ln -sfn "$previous" "${current_link}.rollback"
     mv -Tf "${current_link}.rollback" "$current_link"
-    if [[ -f /etc/aicrm-excel/config.json ]]; then
+    if [[ -f "$excel_config" && -f "$excel_env" ]]; then
       if [[ -f "$previous/components/excel-batches/batches.py" ]]; then
         systemctl restart aicrm-excel-batches.service || true
       else
@@ -459,7 +509,7 @@ rollback() {
   fi
 }
 
-if [[ -f /etc/aicrm-excel/config.json ]]; then
+if [[ -f "$excel_config" && -f "$excel_env" ]]; then
   if ! systemctl enable aicrm-excel-batches.service || ! systemctl restart aicrm-excel-batches.service; then
     rollback
     exit 16
@@ -481,6 +531,7 @@ CHECK_EXCEL
     rollback
     exit 16
   fi
+  printf '%s\n' 'Excel component configuration and readiness verified'
 fi
 
 if ! systemctl start aicrm-migrate.service; then

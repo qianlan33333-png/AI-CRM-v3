@@ -864,6 +864,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	operationRepository := operationstore.NewRepository()
 	operationJournal := operationstore.NewEventJournal()
 	operationService := operationapp.NewService(uow, operationRepository, operationJournal, operationJournal)
+	if err = aiService.BindExcelBatchStrategyReader(operationCycleExcelStrategyAdapter{read: operationRepository}); err != nil {
+		return fail(err)
+	}
 	operationBindings, err := operationModule.Bind(operationService, requestSecurity, cfg.OperationCycleServiceToken)
 	if err != nil {
 		return fail(err)

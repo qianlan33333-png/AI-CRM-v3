@@ -3,6 +3,7 @@
 package port
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
@@ -24,6 +25,14 @@ type Strategy struct {
 	Definition json.RawMessage
 	Snapshot   json.RawMessage
 	UpdatedAt  time.Time
+}
+
+// StrategyReader is the stable read boundary used by a coordinated domain to
+// validate an opaque operation-cycle strategy key inside its already-bound
+// PostgreSQL unit of work. It intentionally exposes no strategy mutation,
+// run creation, Provider operation or table access.
+type StrategyReader interface {
+	OperationCycleStrategy(context.Context, string) (Strategy, error)
 }
 
 type Run struct {
