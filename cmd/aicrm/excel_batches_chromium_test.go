@@ -9,6 +9,7 @@ import (
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	config "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,7 +42,6 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
 	defer cleanup()
 	token := strings.Repeat("x", 32)
-	now := time.Now().UTC()
 	cover, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
 	coverHash := effect.Hash("fixture-cover")
 	card := map[string]any{"appid": "fixture-app", "path": "pages/article/article?lesson_id=1", "title": "标准案例", "cover_digest": ""}
@@ -52,8 +52,15 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		}
 		var value any = map[string]any{"ok": true}
 		switch {
-		case r.URL.Path == "/imports":
-			value = map[string]any{"batch_key": "browser-fixture", "file_digest": effect.Hash("file"), "created_at": now, "rows": []any{map[string]any{"unionid": "browser-user-one", "text": "第一条待审核话术", "sender_userid": "staff-one", "card": card}, map[string]any{"unionid": "browser-user-two", "text": "第二条待审核话术", "sender_userid": "staff-two", "card": card}}}
+		case r.URL.Path == "/prepare":
+			raw, _ := io.ReadAll(r.Body)
+			if string(raw) == "fixture-replace" {
+				value = map[string]any{"file_digest": effect.Hash("file-replace"), "rows": []any{map[string]any{"unionid": "browser-user-three", "text": "替换后的第一条", "sender_userid": "staff-three", "card": card, "segment": "C"}, map[string]any{"unionid": "browser-user-four", "text": "替换后的第二条", "sender_userid": "staff-four", "card": card, "segment": ""}}}
+			} else if string(raw) == "fixture-drift" {
+				value = map[string]any{"file_digest": effect.Hash("file-drift"), "rows": []any{map[string]any{"unionid": "browser-user-one", "text": "同键漂移", "sender_userid": "staff-one", "card": card, "segment": "A"}}}
+			} else {
+				value = map[string]any{"file_digest": effect.Hash("file"), "rows": []any{map[string]any{"unionid": "browser-user-one", "text": "第一条待审核话术", "sender_userid": "staff-one", "card": card, "segment": "A"}, map[string]any{"unionid": "browser-user-two", "text": "第二条待审核话术", "sender_userid": "staff-two", "card": card, "segment": "B"}}}
+			}
 		case r.URL.Path == "/covers":
 			value = map[string]any{"cover_digest": coverHash}
 		case strings.HasPrefix(r.URL.Path, "/covers/"):
@@ -61,6 +68,11 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 			w.Write(cover)
 			return
 		case strings.HasPrefix(r.URL.Path, "/reports/"):
+			if strings.HasSuffix(r.URL.Path, ".csv") {
+				w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+				_, _ = w.Write([]byte("id,delivery_state\n1,delivery_proven\n"))
+				return
+			}
 			value = map[string]any{"pending": true}
 		}
 		_ = json.NewEncoder(w).Encode(value)
@@ -83,44 +95,198 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		t.Fatal(err)
 	}
 	session, csrf := adminAccessLogin(t, application.handler, "excel-browser", "excel-browser-password")
-	request := httptest.NewRequest("POST", "/api/admin/operation-batches/imports", bytes.NewReader([]byte("fixture")))
+	strategy := httptest.NewRequest(http.MethodPost, "/api/admin/operation-cycles/strategies", bytes.NewReader([]byte(`{"strategy_key":"excel.fixture","title":"Excel 固定长期计划","definition":{"schedule":"每周一 09:00","indicator_color":"#2EA121","primary_action":"start_review","stages":[{"key":"retro","label":"复盘","color":"#2EA121","state":"current"}]}}`)))
+	strategy.Header.Set("Content-Type", "application/json")
+	strategy.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	strategy.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+	strategy.Header.Set("X-CSRF-Token", csrf)
+	strategy.Header.Set("Idempotency-Key", "http-composition-strategy")
+	strategyResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(strategyResponse, strategy)
+	if strategyResponse.Code != http.StatusCreated {
+		t.Fatalf("full HTTP strategy: %d %s", strategyResponse.Code, strategyResponse.Body.String())
+	}
+	request := httptest.NewRequest("POST", "/api/admin/operation-batches/strategies/excel.fixture/imports", bytes.NewReader([]byte("fixture")))
 	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
 	request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
 	request.Header.Set("X-CSRF-Token", csrf)
 	request.Header.Set("Idempotency-Key", "http-composition-import")
 	response := httptest.NewRecorder()
 	application.handler.ServeHTTP(response, request)
-	if response.Code != 200 {
+	if response.Code != http.StatusCreated {
 		t.Fatalf("full HTTP import: %d %s", response.Code, response.Body.String())
 	}
 	var imported struct {
-		Plan struct {
+		Batch struct {
 			ID      int64 `json:"id"`
 			Version int64 `json:"version"`
-		} `json:"plan"`
+		} `json:"batch"`
 	}
-	if err = json.Unmarshal(response.Body.Bytes(), &imported); err != nil || imported.Plan.ID < 1 {
+	if err = json.Unmarshal(response.Body.Bytes(), &imported); err != nil || imported.Batch.ID < 1 {
 		t.Fatal("missing native plan", err)
 	}
-	detail := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d", imported.Plan.ID))
+	detail := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d?limit=1", imported.Batch.ID))
 	if detail.Code != 200 {
 		t.Fatalf("full HTTP detail: %d %s", detail.Code, detail.Body.String())
 	}
+	legacy := authenticatedAdminGet(t, application.handler, session, "/api/admin/operation-batches/legacy")
+	if legacy.Code != http.StatusOK || !strings.Contains(legacy.Body.String(), `"items":[]`) {
+		t.Fatalf("unlinked legacy discovery: %d %s", legacy.Code, legacy.Body.String())
+	}
 	if !browser {
-		for _, attempt := range []struct {
-			body []byte
-			want int
-		}{{[]byte("not an image"), 400}, {cover, 200}, {cover, 200}} {
-			req := httptest.NewRequest("POST", fmt.Sprintf("/api/admin/operation-batches/%d/cover?expected_version=%d", imported.Plan.ID, imported.Plan.Version), bytes.NewReader(attempt.body))
+		write := func(method, path, idempotencyKey string, body []byte) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(method, path, bytes.NewReader(body))
 			req.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
 			req.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
 			req.Header.Set("X-CSRF-Token", csrf)
-			req.Header.Set("Idempotency-Key", "http-cover-upload")
+			req.Header.Set("Idempotency-Key", idempotencyKey)
 			res := httptest.NewRecorder()
 			application.handler.ServeHTTP(res, req)
-			if res.Code != attempt.want {
-				t.Fatalf("full HTTP cover: %d %s", res.Code, res.Body.String())
-			}
+			return res
+		}
+		if replay := write(http.MethodPost, "/api/admin/operation-batches/strategies/excel.fixture/imports", "http-composition-import", []byte("fixture")); replay.Code != http.StatusOK {
+			t.Fatalf("same-key import replay: %d %s", replay.Code, replay.Body.String())
+		}
+		if drift := write(http.MethodPost, "/api/admin/operation-batches/strategies/excel.fixture/imports", "http-composition-import", []byte("fixture-drift")); drift.Code != http.StatusConflict || !strings.Contains(drift.Body.String(), "idempotency_conflict") {
+			t.Fatalf("same-key import drift: %d %s", drift.Code, drift.Body.String())
+		}
+		if duplicate := write(http.MethodPost, "/api/admin/operation-batches/strategies/excel.fixture/imports", "http-composition-import-duplicate", []byte("fixture")); duplicate.Code != http.StatusConflict || !strings.Contains(duplicate.Body.String(), "duplicate_file") {
+			t.Fatalf("duplicate import: %d %s", duplicate.Code, duplicate.Body.String())
+		}
+		if fresh := write(http.MethodPost, "/api/admin/operation-batches/strategies/excel.fixture/imports?new=1", "http-composition-import-new", []byte("fixture")); fresh.Code != http.StatusCreated {
+			t.Fatalf("explicit new import: %d %s", fresh.Code, fresh.Body.String())
+		}
+		if invalidCover := write(http.MethodPost, fmt.Sprintf("/api/admin/operation-batches/%d/cover?expected_version=%d", imported.Batch.ID, imported.Batch.Version), "http-cover-invalid", []byte("not an image")); invalidCover.Code != http.StatusBadRequest {
+			t.Fatalf("invalid cover: %d %s", invalidCover.Code, invalidCover.Body.String())
+		}
+		coverResponse := write(http.MethodPost, fmt.Sprintf("/api/admin/operation-batches/%d/cover?expected_version=%d", imported.Batch.ID, imported.Batch.Version), "http-cover-upload", cover)
+		if coverResponse.Code != http.StatusOK {
+			t.Fatalf("full HTTP cover: %d %s", coverResponse.Code, coverResponse.Body.String())
+		}
+		var covered struct {
+			Batch struct {
+				Version     int64  `json:"version"`
+				CoverDigest string `json:"cover_digest"`
+			} `json:"batch"`
+		}
+		if err = json.Unmarshal(coverResponse.Body.Bytes(), &covered); err != nil || covered.Batch.Version < 2 || covered.Batch.CoverDigest != string(coverHash) {
+			t.Fatalf("cover result missing current cover/version: %v %s", err, coverResponse.Body.String())
+		}
+		var detailBody struct {
+			Rows []struct {
+				ID      int64 `json:"id"`
+				Version int64 `json:"version"`
+			} `json:"rows"`
+			NextCursor string `json:"next_cursor"`
+		}
+		if err = json.Unmarshal(detail.Body.Bytes(), &detailBody); err != nil || len(detailBody.Rows) != 1 || detailBody.NextCursor == "" {
+			t.Fatalf("first detail page: %v %s", err, detail.Body.String())
+		}
+		pageTwo := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d?limit=1&cursor=%s", imported.Batch.ID, detailBody.NextCursor))
+		if pageTwo.Code != http.StatusOK {
+			t.Fatalf("second detail page: %d %s", pageTwo.Code, pageTwo.Body.String())
+		}
+		// Reload after cover because the first detail was deliberately captured
+		// before its version change; row version is a separate CAS value.
+		detail = authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d?limit=50", imported.Batch.ID))
+		if err = json.Unmarshal(detail.Body.Bytes(), &detailBody); err != nil || len(detailBody.Rows) != 2 {
+			t.Fatalf("detail after cover: %v %s", err, detail.Body.String())
+		}
+		genericReview := write(http.MethodPost, fmt.Sprintf("/api/admin/ai-assistant/plans/%d/recipients/%d/review", imported.Batch.ID, detailBody.Rows[0].ID), "http-generic-review-blocked", []byte(fmt.Sprintf(`{"expected_version":%d,"decision":"approved"}`, detailBody.Rows[0].Version)))
+		if genericReview.Code != http.StatusConflict {
+			t.Fatalf("generic review bypassed controlled Excel command: %d %s", genericReview.Code, genericReview.Body.String())
+		}
+		patchBody, _ := json.Marshal(map[string]any{"expected_version": detailBody.Rows[0].Version, "text": "人工修改后的话术", "path": "pages/article/article?lesson_id=1", "title": "标准案例", "segment": "D", "excluded": false})
+		patched := write(http.MethodPatch, fmt.Sprintf("/api/admin/operation-batches/%d/rows/%d", imported.Batch.ID, detailBody.Rows[0].ID), "http-row-edit", patchBody)
+		if patched.Code != http.StatusOK {
+			t.Fatalf("controlled row edit: %d %s", patched.Code, patched.Body.String())
+		}
+		var patchedBody struct {
+			Batch struct {
+				Version int64 `json:"version"`
+			} `json:"batch"`
+		}
+		if err = json.Unmarshal(patched.Body.Bytes(), &patchedBody); err != nil || patchedBody.Batch.Version < 3 {
+			t.Fatalf("row edit version: %v %s", err, patched.Body.String())
+		}
+		versions := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d/versions", imported.Batch.ID))
+		if versions.Code != http.StatusOK || !strings.Contains(versions.Body.String(), `"content_version":1`) {
+			t.Fatalf("version list: %d %s", versions.Code, versions.Body.String())
+		}
+		history := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d/versions/1?limit=50", imported.Batch.ID))
+		if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), "人工修改后的话术") || !strings.Contains(history.Body.String(), string(coverHash)) {
+			t.Fatalf("historical contents/cover: %d %s", history.Code, history.Body.String())
+		}
+		edited := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d?limit=50", imported.Batch.ID))
+		if edited.Code != http.StatusOK || json.Unmarshal(edited.Body.Bytes(), &detailBody) != nil || len(detailBody.Rows) != 2 {
+			t.Fatalf("read row before reverting historical content: %d %s", edited.Code, edited.Body.String())
+		}
+		revertBody, _ := json.Marshal(map[string]any{"expected_version": detailBody.Rows[0].Version, "text": "第一条待审核话术", "path": "pages/article/article?lesson_id=1", "title": "标准案例", "segment": "D", "excluded": false})
+		reverted := write(http.MethodPatch, fmt.Sprintf("/api/admin/operation-batches/%d/rows/%d", imported.Batch.ID, detailBody.Rows[0].ID), "http-row-revert-historical-content", revertBody)
+		if reverted.Code != http.StatusOK {
+			t.Fatalf("restoring prior immutable content: %d %s", reverted.Code, reverted.Body.String())
+		}
+		var revertedBody struct {
+			Batch struct {
+				Version int64 `json:"version"`
+			} `json:"batch"`
+		}
+		if err = json.Unmarshal(reverted.Body.Bytes(), &revertedBody); err != nil || revertedBody.Batch.Version <= patchedBody.Batch.Version {
+			t.Fatalf("reverted content version: %v %s", err, reverted.Body.String())
+		}
+		reappliedCover := write(http.MethodPost, fmt.Sprintf("/api/admin/operation-batches/%d/cover?expected_version=%d", imported.Batch.ID, revertedBody.Batch.Version), "http-cover-reapply-historical-content", cover)
+		if reappliedCover.Code != http.StatusOK {
+			t.Fatalf("reapplying current cover: %d %s", reappliedCover.Code, reappliedCover.Body.String())
+		}
+		var reappliedBody struct {
+			Batch struct {
+				Version     int64  `json:"version"`
+				CoverDigest string `json:"cover_digest"`
+			} `json:"batch"`
+		}
+		if err = json.Unmarshal(reappliedCover.Body.Bytes(), &reappliedBody); err != nil || reappliedBody.Batch.Version <= revertedBody.Batch.Version || reappliedBody.Batch.CoverDigest != string(coverHash) {
+			t.Fatalf("reapplied cover result: %v %s", err, reappliedCover.Body.String())
+		}
+		replaced := write(http.MethodPut, fmt.Sprintf("/api/admin/operation-batches/%d/import?expected_version=%d", imported.Batch.ID, reappliedBody.Batch.Version), "http-replace", []byte("fixture-replace"))
+		if replaced.Code != http.StatusOK {
+			t.Fatalf("replace: %d %s", replaced.Code, replaced.Body.String())
+		}
+		var replacedBody struct {
+			Batch struct {
+				ID                    int64  `json:"id"`
+				Version               int64  `json:"version"`
+				CurrentContentVersion int    `json:"current_content_version"`
+				CoverDigest           string `json:"cover_digest"`
+			} `json:"batch"`
+		}
+		if err = json.Unmarshal(replaced.Body.Bytes(), &replacedBody); err != nil || replacedBody.Batch.ID != imported.Batch.ID || replacedBody.Batch.CurrentContentVersion != 2 || replacedBody.Batch.CoverDigest != string(coverHash) {
+			t.Fatalf("replacement did not retain batch/cover: %v %s", err, replaced.Body.String())
+		}
+		versions = authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d/versions", imported.Batch.ID))
+		if versions.Code != http.StatusOK || !strings.Contains(versions.Body.String(), `"content_version":1`) || !strings.Contains(versions.Body.String(), `"content_version":2`) {
+			t.Fatalf("version list after replacement: %d %s", versions.Code, versions.Body.String())
+		}
+		preview := write(http.MethodPost, fmt.Sprintf("/api/admin/operation-batches/%d/preview-approval", imported.Batch.ID), "http-preview", []byte(fmt.Sprintf(`{"expected_version":%d}`, replacedBody.Batch.Version)))
+		if preview.Code != http.StatusOK {
+			t.Fatalf("preview: %d %s", preview.Code, preview.Body.String())
+		}
+		var previewBody struct {
+			PreviewDigest effect.Digest `json:"preview_digest"`
+		}
+		if err = json.Unmarshal(preview.Body.Bytes(), &previewBody); err != nil || !effect.ValidDigest(previewBody.PreviewDigest) {
+			t.Fatalf("preview digest: %v %s", err, preview.Body.String())
+		}
+		approved := write(http.MethodPost, fmt.Sprintf("/api/admin/operation-batches/%d/approve", imported.Batch.ID), "http-approve", []byte(fmt.Sprintf(`{"expected_version":%d,"preview_digest":%q}`, replacedBody.Batch.Version, previewBody.PreviewDigest)))
+		if approved.Code != http.StatusOK {
+			t.Fatalf("approve: %d %s", approved.Code, approved.Body.String())
+		}
+		if blocked := write(http.MethodPut, fmt.Sprintf("/api/admin/operation-batches/%d/import?expected_version=%d", imported.Batch.ID, replacedBody.Batch.Version), "http-replace-submitted", []byte("fixture")); blocked.Code != http.StatusConflict {
+			t.Fatalf("submitted replacement: %d %s", blocked.Code, blocked.Body.String())
+		}
+		report := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d/report", imported.Batch.ID))
+		csv := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d/report.csv", imported.Batch.ID))
+		if report.Code != http.StatusOK || csv.Code != http.StatusOK || !strings.Contains(csv.Body.String(), "delivery_state") {
+			t.Fatalf("report/csv: report=%d csv=%d csv_body=%s", report.Code, csv.Code, csv.Body.String())
 		}
 		return
 	}

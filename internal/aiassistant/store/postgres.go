@@ -187,7 +187,7 @@ func (r *Repository) Reserve(ctx context.Context, input Reservation) (Receipt, b
 	copy(receipt.KeyDigest[:], key)
 	copy(receipt.PayloadDigest[:], payload)
 	if receipt.PayloadDigest != input.PayloadDigest {
-		return Receipt{}, false, ErrConflict
+		return Receipt{}, false, aiassistantapp.ErrIdempotencyConflict
 	}
 	return receipt, false, nil
 }

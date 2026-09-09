@@ -56,6 +56,7 @@ sha_missing_0097=9797979797979797979797979797979797979797
 sha_missing_0098=8282828282828282828282828282828282828282
 sha_missing_0099=8383838383838383838383838383838383838383
 sha_missing_0100=8484848484848484848484848484848484848484
+sha_missing_0124=9494949494949494949494949494949494949494
 sha_missing_operation_runner=8585858585858585858585858585858585858585
 sha_missing_operation_result=8686868686868686868686868686868686868686
 sha_tampered_operation_runner=8787878787878787878787878787878787878787
@@ -208,7 +209,8 @@ make_release() {
     0097_segment_audience_mutation_actor.sql \
     0098_message_archive_historical_projection.sql \
     0099_survey_historical_external_projection.sql \
-    0100_ai_assistant_machine_actor.sql; do
+    0100_ai_assistant_machine_actor.sql \
+    0124_operation_excel_batch_lifecycle.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
@@ -345,6 +347,7 @@ for missing_release in \
   "$sha_missing_0098:migrations/0098_message_archive_historical_projection.sql" \
   "$sha_missing_0099:migrations/0099_survey_historical_external_projection.sql" \
   "$sha_missing_0100:migrations/0100_ai_assistant_machine_actor.sql" \
+  "$sha_missing_0124:migrations/0124_operation_excel_batch_lifecycle.sql" \
   "$sha_missing_open_platform_history:bin/migrate-open-platform"; do
   sha="${missing_release%%:*}"
   missing_path="${missing_release#*:}"

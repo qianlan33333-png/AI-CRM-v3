@@ -462,7 +462,7 @@ func aiAssistantHTTPJourneyPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if _, err = migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0100_ai_assistant_machine_actor.sql", "0120_excel_batches.sql", "0121_excel_delivery_receipts.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0100_ai_assistant_machine_actor.sql", "0120_excel_batches.sql", "0121_excel_delivery_receipts.sql", "0124_operation_excel_batch_lifecycle.sql"} {
 		if err = applyAIAssistantHTTPJourneyMigration(ctx, pool, name); err != nil {
 			t.Fatal(err)
 		}

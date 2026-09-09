@@ -82,7 +82,7 @@ func TestAIAssistantIntakeRequiresStoredVerifiedIdentity(t *testing.T) {
 	changed := verified
 	changed.Nonce = "1234567890abcdef-conflict"
 	changed.Targets[0].Content = []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "changed"}}
-	if _, err = service.CreatePlanFromIdentities(context.Background(), changed); !errors.Is(err, aiassistantapp.ErrConflict) {
+	if _, err = service.CreatePlanFromIdentities(context.Background(), changed); !errors.Is(err, aiassistantapp.ErrIdempotencyConflict) {
 		t.Fatalf("changed semantic command err=%v", err)
 	}
 	var customers, identities, plans, recipients int
@@ -176,7 +176,7 @@ func aiAssistantIdentityPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(ctx)
 		t.Fatal(err)
 	}
-	for _, name := range []string{"0002_identity.sql", "0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql", "0120_excel_batches.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql", "0120_excel_batches.sql", "0124_operation_excel_batch_lifecycle.sql"} {
 		if err = applyAIAssistantIdentityMigration(ctx, pool, name); err != nil {
 			pool.Close()
 			admin.Close(ctx)

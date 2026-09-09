@@ -55,7 +55,10 @@ func (r *Repository) listContentRecipients(ctx context.Context, planID aiassista
 	query := `SELECT r.deferred_target,r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,r.updated_at,
 		c.id,c.recipient_id,c.version,c.content_digest,c.content_payload,c.created_at
 		FROM ai_assistant_plan_recipients r JOIN ai_assistant_content_versions c ON c.id=r.current_content_version_id
-		WHERE r.plan_id=$1 AND ($2 OR r.review_state IN ('pending_review','approved')) ORDER BY r.id`
+		WHERE r.plan_id=$1
+		  AND (NOT EXISTS (SELECT 1 FROM ai_assistant_excel_imports import WHERE import.plan_id=r.plan_id)
+		       OR r.excel_batch_content_revision=(SELECT import.content_revision FROM ai_assistant_excel_imports import WHERE import.plan_id=r.plan_id))
+		  AND ($2 OR (r.review_state IN ('pending_review','approved') AND NOT r.excel_excluded)) ORDER BY r.id`
 	if lock {
 		query += ` FOR UPDATE OF r`
 	}
@@ -187,7 +190,10 @@ func (r *Repository) CompleteExternalEffect(ctx context.Context, effectID string
 		return err
 	}
 	var total, terminal, failed, attention int
-	if err = tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE execution_state IN ('delivery_proven','final_failed') OR (deferred_target IS NULL AND execution_state IN ('provider_accepted','reconciled'))),count(*) FILTER(WHERE execution_state='final_failed'),count(*) FILTER(WHERE execution_state IN ('outcome_unknown','retryable_failed')) FROM ai_assistant_plan_recipients WHERE plan_id=$1 AND review_state='approved'`, planID).Scan(&total, &terminal, &failed, &attention); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE execution_state IN ('delivery_proven','final_failed') OR (deferred_target IS NULL AND execution_state IN ('provider_accepted','reconciled'))),count(*) FILTER(WHERE execution_state='final_failed'),count(*) FILTER(WHERE execution_state IN ('outcome_unknown','retryable_failed'))
+		FROM ai_assistant_plan_recipients recipient WHERE plan_id=$1 AND review_state='approved'
+		  AND (NOT EXISTS (SELECT 1 FROM ai_assistant_excel_imports import WHERE import.plan_id=recipient.plan_id)
+		       OR recipient.excel_batch_content_revision=(SELECT import.content_revision FROM ai_assistant_excel_imports import WHERE import.plan_id=recipient.plan_id))`, planID).Scan(&total, &terminal, &failed, &attention); err != nil {
 		return err
 	}
 	planState := aiassistantport.PlanDispatching
@@ -213,7 +219,10 @@ func (r *Repository) ListRecipients(ctx context.Context, query aiassistantport.R
 	}
 	rows, err := tx.Query(ctx, `SELECT r.deferred_target,r.id,r.plan_id,r.customer_id,r.staff_id,r.review_state,r.execution_state,r.version,r.current_content_version_id,COALESCE(b.external_effect_id,''),r.updated_at
 		FROM ai_assistant_plan_recipients r LEFT JOIN ai_assistant_effect_bindings b ON b.recipient_id=r.id
-		WHERE r.plan_id=$1 AND ($2::text='' OR r.review_state=$2) AND r.id>$3 ORDER BY r.id LIMIT $4`, query.PlanID, query.State, afterID, query.Limit+1)
+		WHERE r.plan_id=$1
+		  AND (NOT EXISTS (SELECT 1 FROM ai_assistant_excel_imports import WHERE import.plan_id=r.plan_id)
+		       OR r.excel_batch_content_revision=(SELECT import.content_revision FROM ai_assistant_excel_imports import WHERE import.plan_id=r.plan_id))
+		  AND ($2::text='' OR r.review_state=$2) AND r.id>$3 ORDER BY r.id LIMIT $4`, query.PlanID, query.State, afterID, query.Limit+1)
 	if err != nil {
 		return nil, err
 	}
@@ -295,14 +304,27 @@ func (r *Repository) UpdateContent(ctx context.Context, planID aiassistantport.P
 	if err != nil {
 		return aiassistantport.Recipient{}, aiassistantport.ContentVersion{}, err
 	}
+	digestRaw := append([]byte(nil), raw...)
 	err = tx.QueryRow(ctx, `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_at)
 		VALUES($1,(SELECT COALESCE(max(version),0)+1 FROM ai_assistant_content_versions WHERE recipient_id=$1),$2,$3::jsonb,$4,$5)
+		ON CONFLICT(recipient_id,content_digest) DO NOTHING
 		RETURNING id,recipient_id,version,content_digest,content_payload,created_at`, recipientID, raw, payload, actor, now.UTC()).Scan(&content.ID, &content.RecipientID, &content.Version, &raw, &payload, &content.CreatedAt)
 	if err != nil {
-		if unique(err) {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return aiassistantport.Recipient{}, aiassistantport.ContentVersion{}, err
+		}
+		// Content history is immutable and deduplicated per recipient. A user
+		// may deliberately restore an earlier wording or cover; reattach that
+		// exact immutable version instead of converting a valid reversion into
+		// a database unique-constraint failure.
+		err = tx.QueryRow(ctx, `SELECT id,recipient_id,version,content_digest,content_payload,created_at
+			FROM ai_assistant_content_versions WHERE recipient_id=$1 AND content_digest=$2`, recipientID, digestRaw).Scan(&content.ID, &content.RecipientID, &content.Version, &raw, &payload, &content.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return aiassistantport.Recipient{}, aiassistantport.ContentVersion{}, ErrConflict
 		}
-		return aiassistantport.Recipient{}, aiassistantport.ContentVersion{}, err
+		if err != nil {
+			return aiassistantport.Recipient{}, aiassistantport.ContentVersion{}, err
+		}
 	}
 	content.Digest = digest
 	if err = json.Unmarshal(payload, &content.Blocks); err != nil {
@@ -352,7 +374,11 @@ func (r *Repository) SavePlanRejection(ctx context.Context, plan aiassistantport
 	if err != nil || tag.RowsAffected() != 1 {
 		return ErrConflict
 	}
-	if _, err = tx.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET review_state='rejected',version=version+1,updated_at=$2 WHERE plan_id=$1 AND review_state IN ('pending_review','approved')`, plan.ID, now.UTC()); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE ai_assistant_plan_recipients recipient
+		SET review_state='rejected',version=version+1,updated_at=$2
+		WHERE plan_id=$1 AND review_state IN ('pending_review','approved')
+		  AND (NOT EXISTS (SELECT 1 FROM ai_assistant_excel_imports import WHERE import.plan_id=recipient.plan_id)
+		       OR recipient.excel_batch_content_revision=(SELECT import.content_revision FROM ai_assistant_excel_imports import WHERE import.plan_id=recipient.plan_id))`, plan.ID, now.UTC()); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO ai_assistant_review_decisions(plan_id,recipient_id,decision,reason,actor_id,aggregate_version,idempotency_digest,occurred_at) VALUES($1,NULL,'rejected',$2,$3,$4,$5,$6)`, plan.ID, reason, actor, plan.Version, idempotencyDigest[:], now.UTC())

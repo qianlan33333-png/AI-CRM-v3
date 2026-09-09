@@ -140,6 +140,166 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 	}
 }
 
+// TestExcelBatchLifecycleMigrationKeepsRollbackImportsReadable proves the
+// installer can safely restore a pre-0124 binary after the forward migration
+// has committed. That binary still inserts just batch_key, plan_id and digest;
+// the compatibility projection must retain a complete read-only history
+// without changing any approval or outbound state.
+func TestExcelBatchLifecycleMigrationKeepsRollbackImportsReadable(t *testing.T) {
+	url, urlErr := platformconfig.DatabaseURL()
+	if urlErr != nil {
+		t.Skip("database URL not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	raw := make([]byte, 6)
+	if _, err = rand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	schema := "migrate_excel_rollback_" + hex.EncodeToString(raw)
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	_, file, _, _ := runtime.Caller(0)
+	filesystem := os.DirFS(filepath.Join(filepath.Dir(file), "..", "..", "migrations"))
+	entries, err := fs.ReadDir(filesystem, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := fstest.MapFS{}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == "0124_operation_excel_batch_lifecycle.sql" {
+			continue
+		}
+		contents, readErr := fs.ReadFile(filesystem, entry.Name())
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		previous[entry.Name()] = &fstest.MapFile{Data: contents}
+	}
+	if err = applyMigrations(ctx, pool, previous); err != nil {
+		t.Fatalf("apply release before 0124: %v", err)
+	}
+
+	var planID, recipientID, contentID int64
+	err = pool.QueryRow(ctx, `INSERT INTO ai_assistant_plans(name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_at,updated_at)
+		VALUES('rollback legacy Excel','excel_batch',decode(repeat('11',32),'hex'),'pending_review',1,1,1,0,0,0,0,1,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&planID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = pool.QueryRow(ctx, `INSERT INTO ai_assistant_plan_recipients(plan_id,customer_id,staff_id,deferred_target,created_at,updated_at)
+		VALUES($1,0,0,'{"unionid":"legacy-union","scope":"wechat-open-platform:legacy","sender_userid":"legacy-sender"}'::jsonb,clock_timestamp(),clock_timestamp()) RETURNING id`, planID).Scan(&recipientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = pool.QueryRow(ctx, `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_at)
+		VALUES($1,1,decode(repeat('22',32),'hex'),'[{"kind":"text","text":"legacy"},{"kind":"mini_program","excel_card":{"appid":"legacy-app","path":"pages/legacy","title":"legacy","cover_digest":""}}]'::jsonb,1,clock_timestamp()) RETURNING id`, recipientID).Scan(&contentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET current_content_version_id=$2 WHERE id=$1`, recipientID, contentID); err != nil {
+		t.Fatal(err)
+	}
+	// A prior rollback may already have a legacy cover before 0124 runs. Its
+	// first historical version must retain that cover instead of inferring an
+	// empty one from a later current-content read.
+	preUpgradeCover := "sha256:" + strings.Repeat("c", 64)
+	var preUpgradePlanID, preUpgradeRecipientID, preUpgradeContentID int64
+	err = pool.QueryRow(ctx, `INSERT INTO ai_assistant_plans(name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_at,updated_at)
+		VALUES('existing legacy Excel','excel_batch',decode(repeat('55',32),'hex'),'pending_review',1,1,1,0,0,0,0,1,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&preUpgradePlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = pool.QueryRow(ctx, `INSERT INTO ai_assistant_plan_recipients(plan_id,customer_id,staff_id,deferred_target,created_at,updated_at)
+		VALUES($1,0,0,'{"unionid":"existing-union","scope":"wechat-open-platform:legacy","sender_userid":"legacy-sender"}'::jsonb,clock_timestamp(),clock_timestamp()) RETURNING id`, preUpgradePlanID).Scan(&preUpgradeRecipientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = pool.QueryRow(ctx, `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_at)
+		VALUES($1,1,decode(repeat('66',32),'hex'),'[{"kind":"text","text":"legacy"},{"kind":"mini_program","excel_card":{"appid":"legacy-app","path":"pages/legacy","title":"legacy","cover_digest":"`+preUpgradeCover+`"}}]'::jsonb,1,clock_timestamp()) RETURNING id`, preUpgradeRecipientID).Scan(&preUpgradeContentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET current_content_version_id=$2 WHERE id=$1`, preUpgradeRecipientID, preUpgradeContentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO ai_assistant_excel_imports(batch_key,plan_id,file_digest) VALUES($1,$2,$3)`, "pre-upgrade-legacy-import", preUpgradePlanID, "sha256:"+strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if err = applyMigrations(ctx, pool, filesystem); err != nil {
+		t.Fatalf("apply 0124: %v", err)
+	}
+	var preUpgradeVersionCover string
+	if err = pool.QueryRow(ctx, `SELECT cover_digest FROM ai_assistant_excel_batch_versions WHERE plan_id=$1 AND content_revision=1`, preUpgradePlanID).Scan(&preUpgradeVersionCover); err != nil || preUpgradeVersionCover != preUpgradeCover {
+		t.Fatalf("pre-upgrade legacy cover=%q err=%v", preUpgradeVersionCover, err)
+	}
+
+	fileDigest := "sha256:" + strings.Repeat("a", 64)
+	if _, err = pool.Exec(ctx, `INSERT INTO ai_assistant_excel_imports(batch_key,plan_id,file_digest) VALUES($1,$2,$3)`, "rollback-legacy-import", planID, fileDigest); err != nil {
+		t.Fatalf("pre-0124 import insert after migration: %v", err)
+	}
+	var origin, versionDigest, coverDigest, state string
+	var revision, planVersion, recipientRevision, versionActor int64
+	var createdAt time.Time
+	err = pool.QueryRow(ctx, `SELECT source_origin,content_revision,created_at FROM ai_assistant_excel_imports WHERE plan_id=$1`, planID).Scan(&origin, &revision, &createdAt)
+	if err != nil || origin != "legacy_snapshot" || revision != 1 || createdAt.IsZero() {
+		t.Fatalf("legacy import metadata origin=%q revision=%d created_at=%v err=%v", origin, revision, createdAt, err)
+	}
+	err = pool.QueryRow(ctx, `SELECT file_digest,cover_digest,created_by FROM ai_assistant_excel_batch_versions WHERE plan_id=$1 AND content_revision=1`, planID).Scan(&versionDigest, &coverDigest, &versionActor)
+	if err != nil || versionDigest != fileDigest || coverDigest != "" || versionActor != 1 {
+		t.Fatalf("legacy version digest=%q cover=%q actor=%d err=%v", versionDigest, coverDigest, versionActor, err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT excel_batch_content_revision FROM ai_assistant_plan_recipients WHERE id=$1`, recipientID).Scan(&recipientRevision); err != nil || recipientRevision != 1 {
+		t.Fatalf("legacy recipient revision=%d err=%v", recipientRevision, err)
+	}
+
+	coverA := "sha256:" + strings.Repeat("a", 64)
+	coverB := "sha256:" + strings.Repeat("b", 64)
+	var coverAContentID, coverBContentID int64
+	err = pool.QueryRow(ctx, `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_at)
+		VALUES($1,2,decode(repeat('33',32),'hex'),'[{"kind":"text","text":"legacy"},{"kind":"mini_program","excel_card":{"appid":"legacy-app","path":"pages/legacy","title":"legacy","cover_digest":"`+coverA+`"}}]'::jsonb,1,clock_timestamp()) RETURNING id`, recipientID).Scan(&coverAContentID)
+	if err != nil {
+		t.Fatalf("pre-0124 cover A content insert: %v", err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET current_content_version_id=$2,version=version+1,updated_at=clock_timestamp() WHERE id=$1`, recipientID, coverAContentID); err != nil {
+		t.Fatalf("pre-0124 cover A projection: %v", err)
+	}
+	err = pool.QueryRow(ctx, `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_at)
+		VALUES($1,3,decode(repeat('44',32),'hex'),'[{"kind":"text","text":"legacy"},{"kind":"mini_program","excel_card":{"appid":"legacy-app","path":"pages/legacy","title":"legacy","cover_digest":"`+coverB+`"}}]'::jsonb,1,clock_timestamp()) RETURNING id`, recipientID).Scan(&coverBContentID)
+	if err != nil {
+		t.Fatalf("pre-0124 cover B content insert: %v", err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET current_content_version_id=$2,version=version+1,updated_at=clock_timestamp() WHERE id=$1`, recipientID, coverBContentID); err != nil {
+		t.Fatalf("pre-0124 cover B projection: %v", err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE ai_assistant_plan_recipients SET current_content_version_id=$2,version=version+1,updated_at=clock_timestamp() WHERE id=$1`, recipientID, coverAContentID); err != nil {
+		t.Fatalf("pre-0124 cover A reversion projection: %v", err)
+	}
+	var latestCover string
+	if err = pool.QueryRow(ctx, `SELECT cover_digest FROM ai_assistant_excel_batch_version_covers WHERE plan_id=$1 AND content_revision=1 ORDER BY created_at DESC,cover_digest DESC LIMIT 1`, planID).Scan(&latestCover); err != nil || latestCover != coverA {
+		t.Fatalf("legacy cover reversion latest=%q err=%v", latestCover, err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT state,version FROM ai_assistant_plans WHERE id=$1`, planID).Scan(&state, &planVersion); err != nil || state != "pending_review" || planVersion != 1 {
+		t.Fatalf("legacy trigger changed plan state=%q version=%d err=%v", state, planVersion, err)
+	}
+}
+
 func TestHXCIdentityV2MigrationsUpgradePublishedV1Projection(t *testing.T) {
 	url, urlErr := platformconfig.DatabaseURL()
 	if urlErr != nil {

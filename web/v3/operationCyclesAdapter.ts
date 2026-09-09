@@ -1,4 +1,4 @@
-import { mountExcelBatchPanel } from './excelBatches';
+import { mountOperationExcelWorkspace } from './excelBatches';
 // This is the only v3-owned browser seam for operation cycles. It supplies a
 // narrow AdminApi.loadDb implementation plus the host-side HTTP binding for
 // the donor's existing primary action. It never renders or styles controls.
@@ -211,10 +211,13 @@ function mountExcelOperations(): void {
   const stage = document.querySelector<HTMLElement>('main#stage');
   if (!stage) return;
   const mount = () => {
-    if (!stage.children.length || stage.querySelector('.excel-batches')) return;
-    const parent = Array.from(stage.querySelectorAll<HTMLElement>('div')).find(node => node.style.overflow === 'auto') as HTMLElement | undefined;
-    // Wait for the donor scroll region: an early loading placeholder is not a mount target.
-    if (parent) void mountExcelBatchPanel(parent);
+    if (!stage.children.length || stage.querySelector('.operation-excel-workspace')) return;
+    // Keep the frozen shell's embedded header intact. The scroll region holds
+    // the mutable donor table and is the V3-owned list/detail mount point.
+    const parent = Array.from(stage.querySelectorAll<HTMLElement>('div')).find(
+      node => node.style.overflow === 'auto',
+    );
+    if (parent) void mountOperationExcelWorkspace(parent);
   };
   // The frozen donor renders asynchronously and may replace its stage on refresh.
   new MutationObserver(mount).observe(stage, { childList: true, subtree: true });

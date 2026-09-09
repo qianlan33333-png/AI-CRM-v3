@@ -26,6 +26,35 @@ const snapshot = {
   action: '开始复盘', action_key: 'start_review', run_key: 'weekly.review.001',
   steps: [{ label: '复盘', color: '#2EA121', dim: false }],
 };
+const excelBatch = {
+  id: 918,
+  state: 'pending_review',
+  version: 3,
+  current_content_version: 1,
+  summary: { total_rows: 1, excluded_rows: 0, empty_title_rows: 0, expected_tasks: 1 },
+};
+const historyBatch = {
+  ...excelBatch,
+  id: 917,
+  state: 'completed',
+  version: 2,
+  current_content_version: 2,
+};
+const excelRow = {
+  id: 33,
+  version: 4,
+  unionid: 'fixture-unionid',
+  sender_userid: 'fixture-staff',
+  text: '待审核话术',
+  card: { appid: 'fixture-app', path: 'pages/fixture', title: '验收标题' },
+  segment: '',
+  excluded: false,
+  review_state: 'pending_review',
+  delivery_state: 'pending_submission',
+  failure_reason: '',
+  sent_at: null,
+};
+const historyRow = { ...excelRow, id: 32, text: '历史批次话术', review_state: 'approved', delivery_state: 'delivery_proven' };
 const dom = new JSDOM(`<!doctype html><html><body class="admin-shell" data-page="cycles"><main id="stage"></main><template id="tpl">${donor}</template><script>${bundle}</script></body></html>`, {
   url: 'https://test.invalid/admin/operation-cycles', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole,
   beforeParse(window) {
@@ -39,6 +68,11 @@ const dom = new JSDOM(`<!doctype html><html><body class="admin-shell" data-page=
         { strategy_key: 'weekly.review', title: '每周复盘', status: 'active', version: 4, run_ordinal: 73, snapshot },
         { strategy_key: 'paused.review', title: '暂停复盘', status: 'paused', version: 2, snapshot: { ...snapshot, name: '暂停复盘', run_key: '' } },
       ] });
+      if (url.pathname === '/api/admin/operation-batches/legacy') return json({ items: [] });
+      if (url.pathname === '/api/admin/operation-batches/strategies/weekly.review') return json({ strategy: { strategy_key: 'weekly.review', title: '每周复盘' }, items: [excelBatch, historyBatch] });
+      if (url.pathname === '/api/admin/operation-batches/strategies/paused.review') return json({ strategy: { strategy_key: 'paused.review', title: '暂停复盘' }, items: [] });
+      if (url.pathname === '/api/admin/operation-batches/918') return json({ batch: excelBatch, rows: [excelRow], next_cursor: '' });
+      if (url.pathname === '/api/admin/operation-batches/917') return json({ batch: historyBatch, rows: [historyRow], next_cursor: '' });
       if (url.pathname.endsWith('/actions/start_review/start') && init.method === 'POST') return json({ request_id: 'ocact_0123456789012345678901234567', status: 'queued' }, 202);
       if (url.pathname.endsWith('/paused.review/status') && init.method === 'POST') return json({ strategy_key: 'paused.review', status: 'active', version: 3 });
       return json({ ok: false, code: 'unexpected_request' }, 500);
@@ -48,23 +82,23 @@ const dom = new JSDOM(`<!doctype html><html><body class="admin-shell" data-page=
 
 try {
   await new Promise((resolve) => setTimeout(resolve, 500));
-  const buttons = Array.from(dom.window.document.querySelectorAll('tbody tr button'));
-  if (buttons.length !== 4 || buttons[0].textContent?.trim() !== '开始复盘' || buttons[2].textContent?.trim() !== '开始复盘') throw new Error(`frozen donor primary actions did not render unchanged: ${dom.window.document.getElementById('stage')?.innerHTML} requests=${JSON.stringify(requests)}`);
+  const workspace = dom.window.document.querySelector('.operation-excel-workspace');
+  const buttons = Array.from(workspace?.querySelectorAll('button') || []);
+  if (!workspace || buttons.length !== 2 || buttons.some((button) => button.textContent?.trim() !== '查看详情') || !workspace.textContent?.includes('长期计划') || !workspace.textContent?.includes('批次 #918') || workspace.textContent?.includes('开始复盘')) throw new Error(`Excel long-plan list did not replace the frozen donor actions: ${dom.window.document.getElementById('stage')?.innerHTML} requests=${JSON.stringify(requests)}`);
   buttons[0].click();
   await new Promise((resolve) => setTimeout(resolve, 80));
-  buttons[0].click();
+  const tabs = Array.from(dom.window.document.querySelectorAll('.xeb-detail-nav button')).map((button) => button.textContent?.trim());
+  if (tabs.length !== 2 || tabs[0] !== '内容准备与发送' || tabs[1] !== '发送效果与复盘' || !workspace.textContent?.includes('当前批次 #918') || !workspace.textContent?.includes('待审核话术')) throw new Error(`Excel detail did not preserve its two-dimension workspace: ${workspace?.innerHTML} requests=${JSON.stringify(requests)}`);
+  const history = dom.window.document.querySelector('select[aria-label="历史批次"]');
+  if (!history) throw new Error('Excel detail did not render the batch history selector');
+  history.value = '917';
+  history.dispatchEvent(new dom.window.Event('change'));
   await new Promise((resolve) => setTimeout(resolve, 80));
-  buttons[2].click();
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  const writes = requests.filter((item) => item.method === 'POST');
-  const starts = writes.filter((item) => item.path === '/api/admin/operation-cycles/strategies/weekly.review/actions/start_review/start');
-  const activations = writes.filter((item) => item.path === '/api/admin/operation-cycles/strategies/paused.review/status');
-  if (starts.length !== 2 || activations.length !== 1) throw new Error(`primary actions did not reach the real admin commands: ${JSON.stringify(writes)}`);
-  if (starts.some((item) => item.body?.run_key !== 'weekly.review.001' || item.body?.parent_request_id !== '') || activations[0].body?.expected_version !== 2 || activations[0].body?.status !== 'active') throw new Error('primary action DTO drifted');
-  if (writes.some((item) => !item.headers['x-csrf-token']) || starts[0].headers['idempotency-key'] !== starts[1].headers['idempotency-key']) throw new Error('CSRF or stable retry idempotency binding is absent');
-  if (alerts.some((message) => message.includes('DTO 不等价')) || !alerts.includes('复盘请求已受理') || !alerts.includes('运营周期已启用')) throw new Error(`donor blocked actions were not replaced by real receipt feedback: ${JSON.stringify(alerts)}`);
+  if (!workspace.textContent?.includes('当前批次 #917') || !workspace.textContent?.includes('历史批次话术')) throw new Error(`Excel history selection did not load the selected batch: ${workspace?.innerHTML} requests=${JSON.stringify(requests)}`);
+  const writes = requests.filter((item) => item.method !== 'GET');
+  if (writes.length || requests.some((item) => item.path.includes('/actions/start_review/start')) || !requests.some((item) => item.path === '/api/admin/operation-batches/legacy') || !requests.some((item) => item.path === '/api/admin/operation-batches/strategies/weekly.review') || !requests.some((item) => item.path === '/api/admin/operation-batches/918?limit=50') || !requests.some((item) => item.path === '/api/admin/operation-batches/917?limit=50')) throw new Error(`Excel workspace read contract drifted: ${JSON.stringify(requests)}`);
   if (jsdomErrors.length) throw new Error(`browser errors: ${JSON.stringify(jsdomErrors)}`);
-  console.log('operation-cycle frozen primary action browser Journey: PASS');
+  console.log('operation-cycle Excel workspace browser Journey: PASS');
 } finally {
   dom.window.close();
 }

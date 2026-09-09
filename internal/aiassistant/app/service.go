@@ -18,6 +18,7 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	operationport "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/port"
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -26,12 +27,16 @@ import (
 const MaximumPageSize = 50
 
 var (
-	ErrInvalid       = errors.New("invalid AI Assistant command")
-	ErrNotFound      = errors.New("AI Assistant record not found")
-	ErrConflict      = errors.New("AI Assistant command conflict")
-	ErrUnavailable   = errors.New("AI Assistant dependency unavailable")
-	ErrNoRecipients  = errors.New("AI Assistant plan has no resolvable recipients")
-	ErrMaterialDrift = errors.New("AI Assistant material changed or unavailable")
+	ErrInvalid  = errors.New("invalid AI Assistant command")
+	ErrNotFound = errors.New("AI Assistant record not found")
+	ErrConflict = errors.New("AI Assistant command conflict")
+	// ErrIdempotencyConflict means a caller reused a key with a different
+	// business command. It remains distinct at the HTTP edge from a stale
+	// version or duplicate file.
+	ErrIdempotencyConflict = errors.New("AI Assistant idempotency key conflict")
+	ErrUnavailable         = errors.New("AI Assistant dependency unavailable")
+	ErrNoRecipients        = errors.New("AI Assistant plan has no resolvable recipients")
+	ErrMaterialDrift       = errors.New("AI Assistant material changed or unavailable")
 	// ErrLegacyMaterialUnmapped is a safe per-target compatibility result. It
 	// never carries a legacy identifier and cannot be used to mint a Media row.
 	ErrLegacyMaterialUnmapped = errors.New("AI Assistant legacy material is not mapped")
@@ -160,7 +165,19 @@ type Service struct {
 	outbound        outboundport.PrivateMessageIntentWriter
 	dispatchEnabled bool
 	reconciler      effectport.UnknownReconciler
+	excelStrategies operationport.StrategyReader
 	now             func() time.Time
+}
+
+// BindExcelBatchStrategyReader supplies the only cross-domain dependency for
+// Excel batches. The reader validates an opaque long-plan key inside the
+// caller's PostgreSQL UoW; it exposes no OperationCycle mutation.
+func (s *Service) BindExcelBatchStrategyReader(reader operationport.StrategyReader) error {
+	if s == nil || reader == nil {
+		return ErrUnavailable
+	}
+	s.excelStrategies = reader
+	return nil
 }
 
 func (s *Service) BindReconciler(value effectport.UnknownReconciler) error {
@@ -533,6 +550,13 @@ func (s *Service) UpdateContent(ctx context.Context, command aiassistantport.Upd
 	}
 	var content aiassistantport.ContentVersion
 	err := s.uow.Within(ctx, func(tx context.Context) error {
+		linked, linkedErr := s.linkedOperationExcelBatch(tx, command.PlanID)
+		if linkedErr != nil {
+			return linkedErr
+		}
+		if linked {
+			return ErrConflict
+		}
 		current, priorContent, readErr := s.store.GetRecipient(tx, command.PlanID, command.RecipientID, false)
 		if readErr != nil {
 			return readErr
@@ -613,6 +637,13 @@ func (s *Service) ReviewRecipient(ctx context.Context, command aiassistantport.R
 		if loadErr != nil {
 			return loadErr
 		}
+		linked, linkedErr := s.linkedOperationExcelBatch(tx, command.PlanID)
+		if linkedErr != nil {
+			return linkedErr
+		}
+		if linked {
+			return ErrConflict
+		}
 		var content aiassistantport.ContentVersion
 		recipient, content, loadErr = s.store.GetRecipient(tx, command.PlanID, command.RecipientID, true)
 		_ = content
@@ -667,6 +698,13 @@ func (s *Service) RejectPlan(ctx context.Context, command aiassistantport.Reject
 		if loadErr != nil {
 			return loadErr
 		}
+		linked, linkedErr := s.linkedOperationExcelBatch(tx, command.PlanID)
+		if linkedErr != nil {
+			return linkedErr
+		}
+		if linked {
+			return ErrConflict
+		}
 		aggregate, loadErr := aiassistantdomain.Restore(projection)
 		if loadErr != nil || aggregate.MarkRejected(command.ExpectedVersion, s.nowUTC()) != nil {
 			return ErrConflict
@@ -688,6 +726,14 @@ func (s *Service) RejectPlan(ctx context.Context, command aiassistantport.Reject
 }
 
 func (s *Service) PreviewApproval(ctx context.Context, command aiassistantport.PreviewApprovalCommand) (aiassistantport.ApprovalPreview, error) {
+	return s.previewApproval(ctx, command, false)
+}
+
+func (s *Service) PreviewOperationExcelBatch(ctx context.Context, command aiassistantport.PreviewApprovalCommand) (aiassistantport.ApprovalPreview, error) {
+	return s.previewApproval(ctx, command, true)
+}
+
+func (s *Service) previewApproval(ctx context.Context, command aiassistantport.PreviewApprovalCommand, allowLinkedExcel bool) (aiassistantport.ApprovalPreview, error) {
 	if s == nil || !command.Actor.Valid() || command.PlanID < 1 || command.ExpectedVersion < 1 {
 		return aiassistantport.ApprovalPreview{}, ErrInvalid
 	}
@@ -696,6 +742,13 @@ func (s *Service) PreviewApproval(ctx context.Context, command aiassistantport.P
 		plan, err := s.store.GetPlan(tx, command.PlanID, false)
 		if err != nil {
 			return err
+		}
+		linked, linkedErr := s.linkedOperationExcelBatch(tx, command.PlanID)
+		if linkedErr != nil {
+			return linkedErr
+		}
+		if linked != allowLinkedExcel {
+			return ErrConflict
 		}
 		if plan.Version != command.ExpectedVersion || (plan.State != aiassistantport.PlanPendingReview && plan.State != aiassistantport.PlanPartiallyApproved) {
 			return ErrConflict
@@ -717,6 +770,14 @@ func (s *Service) PreviewApproval(ctx context.Context, command aiassistantport.P
 }
 
 func (s *Service) ApprovePlan(ctx context.Context, command aiassistantport.ApprovePlanCommand) (aiassistantport.Plan, error) {
+	return s.approvePlan(ctx, command, false)
+}
+
+func (s *Service) ApproveOperationExcelBatch(ctx context.Context, command aiassistantport.ApprovePlanCommand) (aiassistantport.Plan, error) {
+	return s.approvePlan(ctx, command, true)
+}
+
+func (s *Service) approvePlan(ctx context.Context, command aiassistantport.ApprovePlanCommand, allowLinkedExcel bool) (aiassistantport.Plan, error) {
 	if s == nil || !s.dispatchEnabled || s.outbound == nil {
 		return aiassistantport.Plan{}, ErrUnavailable
 	}
@@ -727,6 +788,18 @@ func (s *Service) ApprovePlan(ctx context.Context, command aiassistantport.Appro
 	planBefore, readErr := s.GetPlan(ctx, command.PlanID)
 	if readErr != nil {
 		return aiassistantport.Plan{}, readErr
+	}
+	var linked bool
+	readErr = s.uow.Within(ctx, func(tx context.Context) error {
+		var linkedErr error
+		linked, linkedErr = s.linkedOperationExcelBatch(tx, command.PlanID)
+		return linkedErr
+	})
+	if readErr != nil {
+		return aiassistantport.Plan{}, classify(readErr)
+	}
+	if linked != allowLinkedExcel {
+		return aiassistantport.Plan{}, ErrConflict
 	}
 	if planBefore.SourceKind == "excel_batch" && (planBefore.State == aiassistantport.PlanPendingReview || planBefore.State == aiassistantport.PlanPartiallyApproved) {
 		if planBefore.Version != command.ExpectedVersion {
@@ -1161,6 +1234,8 @@ func classify(err error) error {
 		return ErrInvalid
 	case errors.Is(err, ErrNotFound):
 		return ErrNotFound
+	case errors.Is(err, ErrIdempotencyConflict):
+		return ErrIdempotencyConflict
 	case errors.Is(err, ErrConflict), errors.Is(err, aiassistantdomain.ErrPlanConflict):
 		return ErrConflict
 	case errors.Is(err, ErrMaterialDrift):

@@ -128,7 +128,7 @@ async function waitFor(cdp, expression, message) {
       JSON.stringify(
         await evaluate(
           cdp,
-          `({path:location.pathname,status:document.querySelector(".excel-batches [role=status]")?.textContent,root:document.querySelector("[data-cloud-plan-root]")?.textContent?.slice(0,400)})`,
+          `({path:location.pathname,status:document.querySelector(".operation-excel-workspace [role=status]")?.textContent,root:document.querySelector(".operation-excel-workspace")?.textContent?.slice(0,1000)})`,
         ),
       ),
   );
@@ -223,37 +223,55 @@ try {
   );
   await waitFor(
     cdp,
-    `Boolean(document.querySelector('.excel-batches input[type=file]'))`,
-    "operations import panel missing",
+    `Boolean(document.querySelector('.operation-excel-workspace button')&&[...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情'))`,
+    "operation plan list missing",
   );
   await evaluate(
     cdp,
-    `(()=>{const input=document.querySelector('.excel-batches input[type=file]');const transfer=new DataTransfer();transfer.items.add(new File(['fixture'],'batch.xlsx'));input.files=transfer.files;input.dispatchEvent(new Event('change'));[...document.querySelectorAll('.excel-batches button')].find(b=>b.textContent==='上传并进入审核').click();return true})()`,
+    `[...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情').click();true`,
   );
   await waitFor(
     cdp,
-    `location.pathname.includes('/plans/')&&document.querySelector('.excel-batches')?.textContent.includes('第一条待审核话术')`,
-    "native AI review did not open",
+    `Boolean(document.querySelector('.xeb-detail-main')&&[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次'))`,
+    "operation detail did not open",
+  );
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次').click();true`,
+  );
+  await waitFor(
+    cdp,
+    `Boolean(document.querySelector('dialog[open] input[type=file]'))`,
+    "new batch dialog missing",
+  );
+  await evaluate(
+    cdp,
+    `(()=>{const input=document.querySelector('dialog[open] input[type=file]');const transfer=new DataTransfer();transfer.items.add(new File(['fixture'],'batch.xlsx'));input.files=transfer.files;input.dispatchEvent(new Event('change'));const fresh=document.querySelector('dialog[open] input[type=checkbox]');fresh.checked=true;fresh.dispatchEvent(new Event('change'));[...document.querySelectorAll('dialog[open] button')].find(b=>b.textContent==='上传并开始审核').click();return true})()`,
+  );
+  await waitFor(
+    cdp,
+    `!document.querySelector('dialog[open]')&&document.querySelector('.xeb-detail-main')?.textContent.includes('当前批次 #2')&&document.querySelector('.xeb-detail-main')?.textContent.includes('第一条待审核话术')`,
+    "controlled Excel upload did not open the selected batch",
   );
   if (
     !(await evaluate(
       cdp,
-      `[...document.querySelectorAll('.excel-batches button')].find(b=>b.textContent==='批准并创建群发任务').disabled`,
+      `[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='审核通过并创建企微群发任务').disabled`,
     ))
   )
     throw new Error("cover required guard missing");
   await evaluate(
     cdp,
-    `(()=>{const input=document.querySelector('input[aria-label="统一封面图片"]');const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'cover.png',{type:'image/png'}));input.files=dt.files;[...document.querySelectorAll('.excel-batches button')].find(b=>b.textContent==='上传统一封面').click();return true})()`,
+    `(()=>{const input=document.querySelector('input[aria-label="统一封面图片"]');const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'cover.png',{type:'image/png'}));input.files=dt.files;[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='上传统一封面').click();return true})()`,
   );
   await waitFor(
     cdp,
-    `document.querySelector('.excel-batches [role=status]')?.textContent.includes('统一封面已保存')`,
+    `document.querySelector('.xeb-status')?.textContent.includes('统一封面已更新')`,
     "cover upload failed",
   );
   await evaluate(
     cdp,
-    `[...document.querySelectorAll('.excel-batches button')].find(b=>b.textContent==='修改').click();true`,
+    `[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='修改').click();true`,
   );
   await waitFor(
     cdp,
@@ -266,31 +284,31 @@ try {
   );
   await waitFor(
     cdp,
-    `!document.querySelector('dialog[open]')&&document.querySelector('.excel-batches')?.textContent.includes('人工修改后的话术')`,
+    `!document.querySelector('dialog[open]')&&document.querySelector('.xeb-detail-main')?.textContent.includes('人工修改后的话术')`,
     "edited wording did not persist",
   );
   await evaluate(
     cdp,
-    `[...document.querySelectorAll('.excel-batches button')].filter(b=>b.textContent==='排除')[1].click();true`,
+    `[...document.querySelectorAll('.xeb-detail-main button')].filter(b=>b.textContent==='排除')[1].click();true`,
   );
   await waitFor(
     cdp,
-    `document.querySelector('.excel-batches')?.textContent.includes('预计创建 1 个企微任务')`,
+    `document.querySelector('.xeb-detail-main')?.textContent.includes('已排除1')`,
     "excluded row stayed eligible",
   );
   await evaluate(
     cdp,
-    `[...document.querySelectorAll('.excel-batches button')].find(b=>b.textContent==='批准并创建群发任务').click();true`,
+    `[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='审核通过并创建企微群发任务').click();true`,
   );
   await waitFor(
     cdp,
-    `document.querySelector('.excel-batches')?.textContent.includes('待提交：1')&&!([...document.querySelectorAll('.excel-batches button')].some(b=>b.textContent==='批准并创建群发任务'))`,
+    `document.querySelector('.xeb-status')?.textContent.includes('企微任务意图已创建')&&!([...document.querySelectorAll('.xeb-detail-main button')].some(b=>b.textContent==='审核通过并创建企微群发任务'))`,
     "single approval did not queue one target",
   );
   await cdp.call("Page.reload");
   await waitFor(
     cdp,
-    `document.querySelector('.excel-batches')?.textContent.includes('人工修改后的话术')&&document.querySelector('.excel-batches')?.textContent.includes('待提交：1')`,
+    `document.querySelector('.xeb-detail-main')?.textContent.includes('人工修改后的话术')&&!([...document.querySelectorAll('.xeb-detail-main button')].some(b=>b.textContent==='审核通过并创建企微群发任务'))`,
     "state did not survive reload",
   );
   if (errors.length) throw new Error("runtime exceptions in Excel Host");
