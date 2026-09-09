@@ -2195,8 +2195,11 @@ func redirectH5EntryOrigin(next http.Handler, publicOrigin, h5Origin string) htt
 
 func isH5EntryPage(path string) bool {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 2 || parts[1] == "" || parts[1] == "." || parts[1] == ".." || strings.Contains(parts[1], "\\") {
+	if (len(parts) != 2 && len(parts) != 3) || parts[1] == "" || parts[1] == "." || parts[1] == ".." || strings.Contains(parts[1], "\\") {
 		return false
+	}
+	if len(parts) == 3 {
+		return parts[0] == "s" && parts[2] == "pay"
 	}
 	switch parts[0] {
 	case "h5":

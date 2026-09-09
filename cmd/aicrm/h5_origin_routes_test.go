@@ -52,7 +52,7 @@ func TestApplicationRouterSeparatesH5AndAdminOrigins(t *testing.T) {
 func TestH5EntryRedirectPreservesPathAndQueryOnlyOnConfiguredOldHost(t *testing.T) {
 	marker := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	handler := redirectH5EntryOrigin(marker, "https://admin.example", "https://h5.example")
-	for _, path := range []string{"/h5/auth.html?slug=launch0908-basic-survey", "/q/example", "/p/7", "/pay/example?coupon=demo", "/s/example", "/c/demo"} {
+	for _, path := range []string{"/h5/auth.html?slug=launch0908-basic-survey", "/q/example", "/p/7", "/pay/example?coupon=demo", "/s/example", "/s/example/pay", "/c/demo"} {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://admin.example"+path, nil))
 		if w.Code != http.StatusTemporaryRedirect || w.Header().Get("Location") != "https://h5.example"+path {
@@ -67,6 +67,11 @@ func TestH5EntryRedirectPreservesPathAndQueryOnlyOnConfiguredOldHost(t *testing.
 		"https://admin.example/api/h5/wechat-pay/oauth/callback?code=example&state=example",
 		"https://admin.example/api/h5/surveys/oauth/start?slug=example",
 		"https://admin.example/p/example/extra",
+		"https://admin.example/p/example/pay",
+		"https://admin.example/s/example/extra",
+		"https://admin.example/s/example/pay/extra",
+		"https://admin.example/s/../pay",
+		"https://admin.example/s//pay",
 	} {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
