@@ -56,7 +56,7 @@ type ExcelCard struct {
 }
 
 func (c ExcelCard) Valid() bool {
-	return validLegacyReferencePart(c.AppID, 128) && validLegacyReferencePart(c.Path, 1024) && strings.HasPrefix(c.Path, "pages/") && !strings.Contains(c.Path, "://") && !strings.HasPrefix(c.Path, "//") && strings.TrimSpace(c.Title) != "" && len(c.Title) <= 512 && effectport.ValidDigest(c.CoverDigest)
+	return validLegacyReferencePart(c.AppID, 128) && validLegacyReferencePart(c.Path, 1024) && strings.HasPrefix(c.Path, "pages/") && !strings.Contains(c.Path, "://") && !strings.HasPrefix(c.Path, "//") && len(c.Title) <= 512 && (c.CoverDigest == "" || effectport.ValidDigest(c.CoverDigest))
 }
 
 type DeferredTarget struct {

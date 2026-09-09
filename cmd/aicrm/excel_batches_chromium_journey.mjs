@@ -122,7 +122,16 @@ async function waitFor(cdp, expression, message) {
     if (await evaluate(cdp, expression)) return;
     await delay(50);
   }
-  throw new Error(message);
+  throw new Error(
+    message +
+      " " +
+      JSON.stringify(
+        await evaluate(
+          cdp,
+          `({path:location.pathname,status:document.querySelector(".excel-batches [role=status]")?.textContent,root:document.querySelector("[data-cloud-plan-root]")?.textContent?.slice(0,400)})`,
+        ),
+      ),
+  );
 }
 async function browserExit(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -225,6 +234,22 @@ try {
     cdp,
     `location.pathname.includes('/plans/')&&document.querySelector('.excel-batches')?.textContent.includes('第一条待审核话术')`,
     "native AI review did not open",
+  );
+  if (
+    !(await evaluate(
+      cdp,
+      `[...document.querySelectorAll('.excel-batches button')].find(b=>b.textContent==='批准并创建群发任务').disabled`,
+    ))
+  )
+    throw new Error("cover required guard missing");
+  await evaluate(
+    cdp,
+    `(()=>{const input=document.querySelector('input[aria-label="统一封面图片"]');const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'cover.png',{type:'image/png'}));input.files=dt.files;[...document.querySelectorAll('.excel-batches button')].find(b=>b.textContent==='上传统一封面').click();return true})()`,
+  );
+  await waitFor(
+    cdp,
+    `document.querySelector('.excel-batches [role=status]')?.textContent.includes('统一封面已保存')`,
+    "cover upload failed",
   );
   await evaluate(
     cdp,

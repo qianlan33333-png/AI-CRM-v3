@@ -63,15 +63,21 @@ paths:
         "200": {description: "Last durable observation, per-user receipts and cumulative 12/24/48-hour group metrics. Null rate means unavailable evidence or no matured recipients."}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
-  /api/admin/operation-batches/card:
+  /api/admin/operation-batches/{plan_id}/cover:
     post:
-      operationId: prepareExcelOperationCard
+      operationId: uploadExcelOperationCover
       tags: [AIAssistant]
       security: [{adminSession: [], csrfHeader: []}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [path], properties: {path: {type: string, maxLength: 1024}}}}}}
+      parameters:
+        - {name: plan_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+        - {name: expected_version, in: query, required: true, schema: {type: integer, minimum: 1}}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      requestBody: {required: true, content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}}}
       responses:
-        "200": {description: "Frozen content card, falling back to configured standard card", content: {application/json: {schema: {$ref: "#/components/schemas/ExcelOperationCard"}}}}
+        "200": {description: "Freeze one uploaded cover across all batch rows atomically; prior row approvals require review again. No default cover."}
+        "400": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/admin/operation-batches/covers/{digest}:
     get:
@@ -3900,7 +3906,7 @@ components:
         appid: {type: string, maxLength: 128}
         path: {type: string, maxLength: 1024}
         title: {type: string, maxLength: 512}
-        cover_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        cover_digest: {type: string, pattern: "^(sha256:[a-f0-9]{64})?$", description: "Empty until an operator uploads the batch cover; approval requires a valid digest"}
     AIAssistantContentBlock:
       type: object
       additionalProperties: false

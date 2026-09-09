@@ -10,10 +10,10 @@
 - 组件只监听 `127.0.0.1:8791`，使用至少 32 字符的 Bearer 密钥。浏览器只通过 V3 登录与 CSRF 保护后的接口访问，不能直接访问组件。
 - 五分钟周期任务注册在现有 River，恢复后重新扫描原计划，逐页核对官方回执、更新已保存的观察；没有新增发送重试队列。只有成功回执的 `send_time` 能开始观察窗口。
 
-## 部署准备（本次不部署）
+## 部署准备
 
 1. 正式发布包已包含本目录，程序跟随 `/opt/aicrm/current/components/excel-batches` 切换。安装器在已配置组件时创建 `/opt/aicrm-excel/venv`、安装依赖并创建无登录权限的 `aicrm-excel` 服务账号。
-2. 以 `config.example.json` 为模板填写真实 AppID、默认标题、PNG/JPEG 封面路径和只读数据源。数据库凭据文件仅服务账号可读。SQLite 文件、`-wal`、`-shm` 必须置于持久目录；备份使用 SQLite online backup API，不能只复制运行中的主文件。
+2. 以 `config.example.json` 为模板填写真实 AppID 和只读数据源。标题由 Excel 第五列“标题”提供，允许空标题导入，但该行发送失败。审核页上传统一 PNG/JPEG 封面（不超过 2 MB），未上传禁止批准；没有任何默认标题或默认封面。数据库凭据文件仅服务账号可读。SQLite 文件、`-wal`、`-shm` 必须置于持久目录；备份使用 SQLite online backup API，不能只复制运行中的主文件。
 3. 使用服务单元模板启动组件。`/etc/aicrm-excel/service.env` 配置 `EXCEL_BATCH_TOKEN`；V3 API 和 worker 使用相同的 `EXCEL_BATCH_TOKEN` 和 `EXCEL_BATCH_URL=http://127.0.0.1:8791`。默认二者均为空，即禁用组件。
 4. 通过唯一 V3 发布路径应用 0120/0121 迁移、安装 Go 程序和完整 web/dist 产物；组件源文件纳入同一个校验清单，启用后随主程序发布与回退。不要执行第二套 V3 构建上传路径。
 5. `AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID` 需为 UnionID 所属开放平台的 ID；现有 AI 助手 dispatch / WeCom / External Effects 授权设置维持原有门禁。启用导入不等于启用发送。
@@ -22,7 +22,7 @@
 
 示例 SQL 是按已观察到的 HXC 表/字段提供的适配模板，必须在目标只读数据库核对列名、内容路由、时间语义和权限后启用，不能将模板视为生产验证记录。
 
-- `card_sql` 参数为完整 path，返回唯一 `title` 和 `cover_url` 或 `cover_base64`。URL 只允许 HTTPS 且域名在 `cover_hosts` 中，不跟随重定向；按实际可信 CDN 配置。查不到、模糊匹配或封面读取失败时使用完整默认卡片。
+- 卡片标题完全来自 Excel，不查询内容标题；封面由审核员统一上传。更换封面在同一 PostgreSQL 事务中更新整批内容版本并取消原有行批准，排除的行仍保持排除。已提交批次禁止修改。
 - `user_sql` 参数 UnionID，返回唯一 `user_id`；多个结果不猜测用户。
 - `segment_sql` 参数 UnionID，返回唯一 `segment`，值为 A/B/C/D。必须复用原有分类投影/规则。当前检出缺少原规则源码，因此默认 null，并明确显示“未知”；不要临时自定活跃阈值。每次批准尝试有独立不可变快照，只有事务成功采用的快照会用于统计。
 - `lesson_opens_sql` / `case_opens_sql` 参数为用户 ID、内容 ID、窗口开始、窗口结束，返回 `opened_at`。查询结果必须覆盖指定范围，不能附加全库固定条数上限。默认识别 `pages/article/article?lesson_id=...`、`pages/case/case?case_id=...`、`pages/case-detail/case-detail?case_id=...`；其他实际路由在适配器补充前显示“暂不可统计”。禁止以任意小程序访问替代内容打开。

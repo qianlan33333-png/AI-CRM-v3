@@ -1,6 +1,7 @@
 package excel
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,6 +14,9 @@ import (
 	ai "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	outbound "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"strconv"
@@ -273,16 +277,6 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			plans = append(plans, p)
 		}
 		output = map[string]any{"items": plans}
-	case r.Method == "POST" && len(parts) == 1 && parts[0] == "card":
-		var data struct {
-			Path string `json:"path"`
-		}
-		err = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&data)
-		if err == nil {
-			var card ai.ExcelCard
-			err = b.Client.JSON(r.Context(), "/card", data, &card)
-			output = card
-		}
 	case r.Method == "GET" && len(parts) == 2 && parts[0] == "covers":
 		var raw []byte
 		err = b.Client.Call(r.Context(), "GET", "/covers/"+parts[1], "", nil, &raw)
@@ -317,6 +311,31 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			var report json.RawMessage
 			err = b.Client.Call(r.Context(), "GET", "/reports/"+fmtInt(n), "", nil, &report)
 			output = report
+		case r.Method == "POST" && len(parts) == 2 && parts[1] == "cover":
+			version, e := strconv.ParseInt(r.URL.Query().Get("expected_version"), 10, 64)
+			if e != nil || version < 1 {
+				err = app.ErrInvalid
+				break
+			}
+			raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 2<<20))
+			if e != nil {
+				err = app.ErrInvalid
+				break
+			}
+			imageInfo, _, imageErr := image.DecodeConfig(bytes.NewReader(raw))
+			if imageErr != nil || imageInfo.Width < 1 || imageInfo.Height < 1 || int64(imageInfo.Width)*int64(imageInfo.Height) > 40000000 {
+				err = &InputError{Message: "请上传有效的 PNG 或 JPEG 封面（不超过 2 MB）"}
+				break
+			}
+			var saved struct {
+				Digest effect.Digest `json:"cover_digest"`
+			}
+			err = b.Client.Call(r.Context(), "POST", "/covers", "", raw, &saved)
+			if err != nil {
+				break
+			}
+			plan, err = b.App.ApplyExcelCover(r.Context(), ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, id, version, r.Header.Get("Idempotency-Key"), saved.Digest)
+			output = map[string]any{"plan": plan, "cover_digest": saved.Digest}
 		case r.Method == "POST" && len(parts) == 2 && parts[1] == "approve":
 			var input struct {
 				Version int64 `json:"expected_version"`

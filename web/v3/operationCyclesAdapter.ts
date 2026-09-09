@@ -213,10 +213,11 @@ function mountExcelOperations(): void {
   const mount = () => {
     if (!stage.children.length || stage.querySelector('.excel-batches')) return;
     const parent = Array.from(stage.children).find(node => node instanceof HTMLElement && node.style.overflow === 'auto') as HTMLElement | undefined;
-    void mountExcelBatchPanel(parent || stage);
+    // Wait for the donor scroll region: an early loading placeholder is not a mount target.
+    if (parent) void mountExcelBatchPanel(parent);
   };
   // The frozen donor renders asynchronously and may replace its stage on refresh.
-  new MutationObserver(mount).observe(stage, { childList: true });
+  new MutationObserver(mount).observe(stage, { childList: true, subtree: true });
   mount();
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountExcelOperations, { once: true });

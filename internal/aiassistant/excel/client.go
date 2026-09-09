@@ -93,6 +93,12 @@ func (c *Client) JSON(ctx context.Context, path string, input, out any) error {
 }
 func (c *Client) LoadExcelCard(ctx context.Context, card ai.ExcelCard) (outbound.PrivateMessageAttachment, error) {
 	var raw []byte
+	if strings.TrimSpace(card.Title) == "" {
+		return outbound.PrivateMessageAttachment{}, outbound.PayloadPreparationError("title_missing")
+	}
+	if card.CoverDigest == "" {
+		return outbound.PrivateMessageAttachment{}, outbound.PayloadPreparationError("cover_missing")
+	}
 	if !card.Valid() {
 		return outbound.PrivateMessageAttachment{}, ErrUnavailable
 	}

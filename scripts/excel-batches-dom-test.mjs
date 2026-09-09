@@ -20,7 +20,7 @@ const card = {
   appid: "app",
   path: "pages/article/article?lesson_id=1",
   title: "案例标题",
-  cover_digest: "sha256:" + "a".repeat(64),
+  cover_digest: "",
 };
 let data = {
   plan: {
@@ -55,7 +55,12 @@ win.fetch = async (url, init = {}) => {
     body = { plan: data.plan };
   else if (url === "/api/admin/operation-batches/1")
     body = structuredClone(data);
-  else if (url.endsWith("/report")) body = { pending: true };
+  else if (url.includes("/cover?")) {
+    assert.ok(init.body instanceof win.File);
+    card.cover_digest = "sha256:" + "a".repeat(64);
+    data.plan.version++;
+    body = { plan: data.plan, cover_digest: card.cover_digest };
+  } else if (url.endsWith("/report")) body = { pending: true };
   else if (url.endsWith("/review")) {
     const input = JSON.parse(init.body);
     assert.equal(input.expected_version, data.rows[0].version);
@@ -83,6 +88,25 @@ const click = async (text) => {
   b.click();
   await new Promise((r) => setTimeout(r, 30));
 };
+assert.equal(
+  [...win.document.querySelectorAll("button")].find(
+    (b) => b.textContent === "批准并创建群发任务",
+  ).disabled,
+  true,
+);
+const coverInput = win.document.querySelector(
+  'input[aria-label="统一封面图片"]',
+);
+Object.defineProperty(coverInput, "files", {
+  value: [new win.File(["fixture"], "cover.png", { type: "image/png" })],
+});
+await click("上传统一封面");
+assert.equal(
+  [...win.document.querySelectorAll("button")].find(
+    (b) => b.textContent === "批准并创建群发任务",
+  ).disabled,
+  false,
+);
 await click("排除");
 assert.equal(excluded, true);
 assert.ok(win.document.body.textContent.includes("预计创建 0 个企微任务"));

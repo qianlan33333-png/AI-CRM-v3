@@ -1,8 +1,5 @@
 {
   "appid": "SET_HXC_MINIPROGRAM_APPID",
-  "default_title": "本周内容，点开卡片查看",
-  "default_cover": "/etc/aicrm-excel/default-cover.png",
-  "cover_hosts": [],
   "source": {
     "mysql": {
       "host": "SET_READONLY_DB_HOST",
@@ -11,7 +8,6 @@
       "database": "SET_HXC_DATABASE",
       "charset": "utf8mb4"
     },
-    "card_sql": "SELECT title, cover AS cover_url FROM new_version_push_cards WHERE target_path=%s",
     "user_sql": "SELECT id AS user_id FROM new_version_users WHERE unionid=%s",
     "segment_sql": null,
     "lesson_opens_sql": "SELECT opened_at FROM new_version_card_open_log WHERE user_id=%s AND lesson_id=%s AND opened_at>=%s AND opened_at<=%s ORDER BY opened_at,id",

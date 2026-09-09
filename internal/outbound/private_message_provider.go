@@ -60,7 +60,7 @@ func (p *PrivateMessageProvider) Execute(ctx context.Context, envelope effectpor
 	}
 	payload, err := p.payloads.LoadPrivateMessagePayload(ctx, intent.PayloadReference, intent.PayloadDigest)
 	if err != nil {
-		p.record(ctx, intent.PayloadReference, target, "", "payload_unavailable")
+		p.record(ctx, intent.PayloadReference, target, "", failureCode(err, "payload_unavailable"))
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "payload-unavailable")}, nil
 	}
 	receipt, attempted, err := p.sender.SendPrivateMessage(ctx, target, payload)

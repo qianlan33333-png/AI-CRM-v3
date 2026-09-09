@@ -68,7 +68,7 @@ func TestPostgreSQLExcelImportReviewDeferredSendAndReceiptJourney(t *testing.T) 
 	service.ExcelSnapshot = func(context.Context, ai.PlanID, int64) (string, error) { return "frozen-segments-at-approval", nil }
 	command := ai.CreatePlanCommand{Actor: ai.Actor{Kind: ai.ActorAdmin, ID: 9}, IdempotencyKey: "excel-fixture-import", Name: "Excel fixture", SourceKind: "excel_batch", SourceDigest: effect.Hash("excel-file"), OccurredAt: time.Now().UTC()}
 	for _, u := range []string{"known-union", "unknown-union", "excluded-union"} {
-		command.Recipients = append(command.Recipients, ai.RecipientCandidate{DeferredTarget: &ai.DeferredTarget{UnionID: u, Scope: "wechat-open-platform:fixture", SenderUserID: "sender-from-file"}, Content: []ai.ContentBlock{{Kind: ai.ContentText, Text: "reviewed text"}, {Kind: ai.ContentMiniProgram, ExcelCard: &ai.ExcelCard{AppID: "fixture-app", Path: "pages/article/article?lesson_id=1", Title: "案例", CoverDigest: effect.Hash("cover")}}}})
+		command.Recipients = append(command.Recipients, ai.RecipientCandidate{DeferredTarget: &ai.DeferredTarget{UnionID: u, Scope: "wechat-open-platform:fixture", SenderUserID: "sender-from-file"}, Content: []ai.ContentBlock{{Kind: ai.ContentText, Text: "reviewed text"}, {Kind: ai.ContentMiniProgram, ExcelCard: &ai.ExcelCard{AppID: "fixture-app", Path: "pages/article/article?lesson_id=1", Title: "案例", CoverDigest: ""}}}})
 	}
 	created, err := service.CreateExcelPlan(ctx, "fixture-import", command)
 	if err != nil {
@@ -93,6 +93,24 @@ func TestPostgreSQLExcelImportReviewDeferredSendAndReceiptJourney(t *testing.T) 
 		}
 	}
 	who := ai.Actor{Kind: ai.ActorAdmin, ID: 9}
+	if _, err = service.PreviewApproval(ctx, ai.PreviewApprovalCommand{Actor: who, PlanID: created.Plan.ID, ExpectedVersion: created.Plan.Version}); !errors.Is(err, aiapp.ErrInvalid) {
+		t.Fatalf("coverless approval: %v", err)
+	}
+	withCover, err := service.ApplyExcelCover(ctx, who, created.Plan.ID, created.Plan.Version, "batch-cover-upload", effect.Hash("uploaded-cover"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayCover, err := service.ApplyExcelCover(ctx, who, created.Plan.ID, created.Plan.Version, "batch-cover-upload", effect.Hash("uploaded-cover"))
+	if err != nil || replayCover.Version != withCover.Version {
+		t.Fatalf("cover replay: %v", err)
+	}
+	if _, err = service.ApplyExcelCover(ctx, who, created.Plan.ID, created.Plan.Version, "stale-cover-upload", effect.Hash("different-cover")); !errors.Is(err, aiapp.ErrConflict) {
+		t.Fatalf("stale cover mutation: %v", err)
+	}
+	page, err = service.ListRecipients(ctx, ai.RecipientPageQuery{PlanID: created.Plan.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, original, err := service.GetRecipient(ctx, created.Plan.ID, page.Items[0].ID)
 	if err != nil {
 		t.Fatal(err)

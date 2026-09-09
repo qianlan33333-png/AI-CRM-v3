@@ -26,13 +26,13 @@ class Tests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name); (self.root/'cover.png').write_bytes(PNG)
         self.source = FakeSource()
-        self.config = {'appid':'fixture-app','default_title':'完整内容','default_cover':str(self.root/'cover.png')}
+        self.config = {'appid':'fixture-app'}
         self.service = Service(self.root/'data.sqlite', self.config, self.source)
-        self.raw = workbook([['00123','宝子，本周的案例','pages/article/article?lesson_id=12','staff-1']])
+        self.raw = workbook([['00123','宝子，本周的案例','pages/article/article?lesson_id=12','staff-1','Excel 标题']])
     def test_exact_text_and_replay_across_restart(self):
         first = self.service.import_file(self.raw)
         self.assertEqual(first['rows'][0]['unionid'], '00123')
-        self.assertEqual(first['rows'][0]['card']['title'],'完整内容')
+        self.assertEqual(first['rows'][0]['card']['title'],'Excel 标题')
         self.service.link(first['batch_key'],81)
         restarted = Service(self.root/'data.sqlite',self.config,self.source)
         replay = restarted.import_file(self.raw)
@@ -41,15 +41,18 @@ class Tests(unittest.TestCase):
         self.assertNotEqual(first['batch_key'],new['batch_key'])
         self.assertEqual(new['batch_key'],restarted.import_file(self.raw,True,'explicit-new-batch')['batch_key'])
     def test_reject_numeric_formula_duplicate_and_wrong_headers(self):
-        for rows in [[[123,'x','pages/a/a','s']], [['u','=NOW()','pages/a/a','s']], [['u','x','pages/a/a','s'],['u','y','pages/b/b','s']]]:
+        for rows in [[[123,'x','pages/a/a','s','title']], [['u','=NOW()','pages/a/a','s','title']], [['u','x','pages/a/a','s','title'],['u','y','pages/b/b','s','title']]]:
             with self.subTest(rows=rows),self.assertRaises(Invalid):parse_excel(workbook(rows))
         with self.assertRaises(Invalid):parse_excel(workbook([],['user','copy','path','sender']))
-    def test_matched_card_and_bad_cover_fallback(self):
-        path='pages/article/article?lesson_id=12'
-        self.source.cards[path]={'title':'案例标题','cover_base64':base64.b64encode(PNG).decode()}
-        self.assertEqual(self.service.card(path)['title'],'案例标题')
-        self.source.cards[path]['cover_base64']='broken'
-        self.assertEqual(self.service.card(path)['title'],'完整内容')
+    def test_missing_title_preserved_and_explicit_cover_only(self):
+        raw=workbook([['u','text','pages/a/a','s',None]])
+        row=self.service.import_file(raw)['rows'][0]
+        self.assertEqual(row['card']['title'],'')
+        self.assertEqual(row['card']['cover_digest'],'')
+        key=self.service.cover(PNG)
+        self.assertTrue(key.startswith('sha256:'))
+        with self.assertRaises(Invalid): self.service.cover(b'not an image')
+        self.assertEqual(Service(self.root/'data.sqlite',self.config).import_file(raw)['rows'][0]['card']['cover_digest'],'')
     def test_individual_windows_dedup_late_events_and_missing_source(self):
         start=datetime(2026,9,8,tzinfo=timezone.utc)
         rows=[{'id':1,'unionid':'u1','path':'pages/article/article?lesson_id=12','state':'delivery_proven','sent_at':start.isoformat()},
@@ -98,7 +101,9 @@ class Tests(unittest.TestCase):
             replay = json.loads(call('/imports', self.raw))
             self.assertTrue(replay['replayed'])
             self.assertEqual(replay['plan_id'], 123)
-            self.assertEqual(call('/covers/' + first['rows'][0]['card']['cover_digest']), PNG)
+            self.assertEqual(first['rows'][0]['card']['cover_digest'], '')
+            cover=json.loads(call('/covers', PNG))
+            self.assertEqual(call('/covers/' + cover['cover_digest']), PNG)
         finally:
             server.shutdown()
             server.server_close()

@@ -16,6 +16,8 @@ const labels: Record<string, string> = {
 };
 function failure(value: string): string {
   const messages: Record<string, string> = {
+    title_missing: "标题为空，发送失败；请在审核时填写标题",
+    cover_missing: "未上传统一封面，禁止发送",
     unionid_not_unique: "无法唯一匹配接收用户",
     unionid_unverified: "接收用户身份尚未核实",
     wecom_identity_unavailable: "未找到对应企微客户",
@@ -51,7 +53,7 @@ async function call(
   path: string,
   method = "GET",
   body?: any,
-  key = crypto.randomUUID(),
+  key: string = crypto.randomUUID(),
 ): Promise<Obj> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (method !== "GET") {
@@ -77,7 +79,7 @@ async function call(
           ? "内容已变化，请刷新后重新审核"
           : response.status === 503
             ? "批次服务未启用或暂时不可用"
-            : payload.message || "请检查四列表头、文本格式和是否有重复用户",
+            : payload.message || "请检查五列表头、文本格式和是否有重复用户",
     );
   }
   return payload;
@@ -232,7 +234,11 @@ async function edit(
 ) {
   const dialog = el("dialog"),
     text = el("textarea"),
-    path = el("input");
+    path = el("input"),
+    title = el("input");
+  title.value =
+    row.content.find((v: Obj) => v.excel_card)?.excel_card.title || "";
+  title.setAttribute("aria-label", "标题");
   text.value = row.text;
   path.value = row.path;
   path.style.width = "100%";
@@ -240,6 +246,8 @@ async function edit(
     el("h3", "修改发送内容"),
     el("label", "话术"),
     text,
+    el("label", "标题（为空将发送失败）"),
+    title,
     el("label", "小程序 path"),
     path,
   );
@@ -248,7 +256,11 @@ async function edit(
   dialog.append(note);
   dialog.append(
     button("保存并重新审核", async () => {
-      const card = await call(`${base}/card`, "POST", { path: path.value });
+      const card = {
+        ...row.content.find((v: Obj) => v.excel_card).excel_card,
+        path: path.value.trim(),
+        title: title.value.trim(),
+      };
       await call(
         `/api/admin/ai-assistant/plans/${id}/recipients/${row.id}/content`,
         "PATCH",
@@ -288,10 +300,19 @@ async function detail(parent: HTMLElement, id: number, readOnly = false) {
     const pending = rows.filter(
       (r) => r.review_state !== "rejected" && r.review_state !== "ineligible",
     );
+    const cardOf = (r: Obj): Obj =>
+      r.content.find((v: Obj) => v.excel_card)?.excel_card || {};
+    const readyCount = pending.filter((r) =>
+      String(cardOf(r).title || "").trim(),
+    ).length;
+    const missingCover =
+      pending.length === 0 ||
+      pending.some((r) => !cardOf(r).cover_digest) ||
+      new Set(pending.map((r) => cardOf(r).cover_digest)).size > 1;
     box.append(
       el(
         "p",
-        `共 ${rows.length} 人；预计创建 ${pending.length} 个企微任务。网页批准一次，员工随后在企微端执行。`,
+        `共 ${rows.length} 人；预计创建 ${readyCount} 个企微任务。缺少标题 ${pending.length - readyCount} 行将发送失败。网页批准一次，员工随后在企微端执行。`,
       ),
     );
     const counts: Record<string, number> = {};
@@ -316,18 +337,44 @@ async function detail(parent: HTMLElement, id: number, readOnly = false) {
     }
     actions.className = "excel-actions";
     if (reviewable) {
+      const coverInput = el("input");
+      coverInput.type = "file";
+      coverInput.accept = "image/png,image/jpeg";
+      coverInput.setAttribute("aria-label", "统一封面图片");
+      const coverKey = crypto.randomUUID();
       actions.append(
-        button("批准并创建群发任务", async () => {
+        coverInput,
+        button("上传统一封面", async () => {
+          if (!coverInput.files?.[0]) {
+            tell(box, "请选择 PNG 或 JPEG 封面，最大 2 MB");
+            return;
+          }
           await call(
-            `${base}/${id}/approve`,
+            `${base}/${id}/cover?expected_version=${payload.plan.version}`,
             "POST",
-            { expected_version: payload.plan.version },
-            `excel-approve-${id}-${payload.plan.version}`,
+            coverInput.files[0],
+            coverKey,
           );
           await reload();
-          tell(box, "已提交创建任务，请员工在企微端执行。");
+          tell(box, "统一封面已保存；请重新审核后批准发送。");
         }),
       );
+      const approve = button("批准并创建群发任务", async () => {
+        await call(
+          `${base}/${id}/approve`,
+          "POST",
+          { expected_version: payload.plan.version },
+          `excel-approve-${id}-${payload.plan.version}`,
+        );
+        await reload();
+        tell(box, "已提交创建任务，请员工在企微端执行。");
+      });
+      approve.disabled = missingCover;
+      actions.append(approve);
+      if (missingCover)
+        box.append(
+          el("p", "未上传统一封面或没有可批准的行，禁止发送。请先上传封面。"),
+        );
     }
     actions.append(button("刷新", reload));
     const back = el("a", "返回运营闭环");
@@ -345,9 +392,15 @@ async function detail(parent: HTMLElement, id: number, readOnly = false) {
           const cardView = el("div");
           if (card) {
             const image = el("img");
-            image.src = `${base}/covers/${encodeURIComponent(card.cover_digest)}`;
+            if (card.cover_digest)
+              image.src = `${base}/covers/${encodeURIComponent(card.cover_digest)}`;
             image.alt = "卡片封面";
-            cardView.append(image, el("p", card.title), el("small", card.path));
+            if (card.cover_digest) cardView.append(image);
+            else cardView.append(el("small", "未上传统一封面"));
+            cardView.append(
+              el("p", card.title || "标题为空：发送失败"),
+              el("small", card.path),
+            );
           }
           const controls = el("div");
           if (reviewable) {
@@ -406,7 +459,7 @@ export async function mountExcelBatchPanel(parent: HTMLElement): Promise<void> {
     el("h2", "Excel 群发批次"),
     el(
       "p",
-      "上传四列文本：unionid、话术、小程序 path、发送人 userid。上传后进入 AI 助手审核。",
+      "上传五列文本，依次为：unionid、话术、小程序 path、发送人 userid、标题。标题为空的行发送失败。上传后进入 AI 助手审核，并上传批次统一封面；没有封面禁止发送。",
     ),
   );
   const file = el("input");

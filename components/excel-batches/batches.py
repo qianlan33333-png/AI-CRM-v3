@@ -1,6 +1,5 @@
 """Excel preparation and observation service. Never sends or approves messages."""
 import argparse
-import base64
 import hashlib
 import hmac
 import io
@@ -11,14 +10,13 @@ import sqlite3
 import time
 import threading
 import urllib.parse
-import urllib.request
 import zipfile
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from contextlib import contextmanager
 
-HEADERS = ['unionid', '话术', '小程序 path', '发送人 userid']
+HEADERS = ['unionid', '话术', '小程序 path', '发送人 userid', '标题']
 WINDOWS = (12, 24, 48)
 MAX_BYTES = 8 * 1024 * 1024
 
@@ -66,23 +64,24 @@ def parse_excel(raw):
         for number, cells in enumerate(rows, 2):
             if not any(c.value is not None for c in cells):
                 continue
-            if len(cells) != 4 or any(c.data_type == 'f' or not isinstance(c.value, str) for c in cells):
-                raise Invalid(f'第 {number} 行：四列必须是文本，不能使用公式或数字格式的 ID')
-            unionid, text, path, sender = [c.value for c in cells]
+            if len(cells) != 5 or any(c.data_type == 'f' or (not isinstance(c.value, str) and not (i == 4 and c.value is None)) for i, c in enumerate(cells)):
+                raise Invalid(f'第 {number} 行：五列必须是文本，不能使用公式或数字格式的 ID')
+            unionid, text, path, sender, title = [c.value for c in cells]
+            title = (title or "").strip()
             unionid, path, sender = unionid.strip(), path.strip(), sender.strip()
             if not all((unionid, text.strip(), path, sender)) or any(re.search(r'[\x00-\x20]', x) for x in (unionid, path, sender)):
                 raise Invalid(f'第 {number} 行：存在空值或无效标识')
-            if len(unionid.encode()) > 256 or len(sender.encode()) > 256 or len(path.encode()) > 1024 or len(text.encode()) > 8000:
+            if len(unionid.encode()) > 256 or len(sender.encode()) > 256 or len(path.encode()) > 1024 or len(text.encode()) > 8000 or len(title.encode()) > 512:
                 raise Invalid(f'第 {number} 行：内容超长')
             if '://' in path or path.startswith('//') or not path.startswith('pages/'):
                 raise Invalid(f'第 {number} 行：需要完整的小程序 pages/ 路径')
             if unionid in seen:
                 raise Invalid(f'第 {number} 行：同一批次的 UnionID 重复，请先合并为一行')
-            text_bytes += sum(len(v.encode()) for v in (unionid, text, path, sender))
+            text_bytes += sum(len(v.encode()) for v in (unionid, text, path, sender, title))
             if text_bytes > 8 * 1024 * 1024:
-                raise Invalid('单批次四列文本总量不能超过 8 MB')
+                raise Invalid('单批次五列文本总量不能超过 8 MB')
             seen.add(unionid)
-            result.append({'unionid': unionid, 'text': text, 'path': path, 'sender_userid': sender})
+            result.append({'unionid': unionid, 'text': text, 'path': path, 'sender_userid': sender, 'title': title})
             if len(result) > 5000:
                 raise Invalid('每批最多 5000 行')
         if not result:
@@ -148,15 +147,6 @@ class Source:
             db.rollback()
             if not batch:
                 db.close()
-
-    def card(self, path):
-        try:
-            rows = self.query('card_sql', (path,))
-            if len(rows) == 1:
-                return rows[0]
-        except Exception:
-            pass
-        return None
 
     def segment(self, unionid):
         try:
@@ -228,31 +218,6 @@ class Service:
             db.execute('INSERT OR IGNORE INTO covers VALUES(?,?,?)', (key, raw, mime))
         return key
 
-    def card(self, path):
-        matched = self.source.card(path)
-        title, raw = self.config['default_title'], Path(self.config['default_cover']).read_bytes()
-        if matched and matched.get('cover_url') and not matched.get('cover_base64'):
-            try:
-                url = urllib.parse.urlsplit(matched['cover_url'])
-                if url.scheme != 'https' or url.hostname not in self.config.get('cover_hosts', []) or url.username or url.password:
-                    raise Invalid('untrusted_cover_host')
-                class NoRedirect(urllib.request.HTTPRedirectHandler):
-                    def redirect_request(self, *args, **kwargs): return None
-                with urllib.request.build_opener(NoRedirect).open(matched['cover_url'], timeout=10) as response:
-                    matched['cover_base64'] = base64.b64encode(response.read(2 * 1024 * 1024 + 1)).decode()
-            except Exception:
-                matched = None
-        if matched and matched.get('title') and matched.get('cover_base64'):
-            try:
-                candidate = base64.b64decode(matched['cover_base64'], validate=True)
-                key = self.cover(candidate)
-                title, raw = matched['title'], candidate
-            except (ValueError, Invalid):
-                pass
-        if not title or len(title.encode()) > 512:
-            raise Invalid('卡片标题为空或过长')
-        return {'appid': self.config['appid'], 'path': path, 'title': title, 'cover_digest': self.cover(raw)}
-
     def imported(self, row, replayed):
         return {'batch_key': row['batch_key'], 'file_digest': row['file_digest'], 'created_at': row['created_at'],
                 'plan_id': row['plan_id'], 'rows': json.loads(row['rows_json']), 'replayed': replayed}
@@ -270,11 +235,9 @@ class Service:
                     raise Invalid('同一请求编号不能更换文件')
                 return self.imported(prior, True)
         rows = parse_excel(raw)
-        cards = {}
         for row in rows:
-            if row['path'] not in cards:
-                cards[row['path']] = self.card(row['path'])
-            row['card'] = cards[row['path']]
+            row['card'] = {'appid': self.config['appid'], 'path': row['path'],
+                           'title': row['title'], 'cover_digest': ''}
         batch_key = hashlib.sha256((file_digest + (request_key if new_batch else '')).encode()).hexdigest()
         with self.db() as db:
             db.execute('INSERT OR IGNORE INTO imports(batch_key,file_digest,created_at,rows_json,request_key) VALUES(?,?,?,?,?)',
@@ -395,6 +358,8 @@ class Handler(BaseHTTPRequestHandler):
             if path.path == '/imports':
                 query = urllib.parse.parse_qs(path.query)
                 return self.reply(200, service.import_file(body, query.get('new') == ['1'], self.headers.get('Idempotency-Key', '')))
+            if path.path == '/covers':
+                return self.reply(200, {'cover_digest': service.cover(body)})
             data = json.loads(body)
             if path.path == '/link':
                 return self.reply(200, service.link(data['batch_key'], int(data['plan_id'])))
@@ -402,8 +367,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, service.snapshot(data['snapshot_key'], data['rows']))
             if path.path == '/observations':
                 return self.reply(200, service.observe(int(data['plan_id']), data['snapshot_key'], data['rows']))
-            if path.path == '/card':
-                return self.reply(200, service.card(data['path']))
             return self.reply(404, {'error': 'not_found'})
         except Invalid as error:
             return self.reply(400, {'error': 'invalid_input', 'message': str(error)})
@@ -430,8 +393,8 @@ def main():
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
     token = os.environ.get('EXCEL_BATCH_TOKEN', '')
-    if len(token) < 32 or not config.get('appid') or not config.get('default_title'):
-        raise SystemExit('Configure token, appid and default card before starting')
+    if len(token) < 32 or not config.get('appid'):
+        raise SystemExit('Configure token and appid before starting')
     service = Service(args.database, config)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     server.service, server.token = service, token

@@ -538,7 +538,7 @@ func (s *Service) UpdateContent(ctx context.Context, command aiassistantport.Upd
 			return readErr
 		}
 		if current.DeferredTarget != nil {
-			if len(command.Blocks) != 2 || command.Blocks[0].Kind != aiassistantport.ContentText || command.Blocks[1].ExcelCard == nil || len(priorContent.Blocks) != 2 || priorContent.Blocks[1].ExcelCard == nil || command.Blocks[1].ExcelCard.AppID != priorContent.Blocks[1].ExcelCard.AppID {
+			if len(command.Blocks) != 2 || command.Blocks[0].Kind != aiassistantport.ContentText || command.Blocks[1].ExcelCard == nil || len(priorContent.Blocks) != 2 || priorContent.Blocks[1].ExcelCard == nil || command.Blocks[1].ExcelCard.AppID != priorContent.Blocks[1].ExcelCard.AppID || command.Blocks[1].ExcelCard.CoverDigest != priorContent.Blocks[1].ExcelCard.CoverDigest {
 				return ErrInvalid
 			}
 		} else {
@@ -873,6 +873,7 @@ func (s *Service) ReconcileEffect(ctx context.Context, command aiassistantport.R
 }
 
 func (s *Service) validateApprovalFacts(ctx context.Context, recipients []aiassistantport.Recipient, contents []aiassistantport.ContentVersion) error {
+	var excelCover effectport.Digest
 	if len(recipients) != len(contents) {
 		return ErrConflict
 	}
@@ -887,6 +888,15 @@ func (s *Service) validateApprovalFacts(ctx context.Context, recipients []aiassi
 			for _, b := range contents[i].Blocks {
 				if !b.Valid() {
 					return ErrInvalid
+				}
+				if b.ExcelCard != nil {
+					if !effectport.ValidDigest(b.ExcelCard.CoverDigest) {
+						return ErrInvalid
+					}
+					if excelCover != "" && excelCover != b.ExcelCard.CoverDigest {
+						return ErrInvalid
+					}
+					excelCover = b.ExcelCard.CoverDigest
 				}
 			}
 			continue

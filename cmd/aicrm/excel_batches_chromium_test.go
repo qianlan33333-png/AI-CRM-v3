@@ -34,9 +34,9 @@ func TestPostgreSQLExcelBatchesChromiumJourney(t *testing.T) {
 	defer cleanup()
 	token := strings.Repeat("x", 32)
 	now := time.Now().UTC()
-	cover := []byte{137, 80, 78, 71, 13, 10, 26, 10}
+	cover, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
 	coverHash := effect.Hash("fixture-cover")
-	card := map[string]any{"appid": "fixture-app", "path": "pages/article/article?lesson_id=1", "title": "标准案例", "cover_digest": coverHash}
+	card := map[string]any{"appid": "fixture-app", "path": "pages/article/article?lesson_id=1", "title": "标准案例", "cover_digest": ""}
 	component := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+token {
 			w.WriteHeader(401)
@@ -46,8 +46,8 @@ func TestPostgreSQLExcelBatchesChromiumJourney(t *testing.T) {
 		switch {
 		case r.URL.Path == "/imports":
 			value = map[string]any{"batch_key": "browser-fixture", "file_digest": effect.Hash("file"), "created_at": now, "rows": []any{map[string]any{"unionid": "browser-user-one", "text": "第一条待审核话术", "sender_userid": "staff-one", "card": card}, map[string]any{"unionid": "browser-user-two", "text": "第二条待审核话术", "sender_userid": "staff-two", "card": card}}}
-		case r.URL.Path == "/card":
-			value = card
+		case r.URL.Path == "/covers":
+			value = map[string]any{"cover_digest": coverHash}
 		case strings.HasPrefix(r.URL.Path, "/covers/"):
 			w.Header().Set("Content-Type", "image/png")
 			w.Write(cover)

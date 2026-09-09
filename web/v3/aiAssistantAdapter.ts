@@ -1,4 +1,4 @@
-import { mountExcelBatchPanel, mountExcelDetailIfNeeded } from './excelBatches';
+import { mountExcelDetailIfNeeded } from './excelBatches';
 import {
   approveAIAssistantPlan,
   getAIAssistantPlan,
@@ -183,5 +183,4 @@ async function bootDonor(): Promise<void> {
 void (async()=>{
  try {if(await mountExcelDetailIfNeeded())return;} catch(error) {if(root){root.textContent='Excel 批次读取失败，请刷新重试';}return;}
  await bootDonor();
- if(root && /\/plans\/?$/.test(location.pathname)) await mountExcelBatchPanel(root);
 })();

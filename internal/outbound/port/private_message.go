@@ -126,3 +126,15 @@ func (e TargetResolutionError) FailureCode() string {
 	}
 	return "target_unavailable"
 }
+
+// PayloadPreparationError exposes a closed category without message content.
+type PayloadPreparationError string
+
+func (e PayloadPreparationError) Error() string { return "message content unavailable" }
+func (e PayloadPreparationError) FailureCode() string {
+	switch string(e) {
+	case "title_missing", "cover_missing":
+		return string(e)
+	}
+	return "payload_unavailable"
+}
