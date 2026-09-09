@@ -352,7 +352,27 @@
             );
             return;
           }
-          notice("原企微任务已重新受理，等待执行");
+          const result = await response.json();
+          const states = {
+            accepted: "原企微任务等待执行",
+            queued: "原企微任务等待执行",
+            attempted: "原企微任务正在执行，结果待确认",
+            executed: "原企微任务已完成",
+            outcome_unknown: "原企微任务结果待核对，请勿重复创建",
+            final_failed: "原企微任务尚未完成，请查看当前失败状态",
+            retryable_failed: "原企微任务尚未完成，请查看当前失败状态",
+            cancelled: "原企微任务已取消",
+            reconciled: "原企微任务已完成对账，请查看核对结果",
+          };
+          notice(
+            states[result.effect_state] || "原企微任务状态待确认",
+            [
+              "outcome_unknown",
+              "final_failed",
+              "retryable_failed",
+              "cancelled",
+            ].includes(result.effect_state),
+          );
           scheduleArchiveRefresh(100);
         } catch (_) {
           notice("请求结果待确认，再次点击将查询同一次受理", true);

@@ -27,13 +27,17 @@ const { window } = dom;
 const copies = [];
 const retries = [];
 let generation = 1;
+let retryState = "queued";
 Object.defineProperty(window.navigator, "clipboard", {
   value: { writeText: async (text) => copies.push(text) },
 });
 window.fetch = async (url, options) => {
   if (String(url).endsWith("/retry")) {
     retries.push(options);
-    return { ok: true, json: async () => ({ ok: true }) };
+    return {
+      ok: true,
+      json: async () => ({ ok: true, effect_state: retryState }),
+    };
   }
   if (String(url).endsWith("/sync-status"))
     return {
@@ -149,5 +153,22 @@ assert.equal(
   retries[3].headers["Idempotency-Key"],
   retries[0].headers["Idempotency-Key"],
 );
+for (const [state, label] of Object.entries({
+  executed: "原企微任务已完成",
+  outcome_unknown: "原企微任务结果待核对，请勿重复创建",
+  final_failed: "原企微任务尚未完成，请查看当前失败状态",
+})) {
+  retryState = state;
+  window.document.querySelector("[data-tag-mutation-recovery] button").click();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const notices = [
+    ...window.document.querySelectorAll('[role="status"],[role="alert"]'),
+  ];
+  assert.equal(
+    notices.at(-1).textContent,
+    label,
+    "replayed terminal state must not claim a new queued write",
+  );
+}
 dom.window.close();
 console.log("tag Host Provider ID / explicit safe recovery: PASS");
