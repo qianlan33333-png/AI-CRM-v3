@@ -26,6 +26,7 @@ const created = { id: 101, product_code: 'recovery-product', name: '恢复商品
 const calls = [];
 let savedVersion = 1;
 let externalAttempts = 0;
+let failEditPush = false;
 const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', () => undefined);
 const navigationErrors = [];
@@ -52,6 +53,7 @@ const dom = new JSDOM(page, {
       if (url.pathname === '/api/v1/products' && method === 'POST') return reply(created);
       if (url.pathname === '/api/admin/wechat-pay/products/101/external-push' && (method === 'POST' || method === 'PUT')) {
         externalAttempts += 1;
+        if (failEditPush) { failEditPush = false; return reply({ code: 'dependency_unavailable' }, 503); }
         if (externalAttempts === 1) return reply({ code: 'dependency_unavailable' }, 503);
         return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'recovery.push', updated_at: '2026-09-08T00:01:00Z' });
       }
@@ -141,6 +143,15 @@ for (const expected of [2, 3]) {
   await wait(80);
   assert.match(dom.window.document.querySelector('#product-v3-toast').textContent, /已保存当前维度/);
 }
+failEditPush = true;
+const editSave = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '保存当前维度');
+editSave.click();
+await waitFor(() => savedVersion === 4 && dom.window.document.querySelector('#fb-toast')?.textContent.includes('可直接重试'), 'edited subject partial success must be recoverable');
+const editPushKey = calls.filter(call => call.path.endsWith('/external-push') && ['POST', 'PUT'].includes(call.method)).at(-1).key;
+editSave.click();
+await waitFor(() => dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度'), 'edit configuration recovery must finish');
+assert.equal(savedVersion, 4, 'recovery may not repeat the already committed subject PUT');
+assert.equal(calls.filter(call => call.path.endsWith('/external-push') && ['POST', 'PUT'].includes(call.method)).at(-1).key, editPushKey, 'edit recovery must retain original external configuration key');
 assert.equal(navigationErrors.length, 0, 'successful saves must not navigate to the list');
 [...dom.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '返回商品管理').click();
 await wait(30);

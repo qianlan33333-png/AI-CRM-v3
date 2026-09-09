@@ -240,7 +240,10 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (url.origin === location.origin && method === 'PUT' && /^\/api\/v1\/products\/[1-9][0-9]*$/.test(url.pathname) && response.ok) {
     const saved = object(await response.clone().json());
     const id = Number(url.pathname.split('/').pop());
-    if (Number(saved.id) === id && Number.isSafeInteger(Number(saved.version))) openedProductPayloads.set(id, saved);
+    if (Number(saved.id) === id && Number.isSafeInteger(Number(saved.version))) {
+      openedProductPayloads.set(id, saved);
+      if (context?.productID === id) { context.createdProductID = id; context.createdProduct = saved; }
+    }
   }
   if (context && method === 'POST' && url.pathname === '/api/v1/products' && response.ok) {
     try {
@@ -292,10 +295,10 @@ api.saveProduct = (input) => {
       if (pendingExternalPush?.productID === input.id) pendingExternalPush = undefined;
       return saved;
     } catch (error) {
-      // Creation and the external-push configuration are separate effects.
-      // Keep the returned local ID in the editor URL only after the subject
-      // POST succeeded, allowing a single normal Save retry to finish config.
-      if (!input.id && context.createdProductID && context.createdProduct && context.externalPushAttempted) {
+      // Subject creation/update and external-push configuration are separate writes.
+      // Recover the confirmed subject rather than submitting it again when
+      // the later configuration write fails. Keep the original push key.
+      if (context.createdProductID && context.createdProduct && context.externalPushAttempted) {
         const retry = new URL(location.href);
         retry.searchParams.set('id', String(context.createdProductID));
         history.replaceState(null, '', retry.pathname + retry.search + retry.hash);
