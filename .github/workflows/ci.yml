@@ -134,6 +134,11 @@ jobs:
           donors: 'true'
       - name: Prepare browser assets required by backend fixtures
         run: bash scripts/run-donor-view-consumers.sh stage
+      - name: Verify independent Excel component
+        run: |
+          python3 -m venv "$RUNNER_TEMP/excel-venv"
+          "$RUNNER_TEMP/excel-venv/bin/pip" install -r components/excel-batches/requirements.txt
+          "$RUNNER_TEMP/excel-venv/bin/python" -m unittest discover -s components/excel-batches -v
       - name: Vet all Go packages
         run: scripts/run-go-with-donor-views.sh go vet ./...
       - name: Test every Go package once with PostgreSQL and race detection
@@ -157,6 +162,7 @@ jobs:
           donors: 'true'
       - name: Verify frontend, frozen contracts and final package layout
         run: |
+          node scripts/excel-batches-dom-test.mjs
           node scripts/validate-openapi.mjs
           node scripts/verify-donor-sources.mjs
           node --test scripts/donor-source-views.test.mjs

@@ -206,10 +206,18 @@ api.loadDb = (context?: AdminReadContext): Promise<AdminDb> => {
 // @ts-expect-error The byte-frozen donor entry is a side-effect-only script.
 void import('../src/admin/main');
 
-function mountExcelOperations(){
- if(location.pathname==='/admin/operation-cycles'||location.pathname==='/admin/operation-cycles/'){
-  const parent=document.querySelector<HTMLElement>('main')||document.querySelector<HTMLElement>('.admin-content');
-  if(parent&&!parent.querySelector('.excel-batches')) void mountExcelBatchPanel(parent);
- }
+function mountExcelOperations(): void {
+  if (!['/admin/operation-cycles', '/admin/operation-cycles/', '/admin/cycles.html'].includes(location.pathname)) return;
+  const stage = document.querySelector<HTMLElement>('main#stage');
+  if (!stage) return;
+  const mount = () => {
+    if (!stage.children.length || stage.querySelector('.excel-batches')) return;
+    const parent = Array.from(stage.children).find(node => node instanceof HTMLElement && node.style.overflow === 'auto') as HTMLElement | undefined;
+    void mountExcelBatchPanel(parent || stage);
+  };
+  // The frozen donor renders asynchronously and may replace its stage on refresh.
+  new MutationObserver(mount).observe(stage, { childList: true });
+  mount();
 }
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mountExcelOperations);else mountExcelOperations();
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountExcelOperations, { once: true });
+else mountExcelOperations();

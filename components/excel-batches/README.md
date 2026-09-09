@@ -12,10 +12,10 @@
 
 ## 部署准备（本次不部署）
 
-1. 将本目录复制到同机独立目录，例如 `/opt/aicrm-excel`，创建虚拟环境并安装 `requirements.txt`。创建无登录权限的 `aicrm-excel` 服务账号。
+1. 正式发布包已包含本目录，程序跟随 `/opt/aicrm/current/components/excel-batches` 切换。安装器在已配置组件时创建 `/opt/aicrm-excel/venv`、安装依赖并创建无登录权限的 `aicrm-excel` 服务账号。
 2. 以 `config.example.json` 为模板填写真实 AppID、默认标题、PNG/JPEG 封面路径和只读数据源。数据库凭据文件仅服务账号可读。SQLite 文件、`-wal`、`-shm` 必须置于持久目录；备份使用 SQLite online backup API，不能只复制运行中的主文件。
 3. 使用服务单元模板启动组件。`/etc/aicrm-excel/service.env` 配置 `EXCEL_BATCH_TOKEN`；V3 API 和 worker 使用相同的 `EXCEL_BATCH_TOKEN` 和 `EXCEL_BATCH_URL=http://127.0.0.1:8791`。默认二者均为空，即禁用组件。
-4. 通过唯一 V3 发布路径应用 0120/0121 迁移、安装 Go 程序和完整 web/dist 产物；包含本目录的独立组件制品另行按同一发布版本交付。不要执行第二套 V3 构建上传路径。
+4. 通过唯一 V3 发布路径应用 0120/0121 迁移、安装 Go 程序和完整 web/dist 产物；组件源文件纳入同一个校验清单，启用后随主程序发布与回退。不要执行第二套 V3 构建上传路径。
 5. `AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID` 需为 UnionID 所属开放平台的 ID；现有 AI 助手 dispatch / WeCom / External Effects 授权设置维持原有门禁。启用导入不等于启用发送。
 
 ## 数据源适配及上线前核对
