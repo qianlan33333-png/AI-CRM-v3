@@ -410,7 +410,14 @@ class Workspace {
           this.batches[0]?.id ||
           0,
       );
-      await this.renderDetail(result.strategy || {}, this.batches);
+      const listedStrategy =
+        this.plans.find(
+          (value) => String(value.strategy_key) === this.strategyKey,
+        ) || {};
+      await this.renderDetail(
+        { ...listedStrategy, ...(result.strategy || {}) },
+        this.batches,
+      );
     } catch (error) {
       if (currentGeneration === this.generation)
         this.right().replaceChildren(el("p", (error as Error).message));

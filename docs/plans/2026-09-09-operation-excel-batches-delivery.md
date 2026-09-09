@@ -59,3 +59,11 @@ go test ./cmd/aicrm \
 Host journey 使用确定性的本地组件协议 fixture，没有在同一行程启动真实 Python 服务；组件自身的 12 项测试另行通过。全仓 compile 是编译检查，不是全仓业务测试。
 
 未调用真实 WeCom/Provider；本轮验证发送意图及回执投影，复用既有 External Effects 的重启恢复和未知结果不换键逻辑，未新增一次真实 Provider 故障演练。以上不证明真实企微执行、生产回执权限或生产打开日志覆盖。真实发送、生产数据源完整性和线上端到端验收仍需后续明确安排。
+
+## 生产交付补录（2026-09-10）
+
+- PR #223 合并为 `3ddf7f54cf8208a557ca2181bdc7f166c30b2a9f`；PR 的 PostgreSQL race、前端、Chromium、Python 组件、归档 SDK 与汇总检查全部通过。
+- 正式安装器完成迁移、服务切换及精确 `/readyz` 校验；本地 SSH 回传同一份清单校验通过的正式内容后，以运行序号 `1239` 复核，安装器按幂等保护拒绝重复切换。
+- `aicrm.service`、`aicrm-effects-worker.service`、`aicrm-excel-batches.service` 正常运行，相关 timer 已启用；上一版 release 目录仍保留。安装器没有创建持久 `rollback` 符号链接，仅在安装失败期间使用已读取的 previous 路径回切。
+- 通过受保护管理员会话、CSRF 与正式 API 创建独立验收计划和一个带封面的待审核合成批次。Headless Chromium 只读验收确认批次预览、两个维度、12/24/48 小时窗口和逐人回执均可呈现；没有批准、提交或真实发送。
+- 线上验收发现详情标题退化为内部 `strategy_key`。后续最小修复从页面已加载的长期计划条目读取标题，并保留批次接口返回字段的覆盖能力；专项浏览器回归要求详情标题显示长期计划名称。
