@@ -26,24 +26,31 @@ func (adapter channelStaffReferenceAdapter) ListAcquisitionStaff(ctx context.Con
 		return nil, err
 	}
 	result := make([]channelstore.AcquisitionStaff, 0, len(users))
-	for _, user := range users {
+	for _, user := range staffWithDisplayProfiles(ctx, users, adapter.profiles) {
 		result = append(result, channelstore.AcquisitionStaff{ID: user.ID, WeComUserID: user.WeComUserID, DisplayName: user.DisplayName, Active: user.Active})
 	}
 	return result, nil
 }
 
-type channelStaffReferenceAdapter struct{ users channelStaffUserReader }
+type channelStaffReferenceAdapter struct {
+	users    channelStaffUserReader
+	profiles staffDisplayProfileReader
+}
 
 func (adapter channelStaffReferenceAdapter) ReadChannelStaff(ctx context.Context, ids []int64) ([]channelport.StaffSnapshot, error) {
 	if adapter.users == nil {
 		return nil, errors.New("channel staff reader unavailable")
 	}
 	result := make([]channelport.StaffSnapshot, 0, len(ids))
+	users := make([]accessdomain.User, 0, len(ids))
 	for _, id := range ids {
 		user, err := adapter.users.UserByID(ctx, id, false)
 		if err != nil {
 			return nil, err
 		}
+		users = append(users, user)
+	}
+	for _, user := range staffWithDisplayProfiles(ctx, users, adapter.profiles) {
 		result = append(result, channelport.StaffSnapshot{ID: user.ID, Name: user.DisplayName, Active: user.Active})
 	}
 	return result, nil

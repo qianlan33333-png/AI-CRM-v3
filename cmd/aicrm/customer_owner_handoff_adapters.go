@@ -136,8 +136,9 @@ var _ customerport.OwnerHandoffCandidateResolver = customerOwnerHandoffCandidate
 // existing Access repository. It reads inside the caller UoW and deliberately
 // drops credentials, roles and provider IDs before the Host receives it.
 type customerOwnerHandoffStaffDirectory struct {
-	uow   platformport.UnitOfWork
-	staff interface {
+	profiles staffDisplayProfileReader
+	uow      platformport.UnitOfWork
+	staff    interface {
 		ListUsers(context.Context) ([]accessdomain.User, error)
 	}
 }
@@ -153,7 +154,7 @@ func (a customerOwnerHandoffStaffDirectory) ListOwnerHandoffStaff(ctx context.Co
 			return err
 		}
 		out = make([]customerport.OwnerHandoffStaff, 0, len(users))
-		for _, user := range users {
+		for _, user := range staffWithDisplayProfiles(tx, users, a.profiles) {
 			out = append(out, customerport.OwnerHandoffStaff{ID: user.ID, UserID: user.WeComUserID, DisplayName: user.DisplayName, Active: user.Active})
 		}
 		return nil

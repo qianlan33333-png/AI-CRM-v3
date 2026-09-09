@@ -77,6 +77,7 @@ run_frontend_and_stage_checks() {
   node web/v3/orderAdapter.test.mjs
   node web/v3/couponAdapter.test.mjs
   node web/v3/channelAdmissionHost.test.mjs
+  node web/v3/standardComponentsRefresh.test.mjs
   node web/v3/materialSaveAdapter.test.mjs
   node web/v3/radarAdapter.test.mjs
   node web/v3/sidebar_send_recovery.test.mjs
