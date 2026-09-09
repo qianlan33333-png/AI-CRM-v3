@@ -68,7 +68,8 @@ async function evaluate(cdp, expression) {
 }
 async function waitFor(cdp, expression, message) {
   for (let attempt = 0; attempt < 180; attempt += 1) {
-    if (await evaluate(cdp, expression)) return;
+    const value = await evaluate(cdp, expression);
+    if (value) return value;
     await delay(50);
   }
   throw new Error(message);
@@ -257,8 +258,11 @@ try {
   // Activation refreshes the selected detail and catalog separately. The caller
   // badge may be enabled while the create form is still withheld during loading.
   // Wait for the exact catalog, then retain the independent contents assertion.
-  await waitFor(cdp, `JSON.stringify([...document.querySelectorAll('input[name="create-capability"]')].map(input=>input.value).sort()) === ${JSON.stringify(JSON.stringify(expectedCatalogCapabilities))}`, "administrator catalog did not finish refreshing after activation");
-  const catalogCapabilityValues = await evaluate(cdp, "[...document.querySelectorAll('input[name=\"create-capability\"]')].map((input)=>input.value).sort()");
+  const catalogCapabilityValues = await waitFor(cdp, `(() => {
+    if (document.querySelector('[data-open-platform-secret="browser-open-agent"]')) return null;
+    const values = [...document.querySelectorAll('input[name="create-capability"]')].map(input=>input.value).sort();
+    return JSON.stringify(values) === ${JSON.stringify(JSON.stringify(expectedCatalogCapabilities))} ? values : null;
+  })()`, "administrator catalog did not finish refreshing after activation");
   if (!Array.isArray(catalogCapabilityValues) || catalogCapabilityValues.length !== expectedCatalogCapabilities.length || catalogCapabilityValues.some((value, index) => value !== expectedCatalogCapabilities[index])) throw new Error("administrator catalog did not expose the six current V1 capabilities");
   const operationIDs = (catalog) => Array.isArray(catalog?.body?.data?.operations) ? catalog.body.data.operations.map((item) => item?.operation_id).filter((item) => typeof item === "string").sort() : [];
   const toolNames = (catalog) => Array.isArray(catalog?.body?.result?.tools) ? catalog.body.result.tools.map((item) => item?.name).filter((item) => typeof item === "string").sort() : [];

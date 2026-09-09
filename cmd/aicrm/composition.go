@@ -656,7 +656,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	outboundCompletionSink.WithSurveyCompletion(surveyCompletionSink)
-	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback", cfg.Survey.OAuthScope)
+	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, h5PublicOrigin(cfg)+"/api/h5/surveys/oauth/callback", cfg.Survey.OAuthScope)
 	if err != nil {
 		return fail(err)
 	}
@@ -1103,7 +1103,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(err)
 		}
 	}
-	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, cfg.PublicOrigin+"/api/h5/wechat-pay/oauth/callback")
+	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, h5PublicOrigin(cfg)+"/api/h5/wechat-pay/oauth/callback")
 	if err != nil {
 		return fail(err)
 	}
@@ -1626,7 +1626,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	aiUI := aiModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets aiassistant.Assets) error {
 		return renderer.RenderAIAssistant(writer, webshell.AdminPageForRequest(request, "AI 助手", "AI 计划审阅与可对账执行结果。", "api.admin_ai_assistant"), page, donorTemplate, webshell.AIAssistantAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, GroupCSS: assets.GroupCSS, MaterialCSS: assets.MaterialCSS, ComposerCSS: assets.ComposerCSS, ReadonlyCSS: assets.ReadonlyCSS, HostJS: assets.HostJS})
 	})
-	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin, h5PublicOrigin(cfg))
 	if err != nil {
 		return fail(err)
 	}
@@ -1648,6 +1648,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
 	handler = securityHeaders(mountPublicCoupon(mountPublicServicePeriod(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler), publicServicePeriodHandler), couponPublicHandler))
+	handler = redirectH5EntryOrigin(handler, cfg.PublicOrigin, h5PublicOrigin(cfg))
 	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
 	if err != nil {
 		return fail(err)
@@ -1962,7 +1963,7 @@ func routeApplicationWithProductsCouponsGroupOpsAndCycles(health, access, identi
 	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, http.NotFoundHandler(), http.NotFoundHandler(), operationUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
 
-func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, operationUI, configHandler, configUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, operationUI, configHandler, configUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string, h5Origins ...string) (http.Handler, error) {
 	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || couponHandler == nil || couponUI == nil || channelHandler == nil || groupOpsHandler == nil || groupOpsUI == nil || automationHandler == nil || automationUI == nil || operationUI == nil || configHandler == nil || configUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
@@ -2145,10 +2146,10 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 		}
 		http.Redirect(writer, request, "/admin", http.StatusSeeOther)
 	})
-	return securityHeaders(rejectCrossSiteUnsafeRequests(mux, canonicalOrigin(publicOrigin))), nil
+	return securityHeaders(rejectCrossSiteUnsafeRequests(mux, canonicalOrigin(publicOrigin), h5Origins...)), nil
 }
 
-func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.Handler {
+func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string, h5Origins ...string) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if isUnsafeMethod(request.Method) && !usesIndependentLoginCSRF(request) {
 			origin := request.Header.Get("Origin")
@@ -2157,7 +2158,11 @@ func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.
 				// Origin is the authoritative browser signal. Fetch Metadata is
 				// only a fallback because extensions and restored tabs can report
 				// an inconsistent Sec-Fetch-Site for an otherwise same-origin form.
-				blocked = canonicalOrigin(origin) != publicOrigin
+				expectedOrigin := publicOrigin
+				if len(h5Origins) == 1 && isH5BrowserMutation(request) {
+					expectedOrigin = canonicalOrigin(h5Origins[0])
+				}
+				blocked = expectedOrigin == "" || canonicalOrigin(origin) != expectedOrigin
 			} else {
 				blocked = strings.EqualFold(request.Header.Get("Sec-Fetch-Site"), "cross-site")
 			}
@@ -2170,6 +2175,58 @@ func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+// Move public entry pages before OAuth starts; callbacks and mutations must
+// remain on the origin where they arrived. The target is configuration-owned.
+func redirectH5EntryOrigin(next http.Handler, publicOrigin, h5Origin string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicURL, publicErr := url.Parse(publicOrigin)
+		h5URL, h5Err := url.Parse(h5Origin)
+		if publicErr == nil && h5Err == nil && canonicalOrigin(publicOrigin) != "" && canonicalOrigin(h5Origin) != "" && publicOrigin != h5Origin && strings.EqualFold(r.Host, publicURL.Host) && r.Method == http.MethodGet && isH5EntryPage(r.URL.Path) {
+			target := *r.URL
+			target.Scheme, target.Host, target.User = h5URL.Scheme, h5URL.Host, nil
+			http.Redirect(w, r, target.String(), http.StatusTemporaryRedirect)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isH5EntryPage(path string) bool {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if (len(parts) != 2 && len(parts) != 3) || parts[1] == "" || parts[1] == "." || parts[1] == ".." || strings.Contains(parts[1], "\\") {
+		return false
+	}
+	if len(parts) == 3 {
+		return parts[0] == "s" && parts[2] == "pay"
+	}
+	switch parts[0] {
+	case "h5":
+		return strings.HasSuffix(parts[1], ".html")
+	case "q", "p", "pay", "s", "c":
+		return true
+	default:
+		return false
+	}
+}
+
+// Only these customer-facing mutations use the configured H5 origin. Admin
+// routes and Provider callbacks retain the original application boundary.
+func isH5BrowserMutation(request *http.Request) bool {
+	if request.Method != http.MethodPost {
+		return false
+	}
+	path := strings.TrimSuffix(request.URL.Path, "/")
+	if path == "/api/public/survey-submission-results/query" || path == "/api/v1/wechat-pay/checkouts" {
+		return true
+	}
+	const prefix = "/api/public/questionnaires/"
+	if strings.HasPrefix(path, prefix) {
+		parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+		return len(parts) == 2 && parts[0] != "" && parts[1] == "submissions"
+	}
+	return false
 }
 
 func usesIndependentLoginCSRF(request *http.Request) bool {
