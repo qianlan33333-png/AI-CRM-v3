@@ -5,10 +5,11 @@ import "context"
 // CatalogMutationRecovery is a Tag-owned operation, including archived rows.
 // Its ID selects the original immutable dispatch, never a replacement write.
 type CatalogMutationRecovery struct {
-	ID        int64                    `json:"id"`
-	Operation CatalogMutationOperation `json:"operation"`
-	Name      string                   `json:"name"`
-	State     string                   `json:"state"`
+	Generation int64                    `json:"generation"`
+	ID         int64                    `json:"id"`
+	Operation  CatalogMutationOperation `json:"operation"`
+	Name       string                   `json:"name"`
+	State      string                   `json:"state"`
 }
 type CatalogMutationRecoveryStore interface {
 	ListCatalogMutationRecoveries(context.Context) ([]CatalogMutationRecovery, error)

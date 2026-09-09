@@ -311,11 +311,13 @@
       row.textContent = `${labels[item.operation] || "标签操作"}「${item.name || "未命名"}」 `;
       const button = document.createElement("button");
       button.textContent = "重试企微同步";
+      button.__dcBound = true;
       button.type = "button";
       button.addEventListener("click", async () => {
         button.disabled = true;
-        if (!retryKeys.has(item.id))
-          retryKeys.set(item.id, "tag-retry-" + crypto.randomUUID());
+        const retryScope = `${item.id}:${item.generation}`;
+        if (!retryKeys.has(retryScope))
+          retryKeys.set(retryScope, "tag-retry-" + crypto.randomUUID());
         const cookie = document.cookie
           .split(";")
           .map((part) => part.trim())
@@ -335,7 +337,7 @@
               credentials: "same-origin",
               headers: {
                 "X-CSRF-Token": csrf,
-                "Idempotency-Key": retryKeys.get(item.id),
+                "Idempotency-Key": retryKeys.get(retryScope),
               },
             },
           );

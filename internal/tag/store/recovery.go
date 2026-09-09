@@ -13,7 +13,7 @@ func (r *Repository) ListCatalogMutationRecoveries(ctx context.Context) ([]tagpo
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT m.id,m.operation,COALESCE(NULLIF(m.tag_name,''),NULLIF(m.group_name,''),t.tag_name,g.group_name,''),m.state
+	rows, err := tx.Query(ctx, `SELECT m.id,m.operation,COALESCE(NULLIF(m.tag_name,''),NULLIF(m.group_name,''),t.tag_name,g.group_name,''),m.state,m.completion_generation
  FROM tag_catalog_mutation_receipts m LEFT JOIN tag_catalog_tags t ON t.id=m.tag_id LEFT JOIN tag_groups g ON g.id=m.group_id
  WHERE m.state IN ('final_failed','retryable_failed') ORDER BY m.id DESC LIMIT 100`)
 	if err != nil {
@@ -23,7 +23,7 @@ func (r *Repository) ListCatalogMutationRecoveries(ctx context.Context) ([]tagpo
 	out := []tagport.CatalogMutationRecovery{}
 	for rows.Next() {
 		var v tagport.CatalogMutationRecovery
-		if err = rows.Scan(&v.ID, &v.Operation, &v.Name, &v.State); err != nil {
+		if err = rows.Scan(&v.ID, &v.Operation, &v.Name, &v.State, &v.Generation); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

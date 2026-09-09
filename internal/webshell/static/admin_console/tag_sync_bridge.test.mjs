@@ -1,6 +1,20 @@
 import { JSDOM } from "jsdom";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
+import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
+const feedback = await build({
+  entryPoints: [
+    fileURLToPath(
+      new URL("../../../../web/src/shared/ui/feedback.ts", import.meta.url),
+    ),
+  ],
+  bundle: true,
+  format: "iife",
+  globalName: "tagFeedback",
+  platform: "browser",
+  write: false,
+});
 const code = readFileSync(
   new URL("./tag_sync_bridge.js", import.meta.url),
   "utf8",
@@ -12,6 +26,7 @@ const dom = new JSDOM(
 const { window } = dom;
 const copies = [];
 const retries = [];
+let generation = 1;
 Object.defineProperty(window.navigator, "clipboard", {
   value: { writeText: async (text) => copies.push(text) },
 });
@@ -41,6 +56,7 @@ window.fetch = async (url, options) => {
       mutation_recoveries: [
         {
           id: 3,
+          generation,
           operation: "tag_create",
           name: "Pending",
           state: "final_failed",
@@ -55,6 +71,11 @@ window.fetch = async (url, options) => {
     }),
   };
 };
+// Real donor runtime marks its own controls; install the real capture-layer
+// feedback first, just as the production Admin entry does before the Host.
+for (const button of window.document.querySelectorAll("button"))
+  button.__dcBound = true;
+window.eval(feedback.outputFiles[0].text + "\ntagFeedback.initFeedback();");
 window.eval(code);
 window.document.dispatchEvent(new window.Event("DOMContentLoaded"));
 await new Promise((resolve) => setTimeout(resolve, 30));
@@ -81,6 +102,18 @@ recover[0].click();
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.equal(retries.length, 2);
 assert.equal(
+  recover[0].__dcBound,
+  true,
+  "Host action must register with real donor feedback",
+);
+assert.equal(recover[0].dataset.capabilityState, "real");
+assert.ok(
+  !window.document
+    .querySelector("#fb-toast")
+    ?.textContent.includes("后端能力未就绪"),
+  "real feedback must not report the retry as blocked",
+);
+assert.equal(
   retries[0].headers["Idempotency-Key"],
   retries[1].headers["Idempotency-Key"],
 );
@@ -89,6 +122,32 @@ assert.equal(
   window.document.querySelectorAll("[data-tag-mutation-recovery] button")
     .length,
   1,
+);
+// A completed retry may fail definitively again. That new attempt generation
+// gets a new command key, while stale reads of the old generation retain the
+// original key and cannot cause a second enqueue.
+generation = 2;
+window.document
+  .getElementById("stage")
+  .appendChild(window.document.createComment("new failed generation"));
+await new Promise((resolve) => setTimeout(resolve, 650));
+window.document.querySelector("[data-tag-mutation-recovery] button").click();
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(retries.length, 3);
+assert.notEqual(
+  retries[2].headers["Idempotency-Key"],
+  retries[0].headers["Idempotency-Key"],
+);
+generation = 1;
+window.document
+  .getElementById("stage")
+  .appendChild(window.document.createComment("stale read"));
+await new Promise((resolve) => setTimeout(resolve, 650));
+window.document.querySelector("[data-tag-mutation-recovery] button").click();
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(
+  retries[3].headers["Idempotency-Key"],
+  retries[0].headers["Idempotency-Key"],
 );
 dom.window.close();
 console.log("tag Host Provider ID / explicit safe recovery: PASS");
