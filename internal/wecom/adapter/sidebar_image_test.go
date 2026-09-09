@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -98,13 +99,13 @@ func TestSidebarUploadClassifiesProviderEvidence(t *testing.T) {
 		{"contradiction", `{"errcode":48002,"media_id":"accepted-id"}`, "upload_response_conflict", 200, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			uploads := 0
+			var uploads atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/cgi-bin/gettoken" {
 					io.WriteString(w, `{"access_token":"sensitive-token-and-identity","expires_in":7200}`)
 					return
 				}
-				uploads++
+				uploads.Add(1)
 				w.WriteHeader(tc.status)
 				io.WriteString(w, tc.body)
 			}))
@@ -112,8 +113,8 @@ func TestSidebarUploadClassifiesProviderEvidence(t *testing.T) {
 			client := newTestClient(t, server, func() time.Time { return testNow })
 			receipt, attempted, err := client.UploadSidebarImage(context.Background(), sidebarUploadTestSource())
 			var failure outboundport.SidebarImageUploadError
-			if !attempted || !errors.As(err, &failure) || failure.OutcomeUnknown() != tc.unknown || failure.FailureCode() != tc.code || failure.ProviderErrorCode() != tc.provider || failure.HTTPStatusCode() != tc.status || uploads != 1 || receipt.MediaID != "" {
-				t.Fatalf("classification attempted=%v failure=%v uploads=%d", attempted, err, uploads)
+			if !attempted || !errors.As(err, &failure) || failure.OutcomeUnknown() != tc.unknown || failure.FailureCode() != tc.code || failure.ProviderErrorCode() != tc.provider || failure.HTTPStatusCode() != tc.status || uploads.Load() != 1 || receipt.MediaID != "" {
+				t.Fatalf("classification attempted=%v failure=%v uploads=%d", attempted, err, uploads.Load())
 			}
 			if strings.Contains(err.Error(), "sensitive") {
 				t.Fatal("diagnostic leaked raw provider text")
@@ -129,17 +130,17 @@ func sidebarUploadTestSource() outboundport.SidebarImagePreparationSource {
 func TestSidebarUploadDoesNotFollowRedirectOrRetryUnknown(t *testing.T) {
 	for _, redirect := range []bool{false, true} {
 		t.Run(strconv.FormatBool(redirect), func(t *testing.T) {
-			uploads, redirected := 0, 0
+			var uploads, redirected atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/cgi-bin/gettoken" {
 					io.WriteString(w, `{"access_token":"secret-token","expires_in":7200}`)
 					return
 				}
 				if r.URL.Path == "/other" {
-					redirected++
+					redirected.Add(1)
 					return
 				}
-				uploads++
+				uploads.Add(1)
 				if redirect {
 					w.Header().Set("Location", "/other")
 					w.WriteHeader(307)
@@ -156,8 +157,8 @@ func TestSidebarUploadDoesNotFollowRedirectOrRetryUnknown(t *testing.T) {
 			client := newTestClient(t, server, func() time.Time { return testNow })
 			_, attempted, err := client.UploadSidebarImage(context.Background(), sidebarUploadTestSource())
 			var failure outboundport.SidebarImageUploadError
-			if !attempted || !errors.As(err, &failure) || !failure.OutcomeUnknown() || uploads != 1 || redirected != 0 || strings.Contains(err.Error(), "secret-token") {
-				t.Fatalf("unsafe retry/diagnostic: %v uploads=%d redirected=%d", err, uploads, redirected)
+			if !attempted || !errors.As(err, &failure) || !failure.OutcomeUnknown() || uploads.Load() != 1 || redirected.Load() != 0 || strings.Contains(err.Error(), "secret-token") {
+				t.Fatalf("unsafe retry/diagnostic: %v uploads=%d redirected=%d", err, uploads.Load(), redirected.Load())
 			}
 		})
 	}
