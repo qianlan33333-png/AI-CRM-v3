@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	config "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	"net/http"
@@ -24,6 +27,11 @@ func TestPostgreSQLExcelBatchesChromiumJourney(t *testing.T) {
 	if !config.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1")
 	}
+	runExcelCompositionJourney(t, true)
+}
+func TestPostgreSQLExcelHTTPCompositionJourney(t *testing.T) { runExcelCompositionJourney(t, false) }
+func runExcelCompositionJourney(t *testing.T, browser bool) {
+	t.Helper()
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(source), "..", "..")
 	t.Chdir(root)
@@ -73,6 +81,48 @@ func TestPostgreSQLExcelBatchesChromiumJourney(t *testing.T) {
 	defer application.Close()
 	if err = application.bootstrap(ctx, config.Bootstrap{Enabled: true, Username: "excel-browser", Password: "excel-browser-password", DisplayName: "Excel Browser"}); err != nil {
 		t.Fatal(err)
+	}
+	session, csrf := adminAccessLogin(t, application.handler, "excel-browser", "excel-browser-password")
+	request := httptest.NewRequest("POST", "/api/admin/operation-batches/imports", bytes.NewReader([]byte("fixture")))
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.Header.Set("Idempotency-Key", "http-composition-import")
+	response := httptest.NewRecorder()
+	application.handler.ServeHTTP(response, request)
+	if response.Code != 200 {
+		t.Fatalf("full HTTP import: %d %s", response.Code, response.Body.String())
+	}
+	var imported struct {
+		Plan struct {
+			ID      int64 `json:"id"`
+			Version int64 `json:"version"`
+		} `json:"plan"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &imported); err != nil || imported.Plan.ID < 1 {
+		t.Fatal("missing native plan", err)
+	}
+	detail := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d", imported.Plan.ID))
+	if detail.Code != 200 {
+		t.Fatalf("full HTTP detail: %d %s", detail.Code, detail.Body.String())
+	}
+	if !browser {
+		for _, attempt := range []struct {
+			body []byte
+			want int
+		}{{[]byte("not an image"), 400}, {cover, 200}, {cover, 200}} {
+			req := httptest.NewRequest("POST", fmt.Sprintf("/api/admin/operation-batches/%d/cover?expected_version=%d", imported.Plan.ID, imported.Plan.Version), bytes.NewReader(attempt.body))
+			req.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+			req.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+			req.Header.Set("X-CSRF-Token", csrf)
+			req.Header.Set("Idempotency-Key", "http-cover-upload")
+			res := httptest.NewRecorder()
+			application.handler.ServeHTTP(res, req)
+			if res.Code != attempt.want {
+				t.Fatalf("full HTTP cover: %d %s", res.Code, res.Body.String())
+			}
+		}
+		return
 	}
 	server.Config.Handler = application.handler
 	server.StartTLS()

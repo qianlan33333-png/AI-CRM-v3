@@ -130,6 +130,26 @@ func TestPostgreSQLExcelImportReviewDeferredSendAndReceiptJourney(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	firstReview, err := service.ReviewRecipient(ctx, ai.ReviewRecipientCommand{Actor: who, PlanID: current.ID, RecipientID: page.Items[0].ID, ExpectedVersion: page.Items[0].Version, Decision: ai.ReviewApproved, IdempotencyKey: "approve-single-before-cover"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err = service.GetPlan(ctx, current.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err = service.ApplyExcelCover(ctx, who, current.ID, current.Version, "replace-batch-cover", effect.Hash("replacement-cover"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstReview, _, err = service.GetRecipient(ctx, current.ID, firstReview.ID)
+	if err != nil || firstReview.ReviewState != ai.ReviewPending {
+		t.Fatalf("cover change retained approval: %v", err)
+	}
+	excludedAfter, _, err := service.GetRecipient(ctx, current.ID, exclude.ID)
+	if err != nil || excludedAfter.ReviewState != ai.ReviewRejected {
+		t.Fatalf("cover change restored excluded row: %v", err)
+	}
 	preview, err := service.PreviewApproval(ctx, ai.PreviewApprovalCommand{Actor: who, PlanID: current.ID, ExpectedVersion: current.Version})
 	if err != nil {
 		t.Fatal(err)

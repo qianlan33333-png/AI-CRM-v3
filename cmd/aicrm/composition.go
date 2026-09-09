@@ -1666,7 +1666,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
+	aiReviewAPIs := http.NewServeMux()
+	aiReviewAPIs.Handle("/api/admin/operation-batches", excelBridge)
+	aiReviewAPIs.Handle("/api/admin/operation-batches/", excelBridge)
+	aiReviewAPIs.Handle("/", aiHandler.Routes())
+	handler = mountAIAssistant(handler, aiReviewAPIs, aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
 	handler = securityHeaders(mountPublicCoupon(mountPublicServicePeriod(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler), publicServicePeriodHandler), couponPublicHandler))
 	handler = redirectH5EntryOrigin(handler, cfg.PublicOrigin, h5PublicOrigin(cfg))
 	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
@@ -1786,7 +1790,7 @@ func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthenticat
 func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
 	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
+		if r.URL.Path == "/api/admin/operation-batches" || strings.HasPrefix(r.URL.Path, "/api/admin/operation-batches/") || strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
 			api.ServeHTTP(w, r)
 			return
 		}

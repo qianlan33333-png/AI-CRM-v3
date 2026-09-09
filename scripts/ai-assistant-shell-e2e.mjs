@@ -18,7 +18,7 @@ virtualConsole.on('jsdomError', (error) => {
   const message = String(error?.message || error);
   if (!message.includes('navigation to another Document')) browserErrors.push(message);
 });
-const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) });
+const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body), json: async () => body });
 const now = '2026-09-04T02:03:04Z';
 let planVersion = 1;
 let planState = 'pending_review';

@@ -322,8 +322,8 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				err = app.ErrInvalid
 				break
 			}
-			imageInfo, _, imageErr := image.DecodeConfig(bytes.NewReader(raw))
-			if imageErr != nil || imageInfo.Width < 1 || imageInfo.Height < 1 || int64(imageInfo.Width)*int64(imageInfo.Height) > 40000000 {
+			imageInfo, imageFormat, imageErr := image.DecodeConfig(bytes.NewReader(raw))
+			if imageErr != nil || (imageFormat != "png" && imageFormat != "jpeg") || imageInfo.Width < 1 || imageInfo.Height < 1 || int64(imageInfo.Width)*int64(imageInfo.Height) > 40000000 {
 				err = &InputError{Message: "请上传有效的 PNG 或 JPEG 封面（不超过 2 MB）"}
 				break
 			}

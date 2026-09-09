@@ -212,7 +212,7 @@ function mountExcelOperations(): void {
   if (!stage) return;
   const mount = () => {
     if (!stage.children.length || stage.querySelector('.excel-batches')) return;
-    const parent = Array.from(stage.children).find(node => node instanceof HTMLElement && node.style.overflow === 'auto') as HTMLElement | undefined;
+    const parent = Array.from(stage.querySelectorAll<HTMLElement>('div')).find(node => node.style.overflow === 'auto') as HTMLElement | undefined;
     // Wait for the donor scroll region: an early loading placeholder is not a mount target.
     if (parent) void mountExcelBatchPanel(parent);
   };

@@ -10,6 +10,7 @@ test -f "$release_dir/components/excel-batches/requirements.txt"
 if ! id aicrm-excel >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/aicrm-excel --shell /usr/sbin/nologin aicrm-excel
 fi
+install -d -m 0750 -o root -g aicrm-excel /etc/aicrm-excel
 install -d -m 0755 /opt/aicrm-excel
 install -d -m 0700 -o aicrm-excel -g aicrm-excel /var/lib/aicrm-excel
 if [[ ! -x /opt/aicrm-excel/venv/bin/python ]]; then
