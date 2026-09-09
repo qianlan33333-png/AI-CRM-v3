@@ -13,13 +13,22 @@ const materialPicker = fs.readFileSync(path.join(root, 'web/donors/ai-assistant-
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(check, label) { for (let i = 0; i < 80; i += 1) { if (check()) return; await wait(20); } throw new Error(label); }
 const calls = [];
+let version = 1;
 const projection = { schema_version: 1, status: 'draft', enabled: false, buy_button_text: '', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, wecom_tagging: {}, slices: [] };
-const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.html', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: new VirtualConsole(), beforeParse(window) {
+const navigationErrors = [];
+const editorConsole = new VirtualConsole();
+editorConsole.on('jsdomError', error => { if (String(error.message).includes('navigation')) navigationErrors.push(error.message); });
+const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.html', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: editorConsole, beforeParse(window) {
   window.__AICRM_TEST_MOCK__ = false; window.Request = Request; window.Response = Response; window.Headers = Headers;
   window.fetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href); const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
     calls.push({ path: url.pathname, method, body: typeof init.body === 'string' ? init.body : '' }); const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
     if (url.pathname === '/api/admin/service-period-products' && method === 'POST') return json({ product: { service_product_id: 201, product_code: 'sp-media', name: '周期素材', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: ['/api/admin/image-library/39/variants/original'], admin_projection: projection, version: 1 } }, 201);
+    if (url.pathname === '/api/admin/service-period-products/201/external-push') return json({ product_id: 201, product_kind: 'service_period', enabled: false, configuration_reference: '', updated_at: '2026-09-08T00:00:00Z' });
+    if (url.pathname === '/api/admin/service-period-products/201') {
+      if (method === 'PUT') { assert.equal(JSON.parse(init.body).expected_version, version); version += 1; }
+      return json({ product: { service_product_id: 201, product_code: 'sp-media', name: '周期素材', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, version } });
+    }
     if (url.pathname === '/api/admin/service-period-products' || url.pathname === '/api/v1/products') return json({ items: [], total: 0, has_more: false });
     if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return json({ items: [{ id: 38, name: '首页素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true }], has_more: true, next_offset: 1 });
     if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '1') return json({ items: [{ id: 39, name: '周期后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true }], has_more: false });
@@ -30,7 +39,7 @@ const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.htm
   };
 } });
 const fixtureFetch = dom.window.fetch;
-dom.window.eval(materialPicker); dom.window.eval(host); dom.window.eval(admin); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+dom.window.eval(materialPicker); dom.window.eval(host);  dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 const document = dom.window.document;
 await waitFor(() => document.getElementById('spfName'), 'frozen periodic form did not mount');
 await waitFor(() => document.querySelector('#sp-wecom [data-product-tag-open]') && document.querySelector('#sp-action [data-product-purchase-enabled]'), 'periodic action and tag controls must mount');
@@ -65,6 +74,19 @@ await waitFor(() => calls.some((call) => call.path === '/api/admin/service-perio
 const body = JSON.parse(calls.find((call) => call.path === '/api/admin/service-period-products' && call.method === 'POST').body);
 assert.deepEqual(body.images, ['/api/admin/image-library/39/variants/original'], 'periodic save lost original selected URL');
 await wait(300);
+assert.equal(new URL(dom.window.location.href).pathname, '/admin/spProductForm.html', 'save must stay in the periodic editor');
+assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '201', 'create must retain the returned ID for subsequent dimension saves');
+document.querySelector('a[href="#sp-action"]').click();
+assert.equal(document.querySelector('a[href="#sp-action"]').getAttribute('aria-current'), 'step', 'saved editor must still switch dimensions');
+save.click();
+await waitFor(() => version === 2, 'next dimension save must update the created product');
+await wait(80);
+assert.equal(calls.filter((call) => call.path === '/api/admin/service-period-products' && call.method === 'POST').length, 1, 'dimension save may not create another product');
+assert.equal(document.querySelector('a[href="#sp-action"]').getAttribute('aria-current'), 'step', 'successful save must retain the current dimension');
+assert.equal(navigationErrors.length, 0, 'successful saves must not navigate to the list');
+[...dom.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '返回周期商品管理').click();
+await wait(30);
+assert.equal(navigationErrors.length, 1, 'explicit Back must still invoke list navigation');
 const savedProjection = { ...projection, purchase_action_enabled: true, purchase_action_mode: 'redirect', completion_redirect_enabled: true, completion_redirect_url: '/complete', wecom_tagging: { enabled: false, tag_ids: [37] } };
 const reopened = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.html?id=201', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: new VirtualConsole(), beforeParse(window) {
   window.__AICRM_TEST_MOCK__ = false; window.Request = Request; window.Response = Response; window.Headers = Headers;
@@ -75,7 +97,7 @@ const reopened = new JSDOM(page, { url: 'https://test.invalid/admin/spProductFor
     return fixtureFetch(input, init);
   };
 } });
-reopened.window.eval(host); reopened.window.eval(admin); reopened.window.document.dispatchEvent(new reopened.window.Event('DOMContentLoaded'));
+reopened.window.eval(host);  reopened.window.document.dispatchEvent(new reopened.window.Event('DOMContentLoaded'));
 await waitFor(() => reopened.window.document.querySelector('[data-product-purchase-enabled]'), 'saved periodic action controls did not reopen');
 assert.equal(reopened.window.document.querySelector('[data-product-purchase-enabled]').checked, true, 'reopening must retain the saved action switch');
 assert.equal(reopened.window.document.querySelector('input[name="spfPurchaseActionMode"][value="redirect"]').checked, true, 'reopening must retain redirect mode');
