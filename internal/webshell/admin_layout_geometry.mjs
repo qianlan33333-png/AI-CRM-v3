@@ -272,11 +272,13 @@ try {
       const stage=document.querySelector('#stage.labs.sec-funnel');
       const crumb=stage?.querySelector(':scope > .crumb');
       const title=stage?.querySelector(':scope > .page-head > :first-child');
-      const refresh=stage?.querySelector('#hxcRefresh');
+      const refresh=document.querySelector('.admin-topbar #hxcRefresh');
+      const refreshBox=refresh?.getBoundingClientRect();
+      const topbarBox=document.querySelector('.admin-topbar')?.getBoundingClientRect();
       const style=stage ? getComputedStyle(stage) : null;
-      return {stage: Boolean(stage), paddingLeft: style?.paddingLeft || '', paddingTop: style?.paddingTop || '', crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', titleHidden: Boolean(title) && getComputedStyle(title).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none'};
+      return {stage: Boolean(stage), paddingLeft: style?.paddingLeft || '', paddingTop: style?.paddingTop || '', crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', titleHidden: Boolean(title) && getComputedStyle(title).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', refreshInTopbar: Boolean(refreshBox && topbarBox && refreshBox.top >= topbarBox.top && refreshBox.bottom <= topbarBox.bottom)};
     })()`);
-    if (!hxc?.stage || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible) throw new Error(label + " HXC title/padding/action layout invalid");
+    if (!hxc?.stage || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible || !hxc.refreshInTopbar) throw new Error(label + " HXC title/padding/action layout invalid");
   };
   const assertRadarLayout = async (label, actionSelector, contentSelector = ".sec-radar .page-head") => {
     await assertLayout("standard", label, contentSelector);
