@@ -29,8 +29,33 @@ const waitForPort = async (profile) => { for (let i = 0; i < 160; i += 1) { try 
 const evaluate = async (cdp, expression) => { const result = await cdp.call("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw new Error("page evaluation failed"); return result.result?.value; };
 const waitFor = async (cdp, expression, message) => { for (let i = 0; i < 180; i += 1) { if (await evaluate(cdp, expression)) return; await delay(50); } throw new Error(message); };
 const waitForExit = (child, ms) => new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) return resolve(true); const timer = setTimeout(() => resolve(false), ms); child.once("exit", () => { clearTimeout(timer); resolve(true); }); });
+const asError = (error) => error instanceof Error ? error : new Error(String(error));
+const stopBrowser = async (child) => {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return null;
+  try {
+    child.kill("SIGTERM");
+    if (await waitForExit(child, 3000)) return null;
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (await waitForExit(child, 3000)) return null;
+    return new Error("Chromium process did not exit before profile cleanup");
+  } catch (error) {
+    return asError(error);
+  }
+};
+const removeProfile = async (profile) => {
+  let lastError;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 }); return null; }
+    catch (error) {
+      lastError = asError(error);
+      if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(error?.code)) return lastError;
+      await delay(100);
+    }
+  }
+  return new Error(`Chromium test profile cleanup did not complete after 40 attempts: ${lastError?.code || lastError?.message || "unknown error"}`);
+};
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-groupops-chromium-"));
-let browser; let cdp; let failed = false;
+let browser; let cdp; let journeyError;
 class DevToolsUnavailable extends Error {}
 try {
   browser = spawn(browserBinary(), ["--headless=new", "--no-sandbox", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--ignore-certificate-errors", "--allow-insecure-localhost", "about:blank"], { stdio: ["ignore", "ignore", "ignore"] });
@@ -73,9 +98,15 @@ try {
   console.log("group_ops_chromium: PASS");
 } catch (error) {
   if (error instanceof DevToolsUnavailable) console.log("group_ops_chromium: SKIP_DEVTOOLS");
-  else { failed = true; throw error; }
+  else journeyError = asError(error);
 } finally {
-  if (cdp) cdp.close();
-  if (browser && browser.exitCode === null && browser.signalCode === null) { browser.kill("SIGTERM"); if (!await waitForExit(browser, 3000)) { browser.kill("SIGKILL"); await waitForExit(browser, 1000); } }
-  await fs.rm(profile, { recursive: true, force: true }).catch(() => { if (!failed) throw new Error("Chromium test profile cleanup failed"); });
+  const cleanupErrors = [];
+  if (cdp) { try { cdp.close(); } catch (error) { cleanupErrors.push(asError(error)); } }
+  const browserError = await stopBrowser(browser);
+  if (browserError) cleanupErrors.push(browserError);
+  const profileError = await removeProfile(profile);
+  if (profileError) cleanupErrors.push(profileError);
+  if (journeyError && cleanupErrors.length) throw new AggregateError([journeyError, ...cleanupErrors], "Group Ops Chromium journey and cleanup failed");
+  if (journeyError) throw journeyError;
+  if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Group Ops Chromium cleanup failed");
 }

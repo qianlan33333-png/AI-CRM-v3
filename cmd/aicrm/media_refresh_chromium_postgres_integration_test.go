@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -149,32 +151,58 @@ func mediaRefreshBrowserDatabase(t *testing.T, ctx context.Context) (string, fun
 	t.Helper()
 	raw, err := platformconfig.DatabaseURL()
 	if err != nil {
-		t.Fatal("AICRM_DATABASE_URL is required for the dedicated browser database")
+		t.Fatal("AICRM_DATABASE_URL is required for the browser PostgreSQL journey")
 	}
-	parsed, err := url.Parse(raw)
+	adminConfig, err := pgxpool.ParseConfig(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed.Path = "/aicrm_daily_media_refresh_browser_0910"
-	parsed.RawPath = ""
-	databaseURL := parsed.String()
-	cfg, err := pgxpool.ParseConfig(databaseURL)
+	admin, err := pgxpool.NewWithConfig(ctx, adminConfig)
 	if err != nil {
+		t.Fatalf("browser PostgreSQL database unavailable: %v", err)
+	}
+	var random [8]byte
+	if _, err = rand.Read(random[:]); err != nil {
+		admin.Close()
 		t.Fatal(err)
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	schema := "media_refresh_chromium_" + hex.EncodeToString(random[:])
+	identifier := pgx.Identifier{schema}.Sanitize()
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+identifier); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	config := adminConfig.Copy()
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
+		admin.Close()
 		t.Fatalf("dedicated browser database unavailable: %v", err)
-	}
-	if _, err = pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO PUBLIC`); err != nil {
-		pool.Close()
-		t.Fatal(err)
 	}
 	if err = adminAccessMigrateCompositionSchema(ctx, pool); err != nil {
 		pool.Close()
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
+		admin.Close()
 		t.Fatal(err)
 	}
-	return databaseURL, pool.Close
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		pool.Close()
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
+		admin.Close()
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema)
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), func() {
+		pool.Close()
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = admin.Exec(cleanup, "DROP SCHEMA "+identifier+" CASCADE")
+		admin.Close()
+	}
 }
 
 func mediaRefreshSeedStrategy(t *testing.T, application *composedApplication) error {
