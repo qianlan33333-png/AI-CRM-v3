@@ -138,11 +138,42 @@ func (u *MaterialUploader) upload(ctx context.Context, token, kind, name, mediaT
 	if strings.TrimSpace(result.MediaID) == "" || len(result.MediaID) > 1024 {
 		return fail("upload_receipt_missing", true, true, false)
 	}
-	var createdAt int64
-	if len(result.CreatedAt) == 0 || json.Unmarshal(result.CreatedAt, &createdAt) != nil || createdAt < 1 {
+	createdAt, ok := parseMaterialCreatedAt(result.CreatedAt, u.client.now())
+	if !ok {
 		return fail("upload_created_at_missing", true, true, false)
 	}
-	return outboundport.MaterialUploadReceipt{MediaID: strings.TrimSpace(result.MediaID), ProviderCreatedAt: time.Unix(createdAt, 0).UTC()}, true, nil
+	return outboundport.MaterialUploadReceipt{MediaID: strings.TrimSpace(result.MediaID), ProviderCreatedAt: createdAt}, true, nil
+}
+
+func parseMaterialCreatedAt(raw json.RawMessage, now time.Time) (time.Time, bool) {
+	value := bytes.TrimSpace(raw)
+	if len(value) == 0 {
+		return time.Time{}, false
+	}
+	if value[0] == '"' {
+		var encoded string
+		if json.Unmarshal(value, &encoded) != nil {
+			return time.Time{}, false
+		}
+		value = []byte(encoded)
+	}
+	if len(value) == 0 {
+		return time.Time{}, false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return time.Time{}, false
+		}
+	}
+	seconds, err := strconv.ParseInt(string(value), 10, 64)
+	if err != nil || seconds < 1 {
+		return time.Time{}, false
+	}
+	createdAt := time.Unix(seconds, 0).UTC()
+	if createdAt.After(now.UTC().Add(5 * time.Minute)) {
+		return time.Time{}, false
+	}
+	return createdAt, true
 }
 
 func materialErrcodeRetryable(code int64) bool {
