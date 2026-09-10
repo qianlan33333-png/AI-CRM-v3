@@ -262,11 +262,11 @@ try {
     throw new Error("cover required guard missing");
   await evaluate(
     cdp,
-    `(()=>{const input=document.querySelector('input[aria-label="统一封面图片"]');const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'cover.png',{type:'image/png'}));input.files=dt.files;[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='上传统一封面').click();return true})()`,
+    `(()=>{const input=document.querySelector('input[aria-label="统一封面图片"]');const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'cover.png',{type:'image/png'}));input.files=dt.files;[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='上传统一封面').click();return true})()`,
   );
   await waitFor(
     cdp,
-    `document.querySelector('.xeb-status')?.textContent.includes('统一封面已更新')`,
+    `document.querySelector('[role=status]')?.textContent.includes('统一封面已更新')`,
     "cover upload failed",
   );
   await evaluate(
@@ -302,7 +302,7 @@ try {
   );
   await waitFor(
     cdp,
-    `document.querySelector('.xeb-status')?.textContent.includes('企微任务意图已创建')&&!([...document.querySelectorAll('.xeb-detail-main button')].some(b=>b.textContent==='审核通过并创建企微群发任务'))`,
+    `document.querySelector('[role=status]')?.textContent.includes('企微任务意图已创建')&&!([...document.querySelectorAll('.xeb-detail-main button')].some(b=>b.textContent==='审核通过并创建企微群发任务'))`,
     "single approval did not queue one target",
   );
   await cdp.call("Page.reload");

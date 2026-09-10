@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -165,6 +166,27 @@ type ProviderRouter struct {
 	customerTag        effect.ProviderAdapter
 	ownerHandoff       effect.ProviderAdapter
 	commercePush       effect.ProviderAdapter
+}
+
+func (r *ProviderRouter) Preflight(ctx context.Context, envelope effect.Envelope, effectID string) (bool, time.Duration, error) {
+	if r == nil {
+		return true, 0, nil
+	}
+	var provider effect.ProviderAdapter
+	switch envelope.Kind {
+	case effect.KindOutboundMessage:
+		provider = r.privateMessage
+	case effect.KindAutomationMessage:
+		provider = r.automationMessage
+	case effect.KindGroupMessage:
+		provider = r.groupMessage
+	case effect.KindOutboundMedia:
+		provider = r.sidebarMedia
+	}
+	if preflight, ok := provider.(effect.ProviderPreflighter); ok {
+		return preflight.Preflight(ctx, envelope, effectID)
+	}
+	return true, 0, nil
 }
 
 func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {

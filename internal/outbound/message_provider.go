@@ -2,6 +2,8 @@ package outbound
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
@@ -10,6 +12,36 @@ import (
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 )
+
+func (p *MessageProvider) Preflight(ctx context.Context, envelope effectport.Envelope, _ string) (bool, time.Duration, error) {
+	if p == nil || !p.enabled || envelope.Kind != effectport.KindAutomationMessage {
+		return true, 0, nil
+	}
+	preparer, ok := p.payloads.(outboundport.FrozenAutomationMessageMediaPreflighter)
+	if !ok {
+		return true, 0, nil
+	}
+	execution, found, err := p.executions.MessageExecution(ctx, string(envelope.Fingerprint()))
+	if err != nil {
+		return false, 0, err
+	}
+	if !found || execution.ContentSnapshot == nil {
+		return true, 0, nil
+	}
+	err = preparer.PrepareFrozenAutomationMessageMedia(ctx, execution.ContentSnapshot, execution.ContentSnapshotDigest)
+	if err == nil {
+		return true, 0, nil
+	}
+	var pending outboundport.MediaPreparationPendingError
+	if errors.As(err, &pending) {
+		return false, pending.RetryAfter(), nil
+	}
+	var terminal outboundport.MediaPreparationTerminalError
+	if errors.As(err, &terminal) || errors.Is(err, outboundport.ErrMaterialSourceChanged) || errors.Is(err, outboundport.ErrMaterialPreparationNotFound) {
+		return true, 0, nil
+	}
+	return false, 0, err
+}
 
 type ExternalContactTextWriter interface {
 	SendExternalContactText(context.Context, string, string, string) (string, error)
@@ -102,6 +134,8 @@ func (p *MessageProvider) Execute(ctx context.Context, envelope effectport.Envel
 			state = effectport.StateFinalFailed
 			if attempted && failure.OutcomeUnknown() {
 				state = effectport.StateUnknown
+			} else if retryable, ok := err.(outboundport.PrivateMessageRetryableRejection); ok && attempted && retryable.Retryable() {
+				return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash("outbound.message.provider-retryable-rejection", retryable.FailureCode(), string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: false, SafeToRetryRejected: true, FailureCode: retryable.FailureCode()}, nil
 			}
 			// The typed sender error is already a complete Provider outcome. The
 			// effect kernel treats a returned error as retryable/unknown before it

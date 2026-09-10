@@ -10,6 +10,7 @@ import (
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -267,5 +268,136 @@ func TestGroupMessageCompletionSinkPersistsOnlyValidatedTaskArtifact(t *testing.
 	}
 	if projector.state != groupopsport.ExecutionProviderAccepted || !projector.providerAccepted || projector.deliveryProven {
 		t.Fatalf("projection=%+v", projector)
+	}
+}
+
+type groupMaterialSourceStub struct {
+	source outboundport.MaterialSourceSnapshot
+}
+
+func (s groupMaterialSourceStub) GetSourceSnapshot(_ context.Context, ref string) (outboundport.MaterialSourceSnapshot, error) {
+	if ref != s.source.SourceRef {
+		return outboundport.MaterialSourceSnapshot{}, errors.New("wrong source ref")
+	}
+	return s.source, nil
+}
+func (groupMaterialSourceStub) ListEnabledSourceSnapshots(context.Context, outboundport.MaterialSnapshotPageRequest) (outboundport.MaterialSnapshotPage, error) {
+	return outboundport.MaterialSnapshotPage{}, errors.New("not used")
+}
+func (groupMaterialSourceStub) ReadSourceBytes(context.Context, outboundport.MaterialSourceSnapshot) (outboundport.MaterialSourceContent, error) {
+	return outboundport.MaterialSourceContent{}, errors.New("must not read bytes")
+}
+
+type frozenGroupSourceStub struct {
+	err   error
+	calls int
+}
+
+func (s *frozenGroupSourceStub) VerifyFrozenMaterialSources(context.Context, json.RawMessage, json.RawMessage, string) error {
+	s.calls++
+	return s.err
+}
+
+type groupMaterialPreparerStub struct {
+	calls  int
+	result outboundport.MaterialResult
+	err    error
+}
+
+func (s *groupMaterialPreparerStub) ReadyForSend(_ context.Context, request outboundport.MaterialRequest) (outboundport.MaterialResult, error) {
+	s.calls++
+	if request.SourceRef != "image:8" {
+		return outboundport.MaterialResult{}, errors.New("unexpected source")
+	}
+	return s.result, s.err
+}
+func (*groupMaterialPreparerStub) Prepare(context.Context, outboundport.MaterialRequest) (outboundport.MaterialResult, error) {
+	return outboundport.MaterialResult{}, errors.New("not used")
+}
+
+func TestGroupMessageProviderPreflightsUnifiedMediaAndExecuteUsesFreshID(t *testing.T) {
+	digest := [32]byte{1}
+	digestText := "sha256:0100000000000000000000000000000000000000000000000000000000000000"
+	content := []byte(`{"schema_version":1,"kind":"message","message_text":"hello"}`)
+	material := []byte(`{"schema_version":2,"node_kind":"message","attachments":[{"msgtype":"image","media_id":"obsolete-media-id"}]}`)
+	sources := []byte(`{"schema_version":1,"references":[{"reference":{"kind":"image","id":8},"source_digest":"sha256:0100000000000000000000000000000000000000000000000000000000000000"}]}`)
+	envelope := groupMessageEnvelope()
+	canonicalContent, _ := canonicalGroupMessageJSON(content)
+	canonicalMaterial, _ := canonicalGroupMessageJSON(material)
+	execution := groupopsport.DispatchExecution{ExecutionID: 8, ExternalEffectID: "eer_8", State: groupopsport.ExecutionAccepted, TargetReference: "chat-8", SenderUserID: "owner-8", ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(canonicalContent))), MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(canonicalMaterial))), MaterialSourceSnapshot: sources, MaterialSourceDigest: string(effect.Hash("group-ops.material.source.snapshot.v1", string(sources))), SourceRefDigest: string(envelope.SourceRefDigest), TargetRefDigest: string(envelope.TargetRefDigest), PayloadDigest: string(envelope.PayloadDigest), PolicyVersionHash: string(envelope.PolicyVersionHash)}
+	preparer := &groupMaterialPreparerStub{result: outboundport.MaterialResult{State: "ready", MediaID: "fresh-media-id"}}
+	frozenSources := &frozenGroupSourceStub{}
+	sender := &groupMessageSenderStub{attempted: true, receipt: wecomport.GroupMessageReceipt{MessageID: "msg-8"}}
+	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: groupDispatchReaderStub{value: execution}, Materials: materialReadinessStub{err: errors.New("expired legacy receipt")}, FrozenSources: frozenSources, Writer: sender, Sources: groupMaterialSourceStub{source: outboundport.MaterialSourceSnapshot{SourceRef: "image:8", SourceType: "image", ContentDigest: digest, FileName: "image.png", MediaType: "image/png", SizeBytes: 3, SnapshotVersion: 1}}, Preparer: preparer, ScopeDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready, after, err := provider.Preflight(context.Background(), envelope, "eer_8")
+	if err != nil || !ready || after != 0 || preparer.calls != 1 {
+		t.Fatalf("ready=%v after=%s calls=%d err=%v", ready, after, preparer.calls, err)
+	}
+	if request, requestErr := groupMessageRequestWithPreparedMedia(execution, map[string]string{"image:8": "fresh-media-id"}); requestErr != nil {
+		t.Fatalf("prepared request err=%v", requestErr)
+	} else if len(request.Attachments) != 1 {
+		t.Fatalf("prepared request=%+v", request)
+	}
+	result, err := provider.Execute(context.Background(), envelope, effect.Attempt{EffectID: "eer_8", Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effect.StateExecuted || sender.calls != 1 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, sender.calls, err)
+	}
+	if len(sender.request.Attachments) != 1 || sender.request.Attachments[0].MediaID != "fresh-media-id" || sender.request.Attachments[0].MediaID == "obsolete-media-id" {
+		t.Fatalf("request=%+v", sender.request)
+	}
+	if digestText == "" {
+		t.Fatal("digest fixture unexpectedly empty")
+	}
+}
+
+func TestGroupMessageProviderPreflightSnoozesPendingUnifiedMedia(t *testing.T) {
+	digest := [32]byte{1}
+	content := []byte(`{"schema_version":1,"kind":"message","message_text":"hello"}`)
+	material := []byte(`{"schema_version":2,"node_kind":"message","attachments":[{"msgtype":"image","media_id":"obsolete-media-id"}]}`)
+	sources := []byte(`{"schema_version":1,"references":[{"reference":{"kind":"image","id":8},"source_digest":"sha256:0100000000000000000000000000000000000000000000000000000000000000"}]}`)
+	envelope := groupMessageEnvelope()
+	canonicalContent, _ := canonicalGroupMessageJSON(content)
+	canonicalMaterial, _ := canonicalGroupMessageJSON(material)
+	execution := groupopsport.DispatchExecution{ExecutionID: 8, ExternalEffectID: "eer_8", State: groupopsport.ExecutionAccepted, TargetReference: "chat-8", SenderUserID: "owner-8", ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(canonicalContent))), MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(canonicalMaterial))), MaterialSourceSnapshot: sources, SourceRefDigest: string(envelope.SourceRefDigest), TargetRefDigest: string(envelope.TargetRefDigest), PayloadDigest: string(envelope.PayloadDigest), PolicyVersionHash: string(envelope.PolicyVersionHash)}
+	provider, _ := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: groupDispatchReaderStub{value: execution}, Materials: materialReadinessStub{}, FrozenSources: &frozenGroupSourceStub{}, Writer: &groupMessageSenderStub{}, Sources: groupMaterialSourceStub{source: outboundport.MaterialSourceSnapshot{SourceRef: "image:8", SourceType: "image", ContentDigest: digest, FileName: "image.png", MediaType: "image/png", SizeBytes: 3, SnapshotVersion: 1}}, Preparer: &groupMaterialPreparerStub{result: outboundport.MaterialResult{State: "queued"}}, ScopeDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+	ready, after, err := provider.Preflight(context.Background(), envelope, "eer_8")
+	if err != nil || ready || after != time.Second {
+		t.Fatalf("ready=%v after=%s err=%v", ready, after, err)
+	}
+}
+
+func TestGroupMessagePreparedRequestRejectsReorderedMaterialSources(t *testing.T) {
+	material := []byte(`{"schema_version":2,"node_kind":"message","attachments":[{"msgtype":"image","media_id":"old-image"},{"msgtype":"file","media_id":"old-file"}]}`)
+	sources := []byte(`{"schema_version":1,"references":[{"reference":{"kind":"attachment","id":2},"source_digest":"sha256:0200000000000000000000000000000000000000000000000000000000000000"},{"reference":{"kind":"image","id":1},"source_digest":"sha256:0100000000000000000000000000000000000000000000000000000000000000"}]}`)
+	var frozen mediaport.GroupOpsMaterialSourceSnapshot
+	if err := json.Unmarshal(sources, &frozen); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateGroupMaterialSequence(material, frozen); err == nil {
+		t.Fatal("reordered source sequence accepted")
+	}
+}
+
+func TestGroupMessagePreflightAllowsTerminalPreparationToFinalizeLocally(t *testing.T) {
+	digest := [32]byte{1}
+	content := []byte(`{"schema_version":1,"kind":"message","message_text":"hello"}`)
+	material := []byte(`{"schema_version":2,"node_kind":"message","attachments":[{"msgtype":"image","media_id":"obsolete"}]}`)
+	sources := []byte(`{"schema_version":1,"references":[{"reference":{"kind":"image","id":8},"source_digest":"sha256:0100000000000000000000000000000000000000000000000000000000000000"}]}`)
+	envelope := groupMessageEnvelope()
+	canonicalContent, _ := canonicalGroupMessageJSON(content)
+	canonicalMaterial, _ := canonicalGroupMessageJSON(material)
+	execution := groupopsport.DispatchExecution{ExecutionID: 8, ExternalEffectID: "eer_8", State: groupopsport.ExecutionAccepted, TargetReference: "chat-8", SenderUserID: "owner-8", ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(canonicalContent))), MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(canonicalMaterial))), MaterialSourceSnapshot: sources, SourceRefDigest: string(envelope.SourceRefDigest), TargetRefDigest: string(envelope.TargetRefDigest), PayloadDigest: string(envelope.PayloadDigest), PolicyVersionHash: string(envelope.PolicyVersionHash)}
+	sender := &groupMessageSenderStub{}
+	provider, _ := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: groupDispatchReaderStub{value: execution}, Materials: materialReadinessStub{}, FrozenSources: &frozenGroupSourceStub{}, Writer: sender, Sources: groupMaterialSourceStub{source: outboundport.MaterialSourceSnapshot{SourceRef: "image:8", SourceType: "image", ContentDigest: digest, FileName: "image.png", MediaType: "image/png", SizeBytes: 3, SnapshotVersion: 1}}, Preparer: &groupMaterialPreparerStub{err: outboundport.MediaPreparationTerminalError{Code: "not_supported", State: "final_failed"}}, ScopeDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+	ready, after, err := provider.Preflight(context.Background(), envelope, "eer_8")
+	if err != nil || !ready || after != 0 {
+		t.Fatalf("ready=%v after=%s err=%v", ready, after, err)
+	}
+	result, err := provider.Execute(context.Background(), envelope, effect.Attempt{EffectID: "eer_8", Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effect.StateFinalFailed || sender.calls != 0 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, sender.calls, err)
 	}
 }

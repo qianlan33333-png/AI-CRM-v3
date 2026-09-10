@@ -158,6 +158,9 @@ function style(): void {
   node.id = "operation-excel-batch-style";
   node.textContent = `.operation-excel-workspace{margin:8px 0;color:#1f2329}.operation-excel-workspace *{box-sizing:border-box}.xeb-card{background:#fff;border:1px solid #dee0e3;border-radius:10px;overflow:hidden}.xeb-head{padding:14px 16px;border-bottom:1px solid #eff0f1}.xeb-head h2,.xeb-head h3{margin:0;font-size:16px}.xeb-plan{display:block;text-align:left;border:0;border-bottom:1px solid #f2f3f5;background:#fff;padding:12px 14px;width:100%;cursor:pointer}.xeb-plan:hover{background:#f5f8ff}.operation-excel-workspace small{font-size:12px;color:#8f959e}.xeb-body{padding:16px}.xeb-meta,.xeb-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.xeb-detail{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px;margin-top:16px}.xeb-detail-nav{padding:8px}.xeb-detail-nav button{display:block;width:100%;text-align:left;margin:2px 0}.xeb-detail-nav button[data-selected=true]{background:#eff4ff;color:#245bdb;border-color:#c9d8ff}.operation-excel-workspace button,.operation-excel-workspace input,.operation-excel-workspace select{font:inherit}.operation-excel-workspace button{border:1px solid #dee0e3;border-radius:6px;background:#fff;color:#344054;padding:6px 10px;cursor:pointer;font-size:12px}.operation-excel-workspace button.xeb-primary{background:#3370ff;border-color:#3370ff;color:#fff}.operation-excel-workspace button:disabled{opacity:.5}.xeb-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}.xeb-stat{padding:10px;background:#fafbfc;border:1px solid #eff0f1;border-radius:8px}.xeb-stat b{display:block;font-size:18px}.xeb-scroll{overflow:auto;margin-top:14px}.operation-excel-workspace table{border-collapse:collapse;width:100%;font-size:12px}.operation-excel-workspace th,.operation-excel-workspace td{padding:10px;border-bottom:1px solid #eff0f1;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere}.operation-excel-workspace th{font-weight:500;color:#8f959e;background:#fafafb}.xeb-cover{width:80px;height:60px;object-fit:cover;border-radius:4px}.xeb-status{min-height:22px;color:#935420}.operation-excel-workspace dialog{width:min(680px,92vw);border:1px solid #dee0e3;border-radius:10px;padding:20px}.operation-excel-workspace dialog label{display:block;margin:10px 0 4px;font-size:12px}.operation-excel-workspace textarea{width:100%;min-height:96px}@media(max-width:800px){.xeb-detail{grid-template-columns:1fr}.xeb-grid{grid-template-columns:repeat(2,minmax(0,1fr)}}`;
   document.head.append(node);
+  const pickerStyle = el("style");
+  pickerStyle.textContent = `.xeb-cover-picker{display:grid;gap:12px}.xeb-cover-picker-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;max-height:420px;overflow:auto}.xeb-cover-picker-item{display:grid;gap:6px;padding:8px;border:1px solid #dee0e3;border-radius:8px;background:#fff;text-align:left}.xeb-cover-picker-item img{width:100%;height:96px;object-fit:cover;background:#f5f6f7;border-radius:5px}.xeb-cover-picker-item small{overflow-wrap:anywhere}@media(max-width:800px){.xeb-cover-picker-list{grid-template-columns:repeat(2,minmax(0,1fr))}}`;
+  document.head.append(pickerStyle);
 }
 function batchState(batch: Obj): string {
   return states[String(batch.state)] || String(batch.state || "未知");
@@ -537,7 +540,17 @@ class Workspace {
       stat.append(el("small", String(label)), el("b", String(value ?? 0)));
       grid.append(stat);
     });
-    wrap.append(meta, grid);
+    const coverImageID = Number(batch.cover_image_id || 0);
+    const cover = el(
+      "p",
+      coverImageID > 0
+        ? `冻结封面：素材 #${coverImageID}；内容摘要已冻结，凭据刷新不会触发重新审核。`
+        : batch.cover_digest
+          ? "冻结封面：已上传内容；内容摘要已冻结。"
+          : "统一封面：未设置。",
+    );
+    cover.className = "xeb-status";
+    wrap.append(meta, grid, cover);
     return wrap;
   }
   private editable(batch: Obj): boolean {
@@ -582,11 +595,14 @@ class Workspace {
           });
         }),
         true,
-        Boolean(batch.cover_digest),
+        Boolean(batch.cover_digest || Number(batch.cover_image_id || 0) > 0),
       );
       const previewKey = key(`excel-preview-${id}-${batch.version}`);
       const approveKey = key(`excel-approve-${id}-${batch.version}`);
       const coverKey = key(`excel-cover-${id}-${batch.version}`);
+      const selectCover = this.batchAction(
+        action("选择已有启用图片", () => this.coverPickerDialog(batch)),
+      );
       actions.append(
         cover,
         this.batchAction(
@@ -605,12 +621,13 @@ class Workspace {
             });
           }),
         ),
+        selectCover,
         approve,
       );
     }
     actions.append(action("查看旧版本", () => this.versionDialog(id)));
     parent.append(actions);
-    if (!batch.cover_digest && editable)
+    if (!(batch.cover_digest || Number(batch.cover_image_id || 0) > 0) && editable)
       parent.append(el("p", "没有统一封面，不能审核通过并创建企微群发任务。"));
     const scroll = el("div");
     scroll.className = "xeb-scroll";
@@ -656,6 +673,161 @@ class Workspace {
       ),
     );
     parent.append(scroll);
+  }
+  private coverPickerDialog(batch: Obj): void {
+    if (!this.editable(batch) || Number(batch.id) !== this.batchID) return;
+    const boundBatch = Number(batch.id);
+    const boundGeneration = this.generation;
+    const dialog = el("dialog") as HTMLDialogElement;
+    dialog.className = "xeb-cover-picker";
+    dialog.setAttribute("aria-label", "选择已有启用图片");
+    const heading = el("h3", "选择已有启用图片");
+    const hint = el("p", "仅显示当前启用的图片。选择后会冻结图片编号和内容摘要，凭据刷新不会改变已提交批次。");
+    const query = el("input") as HTMLInputElement;
+    query.type = "search";
+    query.setAttribute("aria-label", "搜索启用图片");
+    query.placeholder = "搜索图片名称";
+    const search = action("查询", () => { void load(0); });
+    const searchRow = el("div");
+    searchRow.className = "xeb-actions";
+    searchRow.append(query, search);
+    const status = el("p");
+    status.className = "xeb-status";
+    status.setAttribute("role", "status");
+    const list = el("div");
+    list.className = "xeb-cover-picker-list";
+    const pager = el("div");
+    pager.className = "xeb-actions";
+    const range = el("small");
+    const previous = action("上一页", () => { void load(Math.max(0, offset - pageSize)); });
+    const next = action("下一页", () => { void load(nextOffset); });
+    pager.append(range, previous, next);
+    const close = action("取消", () => {
+      closed = true;
+      generation += 1;
+      dialog.close();
+      dialog.remove();
+    });
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      close.click();
+    });
+    dialog.append(heading, hint, searchRow, status, list, pager, close);
+    this.root.append(dialog);
+
+    const pageSize = 12;
+    let offset = 0;
+    let nextOffset = pageSize;
+    let hasMore = false;
+    let generation = 0;
+    let closed = false;
+    let loading = false;
+    const selectionKeys = new Map<number, string>();
+    const imageID = (value: Obj): number => Number(value.id ?? value.resource_id ?? value.material_id ?? 0);
+    const imageName = (value: Obj, id: number): string => String(value.name || value.file_name || value.filename || `图片素材 #${id}`);
+    const imageThumb = (value: Obj, id: number): string => String(value.thumb_160_url || value.thumb_320_url || value.thumb_url || value.variant_url || (id > 0 ? `/api/admin/image-library/${id}/variants/thumb_160` : ""));
+    const setLoading = (busy: boolean): void => {
+      loading = busy;
+      search.disabled = busy;
+      previous.disabled = busy || offset <= 0;
+      next.disabled = busy || !hasMore;
+      list.querySelectorAll<HTMLButtonElement>("button[data-cover-image-id]").forEach((button) => { button.disabled = busy; });
+    };
+    const choose = async (item: Obj, button: HTMLButtonElement): Promise<void> => {
+      if (closed || loading || boundBatch !== this.batchID || boundGeneration !== this.generation) {
+        status.textContent = "批次已切换，未保存封面选择。";
+        status.setAttribute("role", "alert");
+        return;
+      }
+      const id = imageID(item);
+      if (!Number.isSafeInteger(id) || id < 1 || item.enabled === false) {
+        status.textContent = "该图片已停用或编号无效，请重新选择启用图片。";
+        status.setAttribute("role", "alert");
+        return;
+      }
+      const selectionKey = selectionKeys.get(id) || key(`excel-cover-select-${boundBatch}-${batch.version}-${id}`);
+      selectionKeys.set(id, selectionKey);
+      setLoading(true);
+      button.textContent = "保存中…";
+      try {
+        await api(
+          `${base}/${boundBatch}/cover?expected_version=${batch.version}`,
+          "POST",
+          { cover_image_id: id },
+          selectionKey,
+        );
+        selectionKeys.delete(id);
+        closed = true;
+        dialog.close();
+        dialog.remove();
+        await this.loadSelected();
+        this.tell("已选择启用图片作为统一封面；请重新核对预览。");
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "选择";
+        setLoading(false);
+        status.textContent = `${(error as Error).message}；可重试，仍使用同一操作 key。`;
+        status.setAttribute("role", "alert");
+      }
+    };
+    const draw = (items: Obj[]): void => {
+      list.replaceChildren();
+      items.filter((item) => item.enabled !== false).forEach((item) => {
+        const id = imageID(item);
+        if (!Number.isSafeInteger(id) || id < 1) return;
+        const card = el("div");
+        card.className = "xeb-cover-picker-item";
+        const thumb = imageThumb(item, id);
+        if (thumb) {
+          const image = el("img") as HTMLImageElement;
+          image.src = thumb;
+          image.alt = imageName(item, id);
+          card.append(image);
+        }
+        card.append(el("small", `${imageName(item, id)} · 素材 #${id}`));
+        const chooseButton = action("选择", () => { void choose(item, chooseButton); });
+        chooseButton.dataset.coverImageId = String(id);
+        card.append(chooseButton);
+        list.append(card);
+      });
+      if (!list.children.length) list.append(el("small", "当前页没有可选择的启用图片。"));
+    };
+    async function load(nextPageOffset: number): Promise<void> {
+      if (loading || closed) return;
+      const requestGeneration = ++generation;
+      offset = Math.max(0, nextPageOffset);
+      nextOffset = offset + pageSize;
+      hasMore = false;
+      setLoading(true);
+      status.textContent = "正在读取启用图片…";
+      status.setAttribute("role", "status");
+      try {
+        const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset), enabled_only: "true" });
+        if (query.value.trim()) params.set("q", query.value.trim());
+        const result = await api(`/api/admin/image-library?${params}`);
+        if (closed || requestGeneration !== generation) return;
+        const items = Array.isArray(result.items) ? result.items : Array.isArray(result.images) ? result.images : [];
+        const providedNext = Number(result.next_offset);
+        nextOffset = Number.isSafeInteger(providedNext) && providedNext > offset ? providedNext : offset + pageSize;
+        hasMore = result.has_more === true || (result.has_more === undefined && items.length === pageSize);
+        draw(items.map((value) => value as Obj));
+        const total = Number(result.total);
+        range.textContent = Number.isFinite(total) && total > 0
+          ? `第 ${offset + 1}–${Math.min(offset + items.length, total)} 项，共 ${total} 项`
+          : `第 ${offset + 1}–${offset + items.length} 项`;
+        status.textContent = "请选择一张启用图片；取消不会修改批次。";
+      } catch (error) {
+        if (closed || requestGeneration !== generation) return;
+        list.replaceChildren();
+        range.textContent = "";
+        status.textContent = (error as Error).message;
+        status.setAttribute("role", "alert");
+      } finally {
+        if (!closed && requestGeneration === generation) setLoading(false);
+      }
+    }
+    dialog.showModal();
+    void load(0);
   }
   private async effects(parent: HTMLElement, batch: Obj): Promise<void> {
     const id = Number(batch.id);
@@ -892,9 +1064,14 @@ class Workspace {
     const items = Array.isArray(result.items) ? result.items : [];
     dialog.append(
       table(
-        ["版本", "创建时间", "操作"],
+        ["版本", "封面素材", "创建时间", "操作"],
         items.map((item: Obj) => [
           String(item.content_version || item.version),
+          Number(item.cover_image_id || 0) > 0
+            ? `素材 #${item.cover_image_id}`
+            : item.cover_digest
+              ? "已上传内容"
+              : "—",
           String(item.created_at || ""),
           action("只读查看", async () => {
             const detail = await readAllPages(

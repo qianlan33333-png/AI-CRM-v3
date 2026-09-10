@@ -229,7 +229,7 @@ func (r *Repository) acceptAndQueueTx(ctx context.Context, tx pgx.Tx, command Ac
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Projection{}, Receipt{}, err
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO external_effects (owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted') RETURNING id,created_at`, command.Envelope.Owner, command.Envelope.Kind, command.Envelope.SourceRefDigest, command.Envelope.TargetRefDigest, command.Envelope.PayloadDigest, command.Envelope.PolicyVersionHash, command.Envelope.Fingerprint()).Scan(&id, &updated)
+	err = tx.QueryRow(ctx, `INSERT INTO external_effects (owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,delivery_lane,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'accepted') RETURNING id,created_at`, command.Envelope.Owner, command.Envelope.Kind, command.Envelope.SourceRefDigest, command.Envelope.TargetRefDigest, command.Envelope.PayloadDigest, command.Envelope.PolicyVersionHash, command.Envelope.Fingerprint(), command.Lane).Scan(&id, &updated)
 	if err != nil {
 		return Projection{}, Receipt{}, err
 	}
@@ -241,7 +241,7 @@ func (r *Repository) acceptAndQueueTx(ctx context.Context, tx pgx.Tx, command Ac
 	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES ($1,1)`, id); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	queue := effectQueue(command.Envelope.Kind)
+	queue := effectQueue(command.Envelope.Kind, command.Lane)
 	inserted, err := platformjobqueue.InsertTxWithOptions(ctx, r.river, tx, EffectJobArgs{EffectID: id, Generation: 1}, river.InsertOpts{Queue: queue, ScheduledAt: command.ScheduledAt.UTC()})
 	if err != nil {
 		return Projection{}, Receipt{}, err
@@ -449,12 +449,27 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	var generation, fence int64
 	var leaseExpires *time.Time
 	var updated time.Time
-	err = tx.QueryRow(ctx, `SELECT owner,kind,state,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,attempt_count,generation,lease_fence,lease_expires_at,updated_at FROM external_effects WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &kind, &state, &source, &target, &payload, &policy, &attempts, &generation, &fence, &leaseExpires, &updated)
+	var lane port.Lane
+	err = tx.QueryRow(ctx, `SELECT owner,kind,state,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,attempt_count,generation,lease_fence,lease_expires_at,updated_at,delivery_lane FROM external_effects WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &kind, &state, &source, &target, &payload, &policy, &attempts, &generation, &fence, &leaseExpires, &updated, &lane)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Projection{}, Receipt{}, ErrNotFound
 	}
 	if err != nil {
 		return Projection{}, Receipt{}, err
+	}
+	if operation == "reconcile" && Kind(kind) == KindOutboundMedia && lane == port.LaneOutboundMedia {
+		switch command.ReconciliationOutcome {
+		case "no_effect":
+			if command.ReconciliationArtifact.Kind != "" || len(command.ReconciliationArtifact.Payload) != 0 || command.ReconciliationArtifact.Digest != "" {
+				return Projection{}, Receipt{}, ErrReconcileRequired
+			}
+		case "confirmed_effect":
+			if !command.ReconciliationArtifact.Valid() || command.ReconciliationArtifact.Kind != "outbound.material.upload.v1" {
+				return Projection{}, Receipt{}, ErrReconcileRequired
+			}
+		default:
+			return Projection{}, Receipt{}, ErrReconcileRequired
+		}
 	}
 	if operation == "reconcile" && (command.Generation != 0 || command.Fence != 0 || !command.LeaseExpiresAt.IsZero()) {
 		if command.Generation < 1 || command.Fence < 1 || command.LeaseExpiresAt.IsZero() || generation != command.Generation || fence != command.Fence || leaseExpires == nil || !leaseExpires.Equal(command.LeaseExpiresAt.UTC()) || leaseExpires.After(time.Now().UTC()) {
@@ -501,7 +516,7 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 		if _, err = tx.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES($1,$2)`, id, generation); err != nil {
 			return Projection{}, Receipt{}, err
 		}
-		queue := effectQueue(Kind(kind))
+		queue := effectQueue(Kind(kind), lane)
 		inserted, insertErr := platformjobqueue.InsertTxWithOptions(ctx, r.river, tx, EffectJobArgs{EffectID: id, Generation: generation}, river.InsertOpts{Queue: queue})
 		if insertErr != nil {
 			return Projection{}, Receipt{}, insertErr
@@ -540,9 +555,18 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	// projecting it here as well would update the same execution twice. AI
 	// Assistant and Automation Operations delegate their owner projection to
 	// the sink.
-	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindWeComTagCatalogMutation || Kind(kind) == KindOutboundMessage || Kind(kind) == KindAutomationMessage || Kind(kind) == KindAIAgentGenerate) && r.sink != nil {
+	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindWeComTagCatalogMutation || Kind(kind) == KindOutboundMessage || (Kind(kind) == KindOutboundMedia && lane == port.LaneOutboundMedia) || Kind(kind) == KindAutomationMessage || Kind(kind) == KindAIAgentGenerate) && r.sink != nil {
 		envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
-		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{EffectID: effectID(id), Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: next, ReceiptDigest: digest}); err != nil {
+		completion := AdapterResult{Completion: next, ReceiptDigest: digest}
+		if Kind(kind) == KindOutboundMedia && lane == port.LaneOutboundMedia {
+			if command.ReconciliationOutcome == "no_effect" {
+				completion.FailureCode = "reconciled_no_effect"
+			} else {
+				completion.Completion = StateExecuted
+				completion.Artifact = command.ReconciliationArtifact
+			}
+		}
+		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{EffectID: effectID(id), Number: attempts, Generation: generation, Fence: fence}, completion); err != nil {
 			return Projection{}, Receipt{}, err
 		}
 	}
@@ -554,7 +578,13 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 // Welcome intents get a registered queue so ordinary outbound backlog cannot
 // consume their short provider-call window; worker, claim, receipt, retry and
 // reconciliation semantics remain exactly the same.
-func effectQueue(kind Kind) string {
+func effectQueue(kind Kind, lane port.Lane) string {
+	if lane == port.LaneOutboundExcel {
+		return platformjobqueue.OutboundExcelQueue
+	}
+	if lane == port.LaneOutboundMedia {
+		return platformjobqueue.OutboundMediaQueue
+	}
 	if kind == KindChannelWelcome {
 		return platformjobqueue.OutboundWelcomeQueue
 	}
@@ -588,7 +618,8 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 	var attempts int32
 	var fence int64
 	var leaseExpires *time.Time
-	err = tx.QueryRow(ctx, `SELECT effect.state,effect.owner,effect.kind,effect.source_ref_digest,effect.target_ref_digest,effect.payload_digest,effect.policy_version_hash,effect.attempt_count,effect.lease_fence,effect.lease_expires_at FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1 AND effect.generation=$2 AND job.river_job_id=$3 FOR UPDATE OF effect`, id, generation, riverJobID).Scan(&state, &owner, &kind, &source, &target, &payload, &policy, &attempts, &fence, &leaseExpires)
+	var deliveryQueue string
+	err = tx.QueryRow(ctx, `SELECT effect.state,effect.owner,effect.kind,effect.source_ref_digest,effect.target_ref_digest,effect.payload_digest,effect.policy_version_hash,effect.attempt_count,effect.lease_fence,effect.lease_expires_at,job.queue FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1 AND effect.generation=$2 AND job.river_job_id=$3 FOR UPDATE OF effect`, id, generation, riverJobID).Scan(&state, &owner, &kind, &source, &target, &payload, &policy, &attempts, &fence, &leaseExpires, &deliveryQueue)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -691,7 +722,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		} else if result.Completion == StateUnknown && (result.CallAttempted || envelope.Kind == port.KindSidebarJSSDKSend) {
 			next = StateUnknown
 			receipt = result.ReceiptDigest
-		} else if result.Completion == StateRetryable && !result.CallAttempted {
+		} else if result.Completion == StateRetryable && (!result.CallAttempted || (((envelope.Kind == KindOutboundMedia && deliveryQueue == platformjobqueue.OutboundMediaQueue) || ((envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage) && deliveryQueue == platformjobqueue.OutboundExcelQueue)) && result.CallAttempted && !result.RealExternalCallExecuted && result.SafeToRetryRejected)) {
 			next = StateRetryable
 			receipt = result.ReceiptDigest
 		} else if result.Completion == StateFinalFailed {
@@ -709,6 +740,13 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 	if next == StateExecuted && (envelope.Kind == KindOutboundMedia || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelLink || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindAIAgentGenerate) && (r.sink == nil || !adapterResult.Artifact.Valid()) {
 		next, receipt = StateUnknown, Hash("provider-artifact-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 	}
+	autoRetryLane := (envelope.Kind == KindOutboundMedia && deliveryQueue == platformjobqueue.OutboundMediaQueue) ||
+		((envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage) && deliveryQueue == platformjobqueue.OutboundExcelQueue)
+	autoRetry := autoRetryLane && next == StateRetryable && attempts < 5
+	persistedState := next
+	if autoRetry {
+		persistedState = StateQueued
+	}
 	tx, err = r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -720,7 +758,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		}
 		return ErrTransition
 	}
-	if result, updateErr := tx.Exec(ctx, `UPDATE external_effects SET state=$2,updated_at=clock_timestamp() WHERE id=$1 AND generation=$3 AND lease_fence=$4 AND state='attempted'`, id, next, generation, fence); updateErr != nil || result.RowsAffected() != 1 {
+	if result, updateErr := tx.Exec(ctx, `UPDATE external_effects SET state=$2,updated_at=clock_timestamp() WHERE id=$1 AND generation=$3 AND lease_fence=$4 AND state='attempted'`, id, persistedState, generation, fence); updateErr != nil || result.RowsAffected() != 1 {
 		if updateErr != nil {
 			return updateErr
 		}
@@ -730,7 +768,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindOutboundMedia || envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindCustomerTagCommand || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindCommerceProductPush || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Kind == port.KindSidebarJSSDKSend || envelope.Kind == KindSurveyCompletion || envelope.Kind == KindAIAgentGenerate || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
-		completionResult.Completion = next
+		completionResult.Completion = persistedState
 		if !ValidDigest(completionResult.ReceiptDigest) {
 			completionResult.ReceiptDigest = receipt
 		}
@@ -738,7 +776,50 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			return err
 		}
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	if autoRetry {
+		return river.JobSnooze(providerAutomaticRetryDelay(attempts))
+	}
+	return nil
+}
+
+func providerAutomaticRetryDelay(attempt int32) time.Duration {
+	switch attempt {
+	case 1:
+		return time.Second
+	case 2:
+		return 5 * time.Second
+	case 3:
+		return 30 * time.Second
+	default:
+		return 2 * time.Minute
+	}
+}
+
+// QueuedEnvelope is the read-only preflight view. RunAttempt still performs
+// the authoritative queued/generation/job CAS after preflight completes.
+func (r *Repository) QueuedEnvelope(ctx context.Context, id, generation, riverJobID int64) (Envelope, bool, error) {
+	if r == nil || r.pool == nil || id < 1 || generation < 1 || riverJobID < 1 {
+		return Envelope{}, false, ErrInvalid
+	}
+	var state, owner, kind, source, target, payload, policy string
+	err := r.pool.QueryRow(ctx, `SELECT effect.state,effect.owner,effect.kind,effect.source_ref_digest,effect.target_ref_digest,effect.payload_digest,effect.policy_version_hash FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1 AND effect.generation=$2 AND job.river_job_id=$3`, id, generation, riverJobID).Scan(&state, &owner, &kind, &source, &target, &payload, &policy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Envelope{}, false, nil
+	}
+	if err != nil {
+		return Envelope{}, false, err
+	}
+	if State(state) != StateQueued {
+		return Envelope{}, false, nil
+	}
+	envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
+	if !envelope.Valid() {
+		return Envelope{}, false, ErrInvalid
+	}
+	return envelope, true, nil
 }
 
 func projectsStaleAttempt(kind Kind) bool {

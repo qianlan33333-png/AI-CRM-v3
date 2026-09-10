@@ -14,6 +14,7 @@ import (
 	app "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	ai "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	outbound "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"image"
 	_ "image/jpeg"
@@ -43,6 +44,7 @@ type Bridge struct {
 	Security   Security
 	Authorizer accessport.AIAssistantAuthorizer
 	Scope      string
+	Covers     mediaport.ExcelCoverLibrary
 }
 type row struct {
 	ID       ai.RecipientID    `json:"id"`
@@ -111,6 +113,7 @@ func batchJSON(plan ai.Plan, meta ai.ExcelBatchMeta, summary ai.ExcelBatchSummar
 		"version":                      plan.Version,
 		"file_digest":                  meta.FileDigest,
 		"cover_digest":                 meta.CoverDigest,
+		"cover_image_id":               meta.CoverImageID,
 		"current_content_version":      meta.Revision,
 		"source_kind":                  plan.SourceKind,
 		"segment_source":               segmentSource,
@@ -391,7 +394,8 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusBadRequest, map[string]any{"error": "invalid_input", "message": "Idempotency-Key 必须为 8–200 字符"})
 		return
 	}
-	if b.Client == nil && (r.Method != "GET" || strings.HasSuffix(r.URL.Path, "/report") || strings.Contains(r.URL.Path, "/covers/")) {
+	mediaCoverMutation := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cover") && b.Covers != nil
+	if b.Client == nil && !mediaCoverMutation && (r.Method != "GET" || strings.HasSuffix(r.URL.Path, "/report") || strings.Contains(r.URL.Path, "/covers/")) {
 		respond(w, 503, map[string]any{"error": "component_disabled"})
 		return
 	}
@@ -698,24 +702,42 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				err = app.ErrInvalid
 				break
 			}
-			raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 2<<20))
-			if e != nil {
-				err = app.ErrInvalid
+			if b.Covers == nil || !validIdempotencyKey(r.Header.Get("Idempotency-Key")) {
+				err = app.ErrUnavailable
 				break
 			}
-			imageInfo, imageFormat, imageErr := image.DecodeConfig(bytes.NewReader(raw))
-			if imageErr != nil || (imageFormat != "png" && imageFormat != "jpeg") || imageInfo.Width < 1 || imageInfo.Height < 1 || int64(imageInfo.Width)*int64(imageInfo.Height) > 40000000 {
-				err = &InputError{Message: "请上传有效的 PNG 或 JPEG 封面（不超过 2 MB）"}
-				break
+			var cover mediaport.ExcelCover
+			if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+				var selectInput struct {
+					ImageID int64 `json:"cover_image_id"`
+				}
+				if decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&selectInput); decodeErr != nil || selectInput.ImageID < 1 {
+					err = app.ErrInvalid
+					break
+				}
+				cover, err = b.Covers.SelectEnabledExcelCover(r.Context(), selectInput.ImageID)
+			} else {
+				raw, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 2<<20))
+				if readErr != nil {
+					err = app.ErrInvalid
+					break
+				}
+				imageInfo, imageFormat, imageErr := image.DecodeConfig(bytes.NewReader(raw))
+				if imageErr != nil || (imageFormat != "png" && imageFormat != "jpeg") || imageInfo.Width < 1 || imageInfo.Height < 1 || int64(imageInfo.Width)*int64(imageInfo.Height) > 40000000 {
+					err = &InputError{Message: "请上传有效的 PNG 或 JPEG 封面（不超过 2 MB）"}
+					break
+				}
+				fileName, declaredType := "excel-cover.png", "image/png"
+				if imageFormat == "jpeg" {
+					fileName, declaredType = "excel-cover.jpg", "image/jpeg"
+				}
+				cover, err = b.Covers.CreateOrReuseExcelCover(r.Context(), mediaport.ExcelCoverUpload{Actor: actor.InternalID, IdempotencyKey: mediaCoverKey(actor.InternalID, r.Header.Get("Idempotency-Key")), FileName: fileName, DeclaredType: declaredType, Content: raw})
 			}
-			var saved struct {
-				Digest effect.Digest `json:"cover_digest"`
-			}
-			err = b.Client.Call(r.Context(), "POST", "/covers", "", raw, &saved)
 			if err != nil {
 				break
 			}
-			plan, err = b.App.ApplyExcelCover(r.Context(), ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, id, version, r.Header.Get("Idempotency-Key"), saved.Digest)
+			digest := effect.Digest("sha256:" + hex.EncodeToString(cover.ContentDigest[:]))
+			plan, err = b.App.ApplyExcelMediaCover(r.Context(), ai.Actor{Kind: ai.ActorAdmin, ID: actor.InternalID}, id, version, r.Header.Get("Idempotency-Key"), cover.ImageID, digest)
 			if err != nil {
 				break
 			}
@@ -729,7 +751,7 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				err = summaryErr
 				break
 			}
-			output = map[string]any{"batch": batchJSON(plan, meta, summary), "cover_digest": saved.Digest}
+			output = map[string]any{"batch": batchJSON(plan, meta, summary), "cover_digest": digest, "cover_image_id": cover.ImageID}
 		case r.Method == http.MethodPatch && len(parts) == 3 && parts[1] == "rows":
 			rowID, parseErr := strconv.ParseInt(parts[2], 10, 64)
 			if parseErr != nil || rowID < 1 {
@@ -857,6 +879,11 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, responseStatus, output)
+}
+
+func mediaCoverKey(actorID int64, clientKey string) string {
+	sum := sha256.Sum256([]byte("excel-cover\x00" + strconv.FormatInt(actorID, 10) + "\x00" + clientKey))
+	return "excel-cover-" + hex.EncodeToString(sum[:])
 }
 func respond(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")

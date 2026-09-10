@@ -49,6 +49,14 @@ type MaterialReadinessVerifier interface {
 	VerifyMaterialReady(context.Context, json.RawMessage, json.RawMessage, string, time.Time) error
 }
 
+// FrozenMaterialSourceVerifier proves that the immutable Group Ops material
+// snapshot still refers to the same Media-owned source facts. It deliberately
+// excludes provider credential lease validity: Outbound's MaterialPreparer
+// owns that independent, refreshable concern.
+type FrozenMaterialSourceVerifier interface {
+	VerifyFrozenMaterialSources(context.Context, json.RawMessage, json.RawMessage, string) error
+}
+
 // ExecutionOutcomeProjector persists the matching Group Ops terminal fact
 // after EER has completed an attempt. RuntimeService implements this boundary.
 type ExecutionOutcomeProjector interface {

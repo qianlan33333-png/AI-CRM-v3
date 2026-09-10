@@ -1,4 +1,5 @@
 import { JSDOM } from "jsdom";
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -289,6 +290,165 @@ for (const spec of [
   releaseUpload();
   await waitFor(() => !dom.window.document.getElementById(spec.input), 'successful upload did not close dialog');
   await waitFor(() => dom.window.document.getElementById('stage')?.textContent.includes(spec.page === 'images.html' ? '原图片' : '原附件'), 'uploaded resource list did not read back');
+  dom.window.close();
+}
+
+// The actual embedded Media page carries the refresh contract inside its
+// existing scroll region. Loading errors are retryable, the manual full
+// refresh is async, and a dropped POST response replays the same operation
+// key rather than creating a second round.
+{
+  let preparationReads = 0;
+  let releasePreparation;
+  let fullPosts = 0;
+  let releaseFull;
+  const fullKeys = [];
+  let roundReads = 0;
+  const csrfHeaders = [];
+  const contract = {
+    ok: true,
+    items: [{
+      source_ref: "image:11",
+      source_type: "image",
+      content_digest: "sha256:source",
+      file_name: "cover.png",
+      media_type: "image/png",
+      size_bytes: 32,
+      snapshot_version: 2,
+      state: "outcome_unknown",
+      credential_state: "expired",
+      credential_usable: false,
+      failure_code: "upload_outcome_unknown",
+      media_id: "temporary-media-id",
+      last_succeeded_at: "2026-09-09T01:00:00Z",
+      expires_at: "2026-09-12T01:00:00Z",
+    }, {
+      source_ref: "image:12",
+      source_type: "image",
+      content_digest: "sha256:source-still-valid",
+      file_name: "last-valid.png",
+      media_type: "image/png",
+      size_bytes: 32,
+      snapshot_version: 2,
+      state: "final_failed",
+      credential_state: "ready",
+      credential_usable: true,
+      failure_code: "provider_rejected",
+      media_id: "still-valid-media-id",
+      last_succeeded_at: "2026-09-10T01:00:00Z",
+      expires_at: "2099-09-13T01:00:00Z",
+    }, {
+      source_ref: "image:13",
+      source_type: "image",
+      content_digest: "sha256:source-expired-by-clock",
+      file_name: "expired-by-clock.png",
+      media_type: "image/png",
+      size_bytes: 32,
+      snapshot_version: 2,
+      state: "executed",
+      credential_state: "ready",
+      credential_usable: true,
+      failure_code: "uploaded",
+      media_id: "expired-media-id",
+      last_succeeded_at: "2020-09-09T01:00:00Z",
+      expires_at: "2020-09-12T01:00:00Z",
+    }, {
+      source_ref: "attachment:14",
+      source_type: "attachment",
+      content_digest: "sha256:source-missing",
+      file_name: "never-uploaded.pdf",
+      media_type: "application/pdf",
+      size_bytes: 32,
+      snapshot_version: 2,
+      state: "missing",
+      credential_state: "missing",
+      credential_usable: false,
+      failure_code: "",
+      media_id: "",
+      last_succeeded_at: null,
+      expires_at: null,
+    }],
+    failures: [{
+      source_ref: "attachment:19",
+      failure_code: "source_bytes_missing",
+      state: "final_failed",
+      credential_state: "missing",
+      credential_usable: false,
+    }],
+    today_refresh_round: { id: 5, local_date: "2026-09-10", state: "outcome_unknown" },
+    next_refresh_at: "2026-09-11T02:00:00+08:00",
+    next_cursor: "",
+    done: true,
+  };
+  const dom = pageFixture("images.html", (window) => async (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url, window.location.origin);
+    const method = (init.method || "GET").toUpperCase();
+    if (url.pathname === "/api/admin/image-library" && method === "GET") return json(mediaRows.image);
+    if (url.pathname === "/api/admin/media-preparations" && method === "GET") {
+      preparationReads += 1;
+      if (preparationReads === 1) {
+        return new Promise((resolve) => { releasePreparation = () => resolve(json({ code: "read_unavailable" }, 503)); });
+      }
+      return json(contract);
+    }
+    if (url.pathname === "/api/admin/media-preparations/refresh-rounds" && method === "POST") {
+      fullPosts += 1;
+      fullKeys.push(new Headers(init.headers).get("Idempotency-Key"));
+      csrfHeaders.push(new Headers(init.headers).get("X-CSRF-Token"));
+      if (fullPosts === 1) {
+        return new Promise((_, reject) => { releaseFull = () => reject(new window.TypeError("response lost after commit")); });
+      }
+      return json({ ok: true, refresh_round: { id: 7, local_date: "2026-09-10", state: "queued", total: 1, queued: 1, succeeded: 0, failed: 0, unknown: 0 } }, 202);
+    }
+    if (url.pathname === "/api/admin/media-preparations/refresh-rounds/5" && method === "GET") {
+      roundReads += 1;
+      return json({ ok: true, refresh_round: { id: 5, local_date: "2026-09-10", state: "outcome_unknown", total: 100, queued: 0, succeeded: 98, failed: 0, unknown: 2 } });
+    }
+    if (url.pathname === "/api/admin/media-preparations/refresh-rounds/7" && method === "GET") {
+      roundReads += 1;
+      return json({ ok: true, refresh_round: { id: 7, local_date: "2026-09-10", state: "completed", total: 1, queued: 0, succeeded: 1, failed: 0, unknown: 0 } });
+    }
+    return json({ code: "unexpected", path: url.pathname, method }, 500);
+  });
+  dom.window.document.cookie = "aicrm_csrf=fixture-csrf";
+  await waitFor(() => typeof releasePreparation === "function", "material preparation loading state never started");
+  if (!dom.window.document.querySelector("[data-material-refresh-status]")?.textContent?.includes("正在读取")) fail("material preparation loading state is not visible");
+  releasePreparation();
+  await waitFor(() => !![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "重试读取刷新状态"), "material preparation read error did not expose a retry action");
+  if (!dom.window.document.querySelector("[data-material-refresh-status]")?.textContent?.includes("read_unavailable")) fail("material preparation read error was hidden");
+  [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "重试读取刷新状态").click();
+  await waitFor(() => dom.window.document.querySelector("#material-refresh-panel")?.textContent?.includes("cover.png"), "material preparation contract did not render after manual retry");
+  const panelText = dom.window.document.querySelector("#material-refresh-panel")?.textContent || "";
+  if (
+    panelText.includes("成功 0") ||
+    !panelText.includes("结果待核实 · 凭据已过期") ||
+    !panelText.includes("刷新失败 · 旧凭据仍可用") ||
+    !panelText.includes("已就绪 · 凭据已过期") ||
+    !panelText.includes("待首次刷新 · 尚无可用凭据") ||
+    panelText.includes("已就绪 · 当前凭据可用") ||
+    !panelText.includes("当日刷新进度暂不可用") ||
+    !panelText.includes("下次运行")
+  ) fail("material credential availability was inferred from the refresh state or expiry incorrectly");
+  if (!panelText.includes("需要补传的原文件") || !panelText.includes("attachment:19：原文件缺失，请补传（source_bytes_missing）")) fail("missing source was not kept as a locateable re-upload item");
+  const uploadedRow = [...dom.window.document.querySelectorAll("#material-refresh-panel tr")].find((row) => row.textContent?.includes("expired-by-clock.png"));
+  if (!uploadedRow || uploadedRow.querySelectorAll("td")[6]?.textContent?.trim() !== "—") fail("a successful uploaded receipt was rendered as a failure reason");
+  if (![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "立即刷新全部启用素材")?.classList.contains("admin-button--primary")) fail("manual refresh did not use the existing primary-button styling");
+  const progressRefresh = [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "刷新进度");
+  progressRefresh.click();
+  await waitFor(() => dom.window.document.querySelector("#material-refresh-panel")?.textContent?.includes("成功 98"), "explicit refresh-round counts were not rendered");
+  const countedPanel = dom.window.document.querySelector("#material-refresh-panel")?.textContent || "";
+  if (!countedPanel.includes("成功 98") || !countedPanel.includes("待核实 2")) fail("explicit refresh-round counts were not preserved");
+  const full = [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "立即刷新全部启用素材");
+  if (full.disabled) fail("manual full refresh button was already disabled before clicking");
+  full.click(); full.click();
+  await waitFor(() => fullPosts === 1 && typeof releaseFull === "function", "manual full refresh issued no request");
+  if (!full.disabled || full.textContent?.trim() !== "刷新中…") fail("manual full refresh was not locked against a double click");
+  assert.equal(csrfHeaders[0], "fixture-csrf");
+  releaseFull();
+  await waitFor(() => !full.disabled && dom.window.document.body.textContent?.includes("同一操作 key"), "dropped full-refresh response did not expose a retryable error");
+  full.click();
+  await waitFor(() => fullPosts === 2 && roundReads === 2, "manual full-refresh retry did not read the async round");
+  if (!fullKeys[0] || fullKeys[0] !== fullKeys[1]) fail("dropped full-refresh response retried with a new idempotency key");
   dom.window.close();
 }
 

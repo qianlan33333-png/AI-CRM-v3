@@ -28,6 +28,15 @@ grep -q 'P4 donor source closure contains an undeclared active donor change' "$t
 grep -q 'odd\\nname.ts' "$temporary_root/donor-special.out"
 rm -f "$special_donor"
 
+definition_migration="$sandbox/migrations/0030_config_definition_import.sql"
+printf '\nALTER TABLE config_definition_import_batches ADD COLUMN external_effect_id BIGINT;\n' >>"$definition_migration"
+if "$sandbox/scripts/check-config-definition-import-boundary.sh" >"$temporary_root/config-migration-effect.out" 2>&1; then
+  echo "config boundary accepted an external-effect field in its definition migration" >&2
+  exit 1
+fi
+grep -q "forbidden source field/table token 'external_effect_id' in migrations/0030_config_definition_import.sql" "$temporary_root/config-migration-effect.out"
+git -C "$sandbox" checkout -- migrations/0030_config_definition_import.sql
+
 runtime_main="$sandbox/cmd/migrate-v2-runtime-config-releases/main.go"
 python3 - "$runtime_main" <<'PY'
 from pathlib import Path

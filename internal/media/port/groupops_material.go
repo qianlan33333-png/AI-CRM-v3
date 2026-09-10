@@ -34,11 +34,21 @@ type SidebarImageSendReader interface {
 	ReadSidebarImageForSend(context.Context, int64, time.Time) (SidebarImageSendMaterial, error)
 }
 
-// GroupOpsMaterialSnapshot is the immutable, provider-ready part of one
-// accepted Group Ops execution. Provider media IDs and link/card fields must
-// be resolved before the execution is accepted; workers may only submit this
-// stored payload and never reopen a mutable content package.
+// GroupOpsMaterialSnapshot is the immutable message shape of one accepted
+// Group Ops execution. Link/card fields are frozen at acceptance. Uploadable
+// attachments may omit their temporary Provider media ID; the Outbound EER
+// preflight resolves that credential from the separately frozen source facts.
 type GroupOpsMaterialSnapshot struct {
+	SchemaVersion int                               `json:"schema_version"`
+	NodeKind      string                            `json:"node_kind"`
+	Attachments   []GroupOpsProviderReadyAttachment `json:"attachments,omitempty"`
+}
+
+// GroupOpsMaterialIntentSnapshot is the accepted, provider-neutral message
+// shape paired with GroupOpsMaterialSourceSnapshot. Temporary media IDs are
+// deliberately absent and can only be filled by Outbound preflight after the
+// source digest has been revalidated.
+type GroupOpsMaterialIntentSnapshot struct {
 	SchemaVersion int                               `json:"schema_version"`
 	NodeKind      string                            `json:"node_kind"`
 	Attachments   []GroupOpsProviderReadyAttachment `json:"attachments,omitempty"`
@@ -88,10 +98,9 @@ type GroupOpsProviderReadyAttachment struct {
 	PicURL      string `json:"picurl,omitempty"`
 }
 
-// GroupOpsMaterialSnapshotFreezer belongs to Media. The Group Ops acceptance
-// flow calls it before persisting the execution snapshot, and must treat any
-// error as a local acceptance failure rather than queue work that a worker
-// would need to resolve later.
+// GroupOpsMaterialSnapshotFreezer belongs to Media and remains the strict
+// provider-ready reader for legacy consumers. New Group Ops EER intents freeze
+// source facts at acceptance and resolve temporary credentials in preflight.
 type GroupOpsMaterialSnapshotFreezer interface {
 	FreezeGroupOpsMaterial(context.Context, GroupOpsMaterialSourceSnapshot, time.Time) (GroupOpsMaterialSnapshot, error)
 }
@@ -218,6 +227,29 @@ func ValidateGroupOpsMaterialSnapshot(value GroupOpsMaterialSnapshot) error {
 		return ErrInvalidGroupOpsMaterialSnapshot
 	}
 	return ValidateGroupOpsProviderReadyAttachments(value.Attachments)
+}
+
+func ValidateGroupOpsMaterialIntentSnapshot(value GroupOpsMaterialIntentSnapshot) error {
+	if value.SchemaVersion != 2 || value.NodeKind != "message" || len(value.Attachments) > 9 {
+		return ErrInvalidGroupOpsMaterialSnapshot
+	}
+	for _, attachment := range value.Attachments {
+		candidate := attachment
+		switch candidate.MsgType {
+		case "image", "file", "miniprogram":
+			if candidate.MediaID != "" {
+				return ErrInvalidGroupOpsMaterialSnapshot
+			}
+			candidate.MediaID = "pending-provider-media"
+		case "link":
+		default:
+			return ErrInvalidGroupOpsMaterialSnapshot
+		}
+		if ValidateGroupOpsProviderReadyAttachments([]GroupOpsProviderReadyAttachment{candidate}) != nil {
+			return ErrInvalidGroupOpsMaterialSnapshot
+		}
+	}
+	return nil
 }
 
 func ValidateGroupOpsMaterialPlan(value GroupOpsMaterialPlan) error {

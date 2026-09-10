@@ -76,9 +76,12 @@ type Config struct {
 	SidebarCallbackURI string
 	APIBase            string
 	HTTPClient         *http.Client // explicit test injection also permits httptest bases
-	Now                func() time.Time
-	Random             func([]byte) error
-	JSAPIList          []string
+	// UploadTimeout is isolated from message/read request timeouts. Zero keeps
+	// the production-safe 120 second default for large media uploads.
+	UploadTimeout time.Duration
+	Now           func() time.Time
+	Random        func([]byte) error
+	JSAPIList     []string
 }
 
 type credential struct {
@@ -1427,6 +1430,9 @@ func (e privateSendError) Error() string {
 	return "wecom private message rejected"
 }
 func (e privateSendError) OutcomeUnknown() bool { return e.uncertain }
+func (e privateSendError) Retryable() bool {
+	return !e.uncertain && (e.code == 45009 || e.code == 45011 || e.code == -1)
+}
 
 // SendGroupMessage creates one WeCom customer-group task for the exact frozen
 // chat list. A msgid is acceptance evidence only; fail_list is always a
@@ -1548,24 +1554,51 @@ func (client *Client) SendPrivateMessage(ctx context.Context, target outboundpor
 	for _, item := range payload.Attachments {
 		switch item.Kind {
 		case "image":
-			mediaID, uploadErr := client.uploadPrivateImage(ctx, token, item.FileName, item.MediaType, item.Content)
-			if uploadErr != nil {
-				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+			mediaID := strings.TrimSpace(item.MediaID)
+			if mediaID != "" {
+				if len(item.Content) != 0 || invalid(mediaID) {
+					return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
+				}
+			} else {
+				var uploadErr error
+				mediaID, uploadErr = client.uploadPrivateImage(ctx, token, item.FileName, item.MediaType, item.Content)
+				if uploadErr != nil {
+					return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+				}
 			}
 			attachments = append(attachments, map[string]any{"msgtype": "image", "image": map[string]string{"media_id": mediaID}})
 		case "mini_program":
-			mediaID, uploadErr := client.uploadPrivateImage(ctx, token, item.FileName, item.MediaType, item.Content)
-			if uploadErr != nil {
-				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+			mediaID := strings.TrimSpace(item.MediaID)
+			if mediaID != "" {
+				if len(item.Content) != 0 || invalid(mediaID) {
+					return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
+				}
+			} else {
+				var uploadErr error
+				mediaID, uploadErr = client.uploadPrivateImage(ctx, token, item.FileName, item.MediaType, item.Content)
+				if uploadErr != nil {
+					return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+				}
 			}
 			attachments = append(attachments, map[string]any{"msgtype": "miniprogram", "miniprogram": map[string]string{"title": item.Title, "pic_media_id": mediaID, "appid": item.AppID, "page": item.PagePath}})
 		case "file":
-			mediaID, uploadErr := client.uploadPrivateFile(ctx, token, item.FileName, item.MediaType, item.Content)
-			if uploadErr != nil {
-				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+			mediaID := strings.TrimSpace(item.MediaID)
+			if mediaID != "" {
+				if len(item.Content) != 0 || invalid(mediaID) {
+					return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
+				}
+			} else {
+				var uploadErr error
+				mediaID, uploadErr = client.uploadPrivateFile(ctx, token, item.FileName, item.MediaType, item.Content)
+				if uploadErr != nil {
+					return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+				}
 			}
 			attachments = append(attachments, map[string]any{"msgtype": "file", "file": map[string]string{"media_id": mediaID}})
 		case "link":
+			if strings.TrimSpace(item.MediaID) != "" || len(item.Content) != 0 {
+				return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
+			}
 			attachments = append(attachments, map[string]any{"msgtype": "link", "link": map[string]string{"title": item.Title, "picurl": item.PicURL, "desc": item.Description, "url": item.URL}})
 		default:
 			return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}

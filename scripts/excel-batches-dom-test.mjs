@@ -35,6 +35,14 @@ let pauseFirstRowPatch = true;
 let releaseInitialDetail;
 let pauseInitialDetail = true;
 let importedBatch;
+let selectedCoverID = 0;
+let coverSelectionPosts = 0;
+const coverLibrary = Array.from({ length: 13 }, (_, index) => ({
+  id: 42 + index,
+  name: index === 12 ? "第二页封面" : `启用图片-${index + 1}`,
+  enabled: true,
+  thumb_160_url: `/api/admin/image-library/${42 + index}/variants/thumb_160`,
+}));
 const calls = [];
 const batch = {
   id: 918,
@@ -42,6 +50,7 @@ const batch = {
   state: "pending_review",
   version: 3,
   cover_digest: "",
+  cover_image_id: 0,
   current_content_version: 1,
   summary: {
     total_rows: 1,
@@ -157,10 +166,35 @@ win.fetch = async (raw, init = {}) => {
   if (url.startsWith("/api/admin/operation-batches/919?"))
     return json({ batch: importedBatch, rows: [row], next_cursor: "" });
   if (url.startsWith("/api/admin/operation-batches/918/cover?")) {
-    assert.ok(init.body instanceof win.File);
-    cover = batch.cover_digest = row.card.cover_digest = "sha256:cover";
+    const contentType = new Headers(init.headers).get("Content-Type") || "";
+    if (contentType.startsWith("application/json")) {
+      const body = JSON.parse(init.body);
+      assert.equal(body.cover_image_id, 42);
+      coverSelectionPosts += 1;
+      selectedCoverID = body.cover_image_id;
+      cover = batch.cover_digest = row.card.cover_digest = "sha256:existing-cover";
+      batch.cover_image_id = selectedCoverID;
+    } else {
+      assert.ok(init.body instanceof win.File);
+      cover = batch.cover_digest = row.card.cover_digest = "sha256:cover";
+      batch.cover_image_id = 43;
+    }
     batch.version++;
-    return json({ batch, cover_digest: cover });
+    return json({ batch, cover_digest: cover, cover_image_id: batch.cover_image_id });
+  }
+  if (url.startsWith("/api/admin/image-library?") && url.includes("enabled_only=true")) {
+    const query = new URL(url, "https://fixture.test").searchParams;
+    assert.equal(query.get("limit"), "12");
+    const offset = Number(query.get("offset"));
+    const items = coverLibrary.slice(offset, offset + 12);
+    return json({
+      items,
+      total: coverLibrary.length,
+      limit: 12,
+      offset,
+      has_more: offset + items.length < coverLibrary.length,
+      next_offset: offset + items.length < coverLibrary.length ? offset + items.length : null,
+    });
   }
   if (url.endsWith("/preview-approval")) {
     assert.equal(JSON.parse(init.body).expected_version, batch.version);
@@ -243,7 +277,7 @@ win.fetch = async (raw, init = {}) => {
     });
   if (url.endsWith("/versions"))
     return json({
-      items: [{ content_version: 1, created_at: "2026-09-09T00:00:00Z" }],
+      items: [{ content_version: 1, cover_image_id: 42, cover_digest: "sha256:existing-cover", created_at: "2026-09-09T00:00:00Z" }],
     });
   if (url.startsWith("/api/admin/operation-batches/918/versions/1?"))
     return json({ rows: [row], next_cursor: "" });
@@ -325,6 +359,43 @@ assert.equal(
   true,
   "frontend prevents approval before a batch cover exists",
 );
+await click("选择已有启用图片");
+const picker = () => win.document.querySelector('dialog[aria-label="选择已有启用图片"]');
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.ok(picker(), "enabled image picker did not open");
+assert.ok(picker().textContent.includes("启用图片-1"), "picker did not render the first image page");
+assert.equal(batch.cover_image_id, 0, "opening the picker changed the frozen cover before selection");
+const nextCoverPage = [...picker().querySelectorAll("button")].find((item) => item.textContent === "下一页");
+assert.ok(nextCoverPage && !nextCoverPage.disabled, "picker did not expose its second page");
+nextCoverPage.click();
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.ok(picker().textContent.includes("第二页封面"), "picker did not follow image-library offset pagination");
+const cancelPicker = [...picker().querySelectorAll("button")].find((item) => item.textContent === "取消");
+assert.ok(cancelPicker, "picker did not expose cancellation");
+cancelPicker.click();
+await new Promise((resolve) => setTimeout(resolve, 10));
+assert.equal(picker(), null, "cancelling the image picker did not close it");
+assert.equal(batch.cover_image_id, 0, "cancelling the image picker changed the batch cover");
+await click("选择已有启用图片");
+await new Promise((resolve) => setTimeout(resolve, 20));
+const firstCoverChoice = picker().querySelector('button[data-cover-image-id="42"]');
+assert.ok(firstCoverChoice, "picker did not expose the selected stable image id");
+firstCoverChoice.click();
+await new Promise((resolve) => setTimeout(resolve, 30));
+assert.equal(coverSelectionPosts, 1, "selecting an existing image did not issue one JSON cover command");
+assert.equal(selectedCoverID, 42, "existing cover command used the wrong stable material id");
+assert.ok(
+  calls.some((call) => call.url.startsWith("/api/admin/operation-batches/918/cover?") && String(call.init.headers["Content-Type"] || "").startsWith("application/json") && JSON.parse(call.init.body).cover_image_id === 42),
+  "existing cover selection did not use the documented JSON body",
+);
+assert.ok(win.document.body.textContent.includes("冻结封面：素材 #42"), "selected cover was not shown as frozen material evidence");
+await click("查看旧版本");
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.ok(win.document.body.textContent.includes("素材 #42"), "history did not retain the frozen cover material id");
+const closeHistory = [...win.document.querySelectorAll("dialog button")].find((item) => item.textContent === "关闭");
+assert.ok(closeHistory, "history dialog did not expose close");
+closeHistory.click();
+await new Promise((resolve) => setTimeout(resolve, 10));
 const coverInput = win.document.querySelector(
   'input[aria-label="统一封面图片"]',
 );
@@ -349,6 +420,11 @@ assert.equal(
   approved,
   1,
   "one click previews then submits one approval command",
+);
+assert.equal(
+  [...win.document.querySelectorAll("button")].some((item) => item.textContent === "选择已有启用图片"),
+  false,
+  "submitted batch still exposed existing-cover selection",
 );
 assert.ok(win.document.body.textContent.includes("任务已创建，待员工执行"));
 await click("发送效果与复盘");

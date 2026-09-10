@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
@@ -26,6 +27,33 @@ type PrivateMessageProvider struct {
 	targets  PrivateMessageTargetResolver
 	payloads PrivateMessagePayloadReader
 	sender   PrivateMessageSender
+}
+
+func (p *PrivateMessageProvider) Preflight(ctx context.Context, envelope effectport.Envelope, _ string) (bool, time.Duration, error) {
+	if p == nil || !p.enabled || envelope.Kind != effectport.KindOutboundMessage {
+		return true, 0, nil
+	}
+	preparer, ok := p.payloads.(outboundport.PrivateMessageMediaPreflighter)
+	if !ok {
+		return true, 0, nil
+	}
+	intent, err := p.intents.PrivateMessageIntentForEnvelope(ctx, envelope)
+	if err != nil {
+		return false, 0, err
+	}
+	err = preparer.PreparePrivateMessageMedia(ctx, intent.PayloadReference, intent.PayloadDigest)
+	if err == nil {
+		return true, 0, nil
+	}
+	var pending outboundport.MediaPreparationPendingError
+	if errors.As(err, &pending) {
+		return false, pending.RetryAfter(), nil
+	}
+	var terminal outboundport.MediaPreparationTerminalError
+	if errors.As(err, &terminal) || errors.Is(err, outboundport.ErrMaterialSourceChanged) || errors.Is(err, outboundport.ErrMaterialPreparationNotFound) {
+		return true, 0, nil
+	}
+	return false, 0, err
 }
 
 func NewPrivateMessageProvider(enabled bool, intents PrivateMessageIntentReader, targets PrivateMessageTargetResolver, payloads PrivateMessagePayloadReader, sender PrivateMessageSender) (*PrivateMessageProvider, error) {
@@ -70,6 +98,10 @@ func (p *PrivateMessageProvider) Execute(ctx context.Context, envelope effectpor
 			state = effectport.StateFinalFailed
 			if attempted && failure.OutcomeUnknown() {
 				state = effectport.StateUnknown
+			} else if retryable, ok := err.(outboundport.PrivateMessageRetryableRejection); ok && attempted && retryable.Retryable() {
+				state = effectport.StateRetryable
+				p.record(ctx, intent.PayloadReference, target, "", retryable.FailureCode())
+				return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash(string(base), "provider-retryable-rejection", retryable.FailureCode()), CallAttempted: true, RealExternalCallExecuted: false, SafeToRetryRejected: true, FailureCode: retryable.FailureCode()}, nil
 			}
 		} else if attempted {
 			state = effectport.StateUnknown

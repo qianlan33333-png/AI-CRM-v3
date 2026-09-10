@@ -242,13 +242,22 @@ def code_files() -> list[Path]:
                     if child.is_file() and child.suffix.lower() in {".go", ".sql", ".py", ".sh"}:
                         found.add(child)
 
-    # Only newly changed migration SQL is in scope. Historical migration files
-    # are not a source snapshot and may legitimately contain excluded domains.
+    # A migration belongs to this boundary only when its owner is the
+    # configuration-definition importer. Other migrations can legitimately
+    # reference media, external-effect, or customer fields in their own
+    # domains, so a changed migration filename alone is not import evidence.
+    # Keep this mapping explicit: extending the importer requires an audited
+    # owner decision instead of silently widening this checker to every SQL
+    # migration.
+    configuration_definition_migration_owners = {
+        "migrations/0030_config_definition_import.sql": "internal/configmigration/target",
+    }
     for relative in changed:
-        if relative.startswith("migrations/") and Path(relative).suffix.lower() == ".sql":
-            path = root / relative
-            if path.is_file():
-                found.add(path)
+        if relative not in configuration_definition_migration_owners:
+            continue
+        path = root / relative
+        if path.is_file():
+            found.add(path)
     return sorted(found)
 
 

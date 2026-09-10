@@ -53,10 +53,13 @@ type ExcelCard struct {
 	Path        string            `json:"path"`
 	Title       string            `json:"title"`
 	CoverDigest effectport.Digest `json:"cover_digest"`
+	// CoverImageID is an opaque, stable Media image reference. Zero preserves
+	// pre-0126 Python-backed covers; new Media-backed covers require it.
+	CoverImageID int64 `json:"cover_image_id,omitempty"`
 }
 
 func (c ExcelCard) Valid() bool {
-	return validLegacyReferencePart(c.AppID, 128) && validLegacyReferencePart(c.Path, 1024) && strings.HasPrefix(c.Path, "pages/") && !strings.Contains(c.Path, "://") && !strings.HasPrefix(c.Path, "//") && len(c.Title) <= 512 && (c.CoverDigest == "" || effectport.ValidDigest(c.CoverDigest))
+	return validLegacyReferencePart(c.AppID, 128) && validLegacyReferencePart(c.Path, 1024) && strings.HasPrefix(c.Path, "pages/") && !strings.Contains(c.Path, "://") && !strings.HasPrefix(c.Path, "//") && len(c.Title) <= 512 && c.CoverImageID >= 0 && (c.CoverDigest == "" || effectport.ValidDigest(c.CoverDigest)) && (c.CoverImageID == 0 || effectport.ValidDigest(c.CoverDigest))
 }
 
 type DeferredTarget struct {

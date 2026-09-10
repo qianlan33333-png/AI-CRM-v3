@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,7 @@ import (
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -246,12 +248,12 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if err != nil || sourceDigest != string(effectport.Hash("group-ops.material.intent.v1", string(canonicalSource))) {
 		t.Fatalf("source digest=%q canonical=%s err=%v", sourceDigest, canonicalSource, err)
 	}
-	// This executes the actual Media SourceCapturer and Preparation Reader
-	// through the Composition adapter against JSONB-read facts. It verifies
-	// semantic equality rather than byte ordering and performs no upload.
+	// New accepted executions freeze source-only facts. Verify the actual Media
+	// capture boundary after the JSONB round trip; credential preparation is
+	// deferred to the EER preflight and therefore must not be inferred here.
 	readiness := groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaStore, freezer: freezer}
-	if err = readiness.VerifyMaterialReady(ctx, materialJSON, sourceJSON, sourceDigest, time.Now().UTC()); err != nil {
-		t.Fatalf("real Media readiness after JSONB round trip: %v", err)
+	if err = readiness.VerifyFrozenMaterialSources(ctx, materialJSON, sourceJSON, sourceDigest); err != nil {
+		t.Fatalf("real Media source verification after JSONB round trip: %v", err)
 	}
 	if evidence.calls != 1 {
 		t.Fatalf("provider delivery calls=%d", evidence.calls)
@@ -643,6 +645,206 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	})
 }
 
+// TestGroupOpsSharedRiverMaterialPreparationAutoResumes proves that an
+// accepted Group Ops image intent needs no second operator action when its
+// temporary provider credential is absent: the original group EER snoozes
+// before an EER attempt, preparation completes separately, and that same
+// River job resumes with the Media-owned credential.
+func TestGroupOpsSharedRiverMaterialPreparationAutoResumes(t *testing.T) {
+	native, cleanup := groupOpsIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	platformPool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer platformPool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(platformPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	provider := newGroupOpsRuntimeWeCom(t)
+	defer provider.Close()
+	releaseUpload := provider.holdUploads()
+	defer releaseUpload()
+	wecomClient, err := wecomadapter.New(wecomadapter.Config{
+		Enabled: true, CorpID: "runtime-corp", AgentID: "runtime-agent", Secret: "runtime-app-secret", ContactSecret: "runtime-contact-secret",
+		AdminCallbackURI: "https://example.test/admin-callback", SidebarCallbackURI: "https://example.test/sidebar-callback",
+		APIBase: provider.URL(), HTTPClient: provider.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var actorID int64
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-material-river','$argon2id$material','Group Ops Material River','journey-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	groupStore, err := groupopsstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaStore, err := mediastore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This source predates the binding below, as can occur for a retained
+	// library record. It is valid and frozen at acceptance but has no cached
+	// credential or already-accepted material EER.
+	image, err := mediaStore.CreateImage(ctx, actorID, "groupops-material-image-0001", mediastore.ImageInput{FileName: "journey.png", MIME: "image/png", Name: "Group Ops journey", Content: []byte("group-ops-media-fixture"), Width: 2, Height: 2, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageID, ok := image["id"].(int64)
+	if !ok || imageID < 1 {
+		t.Fatalf("image=%+v", image)
+	}
+
+	workers := river.NewWorkers()
+	effectsModule := externaleffects.NewModuleRegistration()
+	if err = effectsModule.RegisterWorkers(workers); err != nil {
+		t.Fatal(err)
+	}
+	insertClient, err := platformjobqueue.NewInsertClient(native, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectStore, err := externaleffects.NewRepository(native, insertClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeDigest := string(effectport.Hash("groupops.material.auto-resume.scope.v1"))
+	materialPreparation, err := outbound.NewMaterialPreparationService(uow, effectStore, native, mediaStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = mediaStore.BindMaterialPreparationAccepter(materialPreparation, scopeDigest); err != nil {
+		t.Fatal(err)
+	}
+	freezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{sources: mediaStore, preparer: materialPreparation, scopeDigest: scopeDigest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materials, err := newUnifiedGroupOpsMaterialAdapter(mediaStore, freezer, mediaStore, materialPreparation, scopeDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staff := groupOpsStaffAdapter{access: accessstore.NewPostgreSQL(), owners: groupStore}
+	runtimeService := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, effectStore, staff, nil, staff, nil, journeyReconciler{repository: effectStore}, materials)
+	runtimeService.SetDispatchEnabled(true)
+	readiness := groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaStore, freezer: freezer}
+	groupProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
+		Enabled: true, Executions: groupOpsDispatchReader{uow: uow, execution: groupStore, senders: staff}, Materials: readiness, FrozenSources: readiness,
+		Writer: wecomClient, Sources: mediaStore, Preparer: materialPreparation, ScopeDigest: scopeDigest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialUploader, err := wecomadapter.NewMaterialUploader(wecomClient, scopeDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialProvider, err := outbound.NewMaterialPreparationProvider(materialPreparation, materialUploader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerRouter := outbound.NewProviderRouterWithGroupMessage(nil, groupProvider).WithSidebarMedia(outbound.MaterialEffectMux{GenericProvider: materialProvider})
+	if err = effectsModule.SetProviderAdapter(providerRouter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = effectsModule.Bind(effectStore, groupOpsRuntimeEffectSecurity{}); err != nil {
+		t.Fatal(err)
+	}
+	groupCompletion, err := outbound.NewGroupMessageCompletionSink(groupStore, groupStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completionRouter, err := outbound.NewCompletionRouter(nil, groupCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completionRouter.WithSidebarMedia(outbound.MaterialEffectMux{GenericCompletion: materialPreparation})
+	if err = effectStore.SetCompletionSink(completionRouter); err != nil {
+		t.Fatal(err)
+	}
+
+	planID := createRiverJourneyPlanWithImage(t, ctx, uow, groupStore, actorID, imageID)
+	if _, err = native.Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at) VALUES ('chat-river-1',$1,'River material',1,$2,clock_timestamp())`, actorID, string(effectport.Hash("runtime-directory", "chat-river-1"))); err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtimeService.AcceptBroadcast(ctx, planID, actorID, "river-runtime-material-0001")
+	if err != nil || first.Accepted != 1 || len(first.Executions) != 1 {
+		t.Fatalf("first acceptance=%+v err=%v", first, err)
+	}
+	groupEffectID := first.Executions[0].ExternalEffectID
+	if groupEffectID == "" {
+		t.Fatalf("group execution lacks effect=%+v", first.Executions[0])
+	}
+	if len(groupEffectID) <= len("eer_") {
+		t.Fatalf("invalid group effect ID %q", groupEffectID)
+	}
+	groupEffectNumeric, parseErr := strconv.ParseInt(groupEffectID[len("eer_"):], 10, 64)
+	if parseErr != nil || groupEffectNumeric < 1 {
+		t.Fatalf("invalid group effect ID %q: %v", groupEffectID, parseErr)
+	}
+	var materialRaw []byte
+	if err = native.QueryRow(ctx, `SELECT material_snapshot FROM group_ops_executions WHERE external_effect_id=$1`, groupEffectNumeric).Scan(&materialRaw); err != nil {
+		t.Fatal(err)
+	}
+	var intent mediaport.GroupOpsMaterialIntentSnapshot
+	if json.Unmarshal(materialRaw, &intent) != nil || mediaport.ValidateGroupOpsMaterialIntentSnapshot(intent) != nil || len(intent.Attachments) != 1 || intent.Attachments[0].MsgType != "image" || intent.Attachments[0].MediaID != "" {
+		t.Fatalf("accepted snapshot must freeze source-only intent: %s", materialRaw)
+	}
+	var preexisting int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM outbound_material_preparations WHERE source_ref=$1`, "image:"+strconv.FormatInt(imageID, 10)).Scan(&preexisting); err != nil || preexisting != 0 {
+		t.Fatalf("unexpected pre-existing preparation=%d err=%v", preexisting, err)
+	}
+	var groupJobID int64
+	if err = native.QueryRow(ctx, `SELECT job.river_job_id FROM external_effect_jobs job WHERE job.effect_id=$1`, groupEffectNumeric).Scan(&groupJobID); err != nil {
+		t.Fatal(err)
+	}
+
+	sharedRuntime, err := platformjobqueue.NewRuntime(native, workers, platformjobqueue.OutboundQueue, platformjobqueue.OutboundMediaQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, stop := startGroupOpsRiver(t, sharedRuntime)
+	start()
+	defer func() { releaseUpload(); stop() }()
+	waitGroupOpsMaterialPreflightSnooze(t, native, planID, imageID, groupJobID)
+	if got := provider.callCount(); got != 0 {
+		t.Fatalf("group provider reached before material credential: calls=%d", got)
+	}
+	if got := provider.uploadCount(); got != 0 {
+		t.Fatalf("material upload completed before release: uploads=%d", got)
+	}
+
+	// Releasing the isolated provider fixture completes the Material EER. The
+	// original Group Ops River row, rather than a second AcceptBroadcast, must
+	// then run and use exactly the returned temporary media ID.
+	releaseUpload()
+	waitGroupOpsProviderCalls(t, native, provider, 1)
+	var persistedGroupJob int64
+	var groupState string
+	var groupAttempts int
+	if err = native.QueryRow(ctx, `SELECT job.river_job_id,effect.state,effect.attempt_count FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1`, groupEffectNumeric).Scan(&persistedGroupJob, &groupState, &groupAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if persistedGroupJob != groupJobID || groupState != "executed" || groupAttempts != 1 {
+		t.Fatalf("group effect did not resume its original River row: job=%d/%d state=%s attempts=%d", persistedGroupJob, groupJobID, groupState, groupAttempts)
+	}
+	if got := provider.uploadCount(); got != 1 {
+		t.Fatalf("material uploads=%d want=1", got)
+	}
+	if calls := provider.callsByChat(); len(calls["chat-river-1"]) != 1 {
+		t.Fatalf("group calls=%+v", calls)
+	}
+	if mediaIDs := provider.mediaIDsByChat()["chat-river-1"]; len(mediaIDs) != 1 || mediaIDs[0] != "runtime-prepared-media-1" {
+		t.Fatalf("group did not use prepared media ID: %+v", provider.mediaIDsByChat())
+	}
+}
+
 // TestGroupOpsOperationMemberDirectoryPersistsVerifiedNames proves the
 // profile overlay is a Group Ops-owned projection: it is restricted to the
 // source snapshot and a later provider failure keeps the last verified name
@@ -877,12 +1079,18 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 }
 
 type groupOpsRuntimeWeCom struct {
-	server *httptest.Server
-	mu     sync.Mutex
-	calls  []groupOpsRuntimeWeComCall
+	server        *httptest.Server
+	mu            sync.Mutex
+	calls         []groupOpsRuntimeWeComCall
+	uploads       int
+	uploadGate    chan struct{}
+	uploadRelease sync.Once
 }
 
-type groupOpsRuntimeWeComCall struct{ chat, text, messageID string }
+type groupOpsRuntimeWeComCall struct {
+	chat, text, messageID string
+	mediaIDs              []string
+}
 
 type groupOpsRuntimeEffectSecurity struct{}
 
@@ -899,8 +1107,8 @@ func newGroupOpsRuntimeWeCom(t *testing.T) *groupOpsRuntimeWeCom {
 	fixture.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/cgi-bin/gettoken":
-			if request.URL.Query().Get("corpsecret") != "runtime-contact-secret" {
-				t.Errorf("unexpected contact secret")
+			if secret := request.URL.Query().Get("corpsecret"); secret != "runtime-contact-secret" && secret != "runtime-app-secret" {
+				t.Errorf("unexpected runtime secret")
 			}
 			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"runtime-contact-token","expires_in":7200}`))
 		case "/cgi-bin/externalcontact/add_msg_template":
@@ -911,15 +1119,27 @@ func newGroupOpsRuntimeWeCom(t *testing.T) *groupOpsRuntimeWeCom {
 				Text     struct {
 					Content string `json:"content"`
 				} `json:"text"`
+				Attachments []struct {
+					MessageType string `json:"msgtype"`
+					Image       struct {
+						MediaID string `json:"media_id"`
+					} `json:"image"`
+				} `json:"attachments"`
 			}
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.ChatType != "group" || body.Sender != "journey-sender" || len(body.ChatIDs) != 1 || (body.ChatIDs[0] != "chat-river-1" && body.ChatIDs[0] != "chat-river-2") {
 				t.Errorf("invalid frozen group request body=%+v err=%v", body, err)
 				http.Error(writer, "invalid request", http.StatusBadRequest)
 				return
 			}
+			mediaIDs := make([]string, 0, len(body.Attachments))
+			for _, attachment := range body.Attachments {
+				if attachment.MessageType == "image" && attachment.Image.MediaID != "" {
+					mediaIDs = append(mediaIDs, attachment.Image.MediaID)
+				}
+			}
 			fixture.mu.Lock()
 			messageID := "runtime-task-" + strconv.Itoa(len(fixture.calls)+1)
-			fixture.calls = append(fixture.calls, groupOpsRuntimeWeComCall{chat: body.ChatIDs[0], text: body.Text.Content, messageID: messageID})
+			fixture.calls = append(fixture.calls, groupOpsRuntimeWeComCall{chat: body.ChatIDs[0], text: body.Text.Content, messageID: messageID, mediaIDs: mediaIDs})
 			fixture.mu.Unlock()
 			if body.Text.Content == "provider result intentionally unknown" {
 				connection, _, hijackErr := writer.(http.Hijacker).Hijack()
@@ -931,6 +1151,44 @@ func newGroupOpsRuntimeWeCom(t *testing.T) *groupOpsRuntimeWeCom {
 				return
 			}
 			_, _ = fmt.Fprintf(writer, `{"errcode":0,"msgid":%q}`, messageID)
+		case "/cgi-bin/media/upload":
+			if request.URL.Query().Get("type") != "image" {
+				t.Errorf("unexpected material type %q", request.URL.Query().Get("type"))
+				http.Error(writer, "invalid material", http.StatusBadRequest)
+				return
+			}
+			if err := request.ParseMultipartForm(2 << 20); err != nil {
+				t.Errorf("parse material upload: %v", err)
+				http.Error(writer, "invalid material", http.StatusBadRequest)
+				return
+			}
+			file, _, err := request.FormFile("media")
+			if err != nil {
+				t.Errorf("read material upload: %v", err)
+				http.Error(writer, "invalid material", http.StatusBadRequest)
+				return
+			}
+			content, readErr := io.ReadAll(file)
+			_ = file.Close()
+			if readErr != nil || len(content) == 0 {
+				t.Errorf("empty material upload: %v", readErr)
+				http.Error(writer, "invalid material", http.StatusBadRequest)
+				return
+			}
+			fixture.mu.Lock()
+			gate := fixture.uploadGate
+			fixture.mu.Unlock()
+			if gate != nil {
+				select {
+				case <-gate:
+				case <-request.Context().Done():
+					return
+				}
+			}
+			fixture.mu.Lock()
+			fixture.uploads++
+			fixture.mu.Unlock()
+			_, _ = fmt.Fprintf(writer, `{"errcode":0,"media_id":"runtime-prepared-media-1","created_at":%d}`, time.Now().UTC().Unix())
 		case "/cgi-bin/externalcontact/get_groupmsg_send_result":
 			var body struct {
 				MessageID string `json:"msgid"`
@@ -971,12 +1229,42 @@ func (fixture *groupOpsRuntimeWeCom) callCount() int {
 	defer fixture.mu.Unlock()
 	return len(fixture.calls)
 }
+func (fixture *groupOpsRuntimeWeCom) uploadCount() int {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	return fixture.uploads
+}
+func (fixture *groupOpsRuntimeWeCom) holdUploads() func() {
+	fixture.mu.Lock()
+	fixture.uploadGate = make(chan struct{})
+	gate := fixture.uploadGate
+	fixture.mu.Unlock()
+	return func() {
+		fixture.uploadRelease.Do(func() {
+			close(gate)
+			fixture.mu.Lock()
+			if fixture.uploadGate == gate {
+				fixture.uploadGate = nil
+			}
+			fixture.mu.Unlock()
+		})
+	}
+}
 func (fixture *groupOpsRuntimeWeCom) callsByChat() map[string][]string {
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
 	items := make(map[string][]string)
 	for _, call := range fixture.calls {
 		items[call.chat] = append(items[call.chat], call.text)
+	}
+	return items
+}
+func (fixture *groupOpsRuntimeWeCom) mediaIDsByChat() map[string][]string {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	items := make(map[string][]string)
+	for _, call := range fixture.calls {
+		items[call.chat] = append(items[call.chat], call.mediaIDs...)
 	}
 	return items
 }
@@ -996,6 +1284,26 @@ func waitGroupOpsProviderCalls(t *testing.T, native *pgxpool.Pool, provider *gro
 		_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(id::text || ':' || kind || ':' || state || ':' || attempt::text, ','),'') FROM river_job`).Scan(&jobs)
 	}
 	t.Fatalf("provider calls=%d, want %d; effects=%s river=%s", provider.callCount(), expected, effects, jobs)
+}
+
+func waitGroupOpsMaterialPreflightSnooze(t *testing.T, native *pgxpool.Pool, planID, imageID, groupJobID int64) {
+	t.Helper()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		var groupQueued, materialEffects int
+		err := native.QueryRow(context.Background(), `SELECT
+			(SELECT count(*) FROM group_ops_executions execution JOIN external_effects effect ON effect.id=execution.external_effect_id JOIN external_effect_jobs effectJob ON effectJob.effect_id=effect.id AND effectJob.generation=effect.generation JOIN river_job job ON job.id=effectJob.river_job_id WHERE execution.plan_id=$1 AND effect.state='queued' AND effect.attempt_count=0 AND job.id=$3 AND job.state IN ('available','scheduled') AND COALESCE((job.metadata->>'snoozes')::integer,0)>0),
+			(SELECT count(*) FROM outbound_material_preparations preparation JOIN external_effects effect ON effect.id=substring(preparation.effect_id FROM 5)::bigint WHERE preparation.source_ref=$2 AND preparation.state IN ('queued','retryable_failed','accepted','executed'))`, planID, "image:"+strconv.FormatInt(imageID, 10), groupJobID).Scan(&groupQueued, &materialEffects)
+		if err == nil && groupQueued == 1 && materialEffects == 1 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	var effects, jobs, preparations string
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(id::text || ':' || kind || ':' || state || ':' || attempt_count::text, ','),'') FROM external_effects`).Scan(&effects)
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(id::text || ':' || kind || ':' || state || ':' || attempt::text, ','),'') FROM river_job`).Scan(&jobs)
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(source_ref || ':' || state || ':' || coalesce(effect_id,''), ','),'') FROM outbound_material_preparations`).Scan(&preparations)
+	t.Fatalf("Group Ops material preflight did not snooze before an EER attempt; effects=%s jobs=%s preparations=%s", effects, jobs, preparations)
 }
 
 func assertGroupOpsInitialEffectsPersisted(t *testing.T, native *pgxpool.Pool, planID int64, expected int) {
@@ -1086,6 +1394,24 @@ func startGroupOpsRiver(t *testing.T, runtime *platformjobqueue.Runtime) (func()
 
 func createRiverJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID int64) int64 {
 	return createRiverJourneyPlanWithMessages(t, ctx, uow, repository, actorID, "first", "second")
+}
+
+func createRiverJourneyPlanWithImage(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID, imageID int64) int64 {
+	t.Helper()
+	now := time.Now().UTC()
+	var planID int64
+	err := uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		planID, err = repository.Create(tx, groupopsport.Plan{Name: "River material auto-resume", Status: groupopsport.PlanActive, Revision: 1, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now})
+		if err != nil {
+			return err
+		}
+		return repository.Save(tx, groupopsport.Detail{Plan: groupopsport.Plan{ID: planID, Name: "River material auto-resume", Status: groupopsport.PlanActive, Revision: 1, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now}, Members: []groupopsport.Member{{StaffID: actorID}}, GroupAssets: []groupopsport.GroupAsset{{AssetRef: "chat-river-1"}}, Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "prepared image", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{{Kind: "image", ID: imageID}}}}}})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return planID
 }
 
 func createRiverJourneyPlanWithMessages(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID int64, firstMessage, secondMessage string) int64 {
@@ -1297,7 +1623,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql", "0119_group_ops_unnamed_groups.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0036_ai_assistant_review.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql", "0119_group_ops_unnamed_groups.sql", "0120_excel_batches.sql", "0124_operation_excel_batch_lifecycle.sql", "0125_outbound_material_preparation.sql", "0126_media_material_source_snapshots.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

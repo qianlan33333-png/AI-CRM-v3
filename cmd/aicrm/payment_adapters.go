@@ -3,9 +3,19 @@ package main
 import (
 	"context"
 	"errors"
+	"time"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 )
+
+func (router composedProviderRouter) Preflight(ctx context.Context, envelope effectport.Envelope, effectID string) (bool, time.Duration, error) {
+	if envelope.Owner == effectport.OwnerOutbound {
+		if p, ok := router.outbound.(effectport.ProviderPreflighter); ok {
+			return p.Preflight(ctx, envelope, effectID)
+		}
+	}
+	return true, 0, nil
+}
 
 type composedProviderRouter struct {
 	outbound   effectport.ProviderAdapter

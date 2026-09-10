@@ -148,6 +148,14 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, providerFactory, nil)
 }
 
+func weComProviderConfig(cfg platformconfig.Runtime) wecomadapter.Config {
+	return wecomadapter.Config{
+		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
+		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
+		APIBase: cfg.WeCom.APIBase, HTTPClient: cfg.WeCom.HTTPClient, UploadTimeout: cfg.WeCom.MaterialUploadTimeout,
+	}
+}
+
 // composeWithWeComClientFactoryAndSurveyCompletionHTTPClient keeps a supplied
 // HTTPS client inside test Composition only. Production Composition passes nil
 // and therefore retains the outbound provider's locked default transport.
@@ -314,6 +322,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = river.AddWorkerSafely[aiexcel.RefreshArgs](effectWorkers, excelWorker); err != nil {
 		return fail(err)
 	}
+	materialScopeDigest := string(effectport.Hash("outbound.material.scope.v1", cfg.WeCom.CorpID, cfg.WeCom.AgentID, "application_media_upload"))
+	materialRefreshWorker := outbound.NewMaterialRefreshWorker(nil, materialScopeDigest)
+	if err = river.AddWorkerSafely[outbound.MaterialRefreshJobArgs](effectWorkers, materialRefreshWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
@@ -342,23 +355,45 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	mediaModule := media.NewModuleRegistration()
+	mediaRepository, err := mediastore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	materialSources := excelMaterialSources{media: mediaRepository, excel: excelClient}
+	materialPreparation, err := outbound.NewMaterialPreparationService(uow, effectRepository, pool.Native(), materialSources)
+	if err != nil {
+		return fail(err)
+	}
+	if err = mediaRepository.BindMaterialPreparationAccepter(materialPreparation, materialScopeDigest); err != nil {
+		return fail(err)
+	}
+	materialRefreshEnqueuer, err := outbound.NewRiverMaterialRefreshEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	if err = materialPreparation.BindRefreshEnqueuer(materialRefreshEnqueuer); err != nil {
+		return fail(err)
+	}
+	if err = materialRefreshWorker.Bind(materialPreparation); err != nil {
+		return fail(err)
+	}
+	if err = materialPreparation.EnsureDailyRefresh(ctx); err != nil {
+		return fail(err)
+	}
 	periodicJobs := []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}
+	periodicJobs = append(periodicJobs, outbound.MaterialRefreshPeriodicJob())
 	if excelClient != nil {
 		periodicJobs = append(periodicJobs, aiexcel.Periodic())
 	}
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
 	if err != nil {
 		return fail(err)
 	}
 	effectsBindings, err := effectsModule.Bind(effectRepository, requestSecurity)
-	if err != nil {
-		return fail(err)
-	}
-	mediaModule := media.NewModuleRegistration()
-	mediaRepository, err := mediastore.NewPostgreSQL(pool.Native(), uow)
 	if err != nil {
 		return fail(err)
 	}
@@ -422,6 +457,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	mediaBindings, err := mediaModule.Bind(mediaService, requestSecurity)
 	if err != nil {
+		return fail(err)
+	}
+	if err = mediaBindings.MaterialPreparationAdmin.BindMaterialPreparation(mediaRepository, materialPreparation, materialPreparation, materialPreparation, materialScopeDigest); err != nil {
 		return fail(err)
 	}
 	mediaContentBindings, err := mediaModule.BindContentDelivery(contentDelivery, mediaRepository)
@@ -531,11 +569,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	var groupOpsProvider *outbound.GroupMessageProvider
-	materialFreezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaPreparationBindings.Reader})
+	materialFreezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{sources: mediaRepository, preparer: materialPreparation, scopeDigest: materialScopeDigest})
 	if err != nil {
 		return fail(err)
 	}
-	groupOpsMaterials, err := newGroupOpsMaterialAdapter(mediaContentBindings.SourceCapturer, materialFreezer)
+	groupOpsMaterials, err := newUnifiedGroupOpsMaterialAdapter(mediaContentBindings.SourceCapturer, materialFreezer, mediaRepository, materialPreparation, materialScopeDigest)
 	if err != nil {
 		return fail(err)
 	}
@@ -625,7 +663,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	outboundCompletionSink.WithSidebarMedia(sidebarMediaPreparation)
+	materialCompletionMux := outbound.MaterialEffectMux{GenericCompletion: materialPreparation, LegacyCompletion: sidebarMediaPreparation}
+	outboundCompletionSink.WithSidebarMedia(materialCompletionMux)
 	generationCompletionSink, err := automationprovider.NewGenerationCompletionSink(automationRuntime)
 	if err != nil {
 		return fail(err)
@@ -1179,11 +1218,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 
-	providerClient, err := providerFactory(wecomadapter.Config{
-		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
-		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
-		APIBase: cfg.WeCom.APIBase, HTTPClient: cfg.WeCom.HTTPClient,
-	})
+	providerClient, err := providerFactory(weComProviderConfig(cfg))
 	if err != nil {
 		return fail(err)
 	}
@@ -1205,7 +1240,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		PreparationWriter: mediaPreparationBindings.Writer,
 		Executions:        groupOpsDispatchReader{uow: uow, execution: groupOpsRepository, senders: groupOpsStaff},
 		Materials:         groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaContentBindings.SourceCapturer, freezer: materialFreezer},
+		FrozenSources:     groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaContentBindings.SourceCapturer},
 		Writer:            providerClient,
+		Sources:           mediaRepository,
+		Preparer:          materialPreparation,
+		ScopeDigest:       materialScopeDigest,
 	})
 	if err != nil {
 		return fail(err)
@@ -1292,10 +1331,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	excelBridge := &aiexcel.Bridge{Client: excelClient, App: aiService, Repo: aiRepository, Receipts: privateWriter, Provider: providerClient, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Scope: "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}
+	if excelClient != nil {
+		excelClient.MediaCovers = mediaRepository
+	}
+	excelBridge := &aiexcel.Bridge{Client: excelClient, App: aiService, Repo: aiRepository, Receipts: privateWriter, Provider: providerClient, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Scope: "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID, Covers: mediaRepository}
 	excelWorker.Bridge = excelBridge
 	aiService.ExcelSnapshot = excelBridge.PrepareSnapshot
-	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{deferred: aiRepository, resolver: oneID, trusted: queries, uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{excel: excelClient, content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}, providerClient)
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{deferred: aiRepository, resolver: oneID, trusted: queries, uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{excel: excelClient, content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository, sources: materialSources, preparer: materialPreparation, scopeDigest: materialScopeDigest}, providerClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -1319,7 +1361,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			tagCatalogMutationProvider = mutationProvider
 		}
 	}
-	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}}, Writer: providerClient})
+	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository, sources: materialSources, preparer: materialPreparation, scopeDigest: materialScopeDigest}}, Writer: providerClient})
 	if providerErr != nil {
 		return fail(providerErr)
 	}
@@ -1345,13 +1387,23 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	var sidebarMediaProvider externaleffects.ProviderAdapter
+	var materialProvider *outbound.MaterialPreparationProvider
 	if cfg.WeCom.Enabled && cfg.Effects.ProviderEnabled {
 		sidebarMediaProvider, err = outbound.NewSidebarMediaPreparationProvider(sidebarMediaPreparation, providerClient)
 		if err != nil {
 			return fail(err)
 		}
+		materialUploader, uploaderErr := wecomadapter.NewMaterialUploader(providerClient, materialScopeDigest)
+		if uploaderErr != nil {
+			return fail(uploaderErr)
+		}
+		materialProvider, err = outbound.NewMaterialPreparationProvider(materialPreparation, materialUploader)
+		if err != nil {
+			return fail(err)
+		}
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(sidebarMediaProvider).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
+	materialProviderMux := outbound.MaterialEffectMux{GenericProvider: materialProvider, LegacyProvider: sidebarMediaProvider}
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(materialProviderMux).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter, automation: generationProvider}); err != nil {
 		return fail(err)
 	}
@@ -1421,7 +1473,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		},
 		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: customerTimelineAdapter{uow: uow, reader: customerStore},
 		Products: productCatalog, ProductByID: productTargets, Orders: orderService, Entitlements: entitlements,
-		Coupons: sidebarCouponCatalog, Materials: mediaLibrary, MaterialSend: sidebarImagePreparation{images: mediaService, preparer: sidebarMediaPreparation, scope: cfg.WeCom.CorpID + ":" + cfg.WeCom.AgentID, enabled: cfg.WeCom.Enabled && cfg.Effects.ProviderEnabled}, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin, CursorSigningKey: cursorSigningKey,
+		Coupons: sidebarCouponCatalog, Materials: mediaLibrary, MaterialSend: sidebarImagePreparation{sources: mediaRepository, preparer: materialPreparation, scopeDigest: materialScopeDigest, enabled: cfg.WeCom.Enabled && cfg.Effects.ProviderEnabled}, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin, CursorSigningKey: cursorSigningKey,
 	})
 	if err != nil {
 		return fail(err)
@@ -1584,7 +1636,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	})
 	mediaUI := mediaModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets media.MediaAssets) error {
 		endpoint := map[string]string{"images": "api.admin_image_library_workspace", "mpLib": "api.admin_miniprogram_library_workspace", "attach": "api.admin_attachment_library_workspace"}[page]
-		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page], "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page], "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS})
 	})
 	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
 		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
@@ -2064,6 +2116,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)
+	mux.Handle("/api/admin/media-preparations", mediaHandler)
+	mux.Handle("/api/admin/media-preparations/", mediaHandler)
 	mux.Handle("/api/admin/image-library", mediaHandler)
 	mux.Handle("/api/admin/image-library/", mediaHandler)
 	mux.Handle("/api/admin/attachment-library", mediaHandler)

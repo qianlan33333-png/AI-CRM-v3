@@ -184,8 +184,11 @@ pass "Group Ops has no forbidden cross-domain imports or owner-table bypass"
 
 require_text 'GroupOpsMaterialSourceCapturer' "$REPO_ROOT/cmd/aicrm/group_ops_adapters.go"
 require_text 'GroupOpsMaterialSnapshotFreezer' "$REPO_ROOT/cmd/aicrm/group_ops_adapters.go"
-require_text 'newGroupOpsMaterialAdapter' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'outboundport.MaterialSourceReader' "$REPO_ROOT/cmd/aicrm/group_ops_adapters.go"
+require_text 'outboundport.MaterialPreparer' "$REPO_ROOT/cmd/aicrm/group_ops_adapters.go"
+require_text 'newUnifiedGroupOpsMaterialAdapter(' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'mediaContentBindings.SourceCapturer, materialFreezer, mediaRepository, materialPreparation, materialScopeDigest' "$REPO_ROOT/cmd/aicrm/composition.go"
 require_text 'ContentPackagesPath' "$REPO_ROOT/internal/groupops/http/handler.go"
-pass "Composition binds Media SourceCapturer/Freezer through stable ports; no kind/id source digest fallback"
+pass "Composition binds Media capture/freezing and Outbound source/preparation through stable ports; no kind/id source digest fallback"
 
 printf 'PR06 closure check: PASS: local Group Ops closure, Media snapshot binding, deterministic disabled Provider and frontend hard gates verified.\n'

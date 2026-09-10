@@ -25,13 +25,14 @@ type PrivateMessageIntentCommand struct {
 	PayloadDigest           effectport.Digest
 	PolicyHash              effectport.Digest
 	ReceiptKey              effectport.Digest
+	Lane                    effectport.Lane
 }
 
 func (c PrivateMessageIntentCommand) Valid() bool {
 	return strings.TrimSpace(c.SourceReference) != "" && len(c.SourceReference) <= 200 &&
 		((c.CustomerID > 0 && c.StaffID > 0 && c.DeferredTargetReference == "") || (c.CustomerID == 0 && c.StaffID == 0 && c.DeferredTargetReference == c.PayloadReference && strings.HasPrefix(c.DeferredTargetReference, "aiassistant:"))) && strings.TrimSpace(c.PayloadReference) != "" && len(c.PayloadReference) <= 200 &&
 		effectport.ValidDigest(c.SourceDigest) && effectport.ValidDigest(c.TargetDigest) &&
-		effectport.ValidDigest(c.PayloadDigest) && effectport.ValidDigest(c.PolicyHash) && effectport.ValidDigest(c.ReceiptKey)
+		effectport.ValidDigest(c.PayloadDigest) && effectport.ValidDigest(c.PolicyHash) && effectport.ValidDigest(c.ReceiptKey) && (c.Lane == "" || c.Lane == effectport.LaneOutboundExcel)
 }
 
 type PrivateMessageIntentResult struct {
@@ -59,9 +60,12 @@ type PrivateMessageIntent struct {
 }
 type PrivateMessageTarget struct{ ExternalUserID, StaffUserID string }
 type PrivateMessageAttachment struct {
-	Kind                                                                  string
-	Content                                                               []byte
-	FileName, MediaType, AppID, PagePath, Title, URL, Description, PicURL string
+	Kind                                                                           string
+	Content                                                                        []byte
+	FileName, MediaType, MediaID, AppID, PagePath, Title, URL, Description, PicURL string
+}
+type PrivateMessageMediaPreflighter interface {
+	PreparePrivateMessageMedia(context.Context, string, effectport.Digest) error
 }
 type PrivateMessagePayload struct {
 	Text        string
@@ -84,6 +88,16 @@ type PrivateMessageSender interface {
 type PrivateMessageSendError interface {
 	error
 	OutcomeUnknown() bool
+}
+
+// PrivateMessageRetryableRejection is implemented only for a completed
+// Provider response that proves no message task was created and explicitly
+// asks the caller to retry (for example WeCom errcode 45009). Transport
+// ambiguity must continue to use OutcomeUnknown instead.
+type PrivateMessageRetryableRejection interface {
+	PrivateMessageSendError
+	Retryable() bool
+	FailureCode() string
 }
 
 // DeferredTargetResolver is only used for a persisted, reviewed import reference.

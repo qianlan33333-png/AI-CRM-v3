@@ -15,7 +15,7 @@ import (
 // MediaPageRenderer is implemented by the v3 webshell adapter in composition.
 // The immutable donor template is read only from the release build directory.
 type MediaPageRenderer func(http.ResponseWriter, *http.Request, string, string, MediaAssets) error
-type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS string }
 type mediaUI struct {
 	dist   string
 	render MediaPageRenderer
@@ -113,12 +113,12 @@ func (h *mediaUI) assets() (MediaAssets, error) {
 	if err = json.Unmarshal(raw, &manifest); err != nil {
 		return MediaAssets{}, err
 	}
-	for _, name := range []string{"tokens", "labs", "admin"} {
+	for _, name := range []string{"tokens", "labs", "admin", "materialSaveHost"} {
 		if manifest.Entries[name] == "" {
 			return MediaAssets{}, errors.New("media bundle asset missing")
 		}
 	}
-	return MediaAssets{TokensCSS: "/media-assets/" + manifest.Entries["tokens"], LabsCSS: "/media-assets/" + manifest.Entries["labs"], AdminJS: "/media-assets/" + manifest.Entries["admin"]}, nil
+	return MediaAssets{TokensCSS: "/media-assets/" + manifest.Entries["tokens"], LabsCSS: "/media-assets/" + manifest.Entries["labs"], AdminJS: "/media-assets/" + manifest.Entries["admin"], MaterialSaveHostJS: "/media-assets/" + manifest.Entries["materialSaveHost"]}, nil
 }
 func (h *mediaUI) asset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {

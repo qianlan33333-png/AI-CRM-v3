@@ -56,7 +56,7 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 	native, cleanup := aiAssistantHTTPJourneyPool(t)
 	defer cleanup()
 	ctx := context.Background()
-	for _, migration := range []string{"0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql"} {
+	for _, migration := range []string{"0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql"} {
 		if err := applyAIAssistantHTTPJourneyMigration(ctx, native, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration, err)
 		}
@@ -440,6 +440,18 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if _, err = mediaRepo.UpdateMiniProgram(ctx, materials.miniID, staffID, "joint-runtime-mini-revised-0001", map[string]any{"title": "Runtime card revised"}); err != nil {
 		t.Fatal(err)
 	}
+	// The retained library sources predate this composition binding. Their
+	// first accepted message must therefore create generic preparation work in
+	// preflight, then reuse the resulting provider credential across Automation
+	// and AI instead of falling back to per-message byte uploads.
+	materialScopeDigest := string(effectport.Hash("joint-runtime.material.scope.v1"))
+	materialPreparation, err := outbound.NewMaterialPreparationService(uow, effects, native, mediaRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = mediaRepo.BindMaterialPreparationAccepter(materialPreparation, materialScopeDigest); err != nil {
+		t.Fatal(err)
+	}
 	automationService := automationapp.NewAgentServiceWithMediaReferences(uow, automationRepo, mediaRepo, mediaRepo, mediaRepo, mediaRepo, automationRepo)
 	agent := automationAudiencePublishedAgent(t, ctx, automationService, staffID, materials)
 	published, found, err := automationService.PublishedAgent(ctx, agent.ID)
@@ -479,12 +491,24 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frozen := automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo, attachments: mediaService, uow: uow, capturer: mediaRepo}}
+	materialClient, err := wecomadapter.New(wecomadapter.Config{Enabled: true, CorpID: "runtime-corp", AgentID: "runtime-agent", Secret: "runtime-app-secret", ContactSecret: "runtime-contact-secret", AdminCallbackURI: "https://example.test/admin-callback", SidebarCallbackURI: "https://example.test/sidebar-callback", APIBase: automationWeCom.URL, HTTPClient: automationWeCom.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialUploader, err := wecomadapter.NewMaterialUploader(materialClient, materialScopeDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialProvider, err := outbound.NewMaterialPreparationProvider(materialPreparation, materialUploader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo, attachments: mediaService, uow: uow, capturer: mediaRepo, sources: mediaRepo, preparer: materialPreparation, scopeDigest: materialScopeDigest}}
 	messageProvider, err := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: true, CorpScope: "wecom-corp:runtime-corp", Executions: messages, Identities: outboundIdentityAdapter{uow: uow, reader: identities}, Staff: segmentStaff, Content: automationService, Payloads: frozen, Writer: automationWriter})
 	if err != nil {
 		t.Fatal(err)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, aiPrivateTargetResolver{uow: uow, identities: identities, access: accessRepository, relationships: wecom.NewPostgreSQLFollowRelationshipStore(), corpID: "runtime-corp"}, aiPrivatePayloadReader{content: aiRepo, images: mediaService, materials: mediaRepo, attachments: mediaService, uow: uow, capturer: mediaRepo}, automationWriter)
+	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, aiPrivateTargetResolver{uow: uow, identities: identities, access: accessRepository, relationships: wecom.NewPostgreSQLFollowRelationshipStore(), corpID: "runtime-corp"}, aiPrivatePayloadReader{content: aiRepo, images: mediaService, materials: mediaRepo, attachments: mediaService, uow: uow, capturer: mediaRepo, sources: mediaRepo, preparer: materialPreparation, scopeDigest: materialScopeDigest}, automationWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +536,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	effectWorker := externaleffects.NewWorker(nil, outbound.NewProviderRouterWithMessages(nil, groupProvider, messageProvider).WithPrivateMessage(privateProvider))
+	effectWorker := externaleffects.NewWorker(nil, outbound.NewProviderRouterWithMessages(nil, groupProvider, messageProvider).WithPrivateMessage(privateProvider).WithSidebarMedia(outbound.MaterialEffectMux{GenericProvider: materialProvider}))
 	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, effectWorker); err != nil {
 		t.Fatal(err)
 	}
@@ -537,6 +561,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	completion.WithAutomationMessage(messages)
+	completion.WithSidebarMedia(outbound.MaterialEffectMux{GenericCompletion: materialPreparation})
 	if err = effects.SetCompletionSink(completion); err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +585,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 
 	// Bootstrap the empty and one-member snapshots while no policy is active.
 	// The shared runtime below is stopped for all three business acceptances.
-	bootstrap, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
+	bootstrap, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue, platformjobqueue.OutboundMediaQueue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +703,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		t.Fatal("provider was called before shared runtime start")
 	}
 
-	shared, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
+	shared, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue, platformjobqueue.OutboundMediaQueue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,8 +714,11 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	automationAudienceEventuallyWithDiagnostics(t, "joint source completions", func() bool {
 		return automationWeCom.Calls() == 2 && groupWeCom.callCount() == 4 && jointInitialCompletionsPersisted(ctx, native, policy.ID, plan.ID, groupPlan, unknownPlan, customers[1], staffID)
 	}, func() string { return jointRuntimeDiagnostics(ctx, native) })
-	if uploads := automationWeCom.Uploads(); uploads != 6 {
-		t.Fatalf("frozen mixed-media uploads=%d want 6", uploads)
+	// Image and miniprogram thumbnail share one frozen Media source. The file
+	// is the only other source, so both Automation and AI messages reuse two
+	// generic credentials instead of performing three byte uploads per message.
+	if uploads := automationWeCom.Uploads(); uploads != 2 {
+		t.Fatalf("frozen mixed-media uploads=%d want=2 unique source credentials", uploads)
 	}
 	waitGroupOpsDelayedSuccessors(t, native, groupPlan, 2)
 	var earliestDelayedDue time.Time
@@ -713,7 +741,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		t.Fatalf("replayed acceptance minted effects=%d want %d", effectsAfterReplay, effectsBeforeReplay)
 	}
 	// Restart must not re-send the unknown group effects or the delayed normal nodes.
-	restarted, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
+	restarted, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue, platformjobqueue.OutboundMediaQueue)
 	if err != nil {
 		t.Fatal(err)
 	}

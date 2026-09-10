@@ -60,6 +60,12 @@ const (
 )
 
 type State string
+type Lane string
+
+const (
+	LaneOutboundExcel Lane = "outbound_excel"
+	LaneOutboundMedia Lane = "outbound_media"
+)
 
 const (
 	StateAccepted    State = "accepted"
@@ -95,6 +101,8 @@ func (value Envelope) Fingerprint() Digest {
 type AcceptCommand struct {
 	ReceiptKey Digest
 	Envelope   Envelope
+	// Lane selects a bounded shared River lane. Empty preserves legacy routing.
+	Lane Lane
 	// ScheduledAt is optional. A zero value keeps the existing immediate
 	// acceptance semantics; a future value is persisted in the River job so
 	// durable Group Ops delay nodes cannot run early.
@@ -102,16 +110,16 @@ type AcceptCommand struct {
 }
 
 func (command AcceptCommand) Valid() bool {
-	return ValidDigest(command.ReceiptKey) && command.Envelope.Valid()
+	return ValidDigest(command.ReceiptKey) && command.Envelope.Valid() && (command.Lane == "" || command.Lane == LaneOutboundExcel || command.Lane == LaneOutboundMedia)
 }
 func (command AcceptCommand) Digest() Digest {
 	if !command.Valid() {
 		return ""
 	}
 	if command.ScheduledAt.IsZero() {
-		return Hash("accept", string(command.ReceiptKey), string(command.Envelope.Fingerprint()))
+		return Hash("accept", string(command.ReceiptKey), string(command.Envelope.Fingerprint()), string(command.Lane))
 	}
-	return Hash("accept", string(command.ReceiptKey), string(command.Envelope.Fingerprint()), command.ScheduledAt.UTC().Format(time.RFC3339Nano))
+	return Hash("accept", string(command.ReceiptKey), string(command.Envelope.Fingerprint()), string(command.Lane), command.ScheduledAt.UTC().Format(time.RFC3339Nano))
 }
 
 type Projection struct {
@@ -204,6 +212,14 @@ type ProviderAdapter interface {
 	Execute(context.Context, Envelope, Attempt) (AdapterResult, error)
 }
 
+// ProviderPreflighter may defer a queued effect before an attempt exists. It
+// may persist or inspect prerequisite work, but must not perform the message
+// Provider write represented by the effect. Returning ready=false snoozes the
+// same River job and leaves attempt_count unchanged.
+type ProviderPreflighter interface {
+	Preflight(context.Context, Envelope, string) (ready bool, retryAfter time.Duration, err error)
+}
+
 type Attempt struct {
 	// EffectID lets a Provider adapter load its owner-owned immutable dispatch
 	// snapshot without placing business payloads in the External Effects tables.
@@ -221,7 +237,12 @@ type AdapterResult struct {
 	FailureCode              string
 	CallAttempted            bool
 	RealExternalCallExecuted bool
-	Artifact                 ResultArtifact
+	// SafeToRetryRejected is restricted to a completed Provider response that
+	// proves no external effect was created. The kernel accepts it only for the
+	// bounded material-upload and Excel-message lanes; ambiguous sends remain
+	// outcome_unknown.
+	SafeToRetryRejected bool
+	Artifact            ResultArtifact
 }
 
 // ResultArtifact is a validated, opaque result. EER persists no business

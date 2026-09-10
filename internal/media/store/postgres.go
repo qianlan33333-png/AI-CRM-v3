@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/media/domain"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -43,6 +45,9 @@ func (e *ReferenceConflict) Unwrap() error { return ErrReferences }
 type Repository struct {
 	pool *pgxpool.Pool
 	uow  platformport.UnitOfWork
+
+	materialPreparationAccepter    outboundport.MaterialPreparationAccepter
+	materialPreparationScopeDigest string
 }
 
 func NewPostgreSQL(pool *pgxpool.Pool, uow platformport.UnitOfWork) (*Repository, error) {
@@ -226,6 +231,11 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12) RETURNING id,created_at,updat
 			return err
 		}
 		out = imageMap(id, input.FileName, input.Name, input.Description, input.Tags, input.Category, input.MIME, int64(len(input.Content)), input.Width, input.Height, input.Enabled, created, updated)
+		if input.Enabled {
+			if err = r.acceptMaterialPreparationWithin(txctx, "image:"+strconv.FormatInt(id, 10)); err != nil {
+				return err
+			}
+		}
 		return r.complete(txctx, "image.create", "image", actor, key, id, out, "media.image_created")
 	})
 	return out, err
@@ -418,6 +428,7 @@ func (r *Repository) UpdateImage(ctx context.Context, id, actor int64, key strin
 		if err != nil {
 			return err
 		}
+		wasEnabled := enabled
 		if v, ok := patch["name"].(string); ok {
 			name = strings.TrimSpace(v)
 		}
@@ -459,6 +470,11 @@ func (r *Repository) UpdateImage(ctx context.Context, id, actor int64, key strin
 			return err
 		}
 		out = imageMap(id, file, name, description, tags, category, mime, size, width, height, enabled, created, updated)
+		if !wasEnabled && enabled {
+			if err = r.acceptMaterialPreparationWithin(txctx, "image:"+strconv.FormatInt(id, 10)); err != nil {
+				return err
+			}
+		}
 		return r.complete(txctx, "image.update", "image", actor, key, id, out, "media.image_metadata_updated")
 	})
 	return out, err
@@ -644,6 +660,11 @@ func (r *Repository) CreateAttachment(ctx context.Context, actor int64, key stri
 		}
 		out = attachmentMap(id, input.FileName, input.Name, input.Description, "application/pdf", tags, int64(len(input.Content)), input.Enabled, version, created, updated)
 		out["created_by"], out["updated_by"] = actor, actor
+		if input.Enabled {
+			if err = r.acceptMaterialPreparationWithin(txctx, "attachment:"+strconv.FormatInt(id, 10)); err != nil {
+				return err
+			}
+		}
 		return r.complete(txctx, "attachment.create", "attachment", actor, key, id, out, "media.attachment_created")
 	})
 	return out, err
@@ -746,6 +767,7 @@ func (r *Repository) UpdateAttachment(ctx context.Context, id, actor int64, key 
 		if err != nil {
 			return err
 		}
+		wasEnabled := enabled
 		var tags []string
 		_ = json.Unmarshal(tagsBytes, &tags)
 		expected, ok := patch["expected_version"].(float64)
@@ -796,6 +818,11 @@ func (r *Repository) UpdateAttachment(ctx context.Context, id, actor int64, key 
 		}
 		out = attachmentMap(id, f, n, d, m, tags, size, enabled, version, c, u)
 		out["created_by"], out["updated_by"] = createdBy, actor
+		if !wasEnabled && enabled {
+			if err = r.acceptMaterialPreparationWithin(txctx, "attachment:"+strconv.FormatInt(id, 10)); err != nil {
+				return err
+			}
+		}
 		return r.complete(txctx, "attachment.update", "attachment", actor, key, id, out, "media.attachment_updated")
 	})
 	return out, err
@@ -1477,6 +1504,11 @@ func (r *Repository) CompleteAttachmentUpload(ctx context.Context, uploadID, act
 		}
 		out := attachmentMap(attachmentID, fileName, name, description, "application/pdf", []string{}, int64(len(content)), enabled, version, created, updated)
 		out["created_by"], out["updated_by"] = actor, actor
+		if enabled {
+			if err = r.acceptMaterialPreparationWithin(txctx, "attachment:"+strconv.FormatInt(attachmentID, 10)); err != nil {
+				return err
+			}
+		}
 		return r.complete(txctx, "attachment.upload.complete", "attachment", actor, key, attachmentID, map[string]any{"attachment_id": attachmentID, "item": out}, "media.attachment_upload_completed")
 	})
 	return attachmentID, err
