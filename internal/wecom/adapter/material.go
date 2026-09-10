@@ -166,13 +166,10 @@ func parseMaterialCreatedAt(raw json.RawMessage, now time.Time) (time.Time, bool
 		}
 	}
 	seconds, err := strconv.ParseInt(string(value), 10, 64)
-	if err != nil || seconds < 1 {
+	if err != nil || seconds < 1 || seconds > now.UTC().Add(5*time.Minute).Unix() {
 		return time.Time{}, false
 	}
 	createdAt := time.Unix(seconds, 0).UTC()
-	if createdAt.After(now.UTC().Add(5 * time.Minute)) {
-		return time.Time{}, false
-	}
 	return createdAt, true
 }
 

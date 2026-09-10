@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -69,12 +70,17 @@ func TestParseMaterialCreatedAtRejectsUntrustedTimestamps(t *testing.T) {
 		{name: "missing"},
 		{name: "null", raw: `null`},
 		{name: "empty string", raw: `""`},
+		{name: "zero number", raw: `0`},
 		{name: "negative number", raw: `-1`},
 		{name: "negative string", raw: `"-1"`},
+		{name: "leading plus", raw: `"+1"`},
+		{name: "surrounding spaces", raw: `" 1 "`},
 		{name: "decimal", raw: `1.5`},
 		{name: "exponent", raw: `1e9`},
 		{name: "non decimal string", raw: `"1.5"`},
 		{name: "overflow", raw: `"9223372036854775808"`},
+		{name: "max int number", raw: `9223372036854775807`},
+		{name: "max int string", raw: `"9223372036854775807"`},
 		{name: "future", raw: fmt.Sprintf(`"%d"`, testNow.Add(5*time.Minute+time.Second).Unix())},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -83,10 +89,16 @@ func TestParseMaterialCreatedAtRejectsUntrustedTimestamps(t *testing.T) {
 			}
 		})
 	}
+	boundary := testNow.Add(5 * time.Minute).Unix()
+	for _, raw := range []string{strconv.FormatInt(boundary, 10), fmt.Sprintf(`"%d"`, boundary)} {
+		if createdAt, ok := parseMaterialCreatedAt([]byte(raw), testNow); !ok || createdAt.Unix() != boundary {
+			t.Fatalf("boundary created_at=%q parsed=%s ok=%t", raw, createdAt, ok)
+		}
+	}
 }
 
 func TestMaterialUploaderClassifiesUntrustedCreatedAtAsUnknown(t *testing.T) {
-	for _, createdAt := range []string{`null`, `""`, `"-1"`, `1.5`, `"not-a-timestamp"`, fmt.Sprintf(`"%d"`, testNow.Add(5*time.Minute+time.Second).Unix())} {
+	for _, createdAt := range []string{`null`, `""`, `"-1"`, `1.5`, `"not-a-timestamp"`, `9223372036854775807`, `"9223372036854775807"`, fmt.Sprintf(`"%d"`, testNow.Add(5*time.Minute+time.Second).Unix())} {
 		t.Run(createdAt, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
