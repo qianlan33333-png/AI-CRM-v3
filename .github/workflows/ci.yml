@@ -204,6 +204,12 @@ jobs:
           sudo apt-get install --no-install-recommends --yes fonts-noto-cjk
           fc-match "Noto Sans CJK SC" | rg -qi "Noto"
           command -v google-chrome
+      - name: Install required Excel browser-journey dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/excel-browser-venv"
+          "$RUNNER_TEMP/excel-browser-venv/bin/pip" install -r components/excel-batches/requirements.txt
+          "$RUNNER_TEMP/excel-browser-venv/bin/python" -c 'import openpyxl'
+          echo "$RUNNER_TEMP/excel-browser-venv/bin" >> "$GITHUB_PATH"
       - name: Prepare frontend inputs
         run: node scripts/generate-ai-assistant-client.mjs
       - name: Run every required Chromium journey against the staged release

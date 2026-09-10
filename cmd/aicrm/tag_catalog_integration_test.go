@@ -302,7 +302,7 @@ func catalogIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate")
 	}
 	base := filepath.Join(filepath.Dir(file), "..", "..", "migrations")
-	for _, name := range []string{"0005_external_effects.sql", "0008_tag_catalog.sql", "0019_tag_catalog_sync_projection.sql"} {
+	for _, name := range []string{"0005_external_effects.sql", "0008_tag_catalog.sql", "0019_tag_catalog_sync_projection.sql", "0125_outbound_material_preparation.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(base, name))
 		if readErr != nil {
 			t.Fatal(readErr)

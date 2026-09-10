@@ -31,6 +31,8 @@ const (
 	DefaultMessageArchivePageBudget             = 10
 	DefaultContextTokenTTL                      = 5 * time.Minute
 	DefaultAutomationMaxRecipientsPerRun        = 1
+	DefaultWeComMaterialUploadTimeout           = 120 * time.Second
+	MaximumWeComMaterialUploadTimeout           = 4 * time.Minute
 )
 
 type Runtime struct {
@@ -80,6 +82,7 @@ type WeCom struct {
 	ContextSigningKey               string
 	ChannelStateHMACKey             string
 	ContextTokenTTL                 time.Duration
+	MaterialUploadTimeout           time.Duration
 	ChannelProviderReadEnabled      bool
 	ChannelQRProviderEnabled        bool
 	ChannelMediaPrepProviderEnabled bool
@@ -147,6 +150,9 @@ func NormalizeRuntimePolicyDefaults(cfg Runtime) Runtime {
 	}
 	if cfg.WeCom.ContextTokenTTL == 0 {
 		cfg.WeCom.ContextTokenTTL = DefaultContextTokenTTL
+	}
+	if cfg.WeCom.MaterialUploadTimeout == 0 {
+		cfg.WeCom.MaterialUploadTimeout = DefaultWeComMaterialUploadTimeout
 	}
 	if cfg.AutomationOperations.ProviderMode == "" {
 		cfg.AutomationOperations.ProviderMode = AutomationProviderDisabled
@@ -353,6 +359,7 @@ func Load() (Runtime, error) {
 			ChannelStateHMACKey:           os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 			StaffDirectoryRefreshInterval: 15 * time.Minute,
 			ContextTokenTTL:               DefaultContextTokenTTL,
+			MaterialUploadTimeout:         DefaultWeComMaterialUploadTimeout,
 		},
 		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
 		AutomationOperations: AutomationOperations{
@@ -454,6 +461,13 @@ func Load() (Runtime, error) {
 	}
 	if cfg.WeCom.MessageArchiveEnabled, err = strictBool("AICRM_WECOM_MESSAGE_ARCHIVE_ENABLED", false); err != nil {
 		return Runtime{}, err
+	}
+	if raw := os.Getenv("AICRM_WECOM_MATERIAL_UPLOAD_TIMEOUT_SECONDS"); raw != "" {
+		seconds, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || seconds < 1 || time.Duration(seconds)*time.Second > MaximumWeComMaterialUploadTimeout {
+			return Runtime{}, errors.New("invalid AICRM_WECOM_MATERIAL_UPLOAD_TIMEOUT_SECONDS")
+		}
+		cfg.WeCom.MaterialUploadTimeout = time.Duration(seconds) * time.Second
 	}
 	if raw := os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_PAGE_LIMIT"); raw != "" {
 		value, parseErr := strconv.ParseUint(raw, 10, 32)
@@ -604,6 +618,9 @@ func Load() (Runtime, error) {
 				return Runtime{}, errors.New("invalid enabled WeCom configuration")
 			}
 		}
+	}
+	if cfg.WeCom.MaterialUploadTimeout < time.Second || cfg.WeCom.MaterialUploadTimeout > MaximumWeComMaterialUploadTimeout {
+		return Runtime{}, errors.New("invalid WeCom material upload timeout")
 	}
 	if cfg.WeCom.CallbackEnabled {
 		values := []string{cfg.WeCom.CorpID, cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.ChannelStateHMACKey}

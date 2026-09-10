@@ -441,6 +441,23 @@ func TestAIGenerationProviderConfigurationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestWeComMaterialUploadTimeoutConfiguration(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	cfg, err := Load()
+	if err != nil || cfg.WeCom.MaterialUploadTimeout != 120*time.Second {
+		t.Fatalf("default timeout=%s err=%v", cfg.WeCom.MaterialUploadTimeout, err)
+	}
+	t.Setenv("AICRM_WECOM_MATERIAL_UPLOAD_TIMEOUT_SECONDS", "45")
+	cfg, err = Load()
+	if err != nil || cfg.WeCom.MaterialUploadTimeout != 45*time.Second {
+		t.Fatalf("configured timeout=%s err=%v", cfg.WeCom.MaterialUploadTimeout, err)
+	}
+	t.Setenv("AICRM_WECOM_MATERIAL_UPLOAD_TIMEOUT_SECONDS", "0")
+	if _, err = Load(); err == nil {
+		t.Fatal("zero material upload timeout accepted")
+	}
+}
+
 func TestDatabaseURLPrecedenceAndValidation(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://fallback")
 	t.Setenv("AICRM_DATABASE_URL", "postgres://canonical")

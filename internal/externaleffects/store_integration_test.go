@@ -636,6 +636,9 @@ func effectIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if _, err = pool.Exec(ctx, string(sql)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = pool.Exec(ctx, `ALTER TABLE external_effects ADD COLUMN delivery_lane TEXT NOT NULL DEFAULT '' CHECK(delivery_lane IN ('','outbound_excel','outbound_media'))`); err != nil {
+		t.Fatal(err)
+	}
 	for _, table := range []string{"external_effects", "external_effect_generations", "external_effect_operation_receipts", "external_effect_attempts", "external_effect_jobs"} {
 		var owned bool
 		if err = pool.QueryRow(ctx, `SELECT tableowner=current_user FROM pg_tables WHERE schemaname=current_schema() AND tablename=$1`, table).Scan(&owned); err != nil || !owned {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 )
@@ -145,13 +146,30 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		value, _, err = h.repository.Retry(r.Context(), command)
 	case "reconcile":
 		var body struct {
-			EvidenceDigest string `json:"evidence_digest"`
+			EvidenceDigest    string `json:"evidence_digest"`
+			Outcome           string `json:"outcome"`
+			MediaID           string `json:"media_id"`
+			ProviderCreatedAt string `json:"provider_created_at"`
 		}
 		if decodeEffectJSON(r, &body) != nil {
 			writeEffectError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
 		command.EvidenceDigest = Digest(body.EvidenceDigest)
+		command.ReconciliationOutcome = body.Outcome
+		if body.Outcome == "confirmed_effect" {
+			created, parseErr := time.Parse(time.RFC3339, body.ProviderCreatedAt)
+			if parseErr != nil || strings.TrimSpace(body.MediaID) == "" {
+				writeEffectError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			payload, _ := json.Marshal(struct {
+				MediaID           string    `json:"media_id"`
+				ProviderCreatedAt time.Time `json:"provider_created_at"`
+			}{body.MediaID, created.UTC()})
+			command.ReconciliationArtifact = ResultArtifact{Kind: "outbound.material.upload.v1", Payload: payload}
+			command.ReconciliationArtifact.Digest = Hash("external-effect.artifact.v1", command.ReconciliationArtifact.Kind, string(payload))
+		}
 		value, _, err = h.repository.Reconcile(r.Context(), command)
 	default:
 		writeEffectError(w, http.StatusNotFound, "not_found")

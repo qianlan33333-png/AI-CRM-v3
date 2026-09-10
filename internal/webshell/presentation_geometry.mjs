@@ -15,8 +15,28 @@ export async function verifyPresentation({ cdp, evaluate, waitFor, capture, base
   await cdp.call('Page.navigate', { url: baseURL + '/admin/productForm.html?id=' + productID });
   await waitFor(cdp, 'Boolean(window.__AICRMSurfaceFeedback) && Boolean(document.querySelector("#stage .surface-feedback__spinner"))', 'static loading did not appear while the page script was held');
   assert.ok(pausedScript, 'product entry was not intercepted');
-  const loadingPosition = await evaluate(cdp, `(() => {const r=document.querySelector('#stage .surface-feedback__spinner').getBoundingClientRect();return (r.top+r.height/2)/innerHeight})()`);
-  assert.ok(loadingPosition > .3 && loadingPosition < .7, 'page loading should be centered in the content area');
+  // The initial spinner is server-rendered before the asynchronous feedback
+  // Host. Its DOM can therefore exist before its stylesheet has taken effect
+  // on a cold Linux runner; wait for stylesheet application, not centering.
+  await waitFor(cdp, `(() => {
+    const spinner=document.querySelector('#stage .surface-feedback__spinner');
+    const busy=spinner?.closest('.surface-feedback__busy--initial');
+    const feedbackStyles=Array.from(document.styleSheets).some(sheet => typeof sheet.href === 'string' && sheet.href.includes('surfaceFeedbackStyles'));
+    if (!spinner || !busy || !feedbackStyles) return false;
+    const spinnerStyle=getComputedStyle(spinner), busyStyle=getComputedStyle(busy);
+    return spinnerStyle.width === '24px' && spinnerStyle.height === '24px' && busyStyle.display === 'flex' && busyStyle.justifyContent === 'center';
+  })()`, 'static loading styles did not become ready before geometry measurement');
+  await evaluate(cdp, 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  const loadingGeometry = await evaluate(cdp, `(() => {
+    const box=node => { const rect=node?.getBoundingClientRect(); return rect && {top:rect.top,bottom:rect.bottom,width:rect.width,height:rect.height}; };
+    const spinner=document.querySelector('#stage .surface-feedback__spinner');
+    const busy=spinner?.closest('.surface-feedback__busy--initial');
+    const stage=document.querySelector('#stage');
+    const spinnerStyle=spinner && getComputedStyle(spinner), busyStyle=busy && getComputedStyle(busy);
+    const center=spinner ? (spinner.getBoundingClientRect().top+spinner.getBoundingClientRect().height/2)/innerHeight : null;
+    return {center,viewport:{width:innerWidth,height:innerHeight},spinner:box(spinner),busy:box(busy),stage:box(stage),styles:{spinnerWidth:spinnerStyle?.width,busyDisplay:busyStyle?.display,busyJustifyContent:busyStyle?.justifyContent,feedbackStyles:Array.from(document.styleSheets).some(sheet => typeof sheet.href === 'string' && sheet.href.includes('surfaceFeedbackStyles'))}};
+  })()`);
+  assert.ok(loadingGeometry.center > .3 && loadingGeometry.center < .7, 'page loading should be centered in the content area: ' + JSON.stringify(loadingGeometry));
   await capture('page-loading-slow-script');
   await cdp.call('Fetch.failRequest', { requestId: pausedScript, errorReason: 'Failed' });
   await waitFor(cdp, 'Boolean(document.querySelector("[data-surface-resource-error] button"))', 'failed page script has no reload action');

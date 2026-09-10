@@ -65,10 +65,15 @@ type crossedError struct{}
 func (crossedError) Error() string               { return "uncertain" }
 func (crossedError) ProviderCallAttempted() bool { return true }
 
-type privateWriterError struct{ unknown bool }
+type privateWriterError struct {
+	unknown bool
+	retry   bool
+}
 
 func (e privateWriterError) Error() string        { return "private provider failure" }
 func (e privateWriterError) OutcomeUnknown() bool { return e.unknown }
+func (e privateWriterError) Retryable() bool      { return e.retry }
+func (e privateWriterError) FailureCode() string  { return "wecom_errcode_45009" }
 func messageEnvelope() effectport.Envelope {
 	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindAutomationMessage, SourceRefDigest: effectport.Hash("s"), TargetRefDigest: effectport.Hash("t"), PayloadDigest: effectport.Hash("p"), PolicyVersionHash: effectport.Hash("v")}
 }
@@ -126,6 +131,15 @@ func TestMessageProviderPrivateMessageRejectionsAreFinalNotUnknown(t *testing.T)
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestMessageProviderKnownRateLimitIsSafelyRetryable(t *testing.T) {
+	provider := messageProviderFixture(t, true, true, &writerStub{})
+	provider.writer = messageWriterAttempt{attempted: true, err: privateWriterError{retry: true}}
+	result, err := provider.Execute(context.Background(), messageEnvelope(), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effectport.StateRetryable || !result.CallAttempted || result.RealExternalCallExecuted || !result.SafeToRetryRejected || result.FailureCode != "wecom_errcode_45009" {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
 

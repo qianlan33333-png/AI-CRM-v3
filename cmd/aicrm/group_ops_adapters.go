@@ -17,6 +17,7 @@ import (
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -400,8 +401,11 @@ var _ groupopsport.ExternalReconciler = groupOpsExternalReconciler{}
 // only the frozen JSON snapshot and its digest. In particular, this adapter
 // does not derive a digest from a kind/id pair or reopen a mutable package.
 type groupOpsMaterialAdapter struct {
-	capturer mediaport.GroupOpsMaterialSourceCapturer
-	freezer  mediaport.GroupOpsMaterialSnapshotFreezer
+	capturer    mediaport.GroupOpsMaterialSourceCapturer
+	freezer     mediaport.GroupOpsMaterialSnapshotFreezer
+	sources     outboundport.MaterialSourceReader
+	preparer    outboundport.MaterialPreparer
+	scopeDigest string
 }
 
 // groupOpsMaterialReadinessAdapter repeats Media's capture/read boundary
@@ -414,6 +418,40 @@ type groupOpsMaterialReadinessAdapter struct {
 	}
 	capturer mediaport.GroupOpsMaterialSourceCapturer
 	freezer  mediaport.GroupOpsMaterialSnapshotFreezer
+}
+
+func (adapter groupOpsMaterialReadinessAdapter) VerifyFrozenMaterialSources(ctx context.Context, snapshotRaw, factsRaw json.RawMessage, factsDigest string) error {
+	canonicalSnapshot, snapshotErr := canonicalGroupOpsJSON(snapshotRaw)
+	canonicalFacts, factsErr := canonicalGroupOpsJSON(factsRaw)
+	if adapter.uow == nil || adapter.capturer == nil || snapshotErr != nil || factsErr != nil || !effectport.ValidDigest(effectport.Digest(factsDigest)) || factsDigest != string(effectport.Hash("group-ops.material.intent.v1", string(canonicalFacts))) {
+		return errors.New("Group Ops frozen material sources unavailable")
+	}
+	if emptyGroupOpsMaterialIntent(canonicalSnapshot, canonicalFacts) {
+		return nil
+	}
+	var facts struct {
+		SchemaVersion int                                      `json:"schema_version"`
+		Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
+	}
+	if json.Unmarshal(canonicalFacts, &facts) != nil || facts.SchemaVersion != 1 || mediaport.ValidateGroupOpsMaterialSourceSnapshot(facts.Sources) != nil {
+		return errors.New("invalid frozen Group Ops material facts")
+	}
+	plan := mediaport.GroupOpsMaterialPlan{References: make([]mediaport.GroupOpsMaterialReference, len(facts.Sources.References))}
+	for i, source := range facts.Sources.References {
+		plan.References[i] = source.Reference
+	}
+	return adapter.uow.Within(ctx, func(tx context.Context) error {
+		current, err := adapter.capturer.CaptureGroupOpsMaterialSources(tx, plan)
+		if err != nil {
+			return err
+		}
+		currentRaw, err := json.Marshal(current)
+		frozenRaw, frozenErr := json.Marshal(facts.Sources)
+		if err != nil || frozenErr != nil || string(currentRaw) != string(frozenRaw) {
+			return errors.New("Group Ops material source changed")
+		}
+		return nil
+	})
 }
 
 func (adapter groupOpsMaterialReadinessAdapter) VerifyMaterialReady(ctx context.Context, snapshotRaw, factsRaw json.RawMessage, factsDigest string, now time.Time) error {
@@ -502,35 +540,29 @@ func canonicalGroupOpsJSON(raw []byte) ([]byte, error) {
 }
 
 var _ groupopsport.MaterialReadinessVerifier = groupOpsMaterialReadinessAdapter{}
+var _ groupopsport.FrozenMaterialSourceVerifier = groupOpsMaterialReadinessAdapter{}
 
 func (adapter groupOpsMaterialAdapter) ResolveMaterialSnapshot(ctx context.Context, plan groupopsport.MaterialPlan, requiredThrough time.Time) (json.RawMessage, string, error) {
-	raw, digest, _, _, err := adapter.ResolveMaterialIntentSnapshot(ctx, plan, requiredThrough)
-	if err != nil {
-		// Retain the narrow legacy resolver contract for consumers that do not
-		// persist a Group Ops intent. Runtime dispatch uses the richer method
-		// above and fails closed when receipt facts are unavailable.
-		mediaPlan := mediaport.GroupOpsMaterialPlan{References: make([]mediaport.GroupOpsMaterialReference, len(plan.References))}
-		for index, reference := range plan.References {
-			mediaPlan.References[index] = mediaport.GroupOpsMaterialReference{Kind: reference.Kind, ID: reference.ID}
-		}
-		if adapter.capturer == nil || adapter.freezer == nil || mediaport.ValidateGroupOpsMaterialPlan(mediaPlan) != nil {
-			return nil, "", err
-		}
-		sources, captureErr := adapter.capturer.CaptureGroupOpsMaterialSources(ctx, mediaPlan)
-		if captureErr != nil {
-			return nil, "", captureErr
-		}
-		snapshot, freezeErr := adapter.freezer.FreezeGroupOpsMaterial(ctx, sources, requiredThrough)
-		if freezeErr != nil || mediaport.ValidateGroupOpsMaterialSnapshot(snapshot) != nil {
-			return nil, "", err
-		}
-		raw, marshalErr := json.Marshal(snapshot)
-		if marshalErr != nil {
-			return nil, "", marshalErr
-		}
-		return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), nil
+	mediaPlan := mediaport.GroupOpsMaterialPlan{References: make([]mediaport.GroupOpsMaterialReference, len(plan.References))}
+	for index, reference := range plan.References {
+		mediaPlan.References[index] = mediaport.GroupOpsMaterialReference{Kind: reference.Kind, ID: reference.ID}
 	}
-	return raw, digest, err
+	if adapter.capturer == nil || adapter.freezer == nil || mediaport.ValidateGroupOpsMaterialPlan(mediaPlan) != nil {
+		return nil, "", errors.New("Group Ops material ports are unavailable")
+	}
+	sources, err := adapter.capturer.CaptureGroupOpsMaterialSources(ctx, mediaPlan)
+	if err != nil {
+		return nil, "", err
+	}
+	snapshot, err := adapter.freezer.FreezeGroupOpsMaterial(ctx, sources, requiredThrough)
+	if err != nil || mediaport.ValidateGroupOpsMaterialSnapshot(snapshot) != nil {
+		return nil, "", errors.New("Group Ops material is not ready")
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, "", err
+	}
+	return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), nil
 }
 
 func (adapter groupOpsMaterialAdapter) ResolveMaterialIntentSnapshot(ctx context.Context, plan groupopsport.MaterialPlan, requiredThrough time.Time) (json.RawMessage, string, json.RawMessage, string, error) {
@@ -548,18 +580,12 @@ func (adapter groupOpsMaterialAdapter) ResolveMaterialIntentSnapshot(ctx context
 	if err != nil {
 		return nil, "", nil, "", err
 	}
-	withFacts, ok := adapter.freezer.(interface {
-		FreezeGroupOpsMaterialWithFacts(context.Context, mediaport.GroupOpsMaterialSourceSnapshot, time.Time) (mediaport.GroupOpsMaterialSnapshot, []groupopsmaterial.PreparedMaterial, error)
-	})
-	if !ok {
-		return nil, "", nil, "", errors.New("Group Ops material preparation facts are unavailable")
+	if mediaport.ValidateGroupOpsMaterialSourceSnapshot(sources) != nil {
+		return nil, "", nil, "", errors.New("invalid Group Ops material source snapshot")
 	}
-	snapshot, prepared, err := withFacts.FreezeGroupOpsMaterialWithFacts(ctx, sources, requiredThrough)
-	if err != nil {
-		return nil, "", nil, "", err
-	}
-	if err = mediaport.ValidateGroupOpsMaterialSnapshot(snapshot); err != nil {
-		return nil, "", nil, "", err
+	snapshot := groupOpsMaterialIntentSnapshot(sources)
+	if mediaport.ValidateGroupOpsMaterialIntentSnapshot(snapshot) != nil {
+		return nil, "", nil, "", errors.New("invalid Group Ops material intent snapshot")
 	}
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
@@ -573,7 +599,7 @@ func (adapter groupOpsMaterialAdapter) ResolveMaterialIntentSnapshot(ctx context
 		SchemaVersion int                                      `json:"schema_version"`
 		Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
 		Preparations  []groupopsmaterial.PreparedMaterial      `json:"preparations"`
-	}{SchemaVersion: 1, Sources: sources, Preparations: prepared}
+	}{SchemaVersion: 1, Sources: sources, Preparations: []groupopsmaterial.PreparedMaterial{}}
 	factsRaw, err := json.Marshal(facts)
 	if err != nil {
 		return nil, "", nil, "", err
@@ -583,6 +609,21 @@ func (adapter groupOpsMaterialAdapter) ResolveMaterialIntentSnapshot(ctx context
 		return nil, "", nil, "", err
 	}
 	return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), factsRaw, string(effectport.Hash("group-ops.material.intent.v1", string(factsRaw))), nil
+}
+
+func groupOpsMaterialIntentSnapshot(sources mediaport.GroupOpsMaterialSourceSnapshot) mediaport.GroupOpsMaterialIntentSnapshot {
+	attachments := make([]mediaport.GroupOpsProviderReadyAttachment, len(sources.References))
+	for index, source := range sources.References {
+		switch source.Reference.Kind {
+		case "image":
+			attachments[index].MsgType = "image"
+		case "attachment":
+			attachments[index].MsgType = "file"
+		case "miniprogram", "group_invite":
+			attachments[index] = source.ProviderFields
+		}
+	}
+	return mediaport.GroupOpsMaterialIntentSnapshot{SchemaVersion: 2, NodeKind: "message", Attachments: attachments}
 }
 
 var _ groupopsport.MaterialSnapshotResolver = groupOpsMaterialAdapter{}
@@ -595,6 +636,19 @@ func newGroupOpsMaterialAdapter(capturer mediaport.GroupOpsMaterialSourceCapture
 	return groupOpsMaterialAdapter{capturer: capturer, freezer: freezer}, nil
 }
 
+func newUnifiedGroupOpsMaterialAdapter(capturer mediaport.GroupOpsMaterialSourceCapturer, freezer mediaport.GroupOpsMaterialSnapshotFreezer, sources outboundport.MaterialSourceReader, preparer outboundport.MaterialPreparer, scopeDigest string) (groupopsport.MaterialSnapshotResolver, error) {
+	if sources == nil || preparer == nil || !effectport.ValidDigest(effectport.Digest(scopeDigest)) {
+		return nil, errors.New("Outbound Group Ops material preparation ports are unavailable")
+	}
+	base, err := newGroupOpsMaterialAdapter(capturer, freezer)
+	if err != nil {
+		return nil, err
+	}
+	adapter := base.(groupOpsMaterialAdapter)
+	adapter.sources, adapter.preparer, adapter.scopeDigest = sources, preparer, scopeDigest
+	return adapter, nil
+}
+
 // mediaPreparedPlanReader is the Composition Root adapter from Media's
 // transaction-bound preparation port to the freezer's provider-neutral typed
 // reader. Group invite links are already provider-ready facts from the real
@@ -603,35 +657,37 @@ func newGroupOpsMaterialAdapter(capturer mediaport.GroupOpsMaterialSourceCapture
 // preparation receipt with an unexpired lease; this adapter never derives a
 // media ID or digest from kind/id.
 type mediaPreparedPlanReader struct {
-	reader mediaport.GroupOpsMaterialPreparationReader
+	reader      mediaport.GroupOpsMaterialPreparationReader // legacy test fixture field; production does not bind it
+	sources     outboundport.MaterialSourceReader
+	preparer    outboundport.MaterialStatusReader
+	scopeDigest string
 }
 
 func (adapter mediaPreparedPlanReader) ReadPreparedGroupOpsPlan(ctx context.Context, sources mediaport.GroupOpsMaterialSourceSnapshot, requiredThrough time.Time) (groupopsmaterial.PreparedPlan, error) {
 	if ctx == nil || requiredThrough.IsZero() || mediaport.ValidateGroupOpsMaterialSourceSnapshot(sources) != nil {
 		return groupopsmaterial.PreparedPlan{}, groupopsmaterial.ErrUnavailable
 	}
-	requiresReceipt := false
-	for _, source := range sources.References {
-		if source.Reference.Kind != "group_invite" {
-			requiresReceipt = true
-			break
+	items := make([]mediaport.GroupOpsMaterialPreparation, 0, len(sources.References))
+	for _, frozen := range sources.References {
+		if frozen.Reference.Kind == "group_invite" {
+			items = append(items, mediaport.GroupOpsMaterialPreparation{Reference: frozen.Reference, SourceDigest: frozen.SourceDigest, Attachment: frozen.ProviderFields})
+			continue
 		}
-	}
-	var items []mediaport.GroupOpsMaterialPreparation
-	if requiresReceipt {
-		if adapter.reader == nil {
+		if adapter.sources == nil || adapter.preparer == nil || !effectport.ValidDigest(effectport.Digest(adapter.scopeDigest)) {
 			return groupopsmaterial.PreparedPlan{}, groupopsmaterial.ErrUnavailable
 		}
-		var err error
-		items, err = adapter.reader.ReadPreparedGroupOpsMaterials(ctx, sources, requiredThrough)
-		if err != nil {
+		sourceRef, expected := groupOpsUnifiedSourceRef(frozen)
+		source, err := adapter.sources.GetSourceSnapshot(ctx, sourceRef)
+		if err != nil || sourceSnapshotDigest(source) != expected {
 			return groupopsmaterial.PreparedPlan{}, groupopsmaterial.ErrUnavailable
 		}
-	} else {
-		items = make([]mediaport.GroupOpsMaterialPreparation, 0, len(sources.References))
-		for _, source := range sources.References {
-			items = append(items, mediaport.GroupOpsMaterialPreparation{Reference: source.Reference, SourceDigest: source.SourceDigest, Attachment: source.ProviderFields})
+		result, err := adapter.preparer.GetMaterialStatus(ctx, source, adapter.scopeDigest)
+		if err != nil || !result.CredentialUsable || result.MediaID == "" || !result.ExpiresAt.After(requiredThrough) {
+			return groupopsmaterial.PreparedPlan{}, groupopsmaterial.ErrUnavailable
 		}
+		attachment := frozen.ProviderFields
+		attachment.MediaID = result.MediaID
+		items = append(items, mediaport.GroupOpsMaterialPreparation{Reference: frozen.Reference, SourceDigest: frozen.SourceDigest, ReceiptDigest: string(effectport.Hash("groupops.unified-material.receipt.v1", result.EffectID, result.MediaID, result.ProviderCreatedAt.UTC().Format(time.RFC3339Nano))), ReadyUntil: result.ExpiresAt, Attachment: attachment})
 	}
 	if mediaport.ValidateGroupOpsMaterialPreparations(sources, items, requiredThrough) != nil {
 		return groupopsmaterial.PreparedPlan{}, groupopsmaterial.ErrUnavailable
@@ -641,6 +697,19 @@ func (adapter mediaPreparedPlanReader) ReadPreparedGroupOpsPlan(ctx context.Cont
 		prepared[index] = groupopsmaterial.PreparedMaterial{Reference: item.Reference, SourceDigest: item.SourceDigest, ReceiptDigest: item.ReceiptDigest, ReadyUntil: item.ReadyUntil, Attachment: item.Attachment}
 	}
 	return groupopsmaterial.PreparedPlan{Items: prepared}, nil
+}
+
+func groupOpsUnifiedSourceRef(source mediaport.GroupOpsMaterialSourceReference) (string, string) {
+	switch source.Reference.Kind {
+	case "image":
+		return "image:" + strconv.FormatInt(source.Reference.ID, 10), source.SourceDigest
+	case "attachment":
+		return "attachment:" + strconv.FormatInt(source.Reference.ID, 10), source.SourceDigest
+	case "miniprogram":
+		return "image:" + strconv.FormatInt(source.ThumbnailImageID, 10), source.ThumbnailSourceDigest
+	default:
+		return "", ""
+	}
 }
 
 var _ groupopsmaterial.PreparedPlanReader = mediaPreparedPlanReader{}

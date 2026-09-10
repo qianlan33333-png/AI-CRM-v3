@@ -95,7 +95,7 @@ func (w *PrivateMessageWriter) WritePrivateMessageIntentWithin(ctx context.Conte
 		return outboundport.PrivateMessageIntentResult{}, err
 	}
 	envelope := effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindOutboundMessage, SourceRefDigest: command.SourceDigest, TargetRefDigest: command.TargetDigest, PayloadDigest: command.PayloadDigest, PolicyVersionHash: command.PolicyHash}
-	projection, receipt, err := w.effects.AcceptAndQueueWithin(ctx, effectport.AcceptCommand{ReceiptKey: command.ReceiptKey, Envelope: envelope})
+	projection, receipt, err := w.effects.AcceptAndQueueWithin(ctx, effectport.AcceptCommand{ReceiptKey: command.ReceiptKey, Envelope: envelope, Lane: command.Lane})
 	if err != nil {
 		return outboundport.PrivateMessageIntentResult{}, err
 	}

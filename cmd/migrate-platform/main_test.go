@@ -184,7 +184,7 @@ func TestExcelBatchLifecycleMigrationKeepsRollbackImportsReadable(t *testing.T) 
 	}
 	previous := fstest.MapFS{}
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == "0124_operation_excel_batch_lifecycle.sql" {
+		if entry.IsDir() || entry.Name() >= "0124_" {
 			continue
 		}
 		contents, readErr := fs.ReadFile(filesystem, entry.Name())

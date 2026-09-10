@@ -855,6 +855,10 @@ func (s *Service) approvePlan(ctx context.Context, command aiassistantport.Appro
 		aggregate.Projection.State = aiassistantport.PlanDispatching
 		intents := make([]outboundport.PrivateMessageIntentResult, 0, len(recipients))
 		for i, recipient := range recipients {
+			var lane effectport.Lane
+			if plan.SourceKind == "excel_batch" {
+				lane = effectport.LaneOutboundExcel
+			}
 			sourceRef := "aiassistant:" + strconv.FormatInt(int64(plan.ID), 10) + ":" + strconv.FormatInt(int64(recipient.ID), 10) + ":" + strconv.FormatInt(int64(contents[i].ID), 10)
 			deferredRef := ""
 			targetDigest := effectport.Hash("aiassistant.target", strconv.FormatInt(int64(recipient.CustomerID), 10), strconv.FormatInt(recipient.StaffID, 10))
@@ -865,7 +869,7 @@ func (s *Service) approvePlan(ctx context.Context, command aiassistantport.Appro
 			intent, writeErr := s.outbound.WritePrivateMessageIntentWithin(tx, outboundport.PrivateMessageIntentCommand{
 				DeferredTargetReference: deferredRef, SourceReference: sourceRef, CustomerID: recipient.CustomerID, StaffID: recipient.StaffID, PayloadReference: sourceRef,
 				SourceDigest: effectport.Hash("aiassistant.source", sourceRef), TargetDigest: targetDigest, PayloadDigest: contents[i].Digest,
-				PolicyHash: effectport.Hash("aiassistant.private-message.policy", "v1"), ReceiptKey: effectport.Hash("aiassistant.approval", strconv.FormatInt(int64(plan.ID), 10), strconv.FormatInt(int64(recipient.ID), 10), strconv.FormatInt(plan.Version, 10), string(contents[i].Digest))})
+				PolicyHash: effectport.Hash("aiassistant.private-message.policy", "v1"), ReceiptKey: effectport.Hash("aiassistant.approval", strconv.FormatInt(int64(plan.ID), 10), strconv.FormatInt(int64(recipient.ID), 10), strconv.FormatInt(plan.Version, 10), string(contents[i].Digest)), Lane: lane})
 			if writeErr != nil {
 				return writeErr
 			}

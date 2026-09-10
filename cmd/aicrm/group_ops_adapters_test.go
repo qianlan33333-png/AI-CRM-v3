@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -259,34 +261,39 @@ func TestMediaPreparedPlanReaderBuildsInviteFromCapturedFacts(t *testing.T) {
 	}
 }
 
-func TestMediaPreparedPlanReaderUsesPersistedReceiptForMedia(t *testing.T) {
+func TestMediaPreparedPlanReaderUsesReadyMaterialForMedia(t *testing.T) {
 	sources := mediaport.GroupOpsMaterialSourceSnapshot{SchemaVersion: 1, References: []mediaport.GroupOpsMaterialSourceReference{{
-		Reference:    mediaport.GroupOpsMaterialReference{Kind: "image", ID: 7},
-		SourceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Reference:      mediaport.GroupOpsMaterialReference{Kind: "image", ID: 7},
+		SourceDigest:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ProviderFields: mediaport.GroupOpsProviderReadyAttachment{MsgType: "image"},
 	}}}
 	requiredThrough := time.Now().UTC().Add(time.Hour)
-	reader := mediaPreparedPlanReader{reader: preparationReaderStub{items: []mediaport.GroupOpsMaterialPreparation{{
-		Reference:     sources.References[0].Reference,
-		SourceDigest:  sources.References[0].SourceDigest,
-		ReceiptDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		ReadyUntil:    requiredThrough.Add(time.Hour),
-		Attachment:    mediaport.GroupOpsProviderReadyAttachment{MsgType: "image", MediaID: "provider-image-7"},
-	}}}}
+	contentDigest := [32]byte{}
+	for index := range contentDigest {
+		contentDigest[index] = 0xaa
+	}
+	status := &groupOpsMaterialStatusStub{result: outboundport.MaterialResult{State: "ready", EffectID: "material-effect-7", MediaID: "provider-image-7", CredentialUsable: true, ExpiresAt: requiredThrough.Add(time.Hour)}}
+	reader := mediaPreparedPlanReader{
+		sources:     groupOpsMaterialSourceStub{source: outboundport.MaterialSourceSnapshot{SourceRef: "image:7", SourceType: "image", ContentDigest: contentDigest, FileName: "image-7.png", MediaType: "image/png", SizeBytes: 7, SnapshotVersion: 1}},
+		preparer:    status,
+		scopeDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	}
 	freezer, err := groupopsmaterial.NewFreezer(reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := freezer.FreezeGroupOpsMaterial(context.Background(), sources, requiredThrough)
-	if err != nil || len(snapshot.Attachments) != 1 || snapshot.Attachments[0].MediaID != "provider-image-7" {
-		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	if err != nil || len(snapshot.Attachments) != 1 || snapshot.Attachments[0].MediaID != "provider-image-7" || status.calls != 1 {
+		t.Fatalf("snapshot=%+v calls=%d err=%v", snapshot, status.calls, err)
 	}
 }
 
 func TestDeterministicPreparationWriterThenFreezerClosure(t *testing.T) {
 	requiredThrough := time.Now().UTC().Add(time.Hour)
 	sources := mediaport.GroupOpsMaterialSourceSnapshot{SchemaVersion: 1, References: []mediaport.GroupOpsMaterialSourceReference{{
-		Reference:    mediaport.GroupOpsMaterialReference{Kind: "image", ID: 7},
-		SourceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Reference:      mediaport.GroupOpsMaterialReference{Kind: "image", ID: 7},
+		SourceDigest:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ProviderFields: mediaport.GroupOpsProviderReadyAttachment{MsgType: "image"},
 	}}}
 	command := mediaport.GroupOpsMaterialPreparationCommand{
 		SourceSnapshot:  sources,
@@ -307,14 +314,57 @@ func TestDeterministicPreparationWriterThenFreezerClosure(t *testing.T) {
 	if err != nil || receipt.ID < 1 || store.calls != 1 {
 		t.Fatalf("receipt=%+v calls=%d err=%v", receipt, store.calls, err)
 	}
-	freezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: preparationReaderStub{items: store.command.Items}})
+	contentDigest, err := hex.DecodeString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest [32]byte
+	copy(digest[:], contentDigest)
+	status := &groupOpsMaterialStatusStub{result: outboundport.MaterialResult{State: "ready", EffectID: "deterministic-material-effect-7", MediaID: "deterministic-provider-image-7", CredentialUsable: true, ExpiresAt: requiredThrough.Add(time.Hour)}}
+	freezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{
+		sources:     groupOpsMaterialSourceStub{source: outboundport.MaterialSourceSnapshot{SourceRef: "image:7", SourceType: "image", ContentDigest: digest, FileName: "image-7.png", MediaType: "image/png", SizeBytes: 7, SnapshotVersion: 1}},
+		preparer:    status,
+		scopeDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := freezer.FreezeGroupOpsMaterial(context.Background(), sources, requiredThrough)
-	if err != nil || len(snapshot.Attachments) != 1 || snapshot.Attachments[0].MediaID != "deterministic-provider-image-7" {
-		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	if err != nil || len(snapshot.Attachments) != 1 || snapshot.Attachments[0].MediaID != "deterministic-provider-image-7" || status.calls != 1 {
+		t.Fatalf("snapshot=%+v calls=%d err=%v", snapshot, status.calls, err)
 	}
+}
+
+type groupOpsMaterialSourceStub struct {
+	source outboundport.MaterialSourceSnapshot
+}
+
+func (stub groupOpsMaterialSourceStub) GetSourceSnapshot(_ context.Context, reference string) (outboundport.MaterialSourceSnapshot, error) {
+	if reference != stub.source.SourceRef {
+		return outboundport.MaterialSourceSnapshot{}, errors.New("wrong material source")
+	}
+	return stub.source, nil
+}
+
+func (groupOpsMaterialSourceStub) ListEnabledSourceSnapshots(context.Context, outboundport.MaterialSnapshotPageRequest) (outboundport.MaterialSnapshotPage, error) {
+	return outboundport.MaterialSnapshotPage{}, errors.New("not used")
+}
+
+func (groupOpsMaterialSourceStub) ReadSourceBytes(context.Context, outboundport.MaterialSourceSnapshot) (outboundport.MaterialSourceContent, error) {
+	return outboundport.MaterialSourceContent{}, errors.New("must not read bytes")
+}
+
+type groupOpsMaterialStatusStub struct {
+	calls  int
+	result outboundport.MaterialResult
+}
+
+func (stub *groupOpsMaterialStatusStub) GetMaterialStatus(_ context.Context, source outboundport.MaterialSourceSnapshot, scopeDigest string) (outboundport.MaterialResult, error) {
+	stub.calls++
+	if source.SourceRef != "image:7" || scopeDigest == "" {
+		return outboundport.MaterialResult{}, errors.New("unexpected material status request")
+	}
+	return stub.result, nil
 }
 
 type contentDeliveryServiceStub struct {

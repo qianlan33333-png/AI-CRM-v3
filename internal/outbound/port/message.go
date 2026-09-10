@@ -52,6 +52,9 @@ type MessageExecutionReader interface {
 type FrozenAutomationMessagePayloadReader interface {
 	LoadFrozenAutomationMessagePayload(context.Context, json.RawMessage, [32]byte) (PrivateMessagePayload, error)
 }
+type FrozenAutomationMessageMediaPreflighter interface {
+	PrepareFrozenAutomationMessageMedia(context.Context, json.RawMessage, [32]byte) error
+}
 
 type MessageAcceptance struct {
 	MessageIntentID int64

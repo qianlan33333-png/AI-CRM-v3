@@ -11,6 +11,7 @@ import (
 	"errors"
 	ai "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	outbound "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"io"
 	"net/http"
@@ -39,6 +40,7 @@ func (e *ComponentError) Error() string { return "excel component rejected reque
 type Client struct {
 	Base, Token string
 	HTTP        *http.Client
+	MediaCovers mediaport.ExcelCoverReader
 }
 
 func NewClient(base, token string) (*Client, error) {
@@ -140,7 +142,20 @@ func (c *Client) LoadExcelCard(ctx context.Context, card ai.ExcelCard) (outbound
 	if !card.Valid() {
 		return outbound.PrivateMessageAttachment{}, ErrUnavailable
 	}
-	if err := c.Call(ctx, http.MethodGet, "/covers/"+url.PathEscape(string(card.CoverDigest)), "", nil, &raw); err != nil {
+	if card.CoverImageID > 0 {
+		if c == nil || c.MediaCovers == nil {
+			return outbound.PrivateMessageAttachment{}, ErrUnavailable
+		}
+		digest, decodeErr := digestBytes(card.CoverDigest)
+		if decodeErr != nil {
+			return outbound.PrivateMessageAttachment{}, ErrUnavailable
+		}
+		cover, readErr := c.MediaCovers.ReadExcelCover(ctx, card.CoverImageID, digest)
+		if readErr != nil {
+			return outbound.PrivateMessageAttachment{}, ErrUnavailable
+		}
+		raw = cover.Bytes
+	} else if err := c.Call(ctx, http.MethodGet, "/covers/"+url.PathEscape(string(card.CoverDigest)), "", nil, &raw); err != nil {
 		return outbound.PrivateMessageAttachment{}, err
 	}
 	hash := sha256.Sum256(raw)
@@ -154,6 +169,19 @@ func (c *Client) LoadExcelCard(ctx context.Context, card ai.ExcelCard) (outbound
 		return outbound.PrivateMessageAttachment{}, ErrUnavailable
 	}
 	return outbound.PrivateMessageAttachment{Kind: "mini_program", Content: raw, MediaType: mime, FileName: name, AppID: card.AppID, PagePath: card.Path, Title: card.Title}, nil
+}
+
+func digestBytes(value effect.Digest) ([sha256.Size]byte, error) {
+	var result [sha256.Size]byte
+	if !effect.ValidDigest(value) {
+		return result, ErrUnavailable
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(string(value), "sha256:"))
+	if err != nil || len(decoded) != sha256.Size {
+		return result, ErrUnavailable
+	}
+	copy(result[:], decoded)
+	return result, nil
 }
 func snapshotKey(id ai.PlanID, version int64) string {
 	return strings.Join([]string{fmtInt(int64(id)), fmtInt(version)}, ":")

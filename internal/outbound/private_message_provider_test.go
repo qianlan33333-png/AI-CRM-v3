@@ -36,10 +36,13 @@ func (f privateSenderFunc) SendPrivateMessage(ctx context.Context, target Privat
 
 type privateProviderError struct {
 	unknown bool
+	retry   bool
 }
 
 func (e privateProviderError) Error() string        { return "provider failed" }
 func (e privateProviderError) OutcomeUnknown() bool { return e.unknown }
+func (e privateProviderError) Retryable() bool      { return e.retry }
+func (e privateProviderError) FailureCode() string  { return "wecom_errcode_45009" }
 
 func privateMessageEnvelope() effectport.Envelope {
 	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindOutboundMessage, SourceRefDigest: effectport.Hash("source"), TargetRefDigest: effectport.Hash("target"), PayloadDigest: effectport.Hash("payload"), PolicyVersionHash: effectport.Hash("policy")}
@@ -87,6 +90,7 @@ func TestPrivateMessageProviderFailureClassification(t *testing.T) {
 		{name: "before call", enabled: true, err: errors.New("local failure"), want: effectport.StateRetryable},
 		{name: "invalid before call", enabled: true, err: privateProviderError{}, want: effectport.StateFinalFailed},
 		{name: "provider rejected", enabled: true, attempted: true, err: privateProviderError{}, want: effectport.StateFinalFailed},
+		{name: "provider rate limited", enabled: true, attempted: true, err: privateProviderError{retry: true}, want: effectport.StateRetryable},
 		{name: "ambiguous after call", enabled: true, attempted: true, err: privateProviderError{unknown: true}, want: effectport.StateUnknown},
 	}
 	for _, test := range tests {
@@ -97,7 +101,7 @@ func TestPrivateMessageProviderFailureClassification(t *testing.T) {
 				return PrivateMessageProviderReceipt{}, test.attempted, test.err
 			}))
 			result, err := provider.Execute(context.Background(), privateMessageEnvelope(), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
-			if err != nil || result.Completion != test.want || result.CallAttempted != test.attempted {
+			if err != nil || result.Completion != test.want || result.CallAttempted != test.attempted || (test.want == effectport.StateRetryable && test.attempted && (!result.SafeToRetryRejected || result.RealExternalCallExecuted)) {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
 			if !test.enabled && called {

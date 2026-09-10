@@ -20,6 +20,8 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/media/domain"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 )
 
 type RequestSecurity interface {
@@ -27,15 +29,35 @@ type RequestSecurity interface {
 	AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error)
 }
 type Handler struct {
-	service  mediaapp.HTTPFacade
-	security RequestSecurity
+	service             mediaapp.HTTPFacade
+	security            RequestSecurity
+	materialSources     outboundport.MaterialSourceReader
+	materialStatus      outboundport.MaterialStatusReader
+	materialPreparer    outboundport.MaterialPreparer
+	materialRefresher   outboundport.MaterialRefresher
+	materialScopeDigest string
 }
 
 func NewHandler(service mediaapp.HTTPFacade, security RequestSecurity) (*Handler, error) {
 	if service == nil || security == nil {
 		return nil, errors.New("media HTTP dependencies are required")
 	}
-	return &Handler{service, security}, nil
+	return &Handler{service: service, security: security}, nil
+}
+
+// BindMaterialPreparation adds only stable Outbound ports to the Media admin
+// surface. Media never imports an Outbound store, provider, worker, or EER
+// implementation, and it never receives the raw corporation credential.
+func (h *Handler) BindMaterialPreparation(sources outboundport.MaterialSourceReader, status outboundport.MaterialStatusReader, preparer outboundport.MaterialPreparer, refresher outboundport.MaterialRefresher, scopeDigest string) error {
+	if h == nil || sources == nil || status == nil || preparer == nil || refresher == nil || strings.TrimSpace(scopeDigest) == "" {
+		return errors.New("media preparation dependencies are required")
+	}
+	h.materialSources = sources
+	h.materialStatus = status
+	h.materialPreparer = preparer
+	h.materialRefresher = refresher
+	h.materialScopeDigest = scopeDigest
+	return nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +67,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/"), "/")
 	switch {
+	case path == "media-preparations" || strings.HasPrefix(path, "media-preparations/"):
+		h.materialPreparations(w, r, strings.Trim(strings.TrimPrefix(path, "media-preparations"), "/"))
 	case path == "image-library" || strings.HasPrefix(path, "image-library/"):
 		h.images(w, r, strings.Trim(strings.TrimPrefix(path, "image-library"), "/"))
 	case path == "attachment-library" || strings.HasPrefix(path, "attachment-library/"):
@@ -56,6 +80,184 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, 404, "not_found")
 	}
+}
+
+func (h *Handler) materialPreparations(w http.ResponseWriter, r *http.Request, tail string) {
+	if h.materialSources == nil || h.materialStatus == nil || h.materialPreparer == nil || h.materialRefresher == nil || h.materialScopeDigest == "" {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	if tail == "" && r.Method == http.MethodGet {
+		if !h.read(w, r) {
+			return
+		}
+		limit := 100
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 500 {
+				invalidQuery(w)
+				return
+			}
+			limit = parsed
+		}
+		cursor, err := scalarQuery(r, "cursor")
+		if err != nil {
+			invalidQuery(w)
+			return
+		}
+		page, err := h.materialSources.ListEnabledSourceSnapshots(r.Context(), outboundport.MaterialSnapshotPageRequest{CorpScopeDigest: h.materialScopeDigest, Cursor: cursor, Limit: limit})
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		items := make([]map[string]any, 0, len(page.Items))
+		for _, source := range page.Items {
+			status, statusErr := h.materialStatus.GetMaterialStatus(r.Context(), source, h.materialScopeDigest)
+			if statusErr != nil {
+				writeError(w, http.StatusServiceUnavailable, "unavailable")
+				return
+			}
+			items = append(items, materialProjection(source, status))
+		}
+		// A scan failure is still a source-owned, actionable catalog entry.  It
+		// cannot safely be represented as a material snapshot because no bytes,
+		// digest, or metadata are available to upload.  Keep it separately so the
+		// administrator can locate and replace the original source.
+		failures := make([]map[string]any, 0, len(page.Failures))
+		for _, failure := range page.Failures {
+			failures = append(failures, map[string]any{
+				"source_ref":        failure.SourceRef,
+				"failure_code":      failure.FailureCode,
+				"state":             "final_failed",
+				"credential_state":  "missing",
+				"credential_usable": false,
+			})
+		}
+		today, exists, err := h.materialRefresher.GetTodayRefreshRound(r.Context())
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		var todayProjection any
+		if exists {
+			todayProjection = refreshRoundProjection(today)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "failures": failures, "today_refresh_round": todayProjection, "next_refresh_at": nextRefreshAt(), "next_cursor": page.NextCursor, "done": page.Done, "local_fact_only": false})
+		return
+	}
+	if tail == "refresh-rounds" && r.Method == http.MethodPost {
+		actor, ok := h.write(w, r)
+		if !ok {
+			return
+		}
+		var input struct {
+			Force bool `json:"force"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input); err != nil || !input.Force {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		localDate := time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
+		round, err := h.materialRefresher.RefreshAll(r.Context(), outboundport.MaterialRefreshCommand{LocalDate: localDate, Force: input.Force, ActorAdminID: actor.InternalID, OperationKey: mutationKey(r)})
+		if err != nil {
+			writeMaterialPreparationError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "refresh_round": refreshRoundProjection(round)})
+		return
+	}
+	if strings.HasPrefix(tail, "refresh-rounds/") && r.Method == http.MethodGet {
+		if !h.read(w, r) {
+			return
+		}
+		id, err := id(strings.TrimPrefix(tail, "refresh-rounds/"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		round, err := h.materialRefresher.GetRefreshRound(r.Context(), id)
+		if err != nil {
+			writeMaterialPreparationError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "refresh_round": refreshRoundProjection(round)})
+		return
+	}
+	if strings.HasSuffix(tail, "/prepare") && r.Method == http.MethodPost {
+		actor, ok := h.write(w, r)
+		if !ok {
+			return
+		}
+		sourceRef := strings.TrimSuffix(tail, "/prepare")
+		if !mediaport.ValidSourceRef(sourceRef) {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		var input struct {
+			Force bool `json:"force"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input); err != nil || !input.Force {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		source, err := h.materialSources.GetSourceSnapshot(r.Context(), sourceRef)
+		if err != nil {
+			if errors.Is(err, mediaport.ErrSourceNotFound) {
+				writeError(w, http.StatusNotFound, "not_found")
+			} else {
+				writeError(w, http.StatusServiceUnavailable, "unavailable")
+			}
+			return
+		}
+		result, err := h.materialPreparer.Prepare(r.Context(), outboundport.MaterialRequest{MaterialSourceSnapshot: source, CorpScopeDigest: h.materialScopeDigest, ForceRefresh: input.Force, ActorAdminID: actor.InternalID, OperationKey: mutationKey(r)})
+		if err != nil {
+			writeMaterialPreparationError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "material": materialProjection(source, result)})
+		return
+	}
+	method(w, r.Method, http.MethodGet+", "+http.MethodPost)
+}
+
+func materialProjection(source outboundport.MaterialSourceSnapshot, result outboundport.MaterialResult) map[string]any {
+	return map[string]any{"source_ref": source.SourceRef, "source_type": source.SourceType, "content_digest": "sha256:" + hex.EncodeToString(source.ContentDigest[:]), "file_name": source.FileName, "media_type": source.MediaType, "size_bytes": source.SizeBytes, "snapshot_version": source.SnapshotVersion, "state": result.State, "credential_state": result.CredentialState, "credential_usable": result.CredentialUsable, "failure_code": result.FailureCode, "effect_id": result.EffectID, "media_id": result.MediaID, "source_digest": "sha256:" + hex.EncodeToString(result.SourceDigest[:]), "provider_created_at": optionalTime(result.ProviderCreatedAt), "last_succeeded_at": optionalTime(result.LastSucceededAt), "expires_at": optionalTime(result.ExpiresAt), "next_refresh_at": optionalTime(result.NextRefreshAt)}
+}
+
+func refreshRoundProjection(round outboundport.MaterialRefreshRound) map[string]any {
+	return map[string]any{"id": round.ID, "local_date": round.LocalDate, "state": round.State, "cursor": round.Cursor, "total": round.Total, "queued": round.Queued, "succeeded": round.Succeeded, "failed": round.Failed, "unknown": round.Unknown, "started_at": optionalTime(round.StartedAt), "completed_at": round.CompletedAt}
+}
+
+func optionalTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
+// writeMaterialPreparationError depends only on closed outbound port errors.
+// It intentionally treats unknown errors as unavailable, never as not-found.
+func writeMaterialPreparationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, outboundport.ErrInvalidMaterialRequest):
+		writeError(w, http.StatusBadRequest, "invalid_request")
+	case errors.Is(err, outboundport.ErrMaterialOperationConflict):
+		writeError(w, http.StatusConflict, "idempotency_conflict")
+	case errors.Is(err, outboundport.ErrMaterialPreparationNotFound):
+		writeError(w, http.StatusNotFound, "not_found")
+	default:
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+	}
+}
+
+func nextRefreshAt() time.Time {
+	location := time.FixedZone("CST", 8*3600)
+	now := time.Now().In(location)
+	next := time.Date(now.Year(), now.Month(), now.Day(), 2, 0, 0, 0, location)
+	if !next.After(now) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
 }
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
 	p, err := h.security.Authenticate(r.Context(), r)
@@ -247,7 +449,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func writeError(w http.ResponseWriter, status int, code string) {
-	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "has_references": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
+	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "idempotency_conflict": "CONFLICT", "has_references": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
 	if compat == "" {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}

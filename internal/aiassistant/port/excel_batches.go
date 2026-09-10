@@ -105,6 +105,7 @@ type ExcelBatchMeta struct {
 	SourceOrigin string
 	FileDigest   effectport.Digest
 	CoverDigest  effectport.Digest
+	CoverImageID int64
 	Revision     int
 	CreatedAt    time.Time
 }
@@ -116,6 +117,7 @@ type ExcelBatchVersion struct {
 	ContentRevision int               `json:"content_version"`
 	FileDigest      effectport.Digest `json:"file_digest"`
 	CoverDigest     effectport.Digest `json:"cover_digest"`
+	CoverImageID    int64             `json:"cover_image_id"`
 	CreatedBy       int64             `json:"created_by"`
 	CreatedAt       time.Time         `json:"created_at"`
 }

@@ -16,7 +16,14 @@ import (
 const (
 	OutboundQueue        = "outbound"
 	OutboundWelcomeQueue = "outbound_welcome"
+	OutboundExcelQueue   = "outbound_excel"
+	OutboundMediaQueue   = "outbound_media"
 )
+
+var queueWorkers = map[string]int{
+	OutboundQueue: 4, OutboundWelcomeQueue: 4,
+	OutboundExcelQueue: 3, OutboundMediaQueue: 2,
+}
 
 var ErrUnavailable = errors.New("River client unavailable")
 
@@ -99,7 +106,11 @@ func NewRuntimeWithPeriodic(pool *pgxpool.Pool, workers *river.Workers, periodic
 		if name == "" {
 			return nil, ErrUnavailable
 		}
-		queues[name] = river.QueueConfig{MaxWorkers: 4}
+		maxWorkers := 4
+		if configured, ok := queueWorkers[name]; ok {
+			maxWorkers = configured
+		}
+		queues[name] = river.QueueConfig{MaxWorkers: maxWorkers}
 	}
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: queues, Workers: workers, PeriodicJobs: periodicJobs})
 	if err != nil {

@@ -14,11 +14,11 @@ func envelopeForTest() Envelope {
 }
 
 func TestChannelWelcomeUsesRegisteredDedicatedQueueOnly(t *testing.T) {
-	if got := effectQueue(KindChannelWelcome); got != platformjobqueue.OutboundWelcomeQueue {
+	if got := effectQueue(KindChannelWelcome, ""); got != platformjobqueue.OutboundWelcomeQueue {
 		t.Fatalf("welcome queue=%q", got)
 	}
 	for _, kind := range []Kind{KindOutboundMessage, KindOutboundMedia, KindChannelEntryTag, KindGroupMessage} {
-		if got := effectQueue(kind); got != platformjobqueue.OutboundQueue {
+		if got := effectQueue(kind, ""); got != platformjobqueue.OutboundQueue {
 			t.Fatalf("kind=%q queue=%q", kind, got)
 		}
 	}

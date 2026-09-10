@@ -75,6 +75,11 @@ type ControlCommand struct {
 	Generation     int64
 	Fence          int64
 	LeaseExpiresAt time.Time
+	// ReconciliationOutcome is required only for outbound media whose Provider
+	// upload outcome was unknown. no_effect releases the blocked snapshot;
+	// confirmed_effect requires a validated upload receipt artifact.
+	ReconciliationOutcome  string
+	ReconciliationArtifact ResultArtifact
 }
 
 func (c ControlCommand) Valid() bool {
@@ -84,7 +89,7 @@ func (c ControlCommand) Digest(op string) Digest {
 	if !c.Valid() || (op == "reconcile" && !ValidDigest(c.EvidenceDigest)) {
 		return ""
 	}
-	return Hash(op, c.EffectID, string(c.ReceiptKey), string(c.EvidenceDigest), strconv.FormatInt(c.ActorAdminUserID, 10))
+	return Hash(op, c.EffectID, string(c.ReceiptKey), string(c.EvidenceDigest), strconv.FormatInt(c.ActorAdminUserID, 10), c.ReconciliationOutcome, string(c.ReconciliationArtifact.Digest))
 }
 func CanTransition(from, to State) bool {
 	switch from {

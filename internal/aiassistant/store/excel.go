@@ -85,13 +85,14 @@ func (r *Repository) ExcelBatch(ctx context.Context, id ai.PlanID, lock bool) (a
 		return ai.ExcelBatchMeta{}, err
 	}
 	query := `SELECT plan_id,batch_key,COALESCE(operation_cycle_strategy_key,''),source_origin,file_digest,content_revision,
-		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),created_at
+		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),
+		COALESCE((SELECT cover.cover_image_id FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),0),created_at
 		FROM ai_assistant_excel_imports WHERE plan_id=$1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var value ai.ExcelBatchMeta
-	err = tx.QueryRow(ctx, query, id).Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CreatedAt)
+	err = tx.QueryRow(ctx, query, id).Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CoverImageID, &value.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ai.ExcelBatchMeta{}, ErrNotFound
 	}
@@ -105,8 +106,9 @@ func (r *Repository) ExcelBatchByKey(ctx context.Context, key string) (ai.ExcelB
 	}
 	var value ai.ExcelBatchMeta
 	err = tx.QueryRow(ctx, `SELECT plan_id,batch_key,COALESCE(operation_cycle_strategy_key,''),source_origin,file_digest,content_revision,
-		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),created_at
-		FROM ai_assistant_excel_imports WHERE batch_key=$1`, key).Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CreatedAt)
+		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),
+		COALESCE((SELECT cover.cover_image_id FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),0),created_at
+		FROM ai_assistant_excel_imports WHERE batch_key=$1`, key).Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CoverImageID, &value.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ai.ExcelBatchMeta{}, ErrNotFound
 	}
@@ -122,7 +124,8 @@ func (r *Repository) ListOperationExcelBatches(ctx context.Context, strategyKey 
 		return nil, ErrInvalid
 	}
 	rows, err := tx.Query(ctx, `SELECT plan_id,batch_key,COALESCE(operation_cycle_strategy_key,''),source_origin,file_digest,content_revision,
-		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),created_at
+		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),
+		COALESCE((SELECT cover.cover_image_id FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=ai_assistant_excel_imports.plan_id AND cover.content_revision=ai_assistant_excel_imports.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),0),created_at
 		FROM ai_assistant_excel_imports WHERE operation_cycle_strategy_key=$1 ORDER BY created_at DESC,plan_id DESC LIMIT $2`, strategyKey, limit)
 	if err != nil {
 		return nil, err
@@ -131,7 +134,7 @@ func (r *Repository) ListOperationExcelBatches(ctx context.Context, strategyKey 
 	items := []ai.ExcelBatchMeta{}
 	for rows.Next() {
 		var value ai.ExcelBatchMeta
-		if err = rows.Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CreatedAt); err != nil {
+		if err = rows.Scan(&value.PlanID, &value.BatchKey, &value.StrategyKey, &value.SourceOrigin, &value.FileDigest, &value.Revision, &value.CoverDigest, &value.CoverImageID, &value.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, value)
@@ -251,7 +254,10 @@ func (r *Repository) ListOperationExcelBatchVersions(ctx context.Context, planID
 	rows, err := tx.Query(ctx, `SELECT version.plan_id,version.content_revision,version.file_digest,
 		COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover
 		 WHERE cover.plan_id=version.plan_id AND cover.content_revision=version.content_revision
-			 ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),version.cover_digest),version.created_by,version.created_at
+			 ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),version.cover_digest),
+		COALESCE((SELECT cover.cover_image_id FROM ai_assistant_excel_batch_version_covers cover
+		 WHERE cover.plan_id=version.plan_id AND cover.content_revision=version.content_revision
+			 ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),version.cover_image_id),version.created_by,version.created_at
 		FROM ai_assistant_excel_batch_versions version WHERE version.plan_id=$1
 		ORDER BY version.content_revision DESC LIMIT $2`, planID, limit)
 	if err != nil {
@@ -261,7 +267,7 @@ func (r *Repository) ListOperationExcelBatchVersions(ctx context.Context, planID
 	items := []ai.ExcelBatchVersion{}
 	for rows.Next() {
 		var item ai.ExcelBatchVersion
-		if err = rows.Scan(&item.PlanID, &item.ContentRevision, &item.FileDigest, &item.CoverDigest, &item.CreatedBy, &item.CreatedAt); err != nil {
+		if err = rows.Scan(&item.PlanID, &item.ContentRevision, &item.FileDigest, &item.CoverDigest, &item.CoverImageID, &item.CreatedBy, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -299,15 +305,21 @@ func (r *Repository) ListOperationExcelBatchRecipients(ctx context.Context, plan
 // immutable upload row. One content revision can legitimately have several
 // cover edits; no historical read has to inspect mutable current content.
 func (r *Repository) AppendOperationExcelCover(ctx context.Context, planID ai.PlanID, revision int, cover effect.Digest, actor int64, now time.Time) error {
+	return r.AppendOperationExcelMediaCover(ctx, planID, revision, 0, cover, actor, now)
+}
+
+// AppendOperationExcelMediaCover records an opaque Media image ID with the
+// exact byte digest. Legacy Python covers deliberately remain image_id=0.
+func (r *Repository) AppendOperationExcelMediaCover(ctx context.Context, planID ai.PlanID, revision int, imageID int64, cover effect.Digest, actor int64, now time.Time) error {
 	tx, err := platform.RequireTransaction(ctx)
 	if err != nil {
 		return err
 	}
-	if planID < 1 || revision < 1 || actor < 1 || now.IsZero() || !effect.ValidDigest(cover) {
+	if planID < 1 || revision < 1 || imageID < 0 || actor < 1 || now.IsZero() || !effect.ValidDigest(cover) {
 		return ErrInvalid
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_version_covers(plan_id,content_revision,cover_digest,created_by,created_at)
-		VALUES($1,$2,$3,$4,$5)`, planID, revision, string(cover), actor, now.UTC())
+	_, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_version_covers(plan_id,content_revision,cover_digest,cover_image_id,created_by,created_at)
+		VALUES($1,$2,$3,$4,$5,$6)`, planID, revision, string(cover), imageID, actor, now.UTC())
 	return err
 }
 
@@ -355,6 +367,7 @@ func (r *Repository) ReplaceOperationExcelBatch(ctx context.Context, plan ai.Pla
 	}
 	for index := range rows {
 		rows[index].Card.CoverDigest = effect.Digest(cover)
+		rows[index].Card.CoverImageID = batch.CoverImageID
 	}
 	if err = insertExcelRows(ctx, tx, plan.ID, batch.Revision+1, scope, rows, actor, now); err != nil {
 		return ai.Plan{}, err
@@ -363,12 +376,12 @@ func (r *Repository) ReplaceOperationExcelBatch(ctx context.Context, plan ai.Pla
 		WHERE plan_id=$1 AND content_revision=$3`, plan.ID, string(nextDigest), batch.Revision); err != nil {
 		return ai.Plan{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_versions(plan_id,content_revision,file_digest,cover_digest,created_by,created_at)
-		VALUES($1,$2,$3,$4,$5,$6)`, plan.ID, batch.Revision+1, string(nextDigest), cover, actor, now.UTC()); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_versions(plan_id,content_revision,file_digest,cover_digest,cover_image_id,created_by,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7)`, plan.ID, batch.Revision+1, string(nextDigest), cover, batch.CoverImageID, actor, now.UTC()); err != nil {
 		return ai.Plan{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_version_covers(plan_id,content_revision,cover_digest,created_by,created_at)
-		VALUES($1,$2,$3,$4,$5)`, plan.ID, batch.Revision+1, cover, actor, now.UTC()); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO ai_assistant_excel_batch_version_covers(plan_id,content_revision,cover_digest,cover_image_id,created_by,created_at)
+		VALUES($1,$2,$3,$4,$5,$6)`, plan.ID, batch.Revision+1, cover, batch.CoverImageID, actor, now.UTC()); err != nil {
 		return ai.Plan{}, err
 	}
 	digest, err := digestBytes(nextDigest)

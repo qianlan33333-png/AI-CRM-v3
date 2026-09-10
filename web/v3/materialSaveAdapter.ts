@@ -242,3 +242,553 @@ window.addEventListener('unhandledrejection', (event) => {
   if (state.mutationAccepted) failReadback(state);
   else failMutation(state);
 });
+
+type MaterialProjection = Record<string, unknown> & {
+  source_ref?: string;
+  source_type?: string;
+  state?: string;
+  credential_state?: string;
+  credential_usable?: boolean;
+  media_id?: string;
+  expires_at?: string;
+};
+type MaterialSourceFailureProjection = Record<string, unknown> & {
+  source_ref?: string;
+  failure_code?: string;
+  credential_state?: string;
+  credential_usable?: boolean;
+};
+type RefreshRoundProjection = Record<string, unknown> & {
+  id?: number | string;
+  state?: string;
+};
+
+const materialRefreshBase = '/api/admin/media-preparations';
+const materialRefreshPages = new Set(['images', 'mpLib', 'attach']);
+
+function materialObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function materialString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function materialNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function materialRefreshKey(scope: string): string {
+  return `media-refresh-${scope}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+}
+
+function materialCsrf(): string {
+  for (const part of document.cookie.split(';')) {
+    const [name, ...value] = part.trim().split('=');
+    if (name === 'aicrm_csrf' || name === 'aicrm_admin_csrf')
+      return decodeURIComponent(value.join('='));
+  }
+  return '';
+}
+
+function materialError(status: number, body: Record<string, unknown>): Error {
+  const message = materialString(body.message) || materialString(body.error) || materialString(body.code);
+  return new Error(message || (status === 403 ? '没有此操作权限' : `刷新请求失败（HTTP ${status}）`));
+}
+
+async function materialResponse(response: Response): Promise<Record<string, unknown>> {
+  const body = materialObject(await response.json().catch(() => ({})));
+  if (!response.ok || body.ok === false) throw materialError(response.status, body);
+  return body;
+}
+
+async function materialGet(path: string): Promise<Record<string, unknown>> {
+  const response = await fetch(path, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  return materialResponse(response);
+}
+
+async function materialPost(path: string, body: Record<string, unknown>, idempotencyKey: string): Promise<Record<string, unknown>> {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': materialCsrf(),
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify(body),
+  });
+  return materialResponse(response);
+}
+
+function materialFormatTime(value: unknown): string {
+  const raw = materialString(value);
+  if (!raw) return '—';
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(parsed).replace(/\//g, '-');
+}
+
+function materialTypeLabel(value: unknown): string {
+  switch (materialString(value)) {
+    case 'image': return '图片';
+    case 'file':
+    case 'attachment': return '附件';
+    case 'miniprogram':
+    case 'mini_program':
+    case 'miniprogram_cover': return '小程序封面';
+    default: return materialString(value) || '素材';
+  }
+}
+
+function materialStateLabel(value: unknown): string {
+  switch (materialString(value)) {
+    case 'missing': return '待首次刷新';
+    case 'accepted':
+    case 'queued':
+    case 'running': return '刷新中';
+    case 'ready':
+    case 'executed':
+    case 'succeeded':
+    case 'completed': return '已就绪';
+    case 'retryable_failed':
+    case 'failed':
+    case 'final_failed':
+    case 'completed_with_failures': return '刷新失败';
+    case 'outcome_unknown':
+    case 'unknown': return '结果待核实';
+    default: return materialString(value) || '状态暂不可用';
+  }
+}
+
+type MaterialCredentialState = 'ready' | 'expired' | 'missing' | 'unavailable';
+
+function materialCredentialState(item: MaterialProjection): MaterialCredentialState {
+  const expiresAt = materialString(item.expires_at);
+  if (expiresAt) {
+    const expiry = new Date(expiresAt);
+    if (!Number.isNaN(expiry.getTime()) && expiry.getTime() <= Date.now()) return 'expired';
+  }
+  switch (materialString(item.credential_state)) {
+    case 'ready': return item.credential_usable === true ? 'ready' : 'unavailable';
+    case 'expired': return 'expired';
+    case 'missing': return 'missing';
+    default: return 'unavailable';
+  }
+}
+
+function materialStatusLabel(item: MaterialProjection): string {
+  const refresh = materialStateLabel(item.state);
+  switch (materialCredentialState(item)) {
+    case 'ready':
+      return ['retryable_failed', 'failed', 'final_failed', 'completed_with_failures'].includes(materialString(item.state))
+        ? '刷新失败 · 旧凭据仍可用'
+        : `${refresh} · 当前凭据可用`;
+    case 'expired': return `${refresh} · 凭据已过期`;
+    case 'missing': return `${refresh} · 尚无可用凭据`;
+    default: return `${refresh} · 凭据状态暂不可用`;
+  }
+}
+
+function materialFailureReason(item: MaterialProjection): string {
+  switch (materialString(item.state)) {
+    case 'retryable_failed':
+    case 'failed':
+    case 'final_failed':
+    case 'completed_with_failures':
+      return materialString(item.failure_code) || '刷新失败';
+    default:
+      return '—';
+  }
+}
+
+function materialStableID(item: MaterialProjection): string {
+  const source = materialString(item.source_ref);
+  const match = source.match(/(?:^|:)([1-9][0-9]*)$/);
+  return match?.[1] || '';
+}
+
+function materialCount(_item: MaterialProjection, round: RefreshRoundProjection | undefined, field: string): number | undefined {
+  return materialNumber(round?.[field]);
+}
+
+function materialProgress(item: MaterialProjection, round: RefreshRoundProjection | undefined): string {
+  const total = materialCount(item, round, 'total');
+  const succeeded = materialCount(item, round, 'succeeded');
+  const failed = materialCount(item, round, 'failed');
+  const unknown = materialCount(item, round, 'unknown');
+  if (total === undefined && succeeded === undefined && failed === undefined && unknown === undefined)
+    return '当日进度暂不可用';
+  const successLabel = succeeded === undefined ? '—' : String(succeeded);
+  return `总计 ${total === undefined ? '—' : total} · 成功 ${successLabel} · 失败 ${failed === undefined ? '—' : failed} · 待核实 ${unknown === undefined ? '—' : unknown}`;
+}
+
+function materialSourceName(item: MaterialProjection): string {
+  return materialString(item.file_name) || '未命名素材';
+}
+
+function materialNextRun(value: unknown): string {
+  const next = materialFormatTime(value);
+  return next === '—' ? '每天 02:00（北京时间）' : `${next}（北京时间）`;
+}
+
+function materialFailureHint(failure: MaterialSourceFailureProjection): string {
+  switch (materialString(failure.failure_code)) {
+    case 'source_bytes_missing':
+    case 'source_blob_missing':
+      return '原文件缺失，请补传';
+    case 'invalid_metadata':
+      return '素材元数据无效，请重新上传';
+    default:
+      return '素材无法读取，请重新上传';
+  }
+}
+
+function materialScrollRegion(stage: HTMLElement): HTMLElement | undefined {
+  const candidates = [...stage.querySelectorAll<HTMLElement>('div')];
+  return candidates.find((node) => node.style.overflow === 'auto' && node.style.flex.includes('1')) ||
+    candidates.find((node) => node.style.overflow === 'auto');
+}
+
+function materialBusy(button: HTMLButtonElement, busy: boolean, busyLabel: string): void {
+  if (busy) {
+    button.dataset.materialRefreshLabel = button.textContent || '';
+    button.disabled = true;
+    button.textContent = busyLabel;
+  } else {
+    button.disabled = false;
+    button.textContent = button.dataset.materialRefreshLabel || button.textContent || '';
+  }
+}
+
+class MaterialRefreshPanel {
+  readonly root: HTMLElement;
+  private items: MaterialProjection[] = [];
+  private failures: MaterialSourceFailureProjection[] = [];
+  private round: RefreshRoundProjection | undefined;
+  private nextRefreshAt: unknown;
+  private loading = false;
+  private generation = 0;
+  private fullRetryKey = '';
+  private singleRetryKeys = new Map<string, string>();
+
+  constructor(parent: HTMLElement) {
+    this.root = document.createElement('section');
+    this.root.id = 'material-refresh-panel';
+    this.root.dataset.materialRefresh = 'true';
+    this.root.setAttribute('aria-labelledby', 'material-refresh-title');
+    this.root.style.cssText = 'grid-column:1/-1;background:#fff;border:1px solid #DEE0E3;border-radius:8px;padding:14px 16px;color:#1F2329';
+    parent.prepend(this.root);
+    this.render();
+  }
+
+  async load(): Promise<void> {
+    const generation = ++this.generation;
+    this.loading = true;
+    this.render();
+    try {
+      let cursor = '';
+      const seen = new Set<string>();
+      const items: MaterialProjection[] = [];
+      const failures: MaterialSourceFailureProjection[] = [];
+      do {
+        const query = new URLSearchParams({ limit: '100' });
+        if (cursor) query.set('cursor', cursor);
+        const result = await materialGet(`${materialRefreshBase}?${query}`);
+        const pageItems = Array.isArray(result.items) ? result.items : [];
+        const pageFailures = Array.isArray(result.failures) ? result.failures : [];
+        if (generation === this.generation) {
+          this.nextRefreshAt = result.next_refresh_at;
+          this.round = materialObject(result.today_refresh_round) as RefreshRoundProjection;
+          if (!Object.keys(this.round).length) this.round = undefined;
+        }
+        items.push(...pageItems.map((value) => materialObject(value) as MaterialProjection));
+        failures.push(...pageFailures.map((value) => materialObject(value) as MaterialSourceFailureProjection));
+        const next = materialString(result.next_cursor);
+        if (!next || result.done === true) break;
+        if (seen.has(next)) throw new Error('刷新状态分页游标重复，已停止读取');
+        seen.add(next);
+        cursor = next;
+      } while (true);
+      if (generation !== this.generation) return;
+      this.items = items;
+      this.failures = failures;
+      this.loading = false;
+      this.render();
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.loading = false;
+      this.renderError(error instanceof Error ? error.message : '刷新状态暂不可读取');
+    }
+  }
+
+  private statusNode(): HTMLElement | undefined {
+    return this.root.querySelector<HTMLElement>('[data-material-refresh-status]') || undefined;
+  }
+
+  private setStatus(value: string, alert = false): void {
+    const node = this.statusNode();
+    if (!node) return;
+    node.textContent = value;
+    node.setAttribute('role', alert ? 'alert' : 'status');
+  }
+
+  private renderError(value: string): void {
+    this.root.replaceChildren();
+    const header = document.createElement('div');
+    header.dataset.materialRefreshHeader = 'true';
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap';
+    const title = document.createElement('h2');
+    title.id = 'material-refresh-title';
+    title.textContent = '素材刷新状态';
+    title.style.cssText = 'margin:0;font-size:14px';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = '重试读取刷新状态';
+    retry.onclick = () => { void this.load(); };
+    header.append(title, retry);
+    const status = document.createElement('p');
+    status.dataset.materialRefreshStatus = 'true';
+    status.setAttribute('role', 'alert');
+    status.textContent = value;
+    status.style.cssText = 'margin:10px 0 0;color:#B42318;font-size:12px';
+    this.root.append(header, status);
+  }
+
+  private render(): void {
+    if (this.loading) {
+      this.root.replaceChildren();
+      const status = document.createElement('p');
+      status.dataset.materialRefreshStatus = 'true';
+      status.setAttribute('role', 'status');
+      status.textContent = '正在读取素材刷新状态…';
+      status.style.cssText = 'margin:0;color:#646A73;font-size:12px';
+      this.root.append(status);
+      return;
+    }
+    this.root.replaceChildren();
+    const header = document.createElement('div');
+    header.dataset.materialRefreshHeader = 'true';
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap';
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('h2');
+    title.id = 'material-refresh-title';
+    title.textContent = '素材刷新状态';
+    title.style.cssText = 'margin:0;font-size:14px';
+    const note = document.createElement('p');
+    note.textContent = '启用图片、附件和小程序封面每天 02:00（北京时间）全量刷新；刷新只更新临时凭据，不触发群发。';
+    note.style.cssText = 'margin:4px 0 0;color:#646A73;font-size:12px;line-height:18px';
+    titleWrap.append(title, note);
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.className = 'admin-button admin-button--primary';
+    all.textContent = '立即刷新全部启用素材';
+    all.dataset.materialRefreshAll = 'true';
+    all.onclick = () => { void this.refreshAll(all); };
+    header.append(titleWrap, all);
+    this.root.append(header);
+
+    const status = document.createElement('p');
+    status.dataset.materialRefreshStatus = 'true';
+    status.setAttribute('role', 'status');
+    status.style.cssText = 'margin:10px 0 0;color:#646A73;font-size:12px;min-height:18px';
+    this.root.append(status);
+    const progress = document.createElement('p');
+    progress.dataset.materialRefreshProgress = 'true';
+    progress.style.cssText = 'margin:4px 0 10px;color:#646A73;font-size:12px';
+    progress.textContent = this.round ? this.roundProgress(this.round) : '当日刷新进度暂不可用';
+    this.root.append(progress);
+    if (this.round && materialNumber(this.round.id) !== undefined) {
+      const refreshProgress = document.createElement('button');
+      refreshProgress.type = 'button';
+      refreshProgress.className = 'admin-button admin-button--secondary';
+      refreshProgress.textContent = '刷新进度';
+      refreshProgress.dataset.materialRefreshRound = String(this.round.id);
+      refreshProgress.onclick = () => { void this.loadRound(refreshProgress); };
+      this.root.append(refreshProgress);
+    }
+    const next = document.createElement('p');
+    next.style.cssText = 'margin:8px 0 10px;color:#646A73;font-size:12px';
+    next.textContent = `下次运行：${materialNextRun(this.nextRefreshAt)}`;
+    this.root.append(next);
+
+    if (this.failures.length) {
+      const missing = document.createElement('section');
+      missing.dataset.materialSourceFailures = 'true';
+      missing.style.cssText = 'margin:0 0 10px;padding:10px 12px;border:1px solid #FDA29B;border-radius:6px;background:#FFFBFA;color:#B42318;font-size:12px';
+      const title = document.createElement('strong');
+      title.textContent = '需要补传的原文件';
+      missing.append(title);
+      const list = document.createElement('ul');
+      list.style.cssText = 'margin:6px 0 0;padding-left:18px;display:grid;gap:4px';
+      this.failures.forEach((failure) => {
+        const entry = document.createElement('li');
+        const sourceRef = materialString(failure.source_ref) || '未知素材';
+        const code = materialString(failure.failure_code) || 'source_unavailable';
+        entry.textContent = `${sourceRef}：${materialFailureHint(failure)}（${code}）`;
+        list.append(entry);
+      });
+      missing.append(list);
+      this.root.append(missing);
+    }
+
+    if (!this.items.length) {
+      const empty = document.createElement('p');
+      empty.textContent = '当前没有启用的图片、附件或小程序封面。';
+      empty.style.cssText = 'margin:0;color:#646A73;font-size:12px';
+      this.root.append(empty);
+      return;
+    }
+    const table = document.createElement('table');
+    table.style.cssText = 'border-collapse:collapse;width:100%;font-size:12px';
+    const head = document.createElement('tr');
+    ['素材', '类型', '刷新 / 凭据', '最近成功刷新', '到期时间', '当日进度', '失败原因', '操作'].forEach((label) => {
+      const cell = document.createElement('th');
+      cell.textContent = label;
+      cell.style.cssText = 'padding:8px;border-bottom:1px solid #EFF0F1;text-align:left;font-weight:500;color:#8F959E;white-space:nowrap';
+      head.append(cell);
+    });
+    table.append(head);
+    this.items.forEach((item) => table.append(this.itemRow(item)));
+    this.root.append(table);
+  }
+
+  private roundProgress(round: RefreshRoundProjection): string {
+    const count = (field: string): string => {
+      const value = materialNumber(round[field]);
+      return value === undefined ? '—' : String(value);
+    };
+    const total = count('total');
+    if (total === '—' && count('succeeded') === '—' && count('failed') === '—' && count('unknown') === '—') return '当日刷新进度暂不可用';
+    return `当日进度：总计 ${total} · 已排队 ${count('queued')} · 成功 ${count('succeeded')} · 失败 ${count('failed')} · 待核实 ${count('unknown')}`;
+  }
+
+  private itemRow(item: MaterialProjection): HTMLTableRowElement {
+    const row = document.createElement('tr');
+    const stableID = materialStableID(item);
+    const name = `${materialSourceName(item)}${stableID ? ` · 素材 #${stableID}` : ''}`;
+    const values = [
+      name,
+      materialTypeLabel(item.source_type),
+      materialStatusLabel(item),
+      materialFormatTime(item.last_succeeded_at),
+      materialFormatTime(item.expires_at),
+      materialProgress(item, this.round),
+      materialFailureReason(item),
+    ];
+    values.forEach((value) => {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      cell.style.cssText = 'padding:8px;border-bottom:1px solid #EFF0F1;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere';
+      row.append(cell);
+    });
+    const actions = document.createElement('td');
+    actions.style.cssText = 'padding:8px;border-bottom:1px solid #EFF0F1;vertical-align:top;white-space:nowrap';
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'admin-button admin-button--primary';
+    refresh.textContent = '立即刷新单个';
+    refresh.dataset.materialRefreshSource = materialString(item.source_ref);
+    refresh.disabled = !materialString(item.source_ref);
+    refresh.onclick = () => { void this.refreshOne(item, refresh); };
+    actions.append(refresh);
+    const details = document.createElement('details');
+    details.style.cssText = 'margin-top:5px;white-space:normal';
+    const summary = document.createElement('summary');
+    summary.textContent = '技术详情';
+    summary.style.cursor = 'pointer';
+    const technical = document.createElement('small');
+    technical.style.cssText = 'display:block;margin-top:4px;color:#646A73;white-space:pre-wrap;overflow-wrap:anywhere';
+    const mediaID = materialString(item.media_id);
+    technical.textContent = mediaID ? `media_id：${mediaID}` : '当前没有可显示的 media_id';
+    details.append(summary, technical);
+    actions.append(details);
+    row.append(actions);
+    return row;
+  }
+
+  private async refreshOne(item: MaterialProjection, button: HTMLButtonElement): Promise<void> {
+    const sourceRef = materialString(item.source_ref);
+    if (!sourceRef) return;
+    const key = this.singleRetryKeys.get(sourceRef) || materialRefreshKey(`one-${sourceRef}`);
+    this.singleRetryKeys.set(sourceRef, key);
+    materialBusy(button, true, '刷新中…');
+    try {
+      const result = await materialPost(`${materialRefreshBase}/${encodeURIComponent(sourceRef)}/prepare`, { force: true }, key);
+      const material = materialObject(result.material) as MaterialProjection;
+      const index = this.items.findIndex((value) => value.source_ref === sourceRef);
+      if (index >= 0 && Object.keys(material).length) this.items[index] = { ...this.items[index], ...material };
+      this.singleRetryKeys.delete(sourceRef);
+      this.render();
+      this.setStatus('单素材刷新已受理；完成状态可通过“刷新进度”核对。');
+    } catch (error) {
+      materialBusy(button, false, '立即刷新单个');
+      this.setStatus(error instanceof Error ? `${error.message}；可重试，仍使用同一操作 key。` : '单素材刷新失败；可重试。', true);
+    }
+  }
+
+  private async refreshAll(button: HTMLButtonElement): Promise<void> {
+    const key = this.fullRetryKey || materialRefreshKey('all');
+    this.fullRetryKey = key;
+    materialBusy(button, true, '刷新中…');
+    try {
+      const result = await materialPost(`${materialRefreshBase}/refresh-rounds`, { force: true }, key);
+      const round = materialObject(result.refresh_round) as RefreshRoundProjection;
+      this.round = round;
+      this.fullRetryKey = '';
+      this.render();
+      this.setStatus('全量刷新已异步受理；刷新不会触发群发。');
+      const id = materialNumber(round.id);
+      if (id !== undefined) await this.loadRound();
+    } catch (error) {
+      materialBusy(button, false, '立即刷新全部启用素材');
+      this.setStatus(error instanceof Error ? `${error.message}；可重试，仍使用同一操作 key。` : '全量刷新失败；可重试。', true);
+    }
+  }
+
+  private async loadRound(button?: HTMLButtonElement): Promise<void> {
+    const id = materialNumber(this.round?.id);
+    if (id === undefined) return;
+    if (button) materialBusy(button, true, '读取中…');
+    try {
+      const result = await materialGet(`${materialRefreshBase}/refresh-rounds/${encodeURIComponent(String(id))}`);
+      const round = materialObject(result.refresh_round) as RefreshRoundProjection;
+      this.round = round;
+      this.render();
+      this.setStatus('已读取最新刷新进度。');
+    } catch (error) {
+      if (button) materialBusy(button, false, '刷新进度');
+      this.setStatus(error instanceof Error ? error.message : '刷新进度暂不可读取', true);
+    }
+  }
+}
+
+function installMaterialRefreshPanel(): void {
+  if (typeof document === 'undefined' || !document.body || !materialRefreshPages.has(document.body.dataset.page || '')) return;
+  const stage = document.querySelector<HTMLElement>('main#stage');
+  if (!stage || stage.querySelector('[data-material-refresh="true"]')) return;
+  const region = materialScrollRegion(stage);
+  if (!region) return;
+  const panel = new MaterialRefreshPanel(region);
+  void panel.load();
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installMaterialRefreshPanel);
+else installMaterialRefreshPanel();
+new MutationObserver(installMaterialRefreshPanel).observe(document.documentElement, { childList: true, subtree: true });

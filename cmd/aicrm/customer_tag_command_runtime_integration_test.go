@@ -472,11 +472,24 @@ func TestCustomerTagCommandCompositionBatchOver100QueuesIndependentRiverEffects(
 	if err = json.Unmarshal([]byte(acceptedBody), &accepted); err != nil || acceptedResponse.Code != http.StatusAccepted || accepted.ID < 1 || len(accepted.Lines) != 101 || accepted.State != "queued" {
 		t.Fatalf("accept status=%d result=%+v err=%v body=%s", acceptedResponse.Code, accepted, err, acceptedBody)
 	}
-	for table, want := range map[string]int{"customer_tag_commands": 1, "customer_tag_command_lines": 101, "external_effects": 101, "river_job": 101} {
+	for table, want := range map[string]int{"customer_tag_commands": 1, "customer_tag_command_lines": 101} {
 		var got int
 		if err = first.pool.Native().QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s=%d want=%d err=%v", table, got, want, err)
 		}
+	}
+	// Maintenance may enqueue unrelated River work while this Composition is
+	// starting. Verify the business invariant through the command's immutable
+	// line-to-effect-to-job bindings: every one of the 101 accepted targets has
+	// exactly one distinct External Effect and River job.
+	var boundLines, distinctEffects, distinctJobs int
+	if err = first.pool.Native().QueryRow(ctx, `SELECT
+		count(*), count(DISTINCT effect.id), count(DISTINCT job.river_job_id)
+		FROM customer_tag_command_lines line
+		JOIN external_effects effect ON line.effect_ref='eer_' || effect.id::text
+		JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation
+		WHERE line.command_id=$1`, accepted.ID).Scan(&boundLines, &distinctEffects, &distinctJobs); err != nil || boundLines != 101 || distinctEffects != 101 || distinctJobs != 101 {
+		t.Fatalf("customer tag effect bindings lines=%d effects=%d jobs=%d want=101 err=%v", boundLines, distinctEffects, distinctJobs, err)
 	}
 
 	firstRun, stopFirst := startCustomerTagRestartRuntime(first, ctx)
@@ -1028,7 +1041,7 @@ func customerTagRuntimePool(t *testing.T, ctx context.Context, url string) (*pla
 		t.Fatal(err)
 	}
 	root := filepath.Clean(filepath.Join("..", ".."))
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0008_tag_catalog.sql", "0009_customer_activation.sql", "0019_tag_catalog_sync_projection.sql", "0022_customer_profile_sections.sql", "0093_customer_tag_commands.sql", "0107_tag_catalog_mutation_receipts.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0008_tag_catalog.sql", "0009_customer_activation.sql", "0019_tag_catalog_sync_projection.sql", "0022_customer_profile_sections.sql", "0093_customer_tag_commands.sql", "0107_tag_catalog_mutation_receipts.sql", "0125_outbound_material_preparation.sql"} {
 		body, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

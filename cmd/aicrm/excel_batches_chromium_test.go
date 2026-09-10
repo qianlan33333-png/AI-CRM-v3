@@ -36,14 +36,19 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(source), "..", "..")
 	t.Chdir(root)
-	prepareProductExternalPushChromiumArtifacts(t, root)
+	if browser {
+		prepareProductExternalPushChromiumArtifacts(t, root)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
 	defer cleanup()
 	token := strings.Repeat("x", 32)
-	cover, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
-	coverHash := effect.Hash("fixture-cover")
+	cover, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII=")
+	// Cover uploads now enter Media before the Excel batch freezes its source.
+	// Assert the actual immutable PNG digest rather than the old component-only
+	// fixture token.
+	coverHash := effect.Hash(string(cover))
 	card := map[string]any{"appid": "fixture-app", "path": "pages/article/article?lesson_id=1", "title": "标准案例", "cover_digest": ""}
 	component := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+token {

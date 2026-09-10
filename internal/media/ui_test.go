@@ -22,19 +22,19 @@ func TestMediaUIRendersEveryFrozenWorkspaceWithStablePageKey(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"tokens.css", "labs.css", "admin.js"} {
+	for _, name := range []string{"tokens.css", "labs.css", "admin.js", "material-save.js"} {
 		if err := os.WriteFile(filepath.Join(dist, "assets", name), []byte(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js"},"files":{"assets/tokens.css":{},"assets/labs.css":{},"assets/admin.js":{}}}`
+	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","materialSaveHost":"assets/material-save.js"},"files":{"assets/tokens.css":{},"assets/labs.css":{},"assets/admin.js":{},"assets/material-save.js":{}}}`
 	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
 	handler := NewModuleRegistration().UIBinding(dist, func(w http.ResponseWriter, _ *http.Request, page, donor string, assets MediaAssets) error {
 		got = append(got, page)
-		if donor == "" || assets.AdminJS != "/media-assets/assets/admin.js" {
+		if donor == "" || assets.AdminJS != "/media-assets/assets/admin.js" || assets.MaterialSaveHostJS != "/media-assets/assets/material-save.js" {
 			t.Fatalf("bad render input page=%q donor=%q assets=%+v", page, donor, assets)
 		}
 		w.WriteHeader(http.StatusOK)

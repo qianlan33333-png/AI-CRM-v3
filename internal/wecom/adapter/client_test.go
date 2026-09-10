@@ -889,6 +889,39 @@ func TestPrivateMessageUploadsPDFAsFile(t *testing.T) {
 	}
 }
 
+func TestPrivateMessageRateLimitIsRetryableAndCanLaterSucceed(t *testing.T) {
+	messageCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/add_msg_template":
+			messageCalls++
+			if messageCalls == 1 {
+				_, _ = w.Write([]byte(`{"errcode":45009,"errmsg":"rate limited"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"msgid":"retry-message-1","fail_list":[]}`))
+		default:
+			t.Fatalf("unexpected provider call %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	target := outboundport.PrivateMessageTarget{ExternalUserID: "external-secret-id", StaffUserID: "staff-secret-id"}
+	payload := outboundport.PrivateMessagePayload{Attachments: []outboundport.PrivateMessageAttachment{{Kind: "image", MediaID: "prepared-media-1"}}}
+	_, attempted, err := client.SendPrivateMessage(context.Background(), target, payload)
+	var classified outboundport.PrivateMessageRetryableRejection
+	if !attempted || err == nil || !errors.As(err, &classified) || classified.OutcomeUnknown() || !classified.Retryable() || classified.FailureCode() != "wecom_errcode_45009" {
+		t.Fatalf("rate-limit attempted=%t err=%v classified=%T", attempted, err, classified)
+	}
+	receipt, attempted, err := client.SendPrivateMessage(context.Background(), target, payload)
+	if err != nil || !attempted || receipt.MessageID != "retry-message-1" || messageCalls != 2 {
+		t.Fatalf("retry receipt=%+v attempted=%t calls=%d err=%v", receipt, attempted, messageCalls, err)
+	}
+}
+
 var testNow = time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
 
 func newTestClient(t *testing.T, server *httptest.Server, now func() time.Time) *Client {
@@ -1128,5 +1161,54 @@ func TestTransferCustomerTreatsStrictNonZeroTopLevelErrcodeAsFinalRejection(t *t
 	_, err = client.TransferCustomer(context.Background(), "source", "target", []string{"external-1"}, "")
 	if err == nil || !wecomport.ProviderCallAttempted(err) || wecomport.ProviderOutcomeUnknown(err) {
 		t.Fatalf("err=%v attempted=%t unknown=%t", err, wecomport.ProviderCallAttempted(err), wecomport.ProviderOutcomeUnknown(err))
+	}
+}
+
+func TestPrivateMessageUsesPreparedMediaIDWithoutUpload(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/add_msg_template":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			attachments, _ := body["attachments"].([]any)
+			image, _ := attachments[0].(map[string]any)["image"].(map[string]any)
+			if image["media_id"] != "prepared-media-1" {
+				t.Fatalf("prepared material was not used: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"msgid":"message-1","fail_list":[]}`))
+		default:
+			t.Fatalf("unexpected provider call %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	receipt, attempted, err := client.SendPrivateMessage(context.Background(), outboundport.PrivateMessageTarget{ExternalUserID: "external-secret-id", StaffUserID: "staff-secret-id"}, outboundport.PrivateMessagePayload{Attachments: []outboundport.PrivateMessageAttachment{{Kind: "image", MediaID: "prepared-media-1"}}})
+	if err != nil || !attempted || receipt.MessageID != "message-1" || calls != 2 {
+		t.Fatalf("receipt=%+v attempted=%v calls=%d err=%v", receipt, attempted, calls, err)
+	}
+}
+
+func TestPrivateMessageRejectsPreparedMediaWithBytes(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/cgi-bin/gettoken" {
+			t.Fatalf("bytes must not reach an upload or message endpoint: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	_, attempted, err := client.SendPrivateMessage(context.Background(), outboundport.PrivateMessageTarget{ExternalUserID: "external-secret-id", StaffUserID: "staff-secret-id"}, outboundport.PrivateMessagePayload{Attachments: []outboundport.PrivateMessageAttachment{{Kind: "image", MediaID: "prepared-media-1", Content: []byte("must not upload")}}})
+	if err == nil || attempted || calls != 1 {
+		t.Fatalf("prepared material with bytes attempted=%v calls=%d err=%v", attempted, calls, err)
 	}
 }

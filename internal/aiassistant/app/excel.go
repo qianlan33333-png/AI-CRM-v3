@@ -520,11 +520,22 @@ func (s *Service) CreateExcelPlan(ctx context.Context, batchKey string, command 
 // UoW. The immutable bytes are stored before this call; an interrupted upload
 // may leave an unreferenced blob, never a partially updated review batch.
 func (s *Service) ApplyExcelCover(ctx context.Context, actor ai.Actor, id ai.PlanID, version int64, key string, cover effect.Digest) (ai.Plan, error) {
+	return s.applyExcelCover(ctx, actor, id, version, key, 0, cover, false)
+}
+
+// ApplyExcelMediaCover freezes both the stable Media image reference and its
+// actual content digest. It accepts only controlled Excel batches, preserving
+// legacy Python-cover plans and their historical bytes unchanged.
+func (s *Service) ApplyExcelMediaCover(ctx context.Context, actor ai.Actor, id ai.PlanID, version int64, key string, imageID int64, cover effect.Digest) (ai.Plan, error) {
+	return s.applyExcelCover(ctx, actor, id, version, key, imageID, cover, true)
+}
+
+func (s *Service) applyExcelCover(ctx context.Context, actor ai.Actor, id ai.PlanID, version int64, key string, imageID int64, cover effect.Digest, requireMediaBinding bool) (ai.Plan, error) {
 	var result ai.Plan
 	repo, ok := s.store.(interface {
 		ExcelCoverRecipients(context.Context, ai.PlanID) ([]ai.Recipient, []ai.ContentVersion, error)
 	})
-	if !ok || !actor.Valid() || id < 1 || version < 1 || !validKey(key) || !effect.ValidDigest(cover) {
+	if !ok || !actor.Valid() || id < 1 || version < 1 || !validKey(key) || imageID < 0 || (requireMediaBinding && imageID < 1) || !effect.ValidDigest(cover) {
 		return result, ErrInvalid
 	}
 	err := s.uow.Within(ctx, func(tx context.Context) error {
@@ -532,8 +543,9 @@ func (s *Service) ApplyExcelCover(ctx context.Context, actor ai.Actor, id ai.Pla
 			Actor   ai.Actor
 			ID      ai.PlanID
 			Version int64
+			ImageID int64
 			Cover   effect.Digest
-		}{actor, id, version, cover}
+		}{actor, id, version, imageID, cover}
 		receipt, owned, err := s.store.Reserve(tx, reservation("excel_cover", actor, key, digestJSON(input), s.nowUTC()))
 		if err != nil {
 			return err
@@ -549,6 +561,18 @@ func (s *Service) ApplyExcelCover(ctx context.Context, actor ai.Actor, id ai.Pla
 		if plan.SourceKind != "excel_batch" || plan.Version != version || (plan.State != ai.PlanPendingReview && plan.State != ai.PlanPartiallyApproved) {
 			return ErrConflict
 		}
+		if requireMediaBinding {
+			batchStore, found := s.store.(interface {
+				ExcelBatch(context.Context, ai.PlanID, bool) (ai.ExcelBatchMeta, error)
+			})
+			if !found {
+				return ErrUnavailable
+			}
+			batch, batchErr := batchStore.ExcelBatch(tx, id, true)
+			if batchErr != nil || batch.SourceOrigin != "excel" {
+				return ErrConflict
+			}
+		}
 		rows, contents, err := repo.ExcelCoverRecipients(tx, id)
 		if err != nil {
 			return err
@@ -560,6 +584,7 @@ func (s *Service) ApplyExcelCover(ctx context.Context, actor ai.Actor, id ai.Pla
 			blocks := contents[i].Blocks
 			card := *blocks[1].ExcelCard
 			card.CoverDigest = cover
+			card.CoverImageID = imageID
 			blocks[1].ExcelCard = &card
 			payload, digest, err := domain.FreezeContent(blocks)
 			if err != nil {
@@ -577,13 +602,19 @@ func (s *Service) ApplyExcelCover(ctx context.Context, actor ai.Actor, id ai.Pla
 		if resetter, ok := s.store.(interface {
 			ExcelBatch(context.Context, ai.PlanID, bool) (ai.ExcelBatchMeta, error)
 			AppendOperationExcelCover(context.Context, ai.PlanID, int, effect.Digest, int64, time.Time) error
+			AppendOperationExcelMediaCover(context.Context, ai.PlanID, int, int64, effect.Digest, int64, time.Time) error
 			ResetOperationExcelReview(context.Context, ai.PlanID, int, time.Time) (ai.Plan, error)
 		}); ok {
 			batch, batchErr := resetter.ExcelBatch(tx, id, true)
 			if batchErr != nil {
 				return batchErr
 			}
-			if batchErr = resetter.AppendOperationExcelCover(tx, id, batch.Revision, cover, actor.ID, s.nowUTC()); batchErr != nil {
+			if requireMediaBinding {
+				batchErr = resetter.AppendOperationExcelMediaCover(tx, id, batch.Revision, imageID, cover, actor.ID, s.nowUTC())
+			} else {
+				batchErr = resetter.AppendOperationExcelCover(tx, id, batch.Revision, cover, actor.ID, s.nowUTC())
+			}
+			if batchErr != nil {
 				return batchErr
 			}
 			result, err = resetter.ResetOperationExcelReview(tx, id, batch.Revision, s.nowUTC())

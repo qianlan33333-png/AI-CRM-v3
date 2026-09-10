@@ -380,7 +380,7 @@ func channelWelcomeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate Channel Welcome test")
 	}
 	base := filepath.Join(filepath.Dir(source), "..", "..", "migrations")
-	for _, migration := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0006_wecom_callback_channel_acquisition.sql", "0009_customer_activation.sql", "0029_channel_center.sql", "0031_channel_history_import.sql", "0032_channel_acquisition_assets.sql", "0033_wecom_welcome_grants.sql", "0034_channel_entrant_actions.sql", "0035_channel_acquisition_links.sql", "0059_channel_v1_semantic_repair.sql", "0065_channel_legacy_asset_retirement.sql", "0066_channel_welcome_intents.sql", "0093_customer_tag_commands.sql"} {
+	for _, migration := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0006_wecom_callback_channel_acquisition.sql", "0009_customer_activation.sql", "0029_channel_center.sql", "0031_channel_history_import.sql", "0032_channel_acquisition_assets.sql", "0033_wecom_welcome_grants.sql", "0034_channel_entrant_actions.sql", "0035_channel_acquisition_links.sql", "0059_channel_v1_semantic_repair.sql", "0065_channel_legacy_asset_retirement.sql", "0066_channel_welcome_intents.sql", "0093_customer_tag_commands.sql", "0125_outbound_material_preparation.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(base, migration))
 		if readErr != nil {
 			native.Close()
