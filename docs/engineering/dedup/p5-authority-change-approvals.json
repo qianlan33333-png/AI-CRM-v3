@@ -269,6 +269,28 @@
       ],
       "reason": "Record the user-authorized integrated production cutover and payment checkout local-abandonment contract. Only the active V3 OpenAPI authority and its index/lock identities change; frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent proof of human approval.",
       "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/227"
+    },
+    {
+      "base_commit": "02b79ed473e46beaac6880c6a4f8495c76c791d4",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "19d6bb48c22478c3e1fdf586c0607507642b6cad44f285f401261396335c6fb2",
+          "head_sha256": "7f8652ed24ba0570ca07c1ee24dee9d576a745c93d7508be126c01e903606930"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "50549838931183bd3ee8e53c46649faaee9ba87b1b6583cb2044903e6b9d6ea3",
+          "head_sha256": "8e4ae958b4fd21179b1bfe01ad617472f5b7c94ac7fa47c34fd36ad2d0a78d71"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "e25bcf1d0f365730815eda0ecf1905966572879aab4eed81a7a72be8dd34e6fa",
+          "head_sha256": "54b80195e1f7d58a562f13fe73c9354f499b1d80c70ed9c7599396a4775bcf7d"
+        }
+      ],
+      "reason": "Record the user-authorized checkout recovery PR active V3 contract for an audited explicit new purchase after an invalid legacy attempt. Frozen donors remain unchanged. This declaration is subject to PR review, not independent evidence of human approval.",
+      "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/228"
     }
   ]
 }
