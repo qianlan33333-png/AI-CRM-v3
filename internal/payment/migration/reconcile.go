@@ -150,7 +150,7 @@ func (v PostgreSQLVerifier) verifyPayment(ctx context.Context, runKey string, ex
 	if expected.ProviderTransactionReference != "" {
 		expectedTransactionDigest = string(effectport.Hash("history.transaction", expected.ProviderTransactionReference))
 	}
-	if !historical || sourceStatus != expected.SourceStatus || historyReason != expected.HistoryReason || orderID != expected.OrderID || provider != string(expected.Provider) || channel != string(paymentdomain.ChannelMiniProgram) || merchant != expected.MerchantOrderNo || payerIdentity != expected.PayerIdentityID || payerCustomer != expected.PayerCustomerID || beneficiary != expected.BeneficiaryCustomerID || amount != expected.AmountMinor || currency != expected.Currency || status != string(expected.Status) || externalEffect != nil || transactionDigest != expectedTransactionDigest || version != 1 || !sameTime(createdAt, expected.CreatedAt) || !sameTime(updatedAt, expected.UpdatedAt) {
+	if !historical || sourceStatus != expected.SourceStatus || historyReason != expected.HistoryReason || orderID != expected.OrderID || provider != string(expected.Provider) || channel != string(paymentdomain.ChannelMiniProgram) || merchant != expected.MerchantOrderNo || payerIdentity != expected.PayerIdentityID || payerCustomer != expected.PayerCustomerID || beneficiary != expected.BeneficiaryCustomerID || amount != expected.AmountMinor || currency != expected.Currency || status != string(expected.Status) || externalEffect != nil || transactionDigest != expectedTransactionDigest || version < 1 || !sameTime(createdAt, expected.CreatedAt) || !sameTime(updatedAt, expected.UpdatedAt) {
 		return 0, ErrHistoricalReconciliationMismatch
 	}
 	key := sha256.Sum256([]byte("payment-history:" + runKey + ":" + expected.MerchantOrderNo))
@@ -163,7 +163,7 @@ func (v PostgreSQLVerifier) verifyPayment(ctx context.Context, runKey string, ex
 	if !bytes.Equal(payloadDigest, expected.SourceDigest[:]) || resultKind != "payment" || resultID != id {
 		return 0, ErrHistoricalReconciliationMismatch
 	}
-	if err := v.verifyHistoricalFacts(ctx, id, runKey, "payment.history_imported", expected.CreatedAt); err != nil {
+	if err := v.verifyHistoryVersion(ctx, "payment", id, version, runKey, expected.SourceDigest, "payment.history_imported", expected.CreatedAt); err != nil {
 		return 0, err
 	}
 	return id, nil
@@ -185,7 +185,7 @@ func (v PostgreSQLVerifier) verifyRefund(ctx context.Context, runKey string, pay
 	if expected.ProviderRefundReference != "" {
 		expectedRefundDigest = string(effectport.Hash("history.refund", expected.ProviderRefundReference))
 	}
-	if actualPaymentID != paymentID || provider != string(expected.Provider) || refundNo != expected.RefundNo || amount != expected.AmountMinor || reason != expected.Reason || status != string(expected.historicalStatus()) || externalEffect != nil || digest != expectedRefundDigest || version != 1 || !sameTime(createdAt, expected.OccurredAt) || !sameTime(updatedAt, expected.OccurredAt) {
+	if actualPaymentID != paymentID || provider != string(expected.Provider) || refundNo != expected.RefundNo || amount != expected.AmountMinor || reason != expected.Reason || status != string(expected.historicalStatus()) || externalEffect != nil || digest != expectedRefundDigest || version < 1 || !sameTime(createdAt, expected.OccurredAt) || !sameTime(updatedAt, expected.OccurredAt) {
 		return ErrHistoricalReconciliationMismatch
 	}
 	key := sha256.Sum256([]byte("refund-history:" + runKey + ":" + expected.RefundNo))
@@ -198,7 +198,7 @@ func (v PostgreSQLVerifier) verifyRefund(ctx context.Context, runKey string, pay
 	if !bytes.Equal(payloadDigest, expected.SourceDigest[:]) || resultKind != "refund" || resultID != id {
 		return ErrHistoricalReconciliationMismatch
 	}
-	return v.verifyHistoricalFacts(ctx, id, runKey, "payment.refund_history_imported", expected.OccurredAt)
+	return v.verifyHistoryVersion(ctx, "refund", id, version, runKey, expected.SourceDigest, "payment.refund_history_imported", expected.OccurredAt)
 }
 
 // verifyHistoricalFacts proves the Payment audit/outbox pair committed with a
@@ -267,4 +267,44 @@ func (f HistoricalRefundFact) historicalStatus() paymentdomain.RefundStatus {
 		return paymentdomain.RefundCompleted
 	}
 	return f.Status
+}
+
+// Cross-run evidence must form an unbroken chain back to the initial audit.
+func (v PostgreSQLVerifier) verifyHistoryVersion(ctx context.Context, kind string, id, version int64, run string, digest [32]byte, event string, created time.Time) error {
+	if version == 1 {
+		return v.verifyHistoricalFacts(ctx, id, run, event, created)
+	}
+	var firstRun string
+	var previous []byte
+	if e := v.Pool.QueryRow(ctx, `SELECT actor_scope,payload_digest FROM payment_operation_receipts WHERE operation='history_import' AND result_kind=$1 AND result_id=$2 ORDER BY id LIMIT 1`, kind, id).Scan(&firstRun, &previous); e != nil {
+		return paymentReconciliationError(e)
+	}
+	rows, e := v.Pool.Query(ctx, `SELECT run_key,before_digest,after_digest,before_version,after_version FROM payment_history_source_deltas WHERE result_kind=$1 AND result_id=$2 ORDER BY id`, kind, id)
+	if e != nil {
+		return paymentReconciliationError(e)
+	}
+	defer rows.Close()
+	want := int64(1)
+	lastRun := ""
+	for rows.Next() {
+		var currentRun string
+		var before, after []byte
+		var bv, av int64
+		if e = rows.Scan(&currentRun, &before, &after, &bv, &av); e != nil {
+			return e
+		}
+		if bv != want || av != want+1 || !bytes.Equal(previous, before) {
+			return ErrHistoricalReconciliationMismatch
+		}
+		want = av
+		previous = after
+		lastRun = currentRun
+	}
+	if e = rows.Err(); e != nil {
+		return e
+	}
+	if want != version || lastRun != run || !bytes.Equal(previous, digest[:]) {
+		return ErrHistoricalReconciliationMismatch
+	}
+	return v.verifyHistoricalFacts(ctx, id, firstRun, event, created)
 }
