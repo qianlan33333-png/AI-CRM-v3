@@ -43,6 +43,25 @@ assert.ok(errorDom.window.document.querySelector('#screen [data-h5-blocked]')?.t
 assert.equal(errorDom.window.document.querySelector('#screen').textContent?.includes('授权仅用于识别本次问卷所属客户，不会发送短信。'), false, 'ordinary WeChat notice must not occupy the cleaned page');
 errorDom.window.close();
 console.log('h5 auth Host presentation journey: PASS');
+for (const name of ['all', 'one', 'result']) {
+  const html = fs.readFileSync(path.join(root, `web/dist/h5/${name}.html`), 'utf8');
+  const mobile = new JSDOM(html, {url:`https://test.invalid/h5/${name}.html?slug=survey`,runScripts:'outside-only'});
+  const d = mobile.window.document;
+  assert.equal(d.querySelector('.phone'),null, `${name}: release HTML must have no demo frame before scripts run`);
+  assert.equal(d.querySelector('a[href="index.html"]'),null, `${name}: release HTML must have no demo navigation`);
+  mobile.window.eval(host);
+  const content = d.querySelector('#tpl').content;
+  assert.equal(content.textContent.includes('增长诊断测评'),false, `${name}: fixed demo title must be removed`);
+  assert.ok(d.querySelector('#tpl').innerHTML.includes('data-h5-error'), `${name}: actual error feedback must remain`);
+  assert.ok(d.querySelector('#screen').style.cssText.includes('width: 100%'), `${name}: mobile width must be fluid`);
+  assert.equal(d.querySelector('#screen').style.height,'', `${name}: no fixed device-height crop`);
+  assert.equal(d.querySelector('#screen').style.overflow,'', `${name}: long content must not be clipped`);
+  const binding = name === 'result' ? '{{ resultTitle }}' : '{{ title }}';
+  assert.ok(d.querySelector('#tpl').innerHTML.includes(binding), `${name}: real questionnaire title binding must remain`);
+  mobile.window.close();
+}
+console.log('survey mobile release shell: PASS');
+
 
 // Run the real auth controller with only its renderer/API imports isolated.
 // A session miss auto-starts once; callback failure or a lost cookie cannot loop.

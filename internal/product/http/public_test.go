@@ -98,7 +98,19 @@ func TestPublicPaymentCompletionRefreshJourney(t *testing.T) {
 		t.Fatal("runtime caller unavailable")
 	}
 	journey := filepath.Join(filepath.Dir(source), "public_payment_completion_journey.mjs")
-	command := exec.Command("node", journey)
+	pages := []string{}
+	for _, kind := range []string{"standard", "service_period"} {
+		var html bytes.Buffer
+		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true}}); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), kind+".html")
+		if err := os.WriteFile(path, html.Bytes(), 0600); err != nil {
+			t.Fatal(err)
+		}
+		pages = append(pages, path)
+	}
+	command := exec.Command("node", append([]string{journey}, pages...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("public payment completion refresh journey: %v\n%s", err, output)
 	}
@@ -312,7 +324,19 @@ func TestServicePeriodPublicBrowserJourney(t *testing.T) {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", ".."))
 	journey := filepath.Join(root, "internal", "product", "http", "service_period_public_journey.mjs")
-	command := exec.Command("node", journey)
+	pages := []string{}
+	for _, kind := range []string{"standard", "service_period"} {
+		var html bytes.Buffer
+		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true}}); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), kind+".html")
+		if err := os.WriteFile(path, html.Bytes(), 0600); err != nil {
+			t.Fatal(err)
+		}
+		pages = append(pages, path)
+	}
+	command := exec.Command("node", append([]string{journey}, pages...)...)
 	command.Dir = root
 	command.Env = append(os.Environ(), "AICRM_SERVICE_PERIOD_JOURNEY_BASE_URL="+server.URL, "AICRM_SERVICE_PERIOD_JOURNEY_COOKIE="+paymentport.TrustedSessionCookieName+"=service-period-trusted")
 	if output, err := command.CombinedOutput(); err != nil {

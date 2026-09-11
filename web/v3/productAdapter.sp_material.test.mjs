@@ -92,7 +92,7 @@ assert.equal(navigationErrors.length, 0, 'successful saves must not navigate to 
 await wait(30);
 assert.equal(navigationErrors.length, 1, 'explicit Back must still invoke list navigation');
 const savedProjection = { ...projection, purchase_action_enabled: true, purchase_action_mode: 'redirect', completion_redirect_enabled: true, completion_redirect_url: '/complete', wecom_tagging: { enabled: false, tag_ids: [37] } };
-const reopened = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.html?id=201', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: new VirtualConsole(), beforeParse(window) {
+const reopened = new JSDOM(page, { url: 'https://test.invalid/admin/service-period-products/201/edit', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: new VirtualConsole(), beforeParse(window) {
   window.__AICRM_TEST_MOCK__ = false; window.Request = Request; window.Response = Response; window.Headers = Headers;
   window.fetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);

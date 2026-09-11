@@ -134,6 +134,7 @@ assert.equal(external[0].key, external[1].key, 'external-push recovery must reus
 await wait(300);
 assert.equal(dom.window.location.pathname, '/admin/productForm.html', 'successful recovery must remain in the ordinary editor');
 assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101');
+dom.reconfigure({url:'https://test.invalid/admin/wechat-pay/products/101/edit'});
 const actionLink = dom.window.document.querySelector('a[href="#product-action"]');
 actionLink.click();
 assert.equal(actionLink.getAttribute('aria-current'), 'step', 'saved editor must retain working dimension navigation');

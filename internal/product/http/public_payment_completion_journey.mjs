@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {JSDOM} from 'jsdom';
 
 const source = await readFile(new URL('./public.go', import.meta.url), 'utf8');
 const start = source.indexOf('</main><script>');
@@ -32,8 +33,9 @@ async function settle() {
 function boot(store, completion, redirectFailure = false, sessionAuthorized = true, setup = '', purchase = {purchase_state:'available',can_purchase:true}, userAgent='MicroMessenger', renewal=false, details=false) {
   const calls = [], elements = new Map();
   const setGlobal = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
-  const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', href: '', children: [], attributes: new Map(), addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }, setAttribute(name, value) { this.attributes.set(name, String(value)); }, removeAttribute(name) { this.attributes.delete(name); }});
-  for (const id of ['price', 'buy', 'status', 'coupon', 'wechatNotice', 'mobile', 'payableAmount', 'footerAmount', 'discountAmount', 'identityGate', 'identityMessage', 'authContinue', 'checkoutContent']) elements.set(id, element());
+  const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', href: '', children: [], attributes: new Map(), addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }, replaceChildren(...children) {this.children=children;this.textContent="";}, setAttribute(name, value) { this.attributes.set(name, String(value)); }, removeAttribute(name) { this.attributes.delete(name); }});
+  for (const id of ['price', 'buy', 'status', 'coupon', 'wechatNotice', 'mobile', 'payableAmount', 'footerAmount', 'discountAmount', 'identityGate', 'identityMessage', 'authContinue', 'checkoutContent','paymentDetails','mobilePanel','paymentMethod','product','footer','productName']) elements.set(id, element());
+  elements.get('checkoutContent').querySelector=selector=>elements.get(({'.product':'product','.checkout-footer':'footer','.product h1':'productName'})[selector]||selector.slice(1));
   if(renewal)elements.set('renew',element());
   if(details){const detail=element(),img=element();detail.hidden=true;img.dataset.src='https://example.com/detail.png';detail.querySelectorAll=()=>[img];elements.set('detailContent',detail);elements.set('detailImage',img);elements.set('detailPrice',element());}
   elements.get('authContinue').hidden = true;
@@ -86,7 +88,9 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   assert.equal(run.elements.get('buy').disabled, true);
   assert.equal(run.elements.has('renew'), false);
   assert.equal(run.elements.get('buy').textContent,'已购买');
-  assert.equal(run.elements.get('status').textContent, '支付成功');
+  assert.equal(run.elements.get('status').children.some(child=>child.textContent==='支付完成'),true);
+  assert.equal(run.elements.get('footer').hidden,true);
+  assert.equal(run.elements.get('status').children.some(child=>child.className==='completion-qr'),true);
   assert.equal(JSON.parse(store.get(storageKey)).terminal_status, 'paid');
   assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 1);
   assert.equal(run.calls.some(call => call.method === 'POST'), false);
@@ -354,9 +358,9 @@ for(const action of [
  await settle();
  assert.equal(run.elements.get('buy').disabled,true);
  assert.equal(run.calls.some(call=>call.method==='POST'||call.url?.includes('/checkouts/')),false);
- if(action.mode==='qr')assert.equal(run.elements.get('status').children[0].src,action.lead_qr.url);
+ if(action.mode==='qr')assert.equal(run.elements.get('status').children.find(child=>child.className==='completion-qr').src,action.lead_qr.url);
  else if(action.mode==='redirect')assert.equal(run.calls.filter(call=>call.redirect===action.redirect_url).length,1);
- else assert.match(run.elements.get('status').textContent,/后续指引暂不可用/);
+ else assert.match(run.elements.get('status').children.map(child=>child.textContent).join(''),/后续指引暂不可用/);
 }
 // A local paid checkpoint remains the sole guide source, avoiding duplicate redirects.
 {
@@ -393,4 +397,29 @@ for(const details of [false,true]){
  assert.equal(run.elements.get('checkoutContent').hidden,true);
  assert.equal(store.has(storageKey),false);
  assert.equal(run.calls.some(call=>call.method==='POST'),false);
+}
+
+// Execute actual Go-rendered HTML against a real DOM. Parsing/evaluation here
+// catches template JavaScript errors that a handwritten element map conceals.
+if(process.argv[2]){
+ for(const [index,path] of process.argv.slice(2).entries()){
+  const html=await readFile(path,'utf8'),periodic=index===1;
+  const dom=new JSDOM(html,{url:'https://example.test/pay/course-7',runScripts:'outside-only'}),w=dom.window;
+  const requests=[];let invokes=0;
+  Object.defineProperty(w.navigator,'userAgent',{value:'MicroMessenger'});
+  w.WeixinJSBridge={invoke(){invokes++;throw new Error('must not repeat paid SDK')}};
+  const action={state:'available',mode:'qr',lead_qr:{url:'https://wework.qpic.cn/real-image',title:'添加企微',subtitle:'领取资料'}};
+  if(periodic){const stored=JSON.parse(paidCheckpoint());stored.payload.product_kind='service_period';w.sessionStorage.setItem('aicrm.checkout.tab.v2:7:service_period',JSON.stringify(stored))}
+  w.fetch=async(url,options={})=>{requests.push({url:String(url),method:options.method||'GET'});if(String(url).includes('checkout-session'))return response({checkout_session_binding:'a'.repeat(43),can_create_checkout:true},200);if(String(url).includes('purchase-status'))return response(periodic?{purchase_state:'available',can_purchase:true}:{purchase_state:'owned',can_purchase:false,completion_action:action},200);if(String(url).includes('/coupons/'))return response({items:[]},200);return response({status:'paid',completion_action:action},200)};
+  for(const tag of w.document.querySelectorAll('script'))w.eval(tag.textContent);
+  await settle();
+  const status=w.document.getElementById('status');
+  assert.equal(status.querySelector('h2')?.textContent,'支付完成');
+  assert.equal(status.querySelector('img.completion-qr')?.src,action.lead_qr.url);
+  assert.equal(status.querySelectorAll('button,a').length,0,'inline QR must not need a second action');
+  for(const selector of ['.product','#paymentDetails','#mobilePanel','#paymentMethod','.checkout-footer'])assert.equal(w.document.querySelector('#checkoutContent '+selector).hidden,true,selector);
+  assert.equal(requests.some(r=>r.method==='POST'),false);assert.equal(invokes,0);
+  if(periodic){w.document.getElementById('renew').click();await settle();for(const selector of ['.product','#paymentDetails','#mobilePanel','#paymentMethod','.checkout-footer'])assert.equal(w.document.querySelector('#checkoutContent '+selector).hidden,false,'renew '+selector);assert.equal(status.querySelector('.completion-qr'),null);assert.equal(requests.some(r=>r.method==='POST'),false)}
+  dom.window.close();
+ }
 }

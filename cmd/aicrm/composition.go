@@ -762,10 +762,15 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	productCatalog := productapp.NewService(uow, productRepository, productEvents)
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
-	commercePushTargetResolver, err := commercePushTargetsFromRuntime(cfg.CommercePush)
+	commercePushRuntimeTargets, err := commercePushTargetsFromRuntime(cfg.CommercePush)
 	if err != nil {
 		return fail(err)
 	}
+	commercePushTemplateRefs := make([]string, 0, len(commercePushRuntimeTargets.values))
+	for reference := range commercePushRuntimeTargets.values {
+		commercePushTemplateRefs = append(commercePushTemplateRefs, reference)
+	}
+	commercePushTargetResolver := outbound.NewCommercePushEndpoints(pool.Native(), commercePushRuntimeTargets, commercePushTemplateRefs)
 	var commercePushCipher outbound.CommercePayloadCipher
 	if cfg.CommercePush.PayloadDataKey != "" {
 		commercePushCipher, err = outbound.NewCommercePayloadAESGCM(cfg.CommercePush.PayloadDataKey)
@@ -791,6 +796,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	productExternalPush.SetCommercePushEndpointManager(commercePushTargetResolver)
 	productBindings, err := productModule.Bind(productCatalog, productLifecycle, productServicePeriod, productExternalPush, requestSecurity)
 	if err != nil {
 		return fail(err)
@@ -1027,6 +1033,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	paidPurchaseActions.SetPaidGuidanceOrderReader(orderService)
 	if err = orderService.SetPaidEventConsumer(orderPaidEventFanout{commerce: commercePushService, purchase: paidPurchaseActions}); err != nil {
 		return fail(err)
 	}

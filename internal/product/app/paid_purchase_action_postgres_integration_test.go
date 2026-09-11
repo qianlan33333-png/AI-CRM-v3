@@ -22,8 +22,18 @@ import (
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 )
+
+type guidanceOrderStub struct {
+	orderport.Query
+	order orderdomain.Snapshot
+}
+
+func (s *guidanceOrderStub) Get(context.Context, int64) (orderdomain.Snapshot, error) {
+	return s.order, nil
+}
 
 type paidPurchaseTagSubmitterStub struct {
 	calls int
@@ -155,6 +165,52 @@ func TestPaidPurchaseActionPostgreSQLTransactionBoundaries(t *testing.T) {
 	var tagIDs []int64
 	if err = native.QueryRow(ctx, `SELECT action_mode,tag_state,tag_ids FROM product_paid_purchase_actions WHERE order_id=101`).Scan(&mode, &tagState, &tagIDs); err != nil || mode != "none" || tagState != "disabled" || tagIDs == nil || len(tagIDs) != 0 {
 		t.Fatalf("old action mode=%q tag_state=%q tag_ids=%v err=%v", mode, tagState, tagIDs, err)
+	}
+
+	// Current guidance can improve an old none snapshot without replaying tags.
+	if _, err = native.Exec(ctx, `UPDATE products SET legacy_admin_projection=jsonb_set(jsonb_set(jsonb_set(legacy_admin_projection,'{purchase_action_enabled}','true'),'{purchase_action_mode}','"qr"'),'{lead_channel_id}','7') WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	productID := int64(1)
+	orders := &guidanceOrderStub{order: orderdomain.Snapshot{ID: 101, Status: orderdomain.StatusPaid, Amount: orderdomain.Money{AmountMinor: 990, Currency: "CNY"}, Items: []orderdomain.ItemSnapshot{{ProductID: &productID, ProductCode: "purchase-1"}}}}
+	service.SetPaidGuidanceOrderReader(orders)
+	for _, scenario := range []string{"old_none", "missing_snapshot", "free_paid", "wrong_product", "unpaid", "refunded"} {
+		orders.order.ID = 101
+		orders.order.Status = orderdomain.StatusPaid
+		orders.order.Amount.AmountMinor = 990
+		orders.order.RefundedMinor = 0
+		orders.order.Items[0].ProductCode = "purchase-1"
+		switch scenario {
+		case "missing_snapshot":
+			orders.order.ID = 999
+		case "free_paid":
+			orders.order.Amount.AmountMinor = 0
+		case "wrong_product":
+			orders.order.Items[0].ProductCode = "wrong"
+		case "unpaid":
+			orders.order.Status = orderdomain.StatusPendingPayment
+		case "refunded":
+			orders.order.Status = orderdomain.StatusRefunded
+			orders.order.RefundedMinor = 990
+		}
+		action, e := service.ReadPaidPurchaseGuidance(ctx, orders.order.ID)
+		shouldWork := scenario == "old_none" || scenario == "missing_snapshot" || scenario == "free_paid"
+		if shouldWork && (e != nil || action.Mode != productport.PaidPurchaseActionQR || action.LeadChannelID != 7) {
+			t.Fatalf("%s action=%+v err=%v", scenario, action, e)
+		}
+		if !shouldWork && e == nil {
+			t.Fatalf("%s accepted invalid ownership/product fact", scenario)
+		}
+	}
+	if tags.calls != 0 {
+		t.Fatal("display replayed tags")
+	}
+	if err = native.QueryRow(ctx, `SELECT action_mode FROM product_paid_purchase_actions WHERE order_id=101`).Scan(&mode); err != nil || mode != "none" {
+		t.Fatal("immutable snapshot changed", err)
+	}
+	var snapshots int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM product_paid_purchase_actions`).Scan(&snapshots); err != nil || snapshots != 1 {
+		t.Fatal("display created snapshot", err)
 	}
 
 	insertProduct(2, `{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":7,"lead_qr_title":"扫码","lead_qr_subtitle":"继续","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":true,"purchase_action_mode":"qr","wecom_tagging":{"enabled":false,"tag_ids":[9]},"slices":[]}`)

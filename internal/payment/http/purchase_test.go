@@ -100,3 +100,26 @@ func TestOwnedPurchaseStatusReturnsOriginalCompletionActionWithoutOrderID(t *tes
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 }
+
+type currentGuidanceStub struct {
+	*paidPurchaseActionReaderStub
+	guidanceCalls int
+}
+
+func (s *currentGuidanceStub) ReadPaidPurchaseGuidance(_ context.Context, id int64) (productport.PaidPurchaseAction, error) {
+	s.guidanceCalls++
+	return productport.PaidPurchaseAction{OrderID: id, Enabled: true, Mode: productport.PaidPurchaseActionQR, LeadChannelID: 7}, nil
+}
+func TestOwnedPurchaseUsesReadOnlyGuidanceFallback(t *testing.T) {
+	app := &purchaseAppStub{}
+	h, _ := NewHandler(app, nil, securityStub{}, true)
+	reader := &currentGuidanceStub{paidPurchaseActionReaderStub: &paidPurchaseActionReaderStub{action: productport.PaidPurchaseAction{OrderID: 125, Mode: productport.PaidPurchaseActionNone}}}
+	_ = h.SetPaidPurchaseActionReader(reader, paidPurchaseLeadQRStub{value: channelport.PublicLeadQRCode{URL: "https://example.test/current-qr"}})
+	r := httptest.NewRequest("GET", "/api/v1/wechat-pay/purchase-status?product_type=standard&product_id=5", nil)
+	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000005"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 || reader.guidanceCalls != 1 || reader.order != 0 || !strings.Contains(w.Body.String(), "current-qr") {
+		t.Fatalf("status %d body %s calls %d", w.Code, w.Body.String(), reader.guidanceCalls)
+	}
+}

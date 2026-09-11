@@ -32,10 +32,11 @@ type PaidPurchaseActionStore interface {
 }
 
 type PaidPurchaseActionService struct {
-	uow   platformport.UnitOfWork
-	store PaidPurchaseActionStore
-	tags  customerport.TagCommandSubmitter
-	now   func() time.Time
+	guidanceOrders orderport.Query
+	uow            platformport.UnitOfWork
+	store          PaidPurchaseActionStore
+	tags           customerport.TagCommandSubmitter
+	now            func() time.Time
 }
 
 func NewPaidPurchaseActionService(uow platformport.UnitOfWork, store PaidPurchaseActionStore, tags customerport.TagCommandSubmitter) (*PaidPurchaseActionService, error) {

@@ -626,7 +626,13 @@ func (handler *Handler) paidPurchaseAction(ctx context.Context, orderID int64) m
 	if handler == nil || handler.purchaseActions == nil || handler.leadQR == nil || orderID < 1 {
 		return map[string]any{"state": "unavailable"}
 	}
-	action, err := handler.purchaseActions.ReadPaidPurchaseAction(ctx, orderID)
+	var action productport.PaidPurchaseAction
+	var err error
+	if guidance, ok := handler.purchaseActions.(productport.PaidPurchaseGuidanceReader); ok {
+		action, err = guidance.ReadPaidPurchaseGuidance(ctx, orderID)
+	} else {
+		action, err = handler.purchaseActions.ReadPaidPurchaseAction(ctx, orderID)
+	}
 	if err != nil || action.OrderID != orderID {
 		return map[string]any{"state": "unavailable"}
 	}

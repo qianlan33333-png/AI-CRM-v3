@@ -4780,7 +4780,15 @@ components:
       required: [enabled]
       properties:
         enabled: {type: boolean}
+        url: {type: string, maxLength: 4096, description: Outbound-owned HTTPS webhook address; empty clears the per-product target.}
+        type: {type: string, maxLength: 200}
+        day: {type: [integer, "null"], format: int64, minimum: 0}
+        frequency: {type: [integer, "null"], format: int64, minimum: 0}
+        expires_at_ts: {type: [integer, "null"], format: int64, minimum: 0}
+        remark: {type: string, maxLength: 2000}
+        custom_params: {oneOf: [{type: object, additionalProperties: true}, {type: array, items: {type: object}}, {type: string}]}
         configuration_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$"}
+        expected_revision: {type: integer, format: int64, minimum: 0}
     CommerceExternalPushConfiguration:
       type: object
       additionalProperties: false
@@ -4789,7 +4797,16 @@ components:
         product_id: {$ref: "#/components/schemas/PositiveID"}
         product_kind: {type: string, enum: [wechat_pay, service_period]}
         enabled: {type: boolean}
+        url: {type: string, maxLength: 4096, description: Outbound-owned HTTPS webhook address; empty clears the per-product target.}
+        type: {type: string, maxLength: 200}
+        day: {type: [integer, "null"], format: int64, minimum: 0}
+        frequency: {type: [integer, "null"], format: int64, minimum: 0}
+        expires_at_ts: {type: [integer, "null"], format: int64, minimum: 0}
+        remark: {type: string, maxLength: 2000}
+        custom_params: {type: object, additionalProperties: true}
         configuration_reference: {type: string, maxLength: 128}
+        custom_params_json: {type: string}
+        revision: {type: integer, format: int64, minimum: 0}
         updated_at: {type: string, format: date-time}
     CommerceExternalPushTest:
       type: object

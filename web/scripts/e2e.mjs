@@ -821,7 +821,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         const calls = [], downloads = [], opened = [];
         const projection = { schema_version: 1, status: 'active', enabled: true, buy_button_text: '立即购买', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, wecom_tagging: {}, slices: [] };
         const product = { id: 7, product_code: 'P-7', name: '真实商品', description: '公开商品', price_minor: 990, currency: 'CNY', stock_quantity: 5, images: [], admin_projection: projection, lifecycle: 'enabled', enabled: true, paid_order_count: 3, refund_order_count: 1, sold_count: 2, created_by: 9, version: 3, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:00:00Z' };
-        let externalConfiguration = { product_id: 7, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_open', day: 30, frequency: 1, expires_at_ts: null, remark: '旧备注', custom_params: { campaign: 'control', enabled: true, nested: { keep: ' 空白 ' } }, custom_params_json: '{"campaign":"control","enabled":true,"nested":{"keep":" 空白 "}}', revision: 3, updated_at: '2026-09-04T00:00:00Z' };
+        let externalConfiguration = { url: 'https://hooks.example.test/paid', product_id: 7, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_open', day: 30, frequency: 1, expires_at_ts: null, remark: '旧备注', custom_params: { campaign: 'control', enabled: true, nested: { keep: ' 空白 ' } }, custom_params_json: '{"campaign":"control","enabled":true,"nested":{"keep":" 空白 "}}', revision: 3, updated_at: '2026-09-04T00:00:00Z' };
         let externalTests = [{ product_id: 7, product_kind: 'wechat_pay', effect_id: 'eer_7', state: 'outcome_unknown', attempt_count: 1, provider_accepted: false, delivery_proven: false, real_external_call_executed: true, auto_retry_allowed: false, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:01:00Z' }];
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
         window.__productHttpTest = { calls, downloads, opened };
@@ -2539,8 +2539,10 @@ console.log('admin/productForm.html（渠道存量异常隔离）');
   input(dom, d.querySelector('#product-v3-external-push-remark'), '保留业务备注');
   const exactCustomParams = '{"count":9007199254740993,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]}';
   input(dom, d.querySelector('#product-v3-external-push-custom-params'), exactCustomParams);
-  if (configSave) click(dom, configSave);
-  const expectedConfigBody = JSON.stringify({ enabled: true, configuration_reference: 'product-paid-notify', type: 'member_renew', day: 45, frequency: 2, expires_at_ts: 2147483647, remark: '保留业务备注', custom_params: exactCustomParams, expected_revision: 3 });
+  click(dom, d.querySelector('a[href="#product-push"]'));
+  const dimensionSave = [...d.querySelectorAll('#product-push button')].find((button) => button.textContent.trim() === '保存当前维度');
+  if (dimensionSave) click(dom, dimensionSave);
+  const expectedConfigBody = JSON.stringify({ url: 'https://hooks.example.test/paid', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_renew', day: 45, frequency: 2, expires_at_ts: 2147483647, remark: '保留业务备注', custom_params: exactCustomParams, expected_revision: 3 });
   const savedBusiness = await waitFor(() => {
     d = dom.window.document;
     return test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push' && call.method === 'PUT' && call.body === expectedConfigBody) && d.querySelector('#product-v3-external-push-test')?.textContent.includes('配置版本 4') === true;

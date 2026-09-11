@@ -1,4 +1,4 @@
-// V3 owns this presentation seam. The frozen H5 template retains its actual
+// V3 owns this mobile presentation seam. The frozen H5 template retains its actual
 // OAuth controller and error states; remove only the donor's device-demo
 // chrome before the frozen runtime mounts it.
 if (document.body.dataset.page === 'auth') {
@@ -29,9 +29,17 @@ if (document.body.dataset.page === 'auth') {
     card.insertBefore(conditional, firstAction);
   }
 
+}
+
+if (['auth', 'all', 'one', 'result'].includes(document.body.dataset.page || '')) {
+  const screen = document.getElementById('screen');
+  const template = document.getElementById('tpl') as HTMLTemplateElement | null;
+  if (!screen || !template) throw new Error('问卷页面缺少运行容器');
+  if (document.body.dataset.page !== 'auth') template.content.firstElementChild?.remove();
   const phone = screen.closest('.phone');
   if (phone) phone.replaceWith(screen);
   document.querySelector('a[href="index.html"]')?.parentElement?.remove();
   document.querySelector('.h5-backdrop')?.setAttribute('style', 'min-height:100vh;background:#F5F6F7;display:block;padding:0;');
-  screen.setAttribute('style', 'min-height:100vh;width:100%;background:#F5F6F7;');
+  screen.classList.remove('phone-screen');
+  screen.setAttribute('style', 'display:flex;flex-direction:column;box-sizing:border-box;min-height:100vh;min-height:100dvh;width:100%;max-width:720px;margin:0 auto;background:#F5F6F7;overflow-wrap:anywhere;padding-bottom:env(safe-area-inset-bottom);');
 }

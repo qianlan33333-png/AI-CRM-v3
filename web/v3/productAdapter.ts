@@ -541,17 +541,23 @@ type ExternalPushTimelineItem = {
   autoRetryAllowed: boolean;
 };
 
+function productEditorRoute(): { id: number; prefix: 'pf' | 'spf' } | undefined {
+  const canonical = location.pathname.match(/^\/admin\/(wechat-pay\/products|service-period-products)\/([1-9][0-9]*)\/edit$/);
+  const prefix = canonical ? canonical[1] === 'wechat-pay/products' ? 'pf' : 'spf'
+    : location.pathname.endsWith('/admin/productForm.html') ? 'pf'
+    : location.pathname.endsWith('/admin/spProductForm.html') ? 'spf' : undefined;
+  const raw = canonical?.[2] || new URLSearchParams(location.search).get('id') || '';
+  const id = Number(raw);
+  if (!prefix || !/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(id)) return undefined;
+  return {id, prefix};
+}
+
 function externalPushPage(): ExternalPushPage | undefined {
-  const id = new URLSearchParams(location.search).get('id') || '';
-  if (!/^[1-9][0-9]*$/.test(id)) return undefined;
-  const productID = Number(id);
-  if (location.pathname.endsWith('/admin/productForm.html')) {
-    return { productID, productKind: 'wechat_pay', anchor: '#product-push', endpoint: `/api/admin/wechat-pay/products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/wechat-pay/products/${productID}/external-push` };
-  }
-  if (location.pathname.endsWith('/admin/spProductForm.html')) {
-    return { productID, productKind: 'service_period', anchor: '#sp-push', endpoint: `/api/admin/service-period-products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/service-period-products/${productID}/external-push` };
-  }
-  return undefined;
+  const route = productEditorRoute();
+  if (!route) return undefined;
+  const productID = route.id;
+  if (route.prefix === 'pf') return { productID, productKind: 'wechat_pay', anchor: '#product-push', endpoint: `/api/admin/wechat-pay/products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/wechat-pay/products/${productID}/external-push` };
+  return { productID, productKind: 'service_period', anchor: '#sp-push', endpoint: `/api/admin/service-period-products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/service-period-products/${productID}/external-push` };
 }
 
 const externalPushStateLabel: Record<string, string> = {
@@ -597,6 +603,7 @@ async function externalPushRequest(path: string, init: RequestInit): Promise<unk
 }
 
 type ExternalPushConfigurationDetails = {
+  url: string;
   enabled: boolean;
   configurationReference: string;
   revision: number;
@@ -658,7 +665,7 @@ function parseExternalPushConfiguration(value: unknown, page: ExternalPushPage):
   } catch {
     throw new Error('外推配置响应不完整');
   }
-  return { enabled, configurationReference: reference, revision, pushType, day: optionalInteger('day'), frequency: optionalInteger('frequency'), expiresAtTS: optionalInteger('expires_at_ts'), remark, customParamsText: customParamsJSON };
+  return { url: typeof item.url === 'string' ? item.url : '', enabled, configurationReference: reference, revision, pushType, day: optionalInteger('day'), frequency: optionalInteger('frequency'), expiresAtTS: optionalInteger('expires_at_ts'), remark, customParamsText: customParamsJSON };
 }
 
 function configurationBinding(page: ExternalPushPage, ownerDocument: Document): { enabled: boolean; reference: string } {
@@ -688,9 +695,11 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
   editor.dataset.externalPushConfiguration = '';
   editor.style.cssText = 'display:grid;gap:9px;padding-top:12px;border-top:1px solid #EFF0F1';
   const title = ownerDocument.createElement('strong');
-  title.textContent = '推送业务参数';
+  title.textContent = '推送配置';
+  const prefix = page.productKind === 'wechat_pay' ? 'pf' : 'spf';
+  ownerDocument.getElementById(`${prefix}ExternalPushReference`)?.parentElement?.setAttribute('hidden', '');
   const note = ownerDocument.createElement('p');
-  note.textContent = 'URL 与密钥仍由受控配置引用管理；此处只保存旧商品配置中的业务字段。custom_params 可填 JSON 对象或 key/value 列表。';
+  note.textContent = '支付成功后，向配置的地址推送通知。';
   note.style.cssText = 'margin:0;font-size:12px;line-height:19px;color:#646A73';
   const grid = ownerDocument.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px';
@@ -706,19 +715,53 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     grid.appendChild(wrap);
     return input;
   };
-  const pushType = field('类型', 'product-v3-external-push-type');
+  const targetURL = field('推送地址', 'product-v3-external-push-url', 'url');
+  targetURL.placeholder = 'https://';
+  const pushType = field('推送类型', 'product-v3-external-push-type');
   const day = field('服务天数', 'product-v3-external-push-day', 'text');
   const frequency = field('频次', 'product-v3-external-push-frequency', 'text');
-  const expiresAtTS = field('expires_at_ts', 'product-v3-external-push-expires-at-ts', 'text');
+  const expiresAtTS = field('到期时间戳', 'product-v3-external-push-expires-at-ts', 'text');
   const remark = field('备注', 'product-v3-external-push-remark');
   const paramsLabel = ownerDocument.createElement('label');
   paramsLabel.style.cssText = 'display:grid;gap:5px;color:#646A73;font-size:12px';
-  paramsLabel.textContent = 'custom_params';
+  paramsLabel.textContent = '自定义参数（JSON）';
   const params = ownerDocument.createElement('textarea');
   params.id = 'product-v3-external-push-custom-params';
   params.rows = 5;
   params.style.cssText = 'width:100%;border:1px solid #DEE0E3;border-radius:6px;padding:8px 9px;resize:vertical;box-sizing:border-box;font-family:ui-monospace,Menlo,monospace';
-  paramsLabel.appendChild(params);
+  const rows = ownerDocument.createElement('div');
+  rows.dataset.externalPushParamRows = '';
+  rows.style.cssText = 'display:grid;gap:8px';
+  const addParam = button('新增参数', ownerDocument);
+  const renderParams = (): void => {
+    rows.replaceChildren();
+    addParam.onclick = () => { advanced.open = true; showMessage('当前参数包含结构化数据，请在高级配置中编辑'); };
+    let values: Record<string, string>;
+    try { const parsed = JSON.parse(params.value || '{}'); if (!parsed || Array.isArray(parsed) || Object.values(parsed).some((value) => typeof value !== 'string')) return; values = parsed; } catch { return; }
+    const entries = Object.entries(values);
+    const saveRows = (): void => {
+      const result: Record<string, string> = Object.create(null);
+      for (const row of rows.children) { const fields = row.querySelectorAll('input'); if (fields[0].value.trim()) result[fields[0].value.trim()] = fields[1].value; }
+      params.value = JSON.stringify(result);
+    };
+    const addRow = (key = '', value = ''): void => {
+      const row = ownerDocument.createElement('div'); row.style.cssText = 'display:flex;gap:8px';
+      const keyInput = ownerDocument.createElement('input'); keyInput.placeholder = '参数名'; keyInput.value = key;
+      const valueInput = ownerDocument.createElement('input'); valueInput.placeholder = '参数值'; valueInput.value = value;
+      for (const input of [keyInput, valueInput]) { input.style.cssText = 'min-width:0;flex:1;height:36px;border:1px solid #DEE0E3;border-radius:6px;padding:0 9px'; input.addEventListener('input', saveRows); }
+      const remove = button('删除', ownerDocument); remove.addEventListener('click', () => { row.remove(); saveRows(); });
+      row.append(keyInput, valueInput, remove); rows.append(row);
+    };
+    for (const [key, value] of entries) addRow(key, value);
+    addParam.onclick = () => addRow();
+  };
+  addParam.onclick = () => showMessage('当前参数包含结构化数据，请在高级配置中编辑');
+  params.addEventListener('change', renderParams);
+  const advanced = ownerDocument.createElement('details');
+  const advancedTitle = ownerDocument.createElement('summary'); advancedTitle.textContent = '高级参数（JSON）';
+  advanced.append(advancedTitle, params);
+  paramsLabel.textContent = '自定义参数';
+  paramsLabel.append(rows, addParam, advanced);
   const actions = ownerDocument.createElement('div');
   actions.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
   const save = button('保存外推参数', ownerDocument);
@@ -751,12 +794,14 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     }
     if (!panel.isConnected) return;
     configuration = value;
+    targetURL.value = value.url;
     pushType.value = value.pushType;
     day.value = value.day == null ? '' : String(value.day);
     frequency.value = value.frequency == null ? '' : String(value.frequency);
     expiresAtTS.value = value.expiresAtTS == null ? '' : String(value.expiresAtTS);
     remark.value = value.remark;
     params.value = value.customParamsText;
+    renderParams();
     status.textContent = `配置版本 ${value.revision}`;
   };
   save.addEventListener('click', () => {
@@ -771,6 +816,11 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
       const customParams = JSON.parse(customParamsText);
       if (customParams === null || typeof customParams !== 'object') throw new Error('custom_params 必须是 JSON 对象或 key/value 列表');
       binding = configurationBinding(page, ownerDocument);
+      if (binding.enabled) {
+        let destination: URL;
+        try { destination = new URL(targetURL.value.trim()); } catch { throw new Error('请填写有效的 HTTPS 推送地址'); }
+        if (destination.protocol !== 'https:' || destination.username || destination.password) throw new Error('请填写有效的 HTTPS 推送地址');
+      }
       configuredDay = externalPushOptionalInteger(day);
       configuredFrequency = externalPushOptionalInteger(frequency);
       configuredExpiresAtTS = externalPushOptionalInteger(expiresAtTS);
@@ -782,7 +832,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     void externalPushRequest(page.configurationEndpoint, {
       method: 'PUT',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushConfigurationIdempotencyKey() },
-      body: JSON.stringify({ enabled: binding.enabled, configuration_reference: binding.enabled ? binding.reference : '', type: pushType.value, day: configuredDay, frequency: configuredFrequency, expires_at_ts: configuredExpiresAtTS, remark: remark.value, custom_params: customParamsText, expected_revision: configuration.revision }),
+      body: JSON.stringify({ url: targetURL.value.trim(), enabled: binding.enabled, configuration_reference: binding.enabled ? binding.reference : '', type: pushType.value, day: configuredDay, frequency: configuredFrequency, expires_at_ts: configuredExpiresAtTS, remark: remark.value, custom_params: customParamsText, expected_revision: configuration.revision }),
     }).then((saved) => {
       configuration = parseExternalPushConfiguration(saved, page);
       state.value = configuration;
@@ -830,12 +880,12 @@ function mountExternalPushTest(page: ExternalPushPage, ownerDocument: Document):
   const anchor = ownerDocument.querySelector<HTMLElement>(page.anchor);
   if (!anchor) return false;
   const frozenNotice = [...anchor.querySelectorAll('p')].find((node) => node.textContent?.includes('保存只更新 V2 本地配置'));
-  if (frozenNotice) frozenNotice.textContent = '保存更新本地外推绑定；“运行测试”只创建受控投递意图，投递结果在下方回读。';
+  frozenNotice?.remove();
   const panel = ownerDocument.createElement('section');
   panel.id = 'product-v3-external-push-test';
   panel.style.cssText = 'display:grid;gap:9px;margin-top:14px;padding-top:14px;border-top:1px solid #EFF0F1';
   const description = ownerDocument.createElement('p');
-  description.textContent = '测试请求仅在已启用绑定后创建本地受理记录；接收方回执不代表业务送达，结果未知不会自动重试。';
+  description.textContent = '保存配置后可测试推送，并查看投递结果。';
   description.style.cssText = 'margin:0;font-size:12px;color:#646A73;line-height:19px';
   const actions = ownerDocument.createElement('div');
   actions.style.cssText = 'display:flex;gap:8px;align-items:center';
@@ -902,6 +952,21 @@ function installExternalPushTestHost(): void {
 }
 
 installExternalPushTestHost();
+// The editor's shared save action must use the same complete external-push
+// configuration command as this dimension's own save button.
+document.addEventListener('click', (event) => {
+  const target = (event.target as Element | null)?.closest<HTMLButtonElement>('button');
+  if (!target || target.textContent?.trim() !== '保存当前维度') return;
+  const page = externalPushPage();
+  if (!page) return;
+  const anchor = document.querySelector<HTMLElement>(page.anchor);
+  if (!anchor || anchor.hidden || anchor.style.display === 'none') return;
+  const save = anchor.querySelector<HTMLButtonElement>('[data-external-push-configuration-save]');
+  if (!save) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  if (!save.disabled) save.click();
+}, true);
+
 
 // Dynamic import is deliberate: validation and click interception must be
 // installed before the byte-frozen donor runtime reads the current page.
@@ -926,22 +991,36 @@ async function tagCatalog(): Promise<unknown> {
   return { groups: list(payload.groups), items: list(payload.items) };
 }
 
+function installProductPickerStyles(): void {
+  if (document.getElementById('product-picker-styles')) return;
+  const link = document.createElement('link');
+  link.id = 'product-picker-styles';
+  link.rel = 'stylesheet';
+  link.href = '/assets/standard-components/wecom_tag_picker.css';
+  document.head.appendChild(link);
+  const style = document.createElement('style');
+  style.textContent = `.pk-mask{z-index:10010!important;padding:24px!important}.pk-mask>div{width:min(680px,100%)!important;border:1px solid #e5e7eb;border-radius:16px!important}.pk-mask input{font:inherit;min-height:42px!important}.pk-mask button{font:inherit;min-height:36px;padding:6px 16px!important;border-radius:8px!important}.pk-mask [data-pk-id],.pk-mask [data-pk-none]{min-height:60px;padding:14px 18px!important}.pk-mask [data-pk-id]:hover{background:#f0f5ff!important}.aicrm-tag-picker{z-index:10011!important}[data-product-standard-tag-picker] input[type=checkbox]{appearance:none;position:relative;width:42px;height:24px;border:0;border-radius:20px;background:#cbd5e1;cursor:pointer;flex-shrink:0}[data-product-tag-enabled]:before{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:white;transition:transform .15s}[data-product-standard-tag-picker] input:checked{background:#3370ff}[data-product-tag-enabled]:checked:before{transform:translateX(18px)}[data-product-tag-summary]{line-height:1.8;padding:12px;background:#f7f9fc;border-radius:8px}`;
+  document.head.appendChild(style);
+}
+
 function mountProductTagPicker(): void {
   if (typeof document === 'undefined' || !document.body) return;
   const prefix = document.body.dataset.page === 'productForm' ? 'pf' : document.body.dataset.page === 'spProductForm' ? 'spf' : '';
   if (!prefix) return;
+  installProductPickerStyles();
   if (prefix === 'spf') mountPeriodicTagDimension();
   const input = document.getElementById(`${prefix}WecomTagging`) as HTMLTextAreaElement | null;
   const panel = document.getElementById(prefix === 'pf' ? 'product-wecom' : 'sp-wecom');
   if (!input || !panel || panel.querySelector('[data-product-standard-tag-picker]')) return;
   input.closest('details')?.setAttribute('hidden', '');
+  for (const note of panel.querySelectorAll('p,div')) if (!note.children.length && note.textContent?.includes('OpenAPI')) note.remove();
   const state = safeTagging(input);
   const selected: StandardTag[] = list(state.tags).map((item) => object(item)).map((item) => ({ tag_id: String(item.tag_id || item.id || '').trim(), tag_name: String(item.tag_name || item.name || '').trim(), group_name: String(item.group_name || item.group || '').trim() })).filter((item) => item.tag_id);
   if (!selected.length) for (const raw of list(state.tag_ids)) { const id = String(raw || '').trim(); if (id) selected.push({ tag_id: id }); }
   const host = document.createElement('section');
   host.dataset.productStandardTagPicker = '';
   host.style.cssText = 'display:grid;gap:10px;padding:12px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
-  host.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" data-product-tag-enabled> 启用购买后企微标签</label><button type="button" data-product-tag-open style="height:30px;padding:0 12px;border:1px solid #DEE0E3;border-radius:6px;background:#fff;cursor:pointer">选择标签</button></div><div data-product-tag-summary style="font-size:12px;color:#646A73"></div><p data-product-tag-error style="margin:0;font-size:12px;color:#D83931" hidden></p>';
+  host.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" role="switch" data-product-tag-enabled> 启用购买后企微标签</label><button type="button" data-product-tag-open style="height:30px;padding:0 12px;border:1px solid #DEE0E3;border-radius:6px;background:#fff;cursor:pointer">选择标签</button></div><div data-product-tag-summary style="font-size:12px;color:#646A73"></div><p data-product-tag-error style="margin:0;font-size:12px;color:#D83931" hidden></p>';
   panel.querySelector('div[style*="display:grid"]')?.append(host);
   const enabled = host.querySelector<HTMLInputElement>('[data-product-tag-enabled]')!;
   const summary = host.querySelector<HTMLElement>('[data-product-tag-summary]')!;
@@ -950,7 +1029,7 @@ function mountProductTagPicker(): void {
   const sync = (): void => {
     const tagIDs = [...new Set(selected.map((tag) => Number(tag.tag_id)).filter((tagID) => Number.isSafeInteger(tagID) && tagID > 0))];
     input.value = JSON.stringify({ enabled: enabled.checked, tag_ids: tagIDs }); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
-    summary.textContent = enabled.checked && selected.length ? `已选：${selected.map((tag) => `${tag.group_name ? `${tag.group_name} / ` : ''}${tag.tag_name || tag.tag_id}`).join('、')}` : '未启用购买后企微标签';
+    summary.textContent = enabled.checked && selected.length ? `已选：${selected.map((tag) => `${tag.group_name ? `${tag.group_name} / ` : ''}${tag.tag_name || tag.tag_id}`).join('、')}` : enabled.checked ? '暂未选择标签' : '未启用购买后企微标签';
   };
   enabled.addEventListener('change', sync); sync();
   host.querySelector('[data-product-tag-open]')?.addEventListener('click', () => {
@@ -977,8 +1056,8 @@ function productPrefix(): 'pf' | 'spf' | '' {
 }
 
 function productActionState(prefix: string): PurchaseActionDOM {
-  const id = Number(new URL(location.href).searchParams.get('id'));
-  const saved = Number.isSafeInteger(id) && id > 0 ? purchaseActionByProduct.get(id) : undefined;
+  const route = productEditorRoute();
+  const saved = route?.prefix === prefix ? purchaseActionByProduct.get(route.id) : undefined;
   return saved || { enabled: false, mode: '' };
 }
 
@@ -1194,8 +1273,16 @@ type ProductController = {
   page: string;
   db: AdminDb;
   goto(page: string, query?: string): void;
+  qs(): URLSearchParams;
 };
 const productController = AdminController.prototype as unknown as ProductController;
+const donorProductQuery = productController.qs;
+productController.qs = function () {
+  const query = donorProductQuery.call(this);
+  const route = productEditorRoute();
+  if (route && ((this.page === 'productForm' && route.prefix === 'pf') || (this.page === 'spProductForm' && route.prefix === 'spf'))) query.set('id', String(route.id));
+  return query;
+};
 const donorGotoProduct = productController.goto;
 productController.goto = function (page, query = '') {
   const expected = this.page === 'productForm' ? 'products' : this.page === 'spProductForm' ? 'spProducts' : '';

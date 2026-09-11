@@ -96,7 +96,9 @@ function setPurchase(dom, couponID, mobile) {
 
 async function waitFor(document, expected, label) {
   for (let attempt = 0; attempt < 240; attempt += 1) {
-    if (document.getElementById("status")?.textContent === expected) return;
+    const status = document.getElementById("status");
+    if (expected === paidWithoutCompletionAction && status?.querySelector("h2")?.textContent === "支付完成" && status.textContent.includes(expected)) return;
+    if (status?.textContent === expected) return;
     await sleep(5);
   }
   assert.equal(document.getElementById("status")?.textContent, expected, label);
