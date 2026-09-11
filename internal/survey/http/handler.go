@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -498,6 +499,7 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 		resultError(w, err)
 		return
 	}
+	http.SetCookie(w, &http.Cookie{Name: "survey_oauth_return", Value: r.URL.Query().Get("slug"), Path: "/api/h5/surveys/oauth/callback", MaxAge: 600, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, location, http.StatusSeeOther)
 }
@@ -513,7 +515,11 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	session, redirect, err := h.oauth.Complete(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code"))
 	if err != nil {
-		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_failed", http.StatusSeeOther)
+		if prior, e := r.Cookie("survey_oauth_return"); e == nil && prior.Value != "" {
+			http.Redirect(w, r, "/h5/auth.html?oauth_error=1&slug="+url.QueryEscape(prior.Value), http.StatusSeeOther)
+		} else {
+			http.Redirect(w, r, "/h5/error.html?code=survey_oauth_failed", http.StatusSeeOther)
+		}
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "__Host-aicrm_survey_identity", Value: session, Path: "/", MaxAge: 1800, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})

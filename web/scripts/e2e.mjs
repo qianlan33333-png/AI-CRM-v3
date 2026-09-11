@@ -3135,7 +3135,7 @@ for (const scenario of [
 
   const inside = await loadPage('h5/auth.html', { q: 'slug=uat-survey', h5Http: {}, h5WeChat: true });
   const insideDocument = inside.window.document;
-  ok('H5 auth 微信内展示真实授权入口并读取安全会话', [...insideDocument.querySelectorAll('#screen button')].some((button) => button.textContent.includes('微信授权后继续') && !button.disabled) && inside.window.__h5HttpTest.calls.length === 1 && inside.window.__h5HttpTest.calls[0].path === '/api/h5/surveys/session');
+  ok('H5 auth 微信内先读取安全会话并自动发起一次授权', ![...insideDocument.querySelectorAll('#screen button')].some((button) => !button.disabled) && inside.window.sessionStorage.getItem('survey.oauth:uat-survey') === 'started' && inside.window.__h5HttpTest.calls.length === 1 && inside.window.__h5HttpTest.calls[0].path === '/api/h5/surveys/session');
   inside.window.close();
 }
 for (const page of ['error', 'done', 'signup', 'active', 'expired', 'pay', 'qr']) {

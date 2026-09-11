@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	nethttp "net/http"
 	"net/http/httptest"
 	"strings"
@@ -109,16 +110,17 @@ func (s *operationRouteSurvey) QueueCompletionTest(context.Context, surveyport.I
 }
 
 type routeOAuth struct {
-	enabled  bool
-	identity surveyport.SubmissionIdentity
+	completeErr error
+	enabled     bool
+	identity    surveyport.SubmissionIdentity
 }
 
 func (o routeOAuth) Enabled() bool { return o.enabled }
 func (routeOAuth) Start(context.Context, string) (string, error) {
 	return "https://open.weixin.qq.com/authorize", nil
 }
-func (routeOAuth) Complete(context.Context, string, string) (string, string, error) {
-	return "session", "/h5/all.html?slug=growth", nil
+func (o routeOAuth) Complete(context.Context, string, string) (string, string, error) {
+	return "session", "/h5/all.html?slug=growth", o.completeErr
 }
 func (o routeOAuth) ResolveSession(context.Context, string) (surveyport.SubmissionIdentity, error) {
 	return o.identity, nil
@@ -414,5 +416,16 @@ func TestPublicEntryUsesUnifiedOAuthGate(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != nethttp.StatusBadRequest || !strings.Contains(response.Body.String(), "survey_wechat_required") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestOAuthFailureReturnsToNonAutomaticRetry(t *testing.T) {
+	handler := newRouteHandler(t, routeOAuth{enabled: true, completeErr: fmt.Errorf("provider failure")})
+	request := httptest.NewRequest(nethttp.MethodGet, "/api/h5/surveys/oauth/callback?state=opaque&code=bad", nil)
+	request.AddCookie(&nethttp.Cookie{Name: "survey_oauth_return", Value: "growth"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != 303 || response.Header().Get("Location") != "/h5/auth.html?oauth_error=1&slug=growth" {
+		t.Fatalf("unexpected retry: %d %s", response.Code, response.Header().Get("Location"))
 	}
 }
