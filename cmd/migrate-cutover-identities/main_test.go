@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ import (
 )
 
 func TestProofCaptureDryRunApplyReusesExistingRoot(t *testing.T) {
-	dsn := os.Getenv("AICRM_DATABASE_URL")
+	dsn := platformconfig.CutoverIdentityEnvironment("AICRM_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("local integration database not configured")
 	}
