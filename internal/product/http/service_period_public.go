@@ -101,11 +101,12 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-	if payment && available {
+	if available {
 		if err = publicProductPage.Execute(w, struct {
 			Product publicProduct
 			Payment bool
-		}{Product: public, Payment: true}); err != nil {
+			Detail  bool
+		}{Product: public, Payment: true, Detail: !payment && len(public.Images) > 0}); err != nil {
 			return
 		}
 		return

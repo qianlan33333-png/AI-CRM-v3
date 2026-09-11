@@ -291,6 +291,28 @@
       ],
       "reason": "Record the user-authorized checkout recovery PR active V3 contract for an audited explicit new purchase after an invalid legacy attempt. Frozen donors remain unchanged. This declaration is subject to PR review, not independent evidence of human approval.",
       "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/228"
+    },
+    {
+      "base_commit": "077aee0d9d86d362c66f9f62cc6015df6a720fda",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "7f8652ed24ba0570ca07c1ee24dee9d576a745c93d7508be126c01e903606930",
+          "head_sha256": "cf060a5ea5e88d9c7f05ed2c44400ec55053876bada80d33f69099dc9b0d458b"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "8e4ae958b4fd21179b1bfe01ad617472f5b7c94ac7fa47c34fd36ad2d0a78d71",
+          "head_sha256": "78871ebebfb035f561e95f071b08cdb013b278c0ef522b4bba6a4c591ec3a5af"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "54b80195e1f7d58a562f13fe73c9354f499b1d80c70ed9c7599396a4775bcf7d",
+          "head_sha256": "246ce89231d88c97f25d2029c11fec596096265ab0ae1e4c4737768b53a6b660"
+        }
+      ],
+      "reason": "Record the user-authorized automatic userinfo authorization and purchase availability contract. Only active V3 OpenAPI authority changes; frozen donors remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
+      "review_reference": "Authorized automatic authorization and purchase flow"
     }
   ]
 }

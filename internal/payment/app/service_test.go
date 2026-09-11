@@ -34,7 +34,8 @@ func (o orderStub) ReservePaymentWithin(ctx context.Context, _ int64) (orderdoma
 }
 
 type checkoutOrderStub struct {
-	command orderport.PaymentOrderCommand
+	command  orderport.PaymentOrderCommand
+	purchase orderport.StandardPurchaseState
 }
 
 func (*checkoutOrderStub) ReservePaymentWithin(context.Context, int64) (orderdomain.Snapshot, error) {
@@ -594,5 +595,51 @@ func TestGetCheckoutExposesUnknownPrepayOnlyToAuthorizedPayer(t *testing.T) {
 	reader.projection.Owner = effectport.OwnerOutbound
 	if _, err = service.GetCheckout(context.Background(), "M-pending-7", "authorized-payment-session"); !errors.Is(err, paymentport.ErrUnavailable) {
 		t.Fatalf("wrong owner: %v", err)
+	}
+}
+
+func (o orderStub) ReadStandardPurchaseWithin(context.Context, orderport.StandardPurchaseQuery) (orderport.StandardPurchaseState, error) {
+	return orderport.StandardPurchaseState{}, nil
+}
+func (o *checkoutOrderStub) ReadStandardPurchaseWithin(context.Context, orderport.StandardPurchaseQuery) (orderport.StandardPurchaseState, error) {
+	return o.purchase, nil
+}
+
+func TestStandardPurchaseGateRejectsOwnedAndPendingBeforeOrderOrEffect(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state orderport.StandardPurchaseState
+		want  error
+	}{{"owned", orderport.StandardPurchaseState{Owned: true}, paymentport.ErrAlreadyPurchased}, {"pending", orderport.StandardPurchaseState{Pending: true}, paymentport.ErrPurchasePending}} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &storeStub{}
+			orders := &checkoutOrderStub{purchase: tc.state}
+			products := &checkoutProductStub{product: productport.CheckoutProduct{ID: 5, ProductType: productport.ProductOptionStandard, Code: "course-5", Name: "Course 5", PriceMinor: 8800, Currency: "CNY", Version: 3}}
+			sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved}}
+			svc := NewService(uowStub{}, store, orders, sessions, &effectStub{})
+			_ = svc.SetCheckoutProductReader(products)
+			cmd := paymentport.CreateCommand{ProductID: 5, ProductType: "standard", BeneficiarySelection: paymentport.BeneficiarySelectionPayerSelf, SessionToken: "pays_session_token_0000000005", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_session_token_0000000005"), ActorScope: "public-checkout", IdempotencyKey: "checkout-product-key-0005"}
+			if _, err := svc.Create(context.Background(), cmd); !errors.Is(err, tc.want) {
+				t.Fatalf("got %v want %v", err, tc.want)
+			}
+			if orders.command.ProductID != 0 || store.payment.ID != 0 || sessions.consumed {
+				t.Fatal("blocked purchase wrote order/payment or consumed session")
+			}
+		})
+	}
+}
+
+func TestServicePeriodPurchaseRemainsRenewableDespiteStandardOwned(t *testing.T) {
+	orders := &checkoutOrderStub{purchase: orderport.StandardPurchaseState{Owned: true, Pending: true}}
+	products := &checkoutProductStub{product: productport.CheckoutProduct{ID: 5, ProductType: productport.ProductOptionServicePeriod, Code: "period-5", Name: "Period 5", PriceMinor: 8800, Currency: "CNY", Version: 3, ServicePeriodDurationDays: 30}}
+	sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved}}
+	svc := NewService(uowStub{}, &storeStub{}, orders, sessions, &effectStub{})
+	_ = svc.SetCheckoutProductReader(products)
+	cmd := paymentport.CreateCommand{ProductID: 5, ProductType: "service_period", BeneficiarySelection: paymentport.BeneficiarySelectionPayerSelf, SessionToken: "pays_session_token_0000000005", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_session_token_0000000005"), ActorScope: "public-checkout", IdempotencyKey: "checkout-product-key-0005"}
+	if _, err := svc.Create(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	if orders.command.ProductType != "service_period" {
+		t.Fatal("period renewal was not created")
 	}
 }

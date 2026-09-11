@@ -147,6 +147,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.completeH5OAuth(writer, request)
 	case path == "/api/v1/wechat-pay/sessions":
 		handler.issueSession(writer, request)
+	case path == "/api/v1/wechat-pay/purchase-status":
+		handler.purchaseStatus(writer, request)
 	case path == "/api/v1/wechat-pay/checkout-session":
 		handler.checkoutSession(writer, request)
 	case path == "/api/v1/wechat-pay/checkouts":
@@ -204,7 +206,16 @@ func (handler *Handler) checkoutSession(writer http.ResponseWriter, request *htt
 		resultError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"checkout_session_binding": binding})
+	canCreate := false
+	if ready, ok := handler.app.(paymentport.CheckoutSessionReadiness); ok {
+		canCreate, err = ready.CanCreateCheckout(request.Context(), cookie.Value)
+		if err != nil {
+			resultError(writer, err)
+			return
+		}
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	writeJSON(writer, http.StatusOK, map[string]any{"checkout_session_binding": binding, "can_create_checkout": canCreate})
 }
 
 func (handler *Handler) startH5OAuth(writer http.ResponseWriter, request *http.Request) {
@@ -878,6 +889,10 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, destination a
 
 func resultError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, paymentport.ErrAlreadyPurchased):
+		writeError(writer, http.StatusConflict, "already_purchased")
+	case errors.Is(err, paymentport.ErrPurchasePending):
+		writeError(writer, http.StatusConflict, "purchase_pending")
 	case errors.Is(err, paymentport.ErrInvalid):
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 	case errors.Is(err, paymentport.ErrNotFound):

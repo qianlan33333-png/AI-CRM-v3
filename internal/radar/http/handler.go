@@ -486,6 +486,9 @@ func (h *Handler) open(w http.ResponseWriter, r *http.Request) {
 	if access.SessionToken != "" && access.SessionToken != token {
 		setSession(w, access.SessionToken)
 	}
+	if access.Action == radarport.PublicOAuthRedirect {
+		http.SetCookie(w, &http.Cookie{Name: "radar_oauth_return", Value: string(code), Path: "/api/public/radar/oauth/callback", MaxAge: 600, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	}
 	if access.Action == radarport.PublicOAuthRedirect || access.Action == radarport.PublicLinkRedirect {
 		http.Redirect(w, r, access.Location, http.StatusFound)
 		return
@@ -527,7 +530,15 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	token, path, e := h.public.CompleteOAuth(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code"))
 	if e != nil {
-		h.err(w, e)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		retry := ""
+		if prior, err := r.Cookie("radar_oauth_return"); err == nil && radar.PublicCode(prior.Value).Valid() {
+			retry = `<p><a href="/r/` + template.HTMLEscapeString(prior.Value) + `">重试微信授权</a></p>`
+		}
+		_, _ = fmt.Fprint(w, `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>微信授权未完成</title><body><h1>微信授权未完成</h1><p>请重试；若仍失败，请重新打开原雷达链接。</p>`+retry+`</body></html>`)
 		return
 	}
 	setSession(w, token)

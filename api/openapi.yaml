@@ -3161,7 +3161,46 @@ paths:
       operationId: getWechatPayCheckoutSession
       tags: [Transactions]
       security: [{paymentSession: []}]
-      responses: {"200": {description: Current trusted-payment-session marker for a browser recovery checkpoint, content: {application/json: {schema: {type: object, additionalProperties: false, required: [checkout_session_binding], properties: {checkout_session_binding: {type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: Opaque marker only; it is neither a session token nor an identity claim.}}}}}}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+      responses: {"200": {description: Current trusted-payment-session marker for a browser recovery checkpoint, content: {application/json: {schema: {type: object, additionalProperties: false, required: [checkout_session_binding, can_create_checkout], properties: {can_create_checkout: {type: boolean, description: Whether this trusted session can create a new checkout. Consumed sessions remain valid for reading their existing checkout.}, checkout_session_binding: {type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: Opaque marker only; it is neither a session token nor an identity claim.}}}}}}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/wechat-pay/purchase-status:
+    get:
+      operationId: getWechatPayPurchaseStatus
+      tags: [Transactions]
+      security: [{paymentSession: []}]
+      parameters:
+        - {name: product_id, in: query, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: product_type, in: query, required: true, schema: {type: string, enum: [standard, service_period]}}
+      responses:
+        "200":
+          description: Purchase eligibility from trusted customer lineage and Order-owned facts; no customer identifiers are returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [purchase_state, can_purchase]
+                properties:
+                  purchase_state: {type: string, enum: [available, owned, pending]}
+                  can_purchase: {type: boolean}
+                  completion_action:
+                    type: object
+                    description: Existing purchase instructions, supplied only for an owned product from its saved purchase action.
+                    required: [state]
+                    properties:
+                      state: {type: string, enum: [available, none, unavailable]}
+                      mode: {type: string, enum: [qr, redirect]}
+                      redirect_url: {type: string}
+                      lead_qr:
+                        type: object
+                        properties:
+                          url: {type: string}
+                          title: {type: string}
+                          subtitle: {type: string}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/wechat-pay/checkouts:
     post:
       operationId: createWechatPayCheckout

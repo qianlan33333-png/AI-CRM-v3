@@ -197,6 +197,20 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		var order orderdomain.Snapshot
 		if fromExistingOrder {
 			order, err = s.orders.ReservePaymentWithin(tx, c.OrderID)
+			if err == nil {
+				for _, item := range order.Items {
+					if item.ProductID == nil {
+						return paymentport.ErrConflict
+					}
+					state, checkErr := s.standardPurchaseWithin(tx, actor.BeneficiaryCustomerID, *item.ProductID, item.ProductCode, order.ID, true)
+					if checkErr != nil {
+						return checkErr
+					}
+					if !state.CanPurchase {
+						return purchaseBlocked(state)
+					}
+				}
+			}
 		} else {
 			product, productErr := s.products.ReadCheckoutProductWithin(tx, productport.ProductOptionType(c.ProductType), productport.ID(c.ProductID))
 			if productErr != nil || int64(product.ID) != c.ProductID || product.ProductType != productport.ProductOptionType(c.ProductType) || product.PriceMinor < 1 || product.Currency != "CNY" || product.Version < 1 || product.ProductType == productport.ProductOptionServicePeriod && product.ServicePeriodDurationDays < 1 {
@@ -211,6 +225,15 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 				}
 			} else if c.MobileE164 != "" {
 				return paymentport.ErrConflict
+			}
+			if product.ProductType == productport.ProductOptionStandard {
+				state, checkErr := s.standardPurchaseWithin(tx, actor.BeneficiaryCustomerID, int64(product.ID), product.Code, 0, true)
+				if checkErr != nil {
+					return checkErr
+				}
+				if !state.CanPurchase {
+					return purchaseBlocked(state)
+				}
 			}
 			order, err = s.orders.CreatePaymentOrderWithin(tx, orderport.PaymentOrderCommand{
 				Provider: orderdomain.ProviderWeChatPay, MerchantOrderNo: merchantOrderNo,
@@ -966,6 +989,8 @@ func classify(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, paymentport.ErrAlreadyPurchased), errors.Is(err, paymentport.ErrPurchasePending):
+		return err
 	case errors.Is(err, paymentport.ErrNotFound), errors.Is(err, orderport.ErrNotFound):
 		return paymentport.ErrNotFound
 	case errors.Is(err, paymentport.ErrSessionRequired):

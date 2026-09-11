@@ -55,14 +55,18 @@ export class H5Controller extends PageBase {
 	if (this.page === 'auth') {
 		this.slug = new URLSearchParams(location.search).get('slug') || '';
 		if (!/^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/.test(this.slug)) this.error = '缺少有效公开问卷 slug';
+		else if (new URLSearchParams(location.search).has('oauth_error')) this.error = '微信授权未完成，请重试';
 		else if (/MicroMessenger/i.test(navigator.userAgent || '')) {
 			try {
 				const session = await fetch(`/api/h5/surveys/session?slug=${encodeURIComponent(this.slug)}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
 				if (session.ok) {
+					try { sessionStorage.removeItem('survey.oauth:' + this.slug); } catch {}
 					const body = await session.json() as { display?: string };
 					location.replace(`/h5/${body.display === 'one' ? 'one' : 'all'}.html?slug=${encodeURIComponent(this.slug)}`);
-				} else if (session.status === 409) this.error = '当前微信身份存在冲突，请联系管理员处理后再填写';
+				} else if (session.status === 401) this.startOAuth(false);
+				else if (session.status === 409) this.error = '当前微信身份存在冲突，请联系管理员处理后再填写';
 				else if (session.status === 503) this.error = '微信授权暂不可用，请稍后再试';
+				else this.error = '微信授权状态暂不可用，请重试';
 			} catch { this.error = '微信授权状态读取失败，请检查网络后重试'; }
 		}
 		this.refresh();
@@ -104,6 +108,16 @@ export class H5Controller extends PageBase {
       this.loading = false;
       this.refresh();
     }
+  }
+
+  private startOAuth(retry: boolean): void {
+    if (!/MicroMessenger/i.test(navigator.userAgent || '') || !this.slug) return;
+    try {
+      const key = 'survey.oauth:' + this.slug;
+      if (!retry && sessionStorage.getItem(key)) { this.error = '微信授权未完成，请重试'; return; }
+      sessionStorage.setItem(key, 'started');
+    } catch { this.error = '无法保存授权状态，请允许浏览器存储后重试'; return; }
+    location.replace(`/api/h5/surveys/oauth/start?slug=${encodeURIComponent(this.slug)}`);
   }
 
   private refresh(): void { this.__render?.(); }
@@ -260,6 +274,7 @@ export class H5Controller extends PageBase {
 	  isAssessmentResult: this.result?.mode === 'assessment', resultTitle: this.result?.questionnaire_title || '问卷结果', totalScore: Number(this.result?.total_score || 0), overallTitle: assessment.overall_level?.title || '已完成', overallSummary: assessment.overall_level?.summary || '', dimensions,
       resultTime: this.result ? new Date(this.result.submitted_at).toLocaleString('zh-CN', { hour12: false }) : '',
       notWechatUA: !/MicroMessenger/i.test(navigator.userAgent || ''),
+	  authRetry: !!this.error && /MicroMessenger/i.test(navigator.userAgent || ''),
 	  wechatUA: /MicroMessenger/i.test(navigator.userAgent || ''),
       submitted: this.submitted, resultPath: `result.html#result_token=${encodeURIComponent(this.resultToken)}`,
       title: definition?.title || '公开问卷', description: definition?.description || '',
@@ -295,8 +310,7 @@ export class H5Controller extends PageBase {
       act: {
         submit: () => { void this.submit(); }, previous: () => this.move(-1), next: () => this.move(1), retry: () => { void this.init(); },
 		authContinue: () => {
-			if (!/MicroMessenger/i.test(navigator.userAgent || '') || !this.slug) return;
-			location.href = `/api/h5/surveys/oauth/start?slug=${encodeURIComponent(this.slug)}`;
+			this.startOAuth(true);
 		}, submitAll: () => { void this.submit(); }, prevQ: () => this.move(-1), nextQ: legacyNext,
         signup: () => this.blocked('报名'), pay: () => this.blocked('支付'), renew: () => this.blocked('续费'),
         addWx: () => this.blocked('添加企微账号'), close: () => this.closePage(),

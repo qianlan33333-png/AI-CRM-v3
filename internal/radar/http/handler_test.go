@@ -105,3 +105,19 @@ func TestDisabledPublicLinkIsGone(t *testing.T) {
 		t.Fatalf("status=%d", response.Code)
 	}
 }
+
+func TestOAuthFailureOffersOnlyValidatedManualRetry(t *testing.T) {
+	handler, _ := NewHandler(&testManager{}, testQuery{}, testPublic{}, testSecurity{}, "https://crm.example")
+	for _, code := range []string{"rd_abcdefghijklmnopqrstuv", "//evil.example"} {
+		request := httptest.NewRequest(http.MethodGet, "/api/public/radar/oauth/callback?code=failed&state=opaque", nil)
+		request.AddCookie(&http.Cookie{Name: "radar_oauth_return", Value: code})
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != 503 || response.Header().Get("Location") != "" || !strings.Contains(response.Body.String(), "微信授权未完成") {
+			t.Fatalf("unexpected failure page: %d", response.Code)
+		}
+		if strings.Contains(response.Body.String(), `href="/r/`) != (code == "rd_abcdefghijklmnopqrstuv") {
+			t.Fatal("unsafe or missing retry link")
+		}
+	}
+}

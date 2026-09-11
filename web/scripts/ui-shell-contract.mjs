@@ -28,7 +28,7 @@ const auth = new JSDOM(`<body>${read('src/h5/templates/auth.html')}</body>`);
 ok(auth.window.document.querySelector('[data-h5-blocked]'), 'H5 auth 必须显示授权状态');
 const authButtons = auth.window.document.querySelectorAll('button:not([disabled])');
 ok(authButtons.length === 1 && authButtons[0].getAttribute('onClick') === '{{ act.authContinue }}', 'H5 auth 只允许真实微信授权按钮可执行');
-ok(read('src/h5/templates/auth.html').includes('{{ wechatUA }}'), 'H5 auth 可执行按钮必须受微信 UA 条件约束');
+ok(authButtons[0].closest('sc-if')?.getAttribute('value') === '{{ authRetry }}', 'H5 auth 仅授权失败后显示重试按钮，不拦截首次自动授权');
 const loading = read('src/h5/templates/loading.html');
 ok(!loading.includes('data-h5-blocked') && !loading.includes('blockedReason'), 'H5 loading 骨架屏不得渲染 blocked 横幅');
 for (const page of ['done', 'qr']) {

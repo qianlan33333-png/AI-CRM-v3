@@ -52,15 +52,15 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 	if payment.Code != http.StatusOK || strings.Contains(payment.Body.String(), "beneficiarySelf") || !strings.Contains(payment.Body.String(), "beneficiary_selection:'payer_self'") || strings.Contains(payment.Body.String(), "beneficiary_customer_id") {
 		t.Fatalf("payment page status=%d body=%s", payment.Code, payment.Body.String())
 	}
-	for _, required := range []string{"微信身份验证", "完成微信授权后继续", "bootstrapCheckout", "checkoutContent", "/api/v1/wechat-pay/checkout-session", "/api/h5/wechat-pay/oauth/start?return_url="} {
+	for _, required := range []string{"微信身份验证", "正在核验微信身份", "bootstrapCheckout", "checkoutContent", "/api/v1/wechat-pay/checkout-session", "/api/h5/wechat-pay/oauth/start?return_url="} {
 		if !strings.Contains(payment.Body.String(), required) {
-			t.Fatalf("payment page missing explicit verified-identity gate %q: %s", required, payment.Body.String())
+			t.Fatalf("payment page missing identity verification %q: %s", required, payment.Body.String())
 		}
 	}
-	if strings.Contains(payment.Body.String(), "location.href='/api/h5/wechat-pay/oauth/start") {
-		t.Fatalf("opening the payment page must not auto-start OAuth: %s", payment.Body.String())
+	if strings.Contains(payment.Body.String(), `id="renew"`) {
+		t.Fatalf("ordinary product must not expose renewal: %s", payment.Body.String())
 	}
-	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "retainPaidCheckout(orderNo)", "restorePaidCheckout", "terminal_status==='paid'", "再次购买", "showCompletionAction", "location.assign(action.redirect_url)", "completion-qr", "value.completion_action"} {
+	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "retainPaidCheckout(orderNo)", "restorePaidCheckout", "terminal_status==='paid'", "showCompletionAction", "location.assign(action.redirect_url)", "completion-qr", "value.completion_action"} {
 		if !strings.Contains(payment.Body.String(), required) {
 			t.Fatalf("payment page missing stable checkout behaviour %q: %s", required, payment.Body.String())
 		}
@@ -282,11 +282,8 @@ func TestFrozenServicePeriodFStringDecodesOnlyStaticLiteralSegments(t *testing.T
 	}
 }
 
-// This runs the frozen public-page script in JSDOM against the actual V3
-// ServicePeriodPublicHandler. It covers static literal decoding, the state
-// refresh request, trusted OAuth-cookie recovery, the QR modal, CTA binding,
-// Shanghai date rendering, and rejection of the retired fragment bootstrap.
-func TestFrozenServicePeriodPublicBrowserJourney(t *testing.T) {
+// This exercises the shared authorized checkout for periodic products.
+func TestServicePeriodPublicBrowserJourney(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Fatal("node is required for frozen service-period browser journey")
 	}
@@ -341,12 +338,12 @@ func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *
 	request.AddCookie(&http.Cookie{Name: paymentport.TrustedSessionCookieName, Value: "service-period-trusted"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `is-active`) || !strings.Contains(response.Body.String(), "服务中") || !strings.Contains(response.Body.String(), "剩余 15 天") || !strings.Contains(response.Body.String(), "立即续费") || !strings.Contains(response.Body.String(), "https://work.weixin.qq.com/q/term") || !strings.Contains(response.Body.String(), `class="slice-img"`) || !strings.Contains(response.Body.String(), "/images/88/variants/original") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `id="detailContent" hidden`) || !strings.Contains(response.Body.String(), "/images/88/variants/original") || !strings.Contains(response.Body.String(), `href="/s/term-31/pay"`) {
 		t.Fatalf("active page status=%d body=%s", response.Code, response.Body.String())
 	}
 	untrusted := httptest.NewRecorder()
 	handler.ServeHTTP(untrusted, httptest.NewRequest(http.MethodGet, "/s/term-31", nil))
-	if untrusted.Code != http.StatusOK || !strings.Contains(untrusted.Body.String(), `is-none`) {
+	if untrusted.Code != http.StatusOK || !strings.Contains(untrusted.Body.String(), `id="identityGate"`) {
 		t.Fatalf("untrusted page status=%d body=%s", untrusted.Code, untrusted.Body.String())
 	}
 }
@@ -359,7 +356,7 @@ func TestPublicServicePeriodUsesExactCodeAndSeparateCheckoutRoute(t *testing.T) 
 	}
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/s/term-31", nil))
-	if page.Code != http.StatusOK || reader.code != "term-31" || !strings.Contains(page.Body.String(), `class="service-period-page is-none"`) || !strings.Contains(page.Body.String(), "有效期</span><strong>31 天") || !strings.Contains(page.Body.String(), `"checkout_url":"/s/term-31/pay"`) || !strings.Contains(page.Body.String(), `fetch(window.location.pathname`) || !strings.Contains(page.Body.String(), `createLeadQrModalController`) {
+	if page.Code != http.StatusOK || reader.code != "term-31" || !strings.Contains(page.Body.String(), `id="detailContent" hidden`) || !strings.Contains(page.Body.String(), "服务周期 31 天") || !strings.Contains(page.Body.String(), `href="/s/term-31/pay"`) {
 		t.Fatalf("page status=%d code=%q body=%s", page.Code, reader.code, page.Body.String())
 	}
 	payment := httptest.NewRecorder()

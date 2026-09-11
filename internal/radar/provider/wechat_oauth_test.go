@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
@@ -14,6 +15,8 @@ func TestExchangeRequiresUnionIDAndReturnsOnlyScopedUnionIDFact(t *testing.T) {
 		name, body string
 		ok         bool
 	}{
+		{name: "silent scope rejected", body: `{"unionid":"union-user","scope":"snsapi_base"}`},
+		{name: "snapshot rejected", body: `{"unionid":"union-user","scope":"snsapi_userinfo","is_snapshotuser":1}`},
 		{name: "missing unionid", body: `{"openid":"oa-user","scope":"snsapi_userinfo"}`},
 		{name: "scoped unionid", body: `{"openid":"oa-user","unionid":"union-user","scope":"snsapi_userinfo"}`, ok: true},
 	}
@@ -51,5 +54,19 @@ func TestExchangeRequiresUnionIDAndReturnsOnlyScopedUnionIDFact(t *testing.T) {
 func TestConfigurationRejectsNonRadarCallback(t *testing.T) {
 	if _, err := NewWeChatOAuth(true, "app", "secret", "platform", "https://crm.example/api/h5/surveys/oauth/callback"); err == nil {
 		t.Fatal("survey callback must not be accepted for Radar")
+	}
+}
+
+func TestAuthorizationURLRequestsUserInfo(t *testing.T) {
+	p, err := NewWeChatOAuth(true, "app", "secret", "platform", "https://crm.example/api/public/radar/oauth/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(p.AuthorizationURL("opaque-state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Query().Get("scope") != "snsapi_userinfo" || u.Query().Get("state") != "opaque-state" {
+		t.Fatal("userinfo authorization scope missing")
 	}
 }
