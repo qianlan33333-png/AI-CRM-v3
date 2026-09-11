@@ -719,6 +719,9 @@ func (h *Handler) normalizeSurveyReferences(ctx context.Context, raw json.RawMes
 	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
 		return nil, errReferenceInvalid
 	}
+	if definition.TemplateKey == "questionnaire_submissions" {
+		return h.normalizeSubmissionReferences(ctx, raw, definition.Parameters)
+	}
 	if definition.TemplateKey != "questionnaire_choice_answers" {
 		return raw, nil
 	}

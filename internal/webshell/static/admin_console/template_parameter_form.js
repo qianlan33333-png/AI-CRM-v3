@@ -223,6 +223,9 @@
 
     editableParameters(templateKey, parameters = {}) {
       const value = { ...parameters };
+      if (templateKey === "questionnaire_submissions") {
+        value.questionnaires = parameters.questionnaire_ids || [];
+      }
       if (templateKey === "questionnaire_choice_answers") {
         value.questionnaire = parameters.questionnaire_id || "";
         value.conditions = (parameters.conditions || []).map((item) => ({

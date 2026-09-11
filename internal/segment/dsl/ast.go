@@ -11,6 +11,7 @@ const (
 	OwnerAny                   Template = "owner_any"
 	ChannelAny                 Template = "channel_any"
 	WeComContactRegistration   Template = "wecom_contact_registration"
+	QuestionnaireSubmissions   Template = "questionnaire_submissions"
 	QuestionnaireChoiceAnswers Template = "questionnaire_choice_answers"
 	PaidOrder                  Template = "paid_order"
 	ChannelEntry               Template = "channel_entry"

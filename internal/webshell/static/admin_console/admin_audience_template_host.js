@@ -61,7 +61,10 @@
   function canonicalDefinition(templateKey, value) {
     const parameters = { ...value };
     if (parameters.owner_scope === "all") parameters.owner_userids = [];
-    if (templateKey === "questionnaire_choice_answers") {
+    if (templateKey === "questionnaire_submissions") {
+        parameters.questionnaire_ids = requiredList(parameters.questionnaires, "问卷", canonicalReference); delete parameters.questionnaires;
+      }
+      if (templateKey === "questionnaire_choice_answers") {
       parameters.questionnaire_id = canonicalReference(parameters.questionnaire, "问卷");
       delete parameters.questionnaire;
       const conditions = Array.isArray(parameters.conditions) ? parameters.conditions : [];
@@ -90,6 +93,7 @@
     const value = { ...(parameters || {}) };
 	if (value.owner_scope === undefined) value.owner_scope = "all";
 	if (value.owner_userids === undefined) value.owner_userids = [];
+    if (templateKey === "questionnaire_submissions") value.questionnaires = value.questionnaire_ids || [];
     if (templateKey === "questionnaire_choice_answers") {
       value.questionnaire = value.questionnaire_id || "";
       value.conditions = (value.conditions || []).map((item) => ({ question: item.question_id || "", options: item.option_ids || [] }));

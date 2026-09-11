@@ -40,6 +40,8 @@ func Parse(raw json.RawMessage) (AST, error) {
 		field = "channel.code"
 	case WeComContactRegistration:
 		field = "wecom.contact_registration"
+	case QuestionnaireSubmissions:
+		field = "survey.submissions"
 	case QuestionnaireChoiceAnswers:
 		field = "survey.first_complete_choice_answers"
 	case PaidOrder:

@@ -681,6 +681,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	legacyAudienceSource.Survey = surveyRepository
+	legacyAudienceSource.Submissions = surveyRepository
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
 	segmentBindings.Handler.BindAudienceSurveyReferences(audienceSurveyReferenceAdapter{surveys: surveyDefinitions})
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
@@ -1307,6 +1308,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	legacyAudienceSource.RegistrationFacts = customerStore
 	legacyAudienceSource.Contacts = relationships
+	legacyAudienceSource.RecognizedContacts = relationships
 	var channelAssetProvider effectport.ProviderAdapter
 	var channelEntrantProvider effectport.ProviderAdapter
 	var channelLinkProvider effectport.ProviderAdapter

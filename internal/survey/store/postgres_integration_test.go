@@ -790,6 +790,21 @@ func TestPostgreSQLAudienceChoicesReadFirstResolvedCompletion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Submissions without choice answers and later submissions remain facts;
+	// unresolved and future submissions do not qualify.
+	insertSubmission("resolved", "owner-text-only", &customerID, now.Add(-time.Hour), 4)
+	insertSubmission("resolved", "owner-future", &customerID, now.Add(time.Hour), 5)
+	var submissions []surveyport.AudienceSubmission
+	if err := uow.Within(ctx, func(txCtx context.Context) error {
+		var e error
+		submissions, e = repository.AudienceSubmissions(txCtx, now)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(submissions) != 3 {
+		t.Fatalf("submission facts=%d", len(submissions))
+	}
 	if len(facts) != 1 {
 		t.Fatalf("facts=%+v", facts)
 	}
