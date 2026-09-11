@@ -131,6 +131,12 @@ func (PostgreSQLGroupMembershipFacts) SaveGroupMembership(ctx context.Context, c
 	if e == nil && tag.RowsAffected() != 1 {
 		return wecomport.ErrGroupMembershipUnavailable
 	}
+	if e != nil {
+		return e
+	}
+	if f.Complete {
+		_, e = tx.Exec(ctx, `INSERT INTO wecom_group_membership_observations(corp_scope,chat_reference,observed_at,external_count,customer_ids) VALUES($1,$2,$3,$4,$5)`, corp, chat, f.ObservedAt, f.ExternalCount, ids)
+	}
 	return e
 }
 func (PostgreSQLGroupMembershipFacts) AudienceGroupMembership(ctx context.Context, corp, chat string, at time.Time, maxAge time.Duration) (wecomport.AudienceGroupMembership, error) {
@@ -144,6 +150,13 @@ func (PostgreSQLGroupMembershipFacts) AudienceGroupMembership(ctx context.Contex
 	}
 	var ids []int64
 	e = tx.QueryRow(ctx, `SELECT observed_at,complete,external_count,unresolved_count,customer_ids FROM wecom_group_membership_facts WHERE corp_scope=$1 AND chat_reference=$2`, corp, chat).Scan(&f.ObservedAt, &f.Complete, &f.ExternalCount, &f.UnresolvedCount, &ids)
+	if e != nil || !f.Complete || f.UnresolvedCount != 0 {
+		return f, wecomport.ErrGroupMembershipUnavailable
+	}
+	// Later successful refreshes must not erase the observation preceding the
+	// scheduler's frozen reference. A latest failed/inflight read above still
+	// blocks negative selection, regardless of older successful history.
+	e = tx.QueryRow(ctx, `SELECT observed_at,external_count,customer_ids FROM wecom_group_membership_observations WHERE corp_scope=$1 AND chat_reference=$2 AND observed_at <= $3 ORDER BY observed_at DESC LIMIT 1`, corp, chat, at).Scan(&f.ObservedAt, &f.ExternalCount, &ids)
 	if e != nil {
 		return f, wecomport.ErrGroupMembershipUnavailable
 	}

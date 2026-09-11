@@ -45,6 +45,13 @@ func TestGroupMembershipPostgresFreshnessAndCAS(t *testing.T) {
 	if _, e = native.Exec(ctx, string(migration)); e != nil {
 		t.Fatal(e)
 	}
+	historyMigration, e := os.ReadFile("../../migrations/0137_wecom_group_membership_observations.sql")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = native.Exec(ctx, string(historyMigration)); e != nil {
+		t.Fatal(e)
+	}
 	p, e := pg.Wrap(native, time.Second)
 	if e != nil {
 		t.Fatal(e)
@@ -93,6 +100,9 @@ func TestGroupMembershipPostgresFreshnessAndCAS(t *testing.T) {
 	f.Complete = true
 	if e = save(f, ""); e != nil {
 		t.Fatal(e)
+	}
+	if e = read("wecom-corp:c", "g", at); e != nil {
+		t.Fatal("later refresh erased frozen reference observation", e)
 	}
 	old := f
 	old.ObservedAt = at

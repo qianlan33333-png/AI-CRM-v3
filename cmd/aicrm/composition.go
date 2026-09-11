@@ -512,7 +512,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	if err = audienceScheduleWorker.BindService(scheduledRefreshes); err != nil {
+	preparedAudienceSchedule := &audienceGroupPreparedSchedule{uow: uow, targets: segmentRepository, facts: wecom.PostgreSQLGroupMembershipFacts{}, next: scheduledRefreshes, corp: "wecom-corp:" + cfg.WeCom.CorpID}
+	if err = audienceScheduleWorker.BindService(preparedAudienceSchedule); err != nil {
 		return fail(err)
 	}
 	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
@@ -1488,6 +1489,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		groupMembershipRefresh = wecom.GroupMembershipRefresh{Provider: providerClient, Resolver: oneID, Store: wecom.PostgreSQLGroupMembershipFacts{}, Audit: auditService, UOW: uow, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
 	}
+	preparedAudienceSchedule.refresh = groupMembershipRefresh
 	callbackAdminHandler, err := wecom.NewCallbackAdminHandler(wecom.CallbackAdminConfig{
 		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
 		Receipts: callbackReceipts, Retrier: inboxService, GroupMembership: groupMembershipRefresh,

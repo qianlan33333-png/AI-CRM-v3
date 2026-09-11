@@ -33,3 +33,9 @@ type DefinitionSource interface {
 type CanonicalCustomerResolver interface {
 	CanonicalCustomers(context.Context, []customerdomain.CustomerID) ([]customerdomain.CustomerID, error)
 }
+
+// GroupRefreshTargetReader lists only active closed-rule dependencies; no SQL
+// or source membership data crosses this boundary.
+type GroupRefreshTargetReader interface {
+	ActiveGroupRefreshTargets(context.Context) ([]string, error)
+}
