@@ -13,7 +13,7 @@ import (
 
 var _ couponport.CutoverDefinitionImporter = (*Repository)(nil)
 var errCutoverConflict = errors.New("coupon cutover definition conflict")
-var cutoverSlug = regexp.MustCompile(`^[a-z][a-z0-9-]{5,119}$`)
+var cutoverSlug = regexp.MustCompile(`^[A-Za-z0-9_-]{6,120}$`)
 
 // ImportCutoverDefinition never creates claims or dispatches effects. Source
 // totals can fill an imported zero counter, or advance a counter whose target

@@ -108,7 +108,7 @@ func TestCommerceSafeApplyPreservesFactsAndReplays(t *testing.T) {
 	s.GroupAssets = nil
 	s.Agents = nil
 	for i := range s.Coupons {
-		slug := fmt.Sprintf("cp-cutover-%d", i)
+		slug := fmt.Sprintf("cp-cutover-%d_Legacy", i)
 		issued := int64(5)
 		s.Coupons[i].PublicSlug = &slug
 		s.Coupons[i].IssuedCount = &issued
