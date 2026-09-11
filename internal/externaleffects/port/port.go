@@ -279,3 +279,13 @@ type TagCatalogMutationRetryCommand struct {
 type TagCatalogMutationRetrier interface {
 	RetryTagCatalogMutationWithin(context.Context, TagCatalogMutationRetryCommand) (Projection, error)
 }
+
+// StoppedAttemptEvidence is local execution evidence, not Provider settlement.
+// Readers must use the owning transaction so a new execution cannot race review.
+type StoppedAttemptEvidence struct {
+	Projection
+	CompletedAt time.Time
+}
+type StoppedAttemptReader interface {
+	StoppedAttemptWithin(context.Context, string) (StoppedAttemptEvidence, error)
+}

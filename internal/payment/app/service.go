@@ -456,6 +456,12 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 					return err
 				}
 			}
+			if review, ok := s.store.(checkoutRestartStore); ok {
+				out.CheckoutRestartAllowed, err = review.CheckoutRestartAllowed(tx, payment.ID)
+				if err != nil {
+					return err
+				}
+			}
 			prepayEffectID = payment.EffectID
 			return nil
 		}

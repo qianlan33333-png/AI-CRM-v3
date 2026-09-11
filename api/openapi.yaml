@@ -3081,6 +3081,26 @@ paths:
                 evidence_digest: {type: string, pattern: "^[a-f0-9]{64}$"}
                 confirmed_no_debit: {type: boolean, enum: [true]}
       responses: {"200": {description: Local checkout abandoned only}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wechat-pay/payments/{payment_id}/allow-checkout-restart:
+    post:
+      operationId: allowReviewedLegacyCheckoutRestart
+      tags: [Transactions]
+      description: Allows an explicit new purchase only after human review of an invalid legacy request, no handoff or callback, and the stopped attempt plus 130-minute credential window. Does not retry or settle the original Provider effect.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: payment_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [evidence_digest, confirmed_no_debit]
+              properties:
+                evidence_digest: {type: string, pattern: "^[a-f0-9]{64}$"}
+                confirmed_no_debit: {type: boolean, enum: [true]}
+      responses: {"200": {description: Explicit new checkout permitted after audited review}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/wechat-pay/payments/{payment_id}/reconcile:
     post:
       operationId: reconcileWechatPayPayment

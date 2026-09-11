@@ -34,6 +34,8 @@ func TestApplicationRouterSeparatesH5AndAdminOrigins(t *testing.T) {
 		{"/api/admin/refunds", h5, http.StatusForbidden},
 		{"/api/admin/wechat-pay/payments/7/abandon-checkout", h5, http.StatusForbidden},
 		{"/api/admin/wechat-pay/payments/7/abandon-checkout", admin, http.StatusNoContent},
+		{"/api/admin/wechat-pay/payments/7/allow-checkout-restart", admin, http.StatusNoContent},
+		{"/api/admin/wechat-pay/payments/7/allow-checkout-restart", h5, http.StatusForbidden},
 		{"/api/v1/wechat-pay/sessions", h5, http.StatusForbidden},
 		{"/api/public/questionnaires/example/admin/submissions", h5, http.StatusForbidden},
 		{"/api/admin/questionnaires", admin, http.StatusNoContent},

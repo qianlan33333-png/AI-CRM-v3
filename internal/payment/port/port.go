@@ -102,22 +102,26 @@ type AbandonCheckoutCommand struct {
 	EvidenceDigest   string
 	ConfirmedNoDebit bool
 }
+type CheckoutRestartReviewer interface {
+	AllowCheckoutRestart(context.Context, AbandonCheckoutCommand) error
+}
 type CheckoutAbandoner interface {
 	AbandonCheckout(context.Context, AbandonCheckoutCommand) error
 }
 
 type Handoff struct {
 	// AmountMinor and Currency are frozen Payment facts, not current catalog/coupon prices.
-	AmountMinor       int64
-	Currency          string
-	CheckoutAbandoned bool
-	PrepayState       effectport.State
-	PaymentID         int64
-	OrderID           int64
-	MerchantOrder     string
-	Status            domain.Status
-	Payload           []byte
-	ExpiresAt         time.Time
+	AmountMinor            int64
+	Currency               string
+	CheckoutRestartAllowed bool
+	CheckoutAbandoned      bool
+	PrepayState            effectport.State
+	PaymentID              int64
+	OrderID                int64
+	MerchantOrder          string
+	Status                 domain.Status
+	Payload                []byte
+	ExpiresAt              time.Time
 }
 
 type AdminQuery interface {
