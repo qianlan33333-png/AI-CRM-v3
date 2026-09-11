@@ -666,6 +666,15 @@ func (r *Repository) CompleteEffectWithin(ctx context.Context, effectRef string,
 	case effectport.KindWeChatPayPrepay:
 		status := domain.StatusFailed
 		if result.Completion == effectport.StateExecuted {
+			// An explicitly reviewed legacy checkout must never acquire a late
+			// client payment credential. Verified settlement callbacks are separate.
+			var recovery bool
+			if err = t.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM payment_checkout_restart_permissions WHERE payment_id=$1)`, paymentID).Scan(&recovery); err != nil {
+				return mapError(err)
+			}
+			if recovery {
+				return paymentport.ErrConflict
+			}
 			status = domain.StatusAwaitingPayment
 		} else if result.Completion == effectport.StateUnknown || result.Completion == effectport.StateRetryable {
 			return nil
