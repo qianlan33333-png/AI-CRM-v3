@@ -34,8 +34,12 @@ func run(ctx context.Context, args []string) error {
 	actor := fs.Int64("actor-admin-user-id", 0, "explicit target administrator")
 	want := fs.String("manifest-sha256", "", "snapshot digest confirmation")
 	confirm := fs.Bool("confirm-apply", false, "confirm target write")
+	commerceOnly := fs.Bool("commerce-only", false, "capture/inspect/preflight current commerce definitions only; apply unavailable")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *commerceOnly && *mode != "extract" && *mode != "inspect" && *mode != "dry-run" {
+		return errors.New("commerce-only supports extract, inspect and dry-run only; owner cutover import unavailable")
 	}
 	if *mode == "history-extract" {
 		if *snapshot == "" || *key == "" || *revision == "" {
@@ -73,12 +77,19 @@ func run(ctx context.Context, args []string) error {
 			return e
 		}
 		defer p.Close()
-		s, e := source.Extract(ctx, p, *revision)
+		var s source.Snapshot
+		if *commerceOnly {
+			s, e = source.ExtractCommerceFrom(ctx, p, *revision)
+		} else {
+			s, e = source.Extract(ctx, p, *revision)
+		}
 		if e != nil {
 			return e
 		}
-		if e = source.ValidateExpectedBaseline(s); e != nil {
-			return e
+		if !*commerceOnly {
+			if e = source.ValidateExpectedBaseline(s); e != nil {
+				return e
+			}
 		}
 		d, e := source.SealToFile(s, *snapshot, *key)
 		if e != nil {
@@ -144,8 +155,13 @@ func run(ctx context.Context, args []string) error {
 	if e = s.Validate(); e != nil {
 		return e
 	}
-	if e = source.ValidateExpectedBaseline(s); e != nil {
-		return e
+	if *commerceOnly != (s.Manifest.Scope == "commerce-only") {
+		return errors.New("snapshot scope does not match explicit commerce-only selection")
+	}
+	if !*commerceOnly {
+		if e = source.ValidateExpectedBaseline(s); e != nil {
+			return e
+		}
 	}
 	if *mode == "inspect" {
 		return print(summary("inspect", s, d))
@@ -165,6 +181,13 @@ func run(ctx context.Context, args []string) error {
 		return e
 	}
 	defer pool.Close()
+	if *commerceOnly {
+		report, err := target.InspectCommerceTarget(ctx, pool.Native(), s, *actor)
+		if err != nil {
+			return err
+		}
+		return print(map[string]any{"mode": "dry-run", "scope": "commerce-only", "manifest_sha256": target.DigestHex(d), "result": report})
+	}
 	if *mode != "apply" && *mode != "dry-run" && *mode != "verify" {
 		return errors.New("unknown mode")
 	}
@@ -215,6 +238,7 @@ func print(v any) error { return json.NewEncoder(os.Stdout).Encode(v) }
 
 func summary(mode string, snapshot source.Snapshot, digest [32]byte) map[string]any {
 	return map[string]any{
+		"scope":           snapshot.Manifest.Scope,
 		"mode":            mode,
 		"manifest_sha256": target.DigestHex(digest),
 		"source_system":   snapshot.Manifest.SourceSystem,
