@@ -3182,6 +3182,20 @@ paths:
                 properties:
                   purchase_state: {type: string, enum: [available, owned, pending]}
                   can_purchase: {type: boolean}
+                  completion_action:
+                    type: object
+                    description: Existing purchase instructions, supplied only for an owned product from its saved purchase action.
+                    required: [state]
+                    properties:
+                      state: {type: string, enum: [available, none, unavailable]}
+                      mode: {type: string, enum: [qr, redirect]}
+                      redirect_url: {type: string}
+                      lead_qr:
+                        type: object
+                        properties:
+                          url: {type: string}
+                          title: {type: string}
+                          subtitle: {type: string}
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
