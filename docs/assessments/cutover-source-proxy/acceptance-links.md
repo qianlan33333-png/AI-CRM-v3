@@ -23,9 +23,11 @@ Both staged payment PEMs are root0600. Current service is `aicrm`; both existing
 
 These are actual public resource paths read from target, not invented IDs. Current target local readback: product and period pages200, survey303 to authorization, coupon200. This confirms routes/resources, not WeChat authorization or payment completion. Current formal DNS still serves the old environment until switching.
 
-- [问卷](https://www.youcangogogo.com/q/launch0908-basic-survey)：微信里打开，确认授权后出现问卷；本轮不用提交。
+- [问卷](https://www.youcangogogo.com/q/ai)：微信里打开，确认授权后出现问卷；本轮不用提交。
 - [普通商品](https://www.youcangogogo.com/p/subscription_trial_month)：看名称、价格与报名按钮；不要付款。
 - [周期商品](https://www.youcangogogo.com/s/lianmeng)：微信里看有效期与会员状态；不要续费。
 - [优惠券](https://www.youcangogogo.com/c/cp-e6307b9111d4640a1012cc8d)：看券名、金额、有效期；不要领取。
 
 订单记录涉及个人信息，没有无身份公开分享链接；正式后台登录后进入“交易管理”，按本人测试订单查询。要验证新支付成功/退款/领券，需要另外安排一次明确授权的真实业务验收，不能将上述页面打开成功当作资金链路验收。
+
+历史问卷验收使用实际已迁移的 `/q/ai`（演练Owner读回enabled=true）；`launch0908-basic-survey` 是既有测试入口，不用它证明历史问卷迁移完整。额外测试问卷12仍published，须正式上线前处理；额外券16为draft、不可领。源36商品=普通34+周期2，目标普通35包含额外测试商品1，分类读回无漏项。
