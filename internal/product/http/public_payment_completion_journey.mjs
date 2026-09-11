@@ -13,6 +13,7 @@ const script = source.slice(start + '</main><script>'.length, end)
   .replaceAll('{{.Product.ProductKind}}', 'standard')
   .replaceAll('{{.Product.CouponTargetRef}}', 'standard_product:7');
 
+assert.equal(source.includes('id="grossAmount"'), false);
 const storageKey = 'aicrm.checkout.v1:7:standard';
 const paidCheckpoint = () => JSON.stringify({
   key: 'checkout-key-0000001', merchant_order_no: 'M-paid-7',
@@ -32,7 +33,7 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   const calls = [], elements = new Map();
   const setGlobal = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
   const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', href: '', children: [], attributes: new Map(), addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }, setAttribute(name, value) { this.attributes.set(name, String(value)); }, removeAttribute(name) { this.attributes.delete(name); }});
-  for (const id of ['price', 'buy', 'restart', 'status', 'coupon', 'wechatNotice', 'mobile', 'grossAmount', 'payableAmount', 'footerAmount', 'discountAmount', 'identityGate', 'identityMessage', 'authContinue', 'checkoutContent']) elements.set(id, element());
+  for (const id of ['price', 'buy', 'restart', 'status', 'coupon', 'wechatNotice', 'mobile', 'payableAmount', 'footerAmount', 'discountAmount', 'identityGate', 'identityMessage', 'authContinue', 'checkoutContent']) elements.set(id, element());
   elements.get('authContinue').hidden = true;
   elements.get('checkoutContent').hidden = true;
   setGlobal('document', {getElementById(id) { return elements.get(id); }, addEventListener() {}, createElement() { return element(); }});
@@ -160,6 +161,54 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 2);
 }
 
+// Only the server's reviewed, expired, never-delivered checkout release may
+// remove the old checkpoint. Phone editing returns without an automatic order.
+{
+  const checkpoint = JSON.parse(paidCheckpoint());
+  delete checkpoint.terminal_status;
+  const store = new Map([[storageKey, JSON.stringify(checkpoint)]]);
+  const run = boot(store, {status: 'awaiting_prepay', checkout_abandoned: true, checkout_restart_allowed: true});
+  await settle();
+  assert.equal(store.has(storageKey), false);
+  assert.equal(run.elements.get('mobile').disabled, false);
+  assert.equal(run.elements.get('coupon').disabled, false);
+  assert.equal(run.elements.get('buy').disabled, false);
+  assert.equal(run.elements.get('payableAmount').textContent, '¥9.90');
+  assert.equal(run.calls.some(call => call.method === 'POST'), false);
+  run.elements.get('mobile').value = '13800138000';
+  let submissions = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/checkout-session')) return response({checkout_session_binding: 'a'.repeat(43)});
+    if (options.method === 'POST') {
+      const payload = JSON.parse(options.body);
+      assert.equal(payload.mobile, '+8613800138000');
+      assert.equal(options.headers['Idempotency-Key'], 'fresh-checkout-key');
+      submissions++;
+      return response({merchant_order_no: 'new-order'});
+    }
+    return response({status: 'paid', amount_minor: 990, currency: 'CNY'});
+  };
+  await run.elements.get('buy').listener.click();
+  assert.equal(submissions, 1);
+  assert.equal(JSON.parse(store.get(storageKey)).merchant_order_no, 'new-order');
+}
+
+// A delayed old-order release cannot remove a newer tab's checkpoint.
+{
+  const checkpoint = JSON.parse(paidCheckpoint());
+  delete checkpoint.terminal_status;
+  const store = new Map([[storageKey, JSON.stringify(checkpoint)]]);
+  const run = boot(store, {status: 'awaiting_prepay'}, false, true, 'globalThis.testRelease = releaseExpiredCheckout;');
+  await settle();
+  checkpoint.merchant_order_no = 'new-order-in-other-tab';
+  checkpoint.key = 'other-tab-checkout-key';
+  const newer = JSON.stringify(checkpoint);
+  store.set(storageKey, newer);
+  assert.throws(() => globalThis.testRelease({checkout_restart_allowed: true}, 'M-paid-7'), /订单状态已更新/);
+  assert.equal(store.get(storageKey), newer);
+  delete globalThis.testRelease;
+}
+
 // Expiry between page load and the buyer's click returns to the explicit gate.
 // No checkout key or order is created and the browser never starts OAuth itself.
 {
@@ -208,6 +257,5 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   const run = boot(new Map([[storageKey, JSON.stringify(checkpoint)]]), {status: 'awaiting_prepay'});
   await settle();
   assert.equal(run.elements.get('footerAmount').textContent, '待确认');
-  assert.equal(run.elements.get('grossAmount').textContent, '以原订单为准');
   assert.equal(run.elements.get('discountAmount').hidden, true);
 }
