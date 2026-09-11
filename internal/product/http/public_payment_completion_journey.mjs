@@ -330,10 +330,7 @@ for(const [auth,purchase,visible] of [[false,{purchase_state:'available',can_pur
 // A consumed session can read ownership, but renews OAuth before allocating a new key.
 {
  const store=new Map();const run=boot(store,{},false,'consumed');await settle();
- assert.equal(run.elements.get('checkoutContent').hidden,false);
- assert.equal(run.calls.some(call=>call.redirect),false);
- run.elements.get('mobile').value='13800000000';
- await run.elements.get('buy').listener.click();
+ assert.equal(run.elements.get('checkoutContent').hidden,true);
  assert.equal(run.calls.filter(call=>call.redirect).length,1);
  assert.equal(store.has(storageKey),false);
  assert.equal(run.calls.some(call=>call.method==='POST'),false);
@@ -368,4 +365,32 @@ for(const action of [
  await settle();
  assert.equal(run.calls.filter(call=>call.redirect===action.redirect_url).length,1);
  assert.equal(run.calls.filter(call=>call.url?.includes('/checkouts/')).length,1);
+}
+
+// A consumed-session OAuth failure must not loop or reveal either entry view.
+for(const details of [false,true]){
+ const store=new Map();
+ const first=boot(store,{},false,'consumed','',undefined,'MicroMessenger',false,details);await settle();
+ assert.equal(first.calls.filter(call=>call.redirect).length,1);
+ if(details)assert.equal(first.elements.get('detailImage').src,undefined);
+ const second=boot(store,{},false,'consumed','',undefined,'MicroMessenger',false,details);await settle();
+ assert.equal(second.calls.some(call=>call.redirect),false);
+ assert.equal(second.elements.get('checkoutContent').hidden,true);
+ assert.equal(second.elements.get('authContinue').hidden,false);
+}
+// Owned visitors never renew the consumed session just to read their entitlement.
+{
+ const run=boot(new Map(),{},false,'consumed','',{purchase_state:'owned',can_purchase:false,completion_action:{state:'none'}});await settle();
+ assert.equal(run.calls.some(call=>call.redirect),false);
+ assert.equal(run.elements.get('buy').textContent,'已购买');
+}
+// Renewal checks fresh authorization before exposing an editable payment form.
+{
+ const store=new Map([[storageKey,paidCheckpoint()]]);
+ const run=boot(store,{status:'paid'},false,'consumed','',undefined,'MicroMessenger',true);await settle();
+ await run.elements.get('renew').listener.click();await settle();
+ assert.equal(run.calls.filter(call=>call.redirect).length,1);
+ assert.equal(run.elements.get('checkoutContent').hidden,true);
+ assert.equal(store.has(storageKey),false);
+ assert.equal(run.calls.some(call=>call.method==='POST'),false);
 }
