@@ -18,6 +18,19 @@ chmod +x "$sandbox/scripts/check-config-definition-import-boundary.sh"
 node "$sandbox/scripts/prepare-donor-source-views.mjs" >/dev/null
 "$sandbox/scripts/check-config-definition-import-boundary.sh" >/dev/null
 
+# Test-only target fixtures may mention customer fields; identical production
+# source must still fail the configuration-only importer boundary.
+fixture="$sandbox/cmd/migrate-v2-config-definitions/boundary_fixture_test.go"
+printf 'package main\nvar boundaryFixture = `customer_id history`\n' >"$fixture"
+"$sandbox/scripts/check-config-definition-import-boundary.sh" >/dev/null
+mv "$fixture" "${fixture%_test.go}.go"
+if "$sandbox/scripts/check-config-definition-import-boundary.sh" >"$temporary_root/command-source.out" 2>&1; then
+  echo "config boundary accepted customer/history fields in executable command source" >&2
+  exit 1
+fi
+grep -q "forbidden source field/table token 'customer_id'" "$temporary_root/command-source.out"
+rm "${fixture%_test.go}.go"
+
 special_donor="$sandbox/web/donors/odd"$'\n'"name.ts"
 printf 'undeclared donor mutation\n' >"$special_donor"
 if "$sandbox/scripts/check-config-definition-import-boundary.sh" >"$temporary_root/donor-special.out" 2>&1; then

@@ -239,7 +239,9 @@ def code_files() -> list[Path]:
             # "config".
             if path.is_dir() and ("config" in path.name.lower() or "definition" in path.name.lower()) and path.name != "migrate-v2-runtime-config-releases":
                 for child in path.rglob("*"):
-                    if child.is_file() and child.suffix.lower() in {".go", ".sql", ".py", ".sh"}:
+                    # Go test fixtures are not compiled into the importer, matching
+                    # the internal/configmigration exclusion above. Runtime files stay scanned.
+                    if child.is_file() and child.suffix.lower() in {".go", ".sql", ".py", ".sh"} and not child.name.endswith("_test.go"):
                         found.add(child)
 
     # A migration belongs to this boundary only when its owner is the
