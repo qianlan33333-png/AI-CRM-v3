@@ -22,6 +22,9 @@
   <script defer src="/static/admin_console/template_parameter_form.js?v=dd8-frozen-ab63c644"></script>
   <script defer src="/static/admin_console/admin_audience_template_host.js?v=prd05-template-host-v1"></script>
   {{end}}
+  {{if or .AudienceList .AudienceDetail}}
+  <script defer src="/static/admin_console/admin_audience_activation_host.js?v=rule-activation-v1"></script>
+  {{end}}
   {{if eq .RequestPath "/admin/config/login-access"}}
   <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=static-mime2">
   {{end}}
