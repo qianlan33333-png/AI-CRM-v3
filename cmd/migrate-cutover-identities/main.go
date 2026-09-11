@@ -20,6 +20,7 @@ import (
 	proof "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/migration/cutoverproof"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
@@ -37,8 +38,8 @@ func run(ctx context.Context, args []string) error {
 	want := fs.String("manifest-sha256", "", "explicit proof digest")
 	confirm := fs.Bool("confirm-apply", false, "write accepted identity candidates and quarantine receipts")
 	scopesConfirmed := fs.Bool("confirm-matched-provider-scopes", false, "source and target Provider Corp/OpenPlatform configuration independently verified equal")
-	corp := fs.String("corp-id", os.Getenv("AICRM_WECOM_CORP_ID"), "verified shared WeCom Corp ID")
-	union := fs.String("union-scope", os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), "explicit wechat-open-platform namespace")
+	corp := fs.String("corp-id", platformconfig.CutoverIdentityEnvironment("AICRM_WECOM_CORP_ID"), "verified shared WeCom Corp ID")
+	union := fs.String("union-scope", platformconfig.CutoverIdentityEnvironment("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), "explicit wechat-open-platform namespace")
 	if e := fs.Parse(args); e != nil {
 		return e
 	}
@@ -130,7 +131,7 @@ func run(ctx context.Context, args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"mode": *mode, "manifest_sha256": hex.EncodeToString(d[:]), "plan": plan})
 }
 func open(ctx context.Context, name string) (*pgxpool.Pool, error) {
-	dsn := os.Getenv(name)
+	dsn := platformconfig.CutoverIdentityEnvironment(name)
 	if dsn == "" {
 		return nil, errors.New("protected database environment unavailable")
 	}
