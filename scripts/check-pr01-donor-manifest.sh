@@ -4,7 +4,8 @@ set -euo pipefail
 # This is deliberately a full source-set gate, not a spot check. The frozen
 # V2 business frontend is immutable. The files listed below are explicit V3
 # ownership boundaries for the survey and HXC dashboard; dedicated manifests
-# continue to byte-lock their remaining donor files.
+# continue to byte-lock their remaining donor files. The exact historical-payment
+# read-contract test is authored for the V3 order adapter, not a donor payload.
 manifest="docs/donor-manifests/pr01-web.sha256"
 test -s "$manifest" || { echo "missing PR01 web donor manifest" >&2; exit 1; }
 
@@ -25,6 +26,7 @@ web/scripts/channel-center-characterization.mjs
 web/scripts/survey-editor-characterization.mjs
 web/scripts/survey-public-characterization.mjs
 web/scripts/ui-shell-contract.mjs
+web/scripts/payment-history-read-contract.mjs
 web/src/admin/sections/funnelGrid.ts
 web/src/admin/sections/questionnaireEditor.ts
 web/src/admin/pages/customers.ts
