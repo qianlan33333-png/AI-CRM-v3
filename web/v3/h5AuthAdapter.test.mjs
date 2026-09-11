@@ -50,9 +50,9 @@ const {build} = await import('esbuild');
 const {runInNewContext} = await import('node:vm');
 const compiled = await build({entryPoints:[path.join(root,'web/src/h5/controller.ts')],bundle:true,write:false,format:'iife',globalName:'AuthController',plugins:[{name:'auth-controller-dependencies',setup(b){b.onResolve({filter:/^\.\.\//},args=>({path:args.path,namespace:'auth-dependency'}));b.onLoad({filter:/.*/,namespace:'auth-dependency'},()=>({contents:'export class PageBase {} export class ApiError extends Error {} export const toast=()=>{}; export const readPublicSurvey=()=>{}; export const readSurveyResult=()=>{}; export const submitSurvey=()=>{};',loader:'js'}));}}]});
 const marker = new Map();
-async function authRun(status, search='?slug=survey') {
+async function authRun(status, search='?slug=survey', userAgent='MicroMessenger') {
   const redirects=[], calls=[];
-  const sandbox={URLSearchParams,navigator:{userAgent:'MicroMessenger'},location:{search,replace(url){redirects.push(url)}},sessionStorage:{getItem:k=>marker.get(k),setItem:(k,v)=>marker.set(k,v),removeItem:k=>marker.delete(k)},fetch:async url=>{calls.push(url);return {ok:status===200,status,json:async()=>({display:'one'})}}};
+  const sandbox={URLSearchParams,navigator:{userAgent},location:{search,replace(url){redirects.push(url)}},sessionStorage:{getItem:k=>marker.get(k),setItem:(k,v)=>marker.set(k,v),removeItem:k=>marker.delete(k)},fetch:async url=>{calls.push(url);return {ok:status===200,status,json:async()=>({display:'one'})}}};
   runInNewContext(compiled.outputFiles[0].text,sandbox);
   const controller=new sandbox.AuthController.H5Controller('auth');await controller.init();
   return {controller,redirects,calls};
@@ -60,9 +60,11 @@ async function authRun(status, search='?slug=survey') {
 const fresh=await authRun(401);
 assert.deepEqual(fresh.redirects,['/api/h5/surveys/oauth/start?slug=survey']);
 assert.equal(fresh.calls.length,1);
+assert.equal(fresh.controller.renderVals().authRetry,false);
 const lostCookie=await authRun(401);
 assert.equal(lostCookie.redirects.length,0);
 assert.match(lostCookie.controller.renderVals().error,/请重试/);
+assert.equal(lostCookie.controller.renderVals().authRetry,true);
 lostCookie.controller.renderVals().act.authContinue();
 assert.equal(lostCookie.redirects.length,1);
 const failed=await authRun(401,'?slug=survey&oauth_error=1');
@@ -71,3 +73,9 @@ assert.equal(failed.calls.length,0);
 const known=await authRun(200);
 assert.deepEqual(known.redirects,['/h5/one.html?slug=survey']);
 assert.equal(marker.size,0);
+
+const outsideWeChat=await authRun(401,'?slug=survey&oauth_error=1','Mozilla/5.0');
+assert.equal(outsideWeChat.controller.renderVals().authRetry,false);
+outsideWeChat.controller.renderVals().act.authContinue();
+assert.equal(outsideWeChat.redirects.length,0);
+assert.equal(outsideWeChat.calls.length,0);
