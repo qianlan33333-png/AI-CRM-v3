@@ -580,7 +580,7 @@ func TestPostgreSQLReconcileAuditedEnablePreservesFrozenDefinition(t *testing.T)
 	if _, err := pool.Exec(ctx, `UPDATE survey_questionnaires SET name='changed'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := reconcile(enabledArgs); err == nil {
-		t.Fatal("audited enable concealed definition drift")
+	if err := reconcile(enabledArgs); err == nil || !strings.Contains(err.Error(), "questionnaires/1") || !strings.Contains(err.Error(), "fields=name") || strings.Contains(err.Error(), "changed") {
+		t.Fatalf("unsafe or missing field diagnostic: %v", err)
 	}
 }

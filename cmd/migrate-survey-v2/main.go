@@ -1093,7 +1093,10 @@ func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, tab
 		if err != nil || !exists {
 			return fmt.Errorf("migration reconciliation failed: %s/%s missing target fact", table, pk)
 		}
-		return verifyDefinitionFact(ctx, tx, source, table, *targetPK, sourceFact, sourceIndex, allowEnabled)
+		if err := verifyDefinitionFact(ctx, tx, source, table, *targetPK, sourceFact, sourceIndex, allowEnabled); err != nil {
+			return fmt.Errorf("migration reconciliation failed: %s/%s: %w", table, pk, err)
+		}
+		return nil
 	case "survey_submissions":
 		if table != "questionnaire_submissions" {
 			return fmt.Errorf("migration reconciliation failed: %s/%s type mismatch", table, pk)
@@ -1172,9 +1175,32 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 			auditErr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_questionnaires q JOIN survey_audit_events a ON a.aggregate_id=q.id AND a.aggregate_type='questionnaire' WHERE q.id=$1 AND q.version=2 AND a.event_type='definition_enable' AND a.actor_scope='admin:'||q.updated_by::text AND a.occurred_at=q.updated_at AND a.metadata->>'expected_version'='1' AND a.metadata->>'status'='published' AND a.metadata->>'id'=q.id::text)`, targetPK).Scan(&audited)
 			statusMatches = auditErr == nil && audited
 		}
-		if err != nil || activeVersion == nil || name != trimNonEmpty(value.Name, 200) || title != trimNonEmpty(value.Title, 500) || description != trim(value.Description, 10000) || mode != map[bool]string{true: "assessment", false: "survey"}[value.Assessment] || displayMode != display(value.Display) || slug != safeSlug(value.Slug, value.ID) || !statusMatches {
-			return mismatch(false)
+
+		if err != nil {
+			return errors.New("questionnaire target unreadable")
 		}
+		fields := []string{}
+		for _, check := range []struct {
+			name string
+			ok   bool
+		}{
+			{"active_definition_version_id", activeVersion != nil},
+			{"name", name == trimNonEmpty(value.Name, 200)},
+			{"title", title == trimNonEmpty(value.Title, 500)},
+			{"description", description == trim(value.Description, 10000)},
+			{"mode", mode == map[bool]string{true: "assessment", false: "survey"}[value.Assessment]},
+			{"answer_display_mode", displayMode == display(value.Display)},
+			{"slug", slug == safeSlug(value.Slug, value.ID)},
+			{"status_or_enable_audit", statusMatches},
+		} {
+			if !check.ok {
+				fields = append(fields, check.name)
+			}
+		}
+		if len(fields) > 0 {
+			return fmt.Errorf("questionnaire target fact drift fields=%s", strings.Join(fields, ","))
+		}
+
 		assessment := value.AssessmentConfig
 		if !value.Assessment || !json.Valid(assessment) {
 			assessment = json.RawMessage(`{}`)
@@ -1186,7 +1212,31 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 		var immutable bool
 		var published time.Time
 		err = tx.QueryRow(ctx, `SELECT questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at FROM survey_definition_versions WHERE id=$1`, *activeVersion).Scan(&owner, &number, &vmode, &vdisplay, &vtitle, &vdescription, &vassessment, &vdigest, &immutable, &published)
-		return mismatch(err == nil && owner == targetPK && number == 1 && vmode == mode && vdisplay == displayMode && vtitle == trimNonEmpty(value.Title, 500) && vdescription == trim(value.Description, 10000) && jsonEquivalent(vassessment, assessment) && bytes.Equal(vdigest, expectedDigest[:]) && immutable && published.Equal(value.UpdatedAt))
+
+		if err != nil {
+			return errors.New("definition version unreadable")
+		}
+		fields = nil
+		for _, check := range []struct {
+			name string
+			ok   bool
+		}{
+			{"definition.questionnaire_id", owner == targetPK}, {"definition.version_number", number == 1},
+			{"definition.mode", vmode == mode}, {"definition.answer_display_mode", vdisplay == displayMode},
+			{"definition.title_snapshot", vtitle == trimNonEmpty(value.Title, 500)},
+			{"definition.description_snapshot", vdescription == trim(value.Description, 10000)},
+			{"definition.assessment_config", jsonEquivalent(vassessment, assessment)},
+			{"definition.definition_digest", bytes.Equal(vdigest, expectedDigest[:])},
+			{"definition.is_immutable", immutable}, {"definition.published_at", published.Equal(value.UpdatedAt)},
+		} {
+			if !check.ok {
+				fields = append(fields, check.name)
+			}
+		}
+		if len(fields) > 0 {
+			return fmt.Errorf("questionnaire target fact drift fields=%s", strings.Join(fields, ","))
+		}
+		return nil
 
 	case question:
 		owner, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
