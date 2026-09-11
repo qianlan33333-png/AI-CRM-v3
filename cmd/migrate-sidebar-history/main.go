@@ -48,6 +48,7 @@ const (
 type options struct {
 	mode, snapshot, sourceStream, unionIDScope, digest string
 	confirm                                            bool
+	opaqueSource                                       bool
 	proofPath, proofKey, proofDigest, corp, output     string
 	oaProof, oaKey, oaDigest                           string
 	matchedCorp                                        bool
@@ -186,6 +187,7 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect-stream|inspect|dry-run|preflight|apply|reconcile")
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "protected normalized JSON snapshot")
 	flags.StringVar(&cfg.sourceStream, "source-stream", "", "read-only psql source stream")
+	flags.BoolVar(&cfg.opaqueSource, "opaque-source", false, "capture opaque source references only; external proof binding required before import")
 	flags.StringVar(&cfg.unionIDScope, "unionid-scope", "", "verified WeChat Open Platform scope")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "exact snapshot SHA-256")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm exact apply")
@@ -201,11 +203,14 @@ func run(ctx context.Context, args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if cfg.opaqueSource && cfg.mode != "inspect-stream" {
+		return errors.New("opaque-source is only valid for inspect-stream")
+	}
 	if cfg.mode == "inspect-stream" {
-		if cfg.snapshot == "" || cfg.sourceStream == "" || !strings.HasPrefix(cfg.unionIDScope, "wechat-open-platform:") {
-			return errors.New("inspect-stream requires snapshot, source-stream and unionid-scope")
+		if cfg.snapshot == "" || cfg.sourceStream == "" || (cfg.opaqueSource && cfg.unionIDScope != "") || (!cfg.opaqueSource && !strings.HasPrefix(cfg.unionIDScope, "wechat-open-platform:")) {
+			return errors.New("inspect-stream requires snapshot, source-stream and either confirmed unionid-scope or exclusive opaque-source")
 		}
-		m, err := extractStream(cfg.sourceStream, cfg.unionIDScope)
+		m, err := extractStreamMode(cfg.sourceStream, cfg.unionIDScope, cfg.opaqueSource)
 		if err != nil {
 			return err
 		}
@@ -216,7 +221,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printSummary("inspect-stream", m, true)
+		return printSummary("inspect-stream", m, !cfg.opaqueSource)
 	}
 	if cfg.snapshot == "" {
 		return errors.New("snapshot is required")
@@ -226,7 +231,7 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	if cfg.mode == "inspect" || cfg.mode == "dry-run" {
-		return printSummary(cfg.mode, m, cfg.mode == "dry-run")
+		return printSummary(cfg.mode, m, cfg.mode == "dry-run" && !isOpaqueSource(m))
 	}
 	want, err := hex.DecodeString(cfg.digest)
 	if err != nil || len(want) != 32 || string(want) != string(m.rawDigest[:]) {
@@ -234,6 +239,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	if cfg.mode == "bind-external-proof" {
 		return bindExternalProof(cfg, m)
+	}
+	if isOpaqueSource(m) {
+		return errors.New("opaque source requires bind-external-proof before import or reconciliation")
 	}
 	if m.SchemaVersion == 3 {
 		ctx, err = withExternalProof(ctx, cfg, m)
@@ -271,6 +279,9 @@ func printSummary(mode string, m manifest, eligible bool) error {
 }
 
 func preflight(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
+	if isOpaqueSource(m) {
+		return errors.New("opaque source must be bound to external proof")
+	}
 	uow, err := platformpostgres.NewUnitOfWork(pool)
 	if err != nil {
 		return err
@@ -317,6 +328,12 @@ func preflight(ctx context.Context, pool *platformpostgres.Pool, m manifest) err
 }
 
 func extractStream(path, scope string) (manifest, error) {
+	return extractStreamMode(path, scope, false)
+}
+func extractStreamMode(path, scope string, opaque bool) (manifest, error) {
+	if opaque && scope != "" {
+		return manifest{}, errors.New("opaque source cannot assert UnionID scope")
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return manifest{}, err
@@ -327,6 +344,10 @@ func extractStream(path, scope string) (manifest, error) {
 	// Python str(...).strip() contract. Existing v1 snapshots are loaded as-is
 	// so their protected manifest and row receipts remain byte compatible.
 	m := manifest{SchemaVersion: currentSchemaVersion, SourceSystem: productionSourceSystem, UnionIDScope: scope, Entitlements: []sourceEntitlement{}, Coupons: []sourceCoupon{}}
+	if opaque {
+		m.SchemaVersion = 4
+		m.ResolutionMode = "opaque_source_only"
+	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	markers := 0
@@ -468,6 +489,9 @@ func validate(m manifest) error {
 }
 
 func apply(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
+	if isOpaqueSource(m) {
+		return errors.New("opaque source must be bound to external proof")
+	}
 	lease, err := acquireSidebarHistoryApplyLease(ctx, pool.Native(), m)
 	if err != nil {
 		return err
@@ -918,6 +942,9 @@ func reconcileQuarantineReason(ctx context.Context, tx pgx.Tx, m manifest, kind,
 }
 
 func reconcile(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
+	if isOpaqueSource(m) {
+		return errors.New("opaque source must be bound to external proof")
+	}
 	tx, err := pool.Native().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return err

@@ -15,7 +15,12 @@ import (
 
 type externalProofContext struct{}
 
+func isOpaqueSource(m manifest) bool { return m.SchemaVersion == 4 }
+
 func validSubjectMode(m manifest) bool {
+	if isOpaqueSource(m) {
+		return m.ResolutionMode == "opaque_source_only" && m.UnionIDScope == "" && m.ProofSHA256 == "" && m.SourceSHA256 == "" && m.CorpID == "" && m.OAProofSHA256 == ""
+	}
 	if m.OAProofSHA256 != "" {
 		if b, e := hex.DecodeString(m.OAProofSHA256); e != nil || len(b) != 32 || m.SchemaVersion != 3 {
 			return false
