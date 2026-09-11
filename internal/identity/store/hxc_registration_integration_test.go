@@ -57,7 +57,7 @@ func TestHXCRegistrationCoverageFullIndexesIntegration(t *testing.T) {
 		complete     bool
 		missingUnion bool
 		want         identityport.HXCRegistrationState
-	}{{"full", true, false, identityport.HXCUnregistered}, {"partial", false, false, identityport.HXCRegistrationUnknown}, {"one-index-incomplete", true, true, identityport.HXCRegistrationUnknown}} {
+	}{{"full", true, false, identityport.HXCUnregistered}, {"partial", false, false, identityport.HXCRegistrationUnknown}, {"legal-empty-union", true, true, identityport.HXCUnregistered}} {
 		t.Run(c.name, func(t *testing.T) {
 			v := base
 			if c.missingUnion {
@@ -92,6 +92,36 @@ func TestHXCRegistrationCoverageFullIndexesIntegration(t *testing.T) {
 		return nil
 	}); e != nil {
 		t.Fatal(e)
+	}
+
+	for _, c := range []struct {
+		name, phone, union string
+		verified           bool
+		want               identityport.HXCRegistrationState
+	}{
+		{"empty-phone", "", "union-present", true, identityport.HXCUnregistered},
+		{"both-empty", "", "", true, identityport.HXCUnregistered},
+		{"invalid-nonempty-phone", "bad-phone", "union-present", true, identityport.HXCRegistrationUnknown},
+		{"unverified-nonempty-union", "13800138000", "union-present", false, identityport.HXCRegistrationUnknown},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := base
+			v.Phone = c.phone
+			v.UnionID = c.union
+			v.UnionIDVerified = c.verified
+			if e := uow.Within(ctx, func(tx context.Context) error {
+				out, e := q.InspectHXCRegistrationCoverage(tx, []identityport.HXCSubject{v}, true)
+				if e != nil {
+					return e
+				}
+				if out[absent] != c.want {
+					t.Fatalf("state=%s want=%s", out[absent], c.want)
+				}
+				return nil
+			}); e != nil {
+				t.Fatal(e)
+			}
+		})
 	}
 
 }

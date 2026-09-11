@@ -23,31 +23,41 @@ func (s PostgreSQL) hxcCoverageIndexes(subjects []identityport.HXCSubject, compl
 			x.phoneComplete = false
 			x.unionComplete = false
 		}
-		n, e := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: v.Phone, Assurance: identitydomain.AssuranceDeclared, Source: "hxc"})
-		if e != nil || v.Phone == "" {
-			x.phoneComplete = false
-		} else {
-			d := s.phoneVault.LookupDigest(n.NormalizedValue)
-			key := hex.EncodeToString(d[:])
-			if x.phone[key] {
+		// A legal empty source field contributes no index entry. Completeness
+		// describes exhaustive capture, not mandatory identities on each user.
+		if strings.TrimSpace(v.Phone) != "" {
+			n, e := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: v.Phone, Assurance: identitydomain.AssuranceDeclared, Source: "hxc"})
+			if e != nil {
 				x.phoneComplete = false
+			} else {
+				d := s.phoneVault.LookupDigest(n.NormalizedValue)
+				key := hex.EncodeToString(d[:])
+				if x.phone[key] {
+					x.phoneComplete = false
+				}
+				x.phone[key] = true
+				x.phone["e164:+86"+n.NormalizedValue] = true
 			}
-			x.phone[key] = true
-			x.phone["e164:+86"+n.NormalizedValue] = true
 		}
-		n, e = identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: v.UnionIDScope, Value: v.UnionID, Assurance: identitydomain.AssuranceVerified, Source: "hxc"})
-		if e != nil || v.UnionID == "" || !v.UnionIDVerified {
+		// The configured source scope remains explicit even if this user has
+		// no UnionID. Never infer or invent a platform from an identity value.
+		if x.scope != "" && x.scope != v.UnionIDScope {
 			x.unionComplete = false
-		} else {
-			if x.scope != "" && x.scope != n.Scope {
+		}
+		if v.UnionIDScope != "" {
+			x.scope = v.UnionIDScope
+		}
+		if strings.TrimSpace(v.UnionID) != "" {
+			n, e := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: v.UnionIDScope, Value: v.UnionID, Assurance: identitydomain.AssuranceVerified, Source: "hxc"})
+			if e != nil || !v.UnionIDVerified {
 				x.unionComplete = false
+			} else {
+				key := n.Scope + "\x00" + n.NormalizedValue
+				if x.union[key] {
+					x.unionComplete = false
+				}
+				x.union[key] = true
 			}
-			x.scope = n.Scope
-			key := n.Scope + "\x00" + n.NormalizedValue
-			if x.union[key] {
-				x.unionComplete = false
-			}
-			x.union[key] = true
 		}
 	}
 	return x

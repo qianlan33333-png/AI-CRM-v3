@@ -6,7 +6,7 @@ OneID：Identity Owner 内沿用 Normalize、HXC Inspector 判定受信快照与
 
 - HXC MySQL Provider 在 repeatable-read 全量分页和提交成功后才设置 Snapshot.Complete。
 - Identity 正向 Inspector 唯一匹配为 registered。
-- 源 phone 索引要求每行可正常标准化且无重复；UnionID索引要求每行有同一可信开放平台scope的verified UnionID且无重复。任何源conflict/invalid阻止负面判断。
+- 完整来源中的合法NULL/空字段不产生比较键，不代表抓取缺失。源 phone 索引要求每个非空值可正常标准化且无重复；UnionID索引要求每个非空值具有同一可信开放平台scope且verified、无重复。任何源conflict/invalid阻止负面判断。
 - 客户只允许当前 active、verified 比较键。存在 declared、重复同类键、不认识的scope、任一现有比较键对应源索引不完整或命中时，不能判 unregistered。
 - 只有至少一个可信比较键，且所有现有phone/UnionID比较键的完整索引都明确无匹配，才为 unregistered。
 - 缺客户、缺证据、旧代次无覆盖记录均为 unknown，不纳入未注册人群。
