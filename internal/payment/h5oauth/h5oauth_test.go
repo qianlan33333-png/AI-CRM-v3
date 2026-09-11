@@ -10,6 +10,7 @@ import (
 
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
 )
 
@@ -50,8 +51,9 @@ func (providerStub) Enabled() bool { return true }
 func (providerStub) AuthorizationURL(state string) string {
 	return "https://open.weixin.qq.com/connect/oauth2/authorize?state=" + url.QueryEscape(state)
 }
-func (stub providerStub) Exchange(context.Context, string) (identitydomain.VerifiedFact, error) {
-	return stub.fact, nil
+func (stub providerStub) Exchange(context.Context, string) (paymentport.H5OAuthFacts, error) {
+	union, _ := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:test", Value: "union-test", Source: "test.provider"})
+	return paymentport.H5OAuthFacts{OpenID: stub.fact, UnionID: union}, nil
 }
 
 func TestH5OAuthStateIsBoundExpiresAndCannotReplay(t *testing.T) {

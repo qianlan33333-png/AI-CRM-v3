@@ -150,7 +150,7 @@ const cancelStorage = new SharedStorage();
 const cancelled = await runPage(cancelStorage, firstSession, cancelThenPayBridge);
 setPurchase(cancelled, 12, "13800138000");
 cancelled.window.document.getElementById("buy").click();
-await waitFor(cancelled.window.document, "支付未完成", "cancelled checkout");
+await waitFor(cancelled.window.document, "支付未完成，请使用原订单继续支付", "cancelled checkout");
 assert.equal(cancelled.window.document.getElementById("buy").disabled, false, "cancelled order remains actionable");
 cancelled.window.document.getElementById("buy").click();
 await waitFor(cancelled.window.document, paidWithoutCompletionAction, "resumed cancelled checkout");

@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	"time"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
@@ -254,4 +255,10 @@ type WeChatPayReconciler interface {
 
 type ProviderIntentReader interface {
 	ProviderIntent(context.Context, effectport.Kind, effectport.Digest) (ProviderIntent, error)
+}
+
+// H5OAuthFacts is minted after one userinfo read verifies both subject IDs.
+type H5OAuthFacts struct {
+	OpenID  identitydomain.VerifiedFact
+	UnionID identitydomain.VerifiedFact
 }

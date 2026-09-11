@@ -26,11 +26,11 @@ func (PostgreSQL) Insert(ctx context.Context, record Record) (Record, error) {
 	err = tx.QueryRow(ctx, `
 		INSERT INTO payment_sessions(
 			token_digest,payer_identity_id,payer_customer_id,beneficiary_customer_id,
-			beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,expires_at,created_at
-		) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,unionid_verified,expires_at,created_at
+		) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING id`,
 		record.TokenDigest[:], record.PayerIdentityID, record.PayerCustomerID,
-		beneficiary, record.BeneficiarySelection, record.BeneficiarySelectedAt, record.AppScopeDigest[:], record.Channel,
+		beneficiary, record.BeneficiarySelection, record.BeneficiarySelectedAt, record.AppScopeDigest[:], record.Channel, record.UnionIDVerified,
 		record.ExpiresAt, record.CreatedAt,
 	).Scan(&record.ID)
 	return record, err
@@ -46,7 +46,7 @@ func (PostgreSQL) Consume(ctx context.Context, digest [32]byte, now time.Time) (
 		SET consumed_at=$2
 		WHERE token_digest=$1 AND consumed_at IS NULL AND expires_at>$2 AND beneficiary_customer_id IS NOT NULL
 		RETURNING id,token_digest,payer_identity_id,payer_customer_id,
-			beneficiary_customer_id,beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,expires_at,consumed_at,created_at`,
+			beneficiary_customer_id,beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,unionid_verified,expires_at,consumed_at,created_at`,
 		digest[:], now,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -62,7 +62,7 @@ func (PostgreSQL) Lookup(ctx context.Context, digest [32]byte, now time.Time) (R
 	}
 	record, err := scanRecord(tx.QueryRow(ctx, `
 		SELECT id,token_digest,payer_identity_id,payer_customer_id,
-			beneficiary_customer_id,beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,expires_at,consumed_at,created_at
+			beneficiary_customer_id,beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,unionid_verified,expires_at,consumed_at,created_at
 		FROM payment_sessions WHERE token_digest=$1 AND expires_at>$2`, digest[:], now))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrExpired
@@ -77,7 +77,7 @@ func (PostgreSQL) SelectPayerSelf(ctx context.Context, digest [32]byte, now time
 	}
 	record, err := scanRecord(tx.QueryRow(ctx, `
 		SELECT id,token_digest,payer_identity_id,payer_customer_id,
-			beneficiary_customer_id,beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,expires_at,consumed_at,created_at
+			beneficiary_customer_id,beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,unionid_verified,expires_at,consumed_at,created_at
 		FROM payment_sessions WHERE token_digest=$1 AND expires_at>$2 FOR UPDATE`, digest[:], now))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrExpired
@@ -96,7 +96,7 @@ func (PostgreSQL) SelectPayerSelf(ctx context.Context, digest [32]byte, now time
 		SET beneficiary_customer_id=$2, beneficiary_selection='payer_self', beneficiary_selected_at=$3
 		WHERE id=$1 AND beneficiary_selection='unresolved' AND beneficiary_customer_id IS NULL AND consumed_at IS NULL
 		RETURNING id,token_digest,payer_identity_id,payer_customer_id,
-			beneficiary_customer_id,beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,expires_at,consumed_at,created_at`,
+			beneficiary_customer_id,beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,unionid_verified,expires_at,consumed_at,created_at`,
 		record.ID, record.PayerCustomerID, now,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -114,7 +114,7 @@ func scanRecord(row rowScanner) (Record, error) {
 	var tokenDigest, scopeDigest []byte
 	err := row.Scan(
 		&record.ID, &tokenDigest, &record.PayerIdentityID, &payer, &beneficiary,
-		&record.BeneficiarySelection, &record.BeneficiarySelectedAt, &scopeDigest, &record.Channel, &record.ExpiresAt, &record.ConsumedAt, &record.CreatedAt,
+		&record.BeneficiarySelection, &record.BeneficiarySelectedAt, &scopeDigest, &record.Channel, &record.UnionIDVerified, &record.ExpiresAt, &record.ConsumedAt, &record.CreatedAt,
 	)
 	if err != nil {
 		return Record{}, err
@@ -132,6 +132,9 @@ func scanRecord(row rowScanner) (Record, error) {
 }
 
 func validateRecord(record Record) (Record, error) {
+	if record.Channel == "h5_official_account" && !record.UnionIDVerified {
+		return Record{}, ErrExpired
+	}
 	if record.ID < 1 || record.PayerIdentityID < 1 || record.PayerCustomerID < 1 || !record.ExpiresAt.After(record.CreatedAt) || (record.ConsumedAt != nil && record.ConsumedAt.Before(record.CreatedAt)) {
 		return Record{}, ErrInvalid
 	}

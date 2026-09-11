@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -31,7 +31,7 @@ var returnPathPattern = regexp.MustCompile(`^/(?:pay/[^/?#]+|s/[^/?#]+(?:/pay)?|
 type Provider interface {
 	Enabled() bool
 	AuthorizationURL(string) string
-	Exchange(context.Context, string) (identitydomain.VerifiedFact, error)
+	Exchange(context.Context, string) (paymentport.H5OAuthFacts, error)
 }
 
 type State struct {
@@ -123,10 +123,10 @@ func (s *Service) Complete(ctx context.Context, stateToken, code string) (paymen
 		return paymentsession.Issued{}, "", ErrInvalid
 	}
 	fact, err := s.provider.Exchange(ctx, code) // Provider call is outside PostgreSQL transaction.
-	if err != nil || !fact.Valid() {
+	if err != nil || !fact.OpenID.Valid() || !fact.UnionID.Valid() {
 		return paymentsession.Issued{}, "", ErrUnavailable
 	}
-	issued, err := s.issuer.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact, IdempotencyKey: "payment-h5-oauth:" + base64.RawURLEncoding.EncodeToString(digest[:])})
+	issued, err := s.issuer.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact.OpenID, UnionID: fact.UnionID, IdempotencyKey: "payment-h5-oauth:" + base64.RawURLEncoding.EncodeToString(digest[:])})
 	if err != nil || issued.Channel != "h5_official_account" {
 		return paymentsession.Issued{}, "", ErrUnavailable
 	}

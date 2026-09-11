@@ -1171,7 +1171,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(err)
 		}
 	}
-	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, h5PublicOrigin(cfg)+"/api/h5/wechat-pay/oauth/callback")
+	if cfg.WeChatPay.H5OAuthEnabled && cfg.WeChatPay.H5AppID != cfg.Survey.OAuthAppID {
+		return fail(errors.New("payment H5 OAuth open-platform scope requires matching configured Official Account"))
+	}
+	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, h5PublicOrigin(cfg)+"/api/h5/wechat-pay/oauth/callback", cfg.Survey.OAuthOpenPlatformID)
 	if err != nil {
 		return fail(err)
 	}
