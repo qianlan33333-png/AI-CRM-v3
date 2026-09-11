@@ -427,7 +427,7 @@ func (f *RuntimeFacade) Precheck(ctx context.Context, id int64) (Precheck, error
 }
 func (f *RuntimeFacade) TransitionPackage(ctx context.Context, c VersionCommand, target segmentdomain.Lifecycle) (segmentdomain.Package, error) {
 	if target == segmentdomain.Active {
-		check, err := f.Execution.Precheck(ctx, c.ID)
+		check, err := f.ActivationPrecheck(ctx, c.ID)
 		if err != nil {
 			return segmentdomain.Package{}, err
 		}

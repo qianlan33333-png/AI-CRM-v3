@@ -61,7 +61,7 @@ def apply(request, journal_path, target_label, reference_time):
         target = created["package"]["id"]
         endpoint = f"/api/admin/ai-audience/packages/{target}"
         current = read(endpoint)["package"]
-        if current.get("automation_binding_id") or current.get("sender_set_id"):
+        if any(current.get(key) for key in ("automation_binding_id", "sender_set_id", "current_automation_binding_id", "current_sender_set_id")):
             raise ValueError("unexpected automation binding or sender set")
         step(source, "configure", "PUT", endpoint + "/configuration", lambda: {"expected_package_version": read(endpoint)["package"]["version"], "refresh_cron_utc": "", "refresh_mode": "every_3m", "definition": definitions[str(source)]}, (200, 201))
         config = read(endpoint + "/configuration")["configuration"]
@@ -70,7 +70,7 @@ def apply(request, journal_path, target_label, reference_time):
         step(source, "activate", "POST", endpoint + "/activate", lambda: {"expected_version": read(endpoint)["package"]["version"]}, (200,))
         refreshed = step(source, "refresh", "POST", endpoint + "/refresh", lambda: {"reference_time": reference_time}, (202,))
         final = read(endpoint)["package"]
-        if final["lifecycle"] != "active" or final.get("automation_binding_id") or final.get("sender_set_id"):
+        if final["lifecycle"] != "active" or any(final.get(key) for key in ("automation_binding_id", "sender_set_id", "current_automation_binding_id", "current_sender_set_id")):
             raise ValueError("activation readback mismatch")
         result.append({"source_package": source, "target_package": target, "lifecycle": "active", "refresh_run": refreshed["refresh_run"], "population_verified": False})
     return result
