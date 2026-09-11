@@ -63,3 +63,15 @@
 - Node24全量make test arch通过，fmt-check/vet/hxc identity boundaries通过。Linux隔离二进制源目标sha256一致；生产二进制未变。
 - 源/目标成对代理候选均真实语法通过；缓存DNS仍到源时可代理至目标fixedIP。旧微信支付/退款/小店exact回调保留源本机处理以避免代理循环。小店完整订单回调尚非V3原生接管，需过渡增量；旧内部5013回调不健康，不作成功ACK。
 - 会员/领券、人群解析继续进行：新proof仅用同Corp可信原始证据和现有WeCom Resolve，UnionID作为旧业务引用，不绑定或创建未知开放平台身份。尚未完成，不启动正式切流。
+
+## 12:20 完整演练与候选包
+
+- 会员95、领券61已全部导入隔离库并reconcile通过。最后2个客户由3笔真实签名支付查询核验公众号AppID/OpenID及金额后显式Provision，仅oa_openid，不创建UnionID或合并根；156条重复执行无重复。
+- 人群38包完整保留29248条来源历史；14181条active来源解析为14170个去重快照成员，375条待核验，14692条历史退出成员保留。38包均paused/archived，未激活触达。真实API38包107分页核对14170成员通过。
+- 373个缺根的企微候选读取均失败，未创建客户。单条诊断84061不等于批量同因；等待用户是否接受375条完整隔离保留。最新人群派生父快照为audience-derived-v3.enc，不得回退v2。
+- 实际领取API发现UoW装配遗漏导致503，已修复并真实PostgreSQL HTTP回归；隔离API已更新cbffcb3，最终95/61逐字段原生读取正在复核。
+- 集成cbffcb3完整make test/arch/fmt-check/vet/hxc-identity-boundaries通过。Linux发布包前端构建、staging结构检查、全文件checksum通过；新增迁移CLI全部纳入。
+- 候选包aicrm-cbffcb3cf1eddc66366ce3b2ac6f045bbab273ba.tar.gz SHA256 b4341595d4beac7abd5b5d1be89dfa4711989ef2beb4c5bc4337fd2c6d0fa01d。
+- CGO archive SDK runner采用当前V3生产142d58a中相同源码的既有Linux二进制：cmd/wecom-archive-sdk-runner、internal/wecom/archivesdk、go.mod/go.sum与cbffcb3无差异；二进制SHA256 1c74818dadeb514d3719efbdd61a213cb53c18299173fb0cb26aee0e8c0f0a80，源目标一致。其余二进制由cbffcb3本次交叉编译。不是引入旧仓运行依赖。
+- 正式TLS bootstrap候选及证书已安装独立root:caddy受限路径并以caddy身份validate成功，未被活动Caddy引用。
+- 未做生产业务导入、停写、DNS切换、Provider写或历史队列重放。仍须明确微信小店新订单归属、最终短暂停写增量与实际微信授权/资金验收。
