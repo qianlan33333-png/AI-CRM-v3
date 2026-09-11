@@ -288,6 +288,8 @@ test -f "$release_dir/release-files.sha256"
 (cd "$release_dir" && sha256sum --strict --check release-files.sha256)
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"
 chown -R aicrm:aicrm "$release_dir"
+# The isolated Excel service account must traverse the immutable release root.
+chmod 0755 "$release_dir"
 
 cleanup_release_artifacts() {
   rm -f -- "$archive"

@@ -19,3 +19,11 @@ Persistence: shared PostgreSQL transaction for identity/session; prepay remains 
 ## Acceptance boundary
 
 Unit and PostgreSQL integration checks plus production route readback are required. Native WeChat authorization and cashier display require a WeChat client. An online release alone does not prove an actual payment.
+
+## Production readback
+
+Release 7a88435cdca19372757b0895d072d8638c58fd16 is active on 124.220.53.183. Platform migrations 0140/0141 applied. Payment OAuth returned 302 and survey OAuth 303 to open.weixin.qq.com with snsapi_userinfo, both callbacks on www.youcangogogo.com. API/effects/Excel active; Caddy hash unchanged. Effect 21 remains outcome_unknown with attempt_count=1.
+
+Full Go tests and architecture/format checks passed. Targeted PostgreSQL checkout, session, identity and survey migration tests passed. Broad PostgreSQL run initially included invalid socket-URL fixture parsing and a River timing failure; the failed cases passed with the TCP URL on rerun. Release installer first rolled back because mktemp left the release root 0700, blocking the separate Excel service user; root mode restored to 0755 and validated installation succeeded. Installer now preserves that traversal permission for future releases.
+
+Patch reused verified unchanged 75708 web/component/tool artifacts, replacing the application binary and adding the two owner migrations. Protected pre-release database backup 49,239,840 bytes passed pg_restore listing. Real user OAuth receipt and native cashier UI remain phone-client acceptance, not claimed by HTTP checks.
