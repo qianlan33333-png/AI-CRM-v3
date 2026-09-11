@@ -107,6 +107,9 @@ type CheckoutAbandoner interface {
 }
 
 type Handoff struct {
+	// AmountMinor and Currency are frozen Payment facts, not current catalog/coupon prices.
+	AmountMinor       int64
+	Currency          string
 	CheckoutAbandoned bool
 	PrepayState       effectport.State
 	PaymentID         int64

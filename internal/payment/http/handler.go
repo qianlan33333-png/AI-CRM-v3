@@ -576,7 +576,7 @@ func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http
 		resultError(writer, err)
 		return
 	}
-	result := map[string]any{"payment_id": handoff.PaymentID, "merchant_order_no": handoff.MerchantOrder, "status": handoff.Status, "ready": len(handoff.Payload) > 0}
+	result := map[string]any{"payment_id": handoff.PaymentID, "merchant_order_no": handoff.MerchantOrder, "status": handoff.Status, "ready": len(handoff.Payload) > 0, "amount_minor": handoff.AmountMinor, "currency": handoff.Currency}
 	if handoff.CheckoutAbandoned {
 		result["checkout_abandoned"] = true
 	}
