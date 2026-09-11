@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
@@ -30,8 +31,8 @@ func TestCommerceEndpointURLSecurity(t *testing.T) {
 	}
 }
 func TestCommerceEndpointPostgreSQLIsolationRollbackAndPolicy(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
+	dsn, err := platformconfig.DatabaseURL()
+	if err != nil {
 		t.Skip("DATABASE_URL required")
 	}
 	ctx := context.Background()

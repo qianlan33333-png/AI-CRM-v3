@@ -541,18 +541,23 @@ type ExternalPushTimelineItem = {
   autoRetryAllowed: boolean;
 };
 
-function externalPushPage(): ExternalPushPage | undefined {
+function productEditorRoute(): { id: number; prefix: 'pf' | 'spf' } | undefined {
   const canonical = location.pathname.match(/^\/admin\/(wechat-pay\/products|service-period-products)\/([1-9][0-9]*)\/edit$/);
-  const id = new URLSearchParams(location.search).get('id') || canonical?.[2] || '';
-  if (!/^[1-9][0-9]*$/.test(id)) return undefined;
-  const productID = Number(id);
-  if (location.pathname.endsWith('/admin/productForm.html') || canonical?.[1] === 'wechat-pay/products') {
-    return { productID, productKind: 'wechat_pay', anchor: '#product-push', endpoint: `/api/admin/wechat-pay/products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/wechat-pay/products/${productID}/external-push` };
-  }
-  if (location.pathname.endsWith('/admin/spProductForm.html') || canonical?.[1] === 'service-period-products') {
-    return { productID, productKind: 'service_period', anchor: '#sp-push', endpoint: `/api/admin/service-period-products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/service-period-products/${productID}/external-push` };
-  }
-  return undefined;
+  const prefix = canonical ? canonical[1] === 'wechat-pay/products' ? 'pf' : 'spf'
+    : location.pathname.endsWith('/admin/productForm.html') ? 'pf'
+    : location.pathname.endsWith('/admin/spProductForm.html') ? 'spf' : undefined;
+  const raw = canonical?.[2] || new URLSearchParams(location.search).get('id') || '';
+  const id = Number(raw);
+  if (!prefix || !/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(id)) return undefined;
+  return {id, prefix};
+}
+
+function externalPushPage(): ExternalPushPage | undefined {
+  const route = productEditorRoute();
+  if (!route) return undefined;
+  const productID = route.id;
+  if (route.prefix === 'pf') return { productID, productKind: 'wechat_pay', anchor: '#product-push', endpoint: `/api/admin/wechat-pay/products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/wechat-pay/products/${productID}/external-push` };
+  return { productID, productKind: 'service_period', anchor: '#sp-push', endpoint: `/api/admin/service-period-products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/service-period-products/${productID}/external-push` };
 }
 
 const externalPushStateLabel: Record<string, string> = {
@@ -1051,8 +1056,8 @@ function productPrefix(): 'pf' | 'spf' | '' {
 }
 
 function productActionState(prefix: string): PurchaseActionDOM {
-  const id = Number(new URL(location.href).searchParams.get('id'));
-  const saved = Number.isSafeInteger(id) && id > 0 ? purchaseActionByProduct.get(id) : undefined;
+  const route = productEditorRoute();
+  const saved = route?.prefix === prefix ? purchaseActionByProduct.get(route.id) : undefined;
   return saved || { enabled: false, mode: '' };
 }
 
@@ -1268,8 +1273,16 @@ type ProductController = {
   page: string;
   db: AdminDb;
   goto(page: string, query?: string): void;
+  qs(): URLSearchParams;
 };
 const productController = AdminController.prototype as unknown as ProductController;
+const donorProductQuery = productController.qs;
+productController.qs = function () {
+  const query = donorProductQuery.call(this);
+  const route = productEditorRoute();
+  if (route && ((this.page === 'productForm' && route.prefix === 'pf') || (this.page === 'spProductForm' && route.prefix === 'spf'))) query.set('id', String(route.id));
+  return query;
+};
 const donorGotoProduct = productController.goto;
 productController.goto = function (page, query = '') {
   const expected = this.page === 'productForm' ? 'products' : this.page === 'spProductForm' ? 'spProducts' : '';
