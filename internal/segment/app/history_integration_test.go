@@ -17,6 +17,7 @@ func TestHistoricalImportRealPostgreSQLAtomicReplayAndStaticReadPath(t *testing.
 	native, cleanup := scheduleRuntimeDatabase(t, ctx)
 	defer cleanup()
 	applySegmentRuntimeMigration(t, native, "0130_segment_historical_import.sql")
+	applySegmentRuntimeMigration(t, native, "0135_segment_history_resolution_proof.sql")
 	pool, e := platformpostgres.Wrap(native, time.Second)
 	if e != nil {
 		t.Fatal(e)

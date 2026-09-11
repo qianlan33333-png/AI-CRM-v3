@@ -40,7 +40,9 @@ func TestHistoricalResolutionPreservesSourceAndExistingRoots(t *testing.T) {
 	}
 	actor, _ := segmentport.AdminMutationActor(2)
 	hash := func(s string) segmentport.Digest { return segmentport.Digest(sha256.Sum256([]byte(s))) }
-	in := segmentport.HistoricalImport{Source: "test-resolution", Digest: hash("first"), CapturedAt: time.Now().Add(-time.Hour).UTC(), EncryptedEvidence: make([]byte, 40), Actor: actor, Groups: []segmentport.HistoricalGroup{{SourceID: 1, Name: "group"}}, Packages: []segmentport.HistoricalPackage{{SourceID: 2, GroupSourceID: 1, Name: "package", Members: []segmentport.HistoricalMember{{SourceID: 3, Active: true, Reason: "unresolved", EnteredAt: time.Now().Add(-time.Hour)}}}}, Rows: []segmentport.HistoricalRow{{Kind: "group", SourceID: 1, Digest: hash("group")}, {Kind: "package", SourceID: 2, Digest: hash("package")}, {Kind: "member", SourceID: 3, Digest: hash("member")}}}
+	// Source snapshots use PostgreSQL microsecond precision so a derived import
+	// retains the exact captured instant read back from the previous batch.
+	in := segmentport.HistoricalImport{Source: "test-resolution", Digest: hash("first"), CapturedAt: time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond), EncryptedEvidence: make([]byte, 40), Actor: actor, Groups: []segmentport.HistoricalGroup{{SourceID: 1, Name: "group"}}, Packages: []segmentport.HistoricalPackage{{SourceID: 2, GroupSourceID: 1, Name: "package", Members: []segmentport.HistoricalMember{{SourceID: 3, Active: true, Reason: "unresolved", EnteredAt: time.Now().Add(-time.Hour)}}}}, Rows: []segmentport.HistoricalRow{{Kind: "group", SourceID: 1, Digest: hash("group")}, {Kind: "package", SourceID: 2, Digest: hash("package")}, {Kind: "member", SourceID: 3, Digest: hash("member")}}}
 	apply := func(v segmentport.HistoricalImport) (segmentport.HistoricalImportResult, error) {
 		var out segmentport.HistoricalImportResult
 		err := uow.Within(ctx, func(tx context.Context) error { var e error; out, e = repo.ImportHistorical(tx, v); return e })
