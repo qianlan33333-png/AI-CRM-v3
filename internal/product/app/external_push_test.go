@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -377,5 +378,71 @@ func TestCommerceExternalPushReplaysMain8ecBindingReceiptAndRejectsChangedBindin
 	business.CustomParams = map[string]any{"large": json.Number("9007199254740993")}
 	if _, err = service.SaveExternalPushConfiguration(context.Background(), business); !errors.Is(err, ErrConflict) || store.saves != 0 {
 		t.Fatalf("main@8ec business replay err=%v saves=%d", err, store.saves)
+	}
+}
+
+// Destination writes share the Product command receipt: retry never changes
+// the endpoint, and a reused key cannot mutate it to another destination.
+type commerceEndpointStub struct {
+	url   string
+	saves int
+}
+
+func (s *commerceEndpointStub) ReadCommercePushEndpointWithin(context.Context, string, int64, string) (string, error) {
+	return s.url, nil
+}
+func (s *commerceEndpointStub) SaveCommercePushEndpointWithin(_ context.Context, _ string, _ int64, _ string, url string) (string, error) {
+	s.url = url
+	s.saves++
+	return "product-endpoint-41", nil
+}
+func TestCommerceExternalPushURLBindingAndReceipt(t *testing.T) {
+	store := &commerceExternalPushTestStore{products: map[productport.ID]productport.ExternalPushProductKind{41: productport.ExternalPushWeChatPay}, configs: map[productport.ID]productport.ExternalPushConfiguration{}, receipts: map[string]Receipt{}}
+	service, _ := newCommerceExternalPushTestService(store, &commerceExternalPushTestEffects{})
+	endpoint := &commerceEndpointStub{}
+	service.SetCommercePushEndpointManager(endpoint)
+	url := "https://example.test/notify"
+	command := productport.SaveExternalPushConfigurationCommand{ProductID: 41, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, URL: &url, BusinessParametersSet: true, Actor: 7, IdempotencyKey: "product-url-save-0001"}
+	first, err := service.SaveExternalPushConfiguration(context.Background(), command)
+	if err != nil || first.URL != url || first.ConfigurationReference != "product-endpoint-41" {
+		t.Fatalf("binding failed: %v", err)
+	}
+	for _, receipt := range store.receipts {
+		if strings.Contains(string(receipt.ResultSnapshot), url) {
+			t.Fatal("URL leaked into Product receipt")
+		}
+	}
+	again, err := service.SaveExternalPushConfiguration(context.Background(), command)
+	if err != nil || again.URL != url || endpoint.saves != 1 {
+		t.Fatalf("replay writes endpoint: %v", err)
+	}
+	other := "https://other.test/notify"
+	command.URL = &other
+	if _, err = service.SaveExternalPushConfiguration(context.Background(), command); !errors.Is(err, ErrConflict) || endpoint.saves != 1 {
+		t.Fatal("same key changed destination", err)
+	}
+	read, err := service.GetExternalPushConfiguration(context.Background(), 41, productport.ExternalPushWeChatPay)
+	if err != nil || read.URL != url {
+		t.Fatal("destination not readable", err)
+	}
+
+	command.URL = &url
+	command.IdempotencyKey = "product-url-save-0002"
+	command.ExpectedRevision = 0
+	if _, err = service.SaveExternalPushConfiguration(context.Background(), command); !errors.Is(err, ErrConflict) || endpoint.saves != 1 {
+		t.Fatal("stale revision wrote endpoint", err)
+	}
+	command.IdempotencyKey = "product-url-save-0003"
+	command.ExpectedRevision = first.Revision
+	command.Enabled = false
+	disabled, err := service.SaveExternalPushConfiguration(context.Background(), command)
+	if err != nil || disabled.Enabled || disabled.ConfigurationReference != "" || disabled.URL != url {
+		t.Fatal("disabled config lost editable URL", err)
+	}
+}
+func TestCommerceExternalPushEmptyEnabledURLRejected(t *testing.T) {
+	empty := ""
+	if validSaveCommerceExternalPush(productport.SaveExternalPushConfigurationCommand{ProductID: 1, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, URL: &empty, BusinessParametersSet: true, Actor: 7, IdempotencyKey: "empty-url-0001"}) {
+		t.Fatal("enabled destination missing")
 	}
 }

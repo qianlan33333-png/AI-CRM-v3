@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -44,12 +46,13 @@ type ProductExternalPushEffectAccepter = productport.ExternalPushTestAccepter
 type ProductExternalPushEffectCommand = productport.ExternalPushTestIntent
 
 type CommerceExternalPushService struct {
-	uow      platformport.UnitOfWork
-	store    CommerceExternalPushStore
-	effects  ProductExternalPushEffectAccepter
-	statuses productport.ExternalPushTestStatusReader
-	events   productport.EventAppender
-	now      func() time.Time
+	endpoints outboundport.CommercePushEndpointManager
+	uow       platformport.UnitOfWork
+	store     CommerceExternalPushStore
+	effects   ProductExternalPushEffectAccepter
+	statuses  productport.ExternalPushTestStatusReader
+	events    productport.EventAppender
+	now       func() time.Time
 }
 
 var _ productport.CommerceExternalPushApplication = (*CommerceExternalPushService)(nil)
@@ -67,6 +70,10 @@ func NewCommerceExternalPushService(
 	return &CommerceExternalPushService{uow: uow, store: store, effects: effects, statuses: statuses, events: events, now: time.Now}, nil
 }
 
+func (service *CommerceExternalPushService) SetCommercePushEndpointManager(manager outboundport.CommercePushEndpointManager) {
+	service.endpoints = manager
+}
+
 func (service *CommerceExternalPushService) GetExternalPushConfiguration(
 	ctx context.Context,
 	productID productport.ID,
@@ -82,6 +89,9 @@ func (service *CommerceExternalPushService) GetExternalPushConfiguration(
 	err := service.uow.Within(ctx, func(tx context.Context) error {
 		var readErr error
 		result, readErr = service.store.ReadCommerceExternalPushConfiguration(tx, productID, kind)
+		if readErr == nil && service.endpoints != nil {
+			result.URL, readErr = service.endpoints.ReadCommercePushEndpointWithin(tx, string(kind), int64(productID), result.ConfigurationReference)
+		}
 		return readErr
 	})
 	if err != nil {
@@ -147,7 +157,18 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 			return ErrConflict
 		}
 		if !owned {
-			return decodeCommerceExternalPushSnapshot(receipt.ResultSnapshot, &result, command.ProductID, command.ProductKind)
+			if err := decodeCommerceExternalPushSnapshot(receipt.ResultSnapshot, &result, command.ProductID, command.ProductKind); err != nil {
+				return err
+			}
+			// Destination credentials remain Outbound-owned, never copied into Product receipts.
+			if command.URL != nil {
+				result.URL = *command.URL
+			} else if service.endpoints != nil {
+				var e error
+				result.URL, e = service.endpoints.ReadCommercePushEndpointWithin(tx, string(command.ProductKind), int64(command.ProductID), result.ConfigurationReference)
+				return e
+			}
+			return nil
 		}
 		value, readErr := service.store.LockCommerceExternalPushConfiguration(tx, command.ProductID, command.ProductKind)
 		if readErr != nil {
@@ -156,7 +177,25 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 		if (command.BusinessParametersSet && value.Revision != command.ExpectedRevision) || (!command.BusinessParametersSet && command.ExpectedRevision > 0 && value.Revision != command.ExpectedRevision) {
 			return ErrConflict
 		}
-		value.Enabled, value.ConfigurationReference = command.Enabled, command.ConfigurationReference
+		reference := command.ConfigurationReference
+		if command.URL != nil {
+			if service.endpoints == nil {
+				return ErrUnavailable
+			}
+			var endpointErr error
+			previousReference := value.ConfigurationReference
+			if previousReference == "" {
+				previousReference = command.ConfigurationReference
+			}
+			reference, endpointErr = service.endpoints.SaveCommercePushEndpointWithin(tx, string(command.ProductKind), int64(command.ProductID), previousReference, *command.URL)
+			if endpointErr != nil {
+				return endpointErr
+			}
+			if !command.Enabled {
+				reference = ""
+			}
+		}
+		value.Enabled, value.ConfigurationReference = command.Enabled, reference
 		if command.BusinessParametersSet {
 			value.PushType, value.Day, value.Frequency, value.ExpiresAtTS, value.Remark = command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark
 			value.CustomParams = cloneCommerceExternalPushParams(command.CustomParams)
@@ -166,16 +205,25 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 			return reserveErr
 		}
 		if !validExternalPushConfiguration(result, command.ProductID, command.ProductKind) ||
-			result.Enabled != command.Enabled || result.ConfigurationReference != command.ConfigurationReference ||
+			result.Enabled != command.Enabled || result.ConfigurationReference != reference ||
 			(command.BusinessParametersSet && !sameCommerceExternalPushBusiness(result, value)) {
 			return ErrUnavailable
+		}
+		if service.endpoints != nil {
+			var endpointErr error
+			result.URL, endpointErr = service.endpoints.ReadCommercePushEndpointWithin(tx, string(command.ProductKind), int64(command.ProductID), result.ConfigurationReference)
+			if endpointErr != nil {
+				return endpointErr
+			}
 		}
 		if eventErr := service.appendEvent(tx, productport.EventExternalPushConfigurationSaved, command.ProductID, command.ProductKind, command.Actor, reservation.KeyDigest, map[string]any{
 			"enabled": result.Enabled,
 		}); eventErr != nil {
 			return eventErr
 		}
-		return service.completeCommerceExternalPush(tx, receipt.ID, result, now)
+		snapshotResult := result
+		snapshotResult.URL = ""
+		return service.completeCommerceExternalPush(tx, receipt.ID, snapshotResult, now)
 	})
 	if err != nil {
 		return productport.ExternalPushConfiguration{}, classifyCommerceExternalPush(err)
@@ -356,7 +404,8 @@ func commerceExternalPushSaveDigest(command productport.SaveExternalPushConfigur
 		Remark                 string                              `json:"remark"`
 		CustomParams           map[string]any                      `json:"custom_params"`
 		ExpectedRevision       int64                               `json:"expected_revision"`
-	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference, command.BusinessParametersSet, command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark, command.CustomParams, command.ExpectedRevision})
+		URL                    *string                             `json:"url,omitempty"`
+	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference, command.BusinessParametersSet, command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark, command.CustomParams, command.ExpectedRevision, command.URL})
 	return sha256.Sum256(payload)
 }
 
@@ -377,7 +426,7 @@ func commerceExternalPushLegacySaveReplay(command productport.SaveExternalPushCo
 	// A completed main@8ec receipt represents the old binding-only command. A
 	// post-0095 business save is a different request even if a browser reuses
 	// its key.
-	return !command.BusinessParametersSet && command.ExpiresAtTS == nil &&
+	return command.URL == nil && !command.BusinessParametersSet && command.ExpiresAtTS == nil &&
 		subtle.ConstantTimeCompare(receipt.PayloadDigest[:], legacyDigest[:]) == 1
 }
 
@@ -410,7 +459,24 @@ func validSaveCommerceExternalPush(command productport.SaveExternalPushConfigura
 	if command.ProductID < 1 || !validExternalPushKind(command.ProductKind) || command.Actor < 1 || !validIdempotencyKey(command.IdempotencyKey) || command.ExpectedRevision < 0 {
 		return false
 	}
-	value := productport.ExternalPushConfiguration{ProductID: command.ProductID, ProductKind: command.ProductKind, Enabled: command.Enabled, ConfigurationReference: command.ConfigurationReference, Revision: 1, UpdatedAt: time.Unix(1, 0)}
+	reference := command.ConfigurationReference
+	if command.URL != nil {
+		if !command.BusinessParametersSet || strings.TrimSpace(*command.URL) != *command.URL || len(*command.URL) > 4096 || (command.Enabled && *command.URL == "") {
+			return false
+		}
+		if *command.URL != "" {
+			destination, e := url.Parse(*command.URL)
+			if e != nil || destination.Scheme != "https" || destination.Hostname() == "" || destination.User != nil || destination.Fragment != "" {
+				return false
+			}
+		}
+		if command.Enabled {
+			reference = "url-managed"
+		} else {
+			reference = ""
+		}
+	}
+	value := productport.ExternalPushConfiguration{ProductID: command.ProductID, ProductKind: command.ProductKind, Enabled: command.Enabled, ConfigurationReference: reference, Revision: 1, UpdatedAt: time.Unix(1, 0)}
 	if command.BusinessParametersSet {
 		value.PushType, value.Day, value.Frequency, value.ExpiresAtTS, value.Remark = command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark
 		value.CustomParams = command.CustomParams
@@ -594,6 +660,8 @@ func commerceExternalPushReady(service *CommerceExternalPushService) bool {
 
 func classifyCommerceExternalPush(err error) error {
 	switch {
+	case errors.Is(err, outboundport.ErrCommercePushEndpointInvalid):
+		return ErrInvalidProduct
 	case errors.Is(err, ErrInvalidProduct), errors.Is(err, ErrNotFound), errors.Is(err, ErrConflict), errors.Is(err, ErrExternalPushNotConfigured):
 		return err
 	case errors.Is(err, productport.ErrProductReadNotFound):

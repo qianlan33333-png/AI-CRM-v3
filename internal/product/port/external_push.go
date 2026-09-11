@@ -15,10 +15,13 @@ const (
 	ExternalPushServicePeriod ExternalPushProductKind = "service_period"
 )
 
-// ExternalPushConfiguration is a Product-owned local choice. The reference
-// is an opaque local handle only; URLs, secrets, targets and retry policy are
-// deliberately outside this contract.
+// ExternalPushConfiguration combines Product business settings with an
+// admin-only URL projection read through the Outbound endpoint Port. Product
+// persists only the opaque reference; destination storage, secrets, identity
+// disclosure policy and dispatch remain Outbound-owned.
 type ExternalPushConfiguration struct {
+	// URL is a transient admin projection, excluded from Product receipt storage.
+	URL                    string                  `json:"url,omitempty"`
 	ProductID              ID                      `json:"product_id"`
 	ProductKind            ExternalPushProductKind `json:"product_kind"`
 	Enabled                bool                    `json:"enabled"`
@@ -38,6 +41,7 @@ type ExternalPushConfiguration struct {
 }
 
 type SaveExternalPushConfigurationCommand struct {
+	URL                    *string
 	ProductID              ID
 	ProductKind            ExternalPushProductKind
 	Enabled                bool

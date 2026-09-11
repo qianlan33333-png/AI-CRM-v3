@@ -796,7 +796,7 @@ func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64
 		}
 		configuration, err := h.external.SaveExternalPushConfiguration(r.Context(), productport.SaveExternalPushConfigurationCommand{
 			ProductID: productport.ID(id), ProductKind: kind, Enabled: body.Enabled, ConfigurationReference: body.ConfigurationReference,
-			BusinessParametersSet: businessSet, PushType: business.pushType, Day: business.day, Frequency: business.frequency, ExpiresAtTS: business.expiresAtTS, Remark: business.remark, CustomParams: business.customParams,
+			URL: body.URL, BusinessParametersSet: businessSet, PushType: business.pushType, Day: business.day, Frequency: business.frequency, ExpiresAtTS: business.expiresAtTS, Remark: business.remark, CustomParams: business.customParams,
 			ExpectedRevision: business.expectedRevision, Actor: principal.InternalID, IdempotencyKey: key,
 		})
 		if err != nil {
@@ -1565,6 +1565,7 @@ type versionRequest struct {
 }
 
 type externalConfigurationRequest struct {
+	URL                    *string         `json:"url"`
 	Enabled                bool            `json:"enabled"`
 	ConfigurationReference string          `json:"configuration_reference"`
 	ExpectedRevision       *int64          `json:"expected_revision"`
@@ -1586,6 +1587,7 @@ type externalConfigurationResponse struct {
 	// explicit empty string rather than an absent field.
 	ConfigurationReference string `json:"configuration_reference"`
 	CustomParamsJSON       string `json:"custom_params_json"`
+	URL                    string `json:"url"`
 }
 
 func externalConfigurationJSONResponse(value productport.ExternalPushConfiguration) externalConfigurationResponse {
@@ -1599,7 +1601,7 @@ func externalConfigurationJSONResponse(value productport.ExternalPushConfigurati
 		// defensive fallback; no request data is reflected here.
 		raw = []byte("{}")
 	}
-	return externalConfigurationResponse{ExternalPushConfiguration: value, ConfigurationReference: value.ConfigurationReference, CustomParamsJSON: string(raw)}
+	return externalConfigurationResponse{ExternalPushConfiguration: value, ConfigurationReference: value.ConfigurationReference, CustomParamsJSON: string(raw), URL: value.URL}
 }
 
 type externalConfigurationBusinessValue struct {

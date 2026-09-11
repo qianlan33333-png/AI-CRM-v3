@@ -313,6 +313,28 @@
       ],
       "reason": "Record the user-authorized automatic userinfo authorization and purchase availability contract. Only active V3 OpenAPI authority changes; frozen donors remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
       "review_reference": "Authorized automatic authorization and purchase flow"
+    },
+    {
+      "base_commit": "80d8c106c1e46563d4d30b73957570e7a03a3959",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "cf060a5ea5e88d9c7f05ed2c44400ec55053876bada80d33f69099dc9b0d458b",
+          "head_sha256": "3d5ad874f5e93c04be5fb04202ec53b12a41a8e998e8468af090d34895b32581"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "78871ebebfb035f561e95f071b08cdb013b278c0ef522b4bba6a4c591ec3a5af",
+          "head_sha256": "12da0cc94dbabd661e989ab5ec390ee6199c106ed737e91e5bc08281e9eb0a8f"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "246ce89231d88c97f25d2029c11fec596096265ab0ae1e4c4737768b53a6b660",
+          "head_sha256": "4541542f1da526465b3d553935efdce7b0c700243524cb42f8898d089f0100ad"
+        }
+      ],
+      "reason": "Restore complete product external push editor contract including Outbound-owned destination.",
+      "review_reference": "PR #230 user requested legacy product completion parity"
     }
   ]
 }
