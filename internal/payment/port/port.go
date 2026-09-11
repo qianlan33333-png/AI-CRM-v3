@@ -94,14 +94,27 @@ type EffectProjection struct {
 	UpdatedAt    time.Time
 }
 
+// AbandonCheckoutCommand records a human-reviewed local checkout decision.
+// It is not a Provider cancellation or proof that prepay never executed.
+type AbandonCheckoutCommand struct {
+	PaymentID        int64
+	ActorScope       string
+	EvidenceDigest   string
+	ConfirmedNoDebit bool
+}
+type CheckoutAbandoner interface {
+	AbandonCheckout(context.Context, AbandonCheckoutCommand) error
+}
+
 type Handoff struct {
-	PrepayState   effectport.State
-	PaymentID     int64
-	OrderID       int64
-	MerchantOrder string
-	Status        domain.Status
-	Payload       []byte
-	ExpiresAt     time.Time
+	CheckoutAbandoned bool
+	PrepayState       effectport.State
+	PaymentID         int64
+	OrderID           int64
+	MerchantOrder     string
+	Status            domain.Status
+	Payload           []byte
+	ExpiresAt         time.Time
 }
 
 type AdminQuery interface {

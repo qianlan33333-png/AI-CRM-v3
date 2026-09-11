@@ -3061,6 +3061,26 @@ paths:
         - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
       responses: {"200": {description: Exact after-sale key queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wechat-pay/payments/{payment_id}/abandon-checkout:
+    post:
+      operationId: abandonInvalidLegacyCheckout
+      tags: [Transactions]
+      description: Records only local abandonment for an invalid legacy prepay with no handoff. Preserves unknown Provider outcome, original payer, and payment status. Does not authorize a replacement payment.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: payment_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [evidence_digest, confirmed_no_debit]
+              properties:
+                evidence_digest: {type: string, pattern: "^[a-f0-9]{64}$"}
+                confirmed_no_debit: {type: boolean, enum: [true]}
+      responses: {"200": {description: Local checkout abandoned only}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/wechat-pay/payments/{payment_id}/reconcile:
     post:
       operationId: reconcileWechatPayPayment

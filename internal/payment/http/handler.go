@@ -153,6 +153,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.checkout(writer, request)
 	case strings.HasPrefix(path, "/api/v1/wechat-pay/checkouts/"):
 		handler.checkoutStatus(writer, request, strings.TrimPrefix(path, "/api/v1/wechat-pay/checkouts/"))
+	case strings.HasPrefix(path, "/api/admin/wechat-pay/payments/") && strings.HasSuffix(path, "/abandon-checkout"):
+		handler.abandonCheckout(writer, request, strings.TrimSuffix(strings.TrimPrefix(path, "/api/admin/wechat-pay/payments/"), "/abandon-checkout"))
 	case path == "/api/admin/payments/history":
 		handler.historyPayment(writer, request)
 	case path == "/api/admin/refunds":
@@ -575,6 +577,9 @@ func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http
 		return
 	}
 	result := map[string]any{"payment_id": handoff.PaymentID, "merchant_order_no": handoff.MerchantOrder, "status": handoff.Status, "ready": len(handoff.Payload) > 0}
+	if handoff.CheckoutAbandoned {
+		result["checkout_abandoned"] = true
+	}
 	if handoff.PrepayState != "" {
 		result["prepay_state"] = handoff.PrepayState
 	}

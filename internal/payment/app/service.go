@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
@@ -50,6 +52,7 @@ type Store interface {
 }
 
 type Service struct {
+	lineage        identityport.CanonicalLineageReader
 	uow            platformport.UnitOfWork
 	store          Store
 	orders         orderport.PaymentCoordinator
@@ -418,7 +421,25 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		if err != nil {
 			return err
 		}
-		if !checkoutReadAuthorized(payment, actor) {
+		authorized := checkoutReadAuthorized(payment, actor)
+		if !authorized && s.lineage != nil && payment.PayerIdentityID == actor.PayerIdentityID && payment.Channel == actor.Channel {
+			roots, readErr := s.lineage.CanonicalLineage(tx, customerdomain.CustomerID(actor.PayerCustomerID))
+			if readErr != nil {
+				return readErr
+			}
+			for _, root := range roots {
+				if int64(root) == payment.PayerCustomerID {
+					original := payment
+					original.PayerCustomerID = actor.PayerCustomerID
+					if original.BeneficiaryCustomerID == payment.PayerCustomerID {
+						original.BeneficiaryCustomerID = actor.PayerCustomerID
+					}
+					authorized = checkoutReadAuthorized(original, actor)
+					break
+				}
+			}
+		}
+		if !authorized {
 			return paymentport.ErrConflict
 		}
 		out = paymentport.Handoff{PaymentID: payment.ID, OrderID: payment.OrderID, MerchantOrder: payment.MerchantOrderNo, Status: payment.Status}
@@ -429,6 +450,12 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 			return nil
 		}
 		if payment.Status == domain.StatusAwaitingPrepay {
+			if local, ok := s.store.(checkoutAbandonmentStore); ok {
+				out.CheckoutAbandoned, err = local.CheckoutAbandoned(tx, payment.ID)
+				if err != nil {
+					return err
+				}
+			}
 			prepayEffectID = payment.EffectID
 			return nil
 		}

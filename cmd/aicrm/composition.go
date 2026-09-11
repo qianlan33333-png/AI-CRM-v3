@@ -1086,6 +1086,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	paymentService := paymentapp.NewService(uow, paymentRepository, orderService, paymentSession, effectRepository, effectRepository)
+	paymentService.SetCanonicalLineageReader(queries)
 	if err = paymentService.SetCheckoutProductReader(productTargets); err != nil {
 		return fail(err)
 	}
@@ -1528,6 +1529,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/admin/alipay/transactions", orderHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/orders/", paymentHandler)
+	adminAPIs.Handle("/api/admin/wechat-pay/payments/", paymentHandler)
 	adminAPIs.Handle("/api/admin/wechat-shop/refunds/", paymentHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/order-exports", orderHandler)
 	adminAPIs.Handle("/api/admin/payments/", paymentHandler)
@@ -2125,6 +2127,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/public/wechat-pay/", identity)
 	mux.Handle("/api/public/wechat-shop/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)
+	mux.Handle("/api/admin/wechat-pay/payments/", identity)
 	mux.Handle("/api/admin/wechat-shop/refunds/", identity)
 	mux.Handle("/api/admin/wechat-pay/order-exports", identity)
 	mux.Handle("/api/admin/operation-cycles/", identity)

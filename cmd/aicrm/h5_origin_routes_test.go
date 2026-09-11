@@ -32,6 +32,8 @@ func TestApplicationRouterSeparatesH5AndAdminOrigins(t *testing.T) {
 		{"/api/public/questionnaires/example/submissions", "null", http.StatusForbidden},
 		{"/api/admin/questionnaires", h5, http.StatusForbidden},
 		{"/api/admin/refunds", h5, http.StatusForbidden},
+		{"/api/admin/wechat-pay/payments/7/abandon-checkout", h5, http.StatusForbidden},
+		{"/api/admin/wechat-pay/payments/7/abandon-checkout", admin, http.StatusNoContent},
 		{"/api/v1/wechat-pay/sessions", h5, http.StatusForbidden},
 		{"/api/public/questionnaires/example/admin/submissions", h5, http.StatusForbidden},
 		{"/api/admin/questionnaires", admin, http.StatusNoContent},
