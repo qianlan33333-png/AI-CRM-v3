@@ -119,3 +119,21 @@ function boot(store, completion, redirectFailure = false) {
   assert.equal(timers.size, 0);
   assert.equal(invoked, 0);
 }
+
+// A manually abandoned legacy flow retains its original idempotency evidence.
+// No replacement checkout or payment bridge invocation follows the readback.
+{
+  const checkpoint = JSON.parse(paidCheckpoint());
+  delete checkpoint.terminal_status;
+  const original = JSON.stringify(checkpoint);
+  const store = new Map([[storageKey, original]]);
+  const run = boot(store, {status: 'awaiting_prepay', prepay_state: 'outcome_unknown', checkout_abandoned: true});
+  await settle();
+  await run.elements.get('buy').listener.click();
+  assert.equal(run.elements.get('buy').disabled, true);
+  assert.equal(run.elements.get('restart').hidden, true);
+  assert.match(run.elements.get('status').textContent, /原支付流程已停止/);
+  assert.equal(store.get(storageKey), original);
+  assert.equal(run.calls.some(call => call.method === 'POST'), false);
+  assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 1);
+}
