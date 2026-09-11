@@ -108,3 +108,16 @@ func TestValidateSnapshotRejectsInvalidAssessmentBusinessKeyWithoutChangingIt(t 
 		t.Fatalf("invalid assessment type snapshot err=%v", err)
 	}
 }
+
+func TestDefinitionDigestMatchesHistoricalNilChildren(t *testing.T) {
+	q := questionnaire{ID: 14}
+	index := &frozenSourceIndex{}
+	want := recordDigest(struct {
+		Q         questionnaire
+		Questions []question
+		Rules     []rule
+	}{Q: q})
+	if got := index.definitionDigest(q); got != want {
+		t.Fatal("empty definition differs from importer nil map entries")
+	}
+}

@@ -1027,8 +1027,10 @@ func (i *frozenSourceIndex) optionsForQuestion(questionID int64) int {
 }
 
 func (i *frozenSourceIndex) definitionDigest(value questionnaire) [32]byte {
-	questions := []question{}
-	rules := []rule{}
+	// The importer uses missing map entries (nil slices), serialized as null.
+	// Preserve that frozen encoding for definitions without children.
+	var questions []question
+	var rules []rule
 	for _, candidate := range i.questions {
 		if candidate.QuestionnaireID == value.ID {
 			questions = append(questions, candidate)

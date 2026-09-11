@@ -584,3 +584,24 @@ func TestPostgreSQLReconcileAuditedEnablePreservesFrozenDefinition(t *testing.T)
 		t.Fatalf("unsafe or missing field diagnostic: %v", err)
 	}
 }
+
+func TestPostgreSQLReconcileDefinitionWithoutScoreRules(t *testing.T) {
+	target, pool, cleanup := surveyMigrationIntegrationTarget(t)
+	defer cleanup()
+	snap := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC))
+	setFrozenTable(t, &snap, "questionnaire_score_rules", []rule{})
+	file, key, dataKey := writeFrozenSnapshot(t, snap)
+	args := []string{"--target-url", target, "--snapshot", file, "--snapshot-key-file", key, "--data-key-file", dataKey}
+	if err := importSnapshot(append(args, "--confirm-import")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(args); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `ALTER TABLE survey_definition_versions DISABLE TRIGGER USER; UPDATE survey_definition_versions SET definition_digest=decode(repeat('01',32),'hex'); ALTER TABLE survey_definition_versions ENABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(args); err == nil || !strings.Contains(err.Error(), "definition.definition_digest") {
+		t.Fatalf("expected frozen digest mismatch, got %v", err)
+	}
+}
