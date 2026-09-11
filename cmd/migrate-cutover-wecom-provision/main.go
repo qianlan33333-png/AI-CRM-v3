@@ -64,7 +64,7 @@ func run(ctx context.Context, args []string) error {
 		return e
 	}
 	owner := app.OneIDService{Store: store.NewPostgresStore()}
-	if *mode == "verify" {
+	if *mode == "verify" || *mode == "probe" {
 		refs, _, e := proof.ExistingWecomReferences(s, ia.ProviderHistory{})
 		if e != nil {
 			return e
@@ -118,6 +118,20 @@ func run(ctx context.Context, args []string) error {
 			} else {
 				contact, err := client.ReadExternalContact(ctx, r.PrimaryExternalID)
 				state = verificationState(r, contact, err)
+				if *mode == "probe" {
+					code := "none"
+					var failure wp.DirectoryFailure
+					if errors.As(err, &failure) {
+						code = failure.DirectoryFailureCode()
+					}
+					httpStatus := 0
+					var providerCode int64
+					var numeric interface{ DirectoryFailureNumbers() (int, int64) }
+					if errors.As(err, &numeric) {
+						httpStatus, providerCode = numeric.DirectoryFailureNumbers()
+					}
+					return json.NewEncoder(os.Stdout).Encode(map[string]any{"mode": "probe", "provider_reads": 1, "state": state, "failure_code": code, "http_status": httpStatus, "provider_code": providerCode, "identity_writes": 0})
+				}
 			}
 			fresh.Rows = append(fresh.Rows, r)
 			fresh.Verification[v] = state
