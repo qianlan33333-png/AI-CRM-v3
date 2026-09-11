@@ -2,7 +2,9 @@ package paymenthttp
 
 import (
 	"context"
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +19,7 @@ type purchaseAppStub struct {
 
 func (a *purchaseAppStub) PurchaseStatus(context.Context, string, string, int64) (paymentport.PurchaseState, error) {
 	a.calls++
-	return paymentport.PurchaseState{State: "owned", CanPurchase: false}, a.err
+	return paymentport.PurchaseState{State: "owned", CanPurchase: false, PaidOrderID: 125}, a.err
 }
 func TestPurchaseStatusUsesTrustedSessionAndReturnsNoIdentity(t *testing.T) {
 	for _, name := range []string{"owned", "missing_cookie", "expired_session", "invalid_session", "post"} {
@@ -80,5 +82,21 @@ func TestCheckoutSessionSeparatesReadIdentityFromNewPurchaseReadiness(t *testing
 		if w.Code != 200 || !strings.Contains(w.Body.String(), expected) || !strings.Contains(w.Body.String(), "checkout_session_binding") {
 			t.Fatalf("%d %s", w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestOwnedPurchaseStatusReturnsOriginalCompletionActionWithoutOrderID(t *testing.T) {
+	app := &purchaseAppStub{}
+	h, _ := NewHandler(app, nil, securityStub{}, true)
+	action := &paidPurchaseActionReaderStub{action: productport.PaidPurchaseAction{OrderID: 125, Enabled: true, Mode: productport.PaidPurchaseActionQR, LeadChannelID: 7, LeadQRTitle: "领取资料"}}
+	if err := h.SetPaidPurchaseActionReader(action, paidPurchaseLeadQRStub{value: channelport.PublicLeadQRCode{URL: "https://example.test/qr"}}); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/api/v1/wechat-pay/purchase-status?product_type=standard&product_id=5", nil)
+	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000005"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 || action.order != 125 || !strings.Contains(w.Body.String(), "https://example.test/qr") || strings.Contains(w.Body.String(), "order_id") {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 }

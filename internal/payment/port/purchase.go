@@ -10,6 +10,7 @@ var ErrAlreadyPurchased = errors.New("already purchased")
 var ErrPurchasePending = errors.New("purchase pending")
 
 type PurchaseState struct {
+	PaidOrderID int64  `json:"-"`
 	State       string `json:"purchase_state"`
 	CanPurchase bool   `json:"can_purchase"`
 }

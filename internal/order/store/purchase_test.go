@@ -59,7 +59,7 @@ func TestStandardPurchaseHistoricalStatesAndConcurrentReservation(t *testing.T) 
 			t.Fatal(err)
 		}
 		owned := status == "paid" || status == "partially_refunded"
-		if got.Owned != owned || got.Pending != (status == "pending_payment") {
+		if got.Owned != owned || got.Pending != (status == "pending_payment") || (owned && got.PaidOrderID != id) || (!owned && got.PaidOrderID != 0) {
 			t.Fatalf("%s: %+v", status, got)
 		}
 		q.CustomerIDs = []int64{33}

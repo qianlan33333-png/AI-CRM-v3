@@ -37,11 +37,11 @@ func (r *Repository) ReadStandardPurchaseWithin(ctx context.Context, q orderport
 		}
 	}
 	var result orderport.StandardPurchaseState
-	err = tx.QueryRow(ctx, `SELECT COALESCE(bool_or((o.status IN ('paid','partially_refunded') OR EXISTS(SELECT 1 FROM order_status_history h WHERE h.order_id=o.id AND h.to_status IN ('paid','partially_refunded','refunded'))) AND o.status<>'refunded' AND o.refunded_minor<o.amount_minor),false),COALESCE(bool_or(o.status='pending_payment' AND o.id<>$4 AND NOT(o.id=ANY($5::bigint[]))),false)
+	err = tx.QueryRow(ctx, `SELECT COALESCE(bool_or((o.status IN ('paid','partially_refunded') OR EXISTS(SELECT 1 FROM order_status_history h WHERE h.order_id=o.id AND h.to_status IN ('paid','partially_refunded','refunded'))) AND o.status<>'refunded' AND o.refunded_minor<o.amount_minor),false),COALESCE(bool_or(o.status='pending_payment' AND o.id<>$4 AND NOT(o.id=ANY($5::bigint[]))),false),COALESCE(max(CASE WHEN (o.status IN ('paid','partially_refunded') OR EXISTS(SELECT 1 FROM order_status_history h WHERE h.order_id=o.id AND h.to_status IN ('paid','partially_refunded','refunded'))) AND o.status<>'refunded' AND o.refunded_minor<o.amount_minor THEN o.id END),0)
  FROM orders o JOIN order_items i ON i.order_id=o.id
  LEFT JOIN order_checkout_snapshots c ON c.order_id=o.id
  WHERE COALESCE(o.beneficiary_customer_id,o.payer_customer_id)=ANY($1::bigint[])
  AND (i.product_id=$2 OR (i.product_id IS NULL AND i.product_code=$3))
- AND (c.product_type IS NULL OR c.product_type='standard_product')`, ids, q.ProductID, q.ProductCode, q.CurrentOrderID, append([]int64{}, q.ExcludedPendingOrderIDs...)).Scan(&result.Owned, &result.Pending)
+ AND (c.product_type IS NULL OR c.product_type='standard_product')`, ids, q.ProductID, q.ProductCode, q.CurrentOrderID, append([]int64{}, q.ExcludedPendingOrderIDs...)).Scan(&result.Owned, &result.Pending, &result.PaidOrderID)
 	return result, mapError(err)
 }

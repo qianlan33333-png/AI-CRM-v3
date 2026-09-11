@@ -32,5 +32,9 @@ func (h *Handler) purchaseStatus(w http.ResponseWriter, r *http.Request) {
 		resultError(w, err)
 		return
 	}
-	writeJSON(w, 200, state)
+	result := map[string]any{"purchase_state": state.State, "can_purchase": state.CanPurchase}
+	if state.State == "owned" {
+		result["completion_action"] = h.paidPurchaseAction(r.Context(), state.PaidOrderID)
+	}
+	writeJSON(w, 200, result)
 }

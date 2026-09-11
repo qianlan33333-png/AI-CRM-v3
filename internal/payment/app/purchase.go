@@ -48,6 +48,7 @@ func (s *Service) standardPurchaseWithin(ctx context.Context, customerID, produc
 	result := paymentport.PurchaseState{State: "available", CanPurchase: true}
 	if state.Owned {
 		result.State = "owned"
+		result.PaidOrderID = state.PaidOrderID
 		result.CanPurchase = false
 	} else if state.Pending {
 		result.State = "pending"
