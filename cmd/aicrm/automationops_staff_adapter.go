@@ -7,6 +7,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 type automationOpsAccessRepository interface {
@@ -88,11 +89,19 @@ func (a automationOpsStaffAdapter) AudienceOwnerUserID(ctx context.Context, id a
 		return "", false, errors.New("staff projection unavailable")
 	}
 	var user accessdomain.User
-	err := a.uow.Within(ctx, func(tx context.Context) error {
+	read := func(tx context.Context) error {
 		var e error
 		user, e = a.users.UserByID(tx, int64(id), false)
 		return e
-	})
+	}
+	var err error
+	// Segment evaluates all Owner facts inside its existing UoW. Reuse that
+	// transaction; standalone HTTP reference readback still opens its own UoW.
+	if _, txErr := platformpostgres.RequireTransaction(ctx); txErr == nil {
+		err = read(ctx)
+	} else {
+		err = a.uow.Within(ctx, read)
+	}
 	if errors.Is(err, accessdomain.ErrNotFound) {
 		return "", false, nil
 	}
