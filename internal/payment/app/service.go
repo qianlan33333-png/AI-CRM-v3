@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -128,7 +129,9 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 	now := s.now().UTC()
 	sessionDigest := sha256.Sum256([]byte(c.SessionToken))
 	merchantDigest := sha256.Sum256([]byte("payment.checkout.v1\x00" + c.SessionToken + "\x00" + c.IdempotencyKey))
-	merchantOrderNo := "v3pay_" + hex.EncodeToString(merchantDigest[:16])
+	merchantOrderNo := "v3pay_" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(merchantDigest[:16])
+	// Keep exact legacy replay stable; never change an accepted external intent.
+	legacyMerchantOrderNo := "v3pay_" + hex.EncodeToString(merchantDigest[:16])
 	payload, _ := json.Marshal(c)
 	keyDigest := sha256.Sum256([]byte(c.IdempotencyKey))
 	payloadDigest := sha256.Sum256(payload)
@@ -176,7 +179,7 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			return err
 		}
 		if found {
-			if (fromExistingOrder && replay.OrderID != c.OrderID) || (fromProduct && replay.MerchantOrderNo != merchantOrderNo) || replay.PayerIdentityID != actor.PayerIdentityID || replay.PayerCustomerID != actor.PayerCustomerID || replay.BeneficiaryCustomerID != actor.BeneficiaryCustomerID || replay.Channel != channel {
+			if (fromExistingOrder && replay.OrderID != c.OrderID) || (fromProduct && replay.MerchantOrderNo != merchantOrderNo && replay.MerchantOrderNo != legacyMerchantOrderNo) || replay.PayerIdentityID != actor.PayerIdentityID || replay.PayerCustomerID != actor.PayerCustomerID || replay.BeneficiaryCustomerID != actor.BeneficiaryCustomerID || replay.Channel != channel {
 				return paymentport.ErrConflict
 			}
 			result = replay

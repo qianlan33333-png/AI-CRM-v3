@@ -178,6 +178,9 @@ func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Enve
 	if err != nil || material.Intent.PayloadDigest != envelope.PayloadDigest {
 		return final("wechatpay.material", envelope, attempt), nil
 	}
+	if !validMerchantOrderNo(material.Intent.MerchantOrderNo) {
+		return final("wechatpay.order-number.invalid", envelope, attempt), nil
+	}
 	var path string
 	var payload any
 	if envelope.Kind == effectport.KindWeChatPayPrepay {
@@ -440,3 +443,16 @@ func final(stage string, envelope effectport.Envelope, attempt effectport.Attemp
 
 var _ effectport.ProviderAdapter = (*WeChatPay)(nil)
 var _ paymentport.WeChatPayReconciler = (*WeChatPay)(nil)
+
+// WeChat Pay accepts at most 32 ASCII letters, digits, underscores or hyphens.
+func validMerchantOrderNo(value string) bool {
+	if len(value) < 6 || len(value) > 32 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '*' || c == '|') {
+			return false
+		}
+	}
+	return true
+}

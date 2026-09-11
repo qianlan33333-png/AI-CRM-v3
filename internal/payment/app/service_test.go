@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
@@ -10,6 +12,7 @@ import (
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -391,10 +394,20 @@ func TestCheckoutFromProductCreatesOrderAndPaymentInSameUOW(t *testing.T) {
 	if err != nil || first.ID != 7 || first.AmountMinor != 8800 || products.calls != 1 || orders.command.ProductID != 5 || orders.command.ProductVersion != 3 || orders.command.BeneficiaryCustomerID != 11 || orders.command.MerchantOrderNo == "" || !sessions.consumed {
 		t.Fatalf("payment=%+v product_calls=%d order=%+v consumed=%v err=%v", first, products.calls, orders.command, sessions.consumed, err)
 	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{6,32}$`).MatchString(orders.command.MerchantOrderNo) {
+		t.Fatal("merchant order violates provider contract")
+	}
 	store.payment.MerchantOrderNo = orders.command.MerchantOrderNo
 	replay, err := service.Create(context.Background(), command)
 	if err != nil || replay.ID != first.ID || products.calls != 1 {
 		t.Fatalf("replay=%+v product_calls=%d err=%v", replay, products.calls, err)
+	}
+	// A deployed 38-character legacy order must replay unchanged, never dispatch again.
+	digest := sha256.Sum256([]byte("payment.checkout.v1\x00" + command.SessionToken + "\x00" + command.IdempotencyKey))
+	store.payment.MerchantOrderNo = "v3pay_" + hex.EncodeToString(digest[:16])
+	legacy, err := service.Create(context.Background(), command)
+	if err != nil || legacy.MerchantOrderNo != store.payment.MerchantOrderNo || products.calls != 1 {
+		t.Fatalf("legacy replay failed: %v", err)
 	}
 }
 

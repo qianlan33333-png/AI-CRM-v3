@@ -184,3 +184,14 @@ func signTest(t *testing.T, key *rsa.PrivateKey, message string) string {
 	}
 	return base64.StdEncoding.EncodeToString(signature)
 }
+
+func TestInvalidMerchantNumberNeverDispatches(t *testing.T) {
+	for _, number := range []string{"v3pay_" + strings.Repeat("a", 32), "short", "order/unsafe", "订单123456"} {
+		digest := effectport.Hash("payload")
+		p := &WeChatPay{config: Config{Enabled: true}, loader: loaderStub{Material{PayerOpenID: "openid", Intent: paymentport.ProviderIntent{MerchantOrderNo: number, PayloadDigest: digest}}}, client: doerFunc(func(*http.Request) (*http.Response, error) { t.Fatal("invalid order dispatched"); return nil, nil })}
+		result, err := p.Execute(context.Background(), testEnvelope(effectport.KindWeChatPayPrepay, digest), effectport.Attempt{Number: 1})
+		if err != nil || result.Completion != effectport.StateFinalFailed || result.CallAttempted || result.RealExternalCallExecuted {
+			t.Fatalf("invalid result: %+v %v", result, err)
+		}
+	}
+}
