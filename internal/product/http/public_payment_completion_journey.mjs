@@ -346,3 +346,26 @@ for(const [auth,purchase,visible] of [[false,{purchase_state:'available',can_pur
  assert.equal(run.elements.get('buy').textContent,'已购买');
  assert.equal(store.get(storageKey),paidCheckpoint());
 }
+
+// Server ownership in a fresh tab supplies the configured paid guidance without a local order.
+for(const action of [
+ {state:'available',mode:'qr',lead_qr:{url:'https://work.weixin.qq.com/q/owned',title:'领取资料'}},
+ {state:'available',mode:'redirect',redirect_url:'/owned-followup'},
+ {state:'unavailable'}
+]){
+ const run=boot(new Map(),{},false,true,'',{purchase_state:'owned',can_purchase:false,completion_action:action});
+ await settle();
+ assert.equal(run.elements.get('buy').disabled,true);
+ assert.equal(run.calls.some(call=>call.method==='POST'||call.url?.includes('/checkouts/')),false);
+ if(action.mode==='qr')assert.equal(run.elements.get('status').children[0].src,action.lead_qr.url);
+ else if(action.mode==='redirect')assert.equal(run.calls.filter(call=>call.redirect===action.redirect_url).length,1);
+ else assert.match(run.elements.get('status').textContent,/后续指引暂不可用/);
+}
+// A local paid checkpoint remains the sole guide source, avoiding duplicate redirects.
+{
+ const action={state:'available',mode:'redirect',redirect_url:'/single-followup'};
+ const run=boot(new Map([[storageKey,paidCheckpoint()]]),{status:'paid',completion_action:action},false,true,'',{purchase_state:'owned',can_purchase:false,completion_action:action});
+ await settle();
+ assert.equal(run.calls.filter(call=>call.redirect===action.redirect_url).length,1);
+ assert.equal(run.calls.filter(call=>call.url?.includes('/checkouts/')).length,1);
+}
