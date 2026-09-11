@@ -43,3 +43,10 @@ curl --resolve www.youcangogogo.com:443:150.158.82.186 https://www.youcangogogo.
 Do not use `-k`. After source reload both must report the target release. Verify old callback GET405, shop unsignedGET403, not acceptance; real signed receipt verification remains separate. Historical callback bridge must retain source cert validity (current expiry2026-10-17) and be removed after terminal reconciliation. Do not assume old HTTP-01 renewal works after DNS moves.
 
 Rollback before target accepts mutations: quiesce target and restore paired backups/ownership. After any target mutation/effect, never blindly restore source general5001 or old DB: freeze, reconcile data/receipts then choose one owner. Do not operate target and source checkout paths simultaneously.
+
+
+## 已准备的正式 TLS 启动配置
+
+`Caddyfile.formal-bootstrap.candidate` 使用已核对源证书作为 DNS 尚未切换时的启动证书，避免 ACME 挑战仍到旧机而导致目标 TLS 无法先建立。目标 `/etc/caddy/formal-cutover-20260911/` 已安装独立候选：目录 root:caddy0750，证书/私钥/候选配置 root:caddy0640；以实际 caddy 用户执行 validate 成功。此目录目前未被活动 Caddy 配置引用，443 与现有业务均未改变。
+
+切流时先使用 bootstrap 候选完成目标正式 Host/TLS 实测，再切源固定IP代理，最后由用户改 DNS。DNS 权威和公共解析均稳定指向目标后，采用本目录 `Caddyfile.formal-ready.candidate`（不指定手工证书）交给 Caddy 自动签发与续期；检查实际正式域名证书、链、到期日和 HTTPS 业务读回。自动签发未成功则回到 bootstrap 候选并保留失败证据，不宣称完成证书接管。暂存源证书有效至2026-10-17，不应长期依赖手工副本。
