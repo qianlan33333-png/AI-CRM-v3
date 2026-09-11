@@ -29,8 +29,8 @@ import (
 )
 
 type options struct {
-	mode, snapshot, digest string
-	confirm, orderOnly     bool
+	mode, snapshot, digest, deltaPreconditions string
+	confirm, orderOnly                         bool
 }
 
 type historyIdentityResolution struct {
@@ -51,6 +51,7 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|dry-run|apply|reconcile")
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "path to normalized snapshot")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "required snapshot sha256")
+	flags.StringVar(&cfg.deltaPreconditions, "history-delta-preconditions", "", "protected target CAS evidence bound to exact manifest; full import only")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm the exact apply manifest")
 	flags.BoolVar(&cfg.orderOnly, "order-only", false, "accept only the audited floating WeChat Pay order snapshot")
 	if err := flags.Parse(args); err != nil || cfg.snapshot == "" {
@@ -60,8 +61,16 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.deltaPreconditions != "" {
+		if _, err := loadDeltaPreconditions(cfg.deltaPreconditions, manifest); err != nil {
+			return err
+		}
+	}
 	summary := manifest.Summary()
 	if cfg.orderOnly {
+		if cfg.deltaPreconditions != "" {
+			return errors.New("history delta cannot be order-only")
+		}
 		if err = ordermigration.ValidateOrderOnly(manifest); err != nil {
 			return err
 		}
@@ -76,7 +85,7 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	if cfg.mode == "dry-run" {
-		return printJSON(map[string]any{"mode": cfg.mode, "order_only": cfg.orderOnly, "eligible": true, "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
+		return printJSON(map[string]any{"mode": cfg.mode, "order_only": cfg.orderOnly, "eligible": cfg.deltaPreconditions == "", "target_delta_cas_pending": cfg.deltaPreconditions != "", "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
 	}
 	provided, err := hex.DecodeString(cfg.digest)
 	if err != nil || len(provided) != 32 || string(provided) != string(manifest.Digest[:]) {
@@ -124,6 +133,15 @@ func run(ctx context.Context, args []string) error {
 	identity := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	paymentRepository := paymentstore.NewPostgreSQL()
 	runner := ordermigration.Runner{UOW: uow, Identities: identity, Facts: identityadapter.ProviderHistory{}, IdentityRuns: identitymigration.PostgreSQLReceipts{}, Orders: orderService, Payments: paymentapp.NewService(uow, paymentRepository, nil, nil, nil), Runs: runs}
+	if cfg.deltaPreconditions != "" {
+		runner.DeltaPreconditions, err = loadDeltaPreconditions(cfg.deltaPreconditions, manifest)
+		if err != nil {
+			return err
+		}
+		runner.DeltaOrders = orderRepository
+		runner.Orders = withinOrderImporter{repository: orderRepository}
+		runner.Payments = paymentRepository
+	}
 	result, err := runner.Apply(ctx, manifest)
 	if err != nil {
 		return err

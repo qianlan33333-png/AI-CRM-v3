@@ -128,7 +128,7 @@ func (store PostgreSQLRuns) verifyHistoricalOrder(ctx context.Context, runID int
 	}
 	if !bytes.Equal(receiptDigest, digest[:]) || !bytes.Equal(sourceDigest, digest[:]) ||
 		provider != string(expected.Provider) || sourceSystem != "commerce-history" || sourceKey != expected.SourceKey || merchant != expected.MerchantOrderNo || txn != expected.ProviderTransactionNo ||
-		amount != expected.AmountMinor || refunded != refundedMinor || currency != expected.Currency || status != expected.Status || origin != string(orderdomain.RecordOriginHistory) || effectEligible || version != 1 ||
+		amount != expected.AmountMinor || refunded != refundedMinor || currency != expected.Currency || status != expected.Status || origin != string(orderdomain.RecordOriginHistory) || effectEligible || version < 1 ||
 		!sameHistoricalTime(createdAt, expected.CreatedAt) || !sameHistoricalTime(updatedAt, expected.UpdatedAt) {
 		return 0, ErrReconciliationMismatch
 	}
@@ -145,6 +145,12 @@ func (store PostgreSQLRuns) verifyHistoricalOrder(ctx context.Context, runID int
 	}
 	if err := store.verifyHistoricalItems(ctx, id, expected.Items); err != nil {
 		return 0, err
+	}
+	if version > 1 {
+		if err := store.verifyHistoricalDelta(ctx, id, runID, version, runKey, expected, refundedMinor); err != nil {
+			return 0, err
+		}
+		return id, nil
 	}
 	if err := store.verifyHistoricalInitialStatus(ctx, id, runKey, expected, refundedMinor); err != nil {
 		return 0, err

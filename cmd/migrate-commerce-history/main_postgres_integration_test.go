@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -295,6 +297,8 @@ func commerceHistoryCommandMigrate(ctx context.Context, pool *pgxpool.Pool) erro
 		"0025_payment_reconciliation.sql",
 		"0026_identity_history_receipts.sql",
 		"0061_product_public_purchase.sql",
+		"0127_payment_historical_refund_states.sql",
+		"0129_order_history_source_delta.sql",
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, "migrations", name))
 		if err != nil {
@@ -309,4 +313,98 @@ func commerceHistoryCommandMigrate(ctx context.Context, pool *pgxpool.Pool) erro
 		}
 	}
 	return nil
+}
+
+func TestPostgreSQLHistoricalDeltaAtomicPaymentAndReplay(t *testing.T) {
+	ctx := context.Background()
+	db, pool, cleanup := commerceHistoryCommandDatabase(t, ctx)
+	defer cleanup()
+	t.Setenv("AICRM_DATABASE_URL", db)
+	file, _ := frozenCommerceHistoryManifest(t)
+	current, err := ordermigration.Load(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(m ordermigration.Manifest) (string, string) {
+		t.Helper()
+		raw, e := json.Marshal(m)
+		if e != nil {
+			t.Fatal(e)
+		}
+		p := filepath.Join(t.TempDir(), "manifest.json")
+		if e = os.WriteFile(p, raw, 0600); e != nil {
+			t.Fatal(e)
+		}
+		parsed, e := ordermigration.Parse(raw)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return p, hex.EncodeToString(parsed.Digest[:])
+	}
+	old := current
+	old.RunKey = "delta-before"
+	old.Orders = append([]ordermigration.OrderRow(nil), current.Orders...)
+	old.Orders[0].Status = "pending_payment"
+	old.Orders[0].ProviderTransactionNo = ""
+	old.Refunds = nil
+	oldFile, oldHash := write(old)
+	if err = run(ctx, []string{"--mode=apply", "--snapshot=" + oldFile, "--manifest-sha256=" + oldHash, "--confirm-apply"}); err != nil {
+		t.Fatal(err)
+	}
+	current.RunKey = "delta-after"
+	afterFile, afterHash := write(current)
+	proof := map[string]any{"manifest_sha256": afterHash, "orders": map[string]orderport.HistoricalDeltaPrecondition{old.Orders[0].SourceKey: {SourceDigest: ordermigration.HistoricalOrderDigest(old.Orders[0]), Version: 1}}}
+	raw, _ := json.Marshal(proof)
+	proofFile := filepath.Join(t.TempDir(), "preconditions.json")
+	os.WriteFile(proofFile, raw, 0600)
+	args := []string{"--mode=apply", "--snapshot=" + afterFile, "--manifest-sha256=" + afterHash, "--history-delta-preconditions=" + proofFile, "--confirm-apply"}
+	// The source amount and item snapshot remain frozen even with valid CAS.
+	bad := current
+	bad.RunKey = "delta-bad-commercial-change"
+	bad.Orders = append([]ordermigration.OrderRow(nil), current.Orders...)
+	bad.Orders[0].Items = append([]ordermigration.ItemRow(nil), current.Orders[0].Items...)
+	bad.Orders[0].AmountMinor++
+	bad.Orders[0].Items[0].LineAmountMinor++
+	bad.Orders[0].Items[0].UnitAmountMinor++
+	badFile, badHash := write(bad)
+	proof["manifest_sha256"] = badHash
+	badRaw, _ := json.Marshal(proof)
+	badProof := filepath.Join(t.TempDir(), "bad-proof.json")
+	os.WriteFile(badProof, badRaw, 0600)
+	if err = run(ctx, []string{"--mode=apply", "--snapshot=" + badFile, "--manifest-sha256=" + badHash, "--history-delta-preconditions=" + badProof, "--confirm-apply"}); err == nil {
+		t.Fatal("commercial facts overwritten")
+	}
+
+	if _, err = pool.Exec(ctx, `CREATE FUNCTION delta_fail() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'failpoint'; END;$$; CREATE TRIGGER delta_fail BEFORE INSERT ON payment_audit_events FOR EACH ROW EXECUTE FUNCTION delta_fail()`); err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, args); err == nil {
+		t.Fatal("failpoint accepted")
+	}
+	var version, deltas, payments, refunds int64
+	if err = pool.QueryRow(ctx, `SELECT (SELECT version FROM orders LIMIT 1),(SELECT count(*) FROM order_history_source_deltas),(SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds)`).Scan(&version, &deltas, &payments, &refunds); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 || deltas != 0 || payments != 0 || refunds != 0 {
+		t.Fatal("split delta transaction")
+	}
+	if _, err = pool.Exec(ctx, `DROP TRIGGER delta_fail ON payment_audit_events; DROP FUNCTION delta_fail()`); err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, args); err != nil {
+		t.Fatal("replay", err)
+	}
+	if err = run(ctx, []string{"--mode=reconcile", "--snapshot=" + afterFile, "--manifest-sha256=" + afterHash}); err != nil {
+		t.Fatal("reconcile", err)
+	}
+	var effects int64
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM order_history_source_deltas),(SELECT count(*) FROM external_effects)`).Scan(&deltas, &effects); err != nil {
+		t.Fatal(err)
+	}
+	if deltas != 1 || effects != 0 {
+		t.Fatal("unexpected delta/effects")
+	}
 }
