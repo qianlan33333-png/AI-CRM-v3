@@ -71,7 +71,7 @@ done
 
 `migrate-v2-config-definitions --mode extract --commerce-only --snapshot NEW --snapshot-key-file KEY --source-revision EXACT_SOURCE_SHA`，源 URL 从 `AICRM_SOURCE_DATABASE_URL` 注入。
 
-随后同工具 `--mode dry-run` → `--mode apply --confirm-apply` → `--mode verify`，每步绑定该工具输出的 `--manifest-sha256` 与实际 `--actor-admin-user-id`，保留 `--commerce-only`。源36普通商品、2周期商品、15券是基线，最终以源快照计数和逐字段一致为准。
+随后同工具 `--mode dry-run` → `--mode apply --confirm-apply` → 再次 `--mode dry-run`检查目标差异，并通过Owner/API逐字段读回；**commerce-only目前不支持 `--mode verify`**。每步绑定该工具输出的 `--manifest-sha256` 与实际 `--actor-admin-user-id`，保留 `--commerce-only`。源36普通商品、2周期商品、15券是基线，最终以源快照计数和逐字段一致为准。
 
 任何既有定义差异先停。source17优惠券历史审查使用单项 `--review-coupon-source-id` 与精确 `--review-coupon-before-sha256`；演练 before 摘要不能用于生产。不能批量覆盖线上编辑、库存/发行计数或旧 slug。
 
@@ -112,7 +112,9 @@ dry-run通过后，同一参数改 `--mode apply --confirm-apply`；随后 `--mo
 
 通过仓库 `scripts/capture-sidebar-history-source.sh OUTPUT`，使用明确的 `AICRM_SIDEBAR_SOURCE_SSH_HOST/USER/KEY_FILE/KNOWN_HOSTS_FILE` 提取新只读stream；不得省略主机密钥核验。
 
-`migrate-sidebar-history --mode inspect-stream --source-stream STREAM --snapshot NEW_JSON`规范化；同工具 `--mode bind-external-proof`绑定精确 `--external-proof/--external-proof-key-file/--external-proof-sha256`、已确认`--corp-id --confirm-matched-corp`，需要时加入独立 `--oa-proof/--oa-proof-key-file/--oa-proof-sha256`，输出 `--output-snapshot NEW_DERIVED`。
+**新增提取工具缺口：现有 `inspect-stream` 强制要求 `--unionid-scope` 以 `wechat-open-platform:` 开头；当前没有独立确认的Union scope，不能填占位值运行。已有 `sidebar-source.json` 的演练成功不能证明这次新stream可安全规范化。需要补充显式无Union scope的捕获模式并测试，或先获得真实scope确认；在此之前停在受保护stream，不生产导入。**
+
+取得合法规范化manifest后，同工具 `--mode bind-external-proof`绑定精确 `--external-proof/--external-proof-key-file/--external-proof-sha256`、已确认`--corp-id --confirm-matched-corp`，需要时加入独立 `--oa-proof/--oa-proof-key-file/--oa-proof-sha256`，输出 `--output-snapshot NEW_DERIVED`。
 
 对派生文件依次 `--mode preflight` → `--mode apply --confirm-apply` → `--mode reconcile`，每步 `--snapshot` 与 `--manifest-sha256` 完全一致。95会员/61领券是基线；新状态变更若触发旧摘要冲突必须停止并评估Owner delta，不把旧行当已完成而忽略更新。资金导入不替代此步骤，不补发历史权益或推送。
 
@@ -163,6 +165,7 @@ curl --fail --resolve www.youcangogogo.com:443:150.158.82.186 https://www.youcan
 
 - 最终停写入口/unit清单与执行、最终源/目标备份、新完整capture、正式迁移/导入/API读回均未执行。
 - 生产真实前置/CAS/权限不同于演练；需在实际生产preflight后执行，不能复制演练preconditions。
+- `migrate-sidebar-history inspect-stream`仍强制Union scope，缺显式无scope规范化模式；不得伪造scope。commerce-only没有独立verify模式，需dry-run差异与Owner/API逐字段复核。
 - 373实时企微失败与2无证明人群成员如何验收；原未知记录仍保留。
 - 微信小店新订单需求与旧资金callback留存、持续delta责任/工具和退役条件。
 - 正式域名授权、真实提交/支付/受控Provider回执人工验收，及目标开写时机。
