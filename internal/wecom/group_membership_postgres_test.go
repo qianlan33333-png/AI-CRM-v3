@@ -1,0 +1,111 @@
+package wecom
+
+import (
+	"context"
+	"fmt"
+	"github.com/jackc/pgx/v5/pgxpool"
+	pg "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
+	"os"
+	"testing"
+	"time"
+)
+
+func TestGroupMembershipPostgresFreshnessAndCAS(t *testing.T) {
+	dsn := os.Getenv("AICRM_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AICRM_DATABASE_URL required")
+	}
+	ctx := context.Background()
+	admin, e := pgxpool.New(ctx, dsn)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("test_group_members_%d", time.Now().UnixNano())
+	if _, e = admin.Exec(ctx, "CREATE SCHEMA "+schema); e != nil {
+		t.Fatal(e)
+	}
+	defer admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+	cfg, e := pgxpool.ParseConfig(dsn)
+	if e != nil {
+		t.Fatal(e)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	native, e := pgxpool.NewWithConfig(ctx, cfg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer native.Close()
+	migration, e := os.ReadFile("../../migrations/0136_wecom_group_membership_facts.sql")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = native.Exec(ctx, string(migration)); e != nil {
+		t.Fatal(e)
+	}
+	p, e := pg.Wrap(native, time.Second)
+	if e != nil {
+		t.Fatal(e)
+	}
+	u, e := pg.NewUnitOfWork(p)
+	if e != nil {
+		t.Fatal(e)
+	}
+	s := PostgreSQLGroupMembershipFacts{}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	save := func(f wecomport.AudienceGroupMembership, code string) error {
+		return u.Within(ctx, func(c context.Context) error { return s.SaveGroupMembership(c, "wecom-corp:c", "g", f, code) })
+	}
+	read := func(corp, chat string, at time.Time) error {
+		return u.Within(ctx, func(c context.Context) error {
+			_, e := s.AudienceGroupMembership(c, corp, chat, at, time.Minute)
+			return e
+		})
+	}
+	f := wecomport.AudienceGroupMembership{ObservedAt: at, Complete: true}
+	if e = read("wecom-corp:c", "g", at); e == nil {
+		t.Fatal("missing treated empty")
+	}
+	if e = save(f, ""); e != nil {
+		t.Fatal(e)
+	}
+	if e = read("wecom-corp:c", "g", at); e != nil {
+		t.Fatal(e)
+	}
+	for _, item := range []struct {
+		corp, chat string
+		at         time.Time
+	}{{"wecom-corp:other", "g", at}, {"wecom-corp:c", "g", at.Add(2 * time.Minute)}, {"wecom-corp:c", "g", at.Add(-time.Second)}} {
+		if e = read(item.corp, item.chat, item.at); e == nil {
+			t.Fatal("unsafe snapshot accepted")
+		}
+	}
+	f.ObservedAt = at.Add(time.Second)
+	f.Complete = false
+	if e = save(f, "refreshing"); e != nil {
+		t.Fatal(e)
+	}
+	if e = read("wecom-corp:c", "g", f.ObservedAt); e == nil {
+		t.Fatal("inflight old success usable")
+	}
+	f.Complete = true
+	if e = save(f, ""); e != nil {
+		t.Fatal(e)
+	}
+	old := f
+	old.ObservedAt = at
+	if e = save(old, ""); e == nil {
+		t.Fatal("stale writer replaced latest")
+	}
+	f.ObservedAt = at.Add(2 * time.Second)
+	f.Complete = false
+	f.ExternalCount = 1
+	f.UnresolvedCount = 1
+	if e = save(f, "identity_unresolved"); e != nil {
+		t.Fatal(e)
+	}
+	if e = read("wecom-corp:c", "g", f.ObservedAt); e == nil {
+		t.Fatal("partial identity snapshot usable")
+	}
+}

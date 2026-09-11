@@ -2029,3 +2029,37 @@ func (e privateSendError) FailureCode() string {
 	}
 	return "provider_rejected"
 }
+
+// ReadGroupMembership is a read-only complete Provider snapshot. A missing or
+// malformed member_list must never be interpreted as an empty group.
+func (client *Client) ReadGroupMembership(ctx context.Context, chatID string) (result wecomport.GroupMembership, err error) {
+	defer func() { err = classifyGroupDirectoryReadError(err) }()
+	if !client.DirectoryReady() || invalid(chatID) {
+		return result, wecomport.ErrDirectoryDisabled
+	}
+	token, e := client.contactAccessToken(ctx)
+	if e != nil {
+		return result, e
+	}
+	body, _ := json.Marshal(map[string]any{"chat_id": chatID, "need_name": 0})
+	payload, e := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/groupchat/get", url.Values{"access_token": {token}}, body)
+	if e != nil {
+		return result, e
+	}
+	if payload.GroupChat.ChatID != chatID || payload.GroupChat.Members == nil || len(payload.GroupChat.Members) > 10000 {
+		return result, ErrResponse
+	}
+	result.ChatID = chatID
+	result.ExternalUserIDs = []string{}
+	seen := map[string]bool{}
+	for _, member := range payload.GroupChat.Members {
+		if invalid(member.UserID) || (member.Type != 1 && member.Type != 2) || seen[member.UserID] {
+			return wecomport.GroupMembership{}, ErrResponse
+		}
+		seen[member.UserID] = true
+		if member.Type == 2 {
+			result.ExternalUserIDs = append(result.ExternalUserIDs, member.UserID)
+		}
+	}
+	return result, nil
+}
