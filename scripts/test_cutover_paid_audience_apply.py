@@ -8,6 +8,13 @@ from cutover_paid_audience_apply import apply
 
 class ReplayTest(unittest.TestCase):
     def test_lost_config_reply_reuses_key_and_never_duplicates_packages(self):
+        self.exercise()
+
+    def test_optional_rule_bundle_reuses_same_engine(self):
+        rules = {i: {"name": "Survey rule " + str(i), "definition": {"schema_version": 1, "template_key": "questionnaire_submitted", "parameters": {"questionnaire_ids": [str(i)]}}, "refresh_mode": "every_3m", "refresh_cron_utc": ""} for i in (14, 38)}
+        self.exercise(rules)
+
+    def exercise(self, rules=None):
         packages, configs, receipts = {}, {}, {}
         calls = []
         lost = [False]
@@ -47,15 +54,15 @@ class ReplayTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             journal = Path(d)/'journal.json'
             with self.assertRaises(ConnectionError):
-                apply(request, journal, 'isolated-test', '2026-09-11T05:00:00Z')
-            result = apply(request, journal, 'isolated-test', '2026-09-11T05:00:00Z')
-            apply(request, journal, 'isolated-test', '2026-09-11T05:00:00Z')
+                apply(request, journal, 'isolated-test', '2026-09-11T05:00:00Z', rules=rules)
+            result = apply(request, journal, 'isolated-test', '2026-09-11T05:00:00Z', rules=rules)
+            apply(request, journal, 'isolated-test', '2026-09-11T05:00:00Z', rules=rules)
             self.assertEqual(len(packages), 2)
             self.assertTrue(all(not r['population_verified'] for r in result))
             self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
             self.assertEqual(len(receipts), 8)
             with self.assertRaises(ValueError):
-                apply(request, journal, 'different-target', '2026-09-11T05:00:00Z')
+                apply(request, journal, 'different-target', '2026-09-11T05:00:00Z', rules=rules)
         self.assertFalse(any('sender' in c[1] or 'binding' in c[1] for c in calls))
 
 if __name__ == '__main__':

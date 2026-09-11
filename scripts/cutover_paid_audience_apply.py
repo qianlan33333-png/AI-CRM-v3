@@ -11,12 +11,23 @@ import os
 from pathlib import Path
 
 
-def apply(request, journal_path, target_label, reference_time):
+def apply(request, journal_path, target_label, reference_time, rules=None):
     if not target_label:
         raise ValueError("explicit target required")
     fixtures = Path(__file__).resolve().parents[1] / "docs/migrations/fixtures"
-    definitions = {str(i): json.loads((fixtures / f"cutover-audience-{i}-definition.json").read_text()) for i in (30, 37)}
-    fingerprint = hashlib.sha256(json.dumps(definitions, sort_keys=True).encode()).hexdigest()
+    defaults = rules is None
+    if defaults:
+        names = {30: "首月体验已报名-HuangYouCan企微", 37: "报名商品编号202608121337的用户"}
+        rules = {i: {"name": names[i], "definition": json.loads((fixtures / f"cutover-audience-{i}-definition.json").read_text()), "refresh_mode": "every_3m", "refresh_cron_utc": ""} for i in (30, 37)}
+    if not rules or any(not isinstance(i, int) or i < 1 for i in rules):
+        raise ValueError("positive source rule keys required")
+    for rule in rules.values():
+        if set(rule) != {"name", "definition", "refresh_mode", "refresh_cron_utc"} or not rule["name"] or not rule["definition"].get("template_key"):
+            raise ValueError("explicit native name/definition/schedule required")
+    definitions = {str(i): rules[i]["definition"] for i in rules}
+    # Preserve all existing default journals/keys; optional rule bundles bind
+    # names and schedules too, so a changed plan cannot reuse old receipts.
+    fingerprint = hashlib.sha256(json.dumps(definitions if defaults else rules, sort_keys=True).encode()).hexdigest()
     path = Path(journal_path)
     journal = json.loads(path.read_text()) if path.exists() else {"target": target_label, "definitions_sha256": fingerprint, "reference_time": reference_time, "steps": {}}
     if journal["target"] != target_label or journal["definitions_sha256"] != fingerprint or journal["reference_time"] != reference_time:
@@ -54,18 +65,17 @@ def apply(request, journal_path, target_label, reference_time):
             save()
         return item["result"]
 
-    names = {30: "首月体验已报名-HuangYouCan企微", 37: "报名商品编号202608121337的用户"}
     result = []
-    for source in (30, 37):
-        created = step(source, "create", "POST", "/api/admin/ai-audience/packages", lambda: {"name": names[source], "template_key": "paid_order"}, (200, 201))
+    for source in sorted(rules):
+        created = step(source, "create", "POST", "/api/admin/ai-audience/packages", lambda: {"name": rules[source]["name"], "template_key": definitions[str(source)]["template_key"]}, (200, 201))
         target = created["package"]["id"]
         endpoint = f"/api/admin/ai-audience/packages/{target}"
         current = read(endpoint)["package"]
         if any(current.get(key) for key in ("automation_binding_id", "sender_set_id", "current_automation_binding_id", "current_sender_set_id")):
             raise ValueError("unexpected automation binding or sender set")
-        step(source, "configure", "PUT", endpoint + "/configuration", lambda: {"expected_package_version": read(endpoint)["package"]["version"], "refresh_cron_utc": "", "refresh_mode": "every_3m", "definition": definitions[str(source)]}, (200, 201))
+        step(source, "configure", "PUT", endpoint + "/configuration", lambda: {"expected_package_version": read(endpoint)["package"]["version"], "refresh_cron_utc": rules[source]["refresh_cron_utc"], "refresh_mode": rules[source]["refresh_mode"], "definition": definitions[str(source)]}, (200, 201))
         config = read(endpoint + "/configuration")["configuration"]
-        if config["definition"] != definitions[str(source)] or config["refresh_mode"] != "every_3m":
+        if config["definition"] != definitions[str(source)] or config["refresh_mode"] != rules[source]["refresh_mode"] or config.get("refresh_cron_utc", "") != rules[source]["refresh_cron_utc"]:
             raise ValueError("configuration readback drift")
         step(source, "activate", "POST", endpoint + "/activate", lambda: {"expected_version": read(endpoint)["package"]["version"]}, (200,))
         refreshed = step(source, "refresh", "POST", endpoint + "/refresh", lambda: {"reference_time": reference_time}, (202,))
