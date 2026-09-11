@@ -13,6 +13,7 @@ import (
 // identity evidence has an independent digest/time and cannot rewrite source
 // scope declarations or upgrade any OneID fact.
 type existingProofEnvelope struct {
+	ParentSHA256      string                `json:"parent_sha256,omitempty"`
 	ProofSourceSHA256 string                `json:"proof_source_sha256"`
 	SourceSHA256      string                `json:"source_sha256"`
 	ProofSHA256       string                `json:"proof_sha256"`
@@ -27,6 +28,12 @@ func validateExistingProof(s snapshot) error {
 	}
 	if d, e := hex.DecodeString(p.ProofSourceSHA256); e != nil || len(d) != 32 {
 		return errors.New("proof source digest required")
+	}
+	if p.ParentSHA256 != "" {
+		d, e := hex.DecodeString(p.ParentSHA256)
+		if e != nil || len(d) != 32 {
+			return errors.New("invalid predecessor digest")
+		}
 	}
 	if p.Proof.Version != 2 || p.Proof.ResolutionMode != cutoverproof.ExistingWecomOnly || p.Proof.Scopes.UnionScope != "" {
 		return errors.New("existing-only proof required")
@@ -48,7 +55,7 @@ func validateExistingProof(s snapshot) error {
 	// of any asserted Open Platform namespace before exposing references.
 	return nil
 }
-func deriveExisting(s snapshot, digest, path, keyPath, out, proofSource string, key []byte) error {
+func deriveExisting(s snapshot, digest, path, keyPath, out, proofSource, predecessor string, key []byte) error {
 	if s.ExistingProof != nil || out == "" {
 		return errors.New("new derivation output required")
 	}
@@ -57,6 +64,22 @@ func deriveExisting(s snapshot, digest, path, keyPath, out, proofSource string, 
 		return e
 	}
 	s.ExistingProof = &existingProofEnvelope{ProofSourceSHA256: proofSource, SourceSHA256: digest, ProofSHA256: hex.EncodeToString(d[:]), DerivedAt: time.Now().UTC(), Proof: proof}
+	if predecessor != "" {
+		sealed, e := readPrivate(predecessor, 512<<20)
+		if e != nil {
+			return e
+		}
+		plain, e := open(sealed, key)
+		if e != nil {
+			return e
+		}
+		var prior snapshot
+		if json.Unmarshal(plain, &prior) != nil || validate(prior) != nil || prior.ExistingProof == nil || prior.ExistingProof.SourceSHA256 != digest {
+			return errors.New("predecessor source proof mismatch")
+		}
+		canonical, _ := json.Marshal(prior)
+		s.ExistingProof.ParentSHA256 = sum(canonical)
+	}
 	if e = validate(s); e != nil {
 		return e
 	}

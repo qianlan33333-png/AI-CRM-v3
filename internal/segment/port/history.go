@@ -9,14 +9,17 @@ import (
 // authenticated encrypted source snapshot; its key is never persisted here.
 // This Port cannot evaluate SQL, provision identities, refresh, or send.
 type HistoricalImport struct {
-	Source            string
-	Digest            Digest
-	CapturedAt        time.Time
-	EncryptedEvidence []byte
-	Actor             MutationActor
-	Groups            []HistoricalGroup
-	Packages          []HistoricalPackage
-	Rows              []HistoricalRow
+	Source                 string
+	Digest                 Digest
+	CapturedAt             time.Time
+	ResolutionSourceDigest Digest
+	ResolutionParentDigest Digest
+	ResolutionDerivedAt    time.Time
+	EncryptedEvidence      []byte
+	Actor                  MutationActor
+	Groups                 []HistoricalGroup
+	Packages               []HistoricalPackage
+	Rows                   []HistoricalRow
 }
 type HistoricalGroup struct {
 	SourceID int64

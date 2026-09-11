@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -90,15 +91,60 @@ func (r *Repository) ImportHistorical(ctx context.Context, in segmentport.Histor
 	if existing {
 		return out, ErrConflict
 	}
-	var latest *time.Time
-	if err = t.QueryRow(ctx, `SELECT max(captured_at) FROM segment_audience_history_batches WHERE source=$1`, in.Source).Scan(&latest); err != nil {
-		return out, err
+	var latestID int64
+	var latestCaptured, latestImported time.Time
+	var latestDigest, latestSourceDigest []byte
+	latestErr := t.QueryRow(ctx, `SELECT id,captured_at,imported_at,digest,resolution_source_digest FROM segment_audience_history_batches WHERE source=$1 ORDER BY id DESC LIMIT 1`, in.Source).Scan(&latestID, &latestCaptured, &latestImported, &latestDigest, &latestSourceDigest)
+	if latestErr != nil && !errors.Is(latestErr, pgx.ErrNoRows) {
+		return out, latestErr
 	}
-	if latest != nil && !in.CapturedAt.After(*latest) {
+	derived := in.ResolutionSourceDigest != (segmentport.Digest{})
+	if derived != !in.ResolutionDerivedAt.IsZero() {
+		return out, ErrInvalid
+	}
+	if derived && in.ResolutionDerivedAt.Before(in.CapturedAt) {
+		return out, ErrInvalid
+	}
+	if latestErr == nil && !in.CapturedAt.After(latestCaptured) {
+		if !in.CapturedAt.Equal(latestCaptured) || !derived || !in.ResolutionDerivedAt.After(latestImported) || !bytes.Equal(latestDigest, in.ResolutionParentDigest[:]) {
+			return out, ErrConflict
+		}
+		if len(latestSourceDigest) > 0 && !bytes.Equal(latestSourceDigest, in.ResolutionSourceDigest[:]) {
+			return out, ErrConflict
+		}
+		var count int
+		if err = t.QueryRow(ctx, `SELECT count(*) FROM segment_audience_history_rows WHERE batch_id=$1`, latestID).Scan(&count); err != nil {
+			return out, err
+		}
+		if count != len(in.Rows) {
+			return out, ErrConflict
+		}
+		for _, row := range in.Rows {
+			var prior []byte
+			if err = t.QueryRow(ctx, `SELECT digest FROM segment_audience_history_rows WHERE batch_id=$1 AND kind=$2 AND source_id=$3`, latestID, row.Kind, row.SourceID).Scan(&prior); err != nil || !bytes.Equal(prior, row.Digest[:]) {
+				return out, ErrConflict
+			}
+		}
+		for _, pkg := range in.Packages {
+			for _, member := range pkg.Members {
+				var priorCustomer *int64
+				var priorDisposition string
+				if err = t.QueryRow(ctx, `SELECT customer_id,disposition FROM segment_audience_history_members WHERE batch_id=$1 AND source_id=$2`, latestID, member.SourceID).Scan(&priorCustomer, &priorDisposition); err != nil {
+					return out, ErrConflict
+				}
+				if priorDisposition == "resolved" && (priorCustomer == nil || member.Reason != "resolved" || *priorCustomer != member.CustomerID) {
+					return out, ErrConflict
+				}
+				if (priorDisposition == "exited") != (!member.Active) {
+					return out, ErrConflict
+				}
+			}
+		}
+	} else if in.ResolutionParentDigest != (segmentport.Digest{}) {
 		return out, ErrConflict
 	}
 	var batch int64
-	err = t.QueryRow(ctx, `INSERT INTO segment_audience_history_batches(source,digest,captured_at,encrypted_evidence,imported_at) VALUES($1,$2,$3,$4,$5) RETURNING id`, in.Source, in.Digest[:], in.CapturedAt, in.EncryptedEvidence, now).Scan(&batch)
+	err = t.QueryRow(ctx, `INSERT INTO segment_audience_history_batches(source,digest,captured_at,encrypted_evidence,imported_at,resolution_source_digest,resolution_parent_digest,resolution_derived_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, in.Source, in.Digest[:], in.CapturedAt, in.EncryptedEvidence, now, optionalHistoryDigest(in.ResolutionSourceDigest), optionalHistoryDigest(in.ResolutionParentDigest), optionalHistoryTime(in.ResolutionDerivedAt)).Scan(&batch)
 	if err != nil {
 		return out, err
 	}
@@ -305,4 +351,17 @@ func (r *Repository) VerifyHistorical(ctx context.Context, source string, digest
 		return out, ErrConflict
 	}
 	return out, nil
+}
+
+func optionalHistoryDigest(d segmentport.Digest) any {
+	if d == (segmentport.Digest{}) {
+		return nil
+	}
+	return d[:]
+}
+func optionalHistoryTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }

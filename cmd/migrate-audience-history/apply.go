@@ -110,6 +110,14 @@ func prepareImport(ctx context.Context, s snapshot, digest string, evidence []by
 		return in, errors.New("invalid digest")
 	}
 	copy(in.Digest[:], d)
+	if s.ExistingProof != nil {
+		p := s.ExistingProof
+		d, _ := hex.DecodeString(p.SourceSHA256)
+		copy(in.ResolutionSourceDigest[:], d)
+		d, _ = hex.DecodeString(p.ParentSHA256)
+		copy(in.ResolutionParentDigest[:], d)
+		in.ResolutionDerivedAt = p.DerivedAt
+	}
 	kinds := map[string]string{tableNames[0]: "group", tableNames[1]: "package", tableNames[2]: "version", tableNames[3]: "member"}
 	for _, tableName := range tableNames {
 		for _, row := range s.Tables[tableName].Rows {

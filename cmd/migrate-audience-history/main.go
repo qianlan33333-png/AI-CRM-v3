@@ -65,6 +65,7 @@ func run(args []string) error {
 		return errors.New("unsupported mode")
 	}
 	f := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	predecessor := f.String("predecessor-snapshot", "", "previous derived envelope for resolution-only replay")
 	proofSource := f.String("proof-source-sha256", "", "exact frozen raw evidence SHA256")
 	proofPath := f.String("identity-proof", "", "protected existing-WeCom proof snapshot")
 	proofKey := f.String("identity-proof-key-file", "", "proof decryption key")
@@ -154,7 +155,7 @@ func run(args []string) error {
 		if *expected == "" {
 			return errors.New("exact source expected-sha256 required")
 		}
-		return deriveExisting(s, digest, *proofPath, *proofKey, *outputPath, *proofSource, key)
+		return deriveExisting(s, digest, *proofPath, *proofKey, *outputPath, *proofSource, *predecessor, key)
 	}
 	if args[0] == "apply" || args[0] == "preflight" || args[0] == "reconcile" {
 		if *expected == "" {
