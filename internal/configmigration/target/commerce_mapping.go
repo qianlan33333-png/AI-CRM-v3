@@ -52,14 +52,14 @@ func existingCommerceMapping(ctx context.Context, system, kind string, sourceID 
 
 // Every historical commerce source mapping must remain represented. Removed
 // source definitions/bindings require an explicit reconciliation decision.
-func verifyCommerceCoverage(ctx context.Context, system string, keys map[string][]string) error {
+func verifyCommerceCoverage(ctx context.Context, system string, keys map[string][]string, reviewedCouponID int64) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return err
 	}
 	for kind, ids := range keys {
 		var missing bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM config_definition_import_source_maps WHERE source_system=$1 AND source_kind=$2 AND NOT (source_key=ANY($3::text[])))`, system, kind, ids).Scan(&missing); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM config_definition_import_source_maps old WHERE old.source_system=$1 AND old.source_kind=$2 AND NOT (old.source_key=ANY($3::text[])) AND NOT ($2='commerce_coupon_product_bindings' AND EXISTS(SELECT 1 FROM config_definition_import_source_maps coupon WHERE coupon.source_system=old.source_system AND coupon.source_kind='commerce_coupons' AND coupon.target_id=old.target_id AND (coupon.source_key=$4 OR EXISTS(SELECT 1 FROM config_definition_commerce_reviews review WHERE review.source_map_id=coupon.id AND review.basis='source_authoritative_review')))))`, system, kind, ids, fmt.Sprint(reviewedCouponID)).Scan(&missing); err != nil {
 			return err
 		}
 		if missing {

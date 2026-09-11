@@ -104,7 +104,7 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 			for _, x := range snap.CouponBindings {
 				keys["commerce_coupon_product_bindings"] = append(keys["commerce_coupon_product_bindings"], fmt.Sprint(x.ID))
 			}
-			if e = verifyCommerceCoverage(tx, snap.Manifest.SourceSystem, keys); e != nil {
+			if e = verifyCommerceCoverage(tx, snap.Manifest.SourceSystem, keys, r.ReviewCouponSourceID); e != nil {
 				return e
 			}
 		}

@@ -331,7 +331,7 @@ func TestCommerceExplicitReviewedCouponCASAndReplay(t *testing.T) {
 		s.Coupons[i].IssuedCount = &issued
 	}
 	binding := s.CouponBindings[0]
-	s.CouponBindings = s.CouponBindings[1:]
+	// Keep the old binding mapping, then replace its source key below.
 	s.Coupons[0].TotalIssueLimit = 20
 	if e := source.PopulateManifest(&s, s.Manifest.SourceSystem, s.Manifest.SourceRevision, s.Manifest.SnapshotAt); e != nil {
 		t.Fatal(e)
@@ -348,9 +348,7 @@ func TestCommerceExplicitReviewedCouponCASAndReplay(t *testing.T) {
 	if e := pool.Native().QueryRow(ctx, `SELECT target_id FROM config_definition_import_source_maps WHERE source_kind='wechat_pay_products' AND source_key=$1`, fmt.Sprint(binding.TradeProductID)).Scan(&productID); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := pool.Native().Exec(ctx, `INSERT INTO coupon_rule_targets(coupon_id,target_ref,position) VALUES($1,$2,0)`, id, fmt.Sprintf("standard_product:%d", productID)); e != nil {
-		t.Fatal(e)
-	}
+
 	if _, e := pool.Native().Exec(ctx, `UPDATE coupon_rules SET public_slug='target-test-link',version=2,updated_at=updated_at+interval '2 days' WHERE id=$1`, id); e != nil {
 		t.Fatal(e)
 	}
@@ -359,7 +357,8 @@ func TestCommerceExplicitReviewedCouponCASAndReplay(t *testing.T) {
 	s.GroupNodes = nil
 	s.GroupAssets = nil
 	s.Agents = nil
-	s.CouponBindings = append(s.CouponBindings, binding)
+	binding.ID = 100001
+	s.CouponBindings[0] = binding
 	for i := range s.Coupons {
 		slug := fmt.Sprintf("source-public-%d", i)
 		issued := int64(0)
