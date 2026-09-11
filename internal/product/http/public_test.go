@@ -60,7 +60,7 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 	if strings.Contains(payment.Body.String(), "location.href='/api/h5/wechat-pay/oauth/start") {
 		t.Fatalf("opening the payment page must not auto-start OAuth: %s", payment.Body.String())
 	}
-	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "retainPaidCheckout(orderNo)", "restorePaidCheckout", "terminal_status!=='paid'", "再次购买", "showCompletionAction", "location.assign(action.redirect_url)", "completion-qr", "value.completion_action"} {
+	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "retainPaidCheckout(orderNo)", "restorePaidCheckout", "terminal_status==='paid'", "再次购买", "showCompletionAction", "location.assign(action.redirect_url)", "completion-qr", "value.completion_action"} {
 		if !strings.Contains(payment.Body.String(), required) {
 			t.Fatalf("payment page missing stable checkout behaviour %q: %s", required, payment.Body.String())
 		}

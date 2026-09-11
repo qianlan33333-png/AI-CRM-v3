@@ -28,7 +28,7 @@ async function settle() {
   for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
 }
 
-function boot(store, completion, redirectFailure = false, sessionAuthorized = true) {
+function boot(store, completion, redirectFailure = false, sessionAuthorized = true, setup = '') {
   const calls = [], elements = new Map();
   const setGlobal = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
   const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', href: '', children: [], attributes: new Map(), addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }, setAttribute(name, value) { this.attributes.set(name, String(value)); }, removeAttribute(name) { this.attributes.delete(name); }});
@@ -48,7 +48,7 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
     assert.equal(String(url), '/api/v1/wechat-pay/checkouts/M-paid-7');
     return response(completion);
   });
-  Function(script)();
+  Function(script + '\n' + setup)();
   return {calls, elements};
 }
 
@@ -118,7 +118,7 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   assert.equal(store.get(storageKey), original);
   await run.elements.get('buy').listener.click();
   assert.equal(store.get(storageKey), original);
-  assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 2);
+  assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 3);
   assert.equal(run.calls.some(call => call.method === 'POST'), false);
 }
 
@@ -157,7 +157,7 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   assert.match(run.elements.get('status').textContent, /原支付流程已停止/);
   assert.equal(store.get(storageKey), original);
   assert.equal(run.calls.some(call => call.method === 'POST'), false);
-  assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 1);
+  assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 2);
 }
 
 // Expiry between page load and the buyer's click returns to the explicit gate.
@@ -177,4 +177,37 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   assert.match(run.elements.get('identityMessage').textContent, /已失效/);
   assert.equal(store.size, 0);
   assert.equal(run.calls.some(call => call.method === 'POST' || call.redirect), false);
+}
+
+// A cancelled payment resumes its immutable original amount, never a newly
+// selected coupon. Bootstrap reads once and cannot open the cashier or POST.
+{
+  const checkpoint = JSON.parse(paidCheckpoint());
+  delete checkpoint.terminal_status;
+  const store = new Map([[storageKey, JSON.stringify(checkpoint)]]);
+  const run = boot(store, {status: 'awaiting_payment', amount_minor: 990, currency: 'CNY', ready: true, handoff: {}}, false, true, 'couponDiscounts.set(123,100)');
+  await settle();
+  assert.equal(run.elements.get('footerAmount').textContent, '¥9.90');
+  assert.equal(run.elements.get('coupon').disabled, true);
+  assert.equal(run.elements.get('mobile').disabled, true);
+  assert.equal(run.calls.filter(call => call.url.includes('/checkouts/')).length, 1);
+  assert.equal(run.calls.some(call => call.method === 'POST'), false);
+  run.elements.get('coupon').value = '123';
+  run.elements.get('coupon').listener.change();
+  assert.equal(run.elements.get('footerAmount').textContent, '¥9.90');
+  await run.elements.get('buy').listener.click();
+  assert.equal(run.elements.get('footerAmount').textContent, '¥9.90');
+  assert.equal(store.get(storageKey), JSON.stringify(checkpoint));
+  assert.equal(run.calls.some(call => call.method === 'POST'), false);
+}
+
+// Missing historical amount is not replaced by today's product price.
+{
+  const checkpoint = JSON.parse(paidCheckpoint());
+  delete checkpoint.terminal_status;
+  const run = boot(new Map([[storageKey, JSON.stringify(checkpoint)]]), {status: 'awaiting_prepay'});
+  await settle();
+  assert.equal(run.elements.get('footerAmount').textContent, '待确认');
+  assert.equal(run.elements.get('grossAmount').textContent, '以原订单为准');
+  assert.equal(run.elements.get('discountAmount').hidden, true);
 }
