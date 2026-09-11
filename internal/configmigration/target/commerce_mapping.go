@@ -125,10 +125,21 @@ func existingCouponMapping(ctx context.Context, system string, row source.Coupon
 		return result, ErrDrift
 	}
 	row.TotalIssueLimit = limit
-	row.UpdatedAt = updated.UTC()
-	previous, _ := json.Marshal(row)
-	priorDigest := sha256.Sum256(previous)
-	if string(result.Prior) != string(priorDigest[:]) {
+	// PostgreSQL preserves instants, not the JSON timestamp offset from the
+	// source snapshot. Try its current source offset and UTC, accepting only
+	// an exact historical digest; this does not relax any field comparison.
+	locations := []*time.Location{row.UpdatedAt.Location(), time.UTC}
+	matched := false
+	for _, location := range locations {
+		row.UpdatedAt = updated.In(location)
+		previous, _ := json.Marshal(row)
+		priorDigest := sha256.Sum256(previous)
+		if string(result.Prior) == string(priorDigest[:]) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		return result, ErrDrift
 	}
 	result.ExpectedLimit = limit

@@ -206,6 +206,7 @@ func TestCommerceAuditedCouponDeltaPreservesProductOperatorConfig(t *testing.T) 
 	actor := configMigrationActor(t, ctx, pool)
 	s := configMigrationFixture(t, strings.Repeat("d", 40))
 	s.Coupons[0].TotalIssueLimit = 20
+	s.Coupons[0].UpdatedAt = s.Coupons[0].UpdatedAt.In(time.FixedZone("source", 8*3600))
 	if e := source.PopulateManifest(&s, s.Manifest.SourceSystem, s.Manifest.SourceRevision, s.Manifest.SnapshotAt); e != nil {
 		t.Fatal(e)
 	}
