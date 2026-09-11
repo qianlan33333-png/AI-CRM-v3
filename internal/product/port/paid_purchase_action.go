@@ -41,3 +41,8 @@ type PaidPurchaseAction struct {
 type PaidPurchaseActionReader interface {
 	ReadPaidPurchaseAction(context.Context, int64) (PaidPurchaseAction, error)
 }
+
+// PaidPurchaseGuidanceReader is read-only presentation, not a settlement snapshot.
+type PaidPurchaseGuidanceReader interface {
+	ReadPaidPurchaseGuidance(context.Context, int64) (PaidPurchaseAction, error)
+}

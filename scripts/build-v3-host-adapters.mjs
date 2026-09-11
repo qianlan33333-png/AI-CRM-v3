@@ -266,15 +266,22 @@ manifest.release_files['admin/apidocs.html'] = metadataFor(Buffer.from(openPlatf
 const h5AuthHost = manifest.entries.h5AuthHost;
 const frozenH5 = manifest.entries.h5;
 if (typeof h5AuthHost !== 'string' || typeof frozenH5 !== 'string') throw new Error('H5 auth Host or frozen H5 entry is absent from manifest');
-const h5AuthDocument = path.join(dist, 'h5', 'auth.html');
-let h5AuthHTML = fs.readFileSync(h5AuthDocument, 'utf8');
 const frozenH5Reference = `<script type="module" src="../${frozenH5}"></script>`;
 const h5AuthReference = `<script type="module" src="../${h5AuthHost}"></script>`;
-if (!h5AuthHTML.includes(frozenH5Reference)) throw new Error('auth.html does not reference the declared frozen H5 entry');
-if (h5AuthHTML.includes(h5AuthReference)) throw new Error('auth.html already contains the H5 auth Host');
-h5AuthHTML = h5AuthHTML.replace(frozenH5Reference, `${h5AuthReference}\n${frozenH5Reference}`);
-fs.writeFileSync(h5AuthDocument, h5AuthHTML);
-manifest.release_files['h5/auth.html'] = metadataFor(Buffer.from(h5AuthHTML));
+for (const page of ['auth', 'all', 'one', 'result']) {
+  const documentPath = path.join(dist, 'h5', `${page}.html`);
+  let html = fs.readFileSync(documentPath, 'utf8');
+  if (!html.includes(frozenH5Reference)) throw new Error(`${page}.html does not reference the declared frozen H5 entry`);
+  if (html.includes(h5AuthReference)) throw new Error(`${page}.html already contains the H5 mobile Host`);
+  // Remove demo chrome in the release HTML before first paint, not after mount.
+  const demoShell = /<div class="h5-backdrop"><div><div class="phone"><div id="screen" class="phone-screen"><\/div><\/div><div style="[^"]*"><a href="index.html">← 全部屏幕<\/a><\/div><\/div><\/div>/;
+  if (!demoShell.test(html)) throw new Error(`${page}.html H5 shell changed; inspect the mobile adaptation`);
+  html = html.replace(demoShell, '<main id="screen" class="v3-survey-screen"></main>');
+  html = html.replace('</head>', '<style>html,body{margin:0;min-height:100%;background:#F5F6F7}*{box-sizing:border-box}.v3-survey-screen{display:flex;flex-direction:column;width:100%;max-width:720px;min-height:100vh;min-height:100dvh;margin:0 auto;overflow-wrap:anywhere;padding-bottom:env(safe-area-inset-bottom)}.v3-survey-screen input,.v3-survey-screen textarea{max-width:100%;font-size:16px}</style></head>');
+  html = html.replace(frozenH5Reference, `${h5AuthReference}\n${frozenH5Reference}`);
+  fs.writeFileSync(documentPath, html);
+  manifest.release_files[`h5/${page}.html`] = metadataFor(Buffer.from(html));
+}
 
 // The frozen shell keeps its navigation markup byte-for-byte in the donor
 // source. Adapt its generated release documents instead: Operation Cycles is

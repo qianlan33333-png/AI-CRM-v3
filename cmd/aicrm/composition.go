@@ -1027,6 +1027,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	paidPurchaseActions.SetPaidGuidanceOrderReader(orderService)
 	if err = orderService.SetPaidEventConsumer(orderPaidEventFanout{commerce: commercePushService, purchase: paidPurchaseActions}); err != nil {
 		return fail(err)
 	}
