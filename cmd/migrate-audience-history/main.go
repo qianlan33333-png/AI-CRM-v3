@@ -1,5 +1,5 @@
-// Command migrate-audience-history captures source facts only. It cannot apply,
-// activate an audience, resolve identities, or execute stored audience SQL.
+// Command migrate-audience-history preserves encrypted source history and imports
+// inert static audiences through the Segment and Identity Ports. It never executes source SQL.
 package main
 
 import (
@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 )
 
 const schema = "audience-source-history/v1"
@@ -59,10 +60,13 @@ func run(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: extract|inspect")
 	}
-	if args[0] != "extract" && args[0] != "inspect" {
-		return errors.New("only extract and inspect are supported; no apply or activation")
+	if args[0] != "extract" && args[0] != "inspect" && args[0] != "preflight" && args[0] != "apply" && args[0] != "reconcile" {
+		return errors.New("unsupported mode")
 	}
 	f := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	targetEnv := f.String("target-url-env", "AICRM_DATABASE_URL", "target URL environment variable")
+	adminID := f.Int64("admin-id", 0, "actual importing administrator ID")
+	confirm := f.Bool("confirm-static-import", false, "acknowledge paused static import without activation")
 	path := f.String("snapshot", "", "protected encrypted snapshot")
 	keyPath := f.String("snapshot-key-file", "", "0600 base64 32-byte key")
 	sourceEnv := f.String("source-url-env", "AICRM_AUDIENCE_SOURCE_DATABASE_URL", "environment variable containing read-only source URL")
@@ -96,7 +100,11 @@ func run(args []string) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		s, err = extract(ctx, os.Getenv(*sourceEnv), *sourceSystem, map[string]string{"wecom_external_userid": *corp, "unionid": *union})
+		sourceURL, e := platformconfig.NamedDatabaseURL(*sourceEnv)
+		if e != nil {
+			return errors.New("source database not configured")
+		}
+		s, err = extract(ctx, sourceURL, *sourceSystem, map[string]string{"wecom_external_userid": *corp, "unionid": *union})
 		if err != nil {
 			return err
 		}
@@ -136,6 +144,23 @@ func run(args []string) error {
 	digest := sum(raw)
 	if *expected != "" && *expected != digest {
 		return errors.New("snapshot digest mismatch")
+	}
+	if args[0] == "apply" || args[0] == "preflight" || args[0] == "reconcile" {
+		if *expected == "" {
+			return errors.New("exact expected-sha256 required")
+		}
+		if args[0] == "apply" && !*confirm {
+			return errors.New("confirm-static-import required")
+		}
+		evidence, e := readPrivate(*path, 512<<20)
+		if e != nil {
+			return e
+		}
+		targetURL, e := platformconfig.NamedDatabaseURL(*targetEnv)
+		if e != nil {
+			return errors.New("target database not configured")
+		}
+		return applySnapshot(s, digest, evidence, targetURL, *adminID, args[0])
 	}
 	return json.NewEncoder(os.Stdout).Encode(summary(s, digest))
 }

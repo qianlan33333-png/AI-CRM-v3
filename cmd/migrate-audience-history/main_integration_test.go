@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -15,8 +15,8 @@ import (
 )
 
 func TestPostgreSQLCaptureFrozenFactsAndReadOnlyEnforcement(t *testing.T) {
-	base := os.Getenv("AICRM_AUDIENCE_TEST_ADMIN_URL")
-	if base == "" {
+	base, configErr := platformconfig.NamedDatabaseURL("AICRM_AUDIENCE_TEST_ADMIN_URL")
+	if configErr != nil {
 		t.Skip("isolated PostgreSQL test admin URL not configured")
 	}
 	ctx := context.Background()
