@@ -26,7 +26,6 @@ import (
 	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
-	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
@@ -49,16 +48,22 @@ const (
 type options struct {
 	mode, snapshot, sourceStream, unionIDScope, digest string
 	confirm                                            bool
+	proofPath, proofKey, proofDigest, corp, output     string
+	matchedCorp                                        bool
 }
 type manifest struct {
-	SchemaVersion int                 `json:"schema_version"`
-	RunKey        string              `json:"run_key"`
-	SourceSystem  string              `json:"source_system"`
-	UnionIDScope  string              `json:"unionid_scope"`
-	CapturedAt    time.Time           `json:"captured_at"`
-	Entitlements  []sourceEntitlement `json:"entitlements"`
-	Coupons       []sourceCoupon      `json:"coupons"`
-	rawDigest     [32]byte
+	SchemaVersion  int                 `json:"schema_version"`
+	RunKey         string              `json:"run_key"`
+	SourceSystem   string              `json:"source_system"`
+	UnionIDScope   string              `json:"unionid_scope"`
+	CapturedAt     time.Time           `json:"captured_at"`
+	Entitlements   []sourceEntitlement `json:"entitlements"`
+	Coupons        []sourceCoupon      `json:"coupons"`
+	ResolutionMode string              `json:"resolution_mode,omitempty"`
+	ProofSHA256    string              `json:"proof_sha256,omitempty"`
+	SourceSHA256   string              `json:"source_sha256,omitempty"`
+	CorpID         string              `json:"corp_id,omitempty"`
+	rawDigest      [32]byte
 }
 type sourceEntitlement struct {
 	SourceID         int64     `json:"source_id"`
@@ -182,6 +187,12 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.unionIDScope, "unionid-scope", "", "verified WeChat Open Platform scope")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "exact snapshot SHA-256")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm exact apply")
+	flags.StringVar(&cfg.proofPath, "external-proof", "", "protected same-Corp proof")
+	flags.StringVar(&cfg.proofKey, "external-proof-key-file", "", "protected proof key")
+	flags.StringVar(&cfg.proofDigest, "external-proof-sha256", "", "exact proof digest")
+	flags.StringVar(&cfg.corp, "corp-id", "", "confirmed shared Corp")
+	flags.StringVar(&cfg.output, "output-snapshot", "", "exclusive derived manifest destination")
+	flags.BoolVar(&cfg.matchedCorp, "confirm-matched-corp", false, "source and target Corp verified equal")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -215,6 +226,15 @@ func run(ctx context.Context, args []string) error {
 	want, err := hex.DecodeString(cfg.digest)
 	if err != nil || len(want) != 32 || string(want) != string(m.rawDigest[:]) {
 		return errors.New("manifest digest confirmation mismatch")
+	}
+	if cfg.mode == "bind-external-proof" {
+		return bindExternalProof(cfg, m)
+	}
+	if m.SchemaVersion == 3 {
+		ctx, err = withExternalProof(ctx, cfg, m)
+		if err != nil {
+			return err
+		}
 	}
 	databaseURL, err := platformconfig.DatabaseURL()
 	if err != nil {
@@ -421,7 +441,7 @@ func load(path string) (manifest, error) {
 }
 
 func validate(m manifest) error {
-	if (m.SchemaVersion != legacySchemaVersion && m.SchemaVersion != currentSchemaVersion) || !regexp.MustCompile(`^[A-Za-z0-9._:-]{8,200}$`).MatchString(m.RunKey) || m.SourceSystem != productionSourceSystem || !strings.HasPrefix(m.UnionIDScope, "wechat-open-platform:") || m.CapturedAt.IsZero() || len(m.Entitlements)+len(m.Coupons) > 2_000_000 {
+	if !validSubjectMode(m) || !regexp.MustCompile(`^[A-Za-z0-9._:-]{8,200}$`).MatchString(m.RunKey) || m.SourceSystem != productionSourceSystem || m.CapturedAt.IsZero() || len(m.Entitlements)+len(m.Coupons) > 2_000_000 {
 		return errors.New("invalid snapshot manifest")
 	}
 	seen := map[string]bool{}
@@ -564,7 +584,7 @@ func resolve(ctx context.Context, uow platformport.UnitOfWork, oneID identityapp
 	var out identityport.ResolveResult
 	err := uow.Within(ctx, func(tx context.Context) error {
 		var e error
-		out, e = oneID.Resolve(tx, identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: scope, Value: value, Assurance: identitydomain.AssuranceVerified, Source: "sidebar_history"})
+		out, e = resolveSidebarSubject(tx, oneID, scope, value)
 		return e
 	})
 	if err != nil {
@@ -859,7 +879,7 @@ func reconcileCouponTarget(ctx context.Context, db reconciliationQueryer, m mani
 
 func reconcileMappedCustomer(ctx context.Context, tx pgx.Tx, m manifest, subject string, mapping reconciliationMapping) error {
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
-	resolved, err := oneID.Resolve(platformpostgres.BindTransaction(ctx, tx), identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: m.UnionIDScope, Value: subject, Assurance: identitydomain.AssuranceVerified, Source: "sidebar_history"})
+	resolved, err := resolveSidebarSubject(platformpostgres.BindTransaction(ctx, tx), oneID, m.UnionIDScope, subject)
 	if err != nil || resolved.Status != identityport.ResolveFound || int64(resolved.CustomerID) != mapping.customerID {
 		return errors.New("reconciliation mapped customer mismatch")
 	}
@@ -868,7 +888,7 @@ func reconcileMappedCustomer(ctx context.Context, tx pgx.Tx, m manifest, subject
 
 func reconcileQuarantineReason(ctx context.Context, tx pgx.Tx, m manifest, kind, subject string, definitionID int64) (string, error) {
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
-	resolved, err := oneID.Resolve(platformpostgres.BindTransaction(ctx, tx), identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: m.UnionIDScope, Value: subject, Assurance: identitydomain.AssuranceVerified, Source: "sidebar_history"})
+	resolved, err := resolveSidebarSubject(platformpostgres.BindTransaction(ctx, tx), oneID, m.UnionIDScope, subject)
 	if err != nil {
 		return "", err
 	}

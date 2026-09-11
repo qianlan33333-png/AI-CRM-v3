@@ -37,6 +37,8 @@ func run(ctx context.Context, args []string) error {
 	key := fs.String("snapshot-key-file", "", "0600 32-byte base64 key")
 	want := fs.String("manifest-sha256", "", "explicit proof digest")
 	confirm := fs.Bool("confirm-apply", false, "write accepted identity candidates and quarantine receipts")
+	existingOnly := fs.Bool("existing-wecom-only", false, "resolve existing WeCom roots only; no Union scope or identity writes")
+	matchedCorp := fs.Bool("confirm-matched-corp", false, "source and target Corp independently verified equal")
 	scopesConfirmed := fs.Bool("confirm-matched-provider-scopes", false, "source and target Provider Corp/OpenPlatform configuration independently verified equal")
 	corp := fs.String("corp-id", platformconfig.CutoverIdentityEnvironment("AICRM_WECOM_CORP_ID"), "verified shared WeCom Corp ID")
 	union := fs.String("union-scope", platformconfig.CutoverIdentityEnvironment("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), "explicit wechat-open-platform namespace")
@@ -54,7 +56,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	scopes := proof.Scopes{CorpID: *corp, UnionScope: *union}
 	if *mode == "capture" {
-		if !*scopesConfirmed || scopes.Validate() != nil {
+		if (!*existingOnly && (!*scopesConfirmed || scopes.Validate() != nil)) || (*existingOnly && (!*matchedCorp || *corp == "")) {
 			return errors.New("capture requires independently matched explicit provider scopes")
 		}
 		db, e := open(ctx, "AICRM_SOURCE_DATABASE_URL")
@@ -62,7 +64,14 @@ func run(ctx context.Context, args []string) error {
 			return e
 		}
 		defer db.Close()
-		s, e := proof.Capture(ctx, db, scopes)
+		var s proof.Snapshot
+		var captureErr error
+		if *existingOnly {
+			s, captureErr = proof.CaptureExistingWecom(ctx, db, *corp)
+		} else {
+			s, captureErr = proof.Capture(ctx, db, scopes)
+		}
+		e = captureErr
 		if e != nil {
 			return e
 		}
@@ -79,7 +88,11 @@ func run(ctx context.Context, args []string) error {
 	if *mode == "inspect" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"mode": "inspect", "subjects": len(s.Rows), "manifest_sha256": hex.EncodeToString(d[:])})
 	}
-	if !*scopesConfirmed || scopes.Validate() != nil || scopes != s.Scopes {
+	if s.Version == 2 {
+		if !*existingOnly || !*matchedCorp || s.Scopes.CorpID != *corp || *mode == "apply" {
+			return errors.New("resolve-only proof requires matched Corp and forbids identity apply")
+		}
+	} else if !*scopesConfirmed || scopes.Validate() != nil || scopes != s.Scopes {
 		return errors.New("target explicit provider scopes must equal independently verified capture scopes")
 	}
 	if *want != hex.EncodeToString(d[:]) {
@@ -101,6 +114,20 @@ func run(ctx context.Context, args []string) error {
 	defer tx.Rollback(ctx)
 	bound := platformpostgres.BindTransaction(ctx, tx)
 	owner := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
+	if s.Version == 2 {
+		refs, counts, err := proof.ExistingWecomReferences(s, identityadapter.ProviderHistory{})
+		if err != nil {
+			return err
+		}
+		for _, ref := range refs {
+			r, err := owner.Resolve(bound, ref)
+			if err != nil {
+				return errors.New("resolve existing WeCom failed")
+			}
+			counts["target_"+string(r.Status)]++
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"mode": *mode, "manifest_sha256": hex.EncodeToString(d[:]), "counts": counts, "identity_writes": 0})
+	}
 	plan, e := proof.BuildPlan(bound, s, owner, identityadapter.ProviderHistory{})
 	if e != nil {
 		return e
