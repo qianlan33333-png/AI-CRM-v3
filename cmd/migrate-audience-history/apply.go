@@ -8,8 +8,10 @@ import (
 	"os"
 	"time"
 
+	identityadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/adapter"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	cutoverproof "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/migration/cutoverproof"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -141,6 +143,14 @@ func prepareImport(ctx context.Context, s snapshot, digest string, evidence []by
 		packageIndex[row.ID] = len(in.Packages)
 		in.Packages = append(in.Packages, segmentport.HistoricalPackage{SourceID: row.ID, GroupSourceID: group, Name: factString(m, "name"), Archived: status == "archived"})
 	}
+	var proofRefs map[string]identitydomain.Reference
+	if s.ExistingProof != nil {
+		var e error
+		proofRefs, _, e = cutoverproof.ExistingWecomReferences(s.ExistingProof.Proof, identityadapter.ProviderHistory{})
+		if e != nil {
+			return in, e
+		}
+	}
 	// Cache exact scoped references only, avoiding 30,000 duplicate Port queries.
 	cache := map[identitydomain.Reference]identityport.ResolveResult{}
 	for _, row := range s.Tables[tableNames[3]].Rows {
@@ -165,7 +175,11 @@ func prepareImport(ctx context.Context, s snapshot, digest string, evidence []by
 				member.Reason = "invalid"
 			} else {
 				member.EnteredAt = entered
-				member.CustomerID, member.Reason, e = resolveMember(ctx, m, s.ScopeDeclaration, resolver, cache)
+				if s.ExistingProof != nil {
+					member.CustomerID, member.Reason, e = resolveProofMember(ctx, m, proofRefs, resolver, cache)
+				} else {
+					member.CustomerID, member.Reason, e = resolveMember(ctx, m, s.ScopeDeclaration, resolver, cache)
+				}
 				if e != nil {
 					return in, e
 				}
@@ -251,4 +265,45 @@ func resolveMember(ctx context.Context, m map[string]json.RawMessage, scopes map
 		return root, "resolved", nil
 	}
 	return 0, "unresolved", nil
+}
+
+func resolveProofMember(ctx context.Context, m map[string]json.RawMessage, proof map[string]identitydomain.Reference, resolver identityport.Resolver, cache map[identitydomain.Reference]identityport.ResolveResult) (int64, string, error) {
+	union := factString(m, "unionid")
+	value := factString(m, "identity_value")
+	kind := factString(m, "identity_type")
+	if kind == "unionid" && value != "" {
+		if union != "" && union != value {
+			return 0, "conflict", nil
+		}
+		union = value
+	}
+	if union == "" {
+		return 0, "unresolved", nil
+	}
+	ref, ok := proof[union]
+	if !ok {
+		return 0, "unresolved", nil
+	}
+	if (kind == "external_userid" || kind == "wecom_external_userid") && value != "" && value != ref.Value {
+		return 0, "conflict", nil
+	}
+	if ref.Kind != identitydomain.KindWeComExternalUserID {
+		return 0, "invalid", nil
+	}
+	result, ok := cache[ref]
+	if !ok {
+		var e error
+		result, e = resolver.Resolve(ctx, ref)
+		if e != nil {
+			return 0, "", errors.New("existing identity resolution unavailable")
+		}
+		cache[ref] = result
+	}
+	if result.Status == identityport.ResolveConflict {
+		return 0, "conflict", nil
+	}
+	if result.Status != identityport.ResolveFound || result.CustomerID < 1 || result.IdentityID < 1 {
+		return 0, "unresolved", nil
+	}
+	return int64(result.CustomerID), "resolved", nil
 }

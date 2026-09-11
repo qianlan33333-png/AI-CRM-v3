@@ -41,13 +41,14 @@ type table struct {
 	Rows   []row  `json:"rows"`
 }
 type snapshot struct {
-	Schema           string            `json:"schema"`
-	SourceSystem     string            `json:"source_system"`
-	CapturedAt       time.Time         `json:"captured_at"`
-	ScopeDeclaration map[string]string `json:"scope_declaration"`
-	ScopeVerified    bool              `json:"scope_verified"`
-	Executable       bool              `json:"executable"`
-	Tables           map[string]table  `json:"tables"`
+	Schema           string                 `json:"schema"`
+	SourceSystem     string                 `json:"source_system"`
+	CapturedAt       time.Time              `json:"captured_at"`
+	ScopeDeclaration map[string]string      `json:"scope_declaration"`
+	ScopeVerified    bool                   `json:"scope_verified"`
+	Executable       bool                   `json:"executable"`
+	Tables           map[string]table       `json:"tables"`
+	ExistingProof    *existingProofEnvelope `json:"existing_wecom_proof,omitempty"`
 }
 
 func main() {
@@ -60,10 +61,14 @@ func run(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: extract|inspect")
 	}
-	if args[0] != "extract" && args[0] != "inspect" && args[0] != "preflight" && args[0] != "apply" && args[0] != "reconcile" {
+	if args[0] != "derive-existing-wecom" && args[0] != "extract" && args[0] != "inspect" && args[0] != "preflight" && args[0] != "apply" && args[0] != "reconcile" {
 		return errors.New("unsupported mode")
 	}
 	f := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	proofSource := f.String("proof-source-sha256", "", "exact frozen raw evidence SHA256")
+	proofPath := f.String("identity-proof", "", "protected existing-WeCom proof snapshot")
+	proofKey := f.String("identity-proof-key-file", "", "proof decryption key")
+	outputPath := f.String("output-snapshot", "", "new protected derived audience snapshot")
 	targetEnv := f.String("target-url-env", "AICRM_DATABASE_URL", "target URL environment variable")
 	adminID := f.Int64("admin-id", 0, "actual importing administrator ID")
 	confirm := f.Bool("confirm-static-import", false, "acknowledge paused static import without activation")
@@ -144,6 +149,12 @@ func run(args []string) error {
 	digest := sum(raw)
 	if *expected != "" && *expected != digest {
 		return errors.New("snapshot digest mismatch")
+	}
+	if args[0] == "derive-existing-wecom" {
+		if *expected == "" {
+			return errors.New("exact source expected-sha256 required")
+		}
+		return deriveExisting(s, digest, *proofPath, *proofKey, *outputPath, *proofSource, key)
 	}
 	if args[0] == "apply" || args[0] == "preflight" || args[0] == "reconcile" {
 		if *expected == "" {
@@ -264,6 +275,9 @@ func integer(m map[string]json.RawMessage, k string, required bool) (int64, erro
 	return n, nil
 }
 func validate(s snapshot) error {
+	if err := validateExistingProof(s); err != nil {
+		return err
+	}
 	if s.Schema != schema || !safeName(s.SourceSystem) || s.CapturedAt.IsZero() || s.ScopeVerified || s.Executable || len(s.Tables) != len(tableNames) {
 		return errors.New("invalid snapshot boundary")
 	}
