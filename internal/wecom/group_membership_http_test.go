@@ -14,7 +14,7 @@ type groupHTTPRefresh struct{ called bool }
 
 func (g *groupHTTPRefresh) Refresh(context.Context, string) (wecomport.AudienceGroupMembership, error) {
 	g.called = true
-	return wecomport.AudienceGroupMembership{}, nil
+	return wecomport.AudienceGroupMembership{ProviderComplete: true, ExternalCount: 122, UnresolvedCount: 10, ExternalIdentityHashes: []string{"private-hash"}}, nil
 }
 func TestGroupRefreshHTTPRejectsCSRFBeforeProvider(t *testing.T) {
 	g := &groupHTTPRefresh{}
@@ -35,7 +35,7 @@ func TestGroupRefreshHTTPAcceptsAdminAndDoesNotExposeIDs(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/api/admin/wecom/group-membership/refresh", strings.NewReader(`{"chat_reference":"g"}`))
 	r.Header.Set("Content-Type", "application/json")
 	h.Routes().ServeHTTP(w, r)
-	if w.Code != http.StatusOK || !g.called || strings.Contains(w.Body.String(), "customer_ids") {
+	if w.Code != http.StatusOK || !g.called || strings.Contains(w.Body.String(), "customer_ids") || strings.Contains(w.Body.String(), "private-hash") || !strings.Contains(w.Body.String(), `"provider_complete":true`) || !strings.Contains(w.Body.String(), `"complete":false`) {
 		t.Fatalf("status=%d called=%v", w.Code, g.called)
 	}
 }

@@ -14,11 +14,7 @@ import (
 func (s LegacyTemplateSource) memberExcludingGroupPaid(ctx context.Context, p map[string]json.RawMessage, at time.Time) ([]int64, error) {
 	var chat string
 	products, e := listParam(p, "excluded_product_codes")
-	if e != nil || json.Unmarshal(p["exclude_group_chat"], &chat) != nil || chat == "" || s.Groups == nil || s.Orders == nil {
-		return nil, ErrCustomerReadUnavailable
-	}
-	group, e := s.Groups.AudienceGroupMembership(ctx, s.PrimaryOwnerCorpScope, chat, at, 15*time.Minute)
-	if e != nil || !group.Complete || group.UnresolvedCount != 0 || group.ObservedAt.IsZero() || group.ObservedAt.After(at) || at.Sub(group.ObservedAt) > 15*time.Minute {
+	if e != nil || json.Unmarshal(p["exclude_group_chat"], &chat) != nil || chat == "" || s.GroupCandidates == nil || s.Orders == nil {
 		return nil, ErrCustomerReadUnavailable
 	}
 	contacts, e := s.contacts(ctx, at)
@@ -35,8 +31,13 @@ func (s LegacyTemplateSource) memberExcludingGroupPaid(ctx context.Context, p ma
 		return nil, e
 	}
 	excluded := map[customerdomain.CustomerID]bool{}
-	for _, id := range group.CustomerIDs {
-		excluded[id] = true
+	outside, e := s.GroupCandidates.OutsideGroupCandidates(ctx, s.PrimaryOwnerCorpScope, chat, at, 15*time.Minute, ids)
+	if e != nil {
+		return nil, ErrCustomerReadUnavailable
+	}
+	allowed := map[customerdomain.CustomerID]bool{}
+	for _, id := range outside {
+		allowed[id] = true
 	}
 	orders, e := s.Orders.PaidAudienceOrders(ctx, at)
 	if e != nil {
@@ -53,7 +54,7 @@ func (s LegacyTemplateSource) memberExcludingGroupPaid(ctx context.Context, p ma
 		if !ok || f.Availability != hxcport.SharedFactsAvailable || !f.MembershipRecordFound || f.MembershipSource == "" {
 			continue
 		}
-		if f.ActiveAt(at) && !excluded[customerdomain.CustomerID(id)] {
+		if f.ActiveAt(at) && allowed[customerdomain.CustomerID(id)] && !excluded[customerdomain.CustomerID(id)] {
 			out[id] = true
 		}
 	}

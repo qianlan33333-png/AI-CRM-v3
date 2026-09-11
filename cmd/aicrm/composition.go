@@ -488,7 +488,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	segmentService := segmentapp.NewService(uow, segmentRepository)
 	// Populate this composition-owned adapter as its Owner stores are built
 	// below. The process has not started serving requests at this point.
-	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Groups: wecom.PostgreSQLGroupMembershipFacts{}, Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
+	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Groups: wecom.PostgreSQLGroupMembershipFacts{}, GroupCandidates: wecom.GroupCandidateFacts{Identity: queries}, Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
 	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)
@@ -512,7 +512,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	preparedAudienceSchedule := &audienceGroupPreparedSchedule{uow: uow, targets: segmentRepository, facts: wecom.PostgreSQLGroupMembershipFacts{}, next: scheduledRefreshes, corp: "wecom-corp:" + cfg.WeCom.CorpID}
+	preparedAudienceSchedule := &audienceGroupPreparedSchedule{uow: uow, targets: segmentRepository, facts: wecom.GroupProviderFacts{}, next: scheduledRefreshes, corp: "wecom-corp:" + cfg.WeCom.CorpID}
 	if err = audienceScheduleWorker.BindService(preparedAudienceSchedule); err != nil {
 		return fail(err)
 	}

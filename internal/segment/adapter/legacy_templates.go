@@ -27,6 +27,7 @@ import (
 // its factual Owner is unavailable.
 type LegacyTemplateSource struct {
 	Groups             wecomport.AudienceGroupMembershipReader
+	GroupCandidates    wecomport.CandidateGroupMembershipReader
 	Contacts           wecomport.AudienceContactReader
 	Survey             surveyport.AudienceChoiceAnswerReader
 	Submissions        surveyport.AudienceSubmissionReader

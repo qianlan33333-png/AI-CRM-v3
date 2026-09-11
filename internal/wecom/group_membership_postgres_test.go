@@ -52,6 +52,13 @@ func TestGroupMembershipPostgresFreshnessAndCAS(t *testing.T) {
 	if _, e = native.Exec(ctx, string(historyMigration)); e != nil {
 		t.Fatal(e)
 	}
+	rawMigration, e := os.ReadFile("../../migrations/0139_wecom_group_provider_membership.sql")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = native.Exec(ctx, string(rawMigration)); e != nil {
+		t.Fatal(e)
+	}
 	p, e := pg.Wrap(native, time.Second)
 	if e != nil {
 		t.Fatal(e)
@@ -119,4 +126,40 @@ func TestGroupMembershipPostgresFreshnessAndCAS(t *testing.T) {
 	if e = read("wecom-corp:c", "g", f.ObservedAt); e == nil {
 		t.Fatal("partial identity snapshot usable")
 	}
+	// Provider completeness survives partial CRM coverage; old canonical port stays closed.
+	f.ObservedAt = at.Add(3 * time.Second)
+	f.ProviderComplete = true
+	f.ExternalIdentityHashes = []string{groupExternalHash("wecom-corp:c", "unresolved")}
+	if e = save(f, "identity_unresolved"); e != nil {
+		t.Fatal(e)
+	}
+	providerRead := func(reference time.Time) error {
+		return u.Within(ctx, func(tx context.Context) error {
+			got, err := (GroupProviderFacts{}).AudienceGroupMembership(tx, "wecom-corp:c", "g", reference, time.Minute)
+			if err == nil && (!got.ProviderComplete || len(got.ExternalIdentityHashes) != 1) {
+				t.Fatal("incomplete provider facts")
+			}
+			return err
+		})
+	}
+	if e = providerRead(f.ObservedAt); e != nil {
+		t.Fatal("raw complete membership unavailable", e)
+	}
+	if e = read("wecom-corp:c", "g", f.ObservedAt); e == nil {
+		t.Fatal("canonical port weakened")
+	}
+	if e = providerRead(f.ObservedAt.Add(2 * time.Minute)); e == nil {
+		t.Fatal("stale raw facts allowed")
+	}
+	previous := f.ObservedAt
+	f.ObservedAt = at.Add(4 * time.Second)
+	f.ProviderComplete = false
+	f.ExternalIdentityHashes = nil
+	if e = save(f, "provider_read_failed"); e != nil {
+		t.Fatal(e)
+	}
+	if e = providerRead(previous); e == nil {
+		t.Fatal("latest provider failure left old facts usable")
+	}
+
 }

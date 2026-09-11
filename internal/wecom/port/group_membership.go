@@ -22,9 +22,16 @@ type AudienceGroupMembership struct {
 	ObservedAt                     time.Time
 	ExternalCount, UnresolvedCount int
 	Complete                       bool
+	ProviderComplete               bool
+	ExternalIdentityHashes         []string `json:"-"`
 }
 
 // Reads local Owner facts only; missing, stale or failed snapshots are errors.
 type AudienceGroupMembershipReader interface {
 	AudienceGroupMembership(context.Context, string, string, time.Time, time.Duration) (AudienceGroupMembership, error)
+}
+
+// Unknown candidates are omitted from OutsideCustomerIDs and never selected.
+type CandidateGroupMembershipReader interface {
+	OutsideGroupCandidates(context.Context, string, string, time.Time, time.Duration, []customerdomain.CustomerID) ([]customerdomain.CustomerID, error)
 }

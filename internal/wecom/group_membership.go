@@ -77,6 +77,7 @@ func (s GroupMembershipRefresh) Refresh(ctx context.Context, chat string) (wecom
 					break
 				}
 				seen[value] = true
+				result.ExternalIdentityHashes = append(result.ExternalIdentityHashes, groupExternalHash(s.CorpScope, value))
 				resolved, e := s.Resolver.Resolve(tx, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: s.CorpScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "wecom_group_membership"})
 				if e != nil {
 					failure = "identity_read_failed"
@@ -92,6 +93,7 @@ func (s GroupMembershipRefresh) Refresh(ctx context.Context, chat string) (wecom
 				result.CustomerIDs = append(result.CustomerIDs, id)
 			}
 			sort.Slice(result.CustomerIDs, func(i, j int) bool { return result.CustomerIDs[i] < result.CustomerIDs[j] })
+			result.ProviderComplete = failure == ""
 			if result.UnresolvedCount > 0 {
 				failure = "identity_unresolved"
 			}
@@ -103,14 +105,14 @@ func (s GroupMembershipRefresh) Refresh(ctx context.Context, chat string) (wecom
 		digest := sha256.Sum256([]byte(s.CorpScope + "\x00" + chat))
 		safe := hex.EncodeToString(digest[:])
 		key, _ := idempotency.Parse("wecom-group-membership:" + safe + ":" + result.ObservedAt.Format("20060102T150405.000000000Z"))
-		body, _ := json.Marshal(map[string]any{"complete": result.Complete, "external_count": result.ExternalCount, "unresolved_count": result.UnresolvedCount, "failure_code": failure})
+		body, _ := json.Marshal(map[string]any{"complete": result.Complete, "provider_complete": result.ProviderComplete, "external_count": result.ExternalCount, "unresolved_count": result.UnresolvedCount, "failure_code": failure})
 		_, e := s.Audit.Append(tx, audit.Event{IdempotencyKey: key, Action: "wecom.group_membership.observed", ActorType: "system", ActorID: "group_membership_refresh", ResourceType: "wecom_group", ResourceID: safe, Payload: body, OccurredAt: result.ObservedAt})
 		return e
 	})
 	if err != nil {
 		return result, err
 	}
-	if !result.Complete {
+	if !result.ProviderComplete {
 		return result, wecomport.ErrGroupMembershipUnavailable
 	}
 	return result, nil
@@ -133,6 +135,20 @@ func (PostgreSQLGroupMembershipFacts) SaveGroupMembership(ctx context.Context, c
 	}
 	if e != nil {
 		return e
+	}
+	hashes := f.ExternalIdentityHashes
+	if hashes == nil {
+		hashes = []string{}
+	}
+	_, e = tx.Exec(ctx, `INSERT INTO wecom_group_provider_facts(corp_scope,chat_reference,observed_at,complete,identity_hashes) VALUES($1,$2,$3,$4,$5) ON CONFLICT(corp_scope,chat_reference) DO UPDATE SET observed_at=excluded.observed_at,complete=excluded.complete,identity_hashes=excluded.identity_hashes`, corp, chat, f.ObservedAt, f.ProviderComplete, hashes)
+	if e != nil {
+		return e
+	}
+	if f.ProviderComplete {
+		_, e = tx.Exec(ctx, `INSERT INTO wecom_group_provider_observations(corp_scope,chat_reference,observed_at,identity_hashes) VALUES($1,$2,$3,$4)`, corp, chat, f.ObservedAt, hashes)
+		if e != nil {
+			return e
+		}
 	}
 	if f.Complete {
 		_, e = tx.Exec(ctx, `INSERT INTO wecom_group_membership_observations(corp_scope,chat_reference,observed_at,external_count,customer_ids) VALUES($1,$2,$3,$4,$5)`, corp, chat, f.ObservedAt, f.ExternalCount, ids)

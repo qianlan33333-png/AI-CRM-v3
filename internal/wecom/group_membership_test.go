@@ -70,7 +70,7 @@ func TestGroupRefreshFailsClosedWithoutProvision(t *testing.T) {
 	}{
 		{"complete", []string{"x", "y"}, false, false, true, ""},
 		{"empty", []string{}, false, false, true, ""},
-		{"partial", []string{"x", "missing"}, false, false, false, "identity_unresolved"},
+		{"partial", []string{"x", "missing"}, false, false, true, "identity_unresolved"},
 		{"provider", nil, true, false, false, "provider_read_failed"},
 		{"identity", []string{"x"}, false, true, false, "identity_read_failed"},
 	} {
@@ -80,7 +80,7 @@ func TestGroupRefreshFailsClosedWithoutProvision(t *testing.T) {
 			a := &staffRefreshAudit{}
 			service := GroupMembershipRefresh{Provider: groupTestProvider{s, u, tc.providerFail, tc.ids, t}, Resolver: groupTestResolver{tc.resolverFail}, Store: s, Audit: a, UOW: u, CorpScope: "wecom-corp:corp", Now: func() time.Time { return time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC) }}
 			f, e := service.Refresh(context.Background(), "g")
-			if (e == nil) != tc.ok || f.Complete != tc.ok || len(s.codes) != 2 || s.codes[1] != tc.code || a.count != 2 {
+			if (e == nil) != tc.ok || f.ProviderComplete != tc.ok || f.Complete != (tc.code == "") || len(s.codes) != 2 || s.codes[1] != tc.code || a.count != 2 {
 				t.Fatalf("success=%v complete=%v codes=%v audit=%d", e == nil, f.Complete, s.codes, a.count)
 			}
 			if tc.name == "complete" && len(f.CustomerIDs) != 1 {

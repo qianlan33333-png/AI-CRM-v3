@@ -427,5 +427,5 @@ func (handler *CallbackAdminHandler) refreshGroupMembership(w http.ResponseWrite
 	if e != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	json.NewEncoder(w).Encode(map[string]any{"complete": e == nil && facts.Complete, "observed_at": facts.ObservedAt, "external_count": facts.ExternalCount, "unresolved_count": facts.UnresolvedCount, "resolved_customer_count": len(facts.CustomerIDs)})
+	json.NewEncoder(w).Encode(map[string]any{"complete": e == nil && facts.Complete, "provider_complete": e == nil && facts.ProviderComplete, "observed_at": facts.ObservedAt, "external_count": facts.ExternalCount, "unresolved_count": facts.UnresolvedCount, "resolved_customer_count": len(facts.CustomerIDs)})
 }
