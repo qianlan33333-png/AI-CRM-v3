@@ -17,6 +17,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 const callbackAdminMaxBodyBytes int64 = 64 << 10
@@ -48,15 +49,21 @@ type CallbackAdminRetrier interface {
 	Retry(context.Context, webhook.Retry) (webhook.Delivery, error)
 }
 
+type GroupMembershipRefresher interface {
+	Refresh(context.Context, string) (wecomport.AudienceGroupMembership, error)
+}
+
 type CallbackAdminConfig struct {
-	UnitOfWork    platformport.UnitOfWork
-	Authenticator CallbackAdminAuthenticator
-	CSRF          CallbackAdminCSRFAuthorizer
-	Receipts      CallbackAdminReceiptStore
-	Retrier       CallbackAdminRetrier
+	GroupMembership GroupMembershipRefresher
+	UnitOfWork      platformport.UnitOfWork
+	Authenticator   CallbackAdminAuthenticator
+	CSRF            CallbackAdminCSRFAuthorizer
+	Receipts        CallbackAdminReceiptStore
+	Retrier         CallbackAdminRetrier
 }
 
 type CallbackAdminHandler struct {
+	groups   GroupMembershipRefresher
 	uow      platformport.UnitOfWork
 	auth     CallbackAdminAuthenticator
 	csrf     CallbackAdminCSRFAuthorizer
@@ -70,12 +77,13 @@ func NewCallbackAdminHandler(config CallbackAdminConfig) (*CallbackAdminHandler,
 	}
 	return &CallbackAdminHandler{
 		uow: config.UnitOfWork, auth: config.Authenticator, csrf: config.CSRF,
-		receipts: config.Receipts, retrier: config.Retrier,
+		receipts: config.Receipts, retrier: config.Retrier, groups: config.GroupMembership,
 	}, nil
 }
 
 func (handler *CallbackAdminHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/wecom/group-membership/refresh", handler.refreshGroupMembership)
 	mux.HandleFunc("GET /api/admin/wecom/callback-receipts", handler.list)
 	mux.HandleFunc("GET /api/admin/wecom/callback-receipts/{receipt_id}", handler.detail)
 	mux.HandleFunc("POST /api/admin/wecom/callback-receipts/{receipt_id}/retry", handler.retry)
@@ -391,4 +399,33 @@ func callbackAdminWriteJSON(response http.ResponseWriter, status int, payload an
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	response.WriteHeader(status)
 	_ = json.NewEncoder(response).Encode(payload)
+}
+
+func (handler *CallbackAdminHandler) refreshGroupMembership(w http.ResponseWriter, r *http.Request) {
+	if _, e := handler.writePrincipal(r); e != nil {
+		handler.writeError(w, e)
+		return
+	}
+	var input struct {
+		ChatReference string `json:"chat_reference"`
+	}
+	if e := callbackAdminDecodeJSON(w, r, &input); e != nil {
+		handler.writeError(w, e)
+		return
+	}
+	if r.URL.RawQuery != "" || input.ChatReference == "" || len(input.ChatReference) > 256 || strings.TrimSpace(input.ChatReference) != input.ChatReference {
+		handler.writeError(w, errCallbackAdminInvalidRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if handler.groups == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]any{"code": "group_membership_unavailable"})
+		return
+	}
+	facts, e := handler.groups.Refresh(r.Context(), input.ChatReference)
+	if e != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	json.NewEncoder(w).Encode(map[string]any{"complete": e == nil && facts.Complete, "observed_at": facts.ObservedAt, "external_count": facts.ExternalCount, "unresolved_count": facts.UnresolvedCount, "resolved_customer_count": len(facts.CustomerIDs)})
 }

@@ -16,6 +16,7 @@ const (
 	PaidOrder                  Template = "paid_order"
 	ChannelEntry               Template = "channel_entry"
 	RadarFirstClickElapsed     Template = "radar_first_click_elapsed"
+	MemberExcludingGroupPaid   Template = "member_excluding_group_paid"
 	MemberUsageStatus          Template = "member_usage_status"
 )
 

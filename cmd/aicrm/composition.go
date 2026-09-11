@@ -488,7 +488,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	segmentService := segmentapp.NewService(uow, segmentRepository)
 	// Populate this composition-owned adapter as its Owner stores are built
 	// below. The process has not started serving requests at this point.
-	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
+	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Groups: wecom.PostgreSQLGroupMembershipFacts{}, Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
 	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)
@@ -1484,9 +1484,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	var groupMembershipRefresh wecom.GroupMembershipRefresher
+	if cfg.WeCom.ChannelProviderReadEnabled {
+		groupMembershipRefresh = wecom.GroupMembershipRefresh{Provider: providerClient, Resolver: oneID, Store: wecom.PostgreSQLGroupMembershipFacts{}, Audit: auditService, UOW: uow, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
+	}
 	callbackAdminHandler, err := wecom.NewCallbackAdminHandler(wecom.CallbackAdminConfig{
 		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
-		Receipts: callbackReceipts, Retrier: inboxService,
+		Receipts: callbackReceipts, Retrier: inboxService, GroupMembership: groupMembershipRefresh,
 	})
 	if err != nil {
 		return fail(err)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestFrozenTemplatesAndCanonicalDefinition(t *testing.T) {
-	if got := Templates(); len(got) != 7 {
+	if got := Templates(); len(got) != 8 {
 		t.Fatalf("templates=%d", len(got))
 	} else {
 		for _, item := range got {

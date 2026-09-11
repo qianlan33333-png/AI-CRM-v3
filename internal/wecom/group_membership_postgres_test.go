@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
+	cfgplatform "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	pg "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 	"os"
@@ -12,8 +13,8 @@ import (
 )
 
 func TestGroupMembershipPostgresFreshnessAndCAS(t *testing.T) {
-	dsn := os.Getenv("AICRM_DATABASE_URL")
-	if dsn == "" {
+	dsn, dsnErr := cfgplatform.DatabaseURL()
+	if dsnErr != nil || dsn == "" {
 		t.Skip("AICRM_DATABASE_URL required")
 	}
 	ctx := context.Background()

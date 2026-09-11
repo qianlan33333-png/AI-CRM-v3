@@ -25,6 +25,7 @@ import (
 // matching, Provider call, or customer write. Each condition fails closed when
 // its factual Owner is unavailable.
 type LegacyTemplateSource struct {
+	Groups             wecomport.AudienceGroupMembershipReader
 	Contacts           wecomport.AudienceContactReader
 	Survey             surveyport.AudienceChoiceAnswerReader
 	Submissions        surveyport.AudienceSubmissionReader
@@ -65,6 +66,8 @@ func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentpo
 		ids, err = s.channel(ctx, ast.Parameters, reference)
 	case segmentdsl.RadarFirstClickElapsed:
 		ids, err = s.radar(ctx, ast.Parameters, reference)
+	case segmentdsl.MemberExcludingGroupPaid:
+		ids, err = s.memberExcludingGroupPaid(ctx, ast.Parameters, reference)
 	case segmentdsl.MemberUsageStatus:
 		ids, err = s.member(ctx, ast.Parameters, reference)
 	default:

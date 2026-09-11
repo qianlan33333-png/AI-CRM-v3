@@ -47,7 +47,7 @@ type DefinitionInput struct {
 
 var legacyTemplates = []string{
 	"wecom_contact_registration", "questionnaire_choice_answers", "questionnaire_submissions", "paid_order",
-	"channel_entry", "radar_first_click_elapsed", "member_usage_status",
+	"channel_entry", "radar_first_click_elapsed", "member_usage_status", "member_excluding_group_paid",
 }
 
 // Templates is deliberately a closed catalog. Composition reports source
@@ -67,6 +67,7 @@ func templateCatalog() []Template {
 	}
 	withOwner := func(fields []TemplateField) []TemplateField { return append(fields, owner()...) }
 	return []Template{
+		{Key: "member_excluding_group_paid", Available: true, TemplateVersion: 1, Label: "有效会员排除群与已购商品", Description: "有效会员，排除指定群成员与指定已购商品；群事实缺失或过期时停止刷新。", DefaultRefreshMode: "daily_0200", Fields: append(owner(), TemplateField{Name: "exclude_group_chat", Label: "排除的企微群引用", Type: "string", Required: true}, TemplateField{Name: "excluded_product_codes", Label: "排除的已购商品编码", Type: "string_list", Required: true, MinItems: &minimumOne})},
 		{Key: "wecom_contact_registration", Available: true, TemplateVersion: 1, Label: "企微联系人与注册状态", Description: "按负责人、企微联系人状态和注册状态圈选。", DefaultRefreshMode: "every_3m", Fields: append(owner(), TemplateField{Name: "contact_statuses", Label: "联系人状态", Type: "enum_list", Required: true, Enum: []string{"active", "deleted"}, Default: []string{"active"}}, TemplateField{Name: "registration_status", Label: "注册状态", Type: "enum", Required: true, Enum: []string{"any", "registered", "unregistered"}, Default: "any"})},
 		{Key: "questionnaire_submissions", Available: true, TemplateVersion: 1, Label: "问卷提交", Description: "提交任一所选问卷且已归属客户；不限题型、答案或提交次数。", DefaultRefreshMode: "every_3m", Fields: append(withOwner([]TemplateField{{Name: "questionnaires", Label: "问卷", Type: "reference_list", Required: true, Reference: "questionnaire", MinItems: &minimumOne}}), TemplateField{Name: "require_wecom_identity", Label: "要求已识别企微身份（不限制联系人状态）", Type: "boolean", Required: true, Default: true})},
 		{Key: "questionnaire_choice_answers", Available: true, TemplateVersion: 1, Label: "问卷选择题答案", Description: "按首次完整提交的选择题答案圈选；题间 AND、题内选项 OR。", DefaultRefreshMode: "every_3m", Fields: withOwner([]TemplateField{{Name: "questionnaire", Label: "问卷", Type: "reference", Required: true, Reference: "questionnaire"}, {Name: "conditions", Label: "题目条件", Type: "condition_list", Required: true, MinItems: &minimumOne}})},
@@ -82,6 +83,8 @@ func intPointer(value int) *int { return &value }
 func DefaultDefinition(templateKey string) (json.RawMessage, error) {
 	var parameters map[string]any
 	switch templateKey {
+	case "member_excluding_group_paid":
+		parameters = map[string]any{"owner_scope": "all", "owner_staff_ids": []string{}, "exclude_group_chat": "__configure__", "excluded_product_codes": []string{"__configure__"}}
 	case "active_contacts":
 		parameters = map[string]any{"within_days": "30"}
 	case "stage_any":
@@ -142,6 +145,10 @@ func CanonicalDefinition(raw json.RawMessage) (json.RawMessage, error) {
 func validDefinition(input DefinitionInput) bool {
 	owner := validOwner(input.Parameters)
 	switch input.TemplateKey {
+	case "member_excluding_group_paid":
+		group, ok := stringOf(input.Parameters, "exclude_group_chat")
+		products, pok := stringsOf(input.Parameters, "excluded_product_codes", 1, 100)
+		return owner && ok && validStrings([]string{group}, 1, 1) && pok && validStrings(products, 1, 100) && keys(input.Parameters, "owner_scope", "owner_staff_ids", "exclude_group_chat", "excluded_product_codes")
 	case "active_contacts":
 		// Read-only compatibility for already-persisted definitions. It is not
 		// exposed in the PRD05 catalog because directory updates are not usage.
