@@ -19,6 +19,7 @@ import (
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
+	paymenth5oauth "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/h5oauth"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
@@ -226,7 +227,14 @@ func (handler *Handler) completeH5OAuth(writer http.ResponseWriter, request *htt
 	}
 	issued, returnPath, err := handler.h5OAuth.Complete(request.Context(), request.URL.Query().Get("state"), request.URL.Query().Get("code"))
 	if err != nil {
-		writeError(writer, http.StatusUnauthorized, "identity_verification_failed")
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writer.Header().Set("Cache-Control", "no-store")
+		message := "微信授权未完成，请关闭页面后从原链接重新进入。"
+		if errors.Is(err, paymenth5oauth.ErrIdentityConflict) {
+			message = "微信授权已完成，但您的历史账号资料需要核对。请联系客服处理后再继续支付。"
+		}
+		writer.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprintf(writer, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>授权提示</title></head><body style="font:17px/1.7 -apple-system,sans-serif;padding:32px;color:#263238"><h2>暂时无法继续支付</h2><p>%s</p><p>当前未发起新的支付，请勿反复提交。</p></body></html>`, message)
 		return
 	}
 	if err = WriteTrustedSessionCookie(writer, issued); err != nil {

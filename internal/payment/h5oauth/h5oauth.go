@@ -21,12 +21,12 @@ import (
 
 var ErrUnavailable = errors.New("payment H5 OAuth unavailable")
 var ErrInvalid = errors.New("invalid payment H5 OAuth request")
+var ErrIdentityConflict = errors.New("payment H5 OAuth identities require review")
 
-// Public commerce routes use one escaped code/slug segment only and keep the
-// OAuth return same-origin. /p is intentionally absent because it contains no
-// authenticated action; /pay, /s/{code}, /s/{code}/pay and /c/{slug} reuse
-// the same trusted payment session without accepting browser identity input.
-var returnPathPattern = regexp.MustCompile(`^/(?:pay/[^/?#]+|s/[^/?#]+(?:/pay)?|c/[a-z][a-z0-9-]{5,119})$`)
+// Public commerce routes use one escaped code/slug segment only and keep
+// OAuth returns same-origin. /p is the same-page standard-product checkout;
+// /pay remains compatible with previously shared payment links.
+var returnPathPattern = regexp.MustCompile(`^/(?:p/[^/?#]+|pay/[^/?#]+|s/[^/?#]+(?:/pay)?|c/[a-z][a-z0-9-]{5,119})$`)
 
 type Provider interface {
 	Enabled() bool
@@ -127,6 +127,9 @@ func (s *Service) Complete(ctx context.Context, stateToken, code string) (paymen
 		return paymentsession.Issued{}, "", ErrUnavailable
 	}
 	issued, err := s.issuer.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact.OpenID, UnionID: fact.UnionID, IdempotencyKey: "payment-h5-oauth:" + base64.RawURLEncoding.EncodeToString(digest[:])})
+	if errors.Is(err, paymentsession.ErrIdentityConflict) {
+		return paymentsession.Issued{}, "", ErrIdentityConflict
+	}
 	if err != nil || issued.Channel != "h5_official_account" {
 		return paymentsession.Issued{}, "", ErrUnavailable
 	}
@@ -142,7 +145,7 @@ func validReturnPath(value string) bool {
 		return false
 	}
 	parts := strings.Split(strings.TrimPrefix(value, "/"), "/")
-	if len(parts) < 2 || len(parts) > 3 || (parts[0] != "pay" && parts[0] != "s" && parts[0] != "c") || (len(parts) == 3 && (parts[0] != "s" || parts[2] != "pay")) {
+	if len(parts) < 2 || len(parts) > 3 || (parts[0] != "p" && parts[0] != "pay" && parts[0] != "s" && parts[0] != "c") || (len(parts) == 3 && (parts[0] != "s" || parts[2] != "pay")) {
 		return false
 	}
 	code, err := url.PathUnescape(parts[1])

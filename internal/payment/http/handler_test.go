@@ -16,6 +16,7 @@ import (
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
+	paymenth5oauth "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/h5oauth"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
@@ -98,9 +99,10 @@ func (securityStub) Authenticate(context.Context, *http.Request) (accessdomain.P
 }
 
 type h5OAuthStub struct {
-	enabled bool
-	starts  int
-	issued  paymentsession.Issued
+	completeError error
+	enabled       bool
+	starts        int
+	issued        paymentsession.Issued
 }
 
 func (stub *h5OAuthStub) Enabled() bool { return stub.enabled }
@@ -112,7 +114,7 @@ func (stub *h5OAuthStub) Start(_ context.Context, returnPath string) (string, er
 	return "https://open.weixin.qq.com/oauth", nil
 }
 func (stub *h5OAuthStub) Complete(context.Context, string, string) (paymentsession.Issued, string, error) {
-	return stub.issued, "/pay/course-7", nil
+	return stub.issued, "/pay/course-7", stub.completeError
 }
 
 type sessionVerifierStub struct{ fact identitydomain.VerifiedFact }
@@ -384,5 +386,15 @@ func TestCheckoutStatusReportsUnknownWithoutHandoffOrClearingSession(t *testing.
 	body := response.Body.String()
 	if response.Code != http.StatusAccepted || !strings.Contains(body, `"prepay_state":"outcome_unknown"`) || !strings.Contains(body, `"ready":false`) || strings.Contains(body, `"handoff"`) || len(response.Result().Cookies()) != 0 {
 		t.Fatalf("unexpected checkout: code=%d body=%s", response.Code, body)
+	}
+}
+
+func TestOAuthIdentityConflictExplainsReviewWithoutRedirect(t *testing.T) {
+	handler, _ := NewHandler(&appStub{}, nil, securityStub{}, true)
+	_ = handler.SetH5OAuth(&h5OAuthStub{enabled: true, completeError: paymenth5oauth.ErrIdentityConflict})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/callback?state=opaque&code=opaque", nil))
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "历史账号资料需要核对") || response.Header().Get("Location") != "" || !strings.Contains(response.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("unexpected OAuth response: %d", response.Code)
 	}
 }

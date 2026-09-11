@@ -416,3 +416,29 @@ func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(cleanup)
 	}
 }
+
+func TestPostgreSQLProductOAuthReturnMigrationPreservesRedirectBoundary(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	_, file, _, _ := runtime.Caller(0)
+	body, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0142_payment_h5_product_return_path.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, string(body)); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/p/subscription_trial_month", "/p/7", "/pay/7", "/s/course/pay", "/c/coupon-2026"} {
+		digest := sha256.Sum256([]byte(path))
+		if _, err = pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err != nil {
+			t.Fatalf("valid path=%q: %v", path, err)
+		}
+	}
+	for _, path := range []string{"//evil.example/p/7", "https://evil.example/p/7", "/p/a/b", "/p/a?b", "/p/a#b", "/p/a%2fb", "/p/a%5Cb", "/p/a%3fb", "/p/a%23b", "/p/a\\b"} {
+		digest := sha256.Sum256([]byte(path))
+		if _, err = pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err == nil {
+			t.Fatalf("unsafe redirect accepted: %q", path)
+		}
+	}
+}

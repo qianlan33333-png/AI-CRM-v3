@@ -93,7 +93,7 @@ func TestH5OAuthStateIsBoundExpiresAndCannotReplay(t *testing.T) {
 	if err != nil || legacyRedirect != "/pay/7" {
 		t.Fatalf("legacy redirect=%q err=%v", legacyRedirect, err)
 	}
-	for _, path := range []string{"/s/term-31", "/s/term-31/pay", "/c/coupon-2026"} {
+	for _, path := range []string{"/p/subscription_trial_month", "/p/course-7", "/p/7", "/s/term-31", "/s/term-31/pay", "/c/coupon-2026"} {
 		authorization, startErr := service.Start(context.Background(), path)
 		if startErr != nil {
 			t.Fatalf("path=%q err=%v", path, startErr)
@@ -104,7 +104,7 @@ func TestH5OAuthStateIsBoundExpiresAndCannotReplay(t *testing.T) {
 			t.Fatalf("path=%q redirect=%q err=%v", path, redirect, completeErr)
 		}
 	}
-	for _, path := range []string{"https://evil.example/pay/course-7", "//evil.example/pay/course-7", "/pay/", "/pay/course/7", "/pay/course?x=1", "/pay/%", "/pay/course%2F7", "/pay/course%5C7", "/s/", "/s/course/other", "/s/course/pay/other", "/s/course%2Fother", "/s/course%23fragment", "/c/short", "/c/CAPITAL-2026", "/c/coupon%2F2026"} {
+	for _, path := range []string{"/p/", "/p/a/b", "/p/a?x=1", "/p/a#fragment", "/p/a%2fb", "/p/a%5cb", "/p/a%3fb", "/p/a%23b", "//evil.example/p/course-7", "https://evil.example/p/course-7", "https://evil.example/pay/course-7", "//evil.example/pay/course-7", "/pay/", "/pay/course/7", "/pay/course?x=1", "/pay/%", "/pay/course%2F7", "/pay/course%5C7", "/s/", "/s/course/other", "/s/course/pay/other", "/s/course%2Fother", "/s/course%23fragment", "/c/short", "/c/CAPITAL-2026", "/c/coupon%2F2026"} {
 		if _, err := service.Start(context.Background(), path); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("path=%q err=%v", path, err)
 		}

@@ -16,6 +16,7 @@ import (
 )
 
 var ErrInvalid = errors.New("invalid payment session")
+var ErrIdentityConflict = errors.New("payment OAuth identities require review")
 var ErrExpired = errors.New("payment session expired")
 var ErrConsumed = errors.New("payment session consumed")
 
@@ -135,7 +136,7 @@ func (s *Service) IssueTrusted(ctx context.Context, c IssueCommand) (Issued, err
 		return nil
 	})
 	if e == nil && identityConflict {
-		return Issued{}, ErrInvalid
+		return Issued{}, ErrIdentityConflict
 	}
 	return out, e
 }
