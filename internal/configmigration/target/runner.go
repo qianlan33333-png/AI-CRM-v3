@@ -44,6 +44,20 @@ type Result struct {
 
 func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte, actor int64) (out Result, err error) {
 	commerce := snap.Manifest.Scope == "commerce-only"
+	if r.ReviewCouponSourceID != 0 || r.ReviewCouponBefore != ([32]byte{}) {
+		if !commerce || r.ReviewCouponSourceID < 1 || r.ReviewCouponBefore == ([32]byte{}) {
+			return out, ErrInvalid
+		}
+		found := false
+		for _, row := range snap.Coupons {
+			if row.ID == r.ReviewCouponSourceID {
+				found = true
+			}
+		}
+		if !found {
+			return out, ErrInvalid
+		}
+	}
 	if r.UOW == nil || r.Products == nil || r.Coupons == nil || actor < 1 || snap.Validate() != nil || (!commerce && (r.GroupOps == nil || r.Automation == nil || source.ValidateExpectedBaseline(snap) != nil)) {
 		return out, ErrInvalid
 	}
