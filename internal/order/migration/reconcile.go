@@ -139,7 +139,7 @@ func (store PostgreSQLRuns) verifyHistoricalOrder(ctx context.Context, runID int
 	} else {
 		expectedPayer := input.SubjectCustomerIDs[expected.PayerSubjectKey]
 		expectedBeneficiary := input.SubjectCustomerIDs[expected.BeneficiarySubjectKey]
-		if expectedPayer < 1 || expectedBeneficiary < 1 || payer == nil || beneficiary == nil || *payer != expectedPayer || *beneficiary != expectedBeneficiary {
+		if expectedPayer < 1 || payer == nil || *payer != expectedPayer || (expected.BeneficiarySubjectKey == "" && beneficiary != nil) || (expected.BeneficiarySubjectKey != "" && (expectedBeneficiary < 1 || beneficiary == nil || *beneficiary != expectedBeneficiary)) {
 			return 0, ErrReconciliationMismatch
 		}
 	}

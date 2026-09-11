@@ -152,6 +152,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.checkout(writer, request)
 	case strings.HasPrefix(path, "/api/v1/wechat-pay/checkouts/"):
 		handler.checkoutStatus(writer, request, strings.TrimPrefix(path, "/api/v1/wechat-pay/checkouts/"))
+	case path == "/api/admin/payments/history":
+		handler.historyPayment(writer, request)
 	case path == "/api/admin/refunds":
 		handler.refunds(writer, request)
 	case path == "/api/public/wechat-pay/callbacks/payment" || path == "/api/public/wechat-pay/callbacks/refund":
@@ -896,3 +898,38 @@ func hasRole(roles []accessdomain.Role, expected accessdomain.Role) bool {
 }
 
 var _ Application = (*paymentapp.Service)(nil)
+
+// historyPayment is an authenticated native read path for inert money facts.
+func (handler *Handler) historyPayment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	principal, err := handler.security.Authenticate(r.Context(), r)
+	if err != nil || principal.Kind != accessdomain.KindAdmin {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	provider := domain.Provider(r.URL.Query().Get("provider"))
+	merchant := r.URL.Query().Get("merchant_order_no")
+	if (provider != domain.ProviderWeChatPay && provider != domain.ProviderWeChatShop) || merchant == "" || len(merchant) > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	p, err := handler.app.FindPayment(r.Context(), provider, merchant)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	if !p.Historical {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	nullable := func(v int64) any {
+		if v < 1 {
+			return nil
+		}
+		return v
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": p.ID, "order_id": p.OrderID, "merchant_order_no": p.MerchantOrderNo, "provider": p.Provider, "status": p.Status, "amount_minor": p.AmountMinor, "currency": p.Currency, "record_origin": "history", "source_status": p.SourceStatus, "history_reason": p.HistoryReason, "payer_customer_id": nullable(p.PayerCustomerID), "beneficiary_customer_id": nullable(p.BeneficiaryCustomerID), "effect_eligible": false, "updated_at": p.UpdatedAt})
+}

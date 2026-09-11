@@ -262,15 +262,15 @@ func paymentHistoryFacts(manifest ordermigration.Manifest, orderIDs map[string]i
 		}
 		allOrderIDs = append(allOrderIDs, orderID)
 		status, terminal := historicalPaymentStatus(row.Status)
-		if !terminal || row.PayerIdentityKey == "" || row.Provider == "alipay" {
+		if !terminal || row.Provider == "alipay" {
 			continue
 		}
 		identity := identities[row.PayerIdentityKey]
 		beneficiary := subjectCustomers[row.BeneficiarySubjectKey]
-		if identity.CustomerID < 1 || identity.IdentityID < 1 || beneficiary < 1 {
+		if (row.PayerIdentityKey != "" && (identity.CustomerID < 1 || identity.IdentityID < 1)) || (row.BeneficiarySubjectKey != "" && beneficiary < 1) {
 			return nil, nil, nil, ordermigration.ErrReconciliationMismatch
 		}
-		payments = append(payments, paymentmigration.HistoricalPaymentFact{OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: identity.IdentityID, PayerCustomerID: identity.CustomerID, BeneficiaryCustomerID: beneficiary, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: status, ProviderTransactionReference: row.ProviderTransactionNo, SourceDigest: ordermigration.HistoricalOrderDigest(row), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt})
+		payments = append(payments, paymentmigration.HistoricalPaymentFact{SourceStatus: row.SourceStatus, HistoryReason: row.HistoryReason, OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: identity.IdentityID, PayerCustomerID: identity.CustomerID, BeneficiaryCustomerID: beneficiary, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: status, ProviderTransactionReference: row.ProviderTransactionNo, SourceDigest: ordermigration.HistoricalOrderDigest(row), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt})
 	}
 	refunds := make([]paymentmigration.HistoricalRefundFact, 0, len(manifest.Refunds))
 	for _, row := range manifest.Refunds {

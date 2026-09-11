@@ -108,12 +108,12 @@ func (r *Repository) GetPayment(ctx context.Context, id int64, lock bool) (domai
 	if e != nil {
 		return domain.Payment{}, e
 	}
-	q := `SELECT id,order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_transaction_digest,''),version,created_at,updated_at FROM payments WHERE id=$1`
+	q := `SELECT id,order_id,provider,payment_channel,merchant_order_no,COALESCE(payer_identity_id,0),COALESCE(payer_customer_id,0),COALESCE(beneficiary_customer_id,0),amount_minor,currency,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_transaction_digest,''),version,created_at,updated_at,historical,source_status,history_reason FROM payments WHERE id=$1`
 	if lock {
 		q += ` FOR UPDATE`
 	}
 	var p domain.Payment
-	e = t.QueryRow(ctx, q, id).Scan(&p.ID, &p.OrderID, &p.Provider, &p.Channel, &p.MerchantOrderNo, &p.PayerIdentityID, &p.PayerCustomerID, &p.BeneficiaryCustomerID, &p.AmountMinor, &p.Currency, &p.Status, &p.EffectID, &p.ProviderTransactionDigest, &p.Version, &p.CreatedAt, &p.UpdatedAt)
+	e = t.QueryRow(ctx, q, id).Scan(&p.ID, &p.OrderID, &p.Provider, &p.Channel, &p.MerchantOrderNo, &p.PayerIdentityID, &p.PayerCustomerID, &p.BeneficiaryCustomerID, &p.AmountMinor, &p.Currency, &p.Status, &p.EffectID, &p.ProviderTransactionDigest, &p.Version, &p.CreatedAt, &p.UpdatedAt, &p.Historical, &p.SourceStatus, &p.HistoryReason)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return domain.Payment{}, paymentport.ErrNotFound
 	}
@@ -506,6 +506,10 @@ func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDi
 }
 
 func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.Payment, digest [32]byte, runID string) (domain.Payment, error) {
+	if payment.EffectID != "" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.PayerIdentityID < 0 || payment.PayerCustomerID < 0 || payment.BeneficiaryCustomerID < 0 || ((payment.PayerIdentityID == 0) != (payment.PayerCustomerID == 0)) || (payment.PayerCustomerID == 0 && payment.BeneficiaryCustomerID != 0) {
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	payment.Historical = true
 	t, err := tx(ctx)
 	if err != nil {
 		return domain.Payment{}, err
@@ -526,7 +530,7 @@ func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.P
 	if payment.Channel == "" {
 		payment.Channel = domain.ChannelMiniProgram
 	}
-	err = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12,$13,$14) RETURNING id`, payment.OrderID, payment.Provider, payment.Channel, payment.MerchantOrderNo, payment.PayerIdentityID, payment.PayerCustomerID, payment.BeneficiaryCustomerID, payment.AmountMinor, payment.Currency, payment.Status, payment.ProviderTransactionDigest, payment.Version, payment.CreatedAt, payment.UpdatedAt).Scan(&payment.ID)
+	err = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at,historical,source_status,history_reason) VALUES($1,$2,$3,$4,NULLIF($5,0),NULLIF($6,0),NULLIF($7,0),$8,$9,$10,NULLIF($11,''),$12,$13,$14,true,$15,$16) RETURNING id`, payment.OrderID, payment.Provider, payment.Channel, payment.MerchantOrderNo, payment.PayerIdentityID, payment.PayerCustomerID, payment.BeneficiaryCustomerID, payment.AmountMinor, payment.Currency, payment.Status, payment.ProviderTransactionDigest, payment.Version, payment.CreatedAt, payment.UpdatedAt, payment.SourceStatus, payment.HistoryReason).Scan(&payment.ID)
 	if err != nil {
 		return domain.Payment{}, mapError(err)
 	}

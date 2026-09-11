@@ -133,3 +133,28 @@ func TestHistoricalRefundStatusesPreserveLegacyDigestAndCompletedTotals(t *testi
 		t.Fatal("unknown refund source status accepted")
 	}
 }
+
+func TestHistoricalUnassignedRefundAndPayerOnlyHaveNoInventedBeneficiary(t *testing.T) {
+	m, err := Parse([]byte(orderOnlyJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Refunds = []RefundRow{{Provider: "wechat_pay", SourceKey: "refund-failed", MerchantOrderNo: m.Orders[0].MerchantOrderNo, RefundNo: "failed", AmountMinor: 40, Reason: "historical", Status: "failed", OccurredAt: m.Orders[0].UpdatedAt}}
+	if err = m.Validate(false); err != nil {
+		t.Fatal("unassigned failed refund rejected", err)
+	}
+	if m.Summary().PaymentRows != 1 || m.Summary().RefundMinor != 0 {
+		t.Fatal("money evidence miscounted")
+	}
+	m.Subjects = []SubjectRow{{SourceKey: "s", IdentityKeys: []string{"i"}}}
+	m.Identities = []IdentityRow{{SourceKey: "i", Kind: "mp_openid", Scope: "wechat-app:a", Value: "opaque", Source: "provider-history"}}
+	m.Orders[0].PayerSubjectKey = "s"
+	m.Orders[0].PayerIdentityKey = "i"
+	if err = m.Validate(false); err != nil {
+		t.Fatal("payer-only rejected", err)
+	}
+	m.Orders[0].BeneficiarySubjectKey = "unknown"
+	if err = m.Validate(false); err == nil {
+		t.Fatal("unknown beneficiary accepted")
+	}
+}

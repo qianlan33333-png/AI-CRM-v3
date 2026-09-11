@@ -122,7 +122,9 @@ func (runner Runner) Apply(ctx context.Context, manifest Manifest) (Result, erro
 			payerIdentityID := int64(0)
 			if row.PayerIdentityKey != "" {
 				payerID = &payer.customerID
-				beneficiaryID = &beneficiary.customerID
+				if row.BeneficiarySubjectKey != "" {
+					beneficiaryID = &beneficiary.customerID
+				}
 				payerIdentityID = payer.identities[row.PayerIdentityKey]
 			}
 			status, err := orderStatus(row.Status)
@@ -152,12 +154,12 @@ func (runner Runner) Apply(ctx context.Context, manifest Manifest) (Result, erro
 			entry := struct{ orderID, paymentID int64 }{orderID: imported.ID}
 			result.Orders++
 			paymentStatus, hasPayment := historicalPaymentStatus(status)
-			if payerIdentityID > 0 && hasPayment && row.Provider != orderdomain.ProviderAlipay {
+			if hasPayment && row.Provider != orderdomain.ProviderAlipay {
 				transactionDigest := ""
 				if row.ProviderTransactionNo != "" {
 					transactionDigest = string(effectport.Hash("history.transaction", row.ProviderTransactionNo))
 				}
-				payment := paymentdomain.Payment{OrderID: imported.ID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: payer.customerID, BeneficiaryCustomerID: beneficiary.customerID, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: paymentStatus, ProviderTransactionDigest: transactionDigest, Version: 1, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
+				payment := paymentdomain.Payment{Historical: true, SourceStatus: row.SourceStatus, HistoryReason: row.HistoryReason, OrderID: imported.ID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: payer.customerID, BeneficiaryCustomerID: beneficiary.customerID, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: paymentStatus, ProviderTransactionDigest: transactionDigest, Version: 1, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
 				persisted, err := runner.Payments.ImportTerminalPayment(ctx, payment, digest, manifest.RunKey)
 				if err != nil {
 					return err

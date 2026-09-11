@@ -37,7 +37,7 @@ func TestPostgreSQLHistoricalPaymentVerifierRejectsPerRowDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	transactionDigest := string(effectport.Hash("history.transaction", "transaction-history"))
-	if err := pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at) VALUES($1,'wechat_pay','mini_program','merchant-history',101,11,11,100,'CNY','paid',$2,1,$3,$3) RETURNING id`, orderID, transactionDigest, now).Scan(&paymentID); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at,historical) VALUES($1,'wechat_pay','mini_program','merchant-history',101,11,11,100,'CNY','paid',$2,1,$3,$3,true) RETURNING id`, orderID, transactionDigest, now).Scan(&paymentID); err != nil {
 		t.Fatal(err)
 	}
 	paymentKey := sha256.Sum256([]byte("payment-history:run-001:merchant-history"))
@@ -131,7 +131,7 @@ func historicalPaymentPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate payment migration test")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

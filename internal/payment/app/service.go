@@ -317,7 +317,7 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 		}); err != nil {
 			return domain.Refund{}, classify(err)
 		}
-		if candidate.Provider != domain.ProviderWeChatShop || candidate.MerchantOrderNo != c.ProviderOrderID || candidate.Status != domain.StatusPaid {
+		if candidate.Historical || candidate.Provider != domain.ProviderWeChatShop || candidate.MerchantOrderNo != c.ProviderOrderID || candidate.Status != domain.StatusPaid {
 			return domain.Refund{}, paymentport.ErrConflict
 		}
 		if err := s.shopReconciler.ValidateRefundMaterial(ctx, paymentport.ShopRefundMaterial{AmountMinor: c.AmountMinor, ProviderOrderID: c.ProviderOrderID, ProductID: c.ProductID, SKUID: c.SKUID, RefundCount: c.RefundCount, ReasonCode: c.ReasonCode, Currency: "CNY"}); err != nil {
@@ -628,7 +628,7 @@ func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64
 		if inner != nil {
 			return inner
 		}
-		if current.Provider != domain.ProviderWeChatPay || (current.Status != domain.StatusAwaitingPayment && current.Status != domain.StatusAwaitingPrepay && current.Status != domain.StatusPaid) {
+		if current.Historical || current.Provider != domain.ProviderWeChatPay || (current.Status != domain.StatusAwaitingPayment && current.Status != domain.StatusAwaitingPrepay && current.Status != domain.StatusPaid) {
 			return paymentport.ErrConflict
 		}
 		return nil
@@ -698,6 +698,9 @@ func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) 
 			return paymentport.ErrConflict
 		}
 		payment, inner = s.store.GetPayment(tx, current.PaymentID, false)
+		if inner == nil && payment.Historical {
+			return paymentport.ErrConflict
+		}
 		return inner
 	})
 	if err != nil {
@@ -829,7 +832,7 @@ func (s *Service) callbackAppIDMatches(payment domain.Payment, appID string) boo
 func hexDigest(value [32]byte) string { return fmt.Sprintf("%x", value[:]) }
 
 func (s *Service) ImportTerminalPayment(ctx context.Context, payment domain.Payment, digest [32]byte, runID string) (domain.Payment, error) {
-	if s == nil || s.uow == nil || s.store == nil || digest == ([32]byte{}) || !validScope(runID) || payment.ID != 0 || payment.OrderID < 1 || payment.PayerIdentityID < 1 || payment.AmountMinor < 1 || payment.Currency != "CNY" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.EffectID != "" {
+	if s == nil || s.uow == nil || s.store == nil || digest == ([32]byte{}) || !validScope(runID) || payment.ID != 0 || payment.OrderID < 1 || payment.PayerIdentityID < 0 || payment.PayerCustomerID < 0 || payment.BeneficiaryCustomerID < 0 || ((payment.PayerIdentityID == 0) != (payment.PayerCustomerID == 0)) || (payment.PayerCustomerID == 0 && payment.BeneficiaryCustomerID != 0) || payment.AmountMinor < 1 || payment.Currency != "CNY" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.EffectID != "" {
 		return domain.Payment{}, paymentport.ErrInvalid
 	}
 	var out domain.Payment
@@ -842,7 +845,7 @@ func (s *Service) ImportTerminalPayment(ctx context.Context, payment domain.Paym
 }
 
 func (s *Service) ImportTerminalRefund(ctx context.Context, refund domain.Refund, digest [32]byte, runID string) (domain.Refund, error) {
-	if s == nil || s.uow == nil || s.store == nil || digest == ([32]byte{}) || !validScope(runID) || refund.ID != 0 || refund.PaymentID < 1 || refund.AmountMinor < 1 || refund.Status != domain.RefundCompleted || refund.EffectID != "" {
+	if s == nil || s.uow == nil || s.store == nil || digest == ([32]byte{}) || !validScope(runID) || refund.ID != 0 || refund.PaymentID < 1 || refund.AmountMinor < 1 || !refund.Status.HistoricalImportable() || refund.EffectID != "" {
 		return domain.Refund{}, paymentport.ErrInvalid
 	}
 	var out domain.Refund
