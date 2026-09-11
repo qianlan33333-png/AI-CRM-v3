@@ -49,7 +49,7 @@ async function runPage(storage, cookie, bridge) {
     virtualConsole: console,
     beforeParse(window) {
       Object.defineProperty(window.navigator, "userAgent", { configurable: true, value: "MicroMessenger test" });
-      Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
+      Object.defineProperty(window, "sessionStorage", { configurable: true, value: storage });
       Object.defineProperty(window, "crypto", { configurable: true, value: { randomUUID: () => `checkout-journey-${++keySequence}` } });
       window.WeixinJSBridge = {
         invoke(_method, _handoff, callback) {
@@ -69,7 +69,8 @@ async function runPage(storage, cookie, bridge) {
       window.clearTimeout = () => {};
     },
   });
-  await sleep(5);
+  for (let attempt=0; attempt<240 && !dom.window.document.getElementById("identityGate").hidden; attempt++) await sleep(5);
+  assert.equal(dom.window.document.getElementById("identityGate").hidden,true,"trusted identity and purchase state resolved");
   assert.equal(errors.length, 0, errors.map((error) => error.stack || error.message).join("\n"));
   Object.defineProperty(dom, "checkoutJourneyErrors", { value: errors });
   return dom;
@@ -133,11 +134,12 @@ closePage(replayed);
 
 // A terminal checkpoint is a read-only recovery record. Reloading the same
 // page may read that exact paid order, but must not call the SDK or create a
-// replacement order; starting another checkout requires the explicit button.
+// replacement order; ordinary products have no renewal button.
 const replayedReload = await runPage(replayStorage, firstSession, normalBridge);
 await waitFor(replayedReload.window.document, paidWithoutCompletionAction, "replayed terminal reload");
 assert.equal(replayedReload.window.document.getElementById("buy").disabled, true, "terminal reload cannot initiate a new checkout");
-assert.equal(replayedReload.window.document.getElementById("restart").hidden, false, "terminal reload exposes explicit repurchase");
+assert.equal(replayedReload.window.document.getElementById("renew"), null, "ordinary product cannot be repurchased");
+assert.equal(replayedReload.window.document.getElementById("buy").textContent, "已购买");
 assert.equal(requirePaidCheckpoint(replayStorage, "replayed terminal reload").merchant_order_no, replayedPaid.merchant_order_no, "terminal reload reads the same merchant order");
 closePage(replayedReload);
 
@@ -197,7 +199,7 @@ closePage(unavailable);
 // session binding. If its create response was lost, it must remain visible but
 // never be treated as permission to generate a fresh idempotency key.
 const legacyStorage = new SharedStorage();
-legacyStorage.setItem("aicrm.checkout.v1:7:standard", JSON.stringify({
+legacyStorage.setItem("aicrm.checkout.tab.v2:7:standard", JSON.stringify({
   key: "legacy-checkpoint-0001",
   merchant_order_no: "",
   payload: { product_id: 7, product_kind: "standard", beneficiary_selection: "payer_self", coupon_claim_id: 16, mobile: "+8613800138000" },

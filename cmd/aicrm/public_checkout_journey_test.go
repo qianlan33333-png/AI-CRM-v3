@@ -88,6 +88,15 @@ func (*checkoutJourneyApplication) CheckoutSessionBinding(_ context.Context, tok
 	return binding, nil
 }
 
+// This recovery fixture keeps purchase availability independent of prior cases;
+// purchase-once and consumed-session rules have dedicated application tests.
+func (*checkoutJourneyApplication) CanCreateCheckout(context.Context, string) (bool, error) {
+	return true, nil
+}
+func (*checkoutJourneyApplication) PurchaseStatus(context.Context, string, string, int64) (paymentport.PurchaseState, error) {
+	return paymentport.PurchaseState{State: "available", CanPurchase: true}, nil
+}
+
 func checkoutJourneyTrustedPayer(token string) int {
 	switch token {
 	case "trusted-payment-session-one", "trusted-payment-session-two":
