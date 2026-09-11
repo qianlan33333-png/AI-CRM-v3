@@ -45,13 +45,15 @@ func main() {
 }
 func run(args []string) error {
 	fs := flag.NewFlagSet("migrate-commerce-capture", flag.ContinueOnError)
-	mode := fs.String("mode", "capture", "capture|inspect")
+	mode := fs.String("mode", "capture", "capture|inspect|normalize")
 	directory := fs.String("directory", "", "new protected capture directory, or existing directory for inspect")
+	outputDirectory := fs.String("output-directory", "", "new protected normalization directory")
+	runKey := fs.String("run-key", "", "normalized migration run key")
 	keyPath := fs.String("key-file", "", "protected file containing 32-byte base64 encryption key")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *mode != "capture" && *mode != "inspect" {
+	if *mode != "capture" && *mode != "inspect" && *mode != "normalize" {
 		return errors.New("invalid mode")
 	}
 	key, err := readKey(*keyPath)
@@ -61,7 +63,7 @@ func run(args []string) error {
 	if *directory == "" {
 		return errors.New("directory required")
 	}
-	if *mode == "inspect" {
+	if *mode == "inspect" || *mode == "normalize" {
 		info, e := os.Lstat(*directory)
 		if e != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 			return errors.New("protected directory required")
@@ -85,6 +87,9 @@ func run(args []string) error {
 		}
 		if e = validate(s); e != nil {
 			return e
+		}
+		if *mode == "normalize" {
+			return normalizeCapture(s, *outputDirectory, *runKey)
 		}
 		return report(s)
 	}

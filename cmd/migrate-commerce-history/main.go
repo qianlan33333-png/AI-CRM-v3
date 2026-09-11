@@ -30,7 +30,7 @@ import (
 
 type options struct {
 	mode, snapshot, digest, deltaPreconditions string
-	confirm, orderOnly                         bool
+	confirm, orderOnly, existingOnly           bool
 }
 
 type historyIdentityResolution struct {
@@ -52,6 +52,7 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "path to normalized snapshot")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "required snapshot sha256")
 	flags.StringVar(&cfg.deltaPreconditions, "history-delta-preconditions", "", "protected target CAS evidence bound to exact manifest; full import only")
+	flags.BoolVar(&cfg.existingOnly, "existing-identities-only", false, "resolve already existing identities without provisioning or assurance upgrades")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm the exact apply manifest")
 	flags.BoolVar(&cfg.orderOnly, "order-only", false, "accept only the audited floating WeChat Pay order snapshot")
 	if err := flags.Parse(args); err != nil || cfg.snapshot == "" {
@@ -133,6 +134,9 @@ func run(ctx context.Context, args []string) error {
 	identity := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	paymentRepository := paymentstore.NewPostgreSQL()
 	runner := ordermigration.Runner{UOW: uow, Identities: identity, Facts: identityadapter.ProviderHistory{}, IdentityRuns: identitymigration.PostgreSQLReceipts{}, Orders: orderService, Payments: paymentapp.NewService(uow, paymentRepository, nil, nil, nil), Runs: runs}
+	if cfg.existingOnly {
+		runner.Identities = existingIdentitiesOnly{Resolver: identity}
+	}
 	if cfg.deltaPreconditions != "" {
 		runner.DeltaPreconditions, err = loadDeltaPreconditions(cfg.deltaPreconditions, manifest)
 		if err != nil {
