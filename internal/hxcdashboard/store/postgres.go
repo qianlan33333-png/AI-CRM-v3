@@ -122,6 +122,11 @@ func (store *PostgreSQL) Publish(ctx context.Context, runID int64, projection do
 	if err != nil {
 		return 0, fmt.Errorf("insert projection: %w", err)
 	}
+	for customer, state := range projection.RegistrationCoverage {
+		if _, err = tx.Exec(ctx, `INSERT INTO hxc_registration_coverage(projection_id,customer_id,state) VALUES($1,$2,$3)`, id, customer, state); err != nil {
+			return 0, err
+		}
+	}
 	rows := make([][]any, 0, len(projection.Rows))
 	for _, r := range projection.Rows {
 		var customer any

@@ -29,8 +29,8 @@ import (
 )
 
 type options struct {
-	mode, snapshot, digest string
-	confirm, orderOnly     bool
+	mode, snapshot, digest, deltaPreconditions string
+	confirm, orderOnly, existingOnly           bool
 }
 
 type historyIdentityResolution struct {
@@ -51,6 +51,8 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|dry-run|apply|reconcile")
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "path to normalized snapshot")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "required snapshot sha256")
+	flags.StringVar(&cfg.deltaPreconditions, "history-delta-preconditions", "", "protected target CAS evidence bound to exact manifest; full import only")
+	flags.BoolVar(&cfg.existingOnly, "existing-identities-only", false, "resolve already existing identities without provisioning or assurance upgrades")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm the exact apply manifest")
 	flags.BoolVar(&cfg.orderOnly, "order-only", false, "accept only the audited floating WeChat Pay order snapshot")
 	if err := flags.Parse(args); err != nil || cfg.snapshot == "" {
@@ -60,8 +62,16 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.deltaPreconditions != "" {
+		if _, err := loadDeltaPreconditions(cfg.deltaPreconditions, manifest); err != nil {
+			return err
+		}
+	}
 	summary := manifest.Summary()
 	if cfg.orderOnly {
+		if cfg.deltaPreconditions != "" {
+			return errors.New("history delta cannot be order-only")
+		}
 		if err = ordermigration.ValidateOrderOnly(manifest); err != nil {
 			return err
 		}
@@ -76,7 +86,7 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	if cfg.mode == "dry-run" {
-		return printJSON(map[string]any{"mode": cfg.mode, "order_only": cfg.orderOnly, "eligible": true, "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
+		return printJSON(map[string]any{"mode": cfg.mode, "order_only": cfg.orderOnly, "eligible": cfg.deltaPreconditions == "", "target_delta_cas_pending": cfg.deltaPreconditions != "", "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
 	}
 	provided, err := hex.DecodeString(cfg.digest)
 	if err != nil || len(provided) != 32 || string(provided) != string(manifest.Digest[:]) {
@@ -124,6 +134,18 @@ func run(ctx context.Context, args []string) error {
 	identity := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	paymentRepository := paymentstore.NewPostgreSQL()
 	runner := ordermigration.Runner{UOW: uow, Identities: identity, Facts: identityadapter.ProviderHistory{}, IdentityRuns: identitymigration.PostgreSQLReceipts{}, Orders: orderService, Payments: paymentapp.NewService(uow, paymentRepository, nil, nil, nil), Runs: runs}
+	if cfg.existingOnly {
+		runner.Identities = existingIdentitiesOnly{Resolver: identity}
+	}
+	if cfg.deltaPreconditions != "" {
+		runner.DeltaPreconditions, err = loadDeltaPreconditions(cfg.deltaPreconditions, manifest)
+		if err != nil {
+			return err
+		}
+		runner.DeltaOrders = orderRepository
+		runner.Orders = withinOrderImporter{repository: orderRepository}
+		runner.Payments = paymentRepository
+	}
 	result, err := runner.Apply(ctx, manifest)
 	if err != nil {
 		return err
@@ -244,15 +266,15 @@ func paymentHistoryFacts(manifest ordermigration.Manifest, orderIDs map[string]i
 		}
 		allOrderIDs = append(allOrderIDs, orderID)
 		status, terminal := historicalPaymentStatus(row.Status)
-		if !terminal || row.PayerIdentityKey == "" || row.Provider == "alipay" {
+		if !terminal || row.Provider == "alipay" {
 			continue
 		}
 		identity := identities[row.PayerIdentityKey]
 		beneficiary := subjectCustomers[row.BeneficiarySubjectKey]
-		if identity.CustomerID < 1 || identity.IdentityID < 1 || beneficiary < 1 {
+		if (row.PayerIdentityKey != "" && (identity.CustomerID < 1 || identity.IdentityID < 1)) || (row.BeneficiarySubjectKey != "" && beneficiary < 1) {
 			return nil, nil, nil, ordermigration.ErrReconciliationMismatch
 		}
-		payments = append(payments, paymentmigration.HistoricalPaymentFact{OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: identity.IdentityID, PayerCustomerID: identity.CustomerID, BeneficiaryCustomerID: beneficiary, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: status, ProviderTransactionReference: row.ProviderTransactionNo, SourceDigest: ordermigration.HistoricalOrderDigest(row), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt})
+		payments = append(payments, paymentmigration.HistoricalPaymentFact{SourceStatus: row.SourceStatus, HistoryReason: row.HistoryReason, OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: identity.IdentityID, PayerCustomerID: identity.CustomerID, BeneficiaryCustomerID: beneficiary, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: status, ProviderTransactionReference: row.ProviderTransactionNo, SourceDigest: ordermigration.HistoricalOrderDigest(row), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt})
 	}
 	refunds := make([]paymentmigration.HistoricalRefundFact, 0, len(manifest.Refunds))
 	for _, row := range manifest.Refunds {
@@ -260,7 +282,7 @@ func paymentHistoryFacts(manifest ordermigration.Manifest, orderIDs map[string]i
 		if orderID < 1 {
 			return nil, nil, nil, ordermigration.ErrReconciliationMismatch
 		}
-		refunds = append(refunds, paymentmigration.HistoricalRefundFact{OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, ProviderRefundReference: row.ProviderRefundNo, SourceDigest: ordermigration.HistoricalRefundDigest(row), OccurredAt: row.OccurredAt})
+		refunds = append(refunds, paymentmigration.HistoricalRefundFact{Status: paymentdomain.RefundStatus(row.HistoricalStatus()), OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, ProviderRefundReference: row.ProviderRefundNo, SourceDigest: ordermigration.HistoricalRefundDigest(row), OccurredAt: row.OccurredAt})
 	}
 	return allOrderIDs, payments, refunds, nil
 }

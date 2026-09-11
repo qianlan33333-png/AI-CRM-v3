@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
@@ -38,3 +39,18 @@ func (s *Repository) PaidAudienceOrders(ctx context.Context, reference time.Time
 }
 
 var _ orderport.PaidAudienceReader = (*Repository)(nil)
+
+func (s *Repository) HistoricalAudienceProductCodeExists(ctx context.Context, code string) (bool, error) {
+	if code == "" || strings.TrimSpace(code) != code || len(code) > 200 {
+		return false, ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return false, err
+	}
+	var found bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM order_items i JOIN orders o ON o.id=i.order_id WHERE i.product_code=$1 AND o.record_origin='history' AND o.source_system='commerce-history')`, code).Scan(&found)
+	return found, err
+}
+
+var _ orderport.HistoricalAudienceProductReader = (*Repository)(nil)

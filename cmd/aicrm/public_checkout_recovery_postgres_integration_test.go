@@ -125,11 +125,12 @@ func TestPostgreSQLPublicCheckoutResponseLossRejectsRenewedSessionReplay(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := sessions.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact, IdempotencyKey: "checkout-recovery-oauth-first-0001"})
+	unionFact, _ := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:fixture", Value: "fixture-union", Source: "payment-h5-oauth"})
+	first, err := sessions.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact, UnionID: unionFact, IdempotencyKey: "checkout-recovery-oauth-first-0001"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := sessions.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact, IdempotencyKey: "checkout-recovery-oauth-second-001"})
+	second, err := sessions.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact, UnionID: unionFact, IdempotencyKey: "checkout-recovery-oauth-second-001"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +264,8 @@ func TestPostgreSQLPublicCheckoutResponseLossRejectsRenewedSessionReplay(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := otherSessions.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: otherFact, IdempotencyKey: "checkout-recovery-oauth-other-0001"})
+	otherUnion, _ := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:fixture", Value: "other-fixture-union", Source: "payment-h5-oauth"})
+	other, err := otherSessions.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: otherFact, UnionID: otherUnion, IdempotencyKey: "checkout-recovery-oauth-other-0001"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,4 +295,12 @@ func assertCheckoutRecoveryCounts(t *testing.T, ctx context.Context, pool *pgxpo
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM orders),(SELECT count(*) FROM payments),(SELECT count(*) FROM payment_operation_receipts WHERE operation='create'),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&orders, &payments, &receipts, &effects); err != nil || orders != expected || payments != expected || receipts != expected || effects != expected {
 		t.Fatalf("orders=%d payments=%d receipts=%d effects=%d expected=%d err=%v", orders, payments, receipts, effects, expected, err)
 	}
+}
+
+func (p checkoutRecoveryProvisioner) ProvisionVerifiedOAuthSubject(ctx context.Context, c identityport.OAuthSubjectCommand) (identityport.OAuthSubjectResult, error) {
+	if !c.UnionID.Valid() {
+		return identityport.OAuthSubjectResult{}, paymentsession.ErrInvalid
+	}
+	result, err := p.ProvisionVerifiedIdentity(ctx, identityport.ProvisionCommand{Fact: c.OpenID, IdempotencyKey: c.EventID})
+	return identityport.OAuthSubjectResult{ProvisionResult: result}, err
 }

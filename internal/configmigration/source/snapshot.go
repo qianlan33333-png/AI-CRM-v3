@@ -24,6 +24,7 @@ var (
 )
 
 type Manifest struct {
+	Scope          string            `json:"scope,omitempty"`
 	SchemaVersion  string            `json:"schema_version"`
 	SourceSystem   string            `json:"source_system"`
 	SourceRevision string            `json:"source_revision"`
@@ -70,6 +71,8 @@ type ServicePeriod struct {
 }
 
 type Coupon struct {
+	PublicSlug           *string    `json:"public_slug,omitempty"`
+	IssuedCount          *int64     `json:"issued_count,omitempty"`
 	ID                   int64      `json:"id"`
 	Name                 string     `json:"name"`
 	DiscountAmountTotal  int64      `json:"discount_amount_total"`
@@ -206,6 +209,25 @@ func ValidateSnapshot(snapshot Snapshot) error { return snapshot.Validate() }
 
 func (snapshot Snapshot) Validate() error {
 	m := snapshot.Manifest
+	if m.Scope != "" && m.Scope != "commerce-only" {
+		return ErrInvalidSnapshot
+	}
+	if m.Scope == "commerce-only" {
+		if len(snapshot.GroupPlans)+len(snapshot.GroupNodes)+len(snapshot.GroupAssets)+len(snapshot.Agents) != 0 {
+			return ErrInvalidSnapshot
+		}
+		for _, c := range snapshot.Coupons {
+			if c.PublicSlug == nil || c.IssuedCount == nil || *c.IssuedCount < 0 {
+				return ErrInvalidSnapshot
+			}
+		}
+	} else {
+		for _, c := range snapshot.Coupons {
+			if c.PublicSlug != nil || c.IssuedCount != nil {
+				return ErrInvalidSnapshot
+			}
+		}
+	}
 	if m.SchemaVersion != SchemaVersion || !validText(m.SourceSystem, 160) || !validRevision.MatchString(m.SourceRevision) || m.SnapshotAt.IsZero() || len(m.Counts) != len(tableOrder) || len(m.Digests) != len(tableOrder) {
 		return ErrInvalidSnapshot
 	}
@@ -283,7 +305,7 @@ func PopulateManifest(snapshot *Snapshot, sourceSystem, sourceRevision string, a
 		return ErrInvalidSnapshot
 	}
 	normalizeSnapshot(snapshot)
-	snapshot.Manifest = Manifest{SchemaVersion: SchemaVersion, SourceSystem: sourceSystem, SourceRevision: sourceRevision, SnapshotAt: at.UTC(), Counts: map[string]int{}, Digests: map[string]string{}}
+	snapshot.Manifest = Manifest{Scope: snapshot.Manifest.Scope, SchemaVersion: SchemaVersion, SourceSystem: sourceSystem, SourceRevision: sourceRevision, SnapshotAt: at.UTC(), Counts: map[string]int{}, Digests: map[string]string{}}
 	for name, rows := range snapshotRows(*snapshot) {
 		raw, err := json.Marshal(rows)
 		if err != nil {

@@ -25,6 +25,7 @@ const templates = [
   { key: "radar_first_click_elapsed", label: "雷达首次点击距今", template_version: 1, available: true, fields: [{ name: "radars", label: "雷达", type: "reference_list", reference: "radar", required: true }, { name: "elapsed_min", label: "最小经过时间", type: "integer", default: 0 }, { name: "elapsed_max", label: "最大经过时间", type: "integer" }, { name: "elapsed_unit", label: "时间单位", type: "enum", enum: ["hour", "day"], default: "day" }, ...ownerFields] },
   { key: "member_usage_status", label: "会员与真实使用状态", template_version: 1, available: true, fields: [...ownerFields, { name: "service_period", label: "服务期", type: "enum", enum: ["any", "active", "expired"], default: "active" }, { name: "registration_status", label: "注册状态", type: "enum", enum: ["any", "registered", "unregistered"], default: "any" }, { name: "usage_status", label: "真实使用状态", type: "enum", enum: ["any", "used", "unused"], default: "any" }, { name: "membership_tiers", label: "会员层级", type: "string_list", default: [] }, { name: "membership_statuses", label: "会员状态", type: "string_list", default: [] }] },
 ];
+templates.push({ key: "questionnaire_submissions", label: "问卷提交", template_version: 1, available: true, fields: [{name: "questionnaires", label: "问卷", type: "reference_list", reference: "questionnaire", required: true}, ...ownerFields, {name: "require_wecom_identity", label: "要求已识别企微身份", type: "boolean", default: true}] });
 let config = { id: 4, package_id: 13, version: 1, refresh_cron_utc: "", definition: { schema_version: 1, template_key: "wecom_contact_registration", parameters: { owner_scope: "all", owner_staff_ids: [], contact_statuses: ["active"], registration_status: "any" } } };
 let packageVersion = 3;
 const writes = [];
@@ -104,7 +105,7 @@ dom.window.eval(host);
 await wait(350);
 const document = dom.window.document;
 const select = document.querySelector("#templateSelect");
-if (templateReads < 3 || select.options.length !== 6 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("six frozen template forms were not restored after the delayed detail renderer");
+if (templateReads < 3 || select.options.length !== 7 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("frozen renderer and V3 submission template were not restored after the delayed detail renderer");
 for (const template of templates) {
   select.value = template.key;
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -207,6 +208,14 @@ const savedKeys = writes.map((item) => item.definition.template_key);
 for (const key of ["wecom_contact_registration", "paid_order", "channel_entry", "radar_first_click_elapsed", "member_usage_status"]) {
   if (!savedKeys.includes(key)) throw new Error(`save did not use frozen form for ${key}: ${JSON.stringify(savedKeys)}`);
 }
+await saveTemplate("questionnaire_submissions", () => {
+  fieldInput("questionnaires").value = "5\n7";
+  fieldInput("require_wecom_identity").checked = true;
+}, (definition) => {
+  if (definition.template_key !== "questionnaire_submissions" || definition.parameters.questionnaire_ids.join(",") !== "5,7" || definition.parameters.require_wecom_identity !== true || "questionnaires" in definition.parameters) throw new Error("V3 host did not canonicalize submission references");
+}, () => {
+  if (fieldInput("questionnaires").value !== "5\n7" || !fieldInput("require_wecom_identity").checked) throw new Error("V3 host did not rehydrate submission references using frozen renderer");
+});
 await saveTemplate("questionnaire_choice_answers", () => {
   fieldInput("questionnaire").value = "客户调研";
   const conditionField = document.querySelector('[data-field-name="conditions"]');
@@ -225,7 +234,7 @@ await saveTemplate("questionnaire_choice_answers", () => {
   const rows = document.querySelectorAll('[data-field-name="conditions"] .template-condition-row');
   if (fieldInput("questionnaire").value !== "客户调研" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "内容\n投放" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
 });
-if (writes.length !== 6 || previewWrites.length !== 6 || packageWrites.length !== 6) throw new Error(`six-form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
+if (writes.length !== 7 || previewWrites.length !== 7 || packageWrites.length !== 7) throw new Error(`seven-form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
 // The frozen detail page owns this action: a user clicks the real preview and
 // confirmation controls, then is taken to the existing AI review/recipients
 // page instead of an Automation-only recipient drawer.

@@ -111,6 +111,24 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (url.origin !== location.origin) return originalFetch(input, init);
   orderQuery(url);
   const response = await originalFetch(url.toString(), init);
+  if (/^\/api\/admin\/orders\/[^/]+$/.test(url.pathname) && response.ok && document.body.dataset.page === 'orderDetail') {
+    void response.clone().json().then(async (order: Record<string, unknown>) => {
+      if (!['history', 'v1_history'].includes(String(order.record_origin)) || typeof order.merchant_order_no !== 'string') return;
+      const provider = order.provider === 'wechat' ? 'wechat_pay' : order.provider;
+      if (provider !== 'wechat_pay' && provider !== 'wechat_shop') return;
+      const query = new URLSearchParams({ provider, merchant_order_no: order.merchant_order_no });
+      const money = await originalFetch(`/api/admin/payments/history?${query}`, { credentials: 'same-origin' });
+      if (!money.ok) return;
+      const fact = await money.json() as Record<string, unknown>;
+      if (fact.record_origin !== 'history') return;
+      historicalMoneyText = fact.history_reason === 'refund_evidence_missing'
+        ? '原订单标记已退回；已保留支付记录，但没有退款凭证，未记为退款成功。'
+        : `历史资金状态：${fact.status === 'paid' ? '已支付' : fact.status === 'failed' ? '支付失败' : '已关闭'}。`;
+      if (fact.payer_customer_id === null) historicalMoneyText += '付款人尚未归属。';
+      if (fact.beneficiary_customer_id === null) historicalMoneyText += '未指定权益受益人。';
+      presentHistoricalMoney();
+    }).catch(() => { /* Original order remains usable if optional evidence is unavailable. */ });
+  }
   if (url.pathname !== '/api/admin/orders' || !response.ok) return response;
   try {
     const payload = await response.clone().json() as { items?: unknown[] };
@@ -193,7 +211,19 @@ function applyOrderContractCopy(): void {
   form.appendChild(message);
 }
 
+let historicalMoneyText = '';
+function presentHistoricalMoney(): void {
+  if (!historicalMoneyText || document.getElementById('order-historical-money')) return;
+  const stage = document.getElementById('stage');
+  if (!stage || !stage.children.length) return;
+  const panel = document.createElement('p');
+  panel.id = 'order-historical-money';
+  panel.textContent = historicalMoneyText;
+  panel.style.cssText = 'padding:12px 16px;background:#f4f7fb;border:1px solid #dce4ef;border-radius:8px;color:#374151';
+  stage.prepend(panel);
+}
 const observer = new MutationObserver(() => {
+  presentHistoricalMoney();
   applyOrderContractCopy();
   applyOrderPresentation();
 });

@@ -25,11 +25,13 @@ var (
 )
 
 type Runner struct {
-	UOW        platformport.UnitOfWork
-	Products   productport.DefinitionImporter
-	Coupons    couponport.DefinitionImporter
-	GroupOps   groupopsport.DefinitionImporter
-	Automation automationport.DefinitionImporter
+	ReviewCouponSourceID int64
+	ReviewCouponBefore   [32]byte
+	UOW                  platformport.UnitOfWork
+	Products             productport.DefinitionImporter
+	Coupons              couponport.DefinitionImporter
+	GroupOps             groupopsport.DefinitionImporter
+	Automation           automationport.DefinitionImporter
 }
 type Result struct {
 	BatchID    int64 `json:"batch_id"`
@@ -41,8 +43,34 @@ type Result struct {
 }
 
 func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte, actor int64) (out Result, err error) {
-	if r.UOW == nil || r.Products == nil || r.Coupons == nil || r.GroupOps == nil || r.Automation == nil || actor < 1 || snap.Validate() != nil || source.ValidateExpectedBaseline(snap) != nil {
+	commerce := snap.Manifest.Scope == "commerce-only"
+	if r.ReviewCouponSourceID != 0 || r.ReviewCouponBefore != ([32]byte{}) {
+		if !commerce || r.ReviewCouponSourceID < 1 || r.ReviewCouponBefore == ([32]byte{}) {
+			return out, ErrInvalid
+		}
+		found := false
+		for _, row := range snap.Coupons {
+			if row.ID == r.ReviewCouponSourceID {
+				found = true
+			}
+		}
+		if !found {
+			return out, ErrInvalid
+		}
+	}
+	if r.UOW == nil || r.Products == nil || r.Coupons == nil || actor < 1 || snap.Validate() != nil || (!commerce && (r.GroupOps == nil || r.Automation == nil || source.ValidateExpectedBaseline(snap) != nil)) {
 		return out, ErrInvalid
+	}
+	actualDigest, digestErr := snap.CanonicalDigest()
+	if digestErr != nil || actualDigest != digest {
+		return out, ErrInvalid
+	}
+	batchKey := snap.Manifest.SourceRevision
+	if commerce {
+		if _, ok := r.Coupons.(couponport.CutoverDefinitionImporter); !ok {
+			return out, ErrInvalid
+		}
+		batchKey = "commerce:" + DigestHex(digest)
 	}
 	manifest, err := json.Marshal(snap.Manifest)
 	if err != nil {
@@ -57,21 +85,48 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 		if e = t.QueryRow(tx, `SELECT EXISTS(SELECT 1 FROM admin_users WHERE id=$1 AND is_active)`, actor).Scan(&active); e != nil || !active {
 			return ErrInvalid
 		}
+		if commerce {
+			if _, e = t.Exec(tx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "commerce-definition-cutover:"+snap.Manifest.SourceSystem); e != nil {
+				return e
+			}
+		}
+		if commerce {
+			keys := map[string][]string{"wechat_pay_products": {}, "service_period_products": {}, "commerce_coupons": {}, "commerce_coupon_product_bindings": {}}
+			for _, x := range snap.Products {
+				keys["wechat_pay_products"] = append(keys["wechat_pay_products"], fmt.Sprint(x.ID))
+			}
+			for _, x := range snap.ServicePeriods {
+				keys["service_period_products"] = append(keys["service_period_products"], fmt.Sprint(x.ID))
+			}
+			for _, x := range snap.Coupons {
+				keys["commerce_coupons"] = append(keys["commerce_coupons"], fmt.Sprint(x.ID))
+			}
+			for _, x := range snap.CouponBindings {
+				keys["commerce_coupon_product_bindings"] = append(keys["commerce_coupon_product_bindings"], fmt.Sprint(x.ID))
+			}
+			if e = verifyCommerceCoverage(tx, snap.Manifest.SourceSystem, keys, r.ReviewCouponSourceID); e != nil {
+				return e
+			}
+		}
 		var prior []byte
-		e = t.QueryRow(tx, `SELECT id,snapshot_digest FROM config_definition_import_batches WHERE source_system=$1 AND batch_key=$2 FOR UPDATE`, snap.Manifest.SourceSystem, snap.Manifest.SourceRevision).Scan(&out.BatchID, &prior)
+		e = t.QueryRow(tx, `SELECT id,snapshot_digest FROM config_definition_import_batches WHERE source_system=$1 AND batch_key=$2 FOR UPDATE`, snap.Manifest.SourceSystem, batchKey).Scan(&out.BatchID, &prior)
 		if e == nil {
 			if len(prior) != 32 || string(prior) != string(digest[:]) {
 				return ErrDrift
 			}
 			out.NoOp = true
-			return nil
+			if !commerce {
+				return nil
+			}
 		}
-		if !errors.Is(e, pgx.ErrNoRows) {
+		if e != nil && !errors.Is(e, pgx.ErrNoRows) {
 			return e
 		}
-		e = t.QueryRow(tx, `INSERT INTO config_definition_import_batches(source_system,batch_key,snapshot_digest,actor_admin_user_id,status,manifest) VALUES($1,$2,$3,$4,'applying',$5::jsonb) RETURNING id`, snap.Manifest.SourceSystem, snap.Manifest.SourceRevision, digest[:], actor, manifest).Scan(&out.BatchID)
-		if e != nil {
-			return e
+		if !out.NoOp {
+			e = t.QueryRow(tx, `INSERT INTO config_definition_import_batches(source_system,batch_key,snapshot_digest,actor_admin_user_id,status,manifest) VALUES($1,$2,$3,$4,'applying',$5::jsonb) RETURNING id`, snap.Manifest.SourceSystem, batchKey, digest[:], actor, manifest).Scan(&out.BatchID)
+			if e != nil {
+				return e
+			}
 		}
 		service := map[int64]source.ServicePeriod{}
 		for _, x := range snap.ServicePeriods {
@@ -79,6 +134,36 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 		}
 		productIDs := map[int64]productport.ID{}
 		for _, x := range snap.Products {
+			if commerce {
+				existing, found, e := existingCommerceMapping(tx, snap.Manifest.SourceSystem, "wechat_pay_products", x.ID, x, "products")
+				if e != nil {
+					return e
+				}
+				if found {
+					checker, ok := r.Products.(productport.CutoverDefinitionChecker)
+					if !ok {
+						return ErrInvalid
+					}
+					days := int32(0)
+					if sp, ok := service[x.ID]; ok {
+						days = sp.DurationDays
+					}
+					if e = checker.CheckCutoverDefinition(tx, productport.ID(existing), productport.DefinitionImport{ProductCode: x.ProductCode, Name: x.Name, PriceMinor: x.PriceMinor, Currency: x.Currency, ServicePeriodDurationDays: days}); e != nil {
+						return e
+					}
+					if sp, ok := service[x.ID]; ok {
+						sid, sfound, e := existingCommerceMapping(tx, snap.Manifest.SourceSystem, "service_period_products", sp.ID, sp, "products")
+						if e != nil {
+							return e
+						}
+						if !sfound || sid != existing {
+							return ErrDrift
+						}
+					}
+					productIDs[x.ID] = productport.ID(existing)
+					continue
+				}
+			}
 			status := "disabled"
 			var servicePeriodDurationDays int32
 			if x.Status == "active" {
@@ -120,19 +205,68 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 				refs = append(refs, fmt.Sprintf("%s:%d", kind, productIDs[b.TradeProductID]))
 			}
 			sort.Strings(refs)
-			c, e := r.Coupons.ImportDefinition(tx, couponport.DefinitionImport{Coupon: couponport.Coupon{Name: x.Name, DiscountAmountTotal: x.DiscountAmountTotal, Currency: x.Currency, Status: x.Status, TotalIssueLimit: x.TotalIssueLimit, PerUserIssueLimit: x.PerUserIssueLimit, ClaimStartsAt: x.ClaimStartsAt, ClaimEndsAt: x.ClaimEndsAt, ValidityMode: couponport.ValidityMode(x.ValidityMode), UseStartsAt: x.UseStartsAt, UseEndsAt: x.UseEndsAt, RelativeValidityDays: x.RelativeValidityDays, Instructions: x.Instructions, TargetRefs: refs}, Actor: actor, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt})
+			definition := couponport.DefinitionImport{Coupon: couponport.Coupon{Name: x.Name, DiscountAmountTotal: x.DiscountAmountTotal, Currency: x.Currency, Status: x.Status, TotalIssueLimit: x.TotalIssueLimit, PerUserIssueLimit: x.PerUserIssueLimit, ClaimStartsAt: x.ClaimStartsAt, ClaimEndsAt: x.ClaimEndsAt, ValidityMode: couponport.ValidityMode(x.ValidityMode), UseStartsAt: x.UseStartsAt, UseEndsAt: x.UseEndsAt, RelativeValidityDays: x.RelativeValidityDays, Instructions: x.Instructions, TargetRefs: refs}, Actor: actor, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt}
+			var c couponport.Coupon
+			var e error
+			var existing int64
+			var found bool
+			var cm couponMapping
+			mapCoupon := x
+			if commerce {
+				mapCoupon.PublicSlug = nil
+				mapCoupon.IssuedCount = nil
+				definition.IssuedCount = *x.IssuedCount
+				if r.ReviewCouponSourceID == x.ID && r.ReviewCouponBefore != ([32]byte{}) {
+					c, cm, e = r.applyReviewedCoupon(tx, snap.Manifest.SourceSystem, x, couponport.CutoverDefinitionImport{DefinitionImport: definition, PublicSlug: *x.PublicSlug}, out.BatchID, digest)
+				} else {
+					cm, e = existingCouponMapping(tx, snap.Manifest.SourceSystem, mapCoupon, true)
+					existing, found = cm.ID, cm.Found
+					if e != nil {
+						return e
+					}
+					definition.IssuedCount = *x.IssuedCount
+					c, e = r.Coupons.(couponport.CutoverDefinitionImporter).ImportCutoverDefinition(tx, couponport.CutoverDefinitionImport{DefinitionImport: definition, ExistingID: couponport.ID(existing), PublicSlug: *x.PublicSlug, ExpectedIssuedCount: cm.ExpectedIssued, ExpectedTotalIssueLimit: cm.ExpectedLimit, AllowSourceLimitIncrease: cm.AllowLimitIncrease})
+				}
+				existing, found = cm.ID, cm.Found
+			} else {
+				c, e = r.Coupons.ImportDefinition(tx, definition)
+			}
 			if e != nil {
 				return fmt.Errorf("import coupon source %d: %w", x.ID, e)
 			}
-			if e = mapRow(tx, out.BatchID, snap.Manifest.SourceSystem, "coupon", "commerce_coupons", x.ID, x, int64(c.ID), "coupon_rules", sourceActors(x.SourceCreatedBy, x.SourceUpdatedBy)); e != nil {
-				return e
+			if !found {
+				if e = mapRow(tx, out.BatchID, snap.Manifest.SourceSystem, "coupon", "commerce_coupons", x.ID, mapCoupon, int64(c.ID), "coupon_rules", sourceActors(x.SourceCreatedBy, x.SourceUpdatedBy)); e != nil {
+					return e
+				}
 			}
 			for _, b := range bindings[x.ID] {
+				if commerce {
+					bid, bfound, e := existingCommerceMapping(tx, snap.Manifest.SourceSystem, "commerce_coupon_product_bindings", b.ID, b, "coupon_rules")
+					if e != nil {
+						return e
+					}
+					if bfound {
+						if bid != int64(c.ID) {
+							return ErrDrift
+						}
+						continue
+					}
+					if found && !(r.ReviewCouponSourceID == x.ID && r.ReviewCouponBefore != ([32]byte{})) {
+						return ErrDrift
+					}
+				}
 				if e = mapRow(tx, out.BatchID, snap.Manifest.SourceSystem, "coupon", "commerce_coupon_product_bindings", b.ID, b, int64(c.ID), "coupon_rules", nil); e != nil {
 					return e
 				}
 			}
-			out.Coupons++
+			if commerce {
+				if e = recordCouponRevision(tx, out.BatchID, snap.Manifest.SourceSystem, mapCoupon, *x.IssuedCount, cm.Prior); e != nil {
+					return e
+				}
+			}
+			if !found {
+				out.Coupons++
+			}
 		}
 		nodes := map[int64][]source.GroupNode{}
 		assets := map[int64][]source.GroupAsset{}

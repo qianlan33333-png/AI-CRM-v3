@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
@@ -49,6 +52,7 @@ type Store interface {
 }
 
 type Service struct {
+	lineage        identityport.CanonicalLineageReader
 	uow            platformport.UnitOfWork
 	store          Store
 	orders         orderport.PaymentCoordinator
@@ -128,7 +132,9 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 	now := s.now().UTC()
 	sessionDigest := sha256.Sum256([]byte(c.SessionToken))
 	merchantDigest := sha256.Sum256([]byte("payment.checkout.v1\x00" + c.SessionToken + "\x00" + c.IdempotencyKey))
-	merchantOrderNo := "v3pay_" + hex.EncodeToString(merchantDigest[:16])
+	merchantOrderNo := "v3pay_" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(merchantDigest[:16])
+	// Keep exact legacy replay stable; never change an accepted external intent.
+	legacyMerchantOrderNo := "v3pay_" + hex.EncodeToString(merchantDigest[:16])
 	payload, _ := json.Marshal(c)
 	keyDigest := sha256.Sum256([]byte(c.IdempotencyKey))
 	payloadDigest := sha256.Sum256(payload)
@@ -176,7 +182,7 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			return err
 		}
 		if found {
-			if (fromExistingOrder && replay.OrderID != c.OrderID) || (fromProduct && replay.MerchantOrderNo != merchantOrderNo) || replay.PayerIdentityID != actor.PayerIdentityID || replay.PayerCustomerID != actor.PayerCustomerID || replay.BeneficiaryCustomerID != actor.BeneficiaryCustomerID || replay.Channel != channel {
+			if (fromExistingOrder && replay.OrderID != c.OrderID) || (fromProduct && replay.MerchantOrderNo != merchantOrderNo && replay.MerchantOrderNo != legacyMerchantOrderNo) || replay.PayerIdentityID != actor.PayerIdentityID || replay.PayerCustomerID != actor.PayerCustomerID || replay.BeneficiaryCustomerID != actor.BeneficiaryCustomerID || replay.Channel != channel {
 				return paymentport.ErrConflict
 			}
 			result = replay
@@ -317,7 +323,7 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 		}); err != nil {
 			return domain.Refund{}, classify(err)
 		}
-		if candidate.Provider != domain.ProviderWeChatShop || candidate.MerchantOrderNo != c.ProviderOrderID || candidate.Status != domain.StatusPaid {
+		if candidate.Historical || candidate.Provider != domain.ProviderWeChatShop || candidate.MerchantOrderNo != c.ProviderOrderID || candidate.Status != domain.StatusPaid {
 			return domain.Refund{}, paymentport.ErrConflict
 		}
 		if err := s.shopReconciler.ValidateRefundMaterial(ctx, paymentport.ShopRefundMaterial{AmountMinor: c.AmountMinor, ProviderOrderID: c.ProviderOrderID, ProductID: c.ProductID, SKUID: c.SKUID, RefundCount: c.RefundCount, ReasonCode: c.ReasonCode, Currency: "CNY"}); err != nil {
@@ -405,6 +411,7 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 	}
 	now := s.now().UTC()
 	var out paymentport.Handoff
+	var prepayEffectID string
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		actor, err := s.sessions.LookupWithin(tx, sessionToken, now)
 		if err != nil {
@@ -414,10 +421,28 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		if err != nil {
 			return err
 		}
-		if !checkoutReadAuthorized(payment, actor) {
+		authorized := checkoutReadAuthorized(payment, actor)
+		if !authorized && s.lineage != nil && payment.PayerIdentityID == actor.PayerIdentityID && payment.Channel == actor.Channel {
+			roots, readErr := s.lineage.CanonicalLineage(tx, customerdomain.CustomerID(actor.PayerCustomerID))
+			if readErr != nil {
+				return readErr
+			}
+			for _, root := range roots {
+				if int64(root) == payment.PayerCustomerID {
+					original := payment
+					original.PayerCustomerID = actor.PayerCustomerID
+					if original.BeneficiaryCustomerID == payment.PayerCustomerID {
+						original.BeneficiaryCustomerID = actor.PayerCustomerID
+					}
+					authorized = checkoutReadAuthorized(original, actor)
+					break
+				}
+			}
+		}
+		if !authorized {
 			return paymentport.ErrConflict
 		}
-		out = paymentport.Handoff{PaymentID: payment.ID, OrderID: payment.OrderID, MerchantOrder: payment.MerchantOrderNo, Status: payment.Status}
+		out = paymentport.Handoff{PaymentID: payment.ID, OrderID: payment.OrderID, MerchantOrder: payment.MerchantOrderNo, Status: payment.Status, AmountMinor: payment.AmountMinor, Currency: payment.Currency}
 		// A terminal outcome is an immutable Payment fact. It remains readable to
 		// the original trusted payer after the short-lived JSAPI handoff expires;
 		// handoff material is neither needed nor safe to revive at this point.
@@ -425,6 +450,13 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 			return nil
 		}
 		if payment.Status == domain.StatusAwaitingPrepay {
+			if local, ok := s.store.(checkoutAbandonmentStore); ok {
+				out.CheckoutAbandoned, err = local.CheckoutAbandoned(tx, payment.ID)
+				if err != nil {
+					return err
+				}
+			}
+			prepayEffectID = payment.EffectID
 			return nil
 		}
 		handoff, err := s.store.GetHandoff(tx, payment.ID)
@@ -440,7 +472,19 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		out.Payload, out.ExpiresAt = handoff.Payload, handoff.ExpiresAt
 		return nil
 	})
-	return out, classify(err)
+	if err != nil {
+		return out, classify(err)
+	}
+	// Read through the effect owner after the authorization transaction. Expose
+	// only its state; never return effect identifiers or provider response data.
+	if prepayEffectID != "" && s.effectReader != nil {
+		projection, readErr := s.effectReader.Get(ctx, prepayEffectID)
+		if readErr != nil || projection.ID != prepayEffectID || projection.Owner != effectport.OwnerPayment || projection.Kind != effectport.KindWeChatPayPrepay {
+			return paymentport.Handoff{}, paymentport.ErrUnavailable
+		}
+		out.PrepayState = projection.State
+	}
+	return out, nil
 }
 
 // CheckoutSessionBinding proves only that the caller still holds a valid
@@ -628,7 +672,7 @@ func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64
 		if inner != nil {
 			return inner
 		}
-		if current.Provider != domain.ProviderWeChatPay || (current.Status != domain.StatusAwaitingPayment && current.Status != domain.StatusAwaitingPrepay && current.Status != domain.StatusPaid) {
+		if current.Historical || current.Provider != domain.ProviderWeChatPay || (current.Status != domain.StatusAwaitingPayment && current.Status != domain.StatusAwaitingPrepay && current.Status != domain.StatusPaid) {
 			return paymentport.ErrConflict
 		}
 		return nil
@@ -698,6 +742,9 @@ func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) 
 			return paymentport.ErrConflict
 		}
 		payment, inner = s.store.GetPayment(tx, current.PaymentID, false)
+		if inner == nil && payment.Historical {
+			return paymentport.ErrConflict
+		}
 		return inner
 	})
 	if err != nil {
@@ -829,7 +876,7 @@ func (s *Service) callbackAppIDMatches(payment domain.Payment, appID string) boo
 func hexDigest(value [32]byte) string { return fmt.Sprintf("%x", value[:]) }
 
 func (s *Service) ImportTerminalPayment(ctx context.Context, payment domain.Payment, digest [32]byte, runID string) (domain.Payment, error) {
-	if s == nil || s.uow == nil || s.store == nil || digest == ([32]byte{}) || !validScope(runID) || payment.ID != 0 || payment.OrderID < 1 || payment.PayerIdentityID < 1 || payment.AmountMinor < 1 || payment.Currency != "CNY" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.EffectID != "" {
+	if s == nil || s.uow == nil || s.store == nil || digest == ([32]byte{}) || !validScope(runID) || payment.ID != 0 || payment.OrderID < 1 || payment.PayerIdentityID < 0 || payment.PayerCustomerID < 0 || payment.BeneficiaryCustomerID < 0 || ((payment.PayerIdentityID == 0) != (payment.PayerCustomerID == 0)) || (payment.PayerCustomerID == 0 && payment.BeneficiaryCustomerID != 0) || payment.AmountMinor < 1 || payment.Currency != "CNY" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.EffectID != "" {
 		return domain.Payment{}, paymentport.ErrInvalid
 	}
 	var out domain.Payment
@@ -842,7 +889,7 @@ func (s *Service) ImportTerminalPayment(ctx context.Context, payment domain.Paym
 }
 
 func (s *Service) ImportTerminalRefund(ctx context.Context, refund domain.Refund, digest [32]byte, runID string) (domain.Refund, error) {
-	if s == nil || s.uow == nil || s.store == nil || digest == ([32]byte{}) || !validScope(runID) || refund.ID != 0 || refund.PaymentID < 1 || refund.AmountMinor < 1 || refund.Status != domain.RefundCompleted || refund.EffectID != "" {
+	if s == nil || s.uow == nil || s.store == nil || digest == ([32]byte{}) || !validScope(runID) || refund.ID != 0 || refund.PaymentID < 1 || refund.AmountMinor < 1 || !refund.Status.HistoricalImportable() || refund.EffectID != "" {
 		return domain.Refund{}, paymentport.ErrInvalid
 	}
 	var out domain.Refund

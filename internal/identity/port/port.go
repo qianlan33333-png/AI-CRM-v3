@@ -138,3 +138,9 @@ type DirectoryIdentityReader interface {
 type ExternalIdentityValueReader interface {
 	VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error)
 }
+
+// GroupCandidateIdentityReader reads a unique active verified identity only.
+// Missing or ambiguous evidence must remain unknown; this never provisions.
+type GroupCandidateIdentityReader interface {
+	VerifiedWeComIdentityForCustomer(context.Context, customerdomain.CustomerID, string) (string, bool, error)
+}

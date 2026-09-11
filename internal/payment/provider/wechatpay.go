@@ -178,6 +178,9 @@ func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Enve
 	if err != nil || material.Intent.PayloadDigest != envelope.PayloadDigest {
 		return final("wechatpay.material", envelope, attempt), nil
 	}
+	if !validMerchantOrderNo(material.Intent.MerchantOrderNo) {
+		return final("wechatpay.order-number.invalid", envelope, attempt), nil
+	}
 	var path string
 	var payload any
 	if envelope.Kind == effectport.KindWeChatPayPrepay {
@@ -266,6 +269,10 @@ func (provider *WeChatPay) QueryPayment(ctx context.Context, merchantOrderNo str
 		return paymentport.WeChatPayPaymentQuery{}, ErrInvalidResponse
 	}
 	var decoded struct {
+		AppID string `json:"appid"`
+		Payer struct {
+			OpenID string `json:"openid"`
+		} `json:"payer"`
 		MerchantOrderNo string `json:"out_trade_no"`
 		TransactionID   string `json:"transaction_id"`
 		TradeState      string `json:"trade_state"`
@@ -288,7 +295,7 @@ func (provider *WeChatPay) QueryPayment(ctx context.Context, merchantOrderNo str
 		}
 		transactionDigest = effectport.Hash("wechatpay.transaction", decoded.TransactionID)
 	}
-	return paymentport.WeChatPayPaymentQuery{MerchantOrderNo: merchantOrderNo, Currency: decoded.Amount.Currency, Status: decoded.TradeState, TransactionReference: decoded.TransactionID, AmountMinor: decoded.Amount.Total, OccurredAt: occurred.UTC(), EvidenceDigest: effectport.Hash("wechatpay.payment.query", merchantOrderNo, hashBytes(response.Body)), TransactionDigest: transactionDigest}, nil
+	return paymentport.WeChatPayPaymentQuery{AppID: decoded.AppID, PayerOpenID: decoded.Payer.OpenID, MerchantOrderNo: merchantOrderNo, Currency: decoded.Amount.Currency, Status: decoded.TradeState, TransactionReference: decoded.TransactionID, AmountMinor: decoded.Amount.Total, OccurredAt: occurred.UTC(), EvidenceDigest: effectport.Hash("wechatpay.payment.query", merchantOrderNo, hashBytes(response.Body)), TransactionDigest: transactionDigest}, nil
 }
 
 func (provider *WeChatPay) QueryRefund(ctx context.Context, refundNo string) (paymentport.WeChatPayRefundQuery, error) {
@@ -436,3 +443,16 @@ func final(stage string, envelope effectport.Envelope, attempt effectport.Attemp
 
 var _ effectport.ProviderAdapter = (*WeChatPay)(nil)
 var _ paymentport.WeChatPayReconciler = (*WeChatPay)(nil)
+
+// WeChat Pay accepts at most 32 ASCII letters, digits, underscores or hyphens.
+func validMerchantOrderNo(value string) bool {
+	if len(value) < 6 || len(value) > 32 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '*' || c == '|') {
+			return false
+		}
+	}
+	return true
+}

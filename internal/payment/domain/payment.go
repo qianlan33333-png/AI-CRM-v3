@@ -23,6 +23,8 @@ const (
 )
 
 type Payment struct {
+	Historical                                              bool
+	SourceStatus, HistoryReason                             string
 	ID, OrderID                                             int64
 	Provider                                                Provider
 	Channel                                                 Channel
@@ -93,7 +95,7 @@ func (p Payment) Settle(expected int64, status Status, now time.Time) (Payment, 
 func NewRefund(payment Payment, refundNo string, amount int64, reason string, now time.Time) (Refund, error) {
 	refundNo = strings.TrimSpace(refundNo)
 	reason = strings.TrimSpace(reason)
-	if payment.ID < 1 || payment.Status != StatusPaid || refundNo == "" || len(refundNo) > 200 || amount < 1 || amount > payment.AmountMinor || reason == "" || len(reason) > 500 || now.IsZero() {
+	if payment.Historical || payment.ID < 1 || payment.Status != StatusPaid || refundNo == "" || len(refundNo) > 200 || amount < 1 || amount > payment.AmountMinor || reason == "" || len(reason) > 500 || now.IsZero() {
 		return Refund{}, ErrInvalid
 	}
 	return Refund{PaymentID: payment.ID, Provider: payment.Provider, RefundNo: refundNo, Reason: reason, AmountMinor: amount, Status: RefundRequested, Version: 1, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, nil

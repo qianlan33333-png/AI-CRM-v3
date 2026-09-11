@@ -61,6 +61,8 @@ type IdentityQuarantineRow struct {
 var sha256Evidence = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 type OrderRow struct {
+	SourceStatus          string               `json:"source_status,omitempty"`
+	HistoryReason         string               `json:"history_reason,omitempty"`
 	Provider              orderdomain.Provider `json:"provider"`
 	SourceKey             string               `json:"source_key"`
 	MerchantOrderNo       string               `json:"merchant_order_no"`
@@ -86,6 +88,7 @@ type ItemRow struct {
 }
 
 type RefundRow struct {
+	Status           string               `json:"status,omitempty"`
 	Provider         orderdomain.Provider `json:"provider"`
 	SourceKey        string               `json:"source_key"`
 	MerchantOrderNo  string               `json:"merchant_order_no"`
@@ -196,7 +199,7 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 	merchantKeys := make(map[string]int64, len(manifest.Orders))
 	merchantOrderNos := make(map[string]struct{}, len(manifest.Orders))
 	merchantStatuses := make(map[string]string, len(manifest.Orders))
-	merchantResolved := make(map[string]bool, len(manifest.Orders))
+
 	for _, row := range manifest.Orders {
 		if _, err := orderStatus(row.Status); err != nil {
 			return ErrInvalidManifest
@@ -204,9 +207,9 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		_, payerIdentity := identityKeys[row.PayerIdentityKey]
 		_, payerSubject := subjectKeys[row.PayerSubjectKey]
 		_, beneficiarySubject := subjectKeys[row.BeneficiarySubjectKey]
-		resolved := payerIdentity && payerSubject && beneficiarySubject
+		resolved := payerIdentity && payerSubject && (beneficiarySubject || row.BeneficiarySubjectKey == "")
 		floating := row.PayerIdentityKey == "" && row.PayerSubjectKey == "" && row.BeneficiarySubjectKey == ""
-		if (!resolved && !floating) || !valid(row.SourceKey, 200) || !valid(row.MerchantOrderNo, 200) || len(row.ProviderTransactionNo) > 200 || strings.TrimSpace(row.ProviderTransactionNo) != row.ProviderTransactionNo || row.AmountMinor < 1 || row.Currency != "CNY" || row.CreatedAt.IsZero() || row.UpdatedAt.Before(row.CreatedAt) || len(row.Items) == 0 || len(row.Items) > 100 {
+		if (row.SourceStatus != "" && !valid(row.SourceStatus, 80)) || (row.HistoryReason != "" && !valid(row.HistoryReason, 120)) || (!resolved && !floating) || !valid(row.SourceKey, 200) || !valid(row.MerchantOrderNo, 200) || len(row.ProviderTransactionNo) > 200 || strings.TrimSpace(row.ProviderTransactionNo) != row.ProviderTransactionNo || row.AmountMinor < 1 || row.Currency != "CNY" || row.CreatedAt.IsZero() || row.UpdatedAt.Before(row.CreatedAt) || len(row.Items) == 0 || len(row.Items) > 100 {
 			return ErrInvalidManifest
 		}
 		var itemTotal int64
@@ -258,7 +261,6 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		merchantOrderNos[row.MerchantOrderNo] = struct{}{}
 		merchantKeys[merchantKey] = row.AmountMinor
 		merchantStatuses[merchantKey] = row.Status
-		merchantResolved[merchantKey] = resolved
 	}
 	refundKeys := make(map[string]struct{}, len(manifest.Refunds))
 	refundNumbers := make(map[string]struct{}, len(manifest.Refunds))
@@ -267,7 +269,7 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		merchantKey := string(row.Provider) + "\x00" + row.MerchantOrderNo
 		amount, orderExists := merchantKeys[merchantKey]
 		refundKey := string(row.Provider) + "\x00" + row.SourceKey
-		if (row.Provider != orderdomain.ProviderWeChatPay && row.Provider != orderdomain.ProviderWeChatShop) || !orderExists || !merchantResolved[merchantKey] || !valid(row.SourceKey, 200) || !valid(row.MerchantOrderNo, 200) || !valid(row.RefundNo, 200) || len(row.ProviderRefundNo) > 200 || strings.TrimSpace(row.ProviderRefundNo) != row.ProviderRefundNo || row.AmountMinor < 1 || !valid(row.Reason, 500) || row.OccurredAt.IsZero() {
+		if (row.Provider != orderdomain.ProviderWeChatPay && row.Provider != orderdomain.ProviderWeChatShop) || !orderExists || !row.ValidStatus() || !valid(row.SourceKey, 200) || !valid(row.MerchantOrderNo, 200) || !valid(row.RefundNo, 200) || len(row.ProviderRefundNo) > 200 || strings.TrimSpace(row.ProviderRefundNo) != row.ProviderRefundNo || row.AmountMinor < 1 || row.AmountMinor > amount || !valid(row.Reason, 500) || row.OccurredAt.IsZero() {
 			return ErrInvalidManifest
 		}
 		if _, exists := refundKeys[refundKey]; exists {
@@ -278,7 +280,9 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		}
 		refundKeys[refundKey] = struct{}{}
 		refundNumbers[row.RefundNo] = struct{}{}
-		refunded[merchantKey] += row.AmountMinor
+		if row.Completed() {
+			refunded[merchantKey] += row.AmountMinor
+		}
 		if refunded[merchantKey] > amount {
 			return ErrInvalidManifest
 		}
@@ -318,12 +322,14 @@ func (manifest Manifest) Summary() Summary {
 		if row.PayerIdentityKey == "" {
 			result.FloatingOrderRows++
 		}
-		if row.PayerIdentityKey != "" && row.Status != string(orderdomain.StatusPendingPayment) && row.Provider != orderdomain.ProviderAlipay {
+		if row.Status != string(orderdomain.StatusPendingPayment) && row.Provider != orderdomain.ProviderAlipay {
 			result.PaymentRows++
 		}
 	}
 	for _, row := range manifest.Refunds {
-		result.RefundMinor += row.AmountMinor
+		if row.Completed() {
+			result.RefundMinor += row.AmountMinor
+		}
 	}
 	for provider := range providers {
 		result.Providers = append(result.Providers, provider)
@@ -334,4 +340,32 @@ func (manifest Manifest) Summary() Summary {
 
 func valid(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value
+}
+
+// Empty status preserves the original success-only manifest digest and behavior.
+func (row RefundRow) ValidStatus() bool {
+	switch row.Status {
+	case "", "completed", "SUCCESS", "success", "failed", "closed", "CLOSED", "PROCESSING", "processing", "requested":
+		return true
+	}
+	return false
+}
+func (row RefundRow) Completed() bool {
+	return row.Status == "" || row.Status == "completed" || row.Status == "SUCCESS" || row.Status == "success"
+}
+func (row RefundRow) HistoricalStatus() string {
+	if row.Completed() {
+		return "completed"
+	}
+	switch row.Status {
+	case "failed":
+		return "history_failed"
+	case "closed", "CLOSED":
+		return "history_closed"
+	case "PROCESSING", "processing":
+		return "history_processing"
+	case "requested":
+		return "history_requested"
+	}
+	return ""
 }

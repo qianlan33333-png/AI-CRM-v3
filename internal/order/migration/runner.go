@@ -19,13 +19,15 @@ import (
 )
 
 type Runner struct {
-	UOW          platformport.UnitOfWork
-	Identities   identityport.HistoricalSubjectProvisioner
-	Facts        identityport.HistoricalFactFactory
-	IdentityRuns IdentityRunStore
-	Orders       orderport.HistoricalImporter
-	Payments     paymentport.HistoricalImporter
-	Runs         RunStore
+	UOW                platformport.UnitOfWork
+	Identities         identityport.HistoricalSubjectProvisioner
+	Facts              identityport.HistoricalFactFactory
+	IdentityRuns       IdentityRunStore
+	Orders             orderport.HistoricalImporter
+	Payments           paymentport.HistoricalImporter
+	Runs               RunStore
+	DeltaOrders        orderport.HistoricalDeltaImporter
+	DeltaPreconditions map[string]orderport.HistoricalDeltaPrecondition
 }
 
 type IdentityRunStore interface {
@@ -105,70 +107,96 @@ func (runner Runner) Apply(ctx context.Context, manifest Manifest) (Result, erro
 		}
 		result.IdentityQuarantines++
 	}
-	refundedByOrder := make(map[string]int64, len(manifest.Refunds))
-	for _, refund := range manifest.Refunds {
-		refundedByOrder[string(refund.Provider)+"\x00"+refund.MerchantOrderNo] += refund.AmountMinor
-	}
-	orders := make(map[string]struct{ orderID, paymentID int64 }, len(manifest.Orders))
-	for _, row := range manifest.Orders {
-		payer := subjects[row.PayerSubjectKey]
-		beneficiary := subjects[row.BeneficiarySubjectKey]
-		var payerID, beneficiaryID *int64
-		payerIdentityID := int64(0)
-		if row.PayerIdentityKey != "" {
-			payerID = &payer.customerID
-			beneficiaryID = &beneficiary.customerID
-			payerIdentityID = payer.identities[row.PayerIdentityKey]
-		}
-		status, err := orderStatus(row.Status)
-		if err != nil {
-			return result, err
-		}
-		items := make([]orderdomain.ItemSnapshot, 0, len(row.Items))
-		for _, item := range row.Items {
-			items = append(items, orderdomain.ItemSnapshot{LineNo: item.LineNo, ProductCode: item.ProductCode, ProductName: item.ProductName, UnitAmountMinor: item.UnitAmountMinor, Quantity: item.Quantity, LineAmountMinor: item.LineAmountMinor})
-		}
-		snapshot := orderdomain.Snapshot{Provider: row.Provider, SourceSystem: "commerce-history", SourceKey: row.SourceKey, MerchantOrderNo: row.MerchantOrderNo, ProviderTransactionNo: row.ProviderTransactionNo, PayerCustomerID: payerID, BeneficiaryCustomerID: beneficiaryID, Amount: orderdomain.Money{AmountMinor: row.AmountMinor, Currency: row.Currency}, RefundedMinor: refundedByOrder[string(row.Provider)+"\x00"+row.MerchantOrderNo], Status: status, Items: items, RecordOrigin: orderdomain.RecordOriginHistory, EffectEligible: false, Version: 1, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
-		raw, _ := json.Marshal(row)
-		digest := sha256.Sum256(raw)
-		imported, err := runner.Orders.ImportHistorical(ctx, orderport.HistoricalImportCommand{RunID: manifest.RunKey, SourceDigest: digest, Order: snapshot})
-		if err != nil {
-			return result, err
-		}
-		entry := struct{ orderID, paymentID int64 }{orderID: imported.ID}
-		result.Orders++
-		paymentStatus, hasPayment := historicalPaymentStatus(status)
-		if payerIdentityID > 0 && hasPayment && row.Provider != orderdomain.ProviderAlipay {
-			transactionDigest := ""
-			if row.ProviderTransactionNo != "" {
-				transactionDigest = string(effectport.Hash("history.transaction", row.ProviderTransactionNo))
+	applyBusiness := func(ctx context.Context) error {
+		refundedByOrder := make(map[string]int64, len(manifest.Refunds))
+		for _, refund := range manifest.Refunds {
+			if refund.Completed() {
+				refundedByOrder[string(refund.Provider)+"\x00"+refund.MerchantOrderNo] += refund.AmountMinor
 			}
-			payment := paymentdomain.Payment{OrderID: imported.ID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: payer.customerID, BeneficiaryCustomerID: beneficiary.customerID, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: paymentStatus, ProviderTransactionDigest: transactionDigest, Version: 1, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
-			persisted, err := runner.Payments.ImportTerminalPayment(ctx, payment, digest, manifest.RunKey)
+		}
+		orders := make(map[string]struct{ orderID, paymentID int64 }, len(manifest.Orders))
+		for _, row := range manifest.Orders {
+			payer := subjects[row.PayerSubjectKey]
+			beneficiary := subjects[row.BeneficiarySubjectKey]
+			var payerID, beneficiaryID *int64
+			payerIdentityID := int64(0)
+			if row.PayerIdentityKey != "" {
+				payerID = &payer.customerID
+				if row.BeneficiarySubjectKey != "" {
+					beneficiaryID = &beneficiary.customerID
+				}
+				payerIdentityID = payer.identities[row.PayerIdentityKey]
+			}
+			status, err := orderStatus(row.Status)
 			if err != nil {
-				return result, err
+				return err
 			}
-			entry.paymentID = persisted.ID
-			result.Payments++
+			items := make([]orderdomain.ItemSnapshot, 0, len(row.Items))
+			for _, item := range row.Items {
+				items = append(items, orderdomain.ItemSnapshot{LineNo: item.LineNo, ProductCode: item.ProductCode, ProductName: item.ProductName, UnitAmountMinor: item.UnitAmountMinor, Quantity: item.Quantity, LineAmountMinor: item.LineAmountMinor})
+			}
+			snapshot := orderdomain.Snapshot{Provider: row.Provider, SourceSystem: "commerce-history", SourceKey: row.SourceKey, MerchantOrderNo: row.MerchantOrderNo, ProviderTransactionNo: row.ProviderTransactionNo, PayerCustomerID: payerID, BeneficiaryCustomerID: beneficiaryID, Amount: orderdomain.Money{AmountMinor: row.AmountMinor, Currency: row.Currency}, RefundedMinor: refundedByOrder[string(row.Provider)+"\x00"+row.MerchantOrderNo], Status: status, Items: items, RecordOrigin: orderdomain.RecordOriginHistory, EffectEligible: false, Version: 1, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
+			raw, _ := json.Marshal(row)
+			digest := sha256.Sum256(raw)
+			var imported orderdomain.Snapshot
+			command := orderport.HistoricalImportCommand{RunID: manifest.RunKey, SourceDigest: digest, Order: snapshot}
+			if precondition, ok := runner.DeltaPreconditions[row.SourceKey]; ok {
+				if runner.DeltaOrders == nil {
+					return errors.New("history delta importer missing")
+				}
+				imported, err = runner.DeltaOrders.ApplyHistoricalDeltaWithin(ctx, orderport.HistoricalDeltaCommand{HistoricalImportCommand: command, Before: precondition})
+			} else {
+				imported, err = runner.Orders.ImportHistorical(ctx, command)
+			}
+			if err != nil {
+				return err
+			}
+			entry := struct{ orderID, paymentID int64 }{orderID: imported.ID}
+			result.Orders++
+			paymentStatus, hasPayment := historicalPaymentStatus(status)
+			if hasPayment && row.Provider != orderdomain.ProviderAlipay {
+				transactionDigest := ""
+				if row.ProviderTransactionNo != "" {
+					transactionDigest = string(effectport.Hash("history.transaction", row.ProviderTransactionNo))
+				}
+				payment := paymentdomain.Payment{Historical: true, SourceStatus: row.SourceStatus, HistoryReason: row.HistoryReason, OrderID: imported.ID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: payer.customerID, BeneficiaryCustomerID: beneficiary.customerID, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: paymentStatus, ProviderTransactionDigest: transactionDigest, Version: 1, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
+				persisted, err := runner.Payments.ImportTerminalPayment(ctx, payment, digest, manifest.RunKey)
+				if err != nil {
+					return err
+				}
+				entry.paymentID = persisted.ID
+				result.Payments++
+			}
+			orders[string(row.Provider)+"\x00"+row.MerchantOrderNo] = entry
 		}
-		orders[string(row.Provider)+"\x00"+row.MerchantOrderNo] = entry
+		for _, row := range manifest.Refunds {
+			entry, ok := orders[string(row.Provider)+"\x00"+row.MerchantOrderNo]
+			if !ok || entry.paymentID < 1 {
+				return ErrInvalidManifest
+			}
+			raw, _ := json.Marshal(row)
+			digest := sha256.Sum256(raw)
+			refundDigest := ""
+			if row.ProviderRefundNo != "" {
+				refundDigest = string(effectport.Hash("history.refund", row.ProviderRefundNo))
+			}
+			refund := paymentdomain.Refund{PaymentID: entry.paymentID, Provider: paymentdomain.Provider(row.Provider), RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, Status: paymentdomain.RefundStatus(row.HistoricalStatus()), ProviderRefundDigest: refundDigest, Version: 1, CreatedAt: row.OccurredAt.UTC(), UpdatedAt: row.OccurredAt.UTC()}
+			if _, err := runner.Payments.ImportTerminalRefund(ctx, refund, digest, manifest.RunKey); err != nil {
+				return err
+			}
+			result.Refunds++
+		}
+
+		return nil
 	}
-	for _, row := range manifest.Refunds {
-		entry, ok := orders[string(row.Provider)+"\x00"+row.MerchantOrderNo]
-		if !ok || entry.paymentID < 1 {
-			return result, ErrInvalidManifest
-		}
-		raw, _ := json.Marshal(row)
-		digest := sha256.Sum256(raw)
-		refundDigest := ""
-		if row.ProviderRefundNo != "" {
-			refundDigest = string(effectport.Hash("history.refund", row.ProviderRefundNo))
-		}
-		refund := paymentdomain.Refund{PaymentID: entry.paymentID, Provider: paymentdomain.Provider(row.Provider), RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, Status: paymentdomain.RefundCompleted, ProviderRefundDigest: refundDigest, Version: 1, CreatedAt: row.OccurredAt.UTC(), UpdatedAt: row.OccurredAt.UTC()}
-		if _, err := runner.Payments.ImportTerminalRefund(ctx, refund, digest, manifest.RunKey); err != nil {
-			return result, err
-		}
-		result.Refunds++
+	var businessErr error
+	if runner.DeltaOrders != nil {
+		businessErr = runner.UOW.Within(ctx, applyBusiness)
+	} else {
+		businessErr = applyBusiness(ctx)
+	}
+	if businessErr != nil {
+		return result, businessErr
 	}
 	if err := runner.Runs.Complete(ctx, manifest.RunKey, int64(result.Subjects+result.IdentityQuarantines+result.Orders+result.Refunds)); err != nil {
 		return result, err

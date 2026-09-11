@@ -32,3 +32,10 @@ type DefinitionImport struct {
 type DefinitionImporter interface {
 	ImportDefinition(context.Context, DefinitionImport) (Product, error)
 }
+
+// CutoverDefinitionChecker compares only commerce dependency facts. Display
+// material, tagging, completion and other operator configuration remain owned
+// by the target and are never overwritten when a source mapping is reused.
+type CutoverDefinitionChecker interface {
+	CheckCutoverDefinition(context.Context, ID, DefinitionImport) error
+}

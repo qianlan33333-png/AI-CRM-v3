@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func TestSixFrozenDonorTemplatesAndCanonicalDefinition(t *testing.T) {
-	if got := Templates(); len(got) != 6 {
+func TestFrozenTemplatesAndCanonicalDefinition(t *testing.T) {
+	if got := Templates(); len(got) != 9 {
 		t.Fatalf("templates=%d", len(got))
 	} else {
 		for _, item := range got {

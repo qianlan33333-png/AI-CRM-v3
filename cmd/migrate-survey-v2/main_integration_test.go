@@ -443,3 +443,165 @@ func surveyMigrationIntegrationTarget(t *testing.T) (string, *pgxpool.Pool, func
 		admin.Close(cleanup)
 	}
 }
+
+func TestPostgreSQLAppendOnlySurveySnapshot(t *testing.T) {
+	target, pool, cleanup := surveyMigrationIntegrationTarget(t)
+	defer cleanup()
+	ctx := context.Background()
+	original := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC))
+	file, key, dataKey := writeFrozenSnapshot(t, original)
+	args := func(f, k string) []string {
+		return []string{"--target-url", target, "--snapshot", f, "--snapshot-key-file", k, "--data-key-file", dataKey}
+	}
+	if err := importSnapshot(append(args(file, key), "--confirm-import")); err != nil {
+		t.Fatal(err)
+	}
+	next := cloneFrozenSurveySnapshot(t, original, original.Manifest.SnapshotAt.Add(time.Hour))
+	var submissions []submission
+	decodeTable(next, "questionnaire_submissions", &submissions)
+	added := submissions[1]
+	added.ID = 43
+	submissions = append(submissions, added)
+	setFrozenTable(t, &next, "questionnaire_submissions", submissions)
+	var answers []answer
+	decodeTable(next, "questionnaire_submission_answers", &answers)
+	addedAnswer := answers[0]
+	addedAnswer.ID = 52
+	addedAnswer.SubmissionID = 43
+	answers = append(answers, addedAnswer)
+	setFrozenTable(t, &next, "questionnaire_submission_answers", answers)
+	file, key, _ = writeFrozenSnapshot(t, next)
+	for i := 0; i < 2; i++ {
+		if err := importSnapshot(append(args(file, key), "--confirm-import", "--append-only")); err != nil {
+			t.Fatalf("append/replay: %v", err)
+		}
+		if err := reconcile(append(args(file, key), "--append-only")); err != nil {
+			t.Fatalf("full history reconciliation: %v", err)
+		}
+	}
+	var count, effects int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM survey_submissions),(SELECT count(*) FROM survey_outbox)`).Scan(&count, &effects); err != nil || count != 3 || effects != 0 {
+		t.Fatalf("count=%d effects=%d err=%v", count, effects, err)
+	}
+	for _, kind := range []string{"changed", "omitted", "new_definition"} {
+		bad := cloneFrozenSurveySnapshot(t, next, next.Manifest.SnapshotAt.Add(time.Hour))
+		switch kind {
+		case "changed":
+			rows := append([]submission(nil), submissions...)
+			rows[0].Total++
+			setFrozenTable(t, &bad, "questionnaire_submissions", rows)
+		case "omitted":
+			// The omitted submission has no source answers, so snapshot structural validation passes.
+			rows := []submission{submissions[0], submissions[2]}
+			setFrozenTable(t, &bad, "questionnaire_submissions", rows)
+		case "new_definition":
+			var rows []questionnaire
+			decodeTable(bad, "questionnaires", &rows)
+			q := rows[0]
+			q.ID = 2
+			q.Slug = "new-definition"
+			rows = append(rows, q)
+			setFrozenTable(t, &bad, "questionnaires", rows)
+		}
+		bf, bk, _ := writeFrozenSnapshot(t, bad)
+		if err := importSnapshot(append(args(bf, bk), "--confirm-import", "--append-only")); err == nil {
+			t.Fatalf("%s accepted", kind)
+		}
+	}
+
+	// Resolution is accepted only under an explicitly confirmed scope and an
+	// exact current Identity Port owner match. Wrong scope/customer stays blocked.
+	var customerID, otherID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,'unionid','wechat-open-platform:confirmed','unresolved-union','verified','provider',1,clock_timestamp())`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET customer_id=$1,identity_state='resolved',identity_reason='legacy_unionid_scope_confirmed' WHERE identity_state='unresolved'`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"", "wechat-open-platform:wrong"} {
+		if err := reconcile(append(args(file, key), "--append-only", "--confirmed-unionid-scope", scope)); err == nil {
+			t.Fatalf("unconfirmed resolution accepted: %s", scope)
+		}
+	}
+	scopedArgs := append(args(file, key), "--append-only", "--confirmed-unionid-scope", "wechat-open-platform:confirmed")
+	if err := reconcile(scopedArgs); err != nil {
+		t.Fatalf("legitimate resolved history: %v", err)
+	}
+	if err := importSnapshot(append(args(file, key), "--append-only", "--confirm-import")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(scopedArgs); err != nil {
+		t.Fatalf("replay changed resolved identity: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET customer_id=$1 WHERE identity_state='resolved'`, otherID); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(scopedArgs); err == nil {
+		t.Fatal("wrong customer accepted with correct scope")
+	}
+	var batches int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM survey_migration_batches`).Scan(&batches); err != nil || batches != 2 {
+		t.Fatalf("failed append leaked batch: %d %v", batches, err)
+	}
+}
+
+func TestPostgreSQLReconcileAuditedEnablePreservesFrozenDefinition(t *testing.T) {
+	target, pool, cleanup := surveyMigrationIntegrationTarget(t)
+	defer cleanup()
+	snap := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC))
+	file, key, dataKey := writeFrozenSnapshot(t, snap)
+	args := []string{"--target-url", target, "--snapshot", file, "--snapshot-key-file", key, "--data-key-file", dataKey}
+	if err := importSnapshot(append(args, "--confirm-import")); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE survey_questionnaires SET status='published',version=2,updated_by=created_by,updated_at=$1`, snap.Manifest.SnapshotAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	enabledArgs := append(args, "--allow-audited-enabled-definition")
+	if err := reconcile(enabledArgs); err == nil {
+		t.Fatal("unaudited status enabled accepted")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO survey_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,metadata,occurred_at) SELECT 'definition_enable','questionnaire',id,'admin:'||updated_by::text,jsonb_build_object('id',id,'expected_version',1,'status','published'),updated_at FROM survey_questionnaires`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(args); err == nil {
+		t.Fatal("default strict status check bypassed")
+	}
+	if err := reconcile(enabledArgs); err != nil {
+		t.Fatalf("audited enable: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_questionnaires SET name='changed'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(enabledArgs); err == nil || !strings.Contains(err.Error(), "questionnaires/1") || !strings.Contains(err.Error(), "fields=name") || strings.Contains(err.Error(), "changed") {
+		t.Fatalf("unsafe or missing field diagnostic: %v", err)
+	}
+}
+
+func TestPostgreSQLReconcileDefinitionWithoutScoreRules(t *testing.T) {
+	target, pool, cleanup := surveyMigrationIntegrationTarget(t)
+	defer cleanup()
+	snap := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC))
+	setFrozenTable(t, &snap, "questionnaire_score_rules", []rule{})
+	file, key, dataKey := writeFrozenSnapshot(t, snap)
+	args := []string{"--target-url", target, "--snapshot", file, "--snapshot-key-file", key, "--data-key-file", dataKey}
+	if err := importSnapshot(append(args, "--confirm-import")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(args); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `ALTER TABLE survey_definition_versions DISABLE TRIGGER USER; UPDATE survey_definition_versions SET definition_digest=decode(repeat('01',32),'hex'); ALTER TABLE survey_definition_versions ENABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(args); err == nil || !strings.Contains(err.Error(), "definition.definition_digest") {
+		t.Fatalf("expected frozen digest mismatch, got %v", err)
+	}
+}

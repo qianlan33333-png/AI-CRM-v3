@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	proof "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/migration/cutoverproof"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -878,4 +880,109 @@ func sidebarHistoryCommandMigrate(ctx context.Context, pool *pgxpool.Pool) error
 			UNIQUE(source_system,domain,source_kind,source_key)
 		)`)
 	return err
+}
+
+func TestPostgreSQLSidebarHistoryFreshRunReusesOwnerReceipts(t *testing.T) {
+	ctx := context.Background()
+	dsn, pool, cleanup := sidebarHistoryCommandDatabase(t, ctx)
+	defer cleanup()
+	t.Setenv("AICRM_DATABASE_URL", dsn)
+	path, digest := sidebarHistoryFullFactsManifest(t)
+	sidebarHistorySeedFullFacts(t, ctx, pool)
+	if err := run(ctx, []string{"--mode=apply", "--snapshot=" + path, "--manifest-sha256=" + digest, "--confirm-apply"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.RunKey = "sidebar-new-independent-run"
+	m.CapturedAt = m.CapturedAt.Add(time.Hour)
+	other := filepath.Join(t.TempDir(), "fresh.json")
+	if err = save(other, m); err != nil {
+		t.Fatal(err)
+	}
+	m, err = load(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := hex.EncodeToString(m.rawDigest[:])
+	args := []string{"--mode=apply", "--snapshot=" + other, "--manifest-sha256=" + sha, "--confirm-apply"}
+	if err = run(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+	var ent, claims int
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM order_service_entitlements),(SELECT count(*) FROM coupon_customer_claims)`).Scan(&ent, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if ent != 3 || claims != 3 {
+		t.Fatal("fresh run duplicated owner history")
+	}
+	if err = run(ctx, []string{"--mode=reconcile", "--snapshot=" + other, "--manifest-sha256=" + sha}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgreSQLSidebarHistoryExternalProofResolvesOnlyExistingRoots(t *testing.T) {
+	ctx := context.Background()
+	dsn, pool, cleanup := sidebarHistoryCommandDatabase(t, ctx)
+	defer cleanup()
+	t.Setenv("AICRM_DATABASE_URL", dsn)
+	path, digest := sidebarHistoryFullFactsManifest(t)
+	sidebarHistorySeedFullFacts(t, ctx, pool)
+	// Synthetic fixture owns all identities; production code only calls Resolve.
+	if _, err := pool.Exec(ctx, `UPDATE customer_identities SET kind='wecom_external_userid',scope_key='wecom-corp:test'`); err != nil {
+		t.Fatal(err)
+	}
+	m, err := load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := proof.Snapshot{Version: 2, ResolutionMode: proof.ExistingWecomOnly, Scopes: proof.Scopes{CorpID: "test"}, CapturedAt: time.Now().UTC(), Rows: []proof.Row{}}
+	seen := map[string]bool{}
+	for _, r := range m.Entitlements {
+		if seen[r.UnionID] {
+			continue
+		}
+		seen[r.UnionID] = true
+		s.Rows = append(s.Rows, proof.Row{UnionID: r.UnionID, CRMStatus: "active", PrimaryExternalID: r.UnionID, Evidence: []proof.Evidence{{MapID: int64(len(s.Rows) + 1), ProviderOK: true, CorpID: "test", ExternalID: r.UnionID, UnionID: r.UnionID, Status: "active", RawUnionID: r.UnionID, RawExternalID: r.UnionID}}})
+	}
+	dir := t.TempDir()
+	key := filepath.Join(dir, "key")
+	enc := filepath.Join(dir, "proof.enc")
+	out := filepath.Join(dir, "derived.json")
+	if err = os.WriteFile(key, []byte(base64.RawStdEncoding.EncodeToString(make([]byte, 32))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := proof.Seal(s, enc, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := []string{"--external-proof=" + enc, "--external-proof-key-file=" + key, "--external-proof-sha256=" + hex.EncodeToString(d[:]), "--corp-id=test", "--confirm-matched-corp"}
+	if err = run(ctx, append([]string{"--mode=bind-external-proof", "--snapshot=" + path, "--manifest-sha256=" + digest, "--output-snapshot=" + out}, binding...)); err != nil {
+		t.Fatal(err)
+	}
+	derived, err := load(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(m.Entitlements)
+	after, _ := json.Marshal(derived.Entitlements)
+	if !bytes.Equal(before, after) || !derived.CapturedAt.Equal(m.CapturedAt) {
+		t.Fatal("source row/timestamp changed")
+	}
+	args := append([]string{"--snapshot=" + out, "--manifest-sha256=" + hex.EncodeToString(derived.rawDigest[:])}, binding...)
+	if err = run(ctx, append(args, "--mode=apply", "--confirm-apply")); err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, append(args, "--mode=reconcile")); err != nil {
+		t.Fatal(err)
+	}
+	var unions, ent int
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM customer_identities WHERE kind='unionid'),(SELECT count(*) FROM order_service_entitlements)`).Scan(&unions, &ent); err != nil {
+		t.Fatal(err)
+	}
+	if unions != 0 || ent != 3 {
+		t.Fatalf("unexpected identity or entitlement writes %d %d", unions, ent)
+	}
 }

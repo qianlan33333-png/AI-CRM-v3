@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
@@ -12,7 +13,11 @@ import (
 // Product-owned selection projection. A value is accepted only when it is an
 // exact stable code or identifies exactly one Product display name.
 type audienceProductReferenceAdapter struct {
-	products productport.ProductOptionReader
+	products   productport.ProductOptionReader
+	historical orderport.HistoricalAudienceProductReader
+	uow        interface {
+		Within(context.Context, func(context.Context) error) error
+	}
 }
 
 func (a audienceProductReferenceAdapter) ResolveAudienceProduct(ctx context.Context, value string) (string, bool, error) {
@@ -39,6 +44,22 @@ func (a audienceProductReferenceAdapter) ResolveAudienceProduct(ctx context.Cont
 	for _, item := range page.Items {
 		if item.Code == value {
 			return item.Code, true, nil
+		}
+	}
+	if a.historical != nil {
+		if a.uow == nil {
+			return "", false, errors.New("historical product transaction unavailable")
+		}
+		var found bool
+		if err := a.uow.Within(ctx, func(tx context.Context) error {
+			var readErr error
+			found, readErr = a.historical.HistoricalAudienceProductCodeExists(tx, value)
+			return readErr
+		}); err != nil {
+			return "", false, err
+		}
+		if found {
+			return value, true, nil
 		}
 	}
 	titleCode := ""

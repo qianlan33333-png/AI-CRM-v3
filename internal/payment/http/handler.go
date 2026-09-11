@@ -19,6 +19,7 @@ import (
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
+	paymenth5oauth "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/h5oauth"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
@@ -152,6 +153,10 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.checkout(writer, request)
 	case strings.HasPrefix(path, "/api/v1/wechat-pay/checkouts/"):
 		handler.checkoutStatus(writer, request, strings.TrimPrefix(path, "/api/v1/wechat-pay/checkouts/"))
+	case strings.HasPrefix(path, "/api/admin/wechat-pay/payments/") && strings.HasSuffix(path, "/abandon-checkout"):
+		handler.abandonCheckout(writer, request, strings.TrimSuffix(strings.TrimPrefix(path, "/api/admin/wechat-pay/payments/"), "/abandon-checkout"))
+	case path == "/api/admin/payments/history":
+		handler.historyPayment(writer, request)
 	case path == "/api/admin/refunds":
 		handler.refunds(writer, request)
 	case path == "/api/public/wechat-pay/callbacks/payment" || path == "/api/public/wechat-pay/callbacks/refund":
@@ -224,7 +229,14 @@ func (handler *Handler) completeH5OAuth(writer http.ResponseWriter, request *htt
 	}
 	issued, returnPath, err := handler.h5OAuth.Complete(request.Context(), request.URL.Query().Get("state"), request.URL.Query().Get("code"))
 	if err != nil {
-		writeError(writer, http.StatusUnauthorized, "identity_verification_failed")
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writer.Header().Set("Cache-Control", "no-store")
+		message := "微信授权未完成，请关闭页面后从原链接重新进入。"
+		if errors.Is(err, paymenth5oauth.ErrIdentityConflict) {
+			message = "微信授权已完成，但您的历史账号资料需要核对。请联系客服处理后再继续支付。"
+		}
+		writer.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprintf(writer, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>授权提示</title></head><body style="font:17px/1.7 -apple-system,sans-serif;padding:32px;color:#263238"><h2>暂时无法继续支付</h2><p>%s</p><p>当前未发起新的支付，请勿反复提交。</p></body></html>`, message)
 		return
 	}
 	if err = WriteTrustedSessionCookie(writer, issued); err != nil {
@@ -564,7 +576,13 @@ func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http
 		resultError(writer, err)
 		return
 	}
-	result := map[string]any{"payment_id": handoff.PaymentID, "merchant_order_no": handoff.MerchantOrder, "status": handoff.Status, "ready": len(handoff.Payload) > 0}
+	result := map[string]any{"payment_id": handoff.PaymentID, "merchant_order_no": handoff.MerchantOrder, "status": handoff.Status, "ready": len(handoff.Payload) > 0, "amount_minor": handoff.AmountMinor, "currency": handoff.Currency}
+	if handoff.CheckoutAbandoned {
+		result["checkout_abandoned"] = true
+	}
+	if handoff.PrepayState != "" {
+		result["prepay_state"] = handoff.PrepayState
+	}
 	status := http.StatusAccepted
 	if len(handoff.Payload) > 0 {
 		var providerPayload map[string]any
@@ -896,3 +914,38 @@ func hasRole(roles []accessdomain.Role, expected accessdomain.Role) bool {
 }
 
 var _ Application = (*paymentapp.Service)(nil)
+
+// historyPayment is an authenticated native read path for inert money facts.
+func (handler *Handler) historyPayment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	principal, err := handler.security.Authenticate(r.Context(), r)
+	if err != nil || principal.Kind != accessdomain.KindAdmin {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	provider := domain.Provider(r.URL.Query().Get("provider"))
+	merchant := r.URL.Query().Get("merchant_order_no")
+	if (provider != domain.ProviderWeChatPay && provider != domain.ProviderWeChatShop) || merchant == "" || len(merchant) > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	p, err := handler.app.FindPayment(r.Context(), provider, merchant)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	if !p.Historical {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	nullable := func(v int64) any {
+		if v < 1 {
+			return nil
+		}
+		return v
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": p.ID, "order_id": p.OrderID, "merchant_order_no": p.MerchantOrderNo, "provider": p.Provider, "status": p.Status, "amount_minor": p.AmountMinor, "currency": p.Currency, "record_origin": "history", "source_status": p.SourceStatus, "history_reason": p.HistoryReason, "payer_customer_id": nullable(p.PayerCustomerID), "beneficiary_customer_id": nullable(p.BeneficiaryCustomerID), "effect_eligible": false, "updated_at": p.UpdatedAt})
+}

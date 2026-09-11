@@ -38,8 +38,12 @@ func Parse(raw json.RawMessage) (AST, error) {
 		field = "owner.staff_id"
 	case ChannelAny:
 		field = "channel.code"
+	case HXCRegistration:
+		field = "hxc.registration_coverage"
 	case WeComContactRegistration:
 		field = "wecom.contact_registration"
+	case QuestionnaireSubmissions:
+		field = "survey.submissions"
 	case QuestionnaireChoiceAnswers:
 		field = "survey.first_complete_choice_answers"
 	case PaidOrder:
@@ -48,6 +52,8 @@ func Parse(raw json.RawMessage) (AST, error) {
 		field = "channel.entry"
 	case RadarFirstClickElapsed:
 		field = "radar.first_click_elapsed"
+	case MemberExcludingGroupPaid:
+		field = "hxc.member_excluding_group_paid"
 	case MemberUsageStatus:
 		field = "hxc.member_usage_status"
 	default:

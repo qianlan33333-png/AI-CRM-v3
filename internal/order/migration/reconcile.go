@@ -66,7 +66,9 @@ func (store PostgreSQLRuns) VerifyFull(ctx context.Context, manifest Manifest, i
 
 	refundsByMerchant := make(map[string]int64, len(manifest.Refunds))
 	for _, row := range manifest.Refunds {
-		refundsByMerchant[HistoricalMerchantKey(row.Provider, row.MerchantOrderNo)] += row.AmountMinor
+		if row.Completed() {
+			refundsByMerchant[HistoricalMerchantKey(row.Provider, row.MerchantOrderNo)] += row.AmountMinor
+		}
 	}
 	result := FullReconciliation{OrderIDs: make(map[string]int64, len(manifest.Orders))}
 	for _, row := range manifest.Orders {
@@ -126,7 +128,7 @@ func (store PostgreSQLRuns) verifyHistoricalOrder(ctx context.Context, runID int
 	}
 	if !bytes.Equal(receiptDigest, digest[:]) || !bytes.Equal(sourceDigest, digest[:]) ||
 		provider != string(expected.Provider) || sourceSystem != "commerce-history" || sourceKey != expected.SourceKey || merchant != expected.MerchantOrderNo || txn != expected.ProviderTransactionNo ||
-		amount != expected.AmountMinor || refunded != refundedMinor || currency != expected.Currency || status != expected.Status || origin != string(orderdomain.RecordOriginHistory) || effectEligible || version != 1 ||
+		amount != expected.AmountMinor || refunded != refundedMinor || currency != expected.Currency || status != expected.Status || origin != string(orderdomain.RecordOriginHistory) || effectEligible || version < 1 ||
 		!sameHistoricalTime(createdAt, expected.CreatedAt) || !sameHistoricalTime(updatedAt, expected.UpdatedAt) {
 		return 0, ErrReconciliationMismatch
 	}
@@ -137,12 +139,18 @@ func (store PostgreSQLRuns) verifyHistoricalOrder(ctx context.Context, runID int
 	} else {
 		expectedPayer := input.SubjectCustomerIDs[expected.PayerSubjectKey]
 		expectedBeneficiary := input.SubjectCustomerIDs[expected.BeneficiarySubjectKey]
-		if expectedPayer < 1 || expectedBeneficiary < 1 || payer == nil || beneficiary == nil || *payer != expectedPayer || *beneficiary != expectedBeneficiary {
+		if expectedPayer < 1 || payer == nil || *payer != expectedPayer || (expected.BeneficiarySubjectKey == "" && beneficiary != nil) || (expected.BeneficiarySubjectKey != "" && (expectedBeneficiary < 1 || beneficiary == nil || *beneficiary != expectedBeneficiary)) {
 			return 0, ErrReconciliationMismatch
 		}
 	}
 	if err := store.verifyHistoricalItems(ctx, id, expected.Items); err != nil {
 		return 0, err
+	}
+	if version > 1 {
+		if err := store.verifyHistoricalDelta(ctx, id, runID, version, runKey, expected, refundedMinor); err != nil {
+			return 0, err
+		}
+		return id, nil
 	}
 	if err := store.verifyHistoricalInitialStatus(ctx, id, runKey, expected, refundedMinor); err != nil {
 		return 0, err

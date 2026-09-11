@@ -37,7 +37,7 @@ func TestPostgreSQLHistoricalPaymentVerifierRejectsPerRowDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	transactionDigest := string(effectport.Hash("history.transaction", "transaction-history"))
-	if err := pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at) VALUES($1,'wechat_pay','mini_program','merchant-history',101,11,11,100,'CNY','paid',$2,1,$3,$3) RETURNING id`, orderID, transactionDigest, now).Scan(&paymentID); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at,historical) VALUES($1,'wechat_pay','mini_program','merchant-history',101,11,11,100,'CNY','paid',$2,1,$3,$3,true) RETURNING id`, orderID, transactionDigest, now).Scan(&paymentID); err != nil {
 		t.Fatal(err)
 	}
 	paymentKey := sha256.Sum256([]byte("payment-history:run-001:merchant-history"))
@@ -61,12 +61,40 @@ func TestPostgreSQLHistoricalPaymentVerifierRejectsPerRowDrift(t *testing.T) {
 	if err != nil || matched.Payments != 1 || matched.Refunds != 1 || matched.AmountMinor != 100 || matched.RefundMinor != 40 {
 		t.Fatalf("matched=%+v err=%v", matched, err)
 	}
+
+	for _, status := range []paymentdomain.RefundStatus{paymentdomain.RefundHistoryRequested, paymentdomain.RefundHistoryProcessing, paymentdomain.RefundHistoryFailed, paymentdomain.RefundHistoryClosed} {
+		if _, err = pool.Exec(ctx, `UPDATE payment_refunds SET status=$1 WHERE id=$2`, status, refundID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = verifier.VerifyHistorical(ctx, "run-001", []int64{orderID}, payments, refunds); !errors.Is(err, ErrHistoricalReconciliationMismatch) {
+			t.Fatal("refund status drift accepted")
+		}
+		refunds[0].Status = status
+		result, e := verifier.VerifyHistorical(ctx, "run-001", []int64{orderID}, payments, refunds)
+		if e != nil || result.Refunds != 1 || result.RefundMinor != 0 {
+			t.Fatalf("historical status reconciliation %s: %+v %v", status, result, e)
+		}
+	}
 	if _, err = pool.Exec(ctx, `UPDATE payments SET provider_transaction_digest='sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' WHERE id=$1`, paymentID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = verifier.VerifyHistorical(ctx, "run-001", []int64{orderID}, payments, refunds); !errors.Is(err, ErrHistoricalReconciliationMismatch) {
 		t.Fatalf("same-total per-row payment drift err=%v", err)
 	}
+	newDigest := sha256.Sum256([]byte("fresh-payment-row"))
+	if _, e := pool.Exec(ctx, `INSERT INTO payment_history_source_deltas(result_kind,result_id,run_key,before_digest,after_digest,before_version,after_version,before_status,after_status) VALUES('payment',$1,'run-002',$2,$3,1,2,'paid','paid')`, paymentID, paymentDigest[:], newDigest[:]); e != nil {
+		t.Fatal(e)
+	}
+	if e := verifier.verifyHistoryVersion(ctx, "payment", paymentID, 2, "run-002", newDigest, "payment.history_imported", now); e != nil {
+		t.Fatalf("valid chain: %v", e)
+	}
+	if e := verifier.verifyHistoryVersion(ctx, "payment", paymentID, 3, "run-002", newDigest, "payment.history_imported", now); !errors.Is(e, ErrHistoricalReconciliationMismatch) {
+		t.Fatalf("missing version accepted: %v", e)
+	}
+	if e := verifier.verifyHistoryVersion(ctx, "payment", paymentID, 2, "run-002", paymentDigest, "payment.history_imported", now); !errors.Is(e, ErrHistoricalReconciliationMismatch) {
+		t.Fatalf("wrong digest accepted: %v", e)
+	}
+
 }
 
 func insertHistoryFacts(t *testing.T, ctx context.Context, pool *pgxpool.Pool, event string, aggregateID int64, runKey string, occurredAt time.Time) {
@@ -117,7 +145,7 @@ func historicalPaymentPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate payment migration test")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql", "0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

@@ -581,6 +581,46 @@ func TestPostgreSQLAudienceContactsUseRelationshipFacts(t *testing.T) {
 	if len(facts) != 2 || facts[0].CustomerID != customerdomain.CustomerID(first) || facts[0].OwnerUserID != "owner-a" || facts[0].Status != "active" || !facts[0].ObservedAt.Equal(now.Add(-48*time.Hour)) || facts[1].Status != "deleted" {
 		t.Fatalf("facts=%+v", facts)
 	}
+	// Recognition does not require an active follow relationship, but remains
+	// scope-bound and excludes conflicting profiles.
+	if _, err := pool.Native().Exec(ctx, `DELETE FROM wecom_follow_relationships WHERE customer_id IN ($1,$2)`, first, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := unit.Within(ctx, func(tx context.Context) error {
+		ids, e := (PostgreSQLFollowRelationshipStore{}).AudienceRecognizedContacts(tx, "wecom-corp:test", now.Add(time.Hour))
+		if e != nil {
+			return e
+		}
+		if len(ids) != 2 {
+			t.Fatalf("recognized=%d", len(ids))
+		}
+		ids, e = (PostgreSQLFollowRelationshipStore{}).AudienceRecognizedContacts(tx, "wecom-corp:other", now.Add(time.Hour))
+		if e != nil {
+			return e
+		}
+		if len(ids) != 0 {
+			t.Fatal("cross-corp recognition")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Native().Exec(ctx, `UPDATE wecom_external_contact_profiles SET activation_status='conflict',stale_at=NULL WHERE customer_id=$1`, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := unit.Within(ctx, func(tx context.Context) error {
+		ids, e := (PostgreSQLFollowRelationshipStore{}).AudienceRecognizedContacts(tx, "wecom-corp:test", now.Add(time.Hour))
+		if e != nil {
+			return e
+		}
+		if len(ids) != 1 || int64(ids[0]) != first {
+			t.Fatal("conflict must not qualify")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 }
 
 func TestPostgreSQLAudiencePrimaryOwnersUseCompletedTrustedFollowScopes(t *testing.T) {

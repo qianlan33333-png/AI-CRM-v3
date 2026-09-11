@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,15 +26,20 @@ import (
 // matching, Provider call, or customer write. Each condition fails closed when
 // its factual Owner is unavailable.
 type LegacyTemplateSource struct {
-	Contacts          wecomport.AudienceContactReader
-	Survey            surveyport.AudienceChoiceAnswerReader
-	Orders            orderport.PaidAudienceReader
-	Channels          channelport.AudienceEntryReader
-	Radar             radarport.AudienceFirstClickReader
-	MemberFacts       hxcport.VersionedSharedFactsReader
-	RegistrationFacts customerport.AudienceRegistrationReader
-	Owners            accessport.AudienceOwnerReferenceReader
-	PrimaryOwners     wecomport.AudiencePrimaryOwnerReader
+	Groups             wecomport.AudienceGroupMembershipReader
+	GroupCandidates    wecomport.CandidateGroupMembershipReader
+	Contacts           wecomport.AudienceContactReader
+	Survey             surveyport.AudienceChoiceAnswerReader
+	Submissions        surveyport.AudienceSubmissionReader
+	RecognizedContacts wecomport.AudienceRecognizedContactReader
+	Orders             orderport.PaidAudienceReader
+	Channels           channelport.AudienceEntryReader
+	Radar              radarport.AudienceFirstClickReader
+	MemberFacts        hxcport.VersionedSharedFactsReader
+	HXCRegistration    hxcport.RegistrationReader
+	RegistrationFacts  customerport.AudienceRegistrationReader
+	Owners             accessport.AudienceOwnerReferenceReader
+	PrimaryOwners      wecomport.AudiencePrimaryOwnerReader
 	// PrimaryOwnerCorpScope is the composition-owned active WeCom provider
 	// scope. A primary from another scope cannot be compared to this audience's
 	// provider userid, even when the strings happen to match.
@@ -51,8 +57,12 @@ func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentpo
 		return segmentport.Evaluation{}, err
 	}
 	switch ast.Template {
+	case segmentdsl.HXCRegistration:
+		ids, err = s.hxcRegistration(ctx, ast.Parameters, reference)
 	case segmentdsl.WeComContactRegistration:
 		ids, err = s.wecom(ctx, ast.Parameters, reference)
+	case segmentdsl.QuestionnaireSubmissions:
+		ids, err = s.submissions(ctx, ast.Parameters, reference)
 	case segmentdsl.QuestionnaireChoiceAnswers:
 		ids, err = s.questionnaire(ctx, ast.Parameters, reference)
 	case segmentdsl.PaidOrder:
@@ -61,6 +71,8 @@ func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentpo
 		ids, err = s.channel(ctx, ast.Parameters, reference)
 	case segmentdsl.RadarFirstClickElapsed:
 		ids, err = s.radar(ctx, ast.Parameters, reference)
+	case segmentdsl.MemberExcludingGroupPaid:
+		ids, err = s.memberExcludingGroupPaid(ctx, ast.Parameters, reference)
 	case segmentdsl.MemberUsageStatus:
 		ids, err = s.member(ctx, ast.Parameters, reference)
 	default:
@@ -260,6 +272,7 @@ func idsFrom(set map[int64]bool) []int64 {
 	for id := range set {
 		out = append(out, id)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 

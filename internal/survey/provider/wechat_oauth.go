@@ -55,21 +55,36 @@ func (p *WeChatOAuth) Exchange(ctx context.Context, code string) (identitydomain
 	}
 	var payload struct {
 		OpenID         string `json:"openid"`
+		AccessToken    string `json:"access_token"`
 		UnionID        string `json:"unionid"`
 		ErrorCode      int    `json:"errcode"`
 		Scope          string `json:"scope"`
 		IsSnapshotUser int    `json:"is_snapshotuser"`
 	}
-	if json.Unmarshal(body, &payload) != nil || payload.ErrorCode != 0 || payload.IsSnapshotUser != 0 || !validProviderValue(payload.OpenID) || payload.UnionID != "" && !validProviderValue(payload.UnionID) || !containsScope(payload.Scope, "snsapi_userinfo") || strings.HasPrefix(strings.ToLower(payload.OpenID), "snapshot") {
+	if json.Unmarshal(body, &payload) != nil || payload.ErrorCode != 0 || !validConfigValue(payload.AccessToken, 4096) || payload.IsSnapshotUser != 0 || !validProviderValue(payload.OpenID) || payload.UnionID != "" && !validProviderValue(payload.UnionID) || !containsScope(payload.Scope, "snsapi_userinfo") || strings.HasPrefix(strings.ToLower(payload.OpenID), "snapshot") {
 		return identitydomain.VerifiedFact{}, errors.New("survey OAuth unavailable")
 	}
-	input := identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindOAOpenID, Scope: "wechat-app:" + p.appID, Value: payload.OpenID, Source: "wechat.survey.oauth"}
-	if payload.UnionID != "" {
-		input.Kind = identitydomain.KindUnionID
-		input.Scope = "wechat-open-platform:" + p.openPlatformID
-		input.Value = payload.UnionID
+	values = url.Values{"access_token": {payload.AccessToken}, "openid": {payload.OpenID}, "lang": {"zh_CN"}}
+	request, err = http.NewRequestWithContext(ctx, http.MethodGet, p.apiBase+"/sns/userinfo?"+values.Encode(), nil)
+	if err != nil {
+		return identitydomain.VerifiedFact{}, errors.New("survey OAuth unavailable")
 	}
-	return identitydomain.NewVerifiedFact(input)
+	response, err = p.client.Do(request)
+	if err != nil {
+		return identitydomain.VerifiedFact{}, errors.New("survey OAuth unavailable")
+	}
+	defer response.Body.Close()
+	body, err = io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	var info struct {
+		OpenID    string `json:"openid"`
+		UnionID   string `json:"unionid"`
+		ErrorCode int    `json:"errcode"`
+		Snapshot  int    `json:"is_snapshotuser"`
+	}
+	if err != nil || response.StatusCode != http.StatusOK || json.Unmarshal(body, &info) != nil || info.ErrorCode != 0 || info.Snapshot != 0 || info.OpenID != payload.OpenID || !validConfigValue(info.UnionID, 512) || payload.UnionID != "" && payload.UnionID != info.UnionID {
+		return identitydomain.VerifiedFact{}, errors.New("survey OAuth unavailable")
+	}
+	return identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:" + p.openPlatformID, Value: info.UnionID, Source: "wechat.survey.oauth.userinfo"})
 }
 
 func containsScope(raw, expected string) bool {

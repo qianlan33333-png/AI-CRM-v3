@@ -488,7 +488,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	segmentService := segmentapp.NewService(uow, segmentRepository)
 	// Populate this composition-owned adapter as its Owner stores are built
 	// below. The process has not started serving requests at this point.
-	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
+	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Groups: wecom.PostgreSQLGroupMembershipFacts{}, GroupCandidates: wecom.GroupCandidateFacts{Identity: queries}, Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
 	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)
@@ -512,7 +512,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	if err = audienceScheduleWorker.BindService(scheduledRefreshes); err != nil {
+	preparedAudienceSchedule := &audienceGroupPreparedSchedule{uow: uow, targets: segmentRepository, facts: wecom.GroupProviderFacts{}, next: scheduledRefreshes, corp: "wecom-corp:" + cfg.WeCom.CorpID}
+	if err = audienceScheduleWorker.BindService(preparedAudienceSchedule); err != nil {
 		return fail(err)
 	}
 	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
@@ -681,6 +682,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	legacyAudienceSource.Survey = surveyRepository
+	legacyAudienceSource.Submissions = surveyRepository
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
 	segmentBindings.Handler.BindAudienceSurveyReferences(audienceSurveyReferenceAdapter{surveys: surveyDefinitions})
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
@@ -758,7 +760,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	productCatalog := productapp.NewService(uow, productRepository, productEvents)
-	segmentBindings.Handler.BindAudienceProductReferences(audienceProductReferenceAdapter{products: productCatalog})
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
 	commercePushTargetResolver, err := commercePushTargetsFromRuntime(cfg.CommercePush)
@@ -833,7 +834,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	couponBindings, err := couponModule.BindWithClaimsAndPublic(couponService, productCatalog, couponRepository, couponPublic, requestSecurity)
+	couponClaimAdmin, err := composeCouponClaimAdmin(uow, couponRepository)
+	if err != nil {
+		return fail(err)
+	}
+	couponBindings, err := couponModule.BindWithClaimsAndPublic(couponService, productCatalog, couponClaimAdmin, couponPublic, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -925,6 +930,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	segmentBindings.Handler.BindAudienceProductReferences(audienceProductReferenceAdapter{products: productCatalog, historical: orderRepository, uow: uow})
 	legacyAudienceSource.Orders = orderRepository
 	orderService := orderapp.NewService(uow, orderRepository)
 	if err = orderService.SetCheckoutCouponCoordinator(couponCheckout); err != nil {
@@ -1080,6 +1086,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	paymentService := paymentapp.NewService(uow, paymentRepository, orderService, paymentSession, effectRepository, effectRepository)
+	paymentService.SetCanonicalLineageReader(queries)
 	if err = paymentService.SetCheckoutProductReader(productTargets); err != nil {
 		return fail(err)
 	}
@@ -1165,7 +1172,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(err)
 		}
 	}
-	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, h5PublicOrigin(cfg)+"/api/h5/wechat-pay/oauth/callback")
+	if cfg.WeChatPay.H5OAuthEnabled && cfg.WeChatPay.H5AppID != cfg.Survey.OAuthAppID {
+		return fail(errors.New("payment H5 OAuth open-platform scope requires matching configured Official Account"))
+	}
+	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, h5PublicOrigin(cfg)+"/api/h5/wechat-pay/oauth/callback", cfg.Survey.OAuthOpenPlatformID)
 	if err != nil {
 		return fail(err)
 	}
@@ -1303,6 +1313,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	legacyAudienceSource.RegistrationFacts = customerStore
 	legacyAudienceSource.Contacts = relationships
+	legacyAudienceSource.RecognizedContacts = relationships
 	var channelAssetProvider effectport.ProviderAdapter
 	var channelEntrantProvider effectport.ProviderAdapter
 	var channelLinkProvider effectport.ProviderAdapter
@@ -1438,7 +1449,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	legacyAudienceSource.MemberFacts = hxcRepository
-	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
+	legacyAudienceSource.HXCRegistration = hxcRepository
+	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, RegistrationCoverage: queries, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
@@ -1478,9 +1490,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	var groupMembershipRefresh wecom.GroupMembershipRefresher
+	if cfg.WeCom.ChannelProviderReadEnabled {
+		groupMembershipRefresh = wecom.GroupMembershipRefresh{Provider: providerClient, Resolver: oneID, Store: wecom.PostgreSQLGroupMembershipFacts{}, Audit: auditService, UOW: uow, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
+	}
+	preparedAudienceSchedule.refresh = groupMembershipRefresh
 	callbackAdminHandler, err := wecom.NewCallbackAdminHandler(wecom.CallbackAdminConfig{
 		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
-		Receipts: callbackReceipts, Retrier: inboxService,
+		Receipts: callbackReceipts, Retrier: inboxService, GroupMembership: groupMembershipRefresh,
 	})
 	if err != nil {
 		return fail(err)
@@ -1512,6 +1529,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/admin/alipay/transactions", orderHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/orders/", paymentHandler)
+	adminAPIs.Handle("/api/admin/wechat-pay/payments/", paymentHandler)
 	adminAPIs.Handle("/api/admin/wechat-shop/refunds/", paymentHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/order-exports", orderHandler)
 	adminAPIs.Handle("/api/admin/payments/", paymentHandler)
@@ -2109,6 +2127,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/public/wechat-pay/", identity)
 	mux.Handle("/api/public/wechat-shop/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)
+	mux.Handle("/api/admin/wechat-pay/payments/", identity)
 	mux.Handle("/api/admin/wechat-shop/refunds/", identity)
 	mux.Handle("/api/admin/wechat-pay/order-exports", identity)
 	mux.Handle("/api/admin/operation-cycles/", identity)

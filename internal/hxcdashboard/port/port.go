@@ -8,6 +8,7 @@ import (
 )
 
 type Snapshot struct {
+	Complete  bool // Set only after the trusted provider finishes the full source transaction.
 	AsOf      time.Time
 	Watermark *time.Time
 	Rows      []domain.SourceRow

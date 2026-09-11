@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	"time"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
@@ -93,13 +94,30 @@ type EffectProjection struct {
 	UpdatedAt    time.Time
 }
 
+// AbandonCheckoutCommand records a human-reviewed local checkout decision.
+// It is not a Provider cancellation or proof that prepay never executed.
+type AbandonCheckoutCommand struct {
+	PaymentID        int64
+	ActorScope       string
+	EvidenceDigest   string
+	ConfirmedNoDebit bool
+}
+type CheckoutAbandoner interface {
+	AbandonCheckout(context.Context, AbandonCheckoutCommand) error
+}
+
 type Handoff struct {
-	PaymentID     int64
-	OrderID       int64
-	MerchantOrder string
-	Status        domain.Status
-	Payload       []byte
-	ExpiresAt     time.Time
+	// AmountMinor and Currency are frozen Payment facts, not current catalog/coupon prices.
+	AmountMinor       int64
+	Currency          string
+	CheckoutAbandoned bool
+	PrepayState       effectport.State
+	PaymentID         int64
+	OrderID           int64
+	MerchantOrder     string
+	Status            domain.Status
+	Payload           []byte
+	ExpiresAt         time.Time
 }
 
 type AdminQuery interface {
@@ -222,6 +240,9 @@ type ReconciliationTarget struct {
 }
 
 type WeChatPayPaymentQuery struct {
+	// Verified response identity; never log or return through public APIs.
+	AppID           string `json:"-"`
+	PayerOpenID     string `json:"-"`
 	MerchantOrderNo string
 	Currency        string
 	Status          string
@@ -232,6 +253,9 @@ type WeChatPayPaymentQuery struct {
 	OccurredAt                        time.Time
 	EvidenceDigest, TransactionDigest effectport.Digest
 }
+
+func (WeChatPayPaymentQuery) String() string   { return "WeChatPayPaymentQuery{identity:[REDACTED]}" }
+func (WeChatPayPaymentQuery) GoString() string { return "WeChatPayPaymentQuery{identity:[REDACTED]}" }
 
 type WeChatPayRefundQuery struct {
 	RefundNo, Currency, Status   string
@@ -247,4 +271,10 @@ type WeChatPayReconciler interface {
 
 type ProviderIntentReader interface {
 	ProviderIntent(context.Context, effectport.Kind, effectport.Digest) (ProviderIntent, error)
+}
+
+// H5OAuthFacts is minted after one userinfo read verifies both subject IDs.
+type H5OAuthFacts struct {
+	OpenID  identitydomain.VerifiedFact
+	UnionID identitydomain.VerifiedFact
 }

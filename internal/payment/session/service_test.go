@@ -154,3 +154,36 @@ func TestSessionExpires(t *testing.T) {
 		t.Fatalf("expiry err=%v", err)
 	}
 }
+
+func (stub *provisionerStub) ProvisionVerifiedOAuthSubject(_ context.Context, c identityport.OAuthSubjectCommand) (identityport.OAuthSubjectResult, error) {
+	stub.calls++
+	if !c.OpenID.Valid() || !c.UnionID.Valid() {
+		return identityport.OAuthSubjectResult{}, ErrInvalid
+	}
+	return identityport.OAuthSubjectResult{ProvisionResult: stub.result}, nil
+}
+func TestH5SessionsRequireFreshUnionIDProof(t *testing.T) {
+	ctx := context.Background()
+	p := &provisionerStub{result: identityport.ProvisionResult{CustomerID: 11, IdentityID: 4}}
+	store := &memoryStore{}
+	service, _ := NewService(testUOW{}, p, store, 10*time.Minute)
+	oa, _ := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindOAOpenID, Scope: "wechat-app:oa", Value: "oa-id", Source: "provider.userinfo"})
+	union, _ := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:platform", Value: "union-id", Source: "provider.userinfo"})
+	if _, err := service.IssueTrusted(ctx, IssueCommand{Fact: oa, IdempotencyKey: "oauth-missing-union-001"}); err == nil || p.calls != 0 {
+		t.Fatal("issued OpenID-only session")
+	}
+	issued, err := service.IssueTrusted(ctx, IssueCommand{Fact: oa, UnionID: union, IdempotencyKey: "oauth-verified-union-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.LookupWithin(ctx, issued.Token, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for digest, record := range store.records {
+		record.UnionIDVerified = false
+		store.records[digest] = record
+	}
+	if _, err = service.LookupWithin(ctx, issued.Token, time.Now()); err == nil {
+		t.Fatal("old OpenID session bypassed proof")
+	}
+}

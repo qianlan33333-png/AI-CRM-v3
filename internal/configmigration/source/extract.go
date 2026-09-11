@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -93,6 +94,16 @@ func Extract(ctx context.Context, pool *pgxpool.Pool, revisions ...string) (Snap
 // ExtractFrom is the transaction-seam variant used by tests and composition
 // code that owns a pgx-compatible pool wrapper.
 func ExtractFrom(ctx context.Context, db TxBeginner, sourceRevision string) (Snapshot, error) {
+	return extractScope(ctx, db, sourceRevision, false)
+}
+
+// ExtractCommerceFrom captures only the explicitly selected commerce definition
+// tables. Group/agent tables are never queried. Cardinality is manifest-driven.
+func ExtractCommerceFrom(ctx context.Context, db TxBeginner, sourceRevision string) (Snapshot, error) {
+	return extractScope(ctx, db, sourceRevision, true)
+}
+
+func extractScope(ctx context.Context, db TxBeginner, sourceRevision string, commerce bool) (Snapshot, error) {
 	if db == nil || !validRevision.MatchString(sourceRevision) {
 		return Snapshot{}, ErrInvalidSnapshot
 	}
@@ -105,6 +116,9 @@ func ExtractFrom(ctx context.Context, db TxBeginner, sourceRevision string) (Sna
 		return Snapshot{}, errors.New("set source statement timeout")
 	}
 	var snapshot Snapshot
+	if commerce {
+		snapshot.Manifest.Scope = "commerce-only"
+	}
 	if err = tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&snapshot.Manifest.SnapshotAt); err != nil {
 		return Snapshot{}, errors.New("read source snapshot timestamp")
 	}
@@ -114,23 +128,34 @@ func ExtractFrom(ctx context.Context, db TxBeginner, sourceRevision string) (Sna
 	if err = extractRows(ctx, tx, "service_periods", &snapshot.ServicePeriods); err != nil {
 		return Snapshot{}, err
 	}
-	if err = extractRows(ctx, tx, "coupons", &snapshot.Coupons); err != nil {
+	if commerce {
+		query := strings.Replace(extractionQueries["coupons"], "SELECT id,name,", "SELECT id,COALESCE(public_slug,'') AS public_slug,issued_count::bigint,name,", 1)
+		var raw []byte
+		if err = tx.QueryRow(ctx, query).Scan(&raw); err != nil {
+			return Snapshot{}, errors.New("extract commerce coupon facts")
+		}
+		if json.Unmarshal(raw, &snapshot.Coupons) != nil {
+			return Snapshot{}, ErrInvalidSnapshot
+		}
+	} else if err = extractRows(ctx, tx, "coupons", &snapshot.Coupons); err != nil {
 		return Snapshot{}, err
 	}
 	if err = extractRows(ctx, tx, "coupon_bindings", &snapshot.CouponBindings); err != nil {
 		return Snapshot{}, err
 	}
-	if err = extractRows(ctx, tx, "group_plans", &snapshot.GroupPlans); err != nil {
-		return Snapshot{}, err
-	}
-	if err = extractRows(ctx, tx, "group_nodes", &snapshot.GroupNodes); err != nil {
-		return Snapshot{}, err
-	}
-	if err = extractRows(ctx, tx, "group_assets", &snapshot.GroupAssets); err != nil {
-		return Snapshot{}, err
-	}
-	if err = extractRows(ctx, tx, "agents", &snapshot.Agents); err != nil {
-		return Snapshot{}, err
+	if !commerce {
+		if err = extractRows(ctx, tx, "group_plans", &snapshot.GroupPlans); err != nil {
+			return Snapshot{}, err
+		}
+		if err = extractRows(ctx, tx, "group_nodes", &snapshot.GroupNodes); err != nil {
+			return Snapshot{}, err
+		}
+		if err = extractRows(ctx, tx, "group_assets", &snapshot.GroupAssets); err != nil {
+			return Snapshot{}, err
+		}
+		if err = extractRows(ctx, tx, "agents", &snapshot.Agents); err != nil {
+			return Snapshot{}, err
+		}
 	}
 	if err = PopulateManifest(&snapshot, ProductionSourceSystem, sourceRevision, snapshot.Manifest.SnapshotAt); err != nil {
 		return Snapshot{}, err

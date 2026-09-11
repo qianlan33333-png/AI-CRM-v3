@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -71,6 +72,28 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A distinct run is a real source refresh, not a same-key replay.
+	payment.SourceStatus = "paid"
+	payment.UpdatedAt = now.Add(time.Hour)
+	err = uow.Within(ctx, func(tx context.Context) error {
+		got, e := repository.ImportTerminalPayment(tx, payment, [32]byte{7}, "history-run-next")
+		if e == nil && (got.ID != persisted.ID || got.Version != 2) {
+			t.Fatalf("cross-run did not reuse payment")
+		}
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := payment
+	changed.AmountMinor++
+	err = uow.Within(ctx, func(tx context.Context) error {
+		_, e := repository.ImportTerminalPayment(tx, changed, [32]byte{8}, "history-bad-amount")
+		return e
+	})
+	if !errors.Is(err, paymentport.ErrConflict) {
+		t.Fatalf("amount drift accepted: %v", err)
+	}
 	refund := domain.Refund{PaymentID: persisted.ID, Provider: domain.ProviderWeChatPay, RefundNo: "history-refund", Reason: "历史退款", AmountMinor: 40, Status: domain.RefundCompleted, Version: 1, CreatedAt: now, UpdatedAt: now}
 	err = uow.Within(ctx, func(tx context.Context) error {
 		_, inner := repository.ImportTerminalRefund(tx, refund, [32]byte{2}, "history-run")
@@ -79,8 +102,60 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	progress := refund
+	progress.RefundNo = "history-progress"
+	progress.Status = domain.RefundHistoryFailed
+	for index, status := range []domain.RefundStatus{domain.RefundHistoryFailed, domain.RefundHistoryProcessing, domain.RefundCompleted} {
+		progress.Status = status
+		err = uow.Within(ctx, func(tx context.Context) error {
+			_, e := repository.ImportTerminalRefund(tx, progress, [32]byte{byte(20 + index)}, fmt.Sprintf("refund-run-%d", index))
+			return e
+		})
+		if err != nil {
+			t.Fatalf("refund transition %s: %v", status, err)
+		}
+	}
+	progress.Status = domain.RefundHistoryProcessing
+	err = uow.Within(ctx, func(tx context.Context) error {
+		_, e := repository.ImportTerminalRefund(tx, progress, [32]byte{30}, "refund-regression")
+		return e
+	})
+	if !errors.Is(err, paymentport.ErrConflict) {
+		t.Fatalf("completed refund regressed: %v", err)
+	}
+	var deltaCount int
+	if e := pool.QueryRow(ctx, `SELECT count(*) FROM payment_history_source_deltas`).Scan(&deltaCount); e != nil || deltaCount != 3 {
+		t.Fatalf("delta evidence count=%d err=%v", deltaCount, e)
+	}
+
+	for n, status := range []domain.RefundStatus{domain.RefundHistoryRequested, domain.RefundHistoryProcessing, domain.RefundHistoryFailed, domain.RefundHistoryClosed} {
+		historical := refund
+		historical.RefundNo = fmt.Sprintf("history-status-%d", n)
+		historical.Status = status
+		if err = uow.Within(ctx, func(tx context.Context) error {
+			_, e := repository.ImportTerminalRefund(tx, historical, [32]byte{byte(n + 3)}, "history-run")
+			return e
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err = uow.Within(ctx, func(tx context.Context) error {
+			saved, e := repository.ImportTerminalRefund(tx, historical, [32]byte{byte(n + 3)}, "history-run")
+			if e == nil && saved.Status != status {
+				t.Fatal("status lost")
+			}
+			return e
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, e := historical.BindEffect(1, "eer_forbidden", now); e == nil {
+			t.Fatal("historical status accepted executable effect")
+		}
+		if _, e := historical.Complete(1, domain.RefundCompleted, now); e == nil {
+			t.Fatal("historical status completed through live path")
+		}
+	}
 	var payments, refunds, effects int
-	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 1 || refunds != 1 || effects != 0 {
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 1 || refunds != 6 || effects != 0 {
 		t.Fatalf("payments=%d refunds=%d effects=%d err=%v", payments, refunds, effects, err)
 	}
 }
@@ -145,7 +220,7 @@ func TestPostgreSQLPaymentSessionBeneficiaryFactsCASAndCheckoutRollback(t *testi
 	insert := func(digest [32]byte, beneficiary customerdomain.CustomerID, selection paymentport.BeneficiarySelection, selectedAt *time.Time) {
 		t.Helper()
 		err := uow.Within(ctx, func(tx context.Context) error {
-			_, err := repository.Insert(tx, paymentsession.Record{TokenDigest: digest, PayerIdentityID: 9, PayerCustomerID: 11, BeneficiaryCustomerID: beneficiary, BeneficiarySelection: selection, BeneficiarySelectedAt: selectedAt, AppScopeDigest: sha256.Sum256([]byte("scope")), Channel: domain.ChannelH5Official, ExpiresAt: expires, CreatedAt: now})
+			_, err := repository.Insert(tx, paymentsession.Record{UnionIDVerified: true, TokenDigest: digest, PayerIdentityID: 9, PayerCustomerID: 11, BeneficiaryCustomerID: beneficiary, BeneficiarySelection: selection, BeneficiarySelectedAt: selectedAt, AppScopeDigest: sha256.Sum256([]byte("scope")), Channel: domain.ChannelH5Official, ExpiresAt: expires, CreatedAt: now})
 			return err
 		})
 		if err != nil {
@@ -324,7 +399,7 @@ func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql", "0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
@@ -339,5 +414,31 @@ func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		defer stop()
 		_, _ = admin.Exec(cleanup, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
 		admin.Close(cleanup)
+	}
+}
+
+func TestPostgreSQLProductOAuthReturnMigrationPreservesRedirectBoundary(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	_, file, _, _ := runtime.Caller(0)
+	body, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0142_payment_h5_product_return_path.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, string(body)); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/p/subscription_trial_month", "/p/7", "/pay/7", "/s/course/pay", "/c/coupon-2026"} {
+		digest := sha256.Sum256([]byte(path))
+		if _, err = pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err != nil {
+			t.Fatalf("valid path=%q: %v", path, err)
+		}
+	}
+	for _, path := range []string{"//evil.example/p/7", "https://evil.example/p/7", "/p/a/b", "/p/a?b", "/p/a#b", "/p/a%2fb", "/p/a%5Cb", "/p/a%3fb", "/p/a%23b", "/p/a\\b"} {
+		digest := sha256.Sum256([]byte(path))
+		if _, err = pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err == nil {
+			t.Fatalf("unsafe redirect accepted: %q", path)
+		}
 	}
 }

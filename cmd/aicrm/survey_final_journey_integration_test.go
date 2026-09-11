@@ -354,17 +354,32 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	}
 	authorization := surveyFinalJourneyLocation(t, start)
 	state := authorization.Query().Get("state")
-	if authorization.Host != "open.weixin.qq.com" || state == "" {
+	if authorization.Host != "open.weixin.qq.com" || state == "" || authorization.Query().Get("scope") != "snsapi_userinfo" {
 		t.Fatalf("OAuth authorization=%s", authorization.String())
 	}
 
 	weChat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/sns/oauth2/access_token" || r.URL.Query().Get("grant_type") != "authorization_code" || (r.URL.Query().Get("code") != "journey-code" && r.URL.Query().Get("code") != "journey-code-one") {
-			http.Error(w, "unexpected OAuth exchange", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			http.Error(w, "unexpected OAuth method", http.StatusBadRequest)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"openid":"journey-openid","unionid":"journey-unionid","scope":"snsapi_userinfo"}`))
+		switch r.URL.Path {
+		case "/sns/oauth2/access_token":
+			if r.URL.Query().Get("grant_type") != "authorization_code" || (r.URL.Query().Get("code") != "journey-code" && r.URL.Query().Get("code") != "journey-code-one") {
+				http.Error(w, "unexpected OAuth exchange", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"access_token":"journey-userinfo-token","openid":"journey-openid","scope":"snsapi_userinfo"}`))
+		case "/sns/userinfo":
+			if r.URL.Query().Get("access_token") != "journey-userinfo-token" || r.URL.Query().Get("openid") != "journey-openid" {
+				http.Error(w, "unexpected userinfo identity", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"openid":"journey-openid","unionid":"journey-unionid"}`))
+		default:
+			http.Error(w, "unexpected OAuth endpoint", http.StatusBadRequest)
+		}
 	}))
 	defer weChat.Close()
 	weChatURL, err := url.Parse(weChat.URL)
@@ -381,7 +396,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		t.Fatalf("wrong OAuth state status=%d location=%q calls=%d", wrongState.Code, wrongState.Header().Get("Location"), transport.calls)
 	}
 	callback := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/callback?state="+url.QueryEscape(state)+"&code=journey-code", nil, "", nil, "")
-	if callback.Code != http.StatusSeeOther || transport.calls != 1 {
+	if callback.Code != http.StatusSeeOther || callback.Header().Get("Location") != "/h5/all.html?slug=oauth-journey" || transport.calls != 2 {
 		t.Fatalf("OAuth callback status=%d calls=%d body=%s", callback.Code, transport.calls, callback.Body.String())
 	}
 	cookies := callback.Result().Cookies()
@@ -389,7 +404,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		t.Fatalf("OAuth callback cookie=%+v", cookies)
 	}
 	replayedCallback := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/callback?state="+url.QueryEscape(state)+"&code=journey-code", nil, "", nil, "")
-	if replayedCallback.Code != http.StatusSeeOther || replayedCallback.Header().Get("Location") != "/h5/error.html?code=survey_oauth_failed" || transport.calls != 1 {
+	if replayedCallback.Code != http.StatusSeeOther || replayedCallback.Header().Get("Location") != "/h5/error.html?code=survey_oauth_failed" || transport.calls != 2 {
 		t.Fatalf("replayed OAuth callback status=%d location=%q calls=%d", replayedCallback.Code, replayedCallback.Header().Get("Location"), transport.calls)
 	}
 
@@ -515,7 +530,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	}
 	oneState := surveyFinalJourneyLocation(t, oneStart).Query().Get("state")
 	oneCallback := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/callback?state="+url.QueryEscape(oneState)+"&code=journey-code-one", nil, "", nil, "")
-	if oneCallback.Code != http.StatusSeeOther || oneCallback.Header().Get("Location") != "/h5/one.html?slug=oauth-journey-one" || transport.calls != 2 {
+	if oneCallback.Code != http.StatusSeeOther || oneCallback.Header().Get("Location") != "/h5/one.html?slug=oauth-journey-one" || transport.calls != 4 {
 		t.Fatalf("one-mode callback status=%d location=%q calls=%d", oneCallback.Code, oneCallback.Header().Get("Location"), transport.calls)
 	}
 	oneCookies := oneCallback.Result().Cookies()
@@ -552,6 +567,10 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		(SELECT count(*) FROM survey_submissions WHERE customer_id=(SELECT id FROM customers)),
 		(SELECT count(*) FROM survey_audit_events WHERE event_type='survey_export_requested')`).Scan(&customers, &identities, &storedSubmissions, &storedTokens, &customerBoundSubmissions, &exports); err != nil {
 		t.Fatal(err)
+	}
+	var verifiedUserinfoUnionIDs int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM customer_identities WHERE assurance='verified' AND kind='unionid' AND scope_key='wechat-open-platform:survey-journey-platform' AND source='wechat.survey.oauth.userinfo'`).Scan(&verifiedUserinfoUnionIDs); err != nil || verifiedUserinfoUnionIDs != 1 {
+		t.Fatalf("userinfo UnionID proof count=%d err=%v", verifiedUserinfoUnionIDs, err)
 	}
 	if customers != 1 || identities != 1 || storedSubmissions != 2 || storedTokens != 2 || customerBoundSubmissions != 2 || exports != 1 {
 		t.Fatalf("customers=%d identities=%d submissions=%d result_tokens=%d customer_bound_submissions=%d exports=%d", customers, identities, storedSubmissions, storedTokens, customerBoundSubmissions, exports)
@@ -783,8 +802,8 @@ type surveyOAuthAllowlistTransport struct {
 }
 
 func (t *surveyOAuthAllowlistTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.URL.Scheme != "https" || request.URL.Host != "api.weixin.qq.com" || request.URL.Path != "/sns/oauth2/access_token" {
-		return nil, fmt.Errorf("unexpected network request %s %s", request.Method, request.URL.String())
+	if request.URL.Scheme != "https" || request.URL.Host != "api.weixin.qq.com" || (request.URL.Path != "/sns/oauth2/access_token" && request.URL.Path != "/sns/userinfo") {
+		return nil, fmt.Errorf("unexpected OAuth endpoint or method")
 	}
 	if request.Method != http.MethodGet {
 		return nil, fmt.Errorf("unexpected OAuth method %s", request.Method)

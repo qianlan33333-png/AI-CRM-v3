@@ -25,3 +25,10 @@ type PaidAudienceOrder struct {
 type PaidAudienceReader interface {
 	PaidAudienceOrders(context.Context, time.Time) ([]PaidAudienceOrder, error)
 }
+
+// HistoricalAudienceProductReader validates an exact retained order-item code
+// when its original product no longer exists in the current catalog. It never
+// resolves titles, aliases, external identities or creates a product.
+type HistoricalAudienceProductReader interface {
+	HistoricalAudienceProductCodeExists(context.Context, string) (bool, error)
+}

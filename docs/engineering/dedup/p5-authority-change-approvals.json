@@ -247,6 +247,28 @@
       ],
       "reason": "Implement authorized Excel batch import, uploaded cover and review/receipt API under the active V3 owner; frozen donor payloads remain unchanged.",
       "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/218"
+    },
+    {
+      "base_commit": "142d58a183f64e4c82f177c1cabdb2cb657d647d",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "ebeba9dacb58fd6c8383ceba28b8ec7eac27064f452d8e3e734a6b1552fd9293",
+          "head_sha256": "19d6bb48c22478c3e1fdf586c0607507642b6cad44f285f401261396335c6fb2"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "a2f38107097c39a6c54c28c492359df74cd7700e70665e857432b7f32acfb62f",
+          "head_sha256": "50549838931183bd3ee8e53c46649faaee9ba87b1b6583cb2044903e6b9d6ea3"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "16eaa92bcd2587b54efeba38b016dc063eb2bf95c9f36dcf199484c90f8f7142",
+          "head_sha256": "e25bcf1d0f365730815eda0ecf1905966572879aab4eed81a7a72be8dd34e6fa"
+        }
+      ],
+      "reason": "Record the user-authorized integrated production cutover and payment checkout local-abandonment contract. Only the active V3 OpenAPI authority and its index/lock identities change; frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent proof of human approval.",
+      "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/227"
     }
   ]
 }

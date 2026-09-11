@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
@@ -10,6 +12,7 @@ import (
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -391,10 +394,20 @@ func TestCheckoutFromProductCreatesOrderAndPaymentInSameUOW(t *testing.T) {
 	if err != nil || first.ID != 7 || first.AmountMinor != 8800 || products.calls != 1 || orders.command.ProductID != 5 || orders.command.ProductVersion != 3 || orders.command.BeneficiaryCustomerID != 11 || orders.command.MerchantOrderNo == "" || !sessions.consumed {
 		t.Fatalf("payment=%+v product_calls=%d order=%+v consumed=%v err=%v", first, products.calls, orders.command, sessions.consumed, err)
 	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{6,32}$`).MatchString(orders.command.MerchantOrderNo) {
+		t.Fatal("merchant order violates provider contract")
+	}
 	store.payment.MerchantOrderNo = orders.command.MerchantOrderNo
 	replay, err := service.Create(context.Background(), command)
 	if err != nil || replay.ID != first.ID || products.calls != 1 {
 		t.Fatalf("replay=%+v product_calls=%d err=%v", replay, products.calls, err)
+	}
+	// A deployed 38-character legacy order must replay unchanged, never dispatch again.
+	digest := sha256.Sum256([]byte("payment.checkout.v1\x00" + command.SessionToken + "\x00" + command.IdempotencyKey))
+	store.payment.MerchantOrderNo = "v3pay_" + hex.EncodeToString(digest[:16])
+	legacy, err := service.Create(context.Background(), command)
+	if err != nil || legacy.MerchantOrderNo != store.payment.MerchantOrderNo || products.calls != 1 {
+		t.Fatalf("legacy replay failed: %v", err)
 	}
 }
 
@@ -550,5 +563,36 @@ func TestShopCallbackPersistsQueryRequiredReceiptAndDurableJob(t *testing.T) {
 	err := service.ApplyVerifiedShopCallback(context.Background(), paymentport.ShopRefundCallback{AfterSaleID: "AS-9", ProviderOrderID: "SHOP-7", Status: "MERCHANT_REFUND_SUCCESS", EventDigest: [32]byte{1}, PayloadDigest: [32]byte{2}, OccurredAt: now})
 	if err != nil || jobs.refundID != 9 || store.callbackOutcome != "query_required" {
 		t.Fatalf("job_refund=%d outcome=%q err=%v", jobs.refundID, store.callbackOutcome, err)
+	}
+}
+
+type prepayReadStub struct {
+	projection effectport.Projection
+	calls      int
+}
+
+func (s *prepayReadStub) Get(context.Context, string) (effectport.Projection, error) {
+	s.calls++
+	return s.projection, nil
+}
+
+func TestGetCheckoutExposesUnknownPrepayOnlyToAuthorizedPayer(t *testing.T) {
+	store := &storeStub{payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, Channel: domain.ChannelH5Official, MerchantOrderNo: "M-pending-7", PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, Status: domain.StatusAwaitingPrepay, EffectID: "eer_21"}}
+	sessions := checkoutReadSessionStub{actors: map[string]paymentport.SessionActor{
+		"authorized-payment-session":  {PayerIdentityID: 4, PayerCustomerID: 11, Channel: domain.ChannelH5Official, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved},
+		"other-payment-session-token": {PayerIdentityID: 5, PayerCustomerID: 12, Channel: domain.ChannelH5Official, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved},
+	}}
+	reader := &prepayReadStub{projection: effectport.Projection{ID: "eer_21", Owner: effectport.OwnerPayment, Kind: effectport.KindWeChatPayPrepay, State: effectport.StateUnknown}}
+	service := NewService(uowStub{}, store, orderStub{}, sessions, &effectStub{}, reader)
+	result, err := service.GetCheckout(context.Background(), "M-pending-7", "authorized-payment-session")
+	if err != nil || result.PrepayState != effectport.StateUnknown || len(result.Payload) != 0 || store.handoffCalls != 0 {
+		t.Fatalf("unexpected checkout result=%+v err=%v", result, err)
+	}
+	if _, err = service.GetCheckout(context.Background(), "M-pending-7", "other-payment-session-token"); !errors.Is(err, paymentport.ErrConflict) || reader.calls != 1 {
+		t.Fatalf("unauthorized effect read: calls=%d err=%v", reader.calls, err)
+	}
+	reader.projection.Owner = effectport.OwnerOutbound
+	if _, err = service.GetCheckout(context.Background(), "M-pending-7", "authorized-payment-session"); !errors.Is(err, paymentport.ErrUnavailable) {
+		t.Fatalf("wrong owner: %v", err)
 	}
 }

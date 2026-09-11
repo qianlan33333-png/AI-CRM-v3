@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,6 +13,7 @@ import (
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/target"
+	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -33,9 +35,18 @@ func run(ctx context.Context, args []string) error {
 	revision := fs.String("source-revision", "", "40-char source revision")
 	actor := fs.Int64("actor-admin-user-id", 0, "explicit target administrator")
 	want := fs.String("manifest-sha256", "", "snapshot digest confirmation")
+	reviewID := fs.Int64("review-coupon-source-id", 0, "one explicitly reviewed source coupon")
+	reviewBefore := fs.String("review-coupon-before-sha256", "", "exact Owner before state")
 	confirm := fs.Bool("confirm-apply", false, "confirm target write")
+	commerceOnly := fs.Bool("commerce-only", false, "capture, inspect, preflight or apply current commerce definitions only")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *commerceOnly && *mode != "extract" && *mode != "inspect" && *mode != "dry-run" && *mode != "apply" && *mode != "review-coupon" {
+		return errors.New("commerce-only supports extract, inspect, dry-run and apply only")
+	}
+	if *commerceOnly && *mode == "apply" && !*confirm {
+		return errors.New("commerce-only apply requires --confirm-apply")
 	}
 	if *mode == "history-extract" {
 		if *snapshot == "" || *key == "" || *revision == "" {
@@ -73,12 +84,19 @@ func run(ctx context.Context, args []string) error {
 			return e
 		}
 		defer p.Close()
-		s, e := source.Extract(ctx, p, *revision)
+		var s source.Snapshot
+		if *commerceOnly {
+			s, e = source.ExtractCommerceFrom(ctx, p, *revision)
+		} else {
+			s, e = source.Extract(ctx, p, *revision)
+		}
 		if e != nil {
 			return e
 		}
-		if e = source.ValidateExpectedBaseline(s); e != nil {
-			return e
+		if !*commerceOnly {
+			if e = source.ValidateExpectedBaseline(s); e != nil {
+				return e
+			}
 		}
 		d, e := source.SealToFile(s, *snapshot, *key)
 		if e != nil {
@@ -144,8 +162,13 @@ func run(ctx context.Context, args []string) error {
 	if e = s.Validate(); e != nil {
 		return e
 	}
-	if e = source.ValidateExpectedBaseline(s); e != nil {
-		return e
+	if *commerceOnly != (s.Manifest.Scope == "commerce-only") {
+		return errors.New("snapshot scope does not match explicit commerce-only selection")
+	}
+	if !*commerceOnly {
+		if e = source.ValidateExpectedBaseline(s); e != nil {
+			return e
+		}
 	}
 	if *mode == "inspect" {
 		return print(summary("inspect", s, d))
@@ -165,7 +188,14 @@ func run(ctx context.Context, args []string) error {
 		return e
 	}
 	defer pool.Close()
-	if *mode != "apply" && *mode != "dry-run" && *mode != "verify" {
+	if *commerceOnly && *mode == "dry-run" {
+		report, err := target.InspectCommerceTarget(ctx, pool.Native(), s, *actor)
+		if err != nil {
+			return err
+		}
+		return print(map[string]any{"mode": "dry-run", "scope": "commerce-only", "manifest_sha256": target.DigestHex(d), "result": report})
+	}
+	if *mode != "apply" && *mode != "dry-run" && *mode != "verify" && *mode != "review-coupon" {
 		return errors.New("unknown mode")
 	}
 	if *mode == "apply" && !*confirm {
@@ -182,6 +212,45 @@ func run(ctx context.Context, args []string) error {
 	c, e := couponstore.NewPostgreSQL(pool.Native(), uow)
 	if e != nil {
 		return e
+	}
+	if *commerceOnly {
+		if *mode == "review-coupon" {
+			if *reviewID < 1 {
+				return errors.New("explicit reviewed coupon source required")
+			}
+			var before [32]byte
+			err := uow.Within(ctx, func(bound context.Context) error {
+				tx, err := platformpostgres.RequireTransaction(bound)
+				if err != nil {
+					return err
+				}
+				var id int64
+				err = tx.QueryRow(bound, `SELECT target_id FROM config_definition_import_source_maps WHERE source_system=$1 AND source_kind='commerce_coupons' AND source_key=$2`, s.Manifest.SourceSystem, fmt.Sprint(*reviewID)).Scan(&id)
+				if err != nil {
+					return err
+				}
+				before, err = c.CutoverReviewDigest(bound, couponport.ID(id))
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			return print(map[string]any{"mode": "review-coupon", "source_id": *reviewID, "before_sha256": target.DigestHex(before), "manifest_sha256": target.DigestHex(d)})
+		}
+		var before [32]byte
+		if *reviewID != 0 || *reviewBefore != "" {
+			raw, err := hex.DecodeString(*reviewBefore)
+			if err != nil || len(raw) != 32 || *reviewID < 1 {
+				return errors.New("explicit reviewed coupon and full before digest required")
+			}
+			copy(before[:], raw)
+		}
+		runner := target.Runner{UOW: uow, Products: p, Coupons: c, ReviewCouponSourceID: *reviewID, ReviewCouponBefore: before}
+		out, err := runner.Apply(ctx, s, d, *actor)
+		if err != nil {
+			return err
+		}
+		return print(map[string]any{"mode": "apply", "scope": "commerce-only", "manifest_sha256": target.DigestHex(d), "result": out})
 	}
 	g, e := groupopsstore.NewPostgreSQL(pool.Native(), uow)
 	if e != nil {
@@ -215,6 +284,7 @@ func print(v any) error { return json.NewEncoder(os.Stdout).Encode(v) }
 
 func summary(mode string, snapshot source.Snapshot, digest [32]byte) map[string]any {
 	return map[string]any{
+		"scope":           snapshot.Manifest.Scope,
 		"mode":            mode,
 		"manifest_sha256": target.DigestHex(digest),
 		"source_system":   snapshot.Manifest.SourceSystem,

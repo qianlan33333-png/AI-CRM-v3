@@ -26,7 +26,6 @@ import (
 	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
-	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
@@ -49,16 +48,25 @@ const (
 type options struct {
 	mode, snapshot, sourceStream, unionIDScope, digest string
 	confirm                                            bool
+	opaqueSource                                       bool
+	proofPath, proofKey, proofDigest, corp, output     string
+	oaProof, oaKey, oaDigest                           string
+	matchedCorp                                        bool
 }
 type manifest struct {
-	SchemaVersion int                 `json:"schema_version"`
-	RunKey        string              `json:"run_key"`
-	SourceSystem  string              `json:"source_system"`
-	UnionIDScope  string              `json:"unionid_scope"`
-	CapturedAt    time.Time           `json:"captured_at"`
-	Entitlements  []sourceEntitlement `json:"entitlements"`
-	Coupons       []sourceCoupon      `json:"coupons"`
-	rawDigest     [32]byte
+	SchemaVersion  int                 `json:"schema_version"`
+	RunKey         string              `json:"run_key"`
+	SourceSystem   string              `json:"source_system"`
+	UnionIDScope   string              `json:"unionid_scope"`
+	CapturedAt     time.Time           `json:"captured_at"`
+	Entitlements   []sourceEntitlement `json:"entitlements"`
+	Coupons        []sourceCoupon      `json:"coupons"`
+	ResolutionMode string              `json:"resolution_mode,omitempty"`
+	OAProofSHA256  string              `json:"oa_proof_sha256,omitempty"`
+	ProofSHA256    string              `json:"proof_sha256,omitempty"`
+	SourceSHA256   string              `json:"source_sha256,omitempty"`
+	CorpID         string              `json:"corp_id,omitempty"`
+	rawDigest      [32]byte
 }
 type sourceEntitlement struct {
 	SourceID         int64     `json:"source_id"`
@@ -179,17 +187,30 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect-stream|inspect|dry-run|preflight|apply|reconcile")
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "protected normalized JSON snapshot")
 	flags.StringVar(&cfg.sourceStream, "source-stream", "", "read-only psql source stream")
+	flags.BoolVar(&cfg.opaqueSource, "opaque-source", false, "capture opaque source references only; external proof binding required before import")
 	flags.StringVar(&cfg.unionIDScope, "unionid-scope", "", "verified WeChat Open Platform scope")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "exact snapshot SHA-256")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm exact apply")
+	flags.StringVar(&cfg.oaProof, "oa-proof", "", "protected live OA supplemental proof")
+	flags.StringVar(&cfg.oaKey, "oa-proof-key-file", "", "OA proof key")
+	flags.StringVar(&cfg.oaDigest, "oa-proof-sha256", "", "OA proof exact digest")
+	flags.StringVar(&cfg.proofPath, "external-proof", "", "protected same-Corp proof")
+	flags.StringVar(&cfg.proofKey, "external-proof-key-file", "", "protected proof key")
+	flags.StringVar(&cfg.proofDigest, "external-proof-sha256", "", "exact proof digest")
+	flags.StringVar(&cfg.corp, "corp-id", "", "confirmed shared Corp")
+	flags.StringVar(&cfg.output, "output-snapshot", "", "exclusive derived manifest destination")
+	flags.BoolVar(&cfg.matchedCorp, "confirm-matched-corp", false, "source and target Corp verified equal")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if cfg.opaqueSource && cfg.mode != "inspect-stream" {
+		return errors.New("opaque-source is only valid for inspect-stream")
+	}
 	if cfg.mode == "inspect-stream" {
-		if cfg.snapshot == "" || cfg.sourceStream == "" || !strings.HasPrefix(cfg.unionIDScope, "wechat-open-platform:") {
-			return errors.New("inspect-stream requires snapshot, source-stream and unionid-scope")
+		if cfg.snapshot == "" || cfg.sourceStream == "" || (cfg.opaqueSource && cfg.unionIDScope != "") || (!cfg.opaqueSource && !strings.HasPrefix(cfg.unionIDScope, "wechat-open-platform:")) {
+			return errors.New("inspect-stream requires snapshot, source-stream and either confirmed unionid-scope or exclusive opaque-source")
 		}
-		m, err := extractStream(cfg.sourceStream, cfg.unionIDScope)
+		m, err := extractStreamMode(cfg.sourceStream, cfg.unionIDScope, cfg.opaqueSource)
 		if err != nil {
 			return err
 		}
@@ -200,7 +221,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printSummary("inspect-stream", m, true)
+		return printSummary("inspect-stream", m, !cfg.opaqueSource)
 	}
 	if cfg.snapshot == "" {
 		return errors.New("snapshot is required")
@@ -210,11 +231,23 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	if cfg.mode == "inspect" || cfg.mode == "dry-run" {
-		return printSummary(cfg.mode, m, cfg.mode == "dry-run")
+		return printSummary(cfg.mode, m, cfg.mode == "dry-run" && !isOpaqueSource(m))
 	}
 	want, err := hex.DecodeString(cfg.digest)
 	if err != nil || len(want) != 32 || string(want) != string(m.rawDigest[:]) {
 		return errors.New("manifest digest confirmation mismatch")
+	}
+	if cfg.mode == "bind-external-proof" {
+		return bindExternalProof(cfg, m)
+	}
+	if isOpaqueSource(m) {
+		return errors.New("opaque source requires bind-external-proof before import or reconciliation")
+	}
+	if m.SchemaVersion == 3 {
+		ctx, err = withExternalProof(ctx, cfg, m)
+		if err != nil {
+			return err
+		}
 	}
 	databaseURL, err := platformconfig.DatabaseURL()
 	if err != nil {
@@ -246,6 +279,9 @@ func printSummary(mode string, m manifest, eligible bool) error {
 }
 
 func preflight(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
+	if isOpaqueSource(m) {
+		return errors.New("opaque source must be bound to external proof")
+	}
 	uow, err := platformpostgres.NewUnitOfWork(pool)
 	if err != nil {
 		return err
@@ -292,6 +328,12 @@ func preflight(ctx context.Context, pool *platformpostgres.Pool, m manifest) err
 }
 
 func extractStream(path, scope string) (manifest, error) {
+	return extractStreamMode(path, scope, false)
+}
+func extractStreamMode(path, scope string, opaque bool) (manifest, error) {
+	if opaque && scope != "" {
+		return manifest{}, errors.New("opaque source cannot assert UnionID scope")
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return manifest{}, err
@@ -302,6 +344,10 @@ func extractStream(path, scope string) (manifest, error) {
 	// Python str(...).strip() contract. Existing v1 snapshots are loaded as-is
 	// so their protected manifest and row receipts remain byte compatible.
 	m := manifest{SchemaVersion: currentSchemaVersion, SourceSystem: productionSourceSystem, UnionIDScope: scope, Entitlements: []sourceEntitlement{}, Coupons: []sourceCoupon{}}
+	if opaque {
+		m.SchemaVersion = 4
+		m.ResolutionMode = "opaque_source_only"
+	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	markers := 0
@@ -421,7 +467,7 @@ func load(path string) (manifest, error) {
 }
 
 func validate(m manifest) error {
-	if (m.SchemaVersion != legacySchemaVersion && m.SchemaVersion != currentSchemaVersion) || !regexp.MustCompile(`^[A-Za-z0-9._:-]{8,200}$`).MatchString(m.RunKey) || m.SourceSystem != productionSourceSystem || !strings.HasPrefix(m.UnionIDScope, "wechat-open-platform:") || m.CapturedAt.IsZero() || len(m.Entitlements)+len(m.Coupons) > 2_000_000 {
+	if !validSubjectMode(m) || !regexp.MustCompile(`^[A-Za-z0-9._:-]{8,200}$`).MatchString(m.RunKey) || m.SourceSystem != productionSourceSystem || m.CapturedAt.IsZero() || len(m.Entitlements)+len(m.Coupons) > 2_000_000 {
 		return errors.New("invalid snapshot manifest")
 	}
 	seen := map[string]bool{}
@@ -443,6 +489,9 @@ func validate(m manifest) error {
 }
 
 func apply(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
+	if isOpaqueSource(m) {
+		return errors.New("opaque source must be bound to external proof")
+	}
 	lease, err := acquireSidebarHistoryApplyLease(ctx, pool.Native(), m)
 	if err != nil {
 		return err
@@ -564,7 +613,7 @@ func resolve(ctx context.Context, uow platformport.UnitOfWork, oneID identityapp
 	var out identityport.ResolveResult
 	err := uow.Within(ctx, func(tx context.Context) error {
 		var e error
-		out, e = oneID.Resolve(tx, identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: scope, Value: value, Assurance: identitydomain.AssuranceVerified, Source: "sidebar_history"})
+		out, e = resolveSidebarSubject(tx, oneID, scope, value)
 		return e
 	})
 	if err != nil {
@@ -859,7 +908,7 @@ func reconcileCouponTarget(ctx context.Context, db reconciliationQueryer, m mani
 
 func reconcileMappedCustomer(ctx context.Context, tx pgx.Tx, m manifest, subject string, mapping reconciliationMapping) error {
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
-	resolved, err := oneID.Resolve(platformpostgres.BindTransaction(ctx, tx), identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: m.UnionIDScope, Value: subject, Assurance: identitydomain.AssuranceVerified, Source: "sidebar_history"})
+	resolved, err := resolveSidebarSubject(platformpostgres.BindTransaction(ctx, tx), oneID, m.UnionIDScope, subject)
 	if err != nil || resolved.Status != identityport.ResolveFound || int64(resolved.CustomerID) != mapping.customerID {
 		return errors.New("reconciliation mapped customer mismatch")
 	}
@@ -868,7 +917,7 @@ func reconcileMappedCustomer(ctx context.Context, tx pgx.Tx, m manifest, subject
 
 func reconcileQuarantineReason(ctx context.Context, tx pgx.Tx, m manifest, kind, subject string, definitionID int64) (string, error) {
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
-	resolved, err := oneID.Resolve(platformpostgres.BindTransaction(ctx, tx), identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: m.UnionIDScope, Value: subject, Assurance: identitydomain.AssuranceVerified, Source: "sidebar_history"})
+	resolved, err := resolveSidebarSubject(platformpostgres.BindTransaction(ctx, tx), oneID, m.UnionIDScope, subject)
 	if err != nil {
 		return "", err
 	}
@@ -893,6 +942,9 @@ func reconcileQuarantineReason(ctx context.Context, tx pgx.Tx, m manifest, kind,
 }
 
 func reconcile(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
+	if isOpaqueSource(m) {
+		return errors.New("opaque source must be bound to external proof")
+	}
 	tx, err := pool.Native().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return err
