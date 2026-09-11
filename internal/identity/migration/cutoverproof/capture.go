@@ -16,6 +16,18 @@ func Capture(ctx context.Context, db Beginner, scopes Scopes) (Snapshot, error) 
 	if db == nil || scopes.Validate() != nil {
 		return s, ErrInvalid
 	}
+	return capture(ctx, db, s)
+}
+
+func CaptureExistingWecom(ctx context.Context, db Beginner, corp string) (Snapshot, error) {
+	s := Snapshot{Version: 2, ResolutionMode: ExistingWecomOnly, Scopes: Scopes{CorpID: corp}, Rows: []Row{}}
+	if db == nil || validateCorp(corp) != nil {
+		return s, ErrInvalid
+	}
+	return capture(ctx, db, s)
+}
+
+func capture(ctx context.Context, db Beginner, s Snapshot) (Snapshot, error) {
 	tx, e := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if e != nil {
 		return s, errors.New("begin proof capture")
@@ -35,7 +47,7 @@ func Capture(ctx context.Context, db Beginner, scopes Scopes) (Snapshot, error) 
  'raw_unionid',COALESCE(m.raw_profile->'external_contact'->>'unionid',''),
  'raw_external_id',COALESCE(m.raw_profile->'external_contact'->>'external_userid','')
  ) ORDER BY m.id) FROM wecom_external_contact_identity_map m WHERE m.corp_id=$1 AND m.unionid=r.unionid AND m.external_userid=c.primary_external_userid),'[]'::jsonb)
- ) FROM required r LEFT JOIN crm_user_identity c ON c.unionid=r.unionid ORDER BY r.unionid`, scopes.CorpID)
+ ) FROM required r LEFT JOIN crm_user_identity c ON c.unionid=r.unionid ORDER BY r.unionid`, s.Scopes.CorpID)
 	if e != nil {
 		return s, errors.New("proof source query failed")
 	}

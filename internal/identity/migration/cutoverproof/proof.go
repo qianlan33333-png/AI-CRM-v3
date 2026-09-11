@@ -53,14 +53,19 @@ type Evidence struct {
 	RawExternalID string `json:"raw_external_id"`
 }
 type Snapshot struct {
-	Version    int       `json:"version"`
-	Scopes     Scopes    `json:"scopes"`
-	CapturedAt time.Time `json:"captured_at"`
-	Rows       []Row     `json:"rows"`
+	Version        int       `json:"version"`
+	ResolutionMode string    `json:"resolution_mode,omitempty"`
+	Scopes         Scopes    `json:"scopes"`
+	CapturedAt     time.Time `json:"captured_at"`
+	Rows           []Row     `json:"rows"`
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != 1 || s.Scopes.Validate() != nil || s.CapturedAt.IsZero() || s.Rows == nil {
+	validScope := s.Version == 1 && s.ResolutionMode == "" && s.Scopes.Validate() == nil
+	if s.Version == 2 && s.ResolutionMode == ExistingWecomOnly && s.Scopes.UnionScope == "" && validateCorp(s.Scopes.CorpID) == nil {
+		validScope = true
+	}
+	if !validScope || s.CapturedAt.IsZero() || s.Rows == nil {
 		return ErrInvalid
 	}
 	seen := map[string]bool{}
@@ -103,7 +108,7 @@ type Plan struct {
 
 func BuildPlan(ctx context.Context, s Snapshot, resolver identityport.Resolver, factory identityport.HistoricalFactFactory) (Plan, error) {
 	out := Plan{Counts: map[string]int{}, Rows: []PlanRow{}}
-	if s.Validate() != nil || resolver == nil || factory == nil {
+	if s.Validate() != nil || s.Version != 1 || resolver == nil || factory == nil {
 		return out, ErrInvalid
 	}
 	// Shared primary external identities across different source subjects are
