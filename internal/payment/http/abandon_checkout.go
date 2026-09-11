@@ -13,7 +13,7 @@ func (handler *Handler) abandonCheckout(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	principal, err := handler.security.AuthorizeCSRF(r.Context(), r)
-	if err != nil || principal.Kind != accessdomain.KindAdmin || !hasRole(principal.Roles, accessdomain.RoleAdmin) {
+	if err != nil || principal.Kind != accessdomain.KindAdmin || (!hasRole(principal.Roles, accessdomain.RoleAdmin) && !principal.IsSuperAdmin()) {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
