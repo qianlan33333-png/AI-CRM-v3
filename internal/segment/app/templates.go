@@ -46,7 +46,7 @@ type DefinitionInput struct {
 }
 
 var legacyTemplates = []string{
-	"wecom_contact_registration", "questionnaire_choice_answers", "questionnaire_submissions", "paid_order",
+	"hxc_registration", "wecom_contact_registration", "questionnaire_choice_answers", "questionnaire_submissions", "paid_order",
 	"channel_entry", "radar_first_click_elapsed", "member_usage_status", "member_excluding_group_paid",
 }
 
@@ -68,6 +68,7 @@ func templateCatalog() []Template {
 	withOwner := func(fields []TemplateField) []TemplateField { return append(fields, owner()...) }
 	return []Template{
 		{Key: "member_excluding_group_paid", Available: true, TemplateVersion: 1, Label: "有效会员排除群与已购商品", Description: "有效会员，排除指定群成员与指定已购商品；群事实缺失或过期时停止刷新。", DefaultRefreshMode: "daily_0200", Fields: append(owner(), TemplateField{Name: "exclude_group_chat", Label: "排除的企微群引用", Type: "string", Required: true}, TemplateField{Name: "excluded_product_codes", Label: "排除的已购商品编码", Type: "string_list", Required: true, MinItems: &minimumOne})},
+		{Key: "hxc_registration", Available: true, TemplateVersion: 1, Label: "黄小璨注册状态", Description: "有效企微联系人，按完整黄小璨来源的注册覆盖证据筛选；未知不纳入。", DefaultRefreshMode: "every_3m", Fields: append(owner(), TemplateField{Name: "registration_status", Label: "黄小璨注册状态", Type: "enum", Required: true, Enum: []string{"registered", "unregistered"}, Default: "unregistered"})},
 		{Key: "wecom_contact_registration", Available: true, TemplateVersion: 1, Label: "企微联系人与注册状态", Description: "按负责人、企微联系人状态和注册状态圈选。", DefaultRefreshMode: "every_3m", Fields: append(owner(), TemplateField{Name: "contact_statuses", Label: "联系人状态", Type: "enum_list", Required: true, Enum: []string{"active", "deleted"}, Default: []string{"active"}}, TemplateField{Name: "registration_status", Label: "注册状态", Type: "enum", Required: true, Enum: []string{"any", "registered", "unregistered"}, Default: "any"})},
 		{Key: "questionnaire_submissions", Available: true, TemplateVersion: 1, Label: "问卷提交", Description: "提交任一所选问卷且已归属客户；不限题型、答案或提交次数。", DefaultRefreshMode: "every_3m", Fields: append(withOwner([]TemplateField{{Name: "questionnaires", Label: "问卷", Type: "reference_list", Required: true, Reference: "questionnaire", MinItems: &minimumOne}}), TemplateField{Name: "require_wecom_identity", Label: "要求已识别企微身份（不限制联系人状态）", Type: "boolean", Required: true, Default: true})},
 		{Key: "questionnaire_choice_answers", Available: true, TemplateVersion: 1, Label: "问卷选择题答案", Description: "按首次完整提交的选择题答案圈选；题间 AND、题内选项 OR。", DefaultRefreshMode: "every_3m", Fields: withOwner([]TemplateField{{Name: "questionnaire", Label: "问卷", Type: "reference", Required: true, Reference: "questionnaire"}, {Name: "conditions", Label: "题目条件", Type: "condition_list", Required: true, MinItems: &minimumOne}})},
@@ -95,6 +96,8 @@ func DefaultDefinition(templateKey string) (json.RawMessage, error) {
 		parameters = map[string]any{"staff_ids": []string{"__configure__"}}
 	case "channel_any":
 		parameters = map[string]any{"channels": []string{"__configure__"}}
+	case "hxc_registration":
+		parameters = map[string]any{"owner_scope": "all", "owner_staff_ids": []string{}, "registration_status": "unregistered"}
 	case "wecom_contact_registration":
 		parameters = map[string]any{"owner_scope": "all", "owner_staff_ids": []string{}, "contact_statuses": []string{"active"}, "registration_status": "any"}
 	case "questionnaire_submissions":
@@ -166,6 +169,8 @@ func validDefinition(input DefinitionInput) bool {
 	case "channel_any":
 		value, ok := stringsOf(input.Parameters, "channels", 1, 100)
 		return ok && validStrings(value, 1, 100) && keys(input.Parameters, "channels")
+	case "hxc_registration":
+		return owner && enum(input.Parameters, "registration_status", "registered", "unregistered") && keys(input.Parameters, "owner_scope", "owner_staff_ids", "registration_status")
 	case "wecom_contact_registration":
 		statuses, ok := stringsOf(input.Parameters, "contact_statuses", 1, 2)
 		return owner && ok && allowed(statuses, "active", "deleted") && enum(input.Parameters, "registration_status", "any", "registered", "unregistered") && keys(input.Parameters, "owner_scope", "owner_staff_ids", "contact_statuses", "registration_status")

@@ -122,7 +122,7 @@ func hxcIntegrationPool(t *testing.T) (*pgxpool.Pool, *platformpostgres.UnitOfWo
 		admin.Close()
 		t.Fatal(err)
 	}
-	for _, migration := range []string{"0028_hxc_dashboard.sql", "0064_hxc_dashboard_identity_v2.sql", "0084_hxc_shared_facts.sql"} {
+	for _, migration := range []string{"0028_hxc_dashboard.sql", "0064_hxc_dashboard_identity_v2.sql", "0084_hxc_shared_facts.sql", "0138_hxc_registration_coverage.sql"} {
 		contents, readErr := os.ReadFile(hxcMigrationPath(t, migration))
 		if readErr != nil {
 			t.Fatal(readErr)

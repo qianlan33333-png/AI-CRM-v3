@@ -38,6 +38,7 @@ type Service struct {
 	SubjectKey           []byte
 	Source               hxcport.CurrentSource
 	Identity             identityport.HXCIdentityCoordinator
+	RegistrationCoverage identityport.HXCRegistrationCoverage
 	IdentityWriteEnabled bool
 	UnionIDVerified      bool
 	Store                *hxcstore.PostgreSQL
@@ -250,6 +251,22 @@ func (s Service) project(ctx context.Context, snapshot hxcport.Snapshot, applyId
 			return domain.Projection{}, err
 		}
 	}
+	if s.RegistrationCoverage != nil {
+		err := s.UOW.Within(ctx, func(txCtx context.Context) error {
+			states, e := s.RegistrationCoverage.InspectHXCRegistrationCoverage(txCtx, subjects, snapshot.Complete)
+			if e != nil {
+				return e
+			}
+			projection.RegistrationCoverage = map[int64]string{}
+			for id, state := range states {
+				projection.RegistrationCoverage[int64(id)] = string(state)
+			}
+			return nil
+		})
+		if err != nil {
+			return domain.Projection{}, err
+		}
+	}
 	for i, result := range results {
 		applyIdentityResult(&projection.Rows[i], result)
 	}
@@ -291,6 +308,8 @@ func (s Service) project(ctx context.Context, snapshot hxcport.Snapshot, applyId
 			}
 		}
 	}
+	coverageJSON, _ := json.Marshal(projection.RegistrationCoverage)
+	h.Write(coverageJSON)
 	copy(projection.ProjectionDigest[:], h.Sum(nil))
 	return projection, nil
 }

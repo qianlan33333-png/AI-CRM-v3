@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ type LegacyTemplateSource struct {
 	Channels           channelport.AudienceEntryReader
 	Radar              radarport.AudienceFirstClickReader
 	MemberFacts        hxcport.VersionedSharedFactsReader
+	HXCRegistration    hxcport.RegistrationReader
 	RegistrationFacts  customerport.AudienceRegistrationReader
 	Owners             accessport.AudienceOwnerReferenceReader
 	PrimaryOwners      wecomport.AudiencePrimaryOwnerReader
@@ -54,6 +56,8 @@ func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentpo
 		return segmentport.Evaluation{}, err
 	}
 	switch ast.Template {
+	case segmentdsl.HXCRegistration:
+		ids, err = s.hxcRegistration(ctx, ast.Parameters, reference)
 	case segmentdsl.WeComContactRegistration:
 		ids, err = s.wecom(ctx, ast.Parameters, reference)
 	case segmentdsl.QuestionnaireSubmissions:
@@ -267,6 +271,7 @@ func idsFrom(set map[int64]bool) []int64 {
 	for id := range set {
 		out = append(out, id)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 

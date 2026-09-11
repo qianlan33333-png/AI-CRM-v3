@@ -84,6 +84,7 @@ type Counts struct {
 }
 
 type Projection struct {
+	RegistrationCoverage           map[int64]string
 	ID                             int64
 	AsOf                           time.Time
 	Watermark                      *time.Time

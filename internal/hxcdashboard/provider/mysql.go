@@ -139,6 +139,7 @@ func (source *MySQL) ReadSnapshot(ctx context.Context, asOf time.Time) (port.Sna
 	if err = tx.Commit(); err != nil {
 		return port.Snapshot{}, fmt.Errorf("commit HXC read-only snapshot: %w", err)
 	}
+	result.Complete = true
 	return result, nil
 }
 
