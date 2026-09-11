@@ -24,35 +24,43 @@ func TestAuthorizationURLUsesInteractiveScopeAndExactCallback(t *testing.T) {
 	}
 }
 
-func TestExchangePrefersUnionIDAndFallsBackToOfficialAccountOpenID(t *testing.T) {
-	for _, test := range []struct {
-		name, payload string
-		kind          identitydomain.Kind
-		scope         string
+func TestExchangeRequiresUserinfoUnionID(t *testing.T) {
+	for _, tc := range []struct {
+		name, token, info string
+		ok                bool
 	}{
-		{"unionid", `{"access_token":"not-retained","openid":"oa-open","unionid":"union-one","scope":"snsapi_userinfo"}`, identitydomain.KindUnionID, "wechat-open-platform:platform"},
-		{"openid", `{"access_token":"not-retained","openid":"oa-open","scope":"snsapi_base,snsapi_userinfo"}`, identitydomain.KindOAOpenID, "wechat-app:wx-app"},
+		{"token_and_userinfo", `{"access_token":"token","openid":"oa-open","unionid":"union-one","scope":"snsapi_userinfo"}`, `{"openid":"oa-open","unionid":"union-one"}`, true},
+		{"userinfo_only", `{"access_token":"token","openid":"oa-open","scope":"snsapi_userinfo"}`, `{"openid":"oa-open","unionid":"union-one"}`, true},
+		{"missing_union", `{"access_token":"token","openid":"oa-open","scope":"snsapi_userinfo"}`, `{"openid":"oa-open"}`, false},
+		{"mismatched_openid", `{"access_token":"token","openid":"oa-open","scope":"snsapi_userinfo"}`, `{"openid":"other","unionid":"union-one"}`, false},
+		{"mismatched_union", `{"access_token":"token","openid":"oa-open","unionid":"other","scope":"snsapi_userinfo"}`, `{"openid":"oa-open","unionid":"union-one"}`, false},
+		{"provider_error", `{"access_token":"token","openid":"oa-open","scope":"snsapi_userinfo"}`, `{"errcode":40003}`, false},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/sns/oauth2/access_token" || r.URL.Query().Get("code") != "provider-code" || r.URL.Query().Get("secret") != "secret" {
-					t.Fatalf("request=%s", r.URL.Redacted())
+				calls++
+				if r.URL.Path == "/sns/oauth2/access_token" {
+					_, _ = w.Write([]byte(tc.token))
+					return
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(test.payload))
+				if r.URL.Path != "/sns/userinfo" || r.URL.Query().Get("access_token") != "token" || r.URL.Query().Get("openid") != "oa-open" {
+					t.Error("invalid userinfo request")
+				}
+				_, _ = w.Write([]byte(tc.info))
 			}))
 			defer server.Close()
-			provider, err := NewWeChatOAuth(true, "wx-app", "secret", "platform", "https://example.test/api/h5/surveys/oauth/callback", "snsapi_userinfo")
+			p, err := NewWeChatOAuth(true, "wx-app", "secret", "platform", "https://example.test/api/h5/surveys/oauth/callback", "snsapi_userinfo")
 			if err != nil {
 				t.Fatal(err)
 			}
-			provider.apiBase, provider.client = server.URL, server.Client()
-			fact, err := provider.Exchange(context.Background(), "provider-code")
-			if err != nil {
-				t.Fatal(err)
+			p.apiBase, p.client = server.URL, server.Client()
+			fact, err := p.Exchange(context.Background(), "provider-code")
+			if (err == nil) != tc.ok {
+				t.Fatalf("success=%v expected=%v", err == nil, tc.ok)
 			}
-			if ref := fact.Reference(); ref.Kind != test.kind || ref.Scope != test.scope || ref.Assurance != identitydomain.AssuranceVerified {
-				t.Fatalf("reference=%+v", ref)
+			if tc.ok && (fact.Reference().Kind != identitydomain.KindUnionID || fact.Reference().Scope != "wechat-open-platform:platform" || calls != 2) {
+				t.Fatal("missing verified UnionID")
 			}
 		})
 	}
