@@ -53,17 +53,26 @@ type Evidence struct {
 	RawExternalID string `json:"raw_external_id"`
 }
 type Snapshot struct {
-	Version        int       `json:"version"`
-	ResolutionMode string    `json:"resolution_mode,omitempty"`
-	Scopes         Scopes    `json:"scopes"`
-	CapturedAt     time.Time `json:"captured_at"`
-	Rows           []Row     `json:"rows"`
+	Version        int               `json:"version"`
+	ResolutionMode string            `json:"resolution_mode,omitempty"`
+	Scopes         Scopes            `json:"scopes"`
+	CapturedAt     time.Time         `json:"captured_at"`
+	Rows           []Row             `json:"rows"`
+	ParentProofSHA string            `json:"parent_proof_sha256,omitempty"`
+	CandidateSHA   string            `json:"candidate_sha256,omitempty"`
+	Verification   map[string]string `json:"verification,omitempty"`
 }
 
 func (s Snapshot) Validate() error {
 	validScope := s.Version == 1 && s.ResolutionMode == "" && s.Scopes.Validate() == nil
 	if s.Version == 2 && s.ResolutionMode == ExistingWecomOnly && s.Scopes.UnionScope == "" && validateCorp(s.Scopes.CorpID) == nil {
 		validScope = true
+	}
+	if s.Version == 3 && s.ResolutionMode == VerifiedWecomProvision && s.Scopes.UnionScope == "" && validateCorp(s.Scopes.CorpID) == nil && validSHA(s.ParentProofSHA) && validSHA(s.CandidateSHA) && len(s.Verification) == len(s.Rows) {
+		validScope = true
+	}
+	if s.Version != 3 && (s.ParentProofSHA != "" || s.CandidateSHA != "" || s.Verification != nil) {
+		return ErrInvalid
 	}
 	if !validScope || s.CapturedAt.IsZero() || s.Rows == nil {
 		return ErrInvalid
@@ -74,6 +83,9 @@ func (s Snapshot) Validate() error {
 			return ErrInvalid
 		}
 		seen[r.UnionID] = true
+		if s.Version == 3 && s.Verification[r.UnionID] != "verified" && s.Verification[r.UnionID] != "provider_failed" && s.Verification[r.UnionID] != "provider_mismatch" && s.Verification[r.UnionID] != "already_found" && s.Verification[r.UnionID] != "target_conflict" {
+			return ErrInvalid
+		}
 	}
 	return nil
 }
