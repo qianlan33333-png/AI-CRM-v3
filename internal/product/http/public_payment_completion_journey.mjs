@@ -43,7 +43,7 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   setGlobal('WeixinJSBridge', {invoke() { throw new Error('paid reload must not invoke payment'); }});
   setGlobal('fetch', async (url, options = {}) => {
     calls.push({url: String(url), method: options.method ?? 'GET'});
-    if (String(url) === '/api/v1/wechat-pay/checkout-session') return sessionAuthorized ? response({checkout_session_binding: 'a'.repeat(43)}) : response({code: 'payment_session_required'}, 401);
+    if (String(url) === '/api/v1/wechat-pay/checkout-session') return (typeof sessionAuthorized === 'function' ? sessionAuthorized() : sessionAuthorized) ? response({checkout_session_binding: 'a'.repeat(43)}) : response({code: 'payment_session_required'}, 401);
     if (String(url).startsWith('/api/h5/coupons/available')) return response({items: []});
     assert.equal(String(url), '/api/v1/wechat-pay/checkouts/M-paid-7');
     return response(completion);
@@ -158,4 +158,23 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   assert.equal(store.get(storageKey), original);
   assert.equal(run.calls.some(call => call.method === 'POST'), false);
   assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 1);
+}
+
+// Expiry between page load and the buyer's click returns to the explicit gate.
+// No checkout key or order is created and the browser never starts OAuth itself.
+{
+  let authorized = true;
+  const store = new Map();
+  const run = boot(store, {}, false, () => authorized);
+  await settle();
+  assert.equal(run.elements.get('checkoutContent').hidden, false);
+  authorized = false;
+  run.elements.get('mobile').value = '13800138000';
+  await run.elements.get('buy').listener.click();
+  assert.equal(run.elements.get('identityGate').hidden, false);
+  assert.equal(run.elements.get('checkoutContent').hidden, true);
+  assert.equal(run.elements.get('authContinue').hidden, false);
+  assert.match(run.elements.get('identityMessage').textContent, /已失效/);
+  assert.equal(store.size, 0);
+  assert.equal(run.calls.some(call => call.method === 'POST' || call.redirect), false);
 }
