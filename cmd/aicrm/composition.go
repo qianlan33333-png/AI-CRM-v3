@@ -833,7 +833,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	couponBindings, err := couponModule.BindWithClaimsAndPublic(couponService, productCatalog, couponRepository, couponPublic, requestSecurity)
+	couponClaimAdmin, err := composeCouponClaimAdmin(uow, couponRepository)
+	if err != nil {
+		return fail(err)
+	}
+	couponBindings, err := couponModule.BindWithClaimsAndPublic(couponService, productCatalog, couponClaimAdmin, couponPublic, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
