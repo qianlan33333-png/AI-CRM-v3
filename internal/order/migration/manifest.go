@@ -86,6 +86,7 @@ type ItemRow struct {
 }
 
 type RefundRow struct {
+	Status           string               `json:"status,omitempty"`
 	Provider         orderdomain.Provider `json:"provider"`
 	SourceKey        string               `json:"source_key"`
 	MerchantOrderNo  string               `json:"merchant_order_no"`
@@ -267,7 +268,7 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		merchantKey := string(row.Provider) + "\x00" + row.MerchantOrderNo
 		amount, orderExists := merchantKeys[merchantKey]
 		refundKey := string(row.Provider) + "\x00" + row.SourceKey
-		if (row.Provider != orderdomain.ProviderWeChatPay && row.Provider != orderdomain.ProviderWeChatShop) || !orderExists || !merchantResolved[merchantKey] || !valid(row.SourceKey, 200) || !valid(row.MerchantOrderNo, 200) || !valid(row.RefundNo, 200) || len(row.ProviderRefundNo) > 200 || strings.TrimSpace(row.ProviderRefundNo) != row.ProviderRefundNo || row.AmountMinor < 1 || !valid(row.Reason, 500) || row.OccurredAt.IsZero() {
+		if (row.Provider != orderdomain.ProviderWeChatPay && row.Provider != orderdomain.ProviderWeChatShop) || !orderExists || !merchantResolved[merchantKey] || !row.ValidStatus() || !valid(row.SourceKey, 200) || !valid(row.MerchantOrderNo, 200) || !valid(row.RefundNo, 200) || len(row.ProviderRefundNo) > 200 || strings.TrimSpace(row.ProviderRefundNo) != row.ProviderRefundNo || row.AmountMinor < 1 || row.AmountMinor > amount || !valid(row.Reason, 500) || row.OccurredAt.IsZero() {
 			return ErrInvalidManifest
 		}
 		if _, exists := refundKeys[refundKey]; exists {
@@ -278,7 +279,9 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		}
 		refundKeys[refundKey] = struct{}{}
 		refundNumbers[row.RefundNo] = struct{}{}
-		refunded[merchantKey] += row.AmountMinor
+		if row.Completed() {
+			refunded[merchantKey] += row.AmountMinor
+		}
 		if refunded[merchantKey] > amount {
 			return ErrInvalidManifest
 		}
@@ -323,7 +326,9 @@ func (manifest Manifest) Summary() Summary {
 		}
 	}
 	for _, row := range manifest.Refunds {
-		result.RefundMinor += row.AmountMinor
+		if row.Completed() {
+			result.RefundMinor += row.AmountMinor
+		}
 	}
 	for provider := range providers {
 		result.Providers = append(result.Providers, provider)
@@ -334,4 +339,32 @@ func (manifest Manifest) Summary() Summary {
 
 func valid(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value
+}
+
+// Empty status preserves the original success-only manifest digest and behavior.
+func (row RefundRow) ValidStatus() bool {
+	switch row.Status {
+	case "", "completed", "SUCCESS", "success", "failed", "closed", "CLOSED", "PROCESSING", "processing", "requested":
+		return true
+	}
+	return false
+}
+func (row RefundRow) Completed() bool {
+	return row.Status == "" || row.Status == "completed" || row.Status == "SUCCESS" || row.Status == "success"
+}
+func (row RefundRow) HistoricalStatus() string {
+	if row.Completed() {
+		return "completed"
+	}
+	switch row.Status {
+	case "failed":
+		return "history_failed"
+	case "closed", "CLOSED":
+		return "history_closed"
+	case "PROCESSING", "processing":
+		return "history_processing"
+	case "requested":
+		return "history_requested"
+	}
+	return ""
 }

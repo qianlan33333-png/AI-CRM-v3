@@ -1,8 +1,11 @@
 package migration
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +87,49 @@ func TestValidateRejectsCrossProviderPaymentAndRefundReceiptKeyCollisions(t *tes
 	}
 	if err = manifest.Validate(true); err == nil {
 		t.Fatal("cross-provider refund receipt collision was accepted")
+	}
+}
+
+func TestHistoricalRefundStatusesPreserveLegacyDigestAndCompletedTotals(t *testing.T) {
+	m, err := Parse([]byte(orderOnlyJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Subjects = []SubjectRow{{SourceKey: "s", IdentityKeys: []string{"i"}}}
+	m.Identities = []IdentityRow{{SourceKey: "i", Kind: "mp_openid", Scope: "wechat-app:app", Value: "opaque", Source: "provider-history"}}
+	m.Orders[0].PayerIdentityKey = "i"
+	m.Orders[0].PayerSubjectKey = "s"
+	m.Orders[0].BeneficiarySubjectKey = "s"
+	row := RefundRow{Provider: "wechat_pay", SourceKey: "r", MerchantOrderNo: "merchant-1", RefundNo: "r", AmountMinor: 40, Reason: "history", OccurredAt: m.Orders[0].UpdatedAt}
+	oldBytes, _ := json.Marshal(row)
+	if strings.Contains(string(oldBytes), `"status"`) {
+		t.Fatal("legacy empty-status digest changed")
+	}
+	for _, state := range []string{"failed", "closed", "PROCESSING", "requested"} {
+		row.Status = state
+		m.Refunds = []RefundRow{row}
+		if err := m.Validate(false); err != nil {
+			t.Fatalf("%s: %v", state, err)
+		}
+		if m.Summary().RefundMinor != 0 || row.HistoricalStatus() == "completed" {
+			t.Fatalf("%s counted completed", state)
+		}
+		if HistoricalRefundDigest(row) == sha256.Sum256(oldBytes) {
+			t.Fatal("source state omitted from frozen digest")
+		}
+	}
+	row.Status = "SUCCESS"
+	m.Refunds = []RefundRow{row}
+	if err := m.Validate(false); err == nil {
+		t.Fatal("paid order accepted completed refund without status update")
+	}
+	m.Orders[0].Status = "partially_refunded"
+	if err := m.Validate(false); err != nil || m.Summary().RefundMinor != 40 {
+		t.Fatalf("completed totals: %v", err)
+	}
+	row.Status = "unexpected"
+	m.Refunds = []RefundRow{row}
+	if err := m.Validate(false); err == nil {
+		t.Fatal("unknown refund source status accepted")
 	}
 }

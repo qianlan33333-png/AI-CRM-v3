@@ -139,7 +139,7 @@ SELECT DISTINCT p.order_id
 FROM payment_refunds r
 JOIN payments p ON p.id=r.payment_id
 WHERE p.order_id=ANY($1::bigint[])
-  AND r.status IN ('requested','effect_accepted','outcome_unknown','completed')`, orderIDs)
+  AND r.status IN ('requested','effect_accepted','outcome_unknown','completed','history_requested','history_processing')`, orderIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,7 @@ func (r *Repository) ReservedRefundMinor(ctx context.Context, paymentID int64) (
 		return 0, err
 	}
 	var total int64
-	err = t.QueryRow(ctx, `SELECT COALESCE(sum(amount_minor),0)::bigint FROM payment_refunds WHERE payment_id=$1 AND status<>'final_failed'`, paymentID).Scan(&total)
+	err = t.QueryRow(ctx, `SELECT COALESCE(sum(amount_minor),0)::bigint FROM payment_refunds WHERE payment_id=$1 AND status NOT IN ('final_failed','history_failed','history_closed')`, paymentID).Scan(&total)
 	return total, mapError(err)
 }
 
@@ -541,6 +541,9 @@ func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.P
 }
 
 func (r *Repository) ImportTerminalRefund(ctx context.Context, refund domain.Refund, digest [32]byte, runID string) (domain.Refund, error) {
+	if !refund.Status.HistoricalImportable() || refund.EffectID != "" {
+		return domain.Refund{}, paymentport.ErrConflict
+	}
 	t, err := tx(ctx)
 	if err != nil {
 		return domain.Refund{}, err

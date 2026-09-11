@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -79,8 +80,35 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	for n, status := range []domain.RefundStatus{domain.RefundHistoryRequested, domain.RefundHistoryProcessing, domain.RefundHistoryFailed, domain.RefundHistoryClosed} {
+		historical := refund
+		historical.RefundNo = fmt.Sprintf("history-status-%d", n)
+		historical.Status = status
+		if err = uow.Within(ctx, func(tx context.Context) error {
+			_, e := repository.ImportTerminalRefund(tx, historical, [32]byte{byte(n + 3)}, "history-run")
+			return e
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err = uow.Within(ctx, func(tx context.Context) error {
+			saved, e := repository.ImportTerminalRefund(tx, historical, [32]byte{byte(n + 3)}, "history-run")
+			if e == nil && saved.Status != status {
+				t.Fatal("status lost")
+			}
+			return e
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, e := historical.BindEffect(1, "eer_forbidden", now); e == nil {
+			t.Fatal("historical status accepted executable effect")
+		}
+		if _, e := historical.Complete(1, domain.RefundCompleted, now); e == nil {
+			t.Fatal("historical status completed through live path")
+		}
+	}
 	var payments, refunds, effects int
-	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 1 || refunds != 1 || effects != 0 {
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 1 || refunds != 5 || effects != 0 {
 		t.Fatalf("payments=%d refunds=%d effects=%d err=%v", payments, refunds, effects, err)
 	}
 }
@@ -324,7 +352,7 @@ func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

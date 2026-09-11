@@ -66,7 +66,9 @@ func (store PostgreSQLRuns) VerifyFull(ctx context.Context, manifest Manifest, i
 
 	refundsByMerchant := make(map[string]int64, len(manifest.Refunds))
 	for _, row := range manifest.Refunds {
-		refundsByMerchant[HistoricalMerchantKey(row.Provider, row.MerchantOrderNo)] += row.AmountMinor
+		if row.Completed() {
+			refundsByMerchant[HistoricalMerchantKey(row.Provider, row.MerchantOrderNo)] += row.AmountMinor
+		}
 	}
 	result := FullReconciliation{OrderIDs: make(map[string]int64, len(manifest.Orders))}
 	for _, row := range manifest.Orders {

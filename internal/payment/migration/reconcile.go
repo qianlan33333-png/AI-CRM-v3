@@ -37,6 +37,7 @@ type HistoricalPaymentFact struct {
 }
 
 type HistoricalRefundFact struct {
+	Status                            paymentdomain.RefundStatus
 	OrderID                           int64
 	Provider                          paymentdomain.Provider
 	MerchantOrderNo, RefundNo, Reason string
@@ -98,7 +99,7 @@ func (v PostgreSQLVerifier) VerifyHistorical(ctx context.Context, runKey string,
 	}
 	refundsByOrder := make(map[int64]int, len(refunds))
 	for _, fact := range refunds {
-		if !containsOrderID(orderIDs, fact.OrderID) || paymentIDs[fact.OrderID] < 1 || fact.Provider != paymentdomain.ProviderWeChatPay && fact.Provider != paymentdomain.ProviderWeChatShop || fact.MerchantOrderNo == "" || fact.RefundNo == "" || fact.Reason == "" || fact.AmountMinor < 1 || fact.OccurredAt.IsZero() || fact.SourceDigest == ([32]byte{}) {
+		if !containsOrderID(orderIDs, fact.OrderID) || paymentIDs[fact.OrderID] < 1 || fact.Provider != paymentdomain.ProviderWeChatPay && fact.Provider != paymentdomain.ProviderWeChatShop || fact.MerchantOrderNo == "" || fact.RefundNo == "" || fact.Reason == "" || fact.AmountMinor < 1 || fact.OccurredAt.IsZero() || fact.SourceDigest == ([32]byte{}) || !fact.historicalStatus().HistoricalImportable() {
 			return HistoricalReconciliation{}, ErrHistoricalReconciliationMismatch
 		}
 		if err = v.verifyRefund(ctx, runKey, paymentIDs[fact.OrderID], fact); err != nil {
@@ -106,7 +107,9 @@ func (v PostgreSQLVerifier) VerifyHistorical(ctx context.Context, runKey string,
 		}
 		refundsByOrder[fact.OrderID]++
 		result.Refunds++
-		result.RefundMinor += fact.AmountMinor
+		if fact.Status == "" || fact.Status == paymentdomain.RefundCompleted {
+			result.RefundMinor += fact.AmountMinor
+		}
 	}
 	for orderID, paymentID := range paymentIDs {
 		var actual int
@@ -179,7 +182,7 @@ func (v PostgreSQLVerifier) verifyRefund(ctx context.Context, runKey string, pay
 	if expected.ProviderRefundReference != "" {
 		expectedRefundDigest = string(effectport.Hash("history.refund", expected.ProviderRefundReference))
 	}
-	if actualPaymentID != paymentID || provider != string(expected.Provider) || refundNo != expected.RefundNo || amount != expected.AmountMinor || reason != expected.Reason || status != string(paymentdomain.RefundCompleted) || externalEffect != nil || digest != expectedRefundDigest || version != 1 || !sameTime(createdAt, expected.OccurredAt) || !sameTime(updatedAt, expected.OccurredAt) {
+	if actualPaymentID != paymentID || provider != string(expected.Provider) || refundNo != expected.RefundNo || amount != expected.AmountMinor || reason != expected.Reason || status != string(expected.historicalStatus()) || externalEffect != nil || digest != expectedRefundDigest || version != 1 || !sameTime(createdAt, expected.OccurredAt) || !sameTime(updatedAt, expected.OccurredAt) {
 		return ErrHistoricalReconciliationMismatch
 	}
 	key := sha256.Sum256([]byte("refund-history:" + runKey + ":" + expected.RefundNo))
@@ -254,4 +257,11 @@ func paymentReconciliationError(err error) error {
 		return ErrHistoricalReconciliationMismatch
 	}
 	return err
+}
+
+func (f HistoricalRefundFact) historicalStatus() paymentdomain.RefundStatus {
+	if f.Status == "" {
+		return paymentdomain.RefundCompleted
+	}
+	return f.Status
 }

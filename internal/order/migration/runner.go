@@ -107,7 +107,9 @@ func (runner Runner) Apply(ctx context.Context, manifest Manifest) (Result, erro
 	}
 	refundedByOrder := make(map[string]int64, len(manifest.Refunds))
 	for _, refund := range manifest.Refunds {
-		refundedByOrder[string(refund.Provider)+"\x00"+refund.MerchantOrderNo] += refund.AmountMinor
+		if refund.Completed() {
+			refundedByOrder[string(refund.Provider)+"\x00"+refund.MerchantOrderNo] += refund.AmountMinor
+		}
 	}
 	orders := make(map[string]struct{ orderID, paymentID int64 }, len(manifest.Orders))
 	for _, row := range manifest.Orders {
@@ -164,7 +166,7 @@ func (runner Runner) Apply(ctx context.Context, manifest Manifest) (Result, erro
 		if row.ProviderRefundNo != "" {
 			refundDigest = string(effectport.Hash("history.refund", row.ProviderRefundNo))
 		}
-		refund := paymentdomain.Refund{PaymentID: entry.paymentID, Provider: paymentdomain.Provider(row.Provider), RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, Status: paymentdomain.RefundCompleted, ProviderRefundDigest: refundDigest, Version: 1, CreatedAt: row.OccurredAt.UTC(), UpdatedAt: row.OccurredAt.UTC()}
+		refund := paymentdomain.Refund{PaymentID: entry.paymentID, Provider: paymentdomain.Provider(row.Provider), RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, Status: paymentdomain.RefundStatus(row.HistoricalStatus()), ProviderRefundDigest: refundDigest, Version: 1, CreatedAt: row.OccurredAt.UTC(), UpdatedAt: row.OccurredAt.UTC()}
 		if _, err := runner.Payments.ImportTerminalRefund(ctx, refund, digest, manifest.RunKey); err != nil {
 			return result, err
 		}

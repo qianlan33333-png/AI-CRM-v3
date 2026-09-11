@@ -42,3 +42,15 @@ const (
 	RefundCompleted      RefundStatus = "completed"
 	RefundFinalFailed    RefundStatus = "final_failed"
 )
+
+// Historical non-success states are frozen evidence; they are never executable.
+const (
+	RefundHistoryRequested  RefundStatus = "history_requested"
+	RefundHistoryProcessing RefundStatus = "history_processing"
+	RefundHistoryFailed     RefundStatus = "history_failed"
+	RefundHistoryClosed     RefundStatus = "history_closed"
+)
+
+func (s RefundStatus) HistoricalImportable() bool {
+	return s == RefundCompleted || s == RefundHistoryRequested || s == RefundHistoryProcessing || s == RefundHistoryFailed || s == RefundHistoryClosed
+}

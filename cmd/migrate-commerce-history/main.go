@@ -260,7 +260,7 @@ func paymentHistoryFacts(manifest ordermigration.Manifest, orderIDs map[string]i
 		if orderID < 1 {
 			return nil, nil, nil, ordermigration.ErrReconciliationMismatch
 		}
-		refunds = append(refunds, paymentmigration.HistoricalRefundFact{OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, ProviderRefundReference: row.ProviderRefundNo, SourceDigest: ordermigration.HistoricalRefundDigest(row), OccurredAt: row.OccurredAt})
+		refunds = append(refunds, paymentmigration.HistoricalRefundFact{Status: paymentdomain.RefundStatus(row.HistoricalStatus()), OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, ProviderRefundReference: row.ProviderRefundNo, SourceDigest: ordermigration.HistoricalRefundDigest(row), OccurredAt: row.OccurredAt})
 	}
 	return allOrderIDs, payments, refunds, nil
 }
