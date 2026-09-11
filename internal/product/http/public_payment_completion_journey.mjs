@@ -32,7 +32,7 @@ function boot(store, completion, redirectFailure = false) {
   const calls = [], elements = new Map();
   const setGlobal = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
   const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', children: [], addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }});
-  for (const id of ['price', 'buy', 'restart', 'status', 'coupon', 'wechatNotice', 'beneficiarySelf', 'mobile']) elements.set(id, element());
+  for (const id of ['price', 'buy', 'restart', 'status', 'coupon', 'wechatNotice', 'mobile', 'grossAmount', 'payableAmount', 'footerAmount', 'discountAmount']) elements.set(id, element());
   setGlobal('document', {getElementById(id) { return elements.get(id); }, addEventListener() {}, createElement() { return element(); }});
   setGlobal('navigator', {userAgent: 'MicroMessenger'});
   setGlobal('localStorage', {getItem(key) { return store.get(key) ?? null; }, setItem(key, value) { store.set(key, String(value)); }, removeItem(key) { store.delete(key); }});
@@ -105,7 +105,7 @@ function boot(store, completion, redirectFailure = false) {
 {
   const timers = new Map();
   let timerID = 0, listener, removed = false, invoked = 0;
-  const bridgeSource = script.slice(script.indexOf('function invokePay(handoff)'), script.indexOf('\nasync function loadCoupons'));
+  const bridgeSource = script.slice(script.indexOf('function invokePay(handoff)'), script.indexOf('\nconst couponDiscounts'));
   const doc = {addEventListener(_, fn) { listener = fn; }, removeEventListener(_, fn) { assert.equal(fn, listener); removed = true; }};
   const invoke = Function('document', 'WeixinJSBridge', 'setTimeout', 'clearTimeout', bridgeSource + ';return invokePay;')(
     doc, undefined, (fn, ms) => { timers.set(++timerID, {fn, ms}); return timerID; }, id => timers.delete(id),

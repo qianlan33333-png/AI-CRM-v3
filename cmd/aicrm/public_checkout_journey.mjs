@@ -82,8 +82,7 @@ function closePage(dom) {
 
 function setPurchase(dom, couponID, mobile) {
   const document = dom.window.document;
-  const beneficiary = document.getElementById("beneficiarySelf");
-  beneficiary.checked = true;
+  assert.equal(document.getElementById("beneficiarySelf"), null, "checkout needs no separate beneficiary confirmation");
   const coupon = document.getElementById("coupon");
   const option = document.createElement("option");
   option.value = String(couponID);

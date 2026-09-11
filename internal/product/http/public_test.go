@@ -44,12 +44,12 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/p/secret-code", nil))
-	if page.Code != http.StatusOK || catalog.getCode != "secret-code" || !strings.Contains(page.Body.String(), "公开商品") || !strings.Contains(page.Body.String(), `\/pay\/secret-code`) {
+	if page.Code != http.StatusOK || catalog.getCode != "secret-code" || !strings.Contains(page.Body.String(), "公开商品") || !strings.Contains(page.Body.String(), "checkoutStorageKey") {
 		t.Fatalf("status=%d body=%s", page.Code, page.Body.String())
 	}
 	payment := httptest.NewRecorder()
 	handler.ServeHTTP(payment, httptest.NewRequest(http.MethodGet, "/pay/secret-code", nil))
-	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "我确认购买后权益归我本人") || !strings.Contains(payment.Body.String(), "beneficiary_selection:'payer_self'") || strings.Contains(payment.Body.String(), "beneficiary_customer_id") {
+	if payment.Code != http.StatusOK || strings.Contains(payment.Body.String(), "beneficiarySelf") || !strings.Contains(payment.Body.String(), "beneficiary_selection:'payer_self'") || strings.Contains(payment.Body.String(), "beneficiary_customer_id") {
 		t.Fatalf("payment page status=%d body=%s", payment.Code, payment.Body.String())
 	}
 	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "retainPaidCheckout(orderNo)", "restorePaidCheckout", "terminal_status!=='paid'", "再次购买", "showCompletionAction", "location.assign(action.redirect_url)", "completion-qr", "value.completion_action"} {
@@ -153,7 +153,7 @@ func TestPublicProductMediaUsesOnlyEnabledProductImageBindings(t *testing.T) {
 	}
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/p/course-9", nil))
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "/api/h5/product-images/course-9/88/variants/original") || strings.Contains(page.Body.String(), "/api/admin/image-library/") {
+	if page.Code != http.StatusOK || strings.Contains(page.Body.String(), `class="hero"`) || strings.Contains(page.Body.String(), `class="cover"`) || strings.Contains(page.Body.String(), "/api/admin/image-library/") {
 		t.Fatalf("public page status=%d body=%s", page.Code, page.Body.String())
 	}
 	allowed := httptest.NewRecorder()
