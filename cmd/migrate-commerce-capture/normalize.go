@@ -296,6 +296,7 @@ func normalizeOrder(table string, r rawRow) (ordermigration.OrderRow, error) {
 	quantity := int64(1)
 	switch table {
 	case "wechat_pay_orders":
+		o.SourceStatus = textField(r, "status")
 		o.Provider = orderdomain.ProviderWeChatPay
 		switch textField(r, "status") {
 		case "paid":
@@ -310,6 +311,10 @@ func normalizeOrder(table string, r rawRow) (ordermigration.OrderRow, error) {
 			return o, errors.New("unknown source order status")
 		}
 	case "wechat_shop_orders":
+		o.SourceStatus = textField(r, "business_status")
+		if o.SourceStatus == "returned" {
+			o.HistoryReason = "refund_evidence_missing"
+		}
 		o.Provider = orderdomain.ProviderWeChatShop
 		o.MerchantOrderNo = textField(r, "order_id")
 		quantity = intField(r, "product_count")

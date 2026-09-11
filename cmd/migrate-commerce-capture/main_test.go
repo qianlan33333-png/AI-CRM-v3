@@ -19,7 +19,7 @@ func TestEncryptedCompleteCaptureRoundTripAndFailClosed(t *testing.T) {
 		s.Counts[table] = 0
 		s.Digests[table] = hex.EncodeToString(d[:])
 	}
-	s.Tables["wechat_pay_orders"] = json.RawMessage(`[{"id":1,"unionid":"protected-value","amount_total":990}]`)
+	s.Tables["wechat_pay_orders"] = json.RawMessage(`[{"id":1,"unionid":"protected-value","name":"<test>&url","amount_total":990}]`)
 	s.Counts["wechat_pay_orders"] = 1
 	d := sha256.Sum256(s.Tables["wechat_pay_orders"])
 	s.Digests["wechat_pay_orders"] = hex.EncodeToString(d[:])
@@ -42,6 +42,9 @@ func TestEncryptedCompleteCaptureRoundTripAndFailClosed(t *testing.T) {
 	var back snapshot
 	if json.Unmarshal(decoded, &back) != nil || validate(back) != nil {
 		t.Fatal("roundtrip changed source digests")
+	}
+	if !bytes.Equal(back.Tables["wechat_pay_orders"], s.Tables["wechat_pay_orders"]) {
+		t.Fatal("original bytes not recovered")
 	}
 	sealed[len(sealed)-1] ^= 1
 	if _, e = open(key, sealed); e == nil {

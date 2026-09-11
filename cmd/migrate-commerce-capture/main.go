@@ -141,7 +141,11 @@ func run(args []string) error {
 	if e = validate(s); e != nil {
 		return e
 	}
-	plain, e := json.Marshal(s)
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	e = encoder.Encode(s)
+	plain := encoded.Bytes()
 	if e != nil {
 		return errors.New("snapshot encoding failed")
 	}
@@ -175,7 +179,17 @@ func validate(s snapshot) error {
 		}
 		digest := sha256.Sum256(raw)
 		if hex.EncodeToString(digest[:]) != s.Digests[table] {
-			return fmt.Errorf("snapshot table digest mismatch: %s", table)
+			// Legacy json.Marshal HTML-escaped RawMessage after hashing it.
+			// Only accept reversal when it exactly reproduces the frozen hash.
+			restored := append([]byte(nil), raw...)
+			for _, pair := range [][2]string{{`\u003c`, "<"}, {`\u003e`, ">"}, {`\u0026`, "&"}, {`\u2028`, " "}, {`\u2029`, " "}} {
+				restored = bytes.ReplaceAll(restored, []byte(pair[0]), []byte(pair[1]))
+			}
+			restoredDigest := sha256.Sum256(restored)
+			if hex.EncodeToString(restoredDigest[:]) != s.Digests[table] || !json.Valid(restored) {
+				return fmt.Errorf("snapshot table digest mismatch: %s", table)
+			}
+			s.Tables[table] = restored
 		}
 	}
 	return nil
