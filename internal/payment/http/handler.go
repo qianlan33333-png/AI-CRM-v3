@@ -567,6 +567,9 @@ func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http
 		return
 	}
 	result := map[string]any{"payment_id": handoff.PaymentID, "merchant_order_no": handoff.MerchantOrder, "status": handoff.Status, "ready": len(handoff.Payload) > 0}
+	if handoff.PrepayState != "" {
+		result["prepay_state"] = handoff.PrepayState
+	}
 	status := http.StatusAccepted
 	if len(handoff.Payload) > 0 {
 		var providerPayload map[string]any

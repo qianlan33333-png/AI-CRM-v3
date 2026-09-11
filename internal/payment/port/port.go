@@ -94,6 +94,7 @@ type EffectProjection struct {
 }
 
 type Handoff struct {
+	PrepayState   effectport.State
 	PaymentID     int64
 	OrderID       int64
 	MerchantOrder string

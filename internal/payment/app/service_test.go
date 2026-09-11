@@ -552,3 +552,34 @@ func TestShopCallbackPersistsQueryRequiredReceiptAndDurableJob(t *testing.T) {
 		t.Fatalf("job_refund=%d outcome=%q err=%v", jobs.refundID, store.callbackOutcome, err)
 	}
 }
+
+type prepayReadStub struct {
+	projection effectport.Projection
+	calls      int
+}
+
+func (s *prepayReadStub) Get(context.Context, string) (effectport.Projection, error) {
+	s.calls++
+	return s.projection, nil
+}
+
+func TestGetCheckoutExposesUnknownPrepayOnlyToAuthorizedPayer(t *testing.T) {
+	store := &storeStub{payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, Channel: domain.ChannelH5Official, MerchantOrderNo: "M-pending-7", PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, Status: domain.StatusAwaitingPrepay, EffectID: "eer_21"}}
+	sessions := checkoutReadSessionStub{actors: map[string]paymentport.SessionActor{
+		"authorized-payment-session":  {PayerIdentityID: 4, PayerCustomerID: 11, Channel: domain.ChannelH5Official, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved},
+		"other-payment-session-token": {PayerIdentityID: 5, PayerCustomerID: 12, Channel: domain.ChannelH5Official, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved},
+	}}
+	reader := &prepayReadStub{projection: effectport.Projection{ID: "eer_21", Owner: effectport.OwnerPayment, Kind: effectport.KindWeChatPayPrepay, State: effectport.StateUnknown}}
+	service := NewService(uowStub{}, store, orderStub{}, sessions, &effectStub{}, reader)
+	result, err := service.GetCheckout(context.Background(), "M-pending-7", "authorized-payment-session")
+	if err != nil || result.PrepayState != effectport.StateUnknown || len(result.Payload) != 0 || store.handoffCalls != 0 {
+		t.Fatalf("unexpected checkout result=%+v err=%v", result, err)
+	}
+	if _, err = service.GetCheckout(context.Background(), "M-pending-7", "other-payment-session-token"); !errors.Is(err, paymentport.ErrConflict) || reader.calls != 1 {
+		t.Fatalf("unauthorized effect read: calls=%d err=%v", reader.calls, err)
+	}
+	reader.projection.Owner = effectport.OwnerOutbound
+	if _, err = service.GetCheckout(context.Background(), "M-pending-7", "authorized-payment-session"); !errors.Is(err, paymentport.ErrUnavailable) {
+		t.Fatalf("wrong owner: %v", err)
+	}
+}

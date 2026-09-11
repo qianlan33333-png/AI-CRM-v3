@@ -405,6 +405,7 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 	}
 	now := s.now().UTC()
 	var out paymentport.Handoff
+	var prepayEffectID string
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		actor, err := s.sessions.LookupWithin(tx, sessionToken, now)
 		if err != nil {
@@ -425,6 +426,7 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 			return nil
 		}
 		if payment.Status == domain.StatusAwaitingPrepay {
+			prepayEffectID = payment.EffectID
 			return nil
 		}
 		handoff, err := s.store.GetHandoff(tx, payment.ID)
@@ -440,7 +442,19 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		out.Payload, out.ExpiresAt = handoff.Payload, handoff.ExpiresAt
 		return nil
 	})
-	return out, classify(err)
+	if err != nil {
+		return out, classify(err)
+	}
+	// Read through the effect owner after the authorization transaction. Expose
+	// only its state; never return effect identifiers or provider response data.
+	if prepayEffectID != "" && s.effectReader != nil {
+		projection, readErr := s.effectReader.Get(ctx, prepayEffectID)
+		if readErr != nil || projection.ID != prepayEffectID || projection.Owner != effectport.OwnerPayment || projection.Kind != effectport.KindWeChatPayPrepay {
+			return paymentport.Handoff{}, paymentport.ErrUnavailable
+		}
+		out.PrepayState = projection.State
+	}
+	return out, nil
 }
 
 // CheckoutSessionBinding proves only that the caller still holds a valid

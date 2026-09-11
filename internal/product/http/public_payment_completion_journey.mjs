@@ -80,3 +80,42 @@ function boot(store, completion, redirectFailure = false) {
   assert.equal([...first.calls, ...second.calls].some(call => call.method === 'POST'), false);
   assert.equal([...first.calls, ...second.calls].filter(call => call.redirect === '/after-paid').length, 2);
 }
+
+// Unknown prepay must stop polling, keep the exact checkpoint, and never
+// create another checkout, even when the buyer clicks again.
+{
+  const pending = JSON.parse(paidCheckpoint());
+  delete pending.terminal_status;
+  const original = JSON.stringify(pending);
+  const store = new Map([[storageKey, original]]);
+  const run = boot(store, {status: 'awaiting_prepay', ready: false, prepay_state: 'outcome_unknown'});
+  await settle();
+  await run.elements.get('buy').listener.click();
+  assert.match(run.elements.get('status').textContent, /下单结果尚未确认/);
+  assert.equal(run.elements.get('buy').disabled, false);
+  assert.equal(store.get(storageKey), original);
+  await run.elements.get('buy').listener.click();
+  assert.equal(store.get(storageKey), original);
+  assert.equal(run.calls.filter(call => call.url === '/api/v1/wechat-pay/checkouts/M-paid-7').length, 2);
+  assert.equal(run.calls.some(call => call.method === 'POST'), false);
+}
+
+// Bridge readiness has a deadline and removes its listener. A late bridge
+// event after failure cannot unexpectedly launch a payment sheet.
+{
+  const timers = new Map();
+  let timerID = 0, listener, removed = false, invoked = 0;
+  const bridgeSource = script.slice(script.indexOf('function invokePay(handoff)'), script.indexOf('\nasync function loadCoupons'));
+  const doc = {addEventListener(_, fn) { listener = fn; }, removeEventListener(_, fn) { assert.equal(fn, listener); removed = true; }};
+  const invoke = Function('document', 'WeixinJSBridge', 'setTimeout', 'clearTimeout', bridgeSource + ';return invokePay;')(
+    doc, undefined, (fn, ms) => { timers.set(++timerID, {fn, ms}); return timerID; }, id => timers.delete(id),
+  );
+  const promise = invoke({});
+  assert.equal(timers.get(1).ms, 10000);
+  timers.get(1).fn();
+  await assert.rejects(promise, /微信支付未能打开/);
+  assert.equal(removed, true);
+  listener();
+  assert.equal(timers.size, 0);
+  assert.equal(invoked, 0);
+}

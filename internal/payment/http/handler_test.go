@@ -373,3 +373,16 @@ func TestOrderExternalPushDeliveriesLeavesUnmappedHistoryPending(t *testing.T) {
 		t.Fatalf("code=%d query=%+v body=%s", response.Code, reader.query, response.Body.String())
 	}
 }
+
+func TestCheckoutStatusReportsUnknownWithoutHandoffOrClearingSession(t *testing.T) {
+	application := &appStub{handoff: paymentport.Handoff{PaymentID: 7, MerchantOrder: "M-7", Status: domain.StatusAwaitingPrepay, PrepayState: "outcome_unknown"}}
+	handler, _ := NewHandler(application, nil, securityStub{}, true)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/M-7", nil)
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusAccepted || !strings.Contains(body, `"prepay_state":"outcome_unknown"`) || !strings.Contains(body, `"ready":false`) || strings.Contains(body, `"handoff"`) || len(response.Result().Cookies()) != 0 {
+		t.Fatalf("unexpected checkout: code=%d body=%s", response.Code, body)
+	}
+}
