@@ -222,6 +222,9 @@ type ReconciliationTarget struct {
 }
 
 type WeChatPayPaymentQuery struct {
+	// Verified response identity; never log or return through public APIs.
+	AppID           string `json:"-"`
+	PayerOpenID     string `json:"-"`
 	MerchantOrderNo string
 	Currency        string
 	Status          string
@@ -232,6 +235,9 @@ type WeChatPayPaymentQuery struct {
 	OccurredAt                        time.Time
 	EvidenceDigest, TransactionDigest effectport.Digest
 }
+
+func (WeChatPayPaymentQuery) String() string   { return "WeChatPayPaymentQuery{identity:[REDACTED]}" }
+func (WeChatPayPaymentQuery) GoString() string { return "WeChatPayPaymentQuery{identity:[REDACTED]}" }
 
 type WeChatPayRefundQuery struct {
 	RefundNo, Currency, Status   string

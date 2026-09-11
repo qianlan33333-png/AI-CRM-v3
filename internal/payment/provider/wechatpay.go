@@ -266,6 +266,10 @@ func (provider *WeChatPay) QueryPayment(ctx context.Context, merchantOrderNo str
 		return paymentport.WeChatPayPaymentQuery{}, ErrInvalidResponse
 	}
 	var decoded struct {
+		AppID string `json:"appid"`
+		Payer struct {
+			OpenID string `json:"openid"`
+		} `json:"payer"`
 		MerchantOrderNo string `json:"out_trade_no"`
 		TransactionID   string `json:"transaction_id"`
 		TradeState      string `json:"trade_state"`
@@ -288,7 +292,7 @@ func (provider *WeChatPay) QueryPayment(ctx context.Context, merchantOrderNo str
 		}
 		transactionDigest = effectport.Hash("wechatpay.transaction", decoded.TransactionID)
 	}
-	return paymentport.WeChatPayPaymentQuery{MerchantOrderNo: merchantOrderNo, Currency: decoded.Amount.Currency, Status: decoded.TradeState, TransactionReference: decoded.TransactionID, AmountMinor: decoded.Amount.Total, OccurredAt: occurred.UTC(), EvidenceDigest: effectport.Hash("wechatpay.payment.query", merchantOrderNo, hashBytes(response.Body)), TransactionDigest: transactionDigest}, nil
+	return paymentport.WeChatPayPaymentQuery{AppID: decoded.AppID, PayerOpenID: decoded.Payer.OpenID, MerchantOrderNo: merchantOrderNo, Currency: decoded.Amount.Currency, Status: decoded.TradeState, TransactionReference: decoded.TransactionID, AmountMinor: decoded.Amount.Total, OccurredAt: occurred.UTC(), EvidenceDigest: effectport.Hash("wechatpay.payment.query", merchantOrderNo, hashBytes(response.Body)), TransactionDigest: transactionDigest}, nil
 }
 
 func (provider *WeChatPay) QueryRefund(ctx context.Context, refundNo string) (paymentport.WeChatPayRefundQuery, error) {

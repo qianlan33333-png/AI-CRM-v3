@@ -146,7 +146,7 @@ func TestSignedExactPaymentAndRefundReconciliationQueries(t *testing.T) {
 	platform, _ := rsa.GenerateKey(rand.Reader, 2048)
 	now := time.Date(2026, 9, 3, 5, 0, 0, 0, time.UTC)
 	responses := []string{
-		`{"out_trade_no":"order-1","transaction_id":"tx-1","trade_state":"SUCCESS","success_time":"2026-09-03T04:59:00Z","amount":{"total":99,"currency":"CNY"}}`,
+		`{"appid":"app","payer":{"openid":"synthetic-openid"},"out_trade_no":"order-1","transaction_id":"tx-1","trade_state":"SUCCESS","success_time":"2026-09-03T04:59:00Z","amount":{"total":99,"currency":"CNY"}}`,
 		`{"refund_id":"provider-refund-1","out_refund_no":"refund-1","status":"SUCCESS","success_time":"2026-09-03T04:59:30Z","amount":{"refund":20,"total":99,"currency":"CNY"}}`,
 	}
 	calls := 0
@@ -166,7 +166,7 @@ func TestSignedExactPaymentAndRefundReconciliationQueries(t *testing.T) {
 	provider.now = func() time.Time { return now }
 	provider.nonce = func() (string, error) { return "request-nonce", nil }
 	payment, err := provider.QueryPayment(context.Background(), "order-1")
-	if err != nil || payment.Status != "SUCCESS" || payment.AmountMinor != 99 || !effectport.ValidDigest(payment.TransactionDigest) || payment.TransactionReference != "tx-1" {
+	if err != nil || payment.Status != "SUCCESS" || payment.AmountMinor != 99 || !effectport.ValidDigest(payment.TransactionDigest) || payment.TransactionReference != "tx-1" || payment.AppID != "app" || payment.PayerOpenID != "synthetic-openid" {
 		t.Fatalf("payment=%+v err=%v", payment, err)
 	}
 	refund, err := provider.QueryRefund(context.Background(), "refund-1")

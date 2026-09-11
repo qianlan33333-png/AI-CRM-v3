@@ -49,6 +49,7 @@ type options struct {
 	mode, snapshot, sourceStream, unionIDScope, digest string
 	confirm                                            bool
 	proofPath, proofKey, proofDigest, corp, output     string
+	oaProof, oaKey, oaDigest                           string
 	matchedCorp                                        bool
 }
 type manifest struct {
@@ -60,6 +61,7 @@ type manifest struct {
 	Entitlements   []sourceEntitlement `json:"entitlements"`
 	Coupons        []sourceCoupon      `json:"coupons"`
 	ResolutionMode string              `json:"resolution_mode,omitempty"`
+	OAProofSHA256  string              `json:"oa_proof_sha256,omitempty"`
 	ProofSHA256    string              `json:"proof_sha256,omitempty"`
 	SourceSHA256   string              `json:"source_sha256,omitempty"`
 	CorpID         string              `json:"corp_id,omitempty"`
@@ -187,6 +189,9 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.unionIDScope, "unionid-scope", "", "verified WeChat Open Platform scope")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "exact snapshot SHA-256")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm exact apply")
+	flags.StringVar(&cfg.oaProof, "oa-proof", "", "protected live OA supplemental proof")
+	flags.StringVar(&cfg.oaKey, "oa-proof-key-file", "", "OA proof key")
+	flags.StringVar(&cfg.oaDigest, "oa-proof-sha256", "", "OA proof exact digest")
 	flags.StringVar(&cfg.proofPath, "external-proof", "", "protected same-Corp proof")
 	flags.StringVar(&cfg.proofKey, "external-proof-key-file", "", "protected proof key")
 	flags.StringVar(&cfg.proofDigest, "external-proof-sha256", "", "exact proof digest")
