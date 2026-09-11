@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -88,8 +90,11 @@ func (s *CommercePushEndpoints) SaveCommercePushEndpointWithin(ctx context.Conte
 		}
 	} else {
 		template = ref
-		if template == "" && len(s.templates) == 1 {
-			template = s.templates[0]
+		if template == "" {
+			template, err = s.equivalentDefaultTemplate(ctx)
+			if err != nil {
+				return "", err
+			}
 		}
 	}
 	if endpoint == "" {
@@ -136,7 +141,38 @@ func (s *CommercePushEndpoints) CommercePushTarget(ctx context.Context, ref stri
 		return CommercePushTarget{}, false, outboundport.ErrCommercePushEndpointInvalid
 	}
 	target.Reference = ref
+	target.Slot = ref
 	target.Endpoint = endpoint
 	target.SigningKey = append([]byte(nil), target.SigningKey...)
 	return target, true, nil
+}
+
+// Default selection is allowed only when every protected runtime field agrees.
+// Endpoint, reference and logical target Slot are all replaced by this
+// owner-specific override. Signing and identity disclosure policies must agree.
+func (s *CommercePushEndpoints) equivalentDefaultTemplate(ctx context.Context) (string, error) {
+	refs := append([]string(nil), s.templates...)
+	sort.Strings(refs)
+	if len(refs) == 0 {
+		return "", outboundport.ErrCommercePushEndpointInvalid
+	}
+	var baseline CommercePushTarget
+	for i, ref := range refs {
+		target, ok, err := s.runtime.CommercePushTarget(ctx, ref)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", outboundport.ErrCommercePushEndpointInvalid
+		}
+		target.Reference = ""
+		target.Slot = ""
+		target.Endpoint = ""
+		if i == 0 {
+			baseline = target
+		} else if !reflect.DeepEqual(baseline, target) {
+			return "", outboundport.ErrCommercePushEndpointInvalid
+		}
+	}
+	return refs[0], nil
 }

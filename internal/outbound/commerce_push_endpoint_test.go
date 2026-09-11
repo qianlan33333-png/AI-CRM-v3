@@ -71,7 +71,7 @@ func TestCommerceEndpointPostgreSQLIsolationRollbackAndPolicy(t *testing.T) {
 		t.Fatal("owner references not isolated", err)
 	}
 	target, ok, err := s.CommercePushTarget(c, ref)
-	if err != nil || !ok || target.Endpoint != "https://one.example.com" || string(target.SigningKey) != "private-key" {
+	if err != nil || !ok || target.Endpoint != "https://one.example.com" || target.Slot != ref || string(target.SigningKey) != "private-key" {
 		t.Fatal("runtime policy not retained", err)
 	}
 	if runtime["shared"].Endpoint != "https://original.example.com" {
@@ -117,5 +117,32 @@ func TestCommerceEndpointPostgreSQLIsolationRollbackAndPolicy(t *testing.T) {
 	}
 	if _, ok, err = s.CommercePushTarget(c, ref); err != nil || ok {
 		t.Fatal("cleared endpoint still resolves")
+	}
+}
+
+func TestCommerceEndpointEquivalentDefaultTemplate(t *testing.T) {
+	base := CommercePushTarget{Reference: "z", Slot: "shared-slot", Endpoint: "https://z.example.com", SigningKey: []byte("key"), Version: "v1"}
+	other := base
+	other.Reference = "a"
+	other.Slot = "other-original-slot"
+	other.Endpoint = "https://a.example.com"
+	targets := endpointTargets{"z": base, "a": other}
+	manager := NewCommercePushEndpoints(nil, targets, []string{"z", "a"})
+	if ref, err := manager.equivalentDefaultTemplate(context.Background()); err != nil || ref != "a" {
+		t.Fatal("equivalent targets not stable", err)
+	}
+	for _, change := range []func(*CommercePushTarget){
+		func(v *CommercePushTarget) { v.SigningKey = []byte("other-key") },
+		func(v *CommercePushTarget) { v.AllowLoopbackHTTP = true },
+		func(v *CommercePushTarget) { v.TenantID = "other" },
+		func(v *CommercePushTarget) { v.BuyerPhone.Scope = "other" },
+		func(v *CommercePushTarget) { v.CustomParams = map[string]any{"x": "y"} },
+	} {
+		changed := other
+		change(&changed)
+		targets["a"] = changed
+		if _, err := manager.equivalentDefaultTemplate(context.Background()); err == nil {
+			t.Fatal("unequal policy default accepted")
+		}
 	}
 }
