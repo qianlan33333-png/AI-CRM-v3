@@ -879,3 +879,44 @@ func sidebarHistoryCommandMigrate(ctx context.Context, pool *pgxpool.Pool) error
 		)`)
 	return err
 }
+
+func TestPostgreSQLSidebarHistoryFreshRunReusesOwnerReceipts(t *testing.T) {
+	ctx := context.Background()
+	dsn, pool, cleanup := sidebarHistoryCommandDatabase(t, ctx)
+	defer cleanup()
+	t.Setenv("AICRM_DATABASE_URL", dsn)
+	path, digest := sidebarHistoryFullFactsManifest(t)
+	sidebarHistorySeedFullFacts(t, ctx, pool)
+	if err := run(ctx, []string{"--mode=apply", "--snapshot=" + path, "--manifest-sha256=" + digest, "--confirm-apply"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.RunKey = "sidebar-new-independent-run"
+	m.CapturedAt = m.CapturedAt.Add(time.Hour)
+	other := filepath.Join(t.TempDir(), "fresh.json")
+	if err = save(other, m); err != nil {
+		t.Fatal(err)
+	}
+	m, err = load(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := hex.EncodeToString(m.rawDigest[:])
+	args := []string{"--mode=apply", "--snapshot=" + other, "--manifest-sha256=" + sha, "--confirm-apply"}
+	if err = run(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+	var ent, claims int
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM order_service_entitlements),(SELECT count(*) FROM coupon_customer_claims)`).Scan(&ent, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if ent != 3 || claims != 3 {
+		t.Fatal("fresh run duplicated owner history")
+	}
+	if err = run(ctx, []string{"--mode=reconcile", "--snapshot=" + other, "--manifest-sha256=" + sha}); err != nil {
+		t.Fatal(err)
+	}
+}
