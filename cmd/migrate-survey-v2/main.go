@@ -1,4 +1,5 @@
-// Command migrate-survey-v2 performs the one-time encrypted, read-only Survey import.
+// Command migrate-survey-v2 imports encrypted Survey history, with an explicit
+// append-only mode for unchanged historical source facts.
 package main
 
 import (
@@ -25,6 +26,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
 )
 
@@ -299,6 +305,7 @@ func importSnapshot(args []string) error {
 	target := fs.String("target-url", "", "v3 PostgreSQL URL")
 	dataKeyFile := fs.String("data-key-file", "", "v3 survey data key file")
 	confirm := fs.Bool("confirm-import", false, "perform target write")
+	appendOnly := fs.Bool("append-only", false, "append to unchanged complete source history; preserve existing mappings")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -337,6 +344,11 @@ func importSnapshot(args []string) error {
 	var batchID int64
 	if batchID, err = beginOrReplayBatch(ctx, tx, batchKey, snap.Manifest, manifestRaw, manifestDigest); err != nil {
 		return err
+	}
+	if *appendOnly {
+		if err = verifyAppendOnlySource(ctx, tx, snap); err != nil {
+			return err
+		}
 	}
 	var actor int64
 	if err = tx.QueryRow(ctx, `SELECT id FROM admin_users ORDER BY id LIMIT 1`).Scan(&actor); err != nil {
@@ -745,6 +757,8 @@ func rollbackImport(args []string) error {
 func reconcile(args []string) error {
 	fs, file, keyFile := common("reconcile", args)
 	target := fs.String("target-url", "", "v3 PostgreSQL URL")
+	appendOnly := fs.Bool("append-only", false, "reconcile complete source history across all import batches")
+	confirmedScope := fs.String("confirmed-unionid-scope", "", "operator-verified Open Platform scope for validating already-resolved historical customers")
 	dataKeyFile := fs.String("data-key-file", "", "v3 survey data key file required for protected-answer reconciliation")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -790,11 +804,12 @@ func reconcile(args []string) error {
 	}
 	expected := sourceIndex.digests()
 	for _, table := range tables {
-		rows, err := tx.Query(ctx, `SELECT source_pk,target_table,target_pk,record_digest,import_state FROM survey_migration_source_map WHERE migration_batch_id=$1 AND source_table=$2 ORDER BY id`, batchID, table)
+		rows, err := tx.Query(ctx, `SELECT migration_batch_id,source_pk,target_table,target_pk,record_digest,import_state FROM survey_migration_source_map WHERE (migration_batch_id=$1 OR $3) AND source_system=$4 AND source_table=$2 ORDER BY id`, batchID, table, *appendOnly, snap.Manifest.SourceSystem)
 		if err != nil {
 			return err
 		}
 		type mappedFact struct {
+			batchID                int64
 			pk, targetTable, state string
 			targetPK               *int64
 			digest                 []byte
@@ -803,7 +818,7 @@ func reconcile(args []string) error {
 		seen := map[string]bool{}
 		for rows.Next() {
 			var fact mappedFact
-			if err = rows.Scan(&fact.pk, &fact.targetTable, &fact.targetPK, &fact.digest, &fact.state); err != nil {
+			if err = rows.Scan(&fact.batchID, &fact.pk, &fact.targetTable, &fact.targetPK, &fact.digest, &fact.state); err != nil {
 				rows.Close()
 				return err
 			}
@@ -830,7 +845,7 @@ func reconcile(args []string) error {
 			if sourceErr != nil {
 				return sourceErr
 			}
-			if err = verifyMappedFact(ctx, tx, batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest, sourceFact, sourceIndex, surveyCipher); err != nil {
+			if err = verifyMappedFact(ctx, tx, fact.batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest, sourceFact, sourceIndex, surveyCipher, *confirmedScope); err != nil {
 				return err
 			}
 		}
@@ -839,7 +854,7 @@ func reconcile(args []string) error {
 		return err
 	}
 	var duplicates int
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT source_system,source_table,source_pk,count(*) FROM survey_migration_source_map WHERE migration_batch_id=$1 GROUP BY 1,2,3 HAVING count(*)>1)x`, batchID).Scan(&duplicates); err != nil || duplicates != 0 {
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT source_system,source_table,source_pk,count(*) FROM survey_migration_source_map WHERE (migration_batch_id=$1 OR $2) AND source_system=$3 GROUP BY 1,2,3 HAVING count(*)>1)x`, batchID, *appendOnly, snap.Manifest.SourceSystem).Scan(&duplicates); err != nil || duplicates != 0 {
 		return errors.New("duplicate source mapping")
 	}
 	if _, err = tx.Exec(ctx, `UPDATE survey_migration_batches SET status='reconciled',updated_at=clock_timestamp() WHERE id=$1`, batchID); err != nil {
@@ -1032,7 +1047,7 @@ func (i *frozenSourceIndex) definitionDigest(value questionnaire) [32]byte {
 	}{value, questions, rules})
 }
 
-func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte, sourceFact any, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher) error {
+func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte, sourceFact any, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher, confirmedScope string) error {
 	if state == "quarantined" {
 		var reason string
 		var safe []byte
@@ -1101,7 +1116,7 @@ func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, tab
 	}
 	switch value := sourceFact.(type) {
 	case submission:
-		return verifySubmissionFact(ctx, tx, source, *targetPK, value, sourceIndex, surveyCipher)
+		return verifySubmissionFact(ctx, tx, source, *targetPK, value, sourceIndex, surveyCipher, confirmedScope)
 	case answer:
 		return verifyAnswerFact(ctx, tx, source, *targetPK, value, sourceIndex, surveyCipher)
 	case operation:
@@ -1117,7 +1132,7 @@ func verifyDerivedQuarantines(ctx context.Context, tx pgx.Tx, batchID int64, sou
 		}
 		var reason string
 		var safe, storedDigest []byte
-		err := tx.QueryRow(ctx, `SELECT reason_code,safe_snapshot,record_digest FROM survey_migration_quarantine WHERE migration_batch_id=$1 AND source_system=$2 AND source_table='questionnaire_result_tokens' AND source_pk=$3`, batchID, source, fmt.Sprint(value.ID)).Scan(&reason, &safe, &storedDigest)
+		err := tx.QueryRow(ctx, `SELECT reason_code,safe_snapshot,record_digest FROM survey_migration_quarantine WHERE migration_batch_id=(SELECT migration_batch_id FROM survey_migration_source_map WHERE source_system=$1 AND source_table='questionnaire_submissions' AND source_pk=$2) AND source_system=$1 AND source_table='questionnaire_result_tokens' AND source_pk=$2`, source, fmt.Sprint(value.ID)).Scan(&reason, &safe, &storedDigest)
 		expectedSafe, _ := json.Marshal(map[string]any{"submission_source_id": value.ID})
 		expectedDigest := recordDigest(value)
 		if err != nil || reason != "missing_result_token" || !jsonEquivalent(safe, expectedSafe) || !bytes.Equal(storedDigest, expectedDigest[:]) {
@@ -1275,7 +1290,7 @@ func verifyLegacyExternalProjection(ctx context.Context, tx pgx.Tx, submissionID
 	return nil
 }
 
-func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value submission, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher) error {
+func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value submission, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher, confirmedScope string) error {
 	questionnaireID, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
 	if err != nil {
 		return err
@@ -1300,6 +1315,12 @@ func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetP
 		d := sha256.Sum256([]byte(strings.TrimSpace(value.UnionID)))
 		expectedEvidence = d[:]
 	}
+	identityMatches := customer == nil && identityState == identity && identityReason == reason
+	if !identityMatches && customer != nil && identityState == "resolved" && identityReason == "legacy_unionid_scope_confirmed" && identity == "unresolved" && confirmedScope != "" {
+		var resolver identityport.Resolver = identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
+		resolved, resolveErr := resolver.Resolve(platformpostgres.BindTransaction(ctx, tx), identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: confirmedScope, Value: strings.TrimSpace(value.UnionID), Assurance: identitydomain.AssuranceDeclared, Source: "survey_migration_reconciliation"})
+		identityMatches = resolveErr == nil && resolved.Status == identityport.ResolveFound && int64(resolved.CustomerID) == *customer
+	}
 	resultObject := map[string]any{}
 	_ = json.Unmarshal(value.Result, &resultObject)
 	if resultObject == nil {
@@ -1321,7 +1342,7 @@ func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetP
 		return errors.New("migration reconciliation failed: submission definition missing")
 	}
 	expectedMode := map[bool]string{true: "assessment", false: "survey"}[questionnaireSource.Assessment]
-	if actualQuestionnaire != questionnaireID || actualDefinitionVersion != activeDefinition || customer != nil || identityState != identity || identityReason != reason || !bytes.Equal(evidence, expectedEvidence) || !bytes.Equal(payload, payloadDigest[:]) || slug != safeSlug(questionnaireSource.Slug, questionnaireSource.ID) || title != trimNonEmpty(questionnaireSource.Title, 500) || mode != expectedMode || total != value.Total || !jsonEquivalent(result, expectedResult) || channel != trim(value.SourceChannel, 100) || campaign != trim(value.CampaignID, 200) || staff != trim(value.StaffID, 200) || !submitted.Equal(value.SubmittedAt) || !created.Equal(value.CreatedAt) {
+	if actualQuestionnaire != questionnaireID || actualDefinitionVersion != activeDefinition || !identityMatches || !bytes.Equal(evidence, expectedEvidence) || !bytes.Equal(payload, payloadDigest[:]) || slug != safeSlug(questionnaireSource.Slug, questionnaireSource.ID) || title != trimNonEmpty(questionnaireSource.Title, 500) || mode != expectedMode || total != value.Total || !jsonEquivalent(result, expectedResult) || channel != trim(value.SourceChannel, 100) || campaign != trim(value.CampaignID, 200) || staff != trim(value.StaffID, 200) || !submitted.Equal(value.SubmittedAt) || !created.Equal(value.CreatedAt) {
 		return errors.New("migration reconciliation failed: submission target fact drift")
 	}
 	if err = verifyLegacyExternalProjection(ctx, tx, targetPK, value); err != nil {
@@ -1777,3 +1798,46 @@ func legacyStatus(kind, status string) string {
 	return "legacy_failed"
 }
 func mustJSON(v any) []byte { raw, _ := json.Marshal(v); return raw }
+
+// verifyAppendOnlySource rejects deleted/changed historical rows before any import
+// writes. Definition changes require a separate versioned migration, not append mode.
+func verifyAppendOnlySource(ctx context.Context, tx pgx.Tx, snap Snapshot) error {
+	index, err := buildFrozenSourceIndex(snap)
+	if err != nil {
+		return err
+	}
+	expected := index.digests()
+	rows, err := tx.Query(ctx, `SELECT source_table,source_pk,record_digest FROM survey_migration_source_map WHERE source_system=$1`, snap.Manifest.SourceSystem)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	seen := map[string]map[string]bool{}
+	for rows.Next() {
+		var table, pk string
+		var digest []byte
+		if err = rows.Scan(&table, &pk, &digest); err != nil {
+			return err
+		}
+		want, ok := expected[table][pk]
+		if !ok || !bytes.Equal(want[:], digest) {
+			return fmt.Errorf("append-only source drift: %s mapping changed or omitted", table)
+		}
+		if seen[table] == nil {
+			seen[table] = map[string]bool{}
+		}
+		if seen[table][pk] {
+			return errors.New("append-only duplicate source mapping")
+		}
+		seen[table][pk] = true
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for _, table := range []string{"questionnaires", "questionnaire_questions", "questionnaire_options", "questionnaire_score_rules"} {
+		if len(seen[table]) != len(expected[table]) {
+			return fmt.Errorf("append-only requires unchanged existing definitions: %s", table)
+		}
+	}
+	return nil
+}
