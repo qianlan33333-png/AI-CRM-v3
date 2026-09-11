@@ -10,6 +10,8 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
 	configtarget "github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/target"
 	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 func TestCommerceUnsupportedModesAndUnconfirmedApplyFailBeforeDatabaseAccess(t *testing.T) {
@@ -309,4 +311,137 @@ func TestCommerceAuditedCouponDeltaPreservesProductOperatorConfig(t *testing.T) 
 	if _, e = runner.Apply(ctx, s, d, actor); e == nil {
 		t.Fatal("target commercial fact drift accepted")
 	}
+}
+
+func TestCommerceExplicitReviewedCouponCASAndReplay(t *testing.T) {
+	pool, cleanup := configMigrationIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	actor := configMigrationActor(t, ctx, pool)
+	s := configMigrationFixture(t, strings.Repeat("e", 40))
+	s.Manifest.Scope = "commerce-only"
+	s.GroupPlans = nil
+	s.GroupNodes = nil
+	s.GroupAssets = nil
+	s.Agents = nil
+	for i := range s.Coupons {
+		slug := ""
+		issued := int64(0)
+		s.Coupons[i].PublicSlug = &slug
+		s.Coupons[i].IssuedCount = &issued
+	}
+	binding := s.CouponBindings[0]
+	s.CouponBindings = s.CouponBindings[1:]
+	s.Coupons[0].TotalIssueLimit = 20
+	if e := source.PopulateManifest(&s, s.Manifest.SourceSystem, s.Manifest.SourceRevision, s.Manifest.SnapshotAt); e != nil {
+		t.Fatal(e)
+	}
+	d, _ := s.CanonicalDigest()
+	runner := configMigrationRunner(t, pool)
+	if _, e := runner.Apply(ctx, s, d, actor); e != nil {
+		t.Fatal(e)
+	}
+	var id, productID int64
+	if e := pool.Native().QueryRow(ctx, `SELECT target_id FROM config_definition_import_source_maps WHERE source_kind='commerce_coupons' AND source_key='1'`).Scan(&id); e != nil {
+		t.Fatal(e)
+	}
+	if e := pool.Native().QueryRow(ctx, `SELECT target_id FROM config_definition_import_source_maps WHERE source_kind='wechat_pay_products' AND source_key=$1`, fmt.Sprint(binding.TradeProductID)).Scan(&productID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := pool.Native().Exec(ctx, `INSERT INTO coupon_rule_targets(coupon_id,target_ref,position) VALUES($1,$2,0)`, id, fmt.Sprintf("standard_product:%d", productID)); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := pool.Native().Exec(ctx, `UPDATE coupon_rules SET public_slug='target-test-link',version=2,updated_at=updated_at+interval '2 days' WHERE id=$1`, id); e != nil {
+		t.Fatal(e)
+	}
+	s.Manifest.Scope = "commerce-only"
+	s.GroupPlans = nil
+	s.GroupNodes = nil
+	s.GroupAssets = nil
+	s.Agents = nil
+	s.CouponBindings = append(s.CouponBindings, binding)
+	for i := range s.Coupons {
+		slug := fmt.Sprintf("source-public-%d", i)
+		issued := int64(0)
+		s.Coupons[i].PublicSlug = &slug
+		s.Coupons[i].IssuedCount = &issued
+	}
+	issued := int64(27)
+	s.Coupons[0].IssuedCount = &issued
+	s.Coupons[0].TotalIssueLimit = 10000
+	s.Coupons[0].UpdatedAt = s.Coupons[0].UpdatedAt.Add(time.Hour)
+	if e := source.PopulateManifest(&s, s.Manifest.SourceSystem, s.Manifest.SourceRevision, s.Manifest.SnapshotAt); e != nil {
+		t.Fatal(e)
+	}
+	d, _ = s.CanonicalDigest()
+	if _, e := runner.Apply(ctx, s, d, actor); e == nil {
+		t.Fatal("unreviewed source drift accepted")
+	}
+	owner := runner.Coupons.(couponport.ReviewedCutoverImporter)
+	var before [32]byte
+	if e := runner.UOW.Within(ctx, func(bound context.Context) error {
+		var e error
+		before, e = owner.CutoverReviewDigest(bound, couponport.ID(id))
+		return e
+	}); e != nil {
+		t.Fatal(e)
+	}
+	runner.ReviewCouponSourceID = 1
+	runner.ReviewCouponBefore = before
+	// Even inside the accepted transaction the audit cannot authorize a
+	// second slug replacement: old slug/version no longer match.
+	second := runner
+	second.UOW = cutoverAfterUOW{inner: runner.UOW, after: func(bound context.Context) error {
+		tx, e := platformpostgres.RequireTransaction(bound)
+		if e != nil {
+			return e
+		}
+		_, e = tx.Exec(bound, `UPDATE coupon_rules SET public_slug='second-same-transaction',version=version+1 WHERE id=$1`, id)
+		return e
+	}}
+	if _, e := second.Apply(ctx, s, d, actor); e == nil {
+		t.Fatal("same transaction audit reused")
+	}
+	bad := runner
+	bad.ReviewCouponBefore[0] ^= 1
+	if _, e := bad.Apply(ctx, s, d, actor); e == nil {
+		t.Fatal("wrong before accepted")
+	}
+	for i := 0; i < 2; i++ {
+		if _, e := runner.Apply(ctx, s, d, actor); e != nil {
+			t.Fatal(e)
+		}
+	}
+	var total, count, version, reviews, bindings int64
+	var slug string
+	if e := pool.Native().QueryRow(ctx, `SELECT total_issue_limit,issued_count,version,public_slug,(SELECT count(*) FROM config_definition_commerce_reviews),(SELECT count(*) FROM config_definition_import_source_maps WHERE source_kind='commerce_coupon_product_bindings' AND source_key=$2) FROM coupon_rules WHERE id=$1`, id, fmt.Sprint(binding.ID)).Scan(&total, &count, &version, &slug, &reviews, &bindings); e != nil || total != 10000 || count != 27 || version != 3 || slug != "source-public-0" || reviews != 1 || bindings != 1 {
+		t.Fatalf("review result %d %d %d %s %d %d %v", total, count, version, slug, reviews, bindings, e)
+	}
+	// A prior review never authorizes another transaction, another coupon,
+	// or an ordinary update path to replace a published link.
+	for _, target := range []int64{id, id + 1} {
+		if _, e := pool.Native().Exec(ctx, `UPDATE coupon_rules SET public_slug='unauthorized-replacement',version=version+1 WHERE id=$1`, target); e == nil {
+			t.Fatal("old review reused for ordinary/cross-coupon update")
+		}
+	}
+	if _, e := pool.Native().Exec(ctx, `UPDATE coupon_rules SET version=version+1 WHERE id=$1`, id); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := runner.Apply(ctx, s, d, actor); e == nil {
+		t.Fatal("post-review target edit overwritten")
+	}
+}
+
+type cutoverAfterUOW struct {
+	inner platformport.UnitOfWork
+	after func(context.Context) error
+}
+
+func (u cutoverAfterUOW) Within(ctx context.Context, fn func(context.Context) error) error {
+	return u.inner.Within(ctx, func(bound context.Context) error {
+		if e := fn(bound); e != nil {
+			return e
+		}
+		return u.after(bound)
+	})
 }

@@ -25,11 +25,13 @@ var (
 )
 
 type Runner struct {
-	UOW        platformport.UnitOfWork
-	Products   productport.DefinitionImporter
-	Coupons    couponport.DefinitionImporter
-	GroupOps   groupopsport.DefinitionImporter
-	Automation automationport.DefinitionImporter
+	ReviewCouponSourceID int64
+	ReviewCouponBefore   [32]byte
+	UOW                  platformport.UnitOfWork
+	Products             productport.DefinitionImporter
+	Coupons              couponport.DefinitionImporter
+	GroupOps             groupopsport.DefinitionImporter
+	Automation           automationport.DefinitionImporter
 }
 type Result struct {
 	BatchID    int64 `json:"batch_id"`
@@ -199,13 +201,19 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 			if commerce {
 				mapCoupon.PublicSlug = nil
 				mapCoupon.IssuedCount = nil
-				cm, e = existingCouponMapping(tx, snap.Manifest.SourceSystem, mapCoupon, true)
-				existing, found = cm.ID, cm.Found
-				if e != nil {
-					return e
-				}
 				definition.IssuedCount = *x.IssuedCount
-				c, e = r.Coupons.(couponport.CutoverDefinitionImporter).ImportCutoverDefinition(tx, couponport.CutoverDefinitionImport{DefinitionImport: definition, ExistingID: couponport.ID(existing), PublicSlug: *x.PublicSlug, ExpectedIssuedCount: cm.ExpectedIssued, ExpectedTotalIssueLimit: cm.ExpectedLimit, AllowSourceLimitIncrease: cm.AllowLimitIncrease})
+				if r.ReviewCouponSourceID == x.ID && r.ReviewCouponBefore != ([32]byte{}) {
+					c, cm, e = r.applyReviewedCoupon(tx, snap.Manifest.SourceSystem, x, couponport.CutoverDefinitionImport{DefinitionImport: definition, PublicSlug: *x.PublicSlug}, out.BatchID, digest)
+				} else {
+					cm, e = existingCouponMapping(tx, snap.Manifest.SourceSystem, mapCoupon, true)
+					existing, found = cm.ID, cm.Found
+					if e != nil {
+						return e
+					}
+					definition.IssuedCount = *x.IssuedCount
+					c, e = r.Coupons.(couponport.CutoverDefinitionImporter).ImportCutoverDefinition(tx, couponport.CutoverDefinitionImport{DefinitionImport: definition, ExistingID: couponport.ID(existing), PublicSlug: *x.PublicSlug, ExpectedIssuedCount: cm.ExpectedIssued, ExpectedTotalIssueLimit: cm.ExpectedLimit, AllowSourceLimitIncrease: cm.AllowLimitIncrease})
+				}
+				existing, found = cm.ID, cm.Found
 			} else {
 				c, e = r.Coupons.ImportDefinition(tx, definition)
 			}
@@ -229,7 +237,7 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 						}
 						continue
 					}
-					if found {
+					if found && !(r.ReviewCouponSourceID == x.ID && r.ReviewCouponBefore != ([32]byte{})) {
 						return ErrDrift
 					}
 				}

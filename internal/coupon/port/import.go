@@ -35,3 +35,10 @@ type CutoverDefinitionImport struct {
 type CutoverDefinitionImporter interface {
 	ImportCutoverDefinition(context.Context, CutoverDefinitionImport) (Coupon, error)
 }
+
+// ReviewedCutoverImporter is a narrow explicit source-authoritative exception:
+// full before-state CAS, unchanged core terms/targets, zero target claims.
+type ReviewedCutoverImporter interface {
+	CutoverReviewDigest(context.Context, ID) ([32]byte, error)
+	ImportReviewedCutoverDefinition(context.Context, CutoverDefinitionImport, [32]byte) (Coupon, error)
+}

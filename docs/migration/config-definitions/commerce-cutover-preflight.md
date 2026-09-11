@@ -71,3 +71,31 @@ bin/migrate-v2-config-definitions --commerce-only --mode=apply --confirm-apply \
 核对已领取总数；数字下界通过不等于每条客户领券已迁完，后者仍需独立对账。
 verify模式尚未支持该scope，请使用inspect、只读dry-run以及受控apply重放检查。
 源/目标实际schema和数量漂移必须报告，没有猜测今天delta，未操作生产。
+
+### Explicitly reviewed source-authoritative coupon exception
+
+If an imported coupon's historical timestamp was overwritten by a target
+`coupon.public_shared` event, the original source row digest may be impossible
+to reconstruct. Never label this as matching historical source evidence.
+
+For one separately reviewed source coupon, `--mode=review-coupon
+--review-coupon-source-id=<id>` captures a canonical Coupon Owner before digest.
+The operator reviews the exact source/target delta, then uses
+`--review-coupon-source-id=<id> --review-coupon-before-sha256=<digest>` with the
+already confirmed full manifest SHA and apply command. This path requires 0132.
+It requires zero target claims, no audit events except public sharing, unchanged
+commercial terms and targets, monotone source limits/counters and a full Owner
+CAS. A different existing test slug can be replaced by the formal source slug;
+unique collisions remain errors. New source binding provenance is accepted only
+when the complete target-ref set is already identical. All other source rows
+still use the ordinary strict migration proof.
+
+The old source mapping remains immutable. A separate append-only review records
+`source_authoritative_review`, the full source row and manifest digests, and
+before/after Owner digests in the same transaction. Coupon's dedicated audit
+permits exactly one same-transaction slug replacement matching old/new slug,
+old version and transaction ID; ordinary updates, cross-coupon reuse, later
+transactions and second replacements stay forbidden. Immediate replay validates
+the recorded after state and makes no writes. After importing historical claims,
+perform aggregate/API reconciliation; the original reviewed-before command is
+not a general authorization to overwrite later target activity.
