@@ -28,7 +28,7 @@ type CommerceRow struct {
 }
 
 func InspectCommerceTarget(ctx context.Context, pool *pgxpool.Pool, snap source.Snapshot, actor int64) (CommercePreflight, error) {
-	report := CommercePreflight{Counts: map[string]int{}, Rows: []CommerceRow{}, Limitations: []string{"coupon_owner_cannot_import_issued_count_or_public_slug", "target_owner_projection_verification_required", "commerce_apply_not_implemented"}}
+	report := CommercePreflight{Counts: map[string]int{}, Rows: []CommerceRow{}, Limitations: []string{"apply_revalidates_owner_definition_and_claim_counters"}}
 	if pool == nil || actor < 1 || snap.Manifest.Scope != "commerce-only" || snap.Validate() != nil {
 		return report, ErrInvalid
 	}

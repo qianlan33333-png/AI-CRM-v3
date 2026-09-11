@@ -34,12 +34,15 @@ func run(ctx context.Context, args []string) error {
 	actor := fs.Int64("actor-admin-user-id", 0, "explicit target administrator")
 	want := fs.String("manifest-sha256", "", "snapshot digest confirmation")
 	confirm := fs.Bool("confirm-apply", false, "confirm target write")
-	commerceOnly := fs.Bool("commerce-only", false, "capture/inspect/preflight current commerce definitions only; apply unavailable")
+	commerceOnly := fs.Bool("commerce-only", false, "capture, inspect, preflight or apply current commerce definitions only")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *commerceOnly && *mode != "extract" && *mode != "inspect" && *mode != "dry-run" {
-		return errors.New("commerce-only supports extract, inspect and dry-run only; owner cutover import unavailable")
+	if *commerceOnly && *mode != "extract" && *mode != "inspect" && *mode != "dry-run" && *mode != "apply" {
+		return errors.New("commerce-only supports extract, inspect, dry-run and apply only")
+	}
+	if *commerceOnly && *mode == "apply" && !*confirm {
+		return errors.New("commerce-only apply requires --confirm-apply")
 	}
 	if *mode == "history-extract" {
 		if *snapshot == "" || *key == "" || *revision == "" {
@@ -181,7 +184,7 @@ func run(ctx context.Context, args []string) error {
 		return e
 	}
 	defer pool.Close()
-	if *commerceOnly {
+	if *commerceOnly && *mode == "dry-run" {
 		report, err := target.InspectCommerceTarget(ctx, pool.Native(), s, *actor)
 		if err != nil {
 			return err
@@ -205,6 +208,14 @@ func run(ctx context.Context, args []string) error {
 	c, e := couponstore.NewPostgreSQL(pool.Native(), uow)
 	if e != nil {
 		return e
+	}
+	if *commerceOnly {
+		runner := target.Runner{UOW: uow, Products: p, Coupons: c}
+		out, err := runner.Apply(ctx, s, d, *actor)
+		if err != nil {
+			return err
+		}
+		return print(map[string]any{"mode": "apply", "scope": "commerce-only", "manifest_sha256": target.DigestHex(d), "result": out})
 	}
 	g, e := groupopsstore.NewPostgreSQL(pool.Native(), uow)
 	if e != nil {

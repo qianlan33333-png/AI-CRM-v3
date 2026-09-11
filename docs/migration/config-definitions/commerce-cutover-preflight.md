@@ -1,9 +1,10 @@
 # 当前商品与券定义的切流预检
 
-分类：不涉及 OneID（仅定义，不包含客户/领券行）；持久化为源和目标
-repeatable-read/read-only 事务；不涉及 Provider、任务或外部效果。
+分类：不涉及 OneID（定义和发行汇总，不匹配客户、不写领券行）；源与预检为
+repeatable-read/read-only，apply经Owner Port在单一PostgreSQL UoW内写入。
+不涉及Provider、任务或外部效果。
 
-使用显式 `--commerce-only`，只支持 extract、inspect、dry-run。
+使用显式 `--commerce-only`，支持 extract、inspect、dry-run、apply。
 它不会抽取群计划或 Agent，数量来自本次 manifest，不要求旧 31/15 基线。
 旧命令默认行为、旧加密文件及旧行摘要保持不变。
 
@@ -35,16 +36,33 @@ dry-run 报告按已有 source_system/source_kind/source_key 查询映射：
 
 历史 Coupon 源摘要比较剔除旧快照未捕获的两个新字段，维持旧 source map 兼容。
 这些新事实仍在完整快照里保留，不宣称旧目标已匹配。即使所有行 mapped，
-仍需 Owner 级完整投影核验，因此 apply_ready **始终为 false**。
+dry-run尚未验证Owner业务字段和领取计数，因此apply_ready保守为false。
+显式apply会在同一事务中完成这些检查；任一冲突均整批回滚。
 
-## 明确剩余能力
+## 安全 apply
 
-Coupon DefinitionImporter 当前拒绝非零 IssuedCount，INSERT 固定 issued_count=0，
-不导入 public_slug。现有 Product/Coupon 导入器是 insert-only，没有带源摘要和
-目标版本校验的更新契约。不能通过绕过 Owner、改源键或抹零数量完成切流。
-故 commerce-only apply/verify 在打开目标数据库前明确拒绝，尚未实现新商品写入。
-后续需 Owner 提供切流导入契约，核对旧 source map 与目标字段，再将本预检候选
-转为同一 UoW 中可重放的新增/受控更新。不得将成功 dry-run 当作迁移完成。
+```sh
+bin/migrate-v2-config-definitions --commerce-only --mode=apply --confirm-apply \
+  --snapshot=/secure/commerce.enc --snapshot-key-file=/secure/snapshot.key \
+  --manifest-sha256=<inspect-digest> --actor-admin-user-id=<active-admin>
+```
 
-源/目标实际 schema 或数量漂移必须作为事实报告。本实现没有猜测今天 delta，
-没有连接生产或修改任何生产数据。
+在已准备目标备份、源短暂停写且目标尚未承接真实领取前运行。
+本命令不建立群计划或Agent Owner实例。批次使用完整快照摘要作为键，
+同一源代码版本可以提取不同当前快照，既有source mappings仍按旧稳定源键复用。
+迁移通过事务级锁串行化；映射检查、Owner写入、批次收据原子提交。
+
+- 旧商品/券的旧源摘要不一致、源删除、目标版本不为1：报告冲突，不更新。
+- 旧商品复用ID；新商品新增。同一code已有未映射商品由Owner唯一约束拒绝。
+- 旧券逐字段核对名称、状态、金额、限额、时间、有效期、说明、适用商品；全部相同时复用ID。
+- 券public_slug为空时可补源值；已存在且不同则冲突，不能改写或清空公开链接。
+- issued_count必须在0和发行总额之间且不低于目标实际claim行数。目标计数为0时可补源值；非零时必须完全相同，避免覆盖目标新领取。
+- 已映射券不允许偷偷新增绑定；目标运营修改导致version增长后拒绝整个批次。
+- 新商品/券可新增；任何后续冲突会回滚此前新增的定义和批次。
+- 重放仍检查目标定义、公开链接、计数和映射，不能仅凭批次存在返回成功。
+
+这不是通用增量覆盖器：旧源定义修改、非零发行量变化需另行明确对账，
+不能换源键、抹零数量或绕过Owner。claims之后若另行导入，应再重放本批次
+核对已领取总数；数字下界通过不等于每条客户领券已迁完，后者仍需独立对账。
+verify模式尚未支持该scope，请使用inspect、只读dry-run以及受控apply重放检查。
+源/目标实际schema和数量漂移必须报告，没有猜测今天delta，未操作生产。
