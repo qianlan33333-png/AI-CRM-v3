@@ -35,6 +35,11 @@ type CanonicalLineageReader interface {
 	CanonicalLineage(context.Context, customerdomain.CustomerID) ([]customerdomain.CustomerID, error)
 }
 
+// LockedCanonicalLineageReader pins roots against concurrent merge for the caller UoW.
+type LockedCanonicalLineageReader interface {
+	LockedCanonicalLineage(context.Context, customerdomain.CustomerID) ([]customerdomain.CustomerID, error)
+}
+
 // OutboundWeComIdentityReader is consumed only by the composition-owned
 // private-message target resolver. It may reveal a verified channel identity
 // to Outbound in memory, never to an HTTP response or structured log.

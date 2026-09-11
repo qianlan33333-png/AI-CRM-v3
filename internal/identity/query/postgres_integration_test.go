@@ -219,6 +219,38 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 	}); !errors.Is(err, query.ErrNotFound) {
 		t.Fatalf("missing bulk customer error=%v", err)
 	}
+	// The exact root FOR UPDATE lock used by merge cannot interleave with a
+	// business eligibility UoW holding the new read Port's lineage locks.
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		roots, e := store.LockedCanonicalLineage(txContext, customerdomain.CustomerID(mergedID))
+		if e != nil {
+			return e
+		}
+		if len(roots) != 2 {
+			return errors.New("unexpected locked lineage")
+		}
+		concurrent, e := native.Begin(ctx)
+		if e != nil {
+			return e
+		}
+		defer concurrent.Rollback(ctx)
+		_, e = concurrent.Exec(ctx, `SELECT id FROM customers WHERE id=$1 FOR UPDATE NOWAIT`, canonicalID)
+		if e == nil {
+			return errors.New("merge root lock bypassed locked lineage")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Once eligibility commits, the merge root lock is available again.
+	mergeTx, e := native.Begin(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = mergeTx.Exec(ctx, `SELECT id FROM customers WHERE id=$1 FOR UPDATE NOWAIT`, canonicalID); e != nil {
+		t.Fatal(e)
+	}
+	_ = mergeTx.Rollback(ctx)
 	if _, err = store.Conflicts(ctx, query.ListOptions{Status: "deleted", Limit: 1}); !errors.Is(err, query.ErrInvalidQuery) {
 		t.Fatalf("invalid status error=%v", err)
 	}
