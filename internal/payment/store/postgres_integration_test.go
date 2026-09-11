@@ -72,6 +72,28 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A distinct run is a real source refresh, not a same-key replay.
+	payment.SourceStatus = "paid"
+	payment.UpdatedAt = now.Add(time.Hour)
+	err = uow.Within(ctx, func(tx context.Context) error {
+		got, e := repository.ImportTerminalPayment(tx, payment, [32]byte{7}, "history-run-next")
+		if e == nil && (got.ID != persisted.ID || got.Version != 2) {
+			t.Fatalf("cross-run did not reuse payment")
+		}
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := payment
+	changed.AmountMinor++
+	err = uow.Within(ctx, func(tx context.Context) error {
+		_, e := repository.ImportTerminalPayment(tx, changed, [32]byte{8}, "history-bad-amount")
+		return e
+	})
+	if !errors.Is(err, paymentport.ErrConflict) {
+		t.Fatalf("amount drift accepted: %v", err)
+	}
 	refund := domain.Refund{PaymentID: persisted.ID, Provider: domain.ProviderWeChatPay, RefundNo: "history-refund", Reason: "历史退款", AmountMinor: 40, Status: domain.RefundCompleted, Version: 1, CreatedAt: now, UpdatedAt: now}
 	err = uow.Within(ctx, func(tx context.Context) error {
 		_, inner := repository.ImportTerminalRefund(tx, refund, [32]byte{2}, "history-run")
@@ -79,6 +101,31 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	progress := refund
+	progress.RefundNo = "history-progress"
+	progress.Status = domain.RefundHistoryFailed
+	for index, status := range []domain.RefundStatus{domain.RefundHistoryFailed, domain.RefundHistoryProcessing, domain.RefundCompleted} {
+		progress.Status = status
+		err = uow.Within(ctx, func(tx context.Context) error {
+			_, e := repository.ImportTerminalRefund(tx, progress, [32]byte{byte(20 + index)}, fmt.Sprintf("refund-run-%d", index))
+			return e
+		})
+		if err != nil {
+			t.Fatalf("refund transition %s: %v", status, err)
+		}
+	}
+	progress.Status = domain.RefundHistoryProcessing
+	err = uow.Within(ctx, func(tx context.Context) error {
+		_, e := repository.ImportTerminalRefund(tx, progress, [32]byte{30}, "refund-regression")
+		return e
+	})
+	if !errors.Is(err, paymentport.ErrConflict) {
+		t.Fatalf("completed refund regressed: %v", err)
+	}
+	var deltaCount int
+	if e := pool.QueryRow(ctx, `SELECT count(*) FROM payment_history_source_deltas`).Scan(&deltaCount); e != nil || deltaCount != 3 {
+		t.Fatalf("delta evidence count=%d err=%v", deltaCount, e)
 	}
 
 	for n, status := range []domain.RefundStatus{domain.RefundHistoryRequested, domain.RefundHistoryProcessing, domain.RefundHistoryFailed, domain.RefundHistoryClosed} {
@@ -108,7 +155,7 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 		}
 	}
 	var payments, refunds, effects int
-	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 1 || refunds != 5 || effects != 0 {
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 1 || refunds != 6 || effects != 0 {
 		t.Fatalf("payments=%d refunds=%d effects=%d err=%v", payments, refunds, effects, err)
 	}
 }
@@ -352,7 +399,7 @@ func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

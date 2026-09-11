@@ -530,6 +530,13 @@ func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.P
 	if payment.Channel == "" {
 		payment.Channel = domain.ChannelMiniProgram
 	}
+	existing, lookupErr := r.GetPaymentByMerchantProvider(ctx, payment.Provider, payment.MerchantOrderNo, true)
+	if lookupErr == nil {
+		return r.importPaymentDelta(ctx, existing, payment, digest, runID, key)
+	}
+	if !errors.Is(lookupErr, paymentport.ErrNotFound) {
+		return domain.Payment{}, lookupErr
+	}
 	err = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at,historical,source_status,history_reason) VALUES($1,$2,$3,$4,NULLIF($5,0),NULLIF($6,0),NULLIF($7,0),$8,$9,$10,NULLIF($11,''),$12,$13,$14,true,$15,$16) RETURNING id`, payment.OrderID, payment.Provider, payment.Channel, payment.MerchantOrderNo, payment.PayerIdentityID, payment.PayerCustomerID, payment.BeneficiaryCustomerID, payment.AmountMinor, payment.Currency, payment.Status, payment.ProviderTransactionDigest, payment.Version, payment.CreatedAt, payment.UpdatedAt, payment.SourceStatus, payment.HistoryReason).Scan(&payment.ID)
 	if err != nil {
 		return domain.Payment{}, mapError(err)
@@ -564,6 +571,13 @@ func (r *Repository) ImportTerminalRefund(ctx context.Context, refund domain.Ref
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return domain.Refund{}, mapError(err)
+	}
+	existing, lookupErr := r.GetRefundByNumber(ctx, refund.RefundNo, true)
+	if lookupErr == nil {
+		return r.importRefundDelta(ctx, existing, refund, digest, runID, key)
+	}
+	if !errors.Is(lookupErr, paymentport.ErrNotFound) {
+		return domain.Refund{}, lookupErr
 	}
 	err = t.QueryRow(ctx, `INSERT INTO payment_refunds(payment_id,provider,refund_no,amount_minor,reason,status,provider_refund_digest,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10) RETURNING id`, refund.PaymentID, refund.Provider, refund.RefundNo, refund.AmountMinor, refund.Reason, refund.Status, refund.ProviderRefundDigest, refund.Version, refund.CreatedAt, refund.UpdatedAt).Scan(&refund.ID)
 	if err != nil {
