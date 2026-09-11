@@ -52,6 +52,14 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 	if payment.Code != http.StatusOK || strings.Contains(payment.Body.String(), "beneficiarySelf") || !strings.Contains(payment.Body.String(), "beneficiary_selection:'payer_self'") || strings.Contains(payment.Body.String(), "beneficiary_customer_id") {
 		t.Fatalf("payment page status=%d body=%s", payment.Code, payment.Body.String())
 	}
+	for _, required := range []string{"微信身份验证", "完成微信授权后继续", "bootstrapCheckout", "checkoutContent", "/api/v1/wechat-pay/checkout-session", "/api/h5/wechat-pay/oauth/start?return_url="} {
+		if !strings.Contains(payment.Body.String(), required) {
+			t.Fatalf("payment page missing explicit verified-identity gate %q: %s", required, payment.Body.String())
+		}
+	}
+	if strings.Contains(payment.Body.String(), "location.href='/api/h5/wechat-pay/oauth/start") {
+		t.Fatalf("opening the payment page must not auto-start OAuth: %s", payment.Body.String())
+	}
 	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "retainPaidCheckout(orderNo)", "restorePaidCheckout", "terminal_status!=='paid'", "再次购买", "showCompletionAction", "location.assign(action.redirect_url)", "completion-qr", "value.completion_action"} {
 		if !strings.Contains(payment.Body.String(), required) {
 			t.Fatalf("payment page missing stable checkout behaviour %q: %s", required, payment.Body.String())

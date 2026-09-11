@@ -20,33 +20,53 @@ const paidCheckpoint = () => JSON.stringify({
   session_binding: 'a'.repeat(43), terminal_status: 'paid',
 });
 
-function response(body) {
-  return {ok: true, status: 202, async json() { return body; }};
+function response(body, status = 202) {
+  return {ok: status >= 200 && status < 300, status, async json() { return body; }};
 }
 
 async function settle() {
   for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
 }
 
-function boot(store, completion, redirectFailure = false) {
+function boot(store, completion, redirectFailure = false, sessionAuthorized = true) {
   const calls = [], elements = new Map();
   const setGlobal = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
-  const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', children: [], addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }});
-  for (const id of ['price', 'buy', 'restart', 'status', 'coupon', 'wechatNotice', 'mobile', 'grossAmount', 'payableAmount', 'footerAmount', 'discountAmount']) elements.set(id, element());
+  const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', href: '', children: [], attributes: new Map(), addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }, setAttribute(name, value) { this.attributes.set(name, String(value)); }, removeAttribute(name) { this.attributes.delete(name); }});
+  for (const id of ['price', 'buy', 'restart', 'status', 'coupon', 'wechatNotice', 'mobile', 'grossAmount', 'payableAmount', 'footerAmount', 'discountAmount', 'identityGate', 'identityMessage', 'authContinue', 'checkoutContent']) elements.set(id, element());
+  elements.get('authContinue').hidden = true;
+  elements.get('checkoutContent').hidden = true;
   setGlobal('document', {getElementById(id) { return elements.get(id); }, addEventListener() {}, createElement() { return element(); }});
   setGlobal('navigator', {userAgent: 'MicroMessenger'});
   setGlobal('localStorage', {getItem(key) { return store.get(key) ?? null; }, setItem(key, value) { store.set(key, String(value)); }, removeItem(key) { store.delete(key); }});
-  setGlobal('location', {href: '', assign(url) { calls.push({redirect: url}); if (redirectFailure) throw new Error('redirect blocked'); }});
+  setGlobal('location', {href: '', pathname: '/pay/course-7', assign(url) { calls.push({redirect: url}); if (redirectFailure) throw new Error('redirect blocked'); }});
   setGlobal('crypto', {randomUUID() { return 'fresh-checkout-key'; }});
   setGlobal('WeixinJSBridge', {invoke() { throw new Error('paid reload must not invoke payment'); }});
   setGlobal('fetch', async (url, options = {}) => {
     calls.push({url: String(url), method: options.method ?? 'GET'});
+    if (String(url) === '/api/v1/wechat-pay/checkout-session') return sessionAuthorized ? response({checkout_session_binding: 'a'.repeat(43)}) : response({code: 'payment_session_required'}, 401);
     if (String(url).startsWith('/api/h5/coupons/available')) return response({items: []});
     assert.equal(String(url), '/api/v1/wechat-pay/checkouts/M-paid-7');
     return response(completion);
   });
   Function(script)();
   return {calls, elements};
+}
+
+// An unauthenticated visitor remains on an explicit consent gate. Merely
+// opening the product URL cannot redirect, create a customer, or create an
+// order; the only next step is the user-clicked snsapi_userinfo start link.
+{
+  const store = new Map();
+  const run = boot(store, {}, false, false);
+  await settle();
+  assert.equal(run.elements.get('identityGate').hidden, false);
+  assert.equal(run.elements.get('checkoutContent').hidden, true);
+  assert.equal(run.elements.get('authContinue').hidden, false);
+  assert.equal(run.elements.get('authContinue').href, '/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2Fcourse-7');
+  assert.match(run.elements.get('identityMessage').textContent, /授权后才能/);
+  assert.equal(run.calls.length, 1);
+  assert.equal(run.calls[0].url, '/api/v1/wechat-pay/checkout-session');
+  assert.equal(run.calls.some(call => call.method === 'POST' || call.redirect), false);
 }
 
 // A QR action is re-read after a reload from the persisted paid checkpoint.
@@ -56,6 +76,8 @@ function boot(store, completion, redirectFailure = false) {
   const store = new Map([[storageKey, paidCheckpoint()]]);
   const run = boot(store, {status: 'paid', completion_action: {state: 'available', mode: 'qr', lead_qr: {url: 'https://work.weixin.qq.com/q/test', title: '添加客服', subtitle: '领取资料'}}});
   await settle();
+  assert.equal(run.elements.get('identityGate').hidden, true);
+  assert.equal(run.elements.get('checkoutContent').hidden, false);
   assert.equal(run.elements.get('buy').disabled, true);
   assert.equal(run.elements.get('restart').hidden, false);
   assert.equal(run.elements.get('status').textContent, '支付成功');
