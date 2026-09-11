@@ -948,3 +948,46 @@ func surveyIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(cleanupCtx)
 	}
 }
+
+func TestPostgreSQLUserinfoMigrationRevokesOnlyExistingActiveSessions(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	oldRevoked := now.Add(-time.Hour)
+	for index, expires := range []time.Time{now.Add(time.Hour), now.Add(-time.Hour), now.Add(time.Hour)} {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("userinfo-policy-session-%d", index)))
+		var revoked any
+		if index == 2 {
+			revoked = oldRevoked
+		}
+		if _, err := native.Exec(ctx, `INSERT INTO survey_identity_sessions(session_digest,identity_state,evidence_digest,expires_at,revoked_at,created_at) VALUES($1,'unresolved',$1,$2,$3,$4)`, digest[:], expires, revoked, now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, file, _, _ := runtime.Caller(0)
+	migration, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0141_survey_require_userinfo_reauthorization.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := native.Exec(ctx, string(migration))
+	if err != nil || result.RowsAffected() != 1 {
+		t.Fatalf("migration rows=%d err=%v", result.RowsAffected(), err)
+	}
+	var retained int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM survey_identity_sessions`).Scan(&retained); err != nil || retained != 3 {
+		t.Fatalf("records lost: %d %v", retained, err)
+	}
+	var preserved bool
+	if err = native.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_identity_sessions WHERE revoked_at=$1)`, oldRevoked).Scan(&preserved); err != nil || !preserved {
+		t.Fatal("prior revocation changed")
+	}
+	fresh := sha256.Sum256([]byte("new-userinfo-proof-session"))
+	if _, err = native.Exec(ctx, `INSERT INTO survey_identity_sessions(session_digest,identity_state,evidence_digest,expires_at,created_at) VALUES($1,'unresolved',$1,$2,$3)`, fresh[:], now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	var usable int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM survey_identity_sessions WHERE revoked_at IS NULL AND expires_at>now()`).Scan(&usable); err != nil || usable != 1 {
+		t.Fatalf("post-policy session unusable: %d %v", usable, err)
+	}
+}
