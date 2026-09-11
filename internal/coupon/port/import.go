@@ -22,11 +22,15 @@ type DefinitionImporter interface {
 
 // CutoverDefinitionImport preserves source issuance totals and public links.
 // ExistingID is set only by a trusted migration source mapping. Existing rules
-// must still match the supplied definition at version one; changes conflict.
+// must still match the supplied business definition; only explicitly proven
+// source limit increases and receipt-checked counters may advance.
 type CutoverDefinitionImport struct {
 	DefinitionImport
-	ExistingID ID
-	PublicSlug string
+	ExistingID               ID
+	PublicSlug               string
+	ExpectedIssuedCount      *int64
+	ExpectedTotalIssueLimit  int64
+	AllowSourceLimitIncrease bool
 }
 type CutoverDefinitionImporter interface {
 	ImportCutoverDefinition(context.Context, CutoverDefinitionImport) (Coupon, error)

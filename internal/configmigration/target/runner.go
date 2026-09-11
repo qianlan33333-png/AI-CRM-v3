@@ -124,6 +124,17 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 					return e
 				}
 				if found {
+					checker, ok := r.Products.(productport.CutoverDefinitionChecker)
+					if !ok {
+						return ErrInvalid
+					}
+					days := int32(0)
+					if sp, ok := service[x.ID]; ok {
+						days = sp.DurationDays
+					}
+					if e = checker.CheckCutoverDefinition(tx, productport.ID(existing), productport.DefinitionImport{ProductCode: x.ProductCode, Name: x.Name, PriceMinor: x.PriceMinor, Currency: x.Currency, ServicePeriodDurationDays: days}); e != nil {
+						return e
+					}
 					if sp, ok := service[x.ID]; ok {
 						sid, sfound, e := existingCommerceMapping(tx, snap.Manifest.SourceSystem, "service_period_products", sp.ID, sp, "products")
 						if e != nil {
@@ -183,16 +194,18 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 			var e error
 			var existing int64
 			var found bool
+			var cm couponMapping
 			mapCoupon := x
 			if commerce {
 				mapCoupon.PublicSlug = nil
 				mapCoupon.IssuedCount = nil
-				existing, found, e = existingCommerceMapping(tx, snap.Manifest.SourceSystem, "commerce_coupons", x.ID, mapCoupon, "coupon_rules")
+				cm, e = existingCouponMapping(tx, snap.Manifest.SourceSystem, mapCoupon, true)
+				existing, found = cm.ID, cm.Found
 				if e != nil {
 					return e
 				}
 				definition.IssuedCount = *x.IssuedCount
-				c, e = r.Coupons.(couponport.CutoverDefinitionImporter).ImportCutoverDefinition(tx, couponport.CutoverDefinitionImport{DefinitionImport: definition, ExistingID: couponport.ID(existing), PublicSlug: *x.PublicSlug})
+				c, e = r.Coupons.(couponport.CutoverDefinitionImporter).ImportCutoverDefinition(tx, couponport.CutoverDefinitionImport{DefinitionImport: definition, ExistingID: couponport.ID(existing), PublicSlug: *x.PublicSlug, ExpectedIssuedCount: cm.ExpectedIssued, ExpectedTotalIssueLimit: cm.ExpectedLimit, AllowSourceLimitIncrease: cm.AllowLimitIncrease})
 			} else {
 				c, e = r.Coupons.ImportDefinition(tx, definition)
 			}
@@ -221,6 +234,11 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 					}
 				}
 				if e = mapRow(tx, out.BatchID, snap.Manifest.SourceSystem, "coupon", "commerce_coupon_product_bindings", b.ID, b, int64(c.ID), "coupon_rules", nil); e != nil {
+					return e
+				}
+			}
+			if commerce {
+				if e = recordCouponRevision(tx, out.BatchID, snap.Manifest.SourceSystem, mapCoupon, *x.IssuedCount, cm.Prior); e != nil {
 					return e
 				}
 			}

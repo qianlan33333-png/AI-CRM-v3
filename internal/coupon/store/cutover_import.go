@@ -16,9 +16,9 @@ var errCutoverConflict = errors.New("coupon cutover definition conflict")
 var cutoverSlug = regexp.MustCompile(`^[a-z][a-z0-9-]{5,119}$`)
 
 // ImportCutoverDefinition never creates claims or dispatches effects. Source
-// totals can initially fill an imported zero counter, but cannot overwrite an
-// already nonzero differing counter. This deliberately fails closed if target
-// claiming has begun or a previous cutover's counter has diverged.
+// totals can fill an imported zero counter, or advance a counter whose target
+// still equals the prior audited import. Native target claiming diverges from
+// that baseline and fails closed. Business fields are never blindly replaced.
 func (r *Repository) ImportCutoverDefinition(ctx context.Context, in couponport.CutoverDefinitionImport) (couponport.Coupon, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
@@ -35,7 +35,7 @@ func (r *Repository) ImportCutoverDefinition(ctx context.Context, in couponport.
 		rule, err = r.ImportDefinition(ctx, definition)
 	} else {
 		rule, err = r.get(ctx, tx, in.ExistingID, true)
-		if err == nil && (rule.Version != 1 || !sameCutoverDefinition(rule, desired)) {
+		if err == nil && (!sameCutoverDefinition(rule, desired) || (rule.TotalIssueLimit != desired.TotalIssueLimit && (!in.AllowSourceLimitIncrease || rule.TotalIssueLimit != in.ExpectedTotalIssueLimit || desired.TotalIssueLimit < rule.TotalIssueLimit))) {
 			err = errCutoverConflict
 		}
 	}
@@ -47,10 +47,14 @@ func (r *Repository) ImportCutoverDefinition(ctx context.Context, in couponport.
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(public_slug,''),(SELECT count(*) FROM coupon_customer_claims WHERE coupon_id=$1) FROM coupon_rules WHERE id=$1 FOR UPDATE`, rule.ID).Scan(&existingSlug, &claims); err != nil {
 		return couponport.Coupon{}, err
 	}
-	if claims > desired.IssuedCount || (rule.IssuedCount != 0 && rule.IssuedCount != desired.IssuedCount) || (existingSlug != "" && existingSlug != in.PublicSlug) {
+	counterConflict := rule.IssuedCount != 0 && rule.IssuedCount != desired.IssuedCount
+	if in.ExpectedIssuedCount != nil {
+		counterConflict = rule.IssuedCount != *in.ExpectedIssuedCount || desired.IssuedCount < *in.ExpectedIssuedCount
+	}
+	if claims > desired.IssuedCount || counterConflict || (existingSlug != "" && existingSlug != in.PublicSlug) {
 		return couponport.Coupon{}, errCutoverConflict
 	}
-	if _, err = tx.Exec(ctx, `UPDATE coupon_rules SET public_slug=NULLIF($2,''),issued_count=$3 WHERE id=$1 AND version=1`, rule.ID, in.PublicSlug, desired.IssuedCount); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE coupon_rules SET public_slug=NULLIF($2,''),issued_count=$3,total_issue_limit=$4,version=version+CASE WHEN total_issue_limit<>$4 THEN 1 ELSE 0 END,updated_at=CASE WHEN total_issue_limit<>$4 THEN GREATEST(updated_at,$5) ELSE updated_at END WHERE id=$1`, rule.ID, in.PublicSlug, desired.IssuedCount, desired.TotalIssueLimit, in.UpdatedAt.UTC()); err != nil {
 		return couponport.Coupon{}, err
 	}
 	return r.get(ctx, tx, rule.ID, false)
@@ -78,6 +82,7 @@ func sameCutoverDefinition(a, b couponport.Coupon) bool {
 		}
 		c.AvailabilityStatus = ""
 		c.IssuedCount = 0
+		c.TotalIssueLimit = 0
 		c.TargetRefs = append([]string{}, c.TargetRefs...)
 		sort.Strings(c.TargetRefs)
 		raw, _ := json.Marshal(c)

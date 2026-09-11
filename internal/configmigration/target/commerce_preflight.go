@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 // CommercePreflight intentionally has no mutation path. A matching source map
@@ -66,6 +67,11 @@ func InspectCommerceTarget(ctx context.Context, pool *pgxpool.Pool, snap source.
 			return errors.New("inspect commerce source mapping")
 		} else if string(prior) != string(digest[:]) {
 			r.State = "conflict_source_drift"
+			if coupon, ok := row.(source.Coupon); ok {
+				if _, err := existingCouponMapping(platformpostgres.BindTransaction(ctx, tx), snap.Manifest.SourceSystem, coupon, false); err == nil {
+					r.State = "candidate_coupon_delta_owner_check_required"
+				}
+			}
 		} else {
 			r.State = "mapped_source_equal"
 			var version int64
@@ -82,7 +88,7 @@ func InspectCommerceTarget(ctx context.Context, pool *pgxpool.Pool, snap source.
 			} else if e != nil {
 				return errors.New("inspect commerce target version")
 			} else if version > 1 {
-				r.State = "conflict_target_edited"
+				r.State = "mapped_source_equal_target_version_changed"
 			}
 		}
 		report.Counts[r.State]++
