@@ -29,3 +29,7 @@ migrate-survey-v2 reconcile --snapshot SNAPSHOT.enc --snapshot-key-file SNAPSHOT
 ## 验证
 
 `TestPostgreSQLAppendOnlySurveySnapshot` 使用真实隔离 PostgreSQL schema 覆盖跨批次追加和重放、原批次隔离记录、源修改/遗漏、新定义拒绝、事务回滚、已解析归属保留、错误 scope 和错客户拒绝。
+
+## 已审计启用的导入问卷
+
+若管理员仅启用原 version 1 的导入问卷，对账可显式使用 `--allow-audited-enabled-definition`。限定问卷壳 version=2、status=published，存在相同问卷 ID、管理员 updated_by、updated_at、expected_version=1、status=published 的 `definition_enable` 审计。名称、slug、active definition version、定义摘要及所有冻结字段仍逐项严格校验；无审计或编辑了定义仍失败。此标志不修改问卷，不启用问卷，默认行为不变。

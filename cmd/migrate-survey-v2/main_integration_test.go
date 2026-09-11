@@ -550,3 +550,37 @@ func TestPostgreSQLAppendOnlySurveySnapshot(t *testing.T) {
 		t.Fatalf("failed append leaked batch: %d %v", batches, err)
 	}
 }
+
+func TestPostgreSQLReconcileAuditedEnablePreservesFrozenDefinition(t *testing.T) {
+	target, pool, cleanup := surveyMigrationIntegrationTarget(t)
+	defer cleanup()
+	snap := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC))
+	file, key, dataKey := writeFrozenSnapshot(t, snap)
+	args := []string{"--target-url", target, "--snapshot", file, "--snapshot-key-file", key, "--data-key-file", dataKey}
+	if err := importSnapshot(append(args, "--confirm-import")); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE survey_questionnaires SET status='published',version=2,updated_by=created_by,updated_at=$1`, snap.Manifest.SnapshotAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	enabledArgs := append(args, "--allow-audited-enabled-definition")
+	if err := reconcile(enabledArgs); err == nil {
+		t.Fatal("unaudited status enabled accepted")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO survey_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,metadata,occurred_at) SELECT 'definition_enable','questionnaire',id,'admin:'||updated_by::text,jsonb_build_object('id',id,'expected_version',1,'status','published'),updated_at FROM survey_questionnaires`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(args); err == nil {
+		t.Fatal("default strict status check bypassed")
+	}
+	if err := reconcile(enabledArgs); err != nil {
+		t.Fatalf("audited enable: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_questionnaires SET name='changed'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(enabledArgs); err == nil {
+		t.Fatal("audited enable concealed definition drift")
+	}
+}

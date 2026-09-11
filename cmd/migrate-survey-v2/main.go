@@ -758,6 +758,7 @@ func reconcile(args []string) error {
 	fs, file, keyFile := common("reconcile", args)
 	target := fs.String("target-url", "", "v3 PostgreSQL URL")
 	appendOnly := fs.Bool("append-only", false, "reconcile complete source history across all import batches")
+	allowEnabled := fs.Bool("allow-audited-enabled-definition", false, "allow only an audited enable of unchanged imported definition version one")
 	confirmedScope := fs.String("confirmed-unionid-scope", "", "operator-verified Open Platform scope for validating already-resolved historical customers")
 	dataKeyFile := fs.String("data-key-file", "", "v3 survey data key file required for protected-answer reconciliation")
 	if err := fs.Parse(args); err != nil {
@@ -845,7 +846,7 @@ func reconcile(args []string) error {
 			if sourceErr != nil {
 				return sourceErr
 			}
-			if err = verifyMappedFact(ctx, tx, fact.batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest, sourceFact, sourceIndex, surveyCipher, *confirmedScope); err != nil {
+			if err = verifyMappedFact(ctx, tx, fact.batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest, sourceFact, sourceIndex, surveyCipher, *confirmedScope, *allowEnabled); err != nil {
 				return err
 			}
 		}
@@ -1047,7 +1048,7 @@ func (i *frozenSourceIndex) definitionDigest(value questionnaire) [32]byte {
 	}{value, questions, rules})
 }
 
-func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte, sourceFact any, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher, confirmedScope string) error {
+func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte, sourceFact any, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher, confirmedScope string, allowEnabled bool) error {
 	if state == "quarantined" {
 		var reason string
 		var safe []byte
@@ -1092,7 +1093,7 @@ func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, tab
 		if err != nil || !exists {
 			return fmt.Errorf("migration reconciliation failed: %s/%s missing target fact", table, pk)
 		}
-		return verifyDefinitionFact(ctx, tx, source, table, *targetPK, sourceFact, sourceIndex)
+		return verifyDefinitionFact(ctx, tx, source, table, *targetPK, sourceFact, sourceIndex, allowEnabled)
 	case "survey_submissions":
 		if table != "questionnaire_submissions" {
 			return fmt.Errorf("migration reconciliation failed: %s/%s type mismatch", table, pk)
@@ -1150,7 +1151,7 @@ func sourceTargetPK(ctx context.Context, tx pgx.Tx, source, table string, source
 	return *target, nil
 }
 
-func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, targetPK int64, sourceFact any, sourceIndex *frozenSourceIndex) error {
+func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, targetPK int64, sourceFact any, sourceIndex *frozenSourceIndex, allowEnabled bool) error {
 	mismatch := func(ok bool) error {
 		if !ok {
 			return fmt.Errorf("migration reconciliation failed: %s target fact drift", table)
@@ -1162,7 +1163,16 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 		var name, title, description, mode, displayMode, slug, status string
 		var activeVersion *int64
 		err := tx.QueryRow(ctx, `SELECT name,title,description,mode,answer_display_mode,slug,status,active_definition_version_id FROM survey_questionnaires WHERE id=$1`, targetPK).Scan(&name, &title, &description, &mode, &displayMode, &slug, &status, &activeVersion)
-		if err != nil || activeVersion == nil || name != trimNonEmpty(value.Name, 200) || title != trimNonEmpty(value.Title, 500) || description != trim(value.Description, 10000) || mode != map[bool]string{true: "assessment", false: "survey"}[value.Assessment] || displayMode != display(value.Display) || slug != safeSlug(value.Slug, value.ID) || status != "disabled" {
+
+		statusMatches := status == "disabled"
+		if err == nil && status == "published" && allowEnabled {
+			// A single audited enable can change only the shell status/version, never
+			// the immutable published definition, names or snapshots checked below.
+			var audited bool
+			auditErr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_questionnaires q JOIN survey_audit_events a ON a.aggregate_id=q.id AND a.aggregate_type='questionnaire' WHERE q.id=$1 AND q.version=2 AND a.event_type='definition_enable' AND a.actor_scope='admin:'||q.updated_by::text AND a.occurred_at=q.updated_at AND a.metadata->>'expected_version'='1' AND a.metadata->>'status'='published' AND a.metadata->>'id'=q.id::text)`, targetPK).Scan(&audited)
+			statusMatches = auditErr == nil && audited
+		}
+		if err != nil || activeVersion == nil || name != trimNonEmpty(value.Name, 200) || title != trimNonEmpty(value.Title, 500) || description != trim(value.Description, 10000) || mode != map[bool]string{true: "assessment", false: "survey"}[value.Assessment] || displayMode != display(value.Display) || slug != safeSlug(value.Slug, value.ID) || !statusMatches {
 			return mismatch(false)
 		}
 		assessment := value.AssessmentConfig
