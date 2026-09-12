@@ -505,6 +505,48 @@ func TestRenderTagsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	}
 }
 
+func TestRenderImageLibraryUsesTheSourceOwnedHostAndKeepsMaterialSave(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := MediaAssets{
+		TokensCSS:                "/media-assets/tokens.css",
+		LabsCSS:                  "/media-assets/labs.css",
+		AdminJS:                  "/media-assets/admin.js",
+		MaterialSaveHostJS:       "/media-assets/material-save-host.js",
+		ImageLibraryFilterHostJS: "/media-assets/image-library-filter-host.js",
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderMedia(
+		response,
+		AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"),
+		"images",
+		"",
+		assets,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	hostAt := strings.Index(body, `src="/media-assets/image-library-filter-host.js"`)
+	materialAt := strings.Index(body, `src="/media-assets/material-save-host.js"`)
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `data-page="images"`) || !strings.Contains(body, `data-image-library-v3-root`) || strings.Contains(body, `<template id="tpl">`) || strings.Contains(body, `src="/media-assets/admin.js"`) || hostAt < 0 || materialAt < 0 || !(materialAt < hostAt) {
+		t.Fatalf("image library shell mismatch host=%d material=%d body=%q", hostAt, materialAt, body)
+	}
+	if err = renderer.RenderMedia(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"), "images", "", MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err == nil {
+		t.Fatal("image library shell accepted a missing filter Host asset")
+	}
+	attachmentResponse := httptest.NewRecorder()
+	if err = renderer.RenderMedia(attachmentResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/attachment-library", nil), "附件素材库", "", "api.admin_attachment_library_workspace"), "attach", `<section data-page="attach"></section>`, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err != nil {
+		t.Fatal(err)
+	}
+	attachmentBody := attachmentResponse.Body.String()
+	if strings.Contains(attachmentBody, "image-library-filter-host.js") || !strings.Contains(attachmentBody, `src="/media-assets/admin.js"`) || !strings.Contains(attachmentBody, `src="/media-assets/material-save-host.js"`) {
+		t.Fatal("source-owned image Host leaked or frozen attachment runtime was removed")
+	}
+}
+
 func TestRenderHXCMountsLiveDashboardInTheV3Shell(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
@@ -617,7 +659,7 @@ func TestOwnerHandoffFrozenDonorAssetAndHostBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	pickerSum := sha256.Sum256(picker)
-	if got := hex.EncodeToString(pickerSum[:]); got != "bd84ce78ccb834f170548dea76cb99f6434978bc21211a9ec843dd2bf7ebabea" || !bytes.Contains(picker, []byte("OperationMemberPicker")) || !bytes.Contains(picker, []byte("/api/admin/common/operation-members")) {
+	if got := hex.EncodeToString(pickerSum[:]); got != "1b12b405d737794808dd1b998ccfa8c6eb77dd4d7c22e69380b428fb89a69e70" || !bytes.Contains(picker, []byte("OperationMemberPicker")) || !bytes.Contains(picker, []byte("/api/admin/common/operation-members")) {
 		t.Fatalf("shared frozen picker contract changed hash=%s", got)
 	}
 	if !bytes.Contains(host, []byte("owner_migration_dd8d60d.html")) || !bytes.Contains(host, []byte("operation_member_picker_dd8d60d.js")) || !bytes.Contains(host, []byte("OperationMemberPicker")) || bytes.Contains(host, []byte("data-owner-picker-options")) {

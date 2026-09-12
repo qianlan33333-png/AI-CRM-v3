@@ -14,7 +14,7 @@ type SharedPicker = { open(options: { scope: string; pageSize: number; includeIn
 declare global { interface Window { OperationMemberPicker?: SharedPicker } }
 
 const donorURL = "/static/admin_console/owner_migration_dd8d60d.html";
-const pickerURL = "/static/admin_console/operation_member_picker_dd8d60d.js";
+const pickerURL = "/static/admin_console/operation_member_picker_dd8d60d.js?v=1b12b405d7377948";
 const key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).join("-")}`;
 const text = (value: unknown) => String(value ?? "").trim();
 const esc = (value: unknown) => text(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char] || char));

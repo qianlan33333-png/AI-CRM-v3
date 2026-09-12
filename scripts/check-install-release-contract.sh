@@ -92,6 +92,7 @@ for migration_contract in \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
   '0066_channel_welcome_intents.sql:Channel welcome intents' \
+  '0150_channel_welcome_message_snapshots.sql:Channel welcome message snapshots' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \
@@ -142,6 +143,8 @@ grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/aicrm-operation-cyc
 grep -qx 'test -x "$release_dir/bin/wecom-archive-sdk-runner"' "$installer" || { echo "release must include the WeCom archive SDK runner" >&2; exit 1; }
 grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' "$release_builder" || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
 grep -qF 'bash scripts/run-donor-view-consumers.sh release' "$ci_workflow" || { echo "CI must invoke the reviewed release builder through safe donor-view preparation" >&2; exit 1; }
+grep -A 1 '^  deploy:$' "$ci_workflow" | grep -qF "vars.AICRM_ENABLE_ACTIONS_DEPLOY == 'true'" || { echo "Actions deployment must require the explicit repository opt-in" >&2; exit 1; }
+grep -A 1 '^  deploy:$' "$ci_workflow" | grep -qF "needs.check.result == 'success'" || { echo "Actions deployment must remain gated by the complete CI check" >&2; exit 1; }
 grep -qF 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOWORK=off' scripts/build-wecom-archive-sdk-runner-linux.sh || { echo "archive release runner must be a Linux amd64 cgo build" >&2; exit 1; }
 grep -qF 'scripts/run-go-with-donor-views.sh scripts/build-wecom-archive-sdk-runner-linux.sh "$work/runner"' scripts/check-wecom-message-archive-sdk.sh || { echo "official SDK ABI check must exercise the release runner builder" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-commerce-history"' "$installer" || { echo "release must reject a missing commerce history migration tool" >&2; exit 1; }

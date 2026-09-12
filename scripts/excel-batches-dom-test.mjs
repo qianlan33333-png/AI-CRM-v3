@@ -30,6 +30,8 @@ win.HTMLDialogElement.prototype.close = function () {
 let cover = "",
   approved = 0,
   excluded = false;
+let failCoverUploadOnce = false;
+let failImportOnce = false;
 let releaseFirstRowPatch;
 let pauseFirstRowPatch = true;
 let releaseInitialDetail;
@@ -104,13 +106,14 @@ const json = (body, status = 200) => ({
 win.fetch = async (raw, init = {}) => {
   const url = String(raw);
   calls.push({ url, init });
-  if (url === "/api/admin/operation-cycles/strategies?limit=100&offset=0")
+  if (url === "/api/admin/operation-batches/strategy-summaries?limit=20&offset=0")
     return json({
       items: [
         {
           strategy_key: "weekly.review",
           title: "每周复盘",
           status: "active",
+          latest_batch_status: "ready",
           latest_batch: {
             id: 918,
             state: "pending_review",
@@ -118,6 +121,11 @@ win.fetch = async (raw, init = {}) => {
           },
         },
       ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+      has_more: false,
+      next_offset: null,
     });
   if (url === "/api/admin/operation-batches/legacy")
     return json({
@@ -135,6 +143,10 @@ win.fetch = async (raw, init = {}) => {
       "/api/admin/operation-batches/strategies/weekly.review/imports",
     )
   ) {
+    if (failImportOnce) {
+      failImportOnce = false;
+      return json({}, 503);
+    }
     importedBatch = {
       ...batch,
       id: 919,
@@ -175,6 +187,10 @@ win.fetch = async (raw, init = {}) => {
       cover = batch.cover_digest = row.card.cover_digest = "sha256:existing-cover";
       batch.cover_image_id = selectedCoverID;
     } else {
+      if (failCoverUploadOnce) {
+        failCoverUploadOnce = false;
+        return json({}, 503);
+      }
       assert.ok(init.body instanceof win.File);
       cover = batch.cover_digest = row.card.cover_digest = "sha256:cover";
       batch.cover_image_id = 43;
@@ -313,9 +329,38 @@ assert.ok(
 );
 await click("新建发送批次");
 const importInput = win.document.querySelector('dialog input[type="file"]');
+assert.ok(
+  importInput.closest("label.admin-field"),
+  "new batch file input did not use the standard field wrapper",
+);
+await click("上传并开始审核");
+const importDialog = importInput.closest("dialog");
+assert.ok(importDialog?.open, "missing Excel file closed the new-batch dialog");
+assert.ok(
+  importDialog.querySelector("[data-excel-feedback]")?.textContent.includes("请选择 Excel 文件"),
+  "missing Excel file did not remain visible inside its dialog",
+);
+assert.equal(
+  [...importDialog.querySelectorAll("button")].find((item) => item.textContent === "上传并开始审核")?.getAttribute("aria-busy"),
+  null,
+  "missing Excel file left the dialog action busy",
+);
 Object.defineProperty(importInput, "files", {
   value: [new win.File(["fixture"], "batch.xlsx")],
 });
+failImportOnce = true;
+await click("上传并开始审核");
+assert.ok(importDialog.open, "failed Excel import closed the new-batch dialog");
+assert.ok(
+  importDialog.querySelector("[data-excel-feedback]")?.textContent.includes("批次服务暂时不可用"),
+  "failed Excel import did not remain visible inside its dialog",
+);
+assert.equal(importInput.files?.[0]?.name, "batch.xlsx", "failed Excel import discarded the selected file");
+assert.equal(
+  [...importDialog.querySelectorAll("button")].find((item) => item.textContent === "上传并开始审核")?.getAttribute("aria-busy"),
+  null,
+  "failed Excel import left the dialog action busy",
+);
 await click("上传并开始审核");
 releaseInitialDetail();
 await new Promise((resolve) => setTimeout(resolve, 20));
@@ -324,6 +369,10 @@ assert.ok(
   "a stale initial detail response cannot overwrite the newly imported batch",
 );
 const history = win.document.querySelector('select[aria-label="历史批次"]');
+assert.ok(
+  history.closest("label.admin-field"),
+  "historical batch selector did not use the standard field wrapper",
+);
 history.value = "918";
 history.dispatchEvent(new win.Event("change"));
 await new Promise((resolve) => setTimeout(resolve, 20));
@@ -358,6 +407,16 @@ assert.equal(
   approve().disabled,
   true,
   "frontend prevents approval before a batch cover exists",
+);
+assert.ok(
+  approve().classList.contains("admin-button--primary"),
+  "the approval action did not retain its primary action hierarchy",
+);
+assert.ok(
+  [...win.document.querySelectorAll("button")].every((button) =>
+    button.classList.contains("admin-button"),
+  ),
+  "Excel actions did not use the shared standard button component",
 );
 await click("选择已有启用图片");
 const picker = () => win.document.querySelector('dialog[aria-label="选择已有启用图片"]');
@@ -399,9 +458,38 @@ await new Promise((resolve) => setTimeout(resolve, 10));
 const coverInput = win.document.querySelector(
   'input[aria-label="统一封面图片"]',
 );
+assert.ok(
+  coverInput.closest("label.admin-field"),
+  "cover upload input did not use the standard field wrapper",
+);
 Object.defineProperty(coverInput, "files", {
   value: [new win.File(["fixture"], "cover.png", { type: "image/png" })],
 });
+failCoverUploadOnce = true;
+await click("上传统一封面");
+const feedback = win.document.querySelector("[data-excel-feedback]");
+assert.ok(
+  feedback.classList.contains("admin-alert--error") &&
+    feedback.textContent.includes("批次服务暂时不可用"),
+  "failed upload did not retain an error in the persistent feedback container",
+);
+assert.equal(
+  win.document.querySelectorAll("[data-excel-feedback] .v3-action-busy").length,
+  0,
+  "feedback retained the action spinner after the failed upload completed",
+);
+assert.equal(
+  [...win.document.querySelectorAll("button")].find(
+    (item) => item.textContent === "上传统一封面",
+  )?.getAttribute("aria-busy"),
+  null,
+  "failed upload left the action button busy",
+);
+assert.equal(
+  approve().disabled,
+  false,
+  "a failed replacement upload changed the existing frozen-cover approval guard",
+);
 await click("上传统一封面");
 assert.equal(cover, "sha256:cover");
 await click("排除");

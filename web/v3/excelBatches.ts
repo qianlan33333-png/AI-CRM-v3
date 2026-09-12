@@ -1,3 +1,5 @@
+import { runAction } from "./actionFeedback";
+
 // Browser host only: it never resolves identity, enqueues work, or calls WeCom.
 // It submits the versioned, CSRF-protected commands defined in the batch API.
 type Obj = Record<string, any>;
@@ -110,24 +112,58 @@ async function readAllPages(
     cursor = next;
   } while (true);
 }
+type ActionKind = "primary" | "secondary" | "ghost" | "danger";
+
+function notice(
+  text = "",
+  kind: "success" | "error" = "success",
+): HTMLParagraphElement {
+  const node = el("p");
+  node.dataset.excelFeedback = "";
+  setNotice(node, text, kind);
+  return node;
+}
+function setNotice(
+  node: HTMLElement,
+  text: string,
+  kind: "success" | "error" = "success",
+): void {
+  node.textContent = text;
+  node.className = text ? `admin-alert admin-alert--${kind} xeb-status` : "xeb-status";
+  node.hidden = !text;
+  node.setAttribute("role", kind === "error" ? "alert" : "status");
+}
+function field(label: string, control: HTMLElement): HTMLLabelElement {
+  const node = el("label");
+  node.className = "admin-field xeb-field";
+  node.append(el("span", label), control);
+  return node;
+}
 function action(
   text: string,
   run: () => Promise<void> | void,
+  kind: ActionKind = "secondary",
 ): HTMLButtonElement {
   const node = el("button", text);
   node.type = "button";
-  node.onclick = async () => {
-    node.disabled = true;
-    try {
-      await run();
-    } catch (error) {
-      const status = node
-        .closest(".operation-excel-workspace")
-        ?.querySelector<HTMLElement>("[role=status]");
-      if (status) status.textContent = (error as Error).message;
-    } finally {
-      node.disabled = false;
-    }
+  node.className = `admin-button admin-button--${kind}`;
+  node.onclick = () => {
+    void runAction(node, async () => {
+      try {
+        await run();
+      } catch (error) {
+        const dialog = node.closest("dialog");
+        const scope = dialog || node.closest(".operation-excel-workspace");
+        let status = scope?.querySelector<HTMLElement>("[data-excel-feedback]");
+        if (!status && dialog) {
+          status = notice();
+          const actions = node.closest(".xeb-actions");
+          if (actions?.parentElement === dialog) dialog.insertBefore(status, actions);
+          else dialog.append(status);
+        }
+        if (status) setNotice(status, (error as Error).message, "error");
+      }
+    });
   };
   return node;
 }
@@ -137,6 +173,7 @@ function table(
 ): HTMLTableElement {
   const node = el("table"),
     head = el("tr");
+  node.className = "admin-table";
   headings.forEach((value) => head.append(el("th", value)));
   node.append(head);
   rows.forEach((values) => {
@@ -156,10 +193,47 @@ function style(): void {
   if (document.getElementById("operation-excel-batch-style")) return;
   const node = el("style");
   node.id = "operation-excel-batch-style";
-  node.textContent = `.operation-excel-workspace{margin:8px 0;color:#1f2329}.operation-excel-workspace *{box-sizing:border-box}.xeb-card{background:#fff;border:1px solid #dee0e3;border-radius:10px;overflow:hidden}.xeb-head{padding:14px 16px;border-bottom:1px solid #eff0f1}.xeb-head h2,.xeb-head h3{margin:0;font-size:16px}.xeb-plan{display:block;text-align:left;border:0;border-bottom:1px solid #f2f3f5;background:#fff;padding:12px 14px;width:100%;cursor:pointer}.xeb-plan:hover{background:#f5f8ff}.operation-excel-workspace small{font-size:12px;color:#8f959e}.xeb-body{padding:16px}.xeb-meta,.xeb-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.xeb-detail{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px;margin-top:16px}.xeb-detail-nav{padding:8px}.xeb-detail-nav button{display:block;width:100%;text-align:left;margin:2px 0}.xeb-detail-nav button[data-selected=true]{background:#eff4ff;color:#245bdb;border-color:#c9d8ff}.operation-excel-workspace button,.operation-excel-workspace input,.operation-excel-workspace select{font:inherit}.operation-excel-workspace button{border:1px solid #dee0e3;border-radius:6px;background:#fff;color:#344054;padding:6px 10px;cursor:pointer;font-size:12px}.operation-excel-workspace button.xeb-primary{background:#3370ff;border-color:#3370ff;color:#fff}.operation-excel-workspace button:disabled{opacity:.5}.xeb-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}.xeb-stat{padding:10px;background:#fafbfc;border:1px solid #eff0f1;border-radius:8px}.xeb-stat b{display:block;font-size:18px}.xeb-scroll{overflow:auto;margin-top:14px}.operation-excel-workspace table{border-collapse:collapse;width:100%;font-size:12px}.operation-excel-workspace th,.operation-excel-workspace td{padding:10px;border-bottom:1px solid #eff0f1;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere}.operation-excel-workspace th{font-weight:500;color:#8f959e;background:#fafafb}.xeb-cover{width:80px;height:60px;object-fit:cover;border-radius:4px}.xeb-status{min-height:22px;color:#935420}.operation-excel-workspace dialog{width:min(680px,92vw);border:1px solid #dee0e3;border-radius:10px;padding:20px}.operation-excel-workspace dialog label{display:block;margin:10px 0 4px;font-size:12px}.operation-excel-workspace textarea{width:100%;min-height:96px}@media(max-width:800px){.xeb-detail{grid-template-columns:1fr}.xeb-grid{grid-template-columns:repeat(2,minmax(0,1fr)}}`;
+  node.textContent = `
+    .operation-excel-workspace { margin: 8px 0; color: #1f2329; }
+    .operation-excel-workspace * { box-sizing: border-box; }
+    .xeb-card { overflow: hidden; border: 1px solid #dee0e3; border-radius: 10px; background: #fff; }
+    .xeb-head { padding: 14px 16px; border-bottom: 1px solid #eff0f1; }
+    .xeb-head h2, .xeb-head h3 { margin: 0; font-size: 16px; }
+    .operation-excel-workspace small { color: #8f959e; font-size: 12px; }
+    .xeb-body { padding: 16px; }
+    .xeb-meta, .xeb-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .xeb-actions.admin-toolbar { gap: 8px; }
+    .xeb-actions .admin-field { min-width: 168px; margin: 0; }
+    .xeb-pagination { justify-content: space-between; }
+    .xeb-detail { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 16px; margin-top: 16px; }
+    .xeb-detail-nav { padding: 8px; }
+    .xeb-detail-nav .admin-button { display: flex; width: 100%; justify-content: flex-start; margin: 2px 0; }
+    .xeb-detail-nav .admin-button[data-selected=true] { border-color: #c9d8ff; color: #245bdb; background: #eff4ff; }
+    .xeb-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+    .xeb-stat { padding: 10px; border: 1px solid #eff0f1; border-radius: 8px; background: #fafbfc; }
+    .xeb-stat b { display: block; font-size: 18px; }
+    .xeb-scroll { overflow: auto; margin-top: 14px; }
+    .xeb-scroll .admin-table { min-width: 760px; }
+    .operation-excel-workspace .admin-table { border-collapse: collapse; }
+    .operation-excel-workspace .admin-table th, .operation-excel-workspace .admin-table td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+    .xeb-cover { width: 80px; height: 60px; border-radius: 4px; object-fit: cover; }
+    .xeb-status { margin: 12px 0 0; }
+    .xeb-status[hidden] { display: none; }
+    .operation-excel-workspace dialog { width: min(680px, 92vw); padding: 20px; border: 1px solid #dee0e3; border-radius: 10px; }
+    .operation-excel-workspace dialog .admin-field { width: 100%; margin: 10px 0 4px; }
+    .operation-excel-workspace dialog .admin-field textarea { width: 100%; }
+    .operation-excel-workspace .admin-check-line { margin: 10px 0 4px; }
+    @media screen and (max-width: 800px) {
+      .xeb-detail { grid-template-columns: 1fr; }
+      .xeb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .xeb-head, .xeb-body { padding: 12px; }
+      .xeb-pagination { align-items: flex-start; flex-direction: column; }
+      .xeb-actions .admin-field { width: 100%; min-width: 0; }
+    }
+  `;
   document.head.append(node);
   const pickerStyle = el("style");
-  pickerStyle.textContent = `.xeb-cover-picker{display:grid;gap:12px}.xeb-cover-picker-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;max-height:420px;overflow:auto}.xeb-cover-picker-item{display:grid;gap:6px;padding:8px;border:1px solid #dee0e3;border-radius:8px;background:#fff;text-align:left}.xeb-cover-picker-item img{width:100%;height:96px;object-fit:cover;background:#f5f6f7;border-radius:5px}.xeb-cover-picker-item small{overflow-wrap:anywhere}@media(max-width:800px){.xeb-cover-picker-list{grid-template-columns:repeat(2,minmax(0,1fr))}}`;
+  pickerStyle.textContent = `.xeb-cover-picker{display:grid;gap:12px}.xeb-cover-picker-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;max-height:420px;overflow:auto}.xeb-cover-picker-item{display:grid;gap:6px;padding:8px;border:1px solid #dee0e3;border-radius:8px;background:#fff;text-align:left}.xeb-cover-picker-item img{width:100%;height:96px;object-fit:cover;background:#f5f6f7;border-radius:5px}.xeb-cover-picker-item small{overflow-wrap:anywhere}@media screen and (max-width:800px){.xeb-cover-picker-list{grid-template-columns:repeat(2,minmax(0,1fr))}}`;
   document.head.append(pickerStyle);
 }
 function batchState(batch: Obj): string {
@@ -195,6 +269,13 @@ function card(row: Obj): HTMLElement {
 class Workspace {
   private root: HTMLElement;
   private plans: Obj[] = [];
+  private planTotal = 0;
+  private planLimit = 20;
+  private planOffset = 0;
+  private planHasMore = false;
+  private planNextOffset: number | null = null;
+  private plansLoading = false;
+  private plansError = "";
   private legacy: Obj[] = [];
   private legacyError = "";
   private batches: Obj[] = [];
@@ -210,14 +291,14 @@ class Workspace {
     parent.replaceChildren(this.root);
   }
   async mount(): Promise<void> {
-    await this.loadPlans();
+    await this.loadPlans(0, true);
   }
   private right(): HTMLElement {
     return this.root.querySelector<HTMLElement>(".xeb-detail-main")!;
   }
   private tell(value: string): void {
-    const node = this.root.querySelector<HTMLElement>("[role=status]");
-    if (node) node.textContent = value;
+    const node = this.root.querySelector<HTMLElement>("[data-excel-feedback]");
+    if (node) setNotice(node, value);
   }
   private batchAction(
     node: HTMLButtonElement,
@@ -254,9 +335,15 @@ class Workspace {
       this.syncBatchMutationControls();
     }
   }
-  private async loadPlans(): Promise<void> {
-    const [result, legacyResult] = await Promise.all([
-      api("/api/admin/operation-cycles/strategies?limit=100&offset=0"),
+  private async loadPlans(offset = this.planOffset, openHash = false): Promise<void> {
+    if (this.plansLoading) return;
+    this.plansLoading = true;
+    this.plansError = "";
+    this.renderShell();
+    const [summaryResult, legacyResult] = await Promise.all([
+      api(`${base}/strategy-summaries?limit=20&offset=${Math.max(0, offset)}`)
+        .then((value) => ({ value, error: "" }))
+        .catch((error) => ({ value: {} as Obj, error: (error as Error).message })),
       api(`${base}/legacy`)
         .then((value) => ({ value, error: "" }))
         .catch((error) => ({
@@ -264,39 +351,58 @@ class Workspace {
           error: (error as Error).message,
         })),
     ]);
-    const strategies = Array.isArray(result.items) ? result.items : [];
-    this.plans = await Promise.all(
-      strategies.map(async (strategy) => {
-        try {
-          const batches = await api(
-            `${base}/strategies/${encodeURIComponent(String(strategy.strategy_key))}`,
-          );
-          return {
-            ...strategy,
-            ui_latest_batch: Array.isArray(batches.items)
-              ? batches.items[0]
-              : null,
-          };
-        } catch (error) {
-          return {
-            ...strategy,
-            ui_latest_batch_error: (error as Error).message,
-          };
-        }
-      }),
-    );
+    this.plansLoading = false;
     this.legacy = Array.isArray(legacyResult.value.items)
       ? legacyResult.value.items
       : [];
     this.legacyError = legacyResult.error;
+    if (summaryResult.error) {
+      this.plans = [];
+      this.plansError = `长期计划读取失败：${summaryResult.error}`;
+      this.renderShell();
+      return;
+    }
+    const result = summaryResult.value;
+    const items = Array.isArray(result.items) ? result.items : [];
+    const total = Number(result.total);
+    const limit = Number(result.limit);
+    const returnedOffset = Number(result.offset);
+    const next = result.next_offset === null ? null : Number(result.next_offset);
+    if (!Number.isSafeInteger(total) || total < 0 || !Number.isSafeInteger(limit) || limit !== 20 || !Number.isSafeInteger(returnedOffset) || returnedOffset < 0 || returnedOffset !== Math.max(0, offset) || items.length > limit || (next !== null && (!Number.isSafeInteger(next) || next <= returnedOffset))) {
+      this.plans = [];
+      this.plansError = "长期计划分页响应无效，请刷新后重试";
+      this.renderShell();
+      return;
+    }
+    if (!items.length && returnedOffset > 0 && total > 0) {
+      const lastPageOffset = Math.floor((total - 1) / limit) * limit;
+      // A concurrent delete may leave this page empty after the server counted
+      // strategies. Never retry the same offset: fall back one page when the
+      // newly-computed last page is not before the requested offset.
+      const fallbackOffset =
+        lastPageOffset < returnedOffset
+          ? lastPageOffset
+          : Math.max(0, returnedOffset - limit);
+      await this.loadPlans(fallbackOffset, openHash);
+      return;
+    }
+    this.plans = items;
+    this.planTotal = total;
+    this.planLimit = limit;
+    this.planOffset = returnedOffset;
+    this.planHasMore = result.has_more === true;
+    this.planNextOffset = this.planHasMore ? next : null;
+    if (this.planHasMore !== (returnedOffset + items.length < total) || (this.planHasMore && this.planNextOffset !== returnedOffset + items.length)) {
+      this.plans = [];
+      this.plansError = "长期计划分页游标不一致，请刷新后重试";
+      this.renderShell();
+      return;
+    }
     this.renderShell();
-    const strategy = new URLSearchParams(location.hash.slice(1)).get(
-      "strategy",
-    );
-    if (
-      strategy &&
-      this.plans.some((item) => String(item.strategy_key) === strategy)
-    )
+    const strategy = openHash
+      ? new URLSearchParams(location.hash.slice(1)).get("strategy")
+      : "";
+    if (strategy)
       await this.openStrategy(strategy, false);
   }
   private renderShell(): void {
@@ -306,13 +412,30 @@ class Workspace {
     const head = el("div", "长期计划");
     head.className = "xeb-head";
     left.append(head);
-    if (!this.plans.length) left.append(el("p", "暂无可访问的长期计划。"));
+    if (this.plansLoading) {
+      const loading = el("div", "正在读取长期计划…");
+      loading.className = "admin-state admin-state--loading";
+      left.append(loading);
+      this.root.append(left);
+      return;
+    }
+    if (this.plansError) {
+      const error = notice(this.plansError, "error");
+      left.append(error, action("重新读取", () => this.loadPlans(this.planOffset)));
+      this.root.append(left);
+      return;
+    }
+    if (!this.plans.length) {
+      const empty = el("div", "暂无可访问的长期计划。");
+      empty.className = "admin-state";
+      left.append(empty);
+    }
     const rows = this.plans.map((plan) => {
-      const latest = plan.ui_latest_batch || {};
+      const latest = plan.latest_batch || {};
       const progress = latest.id
         ? `批次 #${latest.id} · ${batchState(latest)} · 预计任务 ${latest.summary?.expected_tasks ?? 0}`
-        : plan.ui_latest_batch_error
-          ? `批次读取失败：${plan.ui_latest_batch_error}`
+        : plan.latest_batch_status === "unavailable"
+          ? "批次摘要暂不可用"
           : "暂无批次";
       return [
         String(plan.title || plan.strategy_key),
@@ -321,6 +444,16 @@ class Workspace {
       ];
     });
     left.append(table(["任务名称", "当前进度", "操作"], rows));
+    const pager = el("div");
+    pager.className = "admin-toolbar admin-pagination xeb-actions xeb-pagination";
+    const start = this.planTotal ? this.planOffset + 1 : 0;
+    const end = Math.min(this.planOffset + this.plans.length, this.planTotal);
+    const previous = action("上一页", () => this.loadPlans(Math.max(0, this.planOffset - this.planLimit)));
+    previous.disabled = this.planOffset <= 0;
+    const next = action("下一页", () => this.loadPlans(this.planNextOffset ?? this.planOffset));
+    next.disabled = !this.planHasMore || this.planNextOffset === null;
+    pager.append(el("small", `第 ${start}–${end} 项，共 ${this.planTotal} 项`), previous, next);
+    left.append(pager);
     if (this.legacy.length) {
       const legacy = el("div");
       legacy.className = "xeb-head";
@@ -355,7 +488,7 @@ class Workspace {
         this.batchID = 0;
         location.hash = "";
         this.renderShell();
-      }),
+      }, "ghost"),
       el("h2", "运营闭环批次详情"),
     );
     header.append(head);
@@ -371,14 +504,16 @@ class Workspace {
         this.tab = id;
         this.updateTabNav();
         if (this.batchID) await this.loadSelected();
-      });
+      }, "ghost");
       node.dataset.tab = id;
       node.dataset.selected = String(this.tab === id);
       nav.append(node);
     });
     const main = el("section");
     main.className = "xeb-card xeb-detail-main";
-    main.append(el("p", "正在读取批次详情…"));
+    const loading = el("div", "正在读取批次详情…");
+    loading.className = "admin-state admin-state--loading";
+    main.append(loading);
     layout.append(nav, main);
     this.root.append(header, layout);
   }
@@ -422,8 +557,11 @@ class Workspace {
         this.batches,
       );
     } catch (error) {
-      if (currentGeneration === this.generation)
-        this.right().replaceChildren(el("p", (error as Error).message));
+      if (currentGeneration === this.generation) {
+        const failed = el("div", (error as Error).message);
+        failed.className = "admin-state admin-state--error";
+        this.right().replaceChildren(failed);
+      }
     }
   }
   private async loadSelected(): Promise<void> {
@@ -453,8 +591,8 @@ class Workspace {
     const head = el("div");
     head.className = "xeb-head";
     const actions = el("div");
-    actions.className = "xeb-actions";
-    actions.append(action("新建发送批次", () => this.importDialog()));
+    actions.className = "admin-toolbar xeb-actions";
+    actions.append(action("新建发送批次", () => this.importDialog(), "primary"));
     if (batches.length) {
       const select = el("select") as HTMLSelectElement;
       select.setAttribute("aria-label", "历史批次");
@@ -471,17 +609,17 @@ class Workspace {
         this.batchID = Number(select.value);
         await this.loadSelected();
       };
-      actions.append(el("label", "历史批次："), select);
+      actions.append(field("历史批次", select));
     }
     head.append(el("h2", String(strategy.title || this.strategyKey)), actions);
     right.append(head);
     if (!selectedID) {
-      right.append(
-        el(
-          "div",
-          "此长期计划还没有 Excel 批次。文件在本地选择期间不会创建任何计划或批次。",
-        ),
+      const empty = el(
+        "div",
+        "此长期计划还没有 Excel 批次。文件在本地选择期间不会创建任何计划或批次。",
       );
+      empty.className = "admin-state";
+      right.append(empty, notice());
       return;
     }
     const payload =
@@ -499,9 +637,7 @@ class Workspace {
     const body = el("div");
     body.className = "xeb-body";
     body.append(this.batchSummary(batch));
-    const status = el("p");
-    status.className = "xeb-status";
-    status.setAttribute("role", "status");
+    const status = notice();
     body.append(status);
     if (this.tab === "content")
       this.content(
@@ -549,7 +685,7 @@ class Workspace {
           ? "冻结封面：已上传内容；内容摘要已冻结。"
           : "统一封面：未设置。",
     );
-    cover.className = "xeb-status";
+    cover.className = "admin-alert xeb-status";
     wrap.append(meta, grid, cover);
     return wrap;
   }
@@ -562,7 +698,7 @@ class Workspace {
     const id = Number(batch.id),
       editable = this.editable(batch),
       actions = el("div");
-    actions.className = "xeb-actions";
+    actions.className = "admin-toolbar xeb-actions";
     if (editable) {
       actions.append(
         this.batchAction(action("替换 Excel", () => this.importDialog(batch))),
@@ -593,7 +729,7 @@ class Workspace {
               "企微任务意图已创建，员工仍需在企微端执行；这不等于发送成功。",
             );
           });
-        }),
+        }, "primary"),
         true,
         Boolean(batch.cover_digest || Number(batch.cover_image_id || 0) > 0),
       );
@@ -604,7 +740,7 @@ class Workspace {
         action("选择已有启用图片", () => this.coverPickerDialog(batch)),
       );
       actions.append(
-        cover,
+        field("上传统一封面（PNG 或 JPEG）", cover),
         this.batchAction(
           action("上传统一封面", async () => {
             await this.withBatchWrite(async () => {
@@ -625,7 +761,7 @@ class Workspace {
         approve,
       );
     }
-    actions.append(action("查看旧版本", () => this.versionDialog(id)));
+    actions.append(action("查看旧版本", () => this.versionDialog(id), "ghost"));
     parent.append(actions);
     if (!(batch.cover_digest || Number(batch.cover_image_id || 0) > 0) && editable)
       parent.append(el("p", "没有统一封面，不能审核通过并创建企微群发任务。"));
@@ -637,8 +773,9 @@ class Workspace {
         rows.map((row) => {
           const controls = el("div");
           if (editable) {
+            controls.className = "admin-toolbar xeb-actions";
             controls.append(
-              this.batchAction(action("修改", () => this.rowDialog(batch, row))),
+              this.batchAction(action("修改", () => this.rowDialog(batch, row), "ghost")),
               this.batchAction(
                 action(row.excluded ? "恢复" : "排除", async () => {
                   await this.withBatchWrite(async () => {
@@ -657,7 +794,7 @@ class Workspace {
                     );
                     await this.loadSelected();
                   });
-                }),
+                }, row.excluded ? "ghost" : "danger"),
               ),
             );
           }
@@ -687,27 +824,25 @@ class Workspace {
     query.type = "search";
     query.setAttribute("aria-label", "搜索启用图片");
     query.placeholder = "搜索图片名称";
-    const search = action("查询", () => { void load(0); });
+    const search = action("查询", () => load(0));
     const searchRow = el("div");
-    searchRow.className = "xeb-actions";
-    searchRow.append(query, search);
-    const status = el("p");
-    status.className = "xeb-status";
-    status.setAttribute("role", "status");
+    searchRow.className = "admin-toolbar xeb-actions";
+    searchRow.append(field("搜索启用图片", query), search);
+    const status = notice();
     const list = el("div");
     list.className = "xeb-cover-picker-list";
     const pager = el("div");
-    pager.className = "xeb-actions";
+    pager.className = "admin-toolbar admin-pagination xeb-actions";
     const range = el("small");
-    const previous = action("上一页", () => { void load(Math.max(0, offset - pageSize)); });
-    const next = action("下一页", () => { void load(nextOffset); });
+    const previous = action("上一页", () => load(Math.max(0, offset - pageSize)), "ghost");
+    const next = action("下一页", () => load(nextOffset), "ghost");
     pager.append(range, previous, next);
     const close = action("取消", () => {
       closed = true;
       generation += 1;
       dialog.close();
       dialog.remove();
-    });
+    }, "ghost");
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
       close.click();
@@ -735,14 +870,12 @@ class Workspace {
     };
     const choose = async (item: Obj, button: HTMLButtonElement): Promise<void> => {
       if (closed || loading || boundBatch !== this.batchID || boundGeneration !== this.generation) {
-        status.textContent = "批次已切换，未保存封面选择。";
-        status.setAttribute("role", "alert");
+        setNotice(status, "批次已切换，未保存封面选择。", "error");
         return;
       }
       const id = imageID(item);
       if (!Number.isSafeInteger(id) || id < 1 || item.enabled === false) {
-        status.textContent = "该图片已停用或编号无效，请重新选择启用图片。";
-        status.setAttribute("role", "alert");
+        setNotice(status, "该图片已停用或编号无效，请重新选择启用图片。", "error");
         return;
       }
       const selectionKey = selectionKeys.get(id) || key(`excel-cover-select-${boundBatch}-${batch.version}-${id}`);
@@ -766,8 +899,7 @@ class Workspace {
         button.disabled = false;
         button.textContent = "选择";
         setLoading(false);
-        status.textContent = `${(error as Error).message}；可重试，仍使用同一操作 key。`;
-        status.setAttribute("role", "alert");
+        setNotice(status, `${(error as Error).message}；可重试，本次封面选择尚未确认。`, "error");
       }
     };
     const draw = (items: Obj[]): void => {
@@ -785,7 +917,7 @@ class Workspace {
           card.append(image);
         }
         card.append(el("small", `${imageName(item, id)} · 素材 #${id}`));
-        const chooseButton = action("选择", () => { void choose(item, chooseButton); });
+        const chooseButton = action("选择", () => choose(item, chooseButton));
         chooseButton.dataset.coverImageId = String(id);
         card.append(chooseButton);
         list.append(card);
@@ -799,8 +931,7 @@ class Workspace {
       nextOffset = offset + pageSize;
       hasMore = false;
       setLoading(true);
-      status.textContent = "正在读取启用图片…";
-      status.setAttribute("role", "status");
+      setNotice(status, "正在读取启用图片…");
       try {
         const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset), enabled_only: "true" });
         if (query.value.trim()) params.set("q", query.value.trim());
@@ -815,13 +946,12 @@ class Workspace {
         range.textContent = Number.isFinite(total) && total > 0
           ? `第 ${offset + 1}–${Math.min(offset + items.length, total)} 项，共 ${total} 项`
           : `第 ${offset + 1}–${offset + items.length} 项`;
-        status.textContent = "请选择一张启用图片；取消不会修改批次。";
+        setNotice(status, "请选择一张启用图片；取消不会修改批次。");
       } catch (error) {
         if (closed || requestGeneration !== generation) return;
         list.replaceChildren();
         range.textContent = "";
-        status.textContent = (error as Error).message;
-        status.setAttribute("role", "alert");
+        setNotice(status, (error as Error).message, "error");
       } finally {
         if (!closed && requestGeneration === generation) setLoading(false);
       }
@@ -874,6 +1004,7 @@ class Workspace {
         hours.append(option);
       });
       const grid = el("div");
+      grid.className = "xeb-scroll";
       const draw = () => {
         const window = report.windows?.[hours.value] || {};
         const groups: Array<[string, Obj]> = [
@@ -907,12 +1038,13 @@ class Workspace {
       };
       hours.onchange = draw;
       draw();
-      parent.append(hours, grid);
+      parent.append(field("观察窗口", hours), grid);
       const download = el("a", "下载逐人报告");
+      download.className = "admin-button admin-button--secondary";
       download.href = `${base}/${id}/report.csv`;
       download.download = `excel-batch-${id}-report.csv`;
       parent.append(download);
-    } else parent.append(el("p", `效果报告暂不可统计：${reportError}`));
+    } else parent.append(notice(`效果报告暂不可统计：${reportError}`, "error"));
     const items = Array.isArray(receipts.items)
       ? receipts.items
       : Array.isArray(receipts.rows)
@@ -936,7 +1068,7 @@ class Workspace {
     );
     parent.append(scroll);
     if (receiptsError)
-      parent.append(el("p", `逐人回执暂不可读取：${receiptsError}`));
+      parent.append(notice(`逐人回执暂不可读取：${receiptsError}`, "error"));
   }
   private rowDialog(batch: Obj, row: Obj): void {
     const boundBatch = Number(batch.id),
@@ -962,9 +1094,11 @@ class Workspace {
       ["标题（可空，执行时明确失败）", title],
       ["分层", segment],
     ].forEach(([label, control]) =>
-      dialog.append(el("label", String(label)), control as HTMLElement),
+      dialog.append(field(String(label), control as HTMLElement)),
     );
-    dialog.append(
+    const actions = el("div");
+    actions.className = "admin-toolbar xeb-actions";
+    actions.append(
       action("保存并重新审核", async () => {
         if (boundBatch !== this.batchID || boundGeneration !== this.generation)
           throw new Error("批次已切换，未将编辑写入其他批次");
@@ -986,12 +1120,13 @@ class Workspace {
           dialog.remove();
           await this.loadSelected();
         });
-      }),
+      }, "primary"),
       action("取消", () => {
         dialog.close();
         dialog.remove();
-      }),
+      }, "ghost"),
     );
+    dialog.append(actions);
     this.root.append(dialog);
     dialog.showModal();
   }
@@ -1025,11 +1160,17 @@ class Workspace {
           ? "替换保留批次编号与已上传封面，旧内容版本只读保留，并重新审核。"
           : "文件在本地选择期间不会创建任何计划或批次。",
       ),
-      file,
+      field("Excel 文件", file),
     );
-    if (!replacing)
-      dialog.append(el("label", "同一文件也明确创建新的发送批次"), fresh);
-    dialog.append(
+    if (!replacing) {
+      const freshLabel = el("label");
+      freshLabel.className = "admin-check-line";
+      freshLabel.append(fresh, el("span", "同一文件也明确创建新的发送批次"));
+      dialog.append(freshLabel);
+    }
+    const actions = el("div");
+    actions.className = "admin-toolbar xeb-actions";
+    actions.append(
       action(replacing ? "替换并重新审核" : "上传并开始审核", async () => {
         const source = file.files?.[0];
         if (!source) throw new Error("请选择 Excel 文件");
@@ -1048,12 +1189,13 @@ class Workspace {
         dialog.close();
         dialog.remove();
         await this.openStrategy(strategyKey, false, selectedID);
-      }),
+      }, "primary"),
       action("取消", () => {
         dialog.close();
         dialog.remove();
-      }),
+      }, "ghost"),
     );
+    dialog.append(actions);
     this.root.append(dialog);
     dialog.showModal();
   }
@@ -1081,7 +1223,7 @@ class Workspace {
             const view = el("pre", JSON.stringify(detail.rows || [], null, 2));
             view.style.whiteSpace = "pre-wrap";
             dialog.append(view);
-          }),
+          }, "ghost"),
         ]),
       ),
     );
@@ -1089,7 +1231,7 @@ class Workspace {
       action("关闭", () => {
         dialog.close();
         dialog.remove();
-      }),
+      }, "ghost"),
     );
     this.root.append(dialog);
     dialog.showModal();

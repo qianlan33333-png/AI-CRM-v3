@@ -22,6 +22,7 @@ const entryPoints = {
   standardComponentsHost: path.join(repository, 'web', 'v3', 'standardComponentsHost.ts'),
   operationCyclesHost: path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts'),
   materialSaveHost: path.join(repository, 'web', 'v3', 'materialSaveAdapter.ts'),
+  imageLibraryFilterHost: path.join(repository, 'web', 'v3', 'imageLibraryFilterHost.ts'),
   orderHost: path.join(repository, 'web', 'v3', 'orderAdapter.ts'),
   productHost: path.join(repository, 'web', 'v3', 'productAdapter.ts'),
   radarHost: path.join(repository, 'web', 'v3', 'radarAdapter.ts'),
@@ -78,7 +79,7 @@ const metadataFor = (contents) => ({
 // have canonical frozen homes, while the previously unshipped tag picker is
 // registered in the standard-components donor ledger.
 const standardComponents = [
-  { name: 'operation_member_picker.js', source: 'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js', sha256: 'bd84ce78ccb834f170548dea76cb99f6434978bc21211a9ec843dd2bf7ebabea' },
+  { name: 'operation_member_picker.js', source: 'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js', sha256: '1b12b405d737794808dd1b998ccfa8c6eb77dd4d7c22e69380b428fb89a69e70' },
   { name: 'group_chat_picker.css', source: 'web/donors/ai-assistant-production/static/group_chat_picker.css', sha256: '99627d8e05be5419c53a5cfbc3c8d6d006b6e4efafec157dd412aa656e858481' },
   { name: 'group_chat_picker.js', source: 'web/donors/ai-assistant-production/static/group_chat_picker.js', sha256: 'da3de5fc5861f1b22e61bbc2726b3de4ebdab8420e4af3342ba3e0c478f2c1ed' },
   { name: 'material_picker.css', source: 'web/donors/ai-assistant-production/static/material_picker.css', sha256: '46deddd60fbbbf6a94603e689fda6830d1a5b1aa221d0af8223bb6855846f1e1' },
@@ -90,7 +91,7 @@ const standardComponents = [
   { name: 'coupon_form.html', source: 'web/donors/standard-components-production/coupons/coupon_form.html', sha256: 'f9116280af8e0c9f4702c54c3cac192012f4c8af7944713afb32b929380f8e86' },
   { name: 'coupon_styles.html', source: 'web/donors/standard-components-production/coupons/coupon_styles.html', sha256: '89d4d72fb3234fc67c630ba61ff5f4292feae2286656fe8bb4b12942aea554f0' },
 ];
-const standardComponentsManifest = { version: 'dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f', css: [], scripts: [] };
+const standardComponentsManifest = { version: 'standard-components-v2-1b12b405d7377948', css: [], scripts: [] };
 for (const component of standardComponents) {
   const contents = fs.readFileSync(path.join(repository, component.source));
   const metadata = metadataFor(contents);
@@ -189,7 +190,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
+  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);

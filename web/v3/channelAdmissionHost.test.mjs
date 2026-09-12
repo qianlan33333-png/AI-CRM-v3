@@ -36,7 +36,7 @@ function channel(overrides = {}) {
   };
 }
 
-function createPage({ saved = channel(), mutations = [], creates = [], resourceID = '17', donorScriptStatus = 200, delayDonorScript = false } = {}) {
+function createPage({ saved = channel(), mutations = [], creates = [], resourceID = '17', donorScriptStatus = 200, delayDonorScript = false, operationMembers = { status: 200, payload: { items: [{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }] } } } = {}) {
   const calls = [];
   let releaseDonorScript;
   const resourceAttribute = resourceID ? ` data-channel-resource-id="${resourceID}"` : '';
@@ -67,7 +67,7 @@ function createPage({ saved = channel(), mutations = [], creates = [], resourceI
           const unknown = Object.keys(JSON.parse(init.body || '{}')).filter((name) => !allowed.has(name));
           if (unknown.length) return response({code:'MALFORMED_REQUEST'}, 400);
         }
-        if (method === 'GET' && url.pathname === '/api/admin/common/operation-members') return response({ items: [{staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服'}] });
+        if (method === 'GET' && url.pathname === '/api/admin/common/operation-members') return response(operationMembers.payload, operationMembers.status);
         if (method === 'GET' && url.pathname === '/assets/standard-components/channel_code_form.html') return new Response(donorForm, { status: 200 });
         if (method === 'GET' && url.pathname === '/api/admin/channels/17') return response({ ok: true, channel: saved }, 200, { ETag: '"7"' });
         if (method === 'PATCH' && url.pathname === '/api/admin/channels/17') {
@@ -95,12 +95,17 @@ try {
   const document = stable.dom.window.document;
   assert.equal(document.querySelector('script[data-aicrm-channel-donor]')?.src, 'https://test.invalid/assets/standard-components/channel_admission_pages.js', 'the byte-preserved donor script must load as a same-origin external resource');
   assert.equal(document.querySelectorAll('[data-channel-bootstrap]').length, 1, 'Host hydration must replace the donor placeholder with one V3 bootstrap payload');
+  assert.equal(document.querySelector('#channel-welcome-template-help')?.textContent.includes('可使用 {{客户名}} 自动带入客户姓名'), true, 'welcome editor must show the exact server-supported variable');
+  assert.equal(document.querySelector('#channel-welcome-template-help')?.textContent.includes('朋友'), true, 'welcome editor must disclose the safe missing-name fallback');
   assert.equal(document.querySelectorAll('[name="status"] option[selected]').length, 1, 'Jinja status branches must render one selected option');
   assert.equal(document.querySelector('[name="status"] option[selected]')?.value, 'active');
   assert.equal(document.querySelectorAll('[name="channel_type"]:checked').length, 1, 'Jinja carrier branches must render one checked type');
   assert.equal(document.querySelector('[data-qrcode-section]').hidden, false, 'the QR branch must be visible for a QR channel');
   assert.ok([...document.querySelectorAll('[data-link-section]')].every((node) => node.hidden), 'all link-only donor branches must be hidden for a QR channel');
   assert.equal(document.querySelector('[data-summary-channel-status]')?.textContent, '启用', 'the donor script must hydrate the rendered status summary');
+  assert.equal(document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), true, 'saved channel assignees must use the trusted local directory display name');
+  assert.equal(document.querySelector('[data-assignee-list]')?.textContent.includes('客服 #12'), false, 'saved channel assignees must not retain synthetic service labels after directory hydration');
+  assert.equal(stable.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/common/operation-members').length, 1, 'saved channel names must use one local directory read');
   assert.equal(document.querySelectorAll('[data-generate-form-qrcode]').length, 1, 'an edit form must render one generate action');
   assert.equal(document.querySelectorAll('[data-download-channel-qrcode]').length, 0, 'an absent download URL must not leave a duplicate donor action');
   assert.equal(document.documentElement.innerHTML.includes('{%'), false, 'no Jinja control syntax may reach the Host DOM');
@@ -115,6 +120,61 @@ try {
   document.querySelector('[data-channel-type-card="wecom_customer_acquisition"]').click();
   assert.ok([...document.querySelectorAll('[data-link-section]')].every((node) => !node.hidden), 'acquisition links expose every standard link-only donor control');
 } finally { stable.dom.window.close(); }
+
+// An inactive definition retains its configuration for a deliberate CAS
+// recovery, but it must not offer a QR download or generation action that
+// would make the disabled callback path appear scan-ready.
+const archived = createPage({ saved: channel({ status: 'archived', qr_download_url: '/api/admin/channels/17/qrcode/download' }) });
+try {
+  await waitFor(() => archived.dom.window.document.querySelector('[data-channel-admission-page]'), 'archived channel form must mount');
+  await waitFor(() => archived.dom.window.__channelComposerOptions, 'archived channel donor must initialize');
+  const document = archived.dom.window.document;
+  const notice = document.querySelector('[data-channel-entrant-actions-blocked="archived"]');
+  assert.match(notice?.textContent || '', /扫码不会发送欢迎语或入渠标签/, 'archived configuration needs an explicit no-send explanation');
+  assert.match(notice?.textContent || '', /选择“启用”并保存/, 'archived configuration needs the normal reactivation path');
+  assert.equal(document.querySelector('[data-download-channel-qrcode]'), null, 'an archived channel must not expose a historical QR download as scan-ready');
+  assert.equal(document.querySelector('[data-generate-form-qrcode]'), null, 'an archived channel must not offer a Provider QR generation action before reactivation');
+  assert.equal(document.querySelector('[name="channel_name"]')?.value, '原渠道', 'the retained configuration remains available for review and explicit reactivation');
+} finally { archived.dom.window.close(); }
+
+// Saved assignments persist staff IDs only. One local directory read hydrates
+// every saved staff label, while missing directory records retain an explicit
+// ID fallback rather than becoming a false name or causing per-member reads.
+const hydratedSavedMembers = createPage({ saved: channel({ assignment_config_json: { assignees: [
+  { staff_id: 12, priority: 1, ratio_percent: 50, max_scans_24h: 100 },
+  { staff_id: 99, priority: 2, ratio_percent: 50, max_scans_24h: 100 },
+] } }) });
+try {
+  await waitFor(() => hydratedSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), 'saved assignment display names must hydrate before donor initialization');
+  const list = hydratedSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent || '';
+  assert.equal(list.includes('当前目录未找到客服姓名'), true, 'a staff member absent from the bounded local directory response must state that its name is unavailable without claiming a global absence');
+  assert.equal(list.includes('客服 #99'), false, 'a staff ID must remain auxiliary information rather than a synthetic customer-service name');
+  assert.equal(hydratedSavedMembers.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/common/operation-members').length, 1, 'multiple saved assignees must not issue N+1 directory reads');
+} finally { hydratedSavedMembers.dom.window.close(); }
+
+const unavailableSavedMembers = createPage({ operationMembers: { status: 503, payload: { ok: false, error: 'staff_directory_unavailable' } } });
+try {
+  await waitFor(() => unavailableSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('客服姓名暂不可用'), 'a directory failure must preserve the saved selection while stating that its name is unavailable');
+  assert.equal(unavailableSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('客服 #12'), false, 'a staff ID must not stand in for a name when the directory is unavailable');
+  assert.equal(unavailableSavedMembers.dom.window.document.querySelector('#channel-directory-read-notice')?.textContent.includes('客服姓名暂不可用'), true, 'a directory failure must show an explicit page-level unavailable state');
+  assert.equal(unavailableSavedMembers.calls.filter((call) => call.method === 'PATCH' || call.method === 'POST').length, 0, 'directory fallback must not mutate saved channel configuration');
+} finally { unavailableSavedMembers.dom.window.close(); }
+
+// The standard channel entry point disables adding once all five places are
+// occupied. That keeps a remaining capacity of zero from invoking the legacy
+// picker call, whose historical max fallback was one.
+const capped = createPage({ saved: channel({ assignment_config_json: { assignees: Array.from({ length: 5 }, (_, index) => ({
+  staff_id: index + 1, priority: index + 1, ratio_percent: index === 0 ? 100 : 0, max_scans_24h: 100,
+})) } }) });
+try {
+  await waitFor(() => capped.dom.window.document.querySelector('[data-channel-admission-page]'), 'capped channel form must mount');
+  await waitFor(() => capped.dom.window.__channelComposerOptions, 'capped channel donor must initialize');
+  const add = capped.dom.window.document.querySelector('[data-add-channel-assignee]');
+  assert.equal(capped.dom.window.document.querySelector('[data-assignee-count]')?.textContent, '5 / 5');
+  assert.equal(add.disabled, true, 'a channel with no remaining assignee capacity must not open the picker');
+  add.click();
+  assert.equal(capped.dom.window.__pickerOptions, undefined, 'a disabled capped entry point must not fall back to one additional picker slot');
+} finally { capped.dom.window.close(); }
 
 // A real Host save supplies Catalog's complete replacement DTO, server ETag
 // and stable idempotency receipt. It does not make a second write for 409.
@@ -146,6 +206,22 @@ try {
   assert.equal(conflict.calls.filter((call) => call.method === 'PATCH').length, 1, '409 must not overwrite or retry automatically');
   assert.equal(conflict.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/channels/17').length, 1, '409 must use the ETag read with the page and never preflight-read a newer version');
 } finally { conflict.dom.window.close(); }
+
+// Template errors retain the exact draft and give a safe, code-specific
+// correction. The Host does not trust or reflect an arbitrary server message.
+const invalidWelcomeTemplate = createPage({ mutations: [{ status: 400, payload: { code: 'WELCOME_TEMPLATE_INVALID', message: 'untrusted server detail' } }] });
+try {
+  await waitFor(() => invalidWelcomeTemplate.dom.window.document.querySelector('[data-save-channel]'), 'template validation save button must mount');
+  const { document } = invalidWelcomeTemplate.dom.window;
+  const welcome = document.querySelector('[data-welcome-message]');
+  welcome.value = '欢迎{{未知变量}}';
+  document.querySelector('[data-save-channel]').click();
+  await waitFor(() => document.querySelector('[data-channel-save-feedback]')?.textContent.includes('欢迎语仅支持 {{客户名}}'), 'invalid welcome template must explain the accepted marker');
+  assert.equal(welcome.value, '欢迎{{未知变量}}', 'invalid template response must retain the original draft');
+  assert.equal(document.querySelector('[data-channel-save-feedback]')?.textContent.includes('untrusted server detail'), false, 'Host must not reflect arbitrary server detail');
+  assert.equal(invalidWelcomeTemplate.dom.window.location.pathname, '/admin/channels/17/edit', 'invalid template must not navigate as a successful save');
+  assert.equal(invalidWelcomeTemplate.calls.filter((call) => call.method === 'PATCH').length, 1, 'invalid template must issue one command without automatic retry');
+} finally { invalidWelcomeTemplate.dom.window.close(); }
 
 // The frozen QR donor has no controls for these Catalog fields. A visible
 // change must therefore retain their current values, and each accepted save
@@ -234,6 +310,9 @@ try {
   await waitFor(() => document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), 'new channel picker result must enter assignment state');
   document.querySelector('[data-add-channel-assignee]').click();
   await waitFor(() => created.dom.window.__pickerOptions.disabledUserIds?.includes('wecom-alice'), 'existing local assignee IDs must disable the corresponding real WeCom ID in the shared picker');
+  assert.equal(created.dom.window.__pickerOptions.context, 'channel_assignees', 'the channel Host must declare the shared picker business context');
+  assert.deepEqual(JSON.parse(JSON.stringify(created.dom.window.__pickerOptions.selection)), { mode: 'multiple', max: 4 }, 'the channel Host must retain the donor remaining-capacity limit through the explicit multi-select contract');
+  assert.equal(created.dom.window.__pickerOptions.multiple, true, 'the channel Host must retain the donor multi-select behavior');
   document.querySelector('[data-save-channel]').click();
   await waitFor(() => created.calls.some((call) => call.method === 'POST' && call.path === '/api/admin/channels'), 'new channel must submit one Catalog create');
   const post = created.calls.find((call) => call.method === 'POST' && call.path === '/api/admin/channels');

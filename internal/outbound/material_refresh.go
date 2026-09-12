@@ -134,6 +134,11 @@ type MaterialRefreshWorker struct {
 	scope   string
 }
 
+type materialRefreshItemResult struct {
+	key, effect, state, failure string
+	count                       int64
+}
+
 func NewMaterialRefreshWorker(service *MaterialPreparationService, scope string) *MaterialRefreshWorker {
 	return &MaterialRefreshWorker{service: service, scope: scope}
 }
@@ -159,22 +164,29 @@ func (w *MaterialRefreshWorker) Work(ctx context.Context, job *river.Job[Materia
 	if round.State == "completed" || round.State == "completed_with_failures" {
 		return nil
 	}
+	// The final page has already advanced the source cursor. Waiting only means
+	// that accepted material effects have not all reached terminal states yet;
+	// it must not rescan the source list from an empty final cursor.
+	if round.State == "waiting" {
+		return w.service.finalizeRefreshRound(ctx, round.ID)
+	}
 	page, err := w.service.sources.ListEnabledSourceSnapshots(ctx, outboundport.MaterialSnapshotPageRequest{CorpScopeDigest: w.scope, Cursor: round.Cursor, Limit: 100})
 	if err != nil {
 		return err
 	}
-	type itemResult struct {
-		key, effect, state, failure string
-		count                       int64
+	// A nonterminal page must move the durable cursor. Accepting a stalled
+	// cursor would let later retries claim and count the same sources forever.
+	if !page.Done && (page.NextCursor == "" || page.NextCursor == round.Cursor) {
+		return ErrMaterialPreparation
 	}
-	items := map[string]itemResult{}
+	items := map[string]materialRefreshItemResult{}
 	for _, failure := range page.Failures {
 		key := string(effectport.Hash("outbound.material.source-failure.v1", failure.SourceRef))
 		code := failure.FailureCode
 		if code == "" {
 			code = "source_invalid"
 		}
-		items[key] = itemResult{key: key, state: "final_failed", failure: code, count: 1}
+		items[key] = materialRefreshItemResult{key: key, state: "final_failed", failure: code, count: 1}
 	}
 	for _, source := range page.Items {
 		cache := materialCacheKey(w.scope, source.SourceType, source.ContentDigest, source.FileName)
@@ -184,44 +196,65 @@ func (w *MaterialRefreshWorker) Work(ctx context.Context, job *river.Job[Materia
 			continue
 		}
 		key := "round:" + strconv.FormatInt(round.ID, 10) + ":" + cache
+		// Prepare atomically binds the effect to the round before its Provider
+		// completion can arrive. Its source_count is a zero placeholder; only
+		// advanceMaterialRefreshPage records a claimed page's source references.
 		result, e := w.service.Prepare(ctx, outboundport.MaterialRequest{MaterialSourceSnapshot: source, CorpScopeDigest: w.scope, ForceRefresh: true, RoundDate: round.LocalDate, RefreshRoundID: round.ID, OperationKey: key})
 		if e != nil {
-			items[cache] = itemResult{key: cache, state: "final_failed", failure: "prepare_unavailable", count: 1}
+			items[cache] = materialRefreshItemResult{key: cache, state: "final_failed", failure: "prepare_unavailable", count: 1}
 			continue
 		}
-		items[cache] = itemResult{key: cache, effect: result.EffectID, state: result.State, failure: result.FailureCode, count: 1}
+		items[cache] = materialRefreshItemResult{key: cache, effect: result.EffectID, state: result.State, failure: result.FailureCode, count: 1}
 	}
+	claimed, err := w.advanceMaterialRefreshPage(ctx, round, page, items)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return nil
+	}
+	if !page.Done {
+		return river.JobSnooze(time.Second)
+	}
+	return w.service.finalizeRefreshRound(ctx, round.ID)
+}
+
+func (w *MaterialRefreshWorker) advanceMaterialRefreshPage(ctx context.Context, round outboundport.MaterialRefreshRound, page outboundport.MaterialSnapshotPage, items map[string]materialRefreshItemResult) (bool, error) {
 	state := "running"
 	if page.Done {
 		state = "waiting"
 	}
 	tx, err := w.service.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(ctx)
+	// Advance first. This compare-and-swap serializes source-count writes with
+	// the durable page cursor; a stale worker rolls back without recording the
+	// same page a second time.
+	var id int64
+	err = tx.QueryRow(ctx, `UPDATE outbound_material_refresh_rounds SET state=$2,cursor=$3 WHERE id=$1 AND cursor=$4 AND state IN ('queued','running') RETURNING id`, round.ID, state, page.NextCursor, round.Cursor).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	for _, item := range items {
-		if _, err = tx.Exec(ctx, `INSERT INTO outbound_material_refresh_items(round_id,cache_key_digest,preparation_effect_id,state,failure_code,source_count) VALUES($1,$2,NULLIF($3,''),$4,$5,$6) ON CONFLICT(round_id,cache_key_digest) DO UPDATE SET source_count=GREATEST(outbound_material_refresh_items.source_count,EXCLUDED.source_count),updated_at=clock_timestamp()`, round.ID, item.key, item.effect, item.state, item.failure, item.count); err != nil {
-			return err
+		// A prepared source already has a zero-count row, inserted atomically
+		// with its effect. Do not overwrite that row's state: a Provider receipt
+		// may have completed it before this page cursor is claimed.
+		if _, err = tx.Exec(ctx, `INSERT INTO outbound_material_refresh_items(round_id,cache_key_digest,preparation_effect_id,state,failure_code,source_count) VALUES($1,$2,NULLIF($3,''),$4,$5,$6) ON CONFLICT(round_id,cache_key_digest) DO UPDATE SET source_count=outbound_material_refresh_items.source_count+EXCLUDED.source_count,updated_at=clock_timestamp()`, round.ID, item.key, item.effect, item.state, item.failure, item.count); err != nil {
+			return false, err
 		}
 	}
-	result, err := tx.Exec(ctx, `UPDATE outbound_material_refresh_rounds SET state=$2,cursor=$3 WHERE id=$1 AND cursor=$4 AND state IN ('queued','running','waiting')`, round.ID, state, page.NextCursor, round.Cursor)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return tx.Commit(ctx)
-	}
-	if err = refreshRoundCounts(ctx, tx, round.ID); err != nil {
-		return err
+	if err = refreshRoundCounts(ctx, tx, id); err != nil {
+		return false, err
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return err
+		return false, err
 	}
-	if !page.Done {
-		return river.JobSnooze(time.Second)
-	}
-	return w.service.finalizeRefreshRound(ctx, round.ID)
+	return true, nil
 }
 func (s *MaterialPreparationService) finalizeRefreshRound(ctx context.Context, id int64) error {
 	tx, err := s.pool.Begin(ctx)

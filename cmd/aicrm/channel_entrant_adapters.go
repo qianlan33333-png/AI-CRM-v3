@@ -44,6 +44,7 @@ func (adapter channelWelcomeMaterialAdapter) ResolveWelcomeMaterialSnapshot(ctx 
 
 type entrantActionSource interface {
 	ReadPublishedEntrantAction(context.Context, string) (channelport.PublishedEntrantAction, error)
+	FreezePublishedWelcomeMessage(context.Context, channelport.WelcomeMessageFreezeRequest) (string, error)
 }
 type channelEntrantActionReaderAdapter struct {
 	uow    platformport.UnitOfWork
@@ -56,6 +57,16 @@ func (adapter channelEntrantActionReaderAdapter) ReadPublishedEntrantAction(ctx 
 		var readErr error
 		result, readErr = adapter.source.ReadPublishedEntrantAction(tx, source)
 		return readErr
+	})
+	return result, err
+}
+
+func (adapter channelEntrantActionReaderAdapter) FreezePublishedWelcomeMessage(ctx context.Context, request channelport.WelcomeMessageFreezeRequest) (string, error) {
+	var result string
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var freezeErr error
+		result, freezeErr = adapter.source.FreezePublishedWelcomeMessage(tx, request)
+		return freezeErr
 	})
 	return result, err
 }
@@ -112,6 +123,7 @@ func (adapter channelProviderTagAdapter) ProviderTagID(ctx context.Context, tagI
 }
 
 var _ channelport.PublishedEntrantActionReader = channelEntrantActionReaderAdapter{}
+var _ channelport.WelcomeMessageFreezer = channelEntrantActionReaderAdapter{}
 var _ channelport.WelcomeMaterialSnapshotResolver = channelWelcomeMaterialAdapter{}
 var _ wecomport.CurrentExternalContactReader = channelCurrentContactAdapter{}
 var _ tagport.ProviderTagBindingReader = channelProviderTagAdapter{}

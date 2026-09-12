@@ -15,6 +15,7 @@ import (
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 )
 
@@ -67,6 +68,7 @@ type testIdentities struct {
 	phoneQueries []string
 	summaries    []identityport.DirectoryIdentitySummary
 	phones       []identityport.MaskedPhone
+	directoryErr error
 }
 
 func (*testIdentities) VerifiedWeComCustomer(context.Context, string, string) (customerdomain.CustomerID, bool, error) {
@@ -78,7 +80,16 @@ func (identities *testIdentities) CustomerForPhone(_ context.Context, phone stri
 	return 42, true, nil
 }
 func (identities *testIdentities) DirectoryIdentities(context.Context, customerdomain.CustomerID) ([]identityport.DirectoryIdentitySummary, []identityport.MaskedPhone, error) {
-	return identities.summaries, identities.phones, nil
+	return identities.summaries, identities.phones, identities.directoryErr
+}
+
+type testOrders struct {
+	summary orderport.CustomerOrderSummary
+	err     error
+}
+
+func (orders testOrders) CustomerOrderSummary(context.Context, int64, int32) (orderport.CustomerOrderSummary, error) {
+	return orders.summary, orders.err
 }
 func (identities *testIdentities) RevealPhone(context.Context, customerdomain.CustomerID) (string, bool, error) {
 	identities.reveals++
@@ -394,6 +405,82 @@ func TestCustomer360ContainsOnlyApprovedLocalSections(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("forbidden %q: %s", forbidden, body)
 		}
+	}
+}
+
+func TestCustomer360RiskDegradesWhenRequiredSectionsAreUnavailable(t *testing.T) {
+	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleViewer}}}
+	tests := []struct {
+		name            string
+		identities      *testIdentities
+		orders          testOrders
+		wantOrderStatus string
+		wantRiskStatus  string
+		wantRiskLevel   string
+		wantRiskReasons []string
+	}{
+		{
+			name:            "order read error",
+			identities:      &testIdentities{},
+			orders:          testOrders{err: errors.New("order projection unavailable")},
+			wantOrderStatus: "degraded", wantRiskStatus: "degraded", wantRiskLevel: "unknown",
+			wantRiskReasons: []string{"order_section_unavailable"},
+		},
+		{
+			name:            "order read timeout",
+			identities:      &testIdentities{},
+			orders:          testOrders{err: context.DeadlineExceeded},
+			wantOrderStatus: "degraded", wantRiskStatus: "degraded", wantRiskLevel: "unknown",
+			wantRiskReasons: []string{"order_section_unavailable"},
+		},
+		{
+			name:            "empty order result is complete",
+			identities:      &testIdentities{},
+			orders:          testOrders{},
+			wantOrderStatus: "ready", wantRiskStatus: "ready", wantRiskLevel: "low",
+			wantRiskReasons: []string{},
+		},
+		{
+			name:            "identity failure preserves refunded order risk",
+			identities:      &testIdentities{directoryErr: errors.New("identity projection unavailable")},
+			orders:          testOrders{summary: orderport.CustomerOrderSummary{Refunded: 1}},
+			wantOrderStatus: "ready", wantRiskStatus: "degraded", wantRiskLevel: "unknown",
+			wantRiskReasons: []string{"identity_section_unavailable", "refunds_present"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &testCustomerStore{detail: customerapp.Detail{Item: customerapp.Item{CustomerID: 42, CustomerStatus: customerdomain.StatusActive, DisplayName: "Alice", OneIDLabel: "CID-42"}}}
+			config := testConfig(security, store, test.identities, &testAudit{})
+			config.Orders = test.orders
+			handler, err := NewHandler(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers/42/360", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			var body struct {
+				OrderSummary struct {
+					Status string `json:"status"`
+				} `json:"order_summary"`
+				Risk struct {
+					Status string `json:"status"`
+					Data   struct {
+						Level   string   `json:"level"`
+						Reasons []string `json:"reasons"`
+					} `json:"data"`
+				} `json:"risk"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.OrderSummary.Status != test.wantOrderStatus || body.Risk.Status != test.wantRiskStatus || body.Risk.Data.Level != test.wantRiskLevel || strings.Join(body.Risk.Data.Reasons, ",") != strings.Join(test.wantRiskReasons, ",") {
+				t.Fatalf("order=%q risk=%+v want order=%q status=%q level=%q reasons=%v", body.OrderSummary.Status, body.Risk, test.wantOrderStatus, test.wantRiskStatus, test.wantRiskLevel, test.wantRiskReasons)
+			}
+		})
 	}
 }
 

@@ -1318,6 +1318,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(cipherErr)
 		}
 		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
+		welcomeMessageCipher, cipherErr := wecom.NewChannelWelcomeMessageCipher(cfg.WeCom.CallbackAESKey)
+		if cipherErr != nil {
+			return fail(cipherErr)
+		}
+		if err = channelEntrantActions.SetWelcomeMessageDependencies(customerStore, welcomeMessageCipher); err != nil {
+			return fail(err)
+		}
 	}
 	legacyAudienceSource.RegistrationFacts = customerStore
 	legacyAudienceSource.Contacts = relationships
@@ -1330,7 +1337,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	if (cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled) && cfg.WeCom.CallbackEnabled {
 		entrantProvider := outbound.NewChannelEntrantProvider(
-			channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, uow, welcomeGrantStore,
+			channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, uow, welcomeGrantStore,
 			channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries},
 			channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient,
 		)
@@ -1353,7 +1360,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if excelClient != nil {
 		excelClient.MediaCovers = mediaRepository
 	}
-	excelBridge := &aiexcel.Bridge{Client: excelClient, App: aiService, Repo: aiRepository, Receipts: privateWriter, Provider: providerClient, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Scope: "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID, Covers: mediaRepository}
+	excelBridge := &aiexcel.Bridge{Client: excelClient, App: aiService, Repo: aiRepository, Receipts: privateWriter, Provider: providerClient, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Scope: "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID, Covers: mediaRepository, Strategies: operationCycleExcelStrategyPageAdapter{read: operationService}}
 	excelWorker.Bridge = excelBridge
 	aiService.ExcelSnapshot = excelBridge.PrepareSnapshot
 	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{deferred: aiRepository, resolver: oneID, trusted: queries, uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{excel: excelClient, content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository, sources: materialSources, preparer: materialPreparation, scopeDigest: materialScopeDigest}, providerClient)
@@ -1589,12 +1596,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if checkErr := pool.Check(readinessContext); checkErr != nil {
 			return checkErr
 		}
-		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT
-			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089','0092','0093','0094','0120','0121','0122','0123']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
-			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='order_service_entitlements' AND column_name='alliance')`).Scan(&complete)
-		if checkErr != nil || !complete {
-			return errors.New("database schema is not ready")
+		checkErr := checkCurrentReleaseSchema(readinessContext, pool.Native(), cfg)
+		if checkErr != nil {
+			return checkErr
 		}
 		if checkErr = effectsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
@@ -1610,6 +1614,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 		if checkErr = aiModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
+		}
+		if cfg.WeCom.ChannelProviderReadEnabled {
+			if checkErr = wecom.CheckGroupMembershipReadiness(readinessContext, pool.Native()); checkErr != nil {
+				return checkErr
+			}
 		}
 		if checkErr = tagModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
@@ -1635,8 +1644,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
-		if checkErr = hxcModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
-			return checkErr
+		if cfg.HXCDashboard.Enabled {
+			if checkErr = hxcModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+				return checkErr
+			}
 		}
 		if checkErr = surveyModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
@@ -1662,7 +1673,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	})
 	mediaUI := mediaModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets media.MediaAssets) error {
 		endpoint := map[string]string{"images": "api.admin_image_library_workspace", "mpLib": "api.admin_miniprogram_library_workspace", "attach": "api.admin_attachment_library_workspace"}[page]
-		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page], "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS})
+		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page], "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, ImageLibraryFilterHostJS: assets.ImageLibraryFilterHostJS})
 	})
 	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
 		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})

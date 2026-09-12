@@ -41,8 +41,13 @@
   {{if .Media}}
   <link rel="stylesheet" href="{{.MediaAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.MediaAssets.LabsCSS}}">
+  {{if eq .MediaPage "images"}}
+  <script type="module" src="{{.MediaAssets.MaterialSaveHostJS}}"></script>
+  <script type="module" src="{{.MediaAssets.ImageLibraryFilterHostJS}}"></script>
+  {{else}}
   <script type="module" src="{{.MediaAssets.AdminJS}}"></script>
   <script type="module" src="{{.MediaAssets.MaterialSaveHostJS}}"></script>
+  {{end}}
   {{end}}
   {{if .Customers}}
   <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-profile-v2">
@@ -85,7 +90,7 @@
   <link rel="stylesheet" href="{{.RadarAssets.LabsCSS}}">
   <link rel="stylesheet" href="/assets/standard-components/material_picker.css">
   <script type="module" src="{{.RadarAssets.StandardHostJS}}"></script>
-  <script defer src="/static/admin_console/radar_oneid_bridge.js?v=radar-oneid-v1"></script>
+  <script defer src="/static/admin_console/radar_oneid_bridge.js?v=radar-oneid-v3"></script>
   <script type="module" src="{{.RadarAssets.HostJS}}"></script>
   {{end}}
   {{if .GroupOps}}
