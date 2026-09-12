@@ -60,6 +60,7 @@ const mapping = {
   ],
 };
 for (const periodic of [false, true])
+  for (const entry of ["canonical", "standalone", "menu"])
   for (const mode of ["mapped", "legacy", "fresh"]) {
     const legacy = mode === "legacy";
     const fresh = mode === "fresh";
@@ -69,9 +70,11 @@ for (const periodic of [false, true])
         : "web/dist/admin/productForm.html",
       "utf8",
     );
-    const route = periodic
+    const canonicalRoute = periodic
       ? "/admin/service-period-products/101/edit"
       : "/admin/wechat-pay/products/101/edit";
+    const route = entry === "canonical" ? canonicalRoute
+      : `/admin/${entry === "menu" ? "wechat-pay/" : ""}${periodic ? "spProductForm" : "productForm"}.html?id=101`;
     const calls = [];
     const config = {
       product_id: 101,
@@ -218,7 +221,7 @@ for (const periodic of [false, true])
       assert.deepEqual(payload.field_mapping, { version: 1, fields: [] });
       assert.equal(d.querySelectorAll("[data-mapping-conversion]").length, 0);
     }
-    assert.equal(dom.window.location.pathname, route);
+    assert.equal(dom.window.location.pathname + dom.window.location.search, route);
     assert.equal(
       calls.some((c) => c.path.endsWith("/test") && c.method !== "GET"),
       false,
