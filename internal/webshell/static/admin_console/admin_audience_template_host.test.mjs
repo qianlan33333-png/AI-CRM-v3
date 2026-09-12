@@ -124,6 +124,13 @@ const document = dom.window.document;
 const select = document.querySelector("#templateSelect");
 if (templateReads < 3 || select.options.length !== 7 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("frozen renderer and V3 submission template were not restored after the delayed detail renderer");
 if (document.querySelector("#dailySelect").value !== "off" || !document.querySelector("#summaryMode").textContent.includes("每日 09:00") || !document.querySelector("#refreshScheduleNote").textContent.includes("保留原规则") || document.querySelector("#refreshScheduleNote").textContent.includes("上海时间")) throw new Error("legacy custom schedule was not presented as its actual business time");
+// The frozen renderer can finish a later asynchronous configuration read.
+// Its old cron projection must not overwrite the V3-owned business schedule
+// or make the two "off" selects look like a manual configuration.
+document.querySelector("#summaryMode").textContent = "计划 0 1 * * *";
+document.querySelector("#dailySelect").value = "daily_0200";
+await wait(20);
+if (document.querySelector("#dailySelect").value !== "off" || document.querySelector("#summaryMode").textContent !== "每日 09:00（历史自定义计划）") throw new Error("late frozen schedule render replaced the V3-owned legacy presentation");
 if (document.querySelector("#policyTimezoneInput")) throw new Error("new quiet-hours must not expose a timezone field in the business UI");
 document.querySelector("#savePackageBtn").click();
 await wait(180);

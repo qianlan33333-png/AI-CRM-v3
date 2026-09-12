@@ -362,6 +362,19 @@
       });
     });
     observer.observe(root, { childList: true });
+    // The frozen page also fills this summary after its own asynchronous
+    // configuration read. Keep the V3-owned schedule projection authoritative
+    // if that late render replaces a legacy custom rule with its raw cron.
+    const summary = byID("summaryMode");
+    if (summary) {
+      const scheduleObserver = new MutationObserver(() => {
+        if (!state.ready || summary.textContent === refreshScheduleLabel(storedRefreshSchedule())) return;
+        queueMicrotask(() => {
+          if (state.ready && summary.textContent !== refreshScheduleLabel(storedRefreshSchedule())) renderRefreshMode();
+        });
+      });
+      scheduleObserver.observe(summary, { childList: true, characterData: true, subtree: true });
+    }
     try {
       await load();
     } catch (error) { setStatus(error.message || "模板表单无法加载。", "error"); }
