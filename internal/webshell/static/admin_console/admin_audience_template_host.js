@@ -156,10 +156,10 @@
 
     function legacyShanghaiSchedule(cron) {
       const match = String(cron || "").trim().match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/);
-      if (!match) return "历史自定义计划（保留原服务端 UTC 规则）";
+      if (!match) return "历史自定义计划（保留原规则）";
       const minute = Number(match[1]);
       const hour = Number(match[2]);
-      if (minute > 59 || hour > 23) return "历史自定义计划（保留原服务端 UTC 规则）";
+      if (minute > 59 || hour > 23) return "历史自定义计划（保留原规则）";
       return `每日 ${String((hour + 8) % 24).padStart(2, "0")}:${String(minute).padStart(2, "0")}（历史自定义计划）`;
     }
 

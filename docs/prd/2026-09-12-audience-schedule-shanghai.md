@@ -6,7 +6,7 @@
 
 人群包详情页旧 controller 将“每日 2:00”提交为 `refresh_cron_utc: "0 2 * * *"`。Scheduler Owner 的既有合同不从该字段解释受控每日计划：`refresh_mode=daily_0200` 才推导 UTC `0 18 * * *`，即上海次日 02:00；所有非 `legacy_custom` 模式的 `refresh_cron_utc` 必须为空。因此旧写法会被服务端拒绝或造成错误语义。
 
-只读生产核验显示：两个 active `daily_0200` 和四个 active `every_3m` 均没有 cron；三个 paused `legacy_custom` 保存 `0 1 * * *`，即上海 09:00。不存在需要迁移的错误 `0 2 * * *` 记录。
+只读生产核验显示：两个 active `daily_0200` 和四个 active `every_3m` 均没有 cron；三个 paused `legacy_custom` 保存 `0 1 * * *`，即上海 09:00。不存在需要迁移的错误 `0 2 * * *` 记录。另以 `quiet_hours` 聚合为空后复核 `automation_policy_versions` 总数为 0：当前生产没有已存安静时段策略版本，因此本项不会声称已统一迁移其他时区的历史策略。
 
 ## 决策
 
