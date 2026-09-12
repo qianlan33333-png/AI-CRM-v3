@@ -10,11 +10,12 @@ const password = process.env.AICRM_ADMIN_LAYOUT_TEST_PASSWORD;
 const productID = process.env.AICRM_ADMIN_LAYOUT_TEST_PRODUCT_ID;
 const serviceProductID = process.env.AICRM_ADMIN_LAYOUT_TEST_SERVICE_PRODUCT_ID;
 const historicalOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_ORDER;
+const nativeOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_NATIVE_ORDER;
 const radarID = process.env.AICRM_ADMIN_LAYOUT_TEST_RADAR_ID;
 const aiPlanID = process.env.AICRM_ADMIN_LAYOUT_TEST_AI_PLAN_ID;
 const screenshotDirectory = process.env.AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !screenshotDirectory) {
-  throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product ids, native AI plan id, and screenshot directory");
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(nativeOrderReference || "") || !screenshotDirectory) {
+  throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product ids, order fixtures, native AI plan id, and screenshot directory");
 }
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -297,6 +298,34 @@ try {
       return {stage:Boolean(stage),paddingLeft:style?.paddingLeft || '',paddingTop:style?.paddingTop || '',crumbHidden:Boolean(crumb) && hidden(crumb),titleHidden:Boolean(title) && hidden(title),emptyPageHeadHidden:!(page === 'radarDetail' || page === 'radarForm') || hidden(pageHead),actionVisible:Boolean(action) && getComputedStyle(action).display !== 'none'};
     })()`);
     if (!radar?.stage || radar.paddingLeft !== "20px" || radar.paddingTop !== "16px" || !radar.crumbHidden || !radar.titleHidden || !radar.emptyPageHeadHidden || !radar.actionVisible) throw new Error(label + " V3 title/action layout invalid");
+  };
+  const assertRadarDetailTimeHost = async () => {
+    const detail = await evaluate(cdp, `(() => {
+      const host=document.querySelector('[data-v3-radar-event-host]');
+      const inputs=host ? Array.from(host.querySelectorAll('input')).map(node => node.type) : [];
+      const text=String(host?.textContent || '');
+      return {host:Boolean(host),inputs,oldRows:Boolean(document.querySelector('#dRows')),time:text.includes('2026-09-07 09:02:03'),raw:text.includes('2026-09-07T01:02:03'),exportVisible:Boolean(document.querySelector('#dExport')) && getComputedStyle(document.querySelector('#dExport')).display !== 'none'};
+    })()`);
+    if (!detail?.host || detail.inputs.join(',') !== 'text,datetime-local,datetime-local' || detail.oldRows || !detail.time || detail.raw || !detail.exportVisible) throw new Error("radar detail Shanghai time Host did not replace the frozen query surface");
+  };
+  const assertRadarDetailNarrow = async () => {
+    try {
+      for (const width of [780, 390]) {
+        await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 844 });
+        await waitFor(cdp, "Boolean(document.querySelector('[data-v3-radar-event-host]'))", "radar detail Host disappeared at narrow width");
+        const narrow = await evaluate(cdp, `(() => {
+          const host=document.querySelector('[data-v3-radar-event-host]');
+          const exportButton=document.querySelector('#dExport');
+          const tableScroll=host?.querySelector('table.tbl')?.parentElement;
+          const visible=node => { if (!node) return false; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
+          const exportRect=exportButton?.getBoundingClientRect();
+          return {overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,host:visible(host),exportVisible:visible(exportButton),exportInside:!exportRect || (exportRect.left >= -1 && exportRect.right <= innerWidth + 1),tableScrollable:Boolean(tableScroll) && getComputedStyle(tableScroll).overflowX !== 'visible'};
+        })()`);
+        if (!narrow?.host || !narrow.exportVisible || !narrow.exportInside || narrow.overflow || !narrow.tableScrollable) throw new Error(`radar detail ${width}px responsive geometry invalid`);
+      }
+    } finally {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+    }
   };
   const assertOwnerHandoffLayout = async label => {
     await assertLayout("standard", label, "[data-owner-picker=\"source\"]");
@@ -584,8 +613,11 @@ try {
   const radarMounted = await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#btnNew'))", "radar", "standard", ".sec-radar .page-head", false, true);
   if (radarMounted) await recordGeometry("radar", () => assertRadarLayout("radar", "#btnNew"), true);
   const radarNumericID = Number(radarID);
-  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarNumericID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit'))", "radar-detail", "standard", "#dEdit", false);
-  if (radarDetailMounted) await recordGeometry("radar-detail", () => assertRadarLayout("radar-detail", "#dEdit", "#dEdit"), true);
+  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarNumericID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit')) && Boolean(document.querySelector('[data-v3-radar-event-host]')) && document.querySelector('[data-v3-radar-event-host]')?.textContent?.includes('2026-09-07 09:02:03')", "radar-detail", "standard", "#dEdit", false);
+  if (radarDetailMounted) {
+    await recordGeometry("radar-detail", async () => { await assertRadarLayout("radar-detail", "#dEdit", "#dEdit"); await assertRadarDetailTimeHost(); }, true);
+    await recordGeometry("radar-detail-narrow", assertRadarDetailNarrow, false);
+  }
   const radarFormMounted = await navigate("/admin/radarForm.html", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#fSave'))", "radar-form", "standard", "#fSave", false);
   if (radarFormMounted) await recordGeometry("radar-form", () => assertRadarLayout("radar-form", "#fSave", "#fSave"), true);
   await navigate("/admin/wecom-tags", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "tags", "embedded", embeddedTitle, true, true);
@@ -650,7 +682,95 @@ try {
 
   // Detail and frozen aliases remain on their business Host, including the
   // order history panel whose source mapping is independently seeded below.
-  await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference), "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.body?.textContent?.includes('外推回执'))", "order-detail-history", "embedded", embeddedTitle, true);
+  await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference), "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.body?.textContent?.includes('外部处理记录'))", "order-detail-history", "embedded", embeddedTitle, true);
+  await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(nativeOrderReference), "Boolean(document.querySelector('.order-refund-confirmation')) && Boolean(document.body?.textContent?.includes('订单信息')) && Boolean(document.body?.textContent?.includes('匿名退款演示商品'))", "order-detail-native", "embedded", embeddedTitle, true);
+  const nativeOrderPresentation = await evaluate(cdp, `(() => ({
+    hasCanonicalCustomer: Boolean(document.body?.textContent?.includes('CID-')),
+    hasMaskedPhone: Boolean(document.body?.textContent?.includes('130****1234')),
+    hasChinesePayment: Boolean(document.body?.textContent?.includes('微信支付')),
+    hasChineseStatus: Boolean(document.body?.textContent?.includes('已支付')),
+    hasRefundForm: Boolean(document.querySelector('.order-refund-confirmation .input[data-order-refund-amount]')) && Boolean(document.querySelector('.order-refund-confirmation .select[data-order-refund-reason]')) && Boolean(document.querySelector('.order-refund-confirmation .btn.primary')),
+    hasRawInternalCustomerKey: Boolean(document.body?.textContent?.includes('customer:')),
+  }))()`);
+  if (!nativeOrderPresentation?.hasCanonicalCustomer || !nativeOrderPresentation?.hasMaskedPhone || !nativeOrderPresentation?.hasChinesePayment || !nativeOrderPresentation?.hasChineseStatus || !nativeOrderPresentation?.hasRefundForm || nativeOrderPresentation?.hasRawInternalCustomerKey) {
+    interactionFailures.push("order-detail-native:business presentation or guarded form is invalid");
+  }
+  // The mobile screenshot is intentionally a real narrow viewport, while the
+  // rest of this layout matrix remains desktop-only. Historical orders must
+  // stay read-only at either width and never expose an implementation-era label.
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true, screenWidth: 390, screenHeight: 844 });
+  currentStep = "order-detail-history-mobile";
+  try {
+    await cdp.call("Page.navigate", { url: baseURL + "/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference) });
+    await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && Boolean(document.querySelector('.order-host-layout')) && Boolean(document.body?.textContent?.includes('历史订单，仅供查询'))", "order-detail-history-mobile did not render the historical read-only detail");
+    await waitForFonts("order-detail-history-mobile");
+    const historicalMobile = await evaluate(cdp, `(() => ({
+      readOnly: Boolean(document.body?.textContent?.includes('历史订单，仅供查询')),
+      implementationLabel: Boolean(document.body?.textContent?.includes('V1')) || Boolean(document.body?.textContent?.includes('V2')),
+      refundForm: Boolean(document.querySelector('.order-refund-confirmation')),
+      rawStatus: Boolean(document.body?.textContent?.includes('outcome_unknown')),
+      sidebarHidden: Boolean(document.querySelector('.admin-sidebar')) && getComputedStyle(document.querySelector('.admin-sidebar')).display === 'none',
+      detailPanelsStacked: (() => {
+        const layout = document.querySelector('[data-order-detail-layout]');
+        if (!layout) return false;
+        const panels = Array.from(layout.children).filter(node => getComputedStyle(node).display !== 'none');
+        const first = panels[0]?.getBoundingClientRect();
+        return panels.length >= 2 && panels.every(node => {
+          const box = node.getBoundingClientRect();
+          return Boolean(first) && Math.abs(box.left - first.left) <= 1 && box.width >= 300;
+        });
+      })(),
+      orderHeader: (() => {
+        const header=document.querySelector('#stage div[style*="height:52px"]');
+        const number=header?.querySelector('[style*="font-family"]');
+        const status=number?.nextElementSibling;
+        const headerBox=header?.getBoundingClientRect();
+        const boxes=[number,status].filter(Boolean).map(node => node.getBoundingClientRect());
+        return {
+          number: number?.textContent?.trim(), status: status?.textContent?.trim(),
+          complete: Boolean(headerBox) && header.scrollHeight <= header.clientHeight + 1 && boxes.length === 2 && boxes.every(box => box.top >= headerBox.top - 1 && box.bottom <= headerBox.bottom + 1),
+        };
+      })(),
+      overflowsViewport: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    }))()`);
+    if (!historicalMobile?.readOnly || historicalMobile?.implementationLabel || historicalMobile?.refundForm || historicalMobile?.rawStatus || !historicalMobile?.sidebarHidden || !historicalMobile?.detailPanelsStacked || !historicalMobile?.orderHeader?.complete || historicalMobile?.orderHeader?.number !== historicalOrderReference || !historicalMobile?.orderHeader?.status || historicalMobile?.overflowsViewport) throw new Error("historical order mobile presentation is invalid");
+    await capture("order-detail-history-mobile");
+    currentStep = "order-detail-native-mobile";
+    await cdp.call("Page.navigate", { url: baseURL + "/admin/orderDetail.html?id=" + encodeURIComponent(nativeOrderReference) });
+    await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && Boolean(document.querySelector('.order-refund-confirmation'))", "order-detail-native-mobile did not render its refund confirmation form");
+    await waitForFonts("order-detail-native-mobile");
+    const nativeMobile = await evaluate(cdp, `(() => {
+      const form=document.querySelector('.order-refund-confirmation');
+      const amount=form?.querySelector('input[data-order-refund-amount]');
+      const transaction=form?.querySelector('input[data-order-refund-transaction]');
+      const reason=form?.querySelector('select[data-order-refund-reason]');
+      const submit=form?.querySelector('button.btn.primary');
+      const formBox=form?.getBoundingClientRect();
+      const controls=[amount,transaction,reason,submit].filter(Boolean).map(node => node.getBoundingClientRect());
+      const submitStyle=submit ? getComputedStyle(submit) : null;
+      const header=document.querySelector('#stage div[style*="height:52px"]');
+      const number=header?.querySelector('[style*="font-family"]');
+      const status=number?.nextElementSibling;
+      const headerBox=header?.getBoundingClientRect();
+      const headerBoxes=[number,status].filter(Boolean).map(node => node.getBoundingClientRect());
+      return {
+        standardFields: Boolean(form?.classList.contains('labs')) && form?.querySelectorAll('.field').length === 4,
+        standardPrimary: submitStyle?.backgroundColor === 'rgb(51, 112, 255)' && submitStyle.color === 'rgb(255, 255, 255)' && submitStyle.borderRadius === '6px',
+        controlsFit: Boolean(formBox) && controls.length === 4 && controls.every(box => box.width >= 300 && box.right <= innerWidth + 1),
+        orderHeader: {
+          number: number?.textContent?.trim(), status: status?.textContent?.trim(),
+          complete: Boolean(headerBox) && header.scrollHeight <= header.clientHeight + 1 && headerBoxes.length === 2 && headerBoxes.every(box => box.top >= headerBox.top - 1 && box.bottom <= headerBox.bottom + 1),
+        },
+        overflowsViewport: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+      };
+    })()`);
+    if (!nativeMobile?.standardFields || !nativeMobile?.standardPrimary || !nativeMobile?.controlsFit || !nativeMobile?.orderHeader?.complete || nativeMobile?.orderHeader?.number !== nativeOrderReference || !nativeMobile?.orderHeader?.status || nativeMobile?.overflowsViewport) throw new Error("native order mobile refund form is not visually actionable");
+    await capture("order-detail-native-mobile");
+  } catch (error) {
+    await recordRouteFailure(currentStep, error);
+  } finally {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+  }
   const effectsMounted = await navigate("/admin/campaigns.html?view=external-effects", "Boolean(document.querySelector('#stage')) && Boolean(document.querySelector('#effects-refresh')) && Boolean(document.querySelector('#stage h2'))", "external-effects", "standard", "#stage h2", false);
   if (effectsMounted) await recordGeometry("external-effects", () => assertExternalEffectsLayout("external-effects"), true);
 

@@ -7,6 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.PageTitle}} · 客户管理后台</title>
   <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=production-shell-layout-20260909">
+  {{with presentationAssets}}{{if .AdminDateTimeScript}}<script type="module" src="{{.AdminDateTimeScript}}"></script>{{end}}{{end}}
   <script defer src="/static/admin_console/admin_console.js?v=production-shell-41f80a11-mime2"></script>
   <script defer src="/static/admin_console/admin_shell.js?v=static-mime2"></script>
   {{if .AudienceList}}
@@ -83,7 +84,6 @@
   <link rel="stylesheet" href="{{.CouponAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.CouponAssets.LabsCSS}}">
   <script type="module" src="{{.CouponAssets.HostJS}}"></script>
-  <script type="module" src="{{.CouponAssets.AdminJS}}"></script>
   {{end}}
   {{if .Radar}}
   <link rel="stylesheet" href="{{.RadarAssets.TokensCSS}}">

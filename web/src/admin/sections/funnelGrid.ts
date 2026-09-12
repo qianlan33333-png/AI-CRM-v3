@@ -2,6 +2,7 @@ import type { AdminApi } from "../../shared/api/client";
 import { request } from "../../api/transport";
 import { toast } from "../../shared/ui/feedback";
 import { esc } from "./util";
+import { formatShanghaiDateTime } from "../../../v3/adminDateTime";
 
 export interface FunnelGridOpts {
   product?: { code: string; name: string; price: string; status: string };
@@ -79,13 +80,45 @@ const identityName: Record<IdentityState, string> = {
   conflict: "冲突",
 };
 const matchName: Record<Row["matched_by"], string> = { none: "未命中", unionid: "UnionID", phone: "手机号", both: "双键" };
+const identityReasonName: Record<string, string> = {
+  matched_unionid: "已通过 UnionID 匹配",
+  matched_phone: "已通过手机号匹配",
+  matched_both: "已通过双键匹配",
+  no_match: "未找到可匹配身份",
+  missing_identity: "缺少可用身份信息",
+  invalid_unionid: "UnionID 格式无效",
+  invalid_phone: "手机号格式无效",
+  duplicate_hxc_unionid: "UnionID 对应多个 HXC 用户",
+  duplicate_hxc_phone: "手机号对应多个 HXC 用户",
+  duplicate_hxc_customer: "HXC 用户对应多个客户",
+  identity_multiple_roots: "身份关联到多个客户根",
+  unionid_phone_cross_root: "双键关联到不同客户根",
+  concurrent_identity_conflict: "身份并发更新冲突",
+};
+const membershipAttributionName: Record<string, string> = {
+  user_id: "用户账号归因",
+  unique_phone: "唯一手机号归因",
+  none: "未建立归因",
+};
+const subscriptionTierName: Record<string, string> = {
+  free: "免费版",
+  standard: "标准版",
+  pro: "专业版",
+};
+const chineseOr = (value: string, fallback: string): string => /[㐀-鿿]/.test(value) ? value : fallback;
+const identityReasonLabel = (value: string): string => identityReasonName[value] || "身份原因待确认";
+const membershipAttributionLabel = (value: string): string => membershipAttributionName[value] || "归因状态待确认";
+const subscriptionTierLabel = (value: string): string => {
+  const normalized = value.trim();
+  if (!normalized || normalized === "(empty)") return "未提供";
+  return subscriptionTierName[normalized] || chineseOr(normalized, "会员等级待确认");
+};
 const split = (value: string): string[] =>
   value
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-const fmtTime = (value?: string): string =>
-  value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
+const fmtTime = (value?: string): string => value ? formatShanghaiDateTime(value) : "—";
 const fmtNumber = (value: number): string =>
   Number(value || 0).toLocaleString("zh-CN");
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -147,6 +180,15 @@ export async function mountFunnelGrid(
   let loading = false;
   const values = (id: string): string[] =>
     split(($(id) as HTMLInputElement).value);
+  const groupLabel = (value: string): string => {
+    const groupBy = ($("#hxcGroup") as HTMLSelectElement).value;
+    if (groupBy === "stage") return stageName[value as Stage] || "漏斗阶段待确认";
+    if (groupBy === "identity_state") return identityName[value as IdentityState] || "OneID 状态待确认";
+    if (groupBy === "matched_by") return matchName[value as Row["matched_by"]] || "匹配来源待确认";
+    if (groupBy === "identity_reason_code") return identityReasonLabel(value);
+    if (groupBy === "subscription_tier") return subscriptionTierLabel(value);
+    return chineseOr(value, "分组值待确认");
+  };
   function payload() {
     return {
       projection_id: summary?.projection_id,
@@ -170,7 +212,7 @@ export async function mountFunnelGrid(
     summary = await json<Summary>("/api/admin/hxc-dashboard/summary");
     const c = summary.counts;
     $("#hxcStats").innerHTML =
-      `<div class="card stat"><div class="stat-l">HXC 当前有效用户</div><div class="stat-v">${fmtNumber(c.total)}</div><div class="stat-s">三段总和严格等于此数</div></div><div class="card stat ok"><div class="stat-l">有效会员 · 已使用</div><div class="stat-v" style="color:#2EA121">${fmtNumber(c.active_used)}</div><div class="stat-s">有效会员且有真实使用</div></div><div class="card stat warn"><div class="stat-l">有效会员 · 未使用</div><div class="stat-v" style="color:#D97917">${fmtNumber(c.active_unused)}</div><div class="stat-s">有效会员且从未使用</div></div><div class="card stat blue"><div class="stat-l">已注册 · 无有效会员</div><div class="stat-v" style="color:#D83931">${fmtNumber(c.registered_no_active_membership)}</div><div class="stat-s">free、过期或无到期时间</div></div><div class="card stat gray"><div class="stat-l">OneID 质量</div><div class="stat-v" style="font-size:18px">${fmtNumber(c.matched)} / ${fmtNumber(c.unmatched)} / ${fmtNumber(c.conflict)}</div><div class="stat-s">UnionID ${fmtNumber(c.matched_by_unionid)} · 手机 ${fmtNumber(c.matched_by_phone)} · 双键 ${fmtNumber(c.matched_by_both)} · 待解析 ${fmtNumber(c.pending_observation)} · 非法 ${fmtNumber(c.invalid_identity)}</div></div>`;
+      `<div class="card stat"><div class="stat-l">HXC 当前有效用户</div><div class="stat-v">${fmtNumber(c.total)}</div><div class="stat-s">三段总和严格等于此数</div></div><div class="card stat ok"><div class="stat-l">有效会员 · 已使用</div><div class="stat-v" style="color:#2EA121">${fmtNumber(c.active_used)}</div><div class="stat-s">有效会员且有真实使用</div></div><div class="card stat warn"><div class="stat-l">有效会员 · 未使用</div><div class="stat-v" style="color:#D97917">${fmtNumber(c.active_unused)}</div><div class="stat-s">有效会员且从未使用</div></div><div class="card stat blue"><div class="stat-l">已注册 · 无有效会员</div><div class="stat-v" style="color:#D83931">${fmtNumber(c.registered_no_active_membership)}</div><div class="stat-s">免费版、已过期或未填写到期时间</div></div><div class="card stat gray"><div class="stat-l">OneID 质量</div><div class="stat-v" style="font-size:18px">${fmtNumber(c.matched)} / ${fmtNumber(c.unmatched)} / ${fmtNumber(c.conflict)}</div><div class="stat-s">UnionID ${fmtNumber(c.matched_by_unionid)} · 手机 ${fmtNumber(c.matched_by_phone)} · 双键 ${fmtNumber(c.matched_by_both)} · 待解析 ${fmtNumber(c.pending_observation)} · 非法 ${fmtNumber(c.invalid_identity)}</div></div>`;
     $("#hxcStale").innerHTML =
       summary.freshness === "stale"
         ? '<div class="card" style="padding:12px;color:#D97917;margin-bottom:12px">⚠ 当前展示上一成功版本，数据已超过 8 小时未刷新。</div>'
@@ -197,7 +239,7 @@ export async function mountFunnelGrid(
         ? result.items
             .map(
               (row) =>
-                `<tr><td><code>${esc(row.user_ref)}</code></td><td><span class="chip ${row.stage === "active_used" ? "ok" : row.stage === "active_unused" ? "warn" : "red"}">${stageName[row.stage]}</span></td><td>${esc(row.subscription_tier)}</td><td>${fmtTime(row.subscription_expires_at)}</td><td>${fmtNumber(row.current_period_used)} / ${fmtNumber(row.monthly_chat_quota)}</td><td>${fmtNumber(row.consultation_used)} / ${fmtNumber(row.consultation_limit)}</td><td>${fmtNumber(row.sessions_7d)}</td><td>${fmtNumber(row.user_messages_7d)}</td><td>${esc(row.last_capability || "—")}</td><td>${fmtTime(row.last_used_at)}</td><td>${esc(row.business_stage || "—")}</td><td>${esc(row.user_segment || "—")}</td><td><span class="chip ${row.identity_state === "matched" ? "ok" : row.identity_state === "conflict" ? "red" : "gray"}">${identityName[row.identity_state]}</span><br><small>${esc(matchName[row.matched_by] || row.matched_by)} · ${esc(row.identity_reason_code)}</small>${row.identity_case_id ? `<br><a href="/admin/oneid">冲突 Case #${fmtNumber(row.identity_case_id)}</a>` : ""}</td><td>${esc(row.membership_attribution)}</td></tr>`,
+                `<tr><td><code>${esc(row.user_ref)}</code></td><td><span class="chip ${row.stage === "active_used" ? "ok" : row.stage === "active_unused" ? "warn" : "red"}">${stageName[row.stage]}</span></td><td>${esc(subscriptionTierLabel(row.subscription_tier))}</td><td>${fmtTime(row.subscription_expires_at)}</td><td>${fmtNumber(row.current_period_used)} / ${fmtNumber(row.monthly_chat_quota)}</td><td>${fmtNumber(row.consultation_used)} / ${fmtNumber(row.consultation_limit)}</td><td>${fmtNumber(row.sessions_7d)}</td><td>${fmtNumber(row.user_messages_7d)}</td><td>${esc(row.last_capability || "—")}</td><td>${fmtTime(row.last_used_at)}</td><td>${esc(row.business_stage || "—")}</td><td>${esc(row.user_segment || "—")}</td><td><span class="chip ${row.identity_state === "matched" ? "ok" : row.identity_state === "conflict" ? "red" : "gray"}">${identityName[row.identity_state]}</span><br><small>${esc(matchName[row.matched_by] || "匹配来源待确认")} · ${esc(identityReasonLabel(row.identity_reason_code))}</small>${row.identity_case_id ? `<br><a href="/admin/oneid">冲突 Case #${fmtNumber(row.identity_case_id)}</a>` : ""}</td><td>${esc(membershipAttributionLabel(row.membership_attribution))}</td></tr>`,
             )
             .join("")
         : '<tr><td colspan="14" style="text-align:center;padding:30px;color:#8F959E">没有符合临时筛选的数据</td></tr>';
@@ -205,7 +247,7 @@ export async function mountFunnelGrid(
         ? result.groups
             .map(
               (group) =>
-                `<span class="chip blue" style="margin-right:6px">${esc(group.key)} · ${fmtNumber(group.count)}</span>`,
+                `<span class="chip blue" style="margin-right:6px">${esc(groupLabel(group.key))} · ${fmtNumber(group.count)}</span>`,
             )
             .join("")
         : "";

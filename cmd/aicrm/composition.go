@@ -822,6 +822,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	couponTargetNames, err := productapp.NewTargetBatchReader(uow, productRepository)
+	if err != nil {
+		return fail(err)
+	}
+	couponProducts, err := newCouponProductReads(productCatalog, couponTargetNames)
+	if err != nil {
+		return fail(err)
+	}
 	couponModule := coupon.NewModuleRegistration()
 	couponRepository, err := couponstore.NewPostgreSQL(pool.Native(), uow)
 	if err != nil {
@@ -844,7 +852,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	couponBindings, err := couponModule.BindWithClaimsAndPublic(couponService, productCatalog, couponClaimAdmin, couponPublic, requestSecurity)
+	couponBindings, err := couponModule.BindWithClaimsAndPublic(couponService, couponProducts, couponClaimAdmin, couponPublic, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -1077,7 +1085,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore})
+	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity, orderCustomerContactDisplayAdapter{uow: uow, reader: customerStore})
 	if err != nil {
 		return fail(err)
 	}

@@ -184,10 +184,16 @@ type storeStub struct {
 	shopMaterial            paymentport.ShopRefundMaterial
 	bound                   bool
 	reserved                int64
+	nonTerminalRefund       bool
+	nonTerminalRefundChecks int
 	refundReconciliationID  int64
 	paymentReconciliationID int64
 	callbackOutcome         string
 	handoffCalls            int
+	recoveryRefund          domain.Refund
+	recoveryFound           bool
+	recoveryActor           string
+	recoveryKey             [32]byte
 }
 
 func (s *storeStub) CreatePayment(_ context.Context, p domain.Payment, _, _ [32]byte, _ string) (domain.Payment, bool, error) {
@@ -219,6 +225,10 @@ func (s *storeStub) GetHandoff(context.Context, int64) (paymentport.Handoff, err
 func (s *storeStub) ReservedRefundMinor(context.Context, int64) (int64, error) {
 	return s.reserved, nil
 }
+func (s *storeStub) HasNonTerminalRefund(context.Context, int64) (bool, error) {
+	s.nonTerminalRefundChecks++
+	return s.nonTerminalRefund, nil
+}
 func (s *storeStub) CreateRefund(_ context.Context, r domain.Refund, _, _ [32]byte, _ string) (domain.Refund, bool, error) {
 	r.ID = 9
 	s.refund = r
@@ -226,6 +236,10 @@ func (s *storeStub) CreateRefund(_ context.Context, r domain.Refund, _, _ [32]by
 }
 func (s *storeStub) ReplayRefund(context.Context, [32]byte, [32]byte, string) (domain.Refund, bool, error) {
 	return s.refund, s.refund.ID > 0, nil
+}
+func (s *storeStub) FindRefundByIdempotencyKey(_ context.Context, key [32]byte, actor string) (domain.Refund, bool, error) {
+	s.recoveryKey, s.recoveryActor = key, actor
+	return s.recoveryRefund, s.recoveryFound, nil
 }
 func (s *storeStub) BindRefundEffect(_ context.Context, r domain.Refund, _ effectport.PaymentV1Intent, _ map[string]any) (domain.Refund, error) {
 	s.refund = r
@@ -262,7 +276,32 @@ func (s *storeStub) GetPaymentByMerchant(context.Context, string, bool) (domain.
 func (s *storeStub) GetPaymentByMerchantProvider(context.Context, domain.Provider, string, bool) (domain.Payment, error) {
 	return s.payment, nil
 }
+
+func TestFindRefundRecoveryReceiptRequiresSamePaymentActorAndKey(t *testing.T) {
+	key := "refund-recovery-key-0001"
+	store := &storeStub{
+		payment:        domain.Payment{ID: 7, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-recovery-7"},
+		recoveryRefund: domain.Refund{ID: 9, PaymentID: 7, Provider: domain.ProviderWeChatPay, RefundNo: "RF-recovery-9", Status: domain.RefundCompleted},
+		recoveryFound:  true,
+	}
+	service := NewService(uowStub{}, store, orderStub{}, sessionStub{}, &effectStub{})
+	refund, found, err := service.FindRefundRecoveryReceipt(context.Background(), domain.ProviderWeChatPay, "M-recovery-7", "admin:17", key)
+	wantDigest := sha256.Sum256([]byte(key))
+	if err != nil || !found || refund.ID != 9 || store.recoveryActor != "admin:17" || store.recoveryKey != wantDigest {
+		t.Fatalf("refund=%+v found=%t actor=%q digest=%x err=%v", refund, found, store.recoveryActor, store.recoveryKey, err)
+	}
+	store.recoveryRefund.PaymentID = 8
+	if refund, found, err = service.FindRefundRecoveryReceipt(context.Background(), domain.ProviderWeChatPay, "M-recovery-7", "admin:17", key); err != nil || found || refund.ID != 0 {
+		t.Fatalf("cross-payment receipt was exposed: refund=%+v found=%t err=%v", refund, found, err)
+	}
+	if _, _, err = service.FindRefundRecoveryReceipt(context.Background(), domain.ProviderWeChatPay, "M-recovery-7", "admin:17", "too-short"); !errors.Is(err, paymentport.ErrInvalid) {
+		t.Fatalf("short key err=%v", err)
+	}
+}
 func (s *storeStub) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
+	return nil, 0, nil
+}
+func (s *storeStub) ListRefundsForPayment(context.Context, domain.Provider, string, int32, int32) ([]paymentport.RefundProjection, int64, error) {
 	return nil, 0, nil
 }
 func (s *storeStub) ListEffectBindings(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error) {
@@ -351,17 +390,38 @@ func TestRefundReservesOutstandingAmountsAndRejectsOverRefund(t *testing.T) {
 	}
 }
 
+func TestWeChatPayRefundRejectsNewKeyWhileEarlierRefundIsNonTerminal(t *testing.T) {
+	now := time.Date(2026, 9, 12, 5, 0, 0, 0, time.UTC)
+	store := &storeStub{payment: domain.Payment{ID: 7, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}, nonTerminalRefund: true}
+	service := NewService(uowStub{}, store, orderStub{}, sessionStub{}, &effectStub{})
+	_, err := service.RequestRefund(context.Background(), paymentport.RefundCommand{PaymentID: 7, AmountMinor: 100, RefundNo: "R-new-key", Reason: "customer request", ActorScope: "admin:18", IdempotencyKey: "refund-key-new-0000001"})
+	if !errors.Is(err, paymentport.ErrConflict) || store.refund.ID != 0 || store.nonTerminalRefundChecks != 1 {
+		t.Fatalf("refund=%+v nonterminal_checks=%d err=%v", store.refund, store.nonTerminalRefundChecks, err)
+	}
+}
+
+func TestWeChatPayRefundAllowsNewKeyAfterEarlierRefundIsTerminal(t *testing.T) {
+	now := time.Date(2026, 9, 12, 5, 0, 0, 0, time.UTC)
+	store := &storeStub{payment: domain.Payment{ID: 7, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}}
+	service := NewService(uowStub{}, store, orderStub{}, sessionStub{}, &effectStub{})
+	created, err := service.RequestRefund(context.Background(), paymentport.RefundCommand{PaymentID: 7, AmountMinor: 100, RefundNo: "R-terminal-next", Reason: "customer request", ActorScope: "admin:18", IdempotencyKey: "refund-key-terminal-0001"})
+	if err != nil || created.ID != 9 || store.nonTerminalRefundChecks != 1 {
+		t.Fatalf("created=%+v nonterminal_checks=%d err=%v", created, store.nonTerminalRefundChecks, err)
+	}
+}
+
 func TestRefundReplayReturnsExistingBeforeReservedAmountCheck(t *testing.T) {
 	now := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
 	store := &storeStub{
-		payment:  domain.Payment{ID: 7, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
-		refund:   domain.Refund{ID: 9, PaymentID: 7, Provider: domain.ProviderWeChatPay, RefundNo: "R-7", Reason: "customer request", AmountMinor: 1000, Status: domain.RefundEffectAccepted, EffectID: "eer_9", Version: 2, CreatedAt: now, UpdatedAt: now},
-		reserved: 1000,
+		payment:           domain.Payment{ID: 7, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+		refund:            domain.Refund{ID: 9, PaymentID: 7, Provider: domain.ProviderWeChatPay, RefundNo: "R-7", Reason: "customer request", AmountMinor: 1000, Status: domain.RefundEffectAccepted, EffectID: "eer_9", Version: 2, CreatedAt: now, UpdatedAt: now},
+		reserved:          1000,
+		nonTerminalRefund: true,
 	}
 	service := NewService(uowStub{}, store, orderStub{}, sessionStub{}, &effectStub{})
 	replay, err := service.RequestRefund(context.Background(), paymentport.RefundCommand{PaymentID: 7, AmountMinor: 1000, RefundNo: "R-7", Reason: "customer request", ActorScope: "admin:1", IdempotencyKey: "refund-key-000000001"})
-	if err != nil || replay.ID != 9 {
-		t.Fatalf("refund=%+v err=%v", replay, err)
+	if err != nil || replay.ID != 9 || store.nonTerminalRefundChecks != 0 {
+		t.Fatalf("refund=%+v nonterminal_checks=%d err=%v", replay, store.nonTerminalRefundChecks, err)
 	}
 }
 

@@ -617,7 +617,9 @@ func TestRenderCouponsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="coupons">frozen donor coupon fragment</section></template>`) || !strings.Contains(body, `data-page="coupons"`) {
+	hostAt := strings.Index(body, `<script type="module" src="/assets/coupon-host.js"></script>`)
+	donorAt := strings.Index(body, `<script type="module" src="/assets/admin.js"></script>`)
+	if response.Code != http.StatusOK || hostAt < 0 || donorAt >= 0 || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="coupons">frozen donor coupon fragment</section></template>`) || !strings.Contains(body, `data-page="coupons"`) {
 		t.Fatalf("coupon shell mismatch status=%d body=%q", response.Code, body)
 	}
 }
@@ -856,6 +858,27 @@ func TestSurveyQRBridgeBrowserFallback(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "survey-qr-bridge-browser: PASS") {
 		t.Fatalf("survey QR bridge browser contract did not report success: %q", output.String())
+	}
+}
+
+func TestAdminConsoleDateTimeReadiness(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate repository")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/admin_console_datetime.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("admin console date/time readiness failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "admin-console date-time readiness: PASS") {
+		t.Fatalf("admin console date/time readiness did not report success: %q", output.String())
 	}
 }
 

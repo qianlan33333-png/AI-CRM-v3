@@ -4,6 +4,7 @@
 
 export {};
 import { clearActionBusy, setActionBusy } from './actionFeedback';
+import { formatShanghaiDateTime } from './adminDateTime';
 
 type SaveState = {
   button: HTMLButtonElement;
@@ -302,9 +303,13 @@ function materialCsrf(): string {
 class MaterialUIError extends Error {}
 
 function materialError(status: number, body: Record<string, unknown>): MaterialUIError {
-  // Refresh responses can contain provider error codes. Keep the operational
-  // state readable instead of surfacing an internal enum in the workspace.
-  void body;
+  const code = materialString(body.code);
+  const known = ({
+    idempotency_conflict: '本次刷新与已提交操作不一致，请重新读取后重试。',
+    not_found: '刷新对象不存在，请重新读取刷新状态。',
+    unavailable: '刷新服务暂不可用，请稍后重试。',
+  } as Record<string, string>)[code];
+  if (known) return new MaterialUIError(known);
   if (status === 401) return new MaterialUIError('登录状态已失效，请重新登录后继续操作。');
   if (status === 403) return new MaterialUIError('没有此操作权限。');
   if (status === 404) return new MaterialUIError('刷新对象不存在，请重新读取刷新状态。');
@@ -351,15 +356,8 @@ async function materialPost(path: string, body: Record<string, unknown>, idempot
 function materialFormatTime(value: unknown): string {
   const raw = materialString(value);
   if (!raw) return '—';
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return '时间暂不可用';
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-  }).formatToParts(parsed);
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value || '00';
-  return `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}:${part('second')}`;
+  const formatted = formatShanghaiDateTime(raw);
+  return formatted === '未提供' ? '时间暂不可用' : formatted;
 }
 
 function materialTypeLabel(value: unknown): string {
@@ -457,7 +455,11 @@ function materialProgress(item: MaterialProjection, round: RefreshRoundProjectio
 }
 
 function materialSourceName(item: MaterialProjection): string {
-  return materialString(item.file_name) || '未命名素材';
+  if (materialString(item.file_name)) return materialString(item.file_name);
+  const source = materialString(item.source_ref);
+  const id = materialStableID(item);
+  const label = materialTypeLabel(item.source_type || source.split(':', 1)[0]);
+  return id ? `${label}素材 #${id}` : `${label}素材`;
 }
 
 function materialNextRun(value: unknown): string {
@@ -472,6 +474,17 @@ function materialFailureHint(failure: MaterialSourceFailureProjection): string {
       return '原文件缺失，请补传';
     case 'invalid_metadata':
       return '素材元数据无效，请重新上传';
+    case 'provider_rejected':
+      return '服务未接受该素材，请重新上传后重试';
+    case 'upload_outcome_unknown':
+    case 'response_unknown':
+      return '刷新结果待核实，请稍后读取进度';
+    case 'read_unavailable':
+      return '刷新服务暂不可用，请稍后重试';
+    case 'cancelled':
+      return '刷新已取消，请重新发起';
+    case 'not_supported':
+      return '该素材暂不支持刷新，请重新上传';
     default:
       return '素材无法读取，请重新上传';
   }
@@ -609,7 +622,7 @@ class MaterialRefreshPanel {
     title.textContent = '素材刷新状态';
     title.style.cssText = 'margin:0;font-size:14px';
     const note = document.createElement('p');
-    note.textContent = '启用图片、附件和小程序封面每天 02:00（北京时间）全量刷新；刷新只更新临时凭据，不触发群发。';
+    note.textContent = '启用图片、附件和小程序封面每天 02:00 全量刷新；刷新只更新临时凭据，不触发群发。';
     note.style.cssText = 'margin:4px 0 0;color:#646A73;font-size:12px;line-height:18px';
     titleWrap.append(title, note);
     const all = document.createElement('button');
@@ -656,8 +669,20 @@ class MaterialRefreshPanel {
       list.style.cssText = 'margin:6px 0 0;padding-left:18px;display:grid;gap:4px';
       this.failures.forEach((failure) => {
         const entry = document.createElement('li');
-        const sourceRef = materialString(failure.source_ref) || '未知素材';
-        entry.textContent = `${sourceRef}：${materialFailureHint(failure)}`;
+        const sourceRef = materialString(failure.source_ref);
+        const id = materialStableID({ source_ref: sourceRef } as MaterialProjection);
+        const type = materialTypeLabel(sourceRef.split(':', 1)[0]);
+        entry.append(document.createTextNode(`${id ? `${type}素材 #${id}` : `${type}素材`}：${materialFailureHint(failure)}`));
+        const details = document.createElement('details');
+        details.style.cssText = 'margin-top:4px';
+        const summary = document.createElement('summary');
+        summary.textContent = '技术详情';
+        summary.style.cursor = 'pointer';
+        const technical = document.createElement('small');
+        technical.style.cssText = 'display:block;margin-top:4px;color:#646A73;white-space:pre-wrap;overflow-wrap:anywhere';
+        technical.textContent = `素材引用：${sourceRef || '未提供'}\n失败说明：${materialFailureHint(failure)}`;
+        details.append(summary, technical);
+        entry.append(details);
         list.append(entry);
       });
       missing.append(list);
@@ -755,7 +780,7 @@ class MaterialRefreshPanel {
       this.setStatus('单素材刷新已受理；完成状态可通过“刷新进度”核对。');
     } catch (error) {
       materialBusy(button, false, '立即刷新单个');
-      this.setStatus(`${materialFailureText(error, '单素材刷新失败，请检查网络后重试。')}可重新发起刷新。`, true);
+      this.setStatus(`${materialFailureText(error, '单素材刷新失败，请检查网络后重试。')}可重试，系统会按同一次提交核对。`, true);
     }
   }
 
@@ -774,7 +799,7 @@ class MaterialRefreshPanel {
       if (id !== undefined) await this.loadRound();
     } catch (error) {
       materialBusy(button, false, '立即刷新全部启用素材');
-      this.setStatus(`${materialFailureText(error, '全量刷新失败，请检查网络后重试。')}可重新发起刷新。`, true);
+      this.setStatus(`${materialFailureText(error, '全量刷新失败，请检查网络后重试。')}可重试，系统会按同一次提交核对。`, true);
     }
   }
 

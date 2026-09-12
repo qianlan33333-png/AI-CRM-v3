@@ -68,6 +68,8 @@ async function load(url, requests, sections) {
     pretendToBeVisual: true,
     beforeParse(window) {
       window.Headers = Headers;
+      window.AdminDateTime = {};
+      window.AdminFmt = { localTime: (value) => value === '2026-09-03T02:52:14Z' ? '2026-09-03 10:52:14' : '时间暂不可用', whenAdminDateTimeReady: (ready) => ready(window.AdminDateTime) };
       window.confirm = () => true;
       window.fetch = async (input, options = {}) => {
         const requestURL = new URL(String(input), window.location.origin);
@@ -114,6 +116,7 @@ try {
   if (document.querySelectorAll('#customer-list-table-wrap thead th').length !== 6) fail('customer table did not retain the Host selection column and remove activation');
   const rowText = document.querySelector('#customer-list-body')?.textContent || '';
   if (!rowText.includes('138****5678') || rowText.includes('+86') || rowText.includes('declared') || rowText.includes('已激活')) fail('customer row did not use the simplified phone/status presentation');
+  if (!rowText.includes('2026-09-03 10:52:14')) fail('customer row did not render a Shanghai timestamp with seconds');
 
   phoneInput.value = '13812345678';
   document.querySelector('#customer-list-filters')?.dispatchEvent(new list.window.Event('submit', { bubbles: true, cancelable: true }));

@@ -71,6 +71,38 @@ type ProductTargetReader interface {
 	ReadProductTarget(context.Context, ProductOptionType, ID) (ProductOption, error)
 }
 
+// ProductTargetBatchMaximum covers the largest valid Coupon list page: 200
+// rules, each with at most 100 persisted targets. It remains a hard bound for
+// a single Product-owned SQL read; callers never fan it out into N target
+// reads.
+const ProductTargetBatchMaximum = 20_000
+
+// ProductTargetReference identifies one persisted target without exposing a
+// Product store or lifecycle implementation to another domain.
+type ProductTargetReference struct {
+	ProductType ProductOptionType `json:"product_type"`
+	ID          ID                `json:"id"`
+}
+
+// ProductTargetLookup is the minimal historical target presentation. It
+// deliberately exposes only a current display name plus existence; a Coupon
+// list does not need Product price, lifecycle, inventory, or provider data.
+// Found=false is reserved for a Product-owned not-found fact; an unavailable
+// Product read is returned as an error so callers do not present it as a
+// deleted product.
+type ProductTargetLookup struct {
+	Reference ProductTargetReference `json:"reference"`
+	Name      string                 `json:"name,omitempty"`
+	Found     bool                   `json:"found"`
+}
+
+// ProductTargetBatchReader resolves a bounded set of existing Coupon-like
+// targets. It keeps product-name projection and not-found classification with
+// Product, while consumers retain only their own target references.
+type ProductTargetBatchReader interface {
+	ReadProductTargets(context.Context, []ProductTargetReference) ([]ProductTargetLookup, error)
+}
+
 // SidebarShareProduct is the narrow current-lifecycle projection needed to
 // form a sidebar product news card. It is deliberately separate from the
 // generic target reader: a coupon may retain a historical target while an

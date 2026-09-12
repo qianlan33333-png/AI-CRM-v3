@@ -6,6 +6,8 @@
 // involved here; showing an already-issued QR/link is a read-only projection.
 
 
+import { formatShanghaiDateTime } from './adminDateTime';
+
 type Json = Record<string, unknown>;
 type Channel = Json & { id?: number; version?: number; config_version?: number };
 type PreservedFormFields = { qrURL: string; sceneValue: string; overflowPolicy: string };
@@ -444,6 +446,20 @@ async function executeChannelDonorScript(): Promise<void> {
   });
 }
 
+function installSaveFeedbackTime(root: HTMLElement): void {
+  const feedback = root.querySelector<HTMLElement>('[data-channel-save-feedback]');
+  if (!feedback) return;
+  const rewrite = () => {
+    if (!/^保存成功。(?:\s+.*)?$/.test(feedback.textContent?.trim() || '')) return;
+    const display = formatShanghaiDateTime(new Date().toISOString());
+    const next = display === '未提供' ? '保存成功。时间暂时无法显示，请刷新重试。' : `保存成功。 ${display}`;
+    if (feedback.textContent === next) return;
+    feedback.textContent = next;
+  };
+  new MutationObserver(rewrite).observe(feedback, { childList: true, characterData: true, subtree: true });
+  rewrite();
+}
+
 async function currentChannel(): Promise<Channel | null> {
   const id = document.body.dataset.channelResourceId || new URLSearchParams(location.search).get('id') || '';
   if (!/^[1-9][0-9]*$/.test(id)) return null;
@@ -515,6 +531,7 @@ export async function startChannelAdmissionHost(): Promise<void> {
     }
     await (window as Window & { AICRMStandardComponents?: { ready?: () => Promise<void> } }).AICRMStandardComponents?.ready?.();
     installChannelPickerIdentityAdapter();
+    installSaveFeedbackTime(root);
     await executeChannelDonorScript();
   } catch (error) {
     const message = error instanceof Error ? error.message : '渠道读取失败';

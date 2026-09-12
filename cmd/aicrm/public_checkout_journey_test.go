@@ -160,7 +160,13 @@ func (*checkoutJourneyApplication) ReconcileWeChatPayRefund(context.Context, int
 func (*checkoutJourneyApplication) FindPayment(context.Context, paymentdomain.Provider, string) (paymentdomain.Payment, error) {
 	return paymentdomain.Payment{}, paymentport.ErrNotFound
 }
+func (*checkoutJourneyApplication) GetPayment(context.Context, int64) (paymentdomain.Payment, error) {
+	return paymentdomain.Payment{}, paymentport.ErrNotFound
+}
 func (*checkoutJourneyApplication) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
+	return nil, 0, nil
+}
+func (*checkoutJourneyApplication) ListRefundsForPayment(context.Context, paymentdomain.Provider, string, int32, int32) ([]paymentport.RefundProjection, int64, error) {
 	return nil, 0, nil
 }
 func (*checkoutJourneyApplication) ListOrderEffects(context.Context, paymentdomain.Provider, string) ([]paymentport.EffectProjection, error) {

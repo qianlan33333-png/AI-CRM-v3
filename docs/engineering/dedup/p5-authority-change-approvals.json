@@ -401,6 +401,72 @@
       ],
       "reason": "Record the user-authorized CRM audit closeout active V3 route parity together with the bounded Operation Cycle strategy-summary contract and observable retirement of the unscoped Excel import writer. Frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
       "review_reference": "docs/prd/2026-09-12-crm-audit-closeout.md AUD-08; https://github.com/qianlan33333-png/AI-CRM-v3/pull/247; https://github.com/qianlan33333-png/AI-CRM-v3/pull/248"
+    },
+    {
+      "base_commit": "f3e453e288e26798808c02ad6adb17d396c05c61",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "aee412088dd2a7ed23a91c49397f3f8731a3d2ad739dc78f90a4a9259d207b40",
+          "head_sha256": "6b674f310b6e9c3191b63742360f4721d63670b67e798e26513f8587d90d8a5a"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "bdba25811ad4a8f25ff172f910f3e4b202f8c3f58c7f44e14fdc1e399f286e08",
+          "head_sha256": "9e3cf17048551fa4b561718d9e11af6e0b390cc189bfe5d55f04d91f12407525"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "8e663852d2664cab97cdd3b07f86261f106830ed32906896a829aa6c4f521259",
+          "head_sha256": "b64266561eab87bdd007fe7c357d785665eda37ce251375c811710ae57394369"
+        }
+      ],
+      "reason": "Record the user-authorized Chinese order and coupon presentation together with bounded WeChat Pay refund-confirmation safety. Only active V3 OpenAPI authority and its index/lock identities change; frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
+      "review_reference": "root review of PR #256 c15e209"
+    },
+    {
+      "base_commit": "d7e328afc805ebf4e54011f393a95a18a2c407d9",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "6b674f310b6e9c3191b63742360f4721d63670b67e798e26513f8587d90d8a5a",
+          "head_sha256": "709e24c1778e5af51b7e127ebba797f3ba7af9f76d269b147c32b87e07b4aee2"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "9e3cf17048551fa4b561718d9e11af6e0b390cc189bfe5d55f04d91f12407525",
+          "head_sha256": "63d3f61be023e111793a4439aac73e822addd71e5c28689ca1361da725b14b64"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "b64266561eab87bdd007fe7c357d785665eda37ce251375c811710ae57394369",
+          "head_sha256": "8c64f7e0899188f0f82a5f7d2e5441afaabc9870c3e5f69f056d5da183b80abe"
+        }
+      ],
+      "reason": "Record the user-authorized Coupon Chinese product presentation and Shanghai claim-window contract. Only active V3 OpenAPI authority and its index/lock identities change; frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
+      "review_reference": "root review of PR #259 coupon Product display contract"
+    },
+    {
+      "base_commit": "d0b74d416ca2a75ee2acf403731271a046c3f663",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "6b674f310b6e9c3191b63742360f4721d63670b67e798e26513f8587d90d8a5a",
+          "head_sha256": "709e24c1778e5af51b7e127ebba797f3ba7af9f76d269b147c32b87e07b4aee2"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "9e3cf17048551fa4b561718d9e11af6e0b390cc189bfe5d55f04d91f12407525",
+          "head_sha256": "8a8b5598aadf7529f9c5e02f319377b7edf2ec0e3741dd87d047cfbece09ccc3"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "b64266561eab87bdd007fe7c357d785665eda37ce251375c811710ae57394369",
+          "head_sha256": "5750f0d8a26a2c0746f0aacf8e85181f982d59683468caab56c2d19444b1d216"
+        }
+      ],
+      "reason": "Rebind the already reviewed Coupon Chinese product presentation and Shanghai claim-window authority metadata to the latest V3 main baseline. The active OpenAPI payload remains the reviewed e8d9 blob and SHA-256 709e24; frozen donor payloads remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "root review of PR #259 coupon Product display contract"
     }
   ]
 }

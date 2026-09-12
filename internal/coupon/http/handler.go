@@ -29,6 +29,7 @@ type RequestSecurity interface {
 type Handler struct {
 	rules    couponport.RuleApplication
 	options  productport.ProductOptionReader
+	targets  productport.ProductTargetBatchReader
 	claims   couponport.CouponClaimAdminReader
 	public   couponport.PublicCouponApplication
 	security RequestSecurity
@@ -38,7 +39,11 @@ func NewHandler(rules couponport.RuleApplication, options productport.ProductOpt
 	if rules == nil || options == nil || security == nil {
 		return nil, errors.New("coupon HTTP dependencies are required")
 	}
-	return &Handler{rules: rules, options: options, security: security}, nil
+	targets, ok := options.(productport.ProductTargetBatchReader)
+	if !ok || targets == nil {
+		return nil, errors.New("coupon product target reader is required")
+	}
+	return &Handler{rules: rules, options: options, targets: targets, security: security}, nil
 }
 
 // NewHandlerWithClaims enables the couponData read journey. Kept separate
@@ -276,7 +281,16 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		resultError(w, err)
 		return
 	}
-	items := couponList(page.Items)
+	targets, err := h.targetPresentations(r.Context(), page.Items)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	items, ok := couponList(page.Items, targets)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true, "coupons": items, "items": items, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
 }
 func (h *Handler) detail(w http.ResponseWriter, r *http.Request, id couponport.ID) {
@@ -285,7 +299,16 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request, id couponport.I
 		resultError(w, err)
 		return
 	}
-	v := legacyCoupon(c)
+	targets, err := h.targetPresentations(r.Context(), []couponport.Coupon{c})
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	v, ok := couponProjection(c, targets)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true, "coupon": v, "data": map[string]any{"coupon": v}})
 }
 
@@ -471,12 +494,100 @@ func (h *Handler) productOptions(w http.ResponseWriter, r *http.Request) {
 func legacyCoupon(c couponport.Coupon) map[string]any {
 	return map[string]any{"id": c.ID, "resource_id": c.ID, "name": c.Name, "discount_amount_total": c.DiscountAmountTotal, "currency": "CNY", "status": c.Status, "availability_status": c.AvailabilityStatus, "total_issue_limit": c.TotalIssueLimit, "per_user_issue_limit": c.PerUserIssueLimit, "issued_count": c.IssuedCount, "rules_frozen": c.IssuedCount > 0, "claim_starts_at": c.ClaimStartsAt.Format(time.RFC3339), "claim_ends_at": c.ClaimEndsAt.Format(time.RFC3339), "validity_mode": c.ValidityMode, "use_starts_at": nullableTime(c.UseStartsAt), "use_ends_at": nullableTime(c.UseEndsAt), "relative_validity_days": c.RelativeValidityDays, "instructions": c.Instructions, "target_refs": c.TargetRefs, "created_by": c.CreatedBy, "updated_by": c.UpdatedBy, "version": c.Version, "created_at": c.CreatedAt.Format(time.RFC3339), "updated_at": c.UpdatedAt.Format(time.RFC3339)}
 }
-func couponList(items []couponport.Coupon) []any {
+
+type targetPresentation struct {
+	TargetRef string
+	Name      string
+	State     string
+}
+
+func (h *Handler) targetPresentations(ctx context.Context, coupons []couponport.Coupon) (map[string]targetPresentation, error) {
+	if h == nil || h.targets == nil {
+		return nil, errors.New("coupon product target reader is required")
+	}
+	references := make([]productport.ProductTargetReference, 0)
+	keys := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, coupon := range coupons {
+		for _, targetRef := range coupon.TargetRefs {
+			if _, duplicate := seen[targetRef]; duplicate {
+				continue
+			}
+			reference, ok := couponTargetReference(targetRef)
+			if !ok {
+				return nil, errors.New("invalid stored coupon target")
+			}
+			seen[targetRef] = struct{}{}
+			references = append(references, reference)
+			keys = append(keys, targetRef)
+		}
+	}
+	if len(references) > productport.ProductTargetBatchMaximum {
+		return nil, errors.New("coupon product target page exceeds Product read bound")
+	}
+	resolved := make(map[string]targetPresentation, len(references))
+	lookups, err := h.targets.ReadProductTargets(ctx, references)
+	if err != nil || len(lookups) != len(references) {
+		return nil, errors.New("coupon product target projection unavailable")
+	}
+	for index, lookup := range lookups {
+		expected := references[index]
+		if lookup.Reference != expected {
+			return nil, errors.New("coupon product target projection mismatched")
+		}
+		key := keys[index]
+		if lookup.Found {
+			if strings.TrimSpace(lookup.Name) == "" {
+				return nil, errors.New("coupon product target projection invalid")
+			}
+			resolved[key] = targetPresentation{TargetRef: key, Name: lookup.Name, State: "available"}
+			continue
+		}
+		resolved[key] = targetPresentation{TargetRef: key, State: "not_found"}
+	}
+	return resolved, nil
+}
+
+func couponTargetReference(value string) (productport.ProductTargetReference, bool) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 || (parts[0] != "standard_product" && parts[0] != "service_period") {
+		return productport.ProductTargetReference{}, false
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || id < 1 || strconv.FormatInt(id, 10) != parts[1] {
+		return productport.ProductTargetReference{}, false
+	}
+	kind := productport.ProductOptionStandard
+	if parts[0] == "service_period" {
+		kind = productport.ProductOptionServicePeriod
+	}
+	return productport.ProductTargetReference{ProductType: kind, ID: productport.ID(id)}, true
+}
+
+func couponProjection(c couponport.Coupon, targets map[string]targetPresentation) (map[string]any, bool) {
+	value := legacyCoupon(c)
+	items := make([]any, 0, len(c.TargetRefs))
+	for _, ref := range c.TargetRefs {
+		target, ok := targets[ref]
+		if !ok || target.TargetRef != ref || (target.State != "available" && target.State != "not_found") {
+			return nil, false
+		}
+		items = append(items, map[string]any{"target_ref": target.TargetRef, "name": target.Name, "state": target.State})
+	}
+	value["target_products"] = items
+	return value, true
+}
+
+func couponList(items []couponport.Coupon, targets map[string]targetPresentation) ([]any, bool) {
 	out := make([]any, 0, len(items))
 	for _, c := range items {
-		out = append(out, legacyCoupon(c))
+		value, ok := couponProjection(c, targets)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, value)
 	}
-	return out
+	return out, true
 }
 func nullableTime(v *time.Time) any {
 	if v == nil {

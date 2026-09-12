@@ -2,15 +2,18 @@ package paymenthttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
@@ -24,9 +27,21 @@ import (
 )
 
 type appStub struct {
-	createCalls int
-	create      paymentport.CreateCommand
-	handoff     paymentport.Handoff
+	createCalls                                  int
+	create                                       paymentport.CreateCommand
+	handoff                                      paymentport.Handoff
+	refundCalls                                  int
+	refund                                       paymentport.RefundCommand
+	payment                                      domain.Payment
+	refundRows                                   []paymentport.RefundProjection
+	refundTotal                                  int64
+	listProvider                                 domain.Provider
+	listMerchant                                 string
+	listAllCalls                                 int
+	recoveryRefund                               domain.Refund
+	recoveryFound                                bool
+	recoveryProvider                             domain.Provider
+	recoveryMerchant, recoveryActor, recoveryKey string
 }
 
 func (stub *appStub) Create(_ context.Context, command paymentport.CreateCommand) (domain.Payment, error) {
@@ -64,8 +79,10 @@ type paidPurchaseLeadQRStub struct{ value channelport.PublicLeadQRCode }
 func (stub paidPurchaseLeadQRStub) ReadPublicLeadQRCode(context.Context, int64) (channelport.PublicLeadQRCode, error) {
 	return stub.value, nil
 }
-func (*appStub) RequestRefund(context.Context, paymentport.RefundCommand) (domain.Refund, error) {
-	return domain.Refund{}, nil
+func (stub *appStub) RequestRefund(_ context.Context, command paymentport.RefundCommand) (domain.Refund, error) {
+	stub.refundCalls++
+	stub.refund = command
+	return domain.Refund{ID: 8, Provider: domain.ProviderWeChatPay, RefundNo: "RF-8", Status: domain.RefundRequested}, nil
 }
 func (*appStub) ApplyVerifiedCallback(context.Context, paymentprovider.CallbackResult) error {
 	return nil
@@ -82,11 +99,26 @@ func (*appStub) ReconcileWeChatPayPayment(context.Context, int64) (domain.Paymen
 func (*appStub) ReconcileWeChatPayRefund(context.Context, int64) (domain.Refund, error) {
 	return domain.Refund{}, nil
 }
-func (*appStub) FindPayment(context.Context, domain.Provider, string) (domain.Payment, error) {
+func (stub *appStub) FindPayment(context.Context, domain.Provider, string) (domain.Payment, error) {
+	if stub.payment.ID != 0 {
+		return stub.payment, nil
+	}
 	return domain.Payment{ID: 9, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-9", Status: domain.StatusPaid}, nil
 }
-func (*appStub) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
-	return nil, 0, nil
+func (stub *appStub) FindRefundRecoveryReceipt(_ context.Context, provider domain.Provider, merchantOrderNo, actorScope, key string) (domain.Refund, bool, error) {
+	stub.recoveryProvider, stub.recoveryMerchant, stub.recoveryActor, stub.recoveryKey = provider, merchantOrderNo, actorScope, key
+	return stub.recoveryRefund, stub.recoveryFound, nil
+}
+func (stub *appStub) GetPayment(context.Context, int64) (domain.Payment, error) {
+	return stub.FindPayment(context.Background(), domain.ProviderWeChatPay, "")
+}
+func (stub *appStub) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
+	stub.listAllCalls++
+	return stub.refundRows, stub.refundTotal, nil
+}
+func (stub *appStub) ListRefundsForPayment(_ context.Context, provider domain.Provider, merchant string, _ int32, _ int32) ([]paymentport.RefundProjection, int64, error) {
+	stub.listProvider, stub.listMerchant = provider, merchant
+	return stub.refundRows, stub.refundTotal, nil
 }
 func (*appStub) ListOrderEffects(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error) {
 	return nil, nil
@@ -95,7 +127,7 @@ func (*appStub) ListOrderEffects(context.Context, domain.Provider, string) ([]pa
 type securityStub struct{}
 
 func (securityStub) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
-	return accessdomain.Principal{}, nil
+	return accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
 }
 
 type h5OAuthStub struct {
@@ -157,6 +189,226 @@ func (securityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.
 	return accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
 }
 
+type recoverySecurityStub struct{ principal accessdomain.Principal }
+
+func (stub recoverySecurityStub) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return stub.principal, nil
+}
+func (stub recoverySecurityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return stub.principal, nil
+}
+
+func TestRefundListScopesOrderDetailToExactPayment(t *testing.T) {
+	statuses := []domain.RefundStatus{
+		domain.RefundCompleted,
+		domain.RefundHistoryRequested,
+		domain.RefundHistoryProcessing,
+		domain.RefundHistoryFailed,
+		domain.RefundHistoryClosed,
+		domain.RefundStatus("legacy_unclassified"),
+	}
+	rows := make([]paymentport.RefundProjection, 0, len(statuses))
+	for index, status := range statuses {
+		rows = append(rows, paymentport.RefundProjection{
+			Refund:  domain.Refund{ID: int64(31 + index), PaymentID: 21, Provider: domain.ProviderWeChatPay, RefundNo: "RF-" + strconv.Itoa(31+index), AmountMinor: 200, Status: status, CreatedAt: time.Date(2026, 9, 10, 4, 10, 38, 0, time.UTC)},
+			OrderID: 12, MerchantOrder: "WXP2609100410381093CE4C5B0C", OrderAmount: 200000, Currency: "CNY",
+		})
+	}
+	application := &appStub{refundRows: rows, refundTotal: int64(len(rows))}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/refunds?provider=wechat&order_no=WXP2609100410381093CE4C5B0C", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var page struct {
+		Items []struct {
+			RefundID            string `json:"refund_id"`
+			Status              string `json:"status"`
+			TransactionID       string `json:"transaction_id"`
+			ExternalEffectState string `json:"external_effect_state"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	wantStatuses := []string{"completed", "history_requested", "history_processing", "history_failed", "history_closed", "unknown"}
+	if response.Code != http.StatusOK || application.listProvider != domain.ProviderWeChatPay || application.listMerchant != "WXP2609100410381093CE4C5B0C" || len(page.Items) != len(wantStatuses) {
+		t.Fatalf("status=%d provider=%q merchant=%q items=%+v", response.Code, application.listProvider, application.listMerchant, page.Items)
+	}
+	for index, want := range wantStatuses {
+		item := page.Items[index]
+		if item.Status != want || item.TransactionID != "" || item.ExternalEffectState != "" {
+			t.Fatalf("item=%d got=%+v want status=%q and empty compatibility placeholders", index, item, want)
+		}
+	}
+	for _, path := range []string{"/api/admin/refunds?provider=wechat", "/api/admin/refunds?order_no=WXP2609100410381093CE4C5B0C", "/api/admin/refunds?provider=v3pay&order_no=WXP2609100410381093CE4C5B0C"} {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("path=%s status=%d", path, response.Code)
+		}
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/refunds?provider=all", nil))
+	if response.Code != http.StatusOK || application.listAllCalls != 1 {
+		t.Fatalf("all-provider compatibility status=%d unscopedCalls=%d", response.Code, application.listAllCalls)
+	}
+}
+func TestRefundRecoveryReceiptIsPaymentActorAndKeyScoped(t *testing.T) {
+	application := &appStub{recoveryFound: true, recoveryRefund: domain.Refund{ID: 31, PaymentID: 21, Provider: domain.ProviderWeChatPay, RefundNo: "RF-recovery-31", Status: domain.RefundCompleted, EffectID: "eer_41"}}
+	security := &recoverySecurityStub{principal: accessdomain.Principal{InternalID: 17, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	handler, err := NewHandler(application, nil, security, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "refund-recovery-key-0001"
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/refunds/recovery?provider=wechat&order_no=M-recovery-21", nil)
+	request.Header.Set("Idempotency-Key", key)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var found map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &found); err != nil {
+		t.Fatal(err)
+	}
+	actorBinding, bindingOK := found["actor_binding"].(string)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || application.recoveryProvider != domain.ProviderWeChatPay || application.recoveryMerchant != "M-recovery-21" || application.recoveryActor != "admin:17" || application.recoveryKey != key || found["found"] != true || found["receipt_id"] != float64(31) || !bindingOK || len(actorBinding) != 64 || strings.Contains(response.Body.String(), key) || strings.Contains(response.Body.String(), "admin:17") || found["external_effect_state"] != nil {
+		t.Fatalf("status=%d provider=%q merchant=%q actor=%q key=%q body=%s", response.Code, application.recoveryProvider, application.recoveryMerchant, application.recoveryActor, application.recoveryKey, response.Body.String())
+	}
+	for _, path := range []string{
+		"/api/admin/refunds/recovery?provider=wechat",
+		"/api/admin/refunds/recovery?order_no=M-recovery-21",
+		"/api/admin/refunds/recovery?provider=wechat&order_no=M-recovery-21&extra=1",
+	} {
+		response = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Idempotency-Key", key)
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("path=%s status=%d", path, response.Code)
+		}
+	}
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/admin/refunds/recovery?provider=wechat&order_no=M-recovery-21", nil)
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing key status=%d", response.Code)
+	}
+
+	application.recoveryFound = false // A different actor/key/Payment must be indistinguishable from no receipt.
+	security.principal.InternalID = 18
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/admin/refunds/recovery?provider=wechat&order_no=M-other-payment", nil)
+	request.Header.Set("Idempotency-Key", "other-actor-or-key-0001")
+	handler.ServeHTTP(response, request)
+	var noMatch map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &noMatch); err != nil {
+		t.Fatal(err)
+	}
+	otherBinding, otherBindingOK := noMatch["actor_binding"].(string)
+	if response.Code != http.StatusOK || noMatch["found"] != false || !otherBindingOK || len(otherBinding) != 64 || otherBinding == actorBinding || strings.Contains(response.Body.String(), "admin:18") || application.recoveryActor != "admin:18" {
+		t.Fatalf("nonmatch status=%d actor=%q body=%s", response.Code, application.recoveryActor, response.Body.String())
+	}
+}
+
+func TestCompatRefundRequiresVerifiedWeChatTransactionID(t *testing.T) {
+	transactionID := "4500000365202609101828595865"
+	application := &appStub{payment: domain.Payment{ID: 9, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "v3pay_order", Status: domain.StatusPaid, ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", transactionID))}}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/admin/wechat-pay/orders/v3pay_order/refunds"
+	post := func(confirmation string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"provider":"wechat","order_no":"v3pay_order","refund_amount_total":200,"reason":"客户申请","transaction_id_confirmation":"`+confirmation+`","checked":true}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "refund-confirmation-test-key")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := post("v3pay_order"); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+		t.Fatalf("merchant fallback status=%d calls=%d body=%s", response.Code, application.refundCalls, response.Body.String())
+	}
+	if response := post(""); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+		t.Fatalf("missing transaction status=%d calls=%d", response.Code, application.refundCalls)
+	}
+	if response := post(transactionID); response.Code != http.StatusAccepted || application.refundCalls != 1 || application.refund.PaymentID != 9 {
+		t.Fatalf("verified transaction status=%d calls=%d command=%+v body=%s", response.Code, application.refundCalls, application.refund, response.Body.String())
+	}
+}
+
+func TestRefundConfirmationHonorsProviderBoundary(t *testing.T) {
+	transactionID := "4500000365202609101828595865"
+	payment := domain.Payment{ID: 9, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "v3pay_order", Status: domain.StatusPaid, ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", transactionID))}
+
+	t.Run("generic WeChat Pay endpoint requires the verified transaction", func(t *testing.T) {
+		application := &appStub{payment: payment}
+		handler, err := NewHandler(application, nil, securityStub{}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		post := func(confirmation string) *httptest.ResponseRecorder {
+			request := httptest.NewRequest(http.MethodPost, "/api/admin/payments/9/refunds", strings.NewReader(`{"amount_minor":200,"refund_no":"RF-generic","reason":"客户申请","transaction_id_confirmation":"`+confirmation+`"}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", "refund-generic-test-key")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		}
+		if response := post("v3pay_order"); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("merchant fallback status=%d calls=%d body=%s", response.Code, application.refundCalls, response.Body.String())
+		}
+		if response := post(""); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("missing transaction status=%d calls=%d", response.Code, application.refundCalls)
+		}
+		if response := post(transactionID); response.Code != http.StatusAccepted || application.refundCalls != 1 || application.refund.PaymentID != payment.ID {
+			t.Fatalf("verified transaction status=%d calls=%d command=%+v body=%s", response.Code, application.refundCalls, application.refund, response.Body.String())
+		}
+	})
+
+	t.Run("WeChat Shop preserves its order confirmation contract", func(t *testing.T) {
+		shopPayment := payment
+		shopPayment.Provider = domain.ProviderWeChatShop
+		shopPayment.ProviderTransactionDigest = ""
+		application := &appStub{payment: shopPayment}
+		handler, err := NewHandler(application, nil, securityStub{}, true, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		post := func(confirmation string) *httptest.ResponseRecorder {
+			request := httptest.NewRequest(http.MethodPost, "/api/admin/refunds", strings.NewReader(`{"provider":"wechat_shop","order_no":"v3pay_order","product_id":"product-1","sku_id":"sku-1","refund_count":1,"refund_amount_total":200,"reason_code":"10000000","reason":"客户申请","transaction_id_confirmation":"`+confirmation+`","checked":true}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", "refund-shop-test-key")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		}
+		if response := post(transactionID); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("non-order confirmation status=%d calls=%d body=%s", response.Code, application.refundCalls, response.Body.String())
+		}
+		if response := post(""); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("missing order confirmation status=%d calls=%d", response.Code, application.refundCalls)
+		}
+		if response := post("v3pay_order"); response.Code != http.StatusAccepted || application.refundCalls != 1 || application.refund.PaymentID != shopPayment.ID {
+			t.Fatalf("exact shop order status=%d calls=%d command=%+v body=%s", response.Code, application.refundCalls, application.refund, response.Body.String())
+		}
+	})
+
+	t.Run("non-WeChat generic payment preserves its existing contract", func(t *testing.T) {
+		application := &appStub{payment: domain.Payment{ID: 9, Provider: domain.Provider("alipay")}}
+		handler, _ := NewHandler(application, nil, securityStub{}, true)
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/payments/9/refunds", strings.NewReader(`{"amount_minor":200,"refund_no":"RF-generic","reason":"客户申请"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "refund-generic-test-key")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted || application.refundCalls != 1 {
+			t.Fatalf("non-WeChat status=%d calls=%d body=%s", response.Code, application.refundCalls, response.Body.String())
+		}
+	})
+}
 func TestCheckoutAcceptsOnlyOpaqueCookieIdentity(t *testing.T) {
 	application := &appStub{}
 	handler, _ := NewHandler(application, nil, securityStub{}, true)

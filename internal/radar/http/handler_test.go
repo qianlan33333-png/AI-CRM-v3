@@ -48,13 +48,13 @@ func (m *testManager) SetStatus(context.Context, radarport.SetStatusCommand) (ra
 	return radarport.LinkDetail{Link: testLink()}, nil
 }
 
-type testQuery struct{}
+type testQuery struct{ events radarport.EventPage }
 
 func (testQuery) Stats(context.Context, radar.RadarID) (radarport.Stats, error) {
 	return radarport.Stats{TotalEvents: 3, TotalLandings: 1, AuthorizedUsers: 1, ViewCount: 2}, nil
 }
-func (testQuery) Events(context.Context, radarport.EventQuery) (radarport.EventPage, error) {
-	return radarport.EventPage{}, nil
+func (q testQuery) Events(context.Context, radarport.EventQuery) (radarport.EventPage, error) {
+	return q.events, nil
 }
 
 type testPublic struct{ openErr error }
@@ -151,6 +151,23 @@ func TestAdminListMapsMeasuredAndUnavailableStatisticsWithoutFallbacks(t *testin
 	unavailable := payload.Items[1]
 	if unavailable.StatisticsStatus != "unavailable" || unavailable.TotalLandings != nil || unavailable.AuthorizedUsers != nil || unavailable.AuthorizedViews != nil || unavailable.ViewCount != nil || unavailable.LastViewedAt != nil {
 		t.Fatalf("unavailable=%+v", unavailable)
+	}
+}
+
+func TestEventExportFormatsBusinessTimestampsInShanghai(t *testing.T) {
+	query := testQuery{events: radarport.EventPage{Items: []radarport.EventProjection{{
+		ReceiptID: "rre_export", RadarID: 1, Stage: radarport.EventLanding,
+		Attribution: radarport.AttributionResolved, CustomerRef: "customer:7",
+		OccurredAt: time.Date(2026, time.September, 5, 0, 1, 2, 611265000, time.UTC),
+	}}, Total: 1, Limit: 500}}
+	handler, err := NewHandler(&testManager{}, query, testPublic{}, testSecurity{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links/1/events/export", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "2026-09-05 08:01:02") || strings.Contains(response.Body.String(), "2026-09-05T00:01:02") || !strings.Contains(response.Body.String(), "访问落地页") || !strings.Contains(response.Body.String(), "已关联客户") || strings.Contains(response.Body.String(), ",landing,resolved,") {
+		t.Fatalf("business CSV did not use Shanghai display time: status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

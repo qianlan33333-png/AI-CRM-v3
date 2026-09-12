@@ -19,10 +19,11 @@ const key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).jo
 const text = (value: unknown) => String(value ?? "").trim();
 const esc = (value: unknown) => text(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char] || char));
 
-type RequestFailure = Error & { httpStatus?: number };
+type RequestFailure = Error & { httpStatus?: number; userMessage?: true };
 const requestFailure = (message: string, status: number): RequestFailure => {
   const error = new Error(message) as RequestFailure;
   error.httpStatus = status;
+  error.userMessage = true;
   return error;
 };
 let pickerLoad: Promise<SharedPicker> | undefined;
@@ -38,8 +39,39 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const response = await fetch(path, { credentials: "same-origin", ...init, headers });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw requestFailure(text(body.error) || `请求失败（${response.status}）`, response.status);
+  if (!response.ok) throw requestFailure(ownerHandoffRequestMessage(response.status, text(body.error)), response.status);
   return body as T;
+}
+
+const localOwnerHandoffMessages = new Set([
+  "请先选择不同的原负责人和目标负责人",
+  "请选择包含旧模板五列的 XLSX、XLS 或 CSV 文件",
+  "每一行必须包含旧模板的五列",
+  "请先上传旧模板名单",
+  "请先生成预览",
+  "确认短语不匹配",
+]);
+
+function ownerHandoffRequestMessage(status: number, detail: string): string {
+  const mapped = ({
+    owner_handoff_provider_unavailable: "迁移服务暂不可用，请稍后重试。",
+    owner_handoff_conflict: "迁移状态已变化，请重新生成预览后重试。",
+    invalid_request: "迁移请求无效，请检查填写内容后重试。",
+  } as Record<string, string>)[detail];
+  if (mapped) return mapped;
+  if (status === 401) return "登录状态已失效，请重新登录后继续。";
+  if (status === 403) return "没有负责人迁移操作权限。";
+  if (status === 404) return "迁移记录不存在或已不可读取，请重新生成预览。";
+  if (status === 409) return "迁移状态已变化，请重新生成预览后重试。";
+  if (status === 400 || status === 405 || status === 422) return "迁移请求无效，请检查填写内容后重试。";
+  if (status >= 500) return "迁移服务暂不可用，请稍后重试。";
+  return "迁移请求失败，请稍后重试。";
+}
+
+function ownerHandoffErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && (error as RequestFailure).userMessage) return error.message;
+  const detail = error instanceof Error ? text(error.message) : "";
+  return localOwnerHandoffMessages.has(detail) ? detail : fallback;
 }
 
 function scrubFrozenServerPlaceholders(page: HTMLElement): void {
@@ -57,7 +89,7 @@ function scrubFrozenServerPlaceholders(page: HTMLElement): void {
 
 async function mountFrozenDonor(stage: HTMLElement): Promise<HTMLElement> {
   const response = await fetch(donorURL, { credentials: "same-origin" });
-  if (!response.ok) throw requestFailure(`冻结页面资源不可用（${response.status}）`, response.status);
+  if (!response.ok) throw requestFailure("负责人迁移页面暂不可用，请刷新后重试。", response.status);
   const source = new DOMParser().parseFromString(await response.text(), "text/html");
   const page = source.querySelector<HTMLElement>("[data-owner-migration-page]");
   const style = source.querySelector("style");
@@ -127,7 +159,39 @@ function ownerUserID(root: ParentNode, kind: "source" | "target", staff: Staff[]
 }
 function selectedScope(root: ParentNode): string { return query<HTMLInputElement>(root, 'input[name="scope_type"]:checked').value; }
 function transferStatusLabel(status: number): string {
-  return ({ 0: "本地迁移", 1: "企微转接已完成", 2: "企微转接处理中", 3: "客户拒绝接替", 4: "目标成员客户上限", 5: "未找到企微转接记录" } as Record<number, string>)[status] || `企微状态 ${status}`;
+  return ({ 0: "本地迁移", 1: "企微转接已完成", 2: "企微转接处理中", 3: "客户拒绝接替", 4: "目标成员客户上限", 5: "未找到企微转接记录" } as Record<number, string>)[status] || "企微转接状态待确认";
+}
+
+function ownerMigrationStateLabel(state: string): string {
+  return ({
+    ready: "可迁移", skipped_by_file: "已按文件跳过", not_under_source_owner: "负责人不一致",
+    not_found: "未找到客户", conflict: "迁移冲突", unresolved: "待核实",
+    missing_external_userid: "缺少客户标识", invalid_move_flag: "迁移标记无效", duplicate: "文件重复",
+    accepted: "已受理", queued: "排队中", attempted: "正在执行", executed: "已执行",
+    provider_accepted: "企微已受理", final_failed: "执行失败", outcome_unknown: "结果待核实",
+    retryable_failed: "可重试失败", cancelled: "已取消", reconciled: "已核对", cas_conflict: "状态冲突",
+    observed: "已读取结果",
+  } as Record<string, string>)[state] || "迁移状态待确认";
+}
+
+function ownerMigrationReason(reason: string): string {
+  return ({
+    "external_userid is required": "缺少客户标识。",
+    "duplicate external_userid; first row is kept": "文件中存在重复客户标识，已保留首次出现的记录。",
+    "Excel marked skip": "已按文件标记跳过。",
+    "no executable rows": "没有可执行迁移行。",
+    "是否迁移字段非法": "迁移标记无效。",
+    "未得到该行的安全预览结果": "未得到该行的安全预览结果。",
+    "已按文件标记跳过。": "已按文件标记跳过。",
+    "没有可执行迁移行": "没有可执行迁移行。",
+    "当前负责人标识与选择的原负责人不一致，预览阶段将不可执行": "当前负责人标识与选择的原负责人不一致，预览阶段将不可执行。",
+    "当前负责人标识与选择的原负责人不一致": "当前负责人标识与选择的原负责人不一致。",
+    "当前负责人userid与选择的原负责人不一致": "当前负责人标识与选择的原负责人不一致。",
+  } as Record<string, string>)[reason] || "迁移原因待确认。";
+}
+
+function ownerMigrationModeLabel(mode: string): string {
+  return ({ local_only: "仅本地迁移", wecom_then_crm: "先企微转接后本地迁移" } as Record<string, string>)[mode] || "迁移方式待确认";
 }
 function downloadBlob(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
@@ -166,7 +230,7 @@ function normalizeImportedRows(rawRows: string[][], sourceUserID: string): Impor
     else if (seen.has(external)) { parseStatus = "duplicate"; parseReason = "duplicate external_userid; first row is kept"; }
     else {
       seen.add(external);
-      if (current && current !== sourceUserID) parseReason = "当前负责人userid与选择的原负责人不一致，预览阶段将不可执行";
+      if (current && current !== sourceUserID) parseReason = "当前负责人标识与选择的原负责人不一致，预览阶段将不可执行";
     }
     return { Line: index + 2, ExternalUserID: external, MoveFlag: moveFlag, CurrentOwnerUserID: current, CustomerDisplayName: text(row[3]), Remark: text(row[4]), ParseStatus: parseStatus, ParseReason: parseReason };
   });
@@ -194,8 +258,8 @@ function previewDisplayRows(preview: Preview, scope: string, imported: ImportedR
   const serverRows = new Map(preview.Rows.map(row => [row.ExternalUserID, row]));
   return imported.map(item => {
     if (item.ParseStatus !== "parsed") return { ...item, State: item.ParseStatus, Reason: item.ParseReason };
-    if (item.MoveFlag === "否") return { ...item, State: "skipped_by_file", Reason: "Excel marked skip" };
-    if (item.CurrentOwnerUserID && item.CurrentOwnerUserID !== sourceUserID) return { ...item, State: "not_under_source_owner", Reason: "当前负责人userid与选择的原负责人不一致" };
+    if (item.MoveFlag === "否") return { ...item, State: "skipped_by_file", Reason: "已按文件标记跳过。" };
+    if (item.CurrentOwnerUserID && item.CurrentOwnerUserID !== sourceUserID) return { ...item, State: "not_under_source_owner", Reason: "当前负责人标识与选择的原负责人不一致" };
     const server = serverRows.get(item.ExternalUserID);
     if (!server) return { ...item, State: "not_found", Reason: "未得到该行的安全预览结果" };
     return displayFromServer(server, item);
@@ -209,7 +273,7 @@ function renderRows(root: HTMLElement, rows: DisplayRow[], scope: string, source
   query<HTMLElement>(root, "[data-preview-basic]").textContent = `${scope === "excel_include" ? "Excel 指定名单" : "全部客户"} · 原负责人 #${source} → 目标负责人 #${target} · ${ready} 个可迁移客户；${blocked} 个不可迁移。`;
   const values: Record<string, number> = { total_rows: rows.length, unique_external_userids: new Set(rows.map(row => row.ExternalUserID).filter(Boolean)).size, ready, skipped_by_file: skipped, blocked, crm_updates: ready };
   Object.entries(values).forEach(([name, value]) => { const node = root.querySelector<HTMLElement>(`[data-preview-stat="${name}"]`); if (node) node.textContent = String(value); });
-  query<HTMLElement>(root, "[data-preview-rows]").innerHTML = rows.map(row => `<tr><td>${row.Line}</td><td><code>${esc(row.ExternalUserID)}</code></td><td>${esc(row.CustomerDisplayName)}</td><td>${esc(row.MoveFlag)}</td><td>${esc(row.CurrentOwnerUserID)}</td><td><span class="owner-migration-status owner-migration-status--${row.State === "ready" ? "ready" : row.State === "skipped_by_file" ? "skip" : "block"}">${esc(row.State)}</span></td><td>${esc(row.Reason)}</td></tr>`).join("") || '<tr><td colspan="7" class="owner-migration-empty">当前范围没有候选客户。</td></tr>';
+  query<HTMLElement>(root, "[data-preview-rows]").innerHTML = rows.map(row => `<tr><td>${row.Line}</td><td><code>${esc(row.ExternalUserID)}</code></td><td>${esc(row.CustomerDisplayName)}</td><td>${esc(row.MoveFlag)}</td><td>${esc(row.CurrentOwnerUserID)}</td><td><span class="owner-migration-status owner-migration-status--${row.State === "ready" ? "ready" : row.State === "skipped_by_file" ? "skip" : "block"}">${esc(ownerMigrationStateLabel(row.State))}</span></td><td>${esc(ownerMigrationReason(row.Reason))}</td></tr>`).join("") || '<tr><td colspan="7" class="owner-migration-empty">当前范围没有候选客户。</td></tr>';
   query<HTMLButtonElement>(root, "[data-download-errors]").disabled = blocked === 0;
   query<HTMLButtonElement>(root, "[data-execute]").disabled = ready === 0;
 }
@@ -224,11 +288,14 @@ function renderPreview(root: HTMLElement, preview: Preview, scope: string, impor
 }
 
 function renderBatch(root: HTMLElement, batch: Batch): void {
+  // Keep the opaque batch reference for the Host's readback actions outside
+  // the operator-facing log, whose states are localized below.
+  root.dataset.ownerHandoffBatchId = batch.ID;
   query<HTMLElement>(root, "[data-execution-log]").textContent = [
-    `batch_id=${batch.ID}`,
-    `mode=${batch.Mode}`,
-    `batch_state=${batch.State}`,
-    ...(batch.Lines || []).map(line => `line_no=${line.Line} customer_id=${line.CustomerID} state=${line.State} transfer_status=${line.TransferStatus} (${transferStatusLabel(line.TransferStatus)})`),
+    `迁移批次：${batch.ID}`,
+    `迁移方式：${ownerMigrationModeLabel(batch.Mode)}`,
+    `批次状态：${ownerMigrationStateLabel(batch.State)}`,
+    ...(batch.Lines || []).map(line => `第 ${line.Line} 行，客户 #${line.CustomerID}：${ownerMigrationStateLabel(line.State)}；企微转接：${transferStatusLabel(line.TransferStatus)}`),
   ].join("\n");
 }
 
@@ -263,6 +330,7 @@ async function boot(): Promise<void> {
     const setNotice = (value: string, kind = "") => { notice.textContent = value; notice.className = `owner-migration-hint ${kind}`; };
     const reset = () => {
       preview = undefined; batch = undefined; displayedRows = [];
+      delete root.dataset.ownerHandoffBatchId;
       query<HTMLElement>(root, "[data-preview-empty]").hidden = false;
       query<HTMLElement>(root, "[data-preview-content]").hidden = true;
       query<HTMLInputElement>(root, "[data-confirm-phrase-input]").value = "";
@@ -310,7 +378,7 @@ async function boot(): Promise<void> {
         Object.entries(stats).forEach(([name, value]) => { const node = root.querySelector<HTMLElement>(`[data-import-stat="${name}"]`); if (node) node.textContent = String(value); });
         reset();
         setNotice("旧模板名单已解析；预览会保留每一行的标记、重复和负责人校验结果。", "ok");
-      } catch (error) { setNotice(error instanceof Error ? error.message : "文件解析失败", "error"); }
+      } catch (error) { setNotice(ownerHandoffErrorMessage(error, "文件解析失败，请检查文件后重试。"), "error"); }
     });
     root.querySelectorAll<HTMLInputElement>('input[name="scope_type"]').forEach(input => input.addEventListener("change", reset));
     query<HTMLInputElement>(root, "[data-include-wecom-transfer]").addEventListener("change", () => { updateWeComPresentation(); reset(); });
@@ -326,7 +394,7 @@ async function boot(): Promise<void> {
         const scope = selectedScope(root);
         if (scope === "excel_include" && !importedRows.length) throw new Error("请先上传旧模板名单");
         if (scope === "excel_include" && !fileExternalIDs.length) {
-          displayedRows = importedRows.map(row => row.ParseStatus === "parsed" && row.MoveFlag === "否" ? { ...row, State: "skipped_by_file", Reason: "Excel marked skip" } : { ...row, State: row.ParseStatus, Reason: row.ParseReason || "没有可执行迁移行" });
+          displayedRows = importedRows.map(row => row.ParseStatus === "parsed" && row.MoveFlag === "否" ? { ...row, State: "skipped_by_file", Reason: "已按文件标记跳过。" } : { ...row, State: row.ParseStatus, Reason: row.ParseReason || "没有可执行迁移行" });
           query<HTMLElement>(root, "[data-preview-empty]").hidden = true;
           query<HTMLElement>(root, "[data-preview-content]").hidden = false;
           renderRows(root, displayedRows, scope, source, target);
@@ -336,7 +404,7 @@ async function boot(): Promise<void> {
         preview = await api<Preview>("/api/admin/customers/owner-handoffs/previews", { method: "POST", body: JSON.stringify({ mode: currentMode(root), scope, source_staff_id: source, target_staff_id: target, customer_ids: [], external_userids: scope === "excel_include" ? fileExternalIDs : [], welcome_message: query<HTMLTextAreaElement>(root, "[data-transfer-welcome-msg]").value, confirmation_phrase: `确认将当前候选客户迁移到 ${target}`, idempotency_key: key() }) });
         displayedRows = renderPreview(root, preview, scope, importedRows, sourceUserID);
         setNotice("预览已生成，请逐字输入确认短语。", "ok");
-      } catch (error) { setNotice(error instanceof Error ? error.message : "预览失败", "error"); }
+      } catch (error) { setNotice(ownerHandoffErrorMessage(error, "预览失败，请检查填写内容后重试。"), "error"); }
     });
     query<HTMLButtonElement>(root, "[data-execute]").addEventListener("click", async () => {
       try {
@@ -348,13 +416,13 @@ async function boot(): Promise<void> {
         query<HTMLButtonElement>(root, "[data-download-result]").disabled = false;
         readTransfer.disabled = false;
         setNotice("迁移已受理；结果导出和企微结果读取会显示每一行实际状态。", "ok");
-      } catch (error) { setNotice(error instanceof Error ? error.message : "执行失败", "error"); }
+      } catch (error) { setNotice(ownerHandoffErrorMessage(error, "执行失败，请重新生成预览后重试。"), "error"); }
     });
     query<HTMLButtonElement>(root, "[data-reset-workbench]").addEventListener("click", reset);
     query<HTMLButtonElement>(root, "[data-download-errors]").addEventListener("click", () => {
       const blocked = displayedRows.filter(row => row.State !== "ready" && row.State !== "skipped_by_file");
       if (!blocked.length) return;
-      downloadWorkbook("owner_migration_blocked_rows.xlsx", ["行号", "external_userid", "客户备注名", "Excel 标记", "当前负责人userid", "备注", "状态", "原因"], blocked.map(row => [String(row.Line), row.ExternalUserID, row.CustomerDisplayName, row.MoveFlag, row.CurrentOwnerUserID, row.Remark, row.State, row.Reason]));
+      downloadWorkbook("owner_migration_blocked_rows.xlsx", ["行号", "external_userid", "客户备注名", "Excel 标记", "当前负责人userid", "备注", "状态", "原因"], blocked.map(row => [String(row.Line), row.ExternalUserID, row.CustomerDisplayName, row.MoveFlag, row.CurrentOwnerUserID, row.Remark, ownerMigrationStateLabel(row.State), ownerMigrationReason(row.Reason)]));
     });
     query<HTMLButtonElement>(root, "[data-download-result]").addEventListener("click", async () => {
       if (!batch) { setNotice("请先执行迁移，再导出结果明细。", "error"); return; }
@@ -364,10 +432,10 @@ async function boot(): Promise<void> {
         const rowsByCustomer = new Map(displayedRows.filter(row => row.CustomerID).map(row => [row.CustomerID as number, row]));
         downloadWorkbook("owner_migration_result.xlsx", ["行号", "external_userid", "客户备注名", "当前负责人userid", "备注", "迁移状态", "企微转接状态"], (batch.Lines || []).map(line => {
           const row = rowsByCustomer.get(line.CustomerID);
-          return [String(row?.Line || line.Line), row?.ExternalUserID || "", row?.CustomerDisplayName || "", row?.CurrentOwnerUserID || "", row?.Remark || "", line.State, transferStatusLabel(line.TransferStatus)];
+          return [String(row?.Line || line.Line), row?.ExternalUserID || "", row?.CustomerDisplayName || "", row?.CurrentOwnerUserID || "", row?.Remark || "", ownerMigrationStateLabel(line.State), transferStatusLabel(line.TransferStatus)];
         }));
         setNotice("已导出当前批次结果明细。", "ok");
-      } catch (error) { setNotice(error instanceof Error ? error.message : "结果导出失败", "error"); }
+      } catch (error) { setNotice(ownerHandoffErrorMessage(error, "结果暂不可读取，请稍后重试。"), "error"); }
     });
     query<HTMLButtonElement>(root, "[data-download-result]").textContent = "下载结果明细";
     const readTransfer = document.createElement("button");
@@ -383,7 +451,7 @@ async function boot(): Promise<void> {
       } catch (error) {
         const status = error && typeof error === "object" && "httpStatus" in error && typeof error.httpStatus === "number" ? error.httpStatus : 0;
         stage.dataset.ownerHandoffTransferResultStatus = status > 0 ? `http_${status}` : "error";
-        setNotice(error instanceof Error ? error.message : "读取失败", "error");
+        setNotice(ownerHandoffErrorMessage(error, "企微转接结果暂不可读取，请稍后重试。"), "error");
       }
     });
     query<HTMLInputElement>(root, 'input[name="scope_type"][value="all"]').checked = true;

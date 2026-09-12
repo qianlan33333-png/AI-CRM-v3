@@ -80,7 +80,7 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 				_, _ = w.Write([]byte("id,delivery_state\n1,delivery_proven\n"))
 				return
 			}
-			value = map[string]any{"pending": true}
+			value = map[string]any{"pending": true, "updated_at": "2026-09-07T01:02:03.611265Z"}
 		}
 		_ = json.NewEncoder(w).Encode(value)
 	}))

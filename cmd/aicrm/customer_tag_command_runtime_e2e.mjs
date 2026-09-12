@@ -16,6 +16,8 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}<script>${script}</
   url: `${origin}/admin/customers`, runScripts: 'dangerously', pretendToBeVisual: true,
   beforeParse(window) {
     window.Headers = Headers;
+    window.AdminDateTime = {};
+    window.AdminFmt = { localTime: (value) => value === '2026-09-06T00:00:00Z' ? '2026-09-06 08:00:00' : '时间暂不可用', whenAdminDateTimeReady: (ready) => ready(window.AdminDateTime) };
     window.confirm = () => true;
     window.fetch = async (input, options = {}) => {
       const url = new URL(String(input), window.location.origin);
@@ -51,9 +53,11 @@ try {
   for (let remaining = 40; remaining > 0; remaining--) {
     await new Promise((resolve) => setTimeout(resolve, 10));
     result = dom.window.document.querySelector('#customer-tag-batch-result')?.textContent || '';
-    if (calls.length === 2 && result.includes('已刷新执行结果：客户 #1：queued；观察标签：已观察标签（active）')) break;
+    if (calls.length === 2 && result.includes('已刷新执行结果：客户 #1：排队中；观察标签：已观察标签（已生效）')) break;
   }
-  if (calls.join(',') !== '/api/v1/customer-tag-commands/preview,/api/v1/customer-tag-commands' || !result.includes('已刷新执行结果：客户 #1：queued；观察标签：已观察标签（active）')) {
+  if (calls.join(',') !== '/api/v1/customer-tag-commands/preview,/api/v1/customer-tag-commands' ||
+      !result.includes('已刷新执行结果：客户 #1：排队中；观察标签：已观察标签（已生效）') ||
+      result.includes('：queued') || result.includes('（active）')) {
     throw new Error(`Host tag interaction calls=${calls.join(',')} result=${result}`);
   }
   console.log('customer-tag-command-runtime-host: PASS');

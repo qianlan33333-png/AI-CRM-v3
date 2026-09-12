@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/presentationtime"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
 )
 
@@ -706,13 +707,28 @@ func (h *Handler) export(w http.ResponseWriter, r *http.Request, id int64) {
 			if s.Identity.CustomerID != nil {
 				customer = fmt.Sprint(*s.Identity.CustomerID)
 			}
-			_ = writer.Write([]string{fmt.Sprint(s.ID), s.SubmittedAt.Format("2006-01-02T15:04:05Z07:00"), string(s.Identity.State), customer, fmt.Sprint(s.TotalScore)})
+			_ = writer.Write([]string{fmt.Sprint(s.ID), presentationtime.FormatShanghaiDateTime(s.SubmittedAt), surveyIdentityStateLabel(s.Identity.State), customer, fmt.Sprint(s.TotalScore)})
 		}
 		writer.Flush()
 		if writer.Error() != nil || len(page.Items) == 0 || int64(offset)+int64(len(page.Items)) >= page.Total {
 			break
 		}
 		offset += int32(len(page.Items))
+	}
+}
+
+func surveyIdentityStateLabel(value surveyport.IdentityState) string {
+	switch value {
+	case surveyport.IdentityAnonymous:
+		return "匿名提交"
+	case surveyport.IdentityResolved:
+		return "已关联客户"
+	case surveyport.IdentityUnresolved:
+		return "待关联客户"
+	case surveyport.IdentityConflict:
+		return "关联冲突"
+	default:
+		return "身份状态待确认"
 	}
 }
 func (h *Handler) customerHistory(w http.ResponseWriter, r *http.Request) {

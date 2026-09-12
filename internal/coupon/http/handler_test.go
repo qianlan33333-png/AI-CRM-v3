@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,46 @@ func (fakeOptions) ListProductOptions(_ context.Context, query productport.Produ
 		kind, id, name = productport.ProductOptionServicePeriod, 8, "周期商品"
 	}
 	return productport.ProductOptionPage{Items: []productport.ProductOption{{ID: id, Name: name, PriceMinor: 1000, Currency: "CNY", ProductType: kind}}, Total: 1, Limit: query.Limit, Offset: query.Offset}, nil
+}
+
+func (fakeOptions) ReadProductTargets(_ context.Context, references []productport.ProductTargetReference) ([]productport.ProductTargetLookup, error) {
+	items := make([]productport.ProductTargetLookup, 0, len(references))
+	for _, reference := range references {
+		name := "标准商品"
+		if reference.ProductType == productport.ProductOptionServicePeriod {
+			name = "周期商品"
+		}
+		items = append(items, productport.ProductTargetLookup{Reference: reference, Name: name, Found: true})
+	}
+	return items, nil
+}
+
+type recordingTargetOptions struct {
+	fakeOptions
+	err     error
+	missing map[productport.ProductTargetReference]bool
+	calls   [][]productport.ProductTargetReference
+}
+
+func (f *recordingTargetOptions) ReadProductTargets(_ context.Context, references []productport.ProductTargetReference) ([]productport.ProductTargetLookup, error) {
+	call := append([]productport.ProductTargetReference(nil), references...)
+	f.calls = append(f.calls, call)
+	if f.err != nil {
+		return nil, f.err
+	}
+	items := make([]productport.ProductTargetLookup, 0, len(references))
+	for _, reference := range references {
+		if f.missing[reference] {
+			items = append(items, productport.ProductTargetLookup{Reference: reference, Found: false})
+			continue
+		}
+		name := "标准商品"
+		if reference.ProductType == productport.ProductOptionServicePeriod {
+			name = "周期商品"
+		}
+		items = append(items, productport.ProductTargetLookup{Reference: reference, Name: name, Found: true})
+	}
+	return items, nil
 }
 
 type fakeRules struct {
@@ -265,4 +306,101 @@ func TestStandardCouponEditorReadProjection(t *testing.T) {
 			t.Fatalf("standard editor freeze state mismatch: %d %s", r.Code, r.Body.String())
 		}
 	}
+}
+
+func TestCouponListProjectsBoundedTypedProductNames(t *testing.T) {
+	first := couponFixture()
+	first.TargetRefs = []string{"standard_product:6", "service_period:8"}
+	second := couponFixture()
+	second.ID = 4
+	second.TargetRefs = []string{"standard_product:6", "standard_product:99"}
+	missing := productport.ProductTargetReference{ProductType: productport.ProductOptionStandard, ID: 99}
+	options := &recordingTargetOptions{missing: map[productport.ProductTargetReference]bool{missing: true}}
+	h, err := NewHandler(&fakeRules{page: couponport.Page{Items: []couponport.Coupon{first, second}, Total: 2, Limit: 2}}, options, fakeSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/coupons?limit=2", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Coupons []struct {
+			TargetRefs []string `json:"target_refs"`
+			Products   []struct {
+				TargetRef string `json:"target_ref"`
+				Name      string `json:"name"`
+				State     string `json:"state"`
+			} `json:"target_products"`
+		} `json:"coupons"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(options.calls) != 1 || len(options.calls[0]) != 3 {
+		t.Fatalf("expected one deduplicated Product read, calls=%+v", options.calls)
+	}
+	if len(payload.Coupons) != 2 || strings.Join(payload.Coupons[0].TargetRefs, ",") != "standard_product:6,service_period:8" {
+		t.Fatalf("target refs must retain their API contract: %+v", payload.Coupons)
+	}
+	if got := payload.Coupons[0].Products; len(got) != 2 || got[0].TargetRef != "standard_product:6" || got[0].Name != "标准商品" || got[0].State != "available" || got[1].TargetRef != "service_period:8" || got[1].Name != "周期商品" || got[1].State != "available" {
+		t.Fatalf("first projection=%+v", got)
+	}
+	if got := payload.Coupons[1].Products; len(got) != 2 || got[1].TargetRef != "standard_product:99" || got[1].Name != "" || got[1].State != "not_found" {
+		t.Fatalf("missing product must remain an explicit Product fact: %+v", got)
+	}
+}
+
+func TestCouponListRejectsUnavailableProductPresentation(t *testing.T) {
+	for _, requestPath := range []string{"/api/admin/coupons?limit=1", "/api/admin/coupons/3"} {
+		t.Run(requestPath, func(t *testing.T) {
+			options := &recordingTargetOptions{err: errors.New("Product unavailable")}
+			h, err := NewHandler(&fakeRules{page: couponport.Page{Items: []couponport.Coupon{couponFixture()}, Total: 1, Limit: 1}, item: couponFixture()}, options, fakeSecurity{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, requestPath, nil))
+			if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "standard_product:") {
+				t.Fatalf("must fail closed without raw Product refs: status=%d body=%s", response.Code, response.Body.String())
+			}
+			if len(options.calls) != 1 {
+				t.Fatalf("Product reads=%d want=1", len(options.calls))
+			}
+		})
+	}
+}
+
+func TestCouponListReadsEveryValidTargetInOneProductBatch(t *testing.T) {
+	items := couponPageWithUniqueTargets()
+	options := &recordingTargetOptions{}
+	h, err := NewHandler(&fakeRules{page: couponport.Page{Items: items, Total: int64(len(items)), Limit: int32(len(items))}}, options, fakeSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/coupons?limit=200", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d", response.Code)
+	}
+	if len(options.calls) != 1 || len(options.calls[0]) != productport.ProductTargetBatchMaximum {
+		t.Fatalf("Product reads must cover the whole legal page once, calls=%d batch=%d", len(options.calls), len(options.calls[0]))
+	}
+}
+
+func couponPageWithUniqueTargets() []couponport.Coupon {
+	items := make([]couponport.Coupon, 0, 200)
+	nextID := 1
+	for couponID := 1; couponID <= 200; couponID++ {
+		item := couponFixture()
+		item.ID = couponport.ID(couponID)
+		item.TargetRefs = make([]string, 0, 100)
+		for target := 0; target < 100; target++ {
+			item.TargetRefs = append(item.TargetRefs, "standard_product:"+strconv.Itoa(nextID))
+			nextID++
+		}
+		items = append(items, item)
+	}
+	return items
 }

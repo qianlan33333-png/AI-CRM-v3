@@ -2,6 +2,8 @@ import { runAction } from "./actionFeedback";
 
 // Browser host only: it never resolves identity, enqueues work, or calls WeCom.
 // It submits the versioned, CSRF-protected commands defined in the batch API.
+import { formatShanghaiDateTime } from "./adminDateTime";
+
 type Obj = Record<string, any>;
 const base = "/api/admin/operation-batches";
 const states: Record<string, string> = {
@@ -22,6 +24,41 @@ const delivery: Record<string, string> = {
   outcome_unknown: "结果待核实",
 };
 
+function displayDateTime(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const formatted = formatShanghaiDateTime(value);
+  return formatted === "未提供" ? "时间暂时无法显示" : formatted;
+}
+
+function deliveryLabel(value: unknown, empty = "待提交"): string {
+  const state = typeof value === "string" ? value : "";
+  if (!state) return empty;
+  return delivery[state] || "状态待核对";
+}
+
+const deliveryFailure: Record<string, string> = {
+  title_missing: "发送内容缺少标题",
+  cover_missing: "发送内容缺少统一封面",
+  unionid_not_unique: "接收对象身份待核对",
+  unionid_unverified: "接收对象身份待核对",
+  wecom_identity_unavailable: "接收对象企微身份暂不可用",
+  target_unavailable: "接收对象暂不可用",
+  payload_unavailable: "发送内容暂不可用",
+  outcome_unknown: "发送结果待核对",
+  provider_rejected: "企微拒绝发送请求",
+  wecom_errcode_45009: "企微接口调用频率受限，请稍后重试",
+  wecom_errcode_45011: "企微接口调用频率受限，请稍后重试",
+  "wecom_errcode_-1": "企微服务暂时繁忙，请稍后核对",
+};
+
+function deliveryReason(value: unknown): string {
+  const reason = typeof value === "string" ? value.trim() : "";
+  if (!reason) return "—";
+  if (deliveryFailure[reason]) return deliveryFailure[reason];
+  if (/^wecom_errcode_-?\d+$/.test(reason)) return "企微发送未成功";
+  if (/^wecom_status_[2-4]$/.test(reason)) return "企微发送未成功";
+  return "失败原因待核对";
+}
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   text?: string,
@@ -242,7 +279,7 @@ function batchState(batch: Obj): string {
 function rowState(row: Obj): string {
   if (row.excluded) return "已排除";
   if (row.review_state !== "approved") return "未批准";
-  return delivery[String(row.delivery_state || row.state)] || "待提交";
+  return deliveryLabel(row.delivery_state || row.state);
 }
 function rate(value: unknown): string {
   return typeof value === "number"
@@ -803,7 +840,7 @@ class Workspace {
             String(row.text || ""),
             card(row),
             String(row.segment || "未分层"),
-            `${rowState(row)}${row.failure_reason || row.reason ? `\n${row.failure_reason || row.reason}` : ""}${row.sent_at ? `\n${row.sent_at}` : ""}`,
+            `${rowState(row)}${row.failure_reason ? `\n${deliveryReason(row.failure_reason)}` : ""}${row.sent_at ? `\n${displayDateTime(row.sent_at)}` : ""}`,
             controls,
           ];
         }),
@@ -978,7 +1015,7 @@ class Workspace {
     parent.append(
       el(
         "p",
-        `报告按每人实际成功发送时间计算；结果未知先进入对账，不会换 key 重发。${report?.updated_at ? ` 最近采集：${report.updated_at}` : ""}`,
+        `报告按每人实际成功发送时间计算；结果未知先进入对账，不会换 key 重发。${report?.updated_at ? ` 最近采集：${displayDateTime(report.updated_at)}` : ""}`,
       ),
     );
     if (report) {
@@ -1059,10 +1096,9 @@ class Workspace {
         items.map((item: Obj) => [
           String(item.unionid || item.recipient || ""),
           String(item.sender_userid || ""),
-          delivery[String(item.delivery_state || item.state)] ||
-            String(item.delivery_state || item.state || "结果待核实"),
-          String(item.sent_at || "—"),
-          String(item.failure_reason || item.reason || "—"),
+          deliveryLabel(item.delivery_state || item.state, "状态待核对"),
+          displayDateTime(item.sent_at),
+          deliveryReason(item.failure_reason),
         ]),
       ),
     );
@@ -1214,7 +1250,7 @@ class Workspace {
             : item.cover_digest
               ? "已上传内容"
               : "—",
-          String(item.created_at || ""),
+          displayDateTime(item.created_at),
           action("只读查看", async () => {
             const detail = await readAllPages(
               `${base}/${id}/versions/${item.content_version || item.version}`,

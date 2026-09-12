@@ -595,16 +595,16 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       }
       if (orderHistoryHttp) {
         const calls = [];
-        const order = { id: 12, record_origin: 'v1_history', created_at: '2026-08-28T00:00:00Z', merchant_order_no: 'V1-H-12', out_trade_no: 'V1-H-12', order_no: 'V1-H-12', platform_transaction_no: 'TX-H-12', transaction_id: 'TX-H-12', payer_name: '历史客户', mobile: '', product_code: 'course-history', product_name: '历史课程', amount_yuan: '99.00', currency: 'CNY', status: 'paid', status_label: '已支付', provider: 'wechat', provider_label: '微信支付', detail_url: '/api/admin/orders/V1-H-12', refundable_amount_total: 0, historical_refunds: [{ id: 31, order_id: 12, source_refund_id: 801, refund_number: 'R-801', provider_refund_id: '', transaction_id: 'TX-H-12', status: 'refunded', amount_minor: 1990, order_amount_minor: 9900, currency: 'CNY', reason: '历史退款', created_at: '2026-08-28T00:00:00Z', updated_at: '2026-08-28T00:00:00Z' }] };
+        const order = { id: 12, record_origin: 'v1_history', created_at: '2026-08-28T00:00:00Z', merchant_order_no: 'V1-H-12', out_trade_no: 'V1-H-12', order_no: 'V1-H-12', platform_transaction_no: 'TX-H-12', transaction_id: 'TX-H-12', payer_name: '历史客户', mobile: '', product_code: 'course-history', product_name: '历史课程', amount_yuan: '99.00', currency: 'CNY', status: 'paid', status_label: '已支付', provider: 'wechat', provider_label: '微信支付', detail_url: '/api/admin/orders/V1-H-12', refundable_amount_total: 0 };
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
         window.__orderHistoryHttpTest = { calls };
         window.fetch = async (input, init = {}) => {
           const url = new URL(String(input), window.location.origin);
-          calls.push({ path: url.pathname, method: init.method || 'GET' });
+          calls.push({ path: url.pathname, query: url.search, method: init.method || 'GET' });
           if (url.pathname === '/api/admin/orders') return json({ items: [order], total: 1, limit: 20, has_more: false });
           if (url.pathname === '/api/admin/orders/V1-H-12') return json(order);
           if (url.pathname === '/api/admin/orders/V1-H-12/items') return json({ items: [] });
-          if (url.pathname === '/api/admin/refunds') return json({ items: [], total: 0, limit: 20, has_more: false });
+          if (url.pathname === '/api/admin/refunds') return json({ items: [{ refund_id: 'R-801', refund_amount_total: 1990, status: 'history_closed', reason: '历史退款', created_at: '2026-08-28T00:00:00Z' }], refunds: [{ refund_id: 'R-801', refund_amount_total: 1990, status: 'history_closed', reason: '历史退款', created_at: '2026-08-28T00:00:00Z' }], total: 1, limit: 20, offset: 0, has_more: false });
           if (url.pathname === '/api/admin/wechat-pay/orders/V1-H-12/external-push-deliveries') return json({ items: [], total: 0 });
           return json({ code: 'unexpected_order_history_request' }, 500);
         };
@@ -1868,8 +1868,11 @@ console.log('admin/orderDetail.html（V1 历史只读退款）');
   ok('V1 历史订单只走真实 HTTP 详情读取且不回退 Mock',
     dom.window.__AICRM_TEST_MOCK__ === false &&
     dom.window.__orderHistoryHttpTest.calls.some((call) => call.path === '/api/admin/orders/V1-H-12' && call.method === 'GET'));
-  ok('V1 历史详情显示只读边界', d.querySelector('#stage')?.textContent.includes('V1历史只读，非V2支付/退款确认'));
-  ok('V1 历史详情显示退款状态金额原因', d.querySelector('#stage')?.textContent.includes('refunded · ¥19.90 CNY') && d.querySelector('#stage')?.textContent.includes('历史退款'));
+  const historyDetail = d.querySelector('#stage')?.textContent || '';
+  ok('历史详情显示查询边界且不暴露实现代际', historyDetail.includes('历史订单，仅供查询') && historyDetail.includes('不支持退款确认') && !historyDetail.includes('V1历史') && !historyDetail.includes('V2支付'));
+  ok('历史详情只显示本订单的退款状态、金额和原因',
+    dom.window.__orderHistoryHttpTest.calls.some((call) => call.path === '/api/admin/refunds' && new URLSearchParams(call.query).get('order_no') === 'V1-H-12') &&
+    historyDetail.includes('历史记录：已关闭 · ¥19.90') && historyDetail.includes('历史退款') && !historyDetail.includes('金额待确认'));
   ok('V1 历史详情不渲染退款 intent 按钮或表单', ![...d.querySelectorAll('button')].some((button) => button.textContent.includes('创建退款 intent')) && !d.querySelector('#refundAmount'));
   dom.window.close();
 }
@@ -2916,11 +2919,11 @@ console.log('admin/ownerMig.html（冻结负责人迁移页 Host → Picker → 
   click(dom, root.querySelector('[data-execute]'));
   await sleep(100);
   const confirm = ownerCalls().find((call) => call.path.endsWith('/confirm'));
-  ok('Host 只在冻结 preview hash 和确认语存在时确认，并展示逐行 queued 结果', confirm?.method === 'POST' && confirm.body.preview_id === 'preview-owner-host' && confirm.body.preview_hash === 'preview-hash' && confirm.body.confirmation_phrase === 'CONFIRM' && root.querySelector('[data-execution-log]')?.textContent.includes('queued'));
+  ok('Host 只在冻结 preview hash 和确认语存在时确认，并展示逐行排队结果', confirm?.method === 'POST' && confirm.body.preview_id === 'preview-owner-host' && confirm.body.preview_hash === 'preview-hash' && confirm.body.confirmation_phrase === 'CONFIRM' && root?.dataset.ownerHandoffBatchId === 'batch-owner-host' && root.querySelector('[data-execution-log]')?.textContent.includes('排队中') && !root.querySelector('[data-execution-log]')?.textContent.includes('queued'));
   click(dom, root.querySelector('[data-read-transfer-result]'));
   await sleep(100);
   const readback = ownerCalls().find((call) => call.path.endsWith('/transfer-result'));
-  ok('企微回查是独立 POST，不从页面直接写 Provider，并回填逐行状态', readback?.method === 'POST' && root.querySelector('[data-execution-log]')?.textContent.includes('observed') && root.querySelector('[data-execution-log]')?.textContent.includes('transfer_status=1'));
+  ok('企微回查是独立 POST，不从页面直接写 Provider，并回填逐行中文状态', readback?.method === 'POST' && root.querySelector('[data-execution-log]')?.textContent.includes('已读取结果') && root.querySelector('[data-execution-log]')?.textContent.includes('企微转接已完成') && !root.querySelector('[data-execution-log]')?.textContent.includes('observed') && !root.querySelector('[data-execution-log]')?.textContent.includes('transfer_status=1'));
   dom.window.__aicrmDownload = null;
   dom.window.__aicrmDownloadRevocations = [];
   dom.window.URL.createObjectURL = () => 'blob:owner-handoff';
@@ -3105,7 +3108,7 @@ console.log('h5/result.html（真实结果与失败关闭）');
   const d = dom.window.document;
   const call = dom.window.__h5HttpTest.calls[0];
   ok('结果token通过POST body查询真实结果', call?.path === '/api/public/survey-submission-results/query' && call.method === 'POST' && call.query === '' && call.body.result_token === 'r'.repeat(43));
-  ok('结果只显示真实编号/版本/时间/本地效果，不伪造82分报告', !!d.querySelector('[data-h5-result]') && d.body.textContent.includes('901') && d.body.textContent.includes('v' + h5Result.definition_version) && d.body.textContent.includes(new Date(h5Result.submitted_at).toLocaleString('zh-CN', { hour12: false })) && !d.body.textContent.includes('你的增长基本盘不错') && !d.body.textContent.includes('总分 / 100'));
+  ok('结果只显示真实编号/版本/上海时间/本地效果，不伪造82分报告', !!d.querySelector('[data-h5-result]') && d.body.textContent.includes('901') && d.body.textContent.includes('v' + h5Result.definition_version) && d.body.textContent.includes('2026-08-28 17:30:00') && !d.body.textContent.includes('2026-08-28T09:30:00') && !d.body.textContent.includes('你的增长基本盘不错') && !d.body.textContent.includes('总分 / 100'));
   ok('结果页提供纯本地返回出口，不发请求', !!d.querySelector('[data-h5-local-exit]'));
   dom.window.close();
 }
