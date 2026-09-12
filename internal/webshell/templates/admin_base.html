@@ -41,6 +41,9 @@
   {{if .Media}}
   <link rel="stylesheet" href="{{.MediaAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.MediaAssets.LabsCSS}}">
+  {{if eq .MediaPage "images"}}
+  <script type="module" src="{{.MediaAssets.ImageLibraryFilterHostJS}}"></script>
+  {{end}}
   <script type="module" src="{{.MediaAssets.AdminJS}}"></script>
   <script type="module" src="{{.MediaAssets.MaterialSaveHostJS}}"></script>
   {{end}}

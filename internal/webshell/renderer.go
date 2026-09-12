@@ -128,7 +128,7 @@ type HXCAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // MediaAssets are manifest-derived URLs for the immutable Media donor bundle.
 // They are supplied by the Media module's release-only UI adapter.
-type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS string }
+type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS, ImageLibraryFilterHostJS string }
 
 // TagsAssets are manifest-derived frozen donor bundle paths. The tag page is
 // mounted in admin_base and never publishes the donor's own shell/sidebar.
@@ -316,7 +316,7 @@ func (renderer *Renderer) RenderHXC(writer http.ResponseWriter, data AdminPageDa
 // caller supplies only a verified template extracted from web/dist; it never
 // receives an arbitrary request-controlled HTML fragment.
 func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets MediaAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.MaterialSaveHostJS == "" || (page != "images" && page != "attach" && page != "mpLib") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.MaterialSaveHostJS == "" || (page == "images" && assets.ImageLibraryFilterHostJS == "") || (page != "images" && page != "attach" && page != "mpLib") {
 		return errors.New("media shell assets are required")
 	}
 	normalizeAdminPage(&data)

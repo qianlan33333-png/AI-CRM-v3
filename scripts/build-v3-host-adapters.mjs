@@ -22,6 +22,7 @@ const entryPoints = {
   standardComponentsHost: path.join(repository, 'web', 'v3', 'standardComponentsHost.ts'),
   operationCyclesHost: path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts'),
   materialSaveHost: path.join(repository, 'web', 'v3', 'materialSaveAdapter.ts'),
+  imageLibraryFilterHost: path.join(repository, 'web', 'v3', 'imageLibraryFilterHost.ts'),
   orderHost: path.join(repository, 'web', 'v3', 'orderAdapter.ts'),
   productHost: path.join(repository, 'web', 'v3', 'productAdapter.ts'),
   radarHost: path.join(repository, 'web', 'v3', 'radarAdapter.ts'),
@@ -189,7 +190,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
+  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);

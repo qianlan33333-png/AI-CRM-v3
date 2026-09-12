@@ -24,7 +24,7 @@ if (fs.existsSync(stage)) fail(`refusing to overwrite an existing stage: ${stage
 if (!fs.statSync(manifestPath).isFile()) fail('missing asset-manifest.json');
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const entryNames = ['admin', 'tokens', 'labs', 'h5', 'operationCyclesHost', 'materialSaveHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'standardComponentsHost', 'standardComponentsStableHost', 'channelAdmissionStyles', 'aiAssistantHost', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
+const entryNames = ['admin', 'tokens', 'labs', 'h5', 'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'standardComponentsHost', 'standardComponentsStableHost', 'channelAdmissionStyles', 'aiAssistantHost', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
 const roots = entryNames.map((name) => manifest.entries?.[name]);
 if (roots.some((entry) => typeof entry !== 'string')) fail('required release entry assets are absent from manifest');
 const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports || []).find((item) =>
