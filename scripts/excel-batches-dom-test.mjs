@@ -31,6 +31,7 @@ let cover = "",
   approved = 0,
   excluded = false;
 let failCoverUploadOnce = false;
+let failImportOnce = false;
 let releaseFirstRowPatch;
 let pauseFirstRowPatch = true;
 let releaseInitialDetail;
@@ -142,6 +143,10 @@ win.fetch = async (raw, init = {}) => {
       "/api/admin/operation-batches/strategies/weekly.review/imports",
     )
   ) {
+    if (failImportOnce) {
+      failImportOnce = false;
+      return json({}, 503);
+    }
     importedBatch = {
       ...batch,
       id: 919,
@@ -328,9 +333,34 @@ assert.ok(
   importInput.closest("label.admin-field"),
   "new batch file input did not use the standard field wrapper",
 );
+await click("上传并开始审核");
+const importDialog = importInput.closest("dialog");
+assert.ok(importDialog?.open, "missing Excel file closed the new-batch dialog");
+assert.ok(
+  importDialog.querySelector("[data-excel-feedback]")?.textContent.includes("请选择 Excel 文件"),
+  "missing Excel file did not remain visible inside its dialog",
+);
+assert.equal(
+  [...importDialog.querySelectorAll("button")].find((item) => item.textContent === "上传并开始审核")?.getAttribute("aria-busy"),
+  null,
+  "missing Excel file left the dialog action busy",
+);
 Object.defineProperty(importInput, "files", {
   value: [new win.File(["fixture"], "batch.xlsx")],
 });
+failImportOnce = true;
+await click("上传并开始审核");
+assert.ok(importDialog.open, "failed Excel import closed the new-batch dialog");
+assert.ok(
+  importDialog.querySelector("[data-excel-feedback]")?.textContent.includes("批次服务暂时不可用"),
+  "failed Excel import did not remain visible inside its dialog",
+);
+assert.equal(importInput.files?.[0]?.name, "batch.xlsx", "failed Excel import discarded the selected file");
+assert.equal(
+  [...importDialog.querySelectorAll("button")].find((item) => item.textContent === "上传并开始审核")?.getAttribute("aria-busy"),
+  null,
+  "failed Excel import left the dialog action busy",
+);
 await click("上传并开始审核");
 releaseInitialDetail();
 await new Promise((resolve) => setTimeout(resolve, 20));

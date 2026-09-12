@@ -152,9 +152,15 @@ function action(
       try {
         await run();
       } catch (error) {
-        const status = node
-          .closest(".operation-excel-workspace")
-          ?.querySelector<HTMLElement>("[data-excel-feedback]");
+        const dialog = node.closest("dialog");
+        const scope = dialog || node.closest(".operation-excel-workspace");
+        let status = scope?.querySelector<HTMLElement>("[data-excel-feedback]");
+        if (!status && dialog) {
+          status = notice();
+          const actions = node.closest(".xeb-actions");
+          if (actions?.parentElement === dialog) dialog.insertBefore(status, actions);
+          else dialog.append(status);
+        }
         if (status) setNotice(status, (error as Error).message, "error");
       }
     });
@@ -893,7 +899,7 @@ class Workspace {
         button.disabled = false;
         button.textContent = "选择";
         setLoading(false);
-        setNotice(status, `${(error as Error).message}；可重试，仍使用同一操作 key。`, "error");
+        setNotice(status, `${(error as Error).message}；可重试，本次封面选择尚未确认。`, "error");
       }
     };
     const draw = (items: Obj[]): void => {
