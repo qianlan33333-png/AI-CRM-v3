@@ -44,6 +44,21 @@ const V1_AUDIENCE = 'external_integration';
 const KNOWN_SCOPES = ['read', 'write'];
 const title = '开放平台调用方';
 
+function auditActionLabel(value: string): string {
+  return ({
+    machine_client_created: '创建调用方', machine_client_rotated: '轮换密钥', machine_client_enabled: '更新启用状态',
+    machine_client_updated: '更新调用方', machine_client_grants_updated: '更新授权范围', machine_client_activated: '确认启用调用方',
+    machine_token_issued: '签发访问令牌', direct_key_authenticated: '直接密钥认证', machine_client_imported: '导入历史调用方',
+  } as Record<string, string>)[value] || '审计操作待确认';
+}
+
+function auditOutcomeLabel(value: string): string {
+  return ({
+    succeeded: '已完成', enabled: '已启用', disabled: '已停用', revoked_prior_bearers: '已撤销旧访问凭据',
+    unchanged: '没有变更', imported: '已导入', replayed: '已按原记录核对',
+  } as Record<string, string>)[value] || '审计结果待确认';
+}
+
 function cookie(name: string): string {
   const prefix = `${name}=`;
   for (const entry of document.cookie.split(';')) {
@@ -485,7 +500,7 @@ async function boot(): Promise<void> {
       for (const entry of result.items || []) {
         const row = element('tr');
         const details = typeof entry.details === 'string' ? entry.details : JSON.stringify(entry.details ?? {});
-        for (const value of [formatTime(entry.created_at), entry.action, entry.outcome, details]) row.append(element('td', value));
+        for (const value of [formatTime(entry.created_at), auditActionLabel(entry.action), auditOutcomeLabel(entry.outcome), details]) row.append(element('td', value));
         rows.append(row);
       }
       if (!rows.children.length) { const row = element('tr'); const cell = element('td', '暂无审计记录'); cell.colSpan = 4; row.append(cell); rows.append(row); }

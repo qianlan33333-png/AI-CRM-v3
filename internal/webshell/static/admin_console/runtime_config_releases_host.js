@@ -18,6 +18,28 @@
     return "";
   };
   const requestID = () => globalThis.crypto?.randomUUID?.() || `runtime-release-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const releaseStateLabel = (state) => ({
+    draft: "草稿", validated: "已校验", validation_failed: "校验未通过", published: "已发布", superseded: "已被新版本替代",
+  })[String(state || "")] || "发布状态待确认";
+  const requestMessage = (status, detail) => {
+    const mapped = ({ csrf_required: "页面安全令牌已失效，请刷新页面后重试。", invalid_request: "配置请求无效，请检查后重试。" })[String(detail || "")];
+    if (mapped) return mapped;
+    if (status === 401) return "登录状态已失效，请重新登录后继续。";
+    if (status === 403) return "没有配置发布操作权限。";
+    if (status === 404) return "配置发布记录不存在或已不可读取。";
+    if (status === 409) return "发布版本已变化，请重新查看并确认。";
+    if (status === 400 || status === 405 || status === 422) return "配置请求无效，请检查后重试。";
+    if (status >= 500) return "配置服务暂不可用，请稍后重试。";
+    return "配置操作失败，请稍后重试。";
+  };
+  const visibleError = (error, fallback) => error instanceof Error && error.userMessage === true ? error.message : fallback;
+  const validationMessage = (value) => ({
+    required: "该配置项不能为空。",
+    invalid: "该配置项格式不正确。",
+    invalid_value: "该配置项的值不符合要求。",
+    out_of_range: "该配置项超出允许范围。",
+    conflict: "该配置项与当前配置冲突。",
+  })[String(value || "")] || "该配置项未通过校验。";
   const element = (tag, className, value) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -52,8 +74,9 @@
     let payload = null;
     try { payload = await response.json(); } catch (_error) {}
     if (!response.ok) {
-      const safe = payload?.error === "runtime_release_conflict" ? "发布版本已变化，请重新查看并确认。" : `配置操作失败（${response.status}）`;
-      throw new Error(safe);
+      const error = new Error(requestMessage(response.status, payload?.error));
+      error.userMessage = true;
+      throw error;
     }
     return payload;
   };
@@ -118,7 +141,7 @@
             if (!token) throw new Error("后端未返回旧程序恢复操作凭证");
             const result = await request(`${API}/legacy-binary-recovery`, { method: "POST", headers: writeHeaders(), body: JSON.stringify({ expected_base_revision: current.runtime_releases?.active_revision || 0, admin_action_token: token }) });
             await showDetail(result.runtime_release.id, "已发布旧程序恢复配置；请确认该版本只有旧字段后，再按部署流程回退程序。");
-          } catch (error) { status(error instanceof Error ? error.message : "旧程序恢复配置未能发布", "error"); legacyRecovery.disabled = false; }
+          } catch (error) { status(visibleError(error, "旧程序恢复配置未能发布，请刷新页面后重试。"), "error"); legacyRecovery.disabled = false; }
         })();
       });
       summary.append(legacyRecovery);
@@ -127,7 +150,7 @@
         const row = document.createElement("tr");
         const cells = [
           `#${release.id}`,
-          text(release.state),
+          releaseStateLabel(release.state),
           `${Array.isArray(release.settings) ? release.settings.length : 0}`,
           text(release.created_by),
           formatDate(release.published_at),
@@ -141,7 +164,7 @@
         action.append(view); row.append(action); rows.append(row);
       }
       if (!rows.children.length) status("尚无配置发布记录。新建草稿后，必须先校验，再由有权限的操作人发布。");
-    } catch (error) { status(error instanceof Error ? error.message : "配置发布不可用", "error"); }
+    } catch (error) { status(visibleError(error, "配置发布暂不可用，请稍后重试。"), "error"); }
   };
   const showNew = async () => {
     clear();
@@ -165,14 +188,14 @@
       try {
         const payload = await request(API, { method: "POST", headers: writeHeaders(), body: JSON.stringify({ expected_base_revision: list.runtime_releases?.active_revision || 0, settings: [{ key: "automation.operations.max_recipients_per_run", value: Number(value.value) }], admin_action_token: list.admin_action_token }) });
         await showDetail(payload.runtime_release.id, "草稿已创建");
-      } catch (error) { status(error instanceof Error ? error.message : "保存草稿失败", "error"); save.disabled = false; }
+      } catch (error) { status(visibleError(error, "保存草稿失败，请稍后重试。"), "error"); save.disabled = false; }
     });
-    try { list = await runtimeList(); save.disabled = false; } catch (error) { status(error instanceof Error ? error.message : "配置发布不可用", "error"); }
+    try { list = await runtimeList(); save.disabled = false; } catch (error) { status(visibleError(error, "配置发布暂不可用，请稍后重试。"), "error"); }
   };
   const releaseFacts = (release) => {
     const details = element("dl", "admin-definition-list");
     const add = (label, value) => { const item = element("div"); item.append(element("dt", "", label), element("dd", "", value)); details.append(item); };
-    add("状态", text(release.state)); add("创建", `${text(release.created_by)} · ${formatDate(release.created_at)}`); add("发布", `${text(release.published_by)} · ${formatDate(release.published_at)}`); add("校验时间", formatDate(release.validated_at)); add("校验和", text(release.checksum));
+    add("状态", releaseStateLabel(release.state)); add("创建", `${text(release.created_by)} · ${formatDate(release.created_at)}`); add("发布", `${text(release.published_by)} · ${formatDate(release.published_at)}`); add("校验时间", formatDate(release.validated_at)); add("校验和", text(release.checksum));
     return details;
   };
   const showDetail = async (id, notice = "") => {
@@ -187,7 +210,7 @@
       const table = element("table", "admin-table"); table.innerHTML = "<thead><tr><th>配置项</th><th>发布值</th></tr></thead>"; const body = document.createElement("tbody");
       for (const setting of release.settings || []) { const row = document.createElement("tr"); row.append(element("td", "", setting.key), element("td", "", String(setting.value))); body.append(row); }
       table.append(body); changes.append(table); root.append(changes);
-      if (Array.isArray(release.validation_errors) && release.validation_errors.length) { const error = element("section", "admin-alert admin-alert--error"); error.append(element("strong", "", "校验未通过")); for (const item of release.validation_errors) error.append(element("p", "", `${text(item.key)}：${text(item.error)}`)); root.append(error); }
+      if (Array.isArray(release.validation_errors) && release.validation_errors.length) { const error = element("section", "admin-alert admin-alert--error"); error.append(element("strong", "", "校验未通过")); for (const item of release.validation_errors) error.append(element("p", "", `${text(item?.key, "配置项")}：${validationMessage(item?.error)}`)); root.append(error); }
       const operations = element("section", "admin-card"); operations.append(element("h2", "", "发布操作"), element("p", "", "校验不会改变生效配置；发布和回滚使用单个数据库事务。")); const actions = element("div", "admin-form-actions"); operations.append(actions); root.append(operations);
       const postAction = async (suffix, body) => {
         const current = await runtimeDetail(id);
@@ -198,12 +221,12 @@
         const result = await request(`${API}/${id}/${suffix}`, { method: "POST", headers: writeHeaders(), body: JSON.stringify(data) });
         await showDetail(result.runtime_release.id, suffix === "validate" ? "校验完成" : suffix === "publish" ? "配置已发布" : "已创建并发布回滚记录");
       };
-      if (["draft", "validated", "validation_failed"].includes(release.state)) { const validate = button("运行跨模块校验"); validate.dataset.runtimeReleaseValidate = String(id); validate.addEventListener("click", () => void postAction("validate").catch((error) => status(error.message, "error"))); actions.append(validate); }
-      if (release.state === "validated") { const publish = button("发布配置", "primary"); publish.dataset.runtimeReleasePublish = String(id); publish.addEventListener("click", () => void postAction("publish").catch((error) => status(error.message, "error"))); actions.append(publish); }
-      if (["published", "superseded"].includes(release.state)) { const rollback = button("用此版本回滚", "danger"); rollback.dataset.runtimeReleaseRollback = String(id); rollback.addEventListener("click", () => void postAction("rollback").catch((error) => status(error.message, "error"))); actions.append(rollback); }
+      if (["draft", "validated", "validation_failed"].includes(release.state)) { const validate = button("运行跨模块校验"); validate.dataset.runtimeReleaseValidate = String(id); validate.addEventListener("click", () => void postAction("validate").catch((error) => status(visibleError(error, "校验暂不可执行，请稍后重试。"), "error"))); actions.append(validate); }
+      if (release.state === "validated") { const publish = button("发布配置", "primary"); publish.dataset.runtimeReleasePublish = String(id); publish.addEventListener("click", () => void postAction("publish").catch((error) => status(visibleError(error, "发布暂不可执行，请稍后重试。"), "error"))); actions.append(publish); }
+      if (["published", "superseded"].includes(release.state)) { const rollback = button("用此版本回滚", "danger"); rollback.dataset.runtimeReleaseRollback = String(id); rollback.addEventListener("click", () => void postAction("rollback").catch((error) => status(visibleError(error, "回滚暂不可执行，请稍后重试。"), "error"))); actions.append(rollback); }
       const usage = element("section", "admin-card"); usage.append(element("h2", "", "实际使用回读")); const usageRows = element("div", "admin-muted", "正在读取已发生的服务使用事实…"); usage.append(usageRows); root.append(usage);
       request(`${API}/${id}/usage`).then((body) => { const items = body.usage || []; usageRows.textContent = items.length ? items.map((item) => `${serviceLabel(item.role)}已记录${text(item.operation, "运行配置")}`).join("；") : "尚无实际使用记录。"; }).catch(() => { usageRows.textContent = "使用回读暂不可用。"; });
-    } catch (error) { status(error instanceof Error ? error.message : "配置发布不可用", "error"); }
+    } catch (error) { status(visibleError(error, "配置发布暂不可用，请稍后重试。"), "error"); }
   };
 
   if (page === "runtimeConfigCenter" || page === "runtimeConfigCategory") return;

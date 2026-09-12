@@ -509,7 +509,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		t.Fatalf("export status=%d content_type=%q body=%s", export.Code, export.Header().Get("Content-Type"), export.Body.String())
 	}
 	csvRows, err := csv.NewReader(bytes.NewReader(export.Body.Bytes())).ReadAll()
-	if err != nil || len(csvRows) != 2 || len(csvRows[1]) != 5 || csvRows[1][0] != fmt.Sprint(submissionResult.Receipt.SubmissionID) || csvRows[1][2] != string(surveyport.IdentityResolved) || csvRows[1][3] == "" || csvRows[1][4] != "0" {
+	if err != nil || len(csvRows) != 2 || len(csvRows[1]) != 5 || csvRows[1][0] != fmt.Sprint(submissionResult.Receipt.SubmissionID) || csvRows[1][2] != "已关联客户" || csvRows[1][3] == "" || csvRows[1][4] != "0" {
 		t.Fatalf("export rows=%q err=%v", csvRows, err)
 	}
 

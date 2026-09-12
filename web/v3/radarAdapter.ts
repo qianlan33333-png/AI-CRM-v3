@@ -152,6 +152,20 @@ function radarDisplayTime(value: string): string {
   return formatted === '未提供' ? '时间暂时无法显示' : formatted;
 }
 
+function radarStageLabel(value: string): string {
+  return ({
+    landing: '访问落地页',
+    oauth_started: '开始授权',
+    oauth_verified: '授权已验证',
+    identity_resolved: '已关联客户',
+    content_opened: '已打开内容',
+    redirected: '已完成跳转',
+    image_loaded: '图片已加载',
+    pdf_opened: '已打开 PDF',
+    failed: '处理失败',
+  } as Record<string, string>)[value] || '事件阶段待确认';
+}
+
 function radarErrorMessage(error: unknown, operation: 'read' | 'export'): string {
   const status = radarRecord(error)?.status;
   const code = typeof status === 'number' && Number.isSafeInteger(status) ? status : 0;
@@ -374,7 +388,7 @@ class RadarDetailTimeHost {
   private visibleItems(): RadarEvent[] {
     const keyword = this.keyword.value.trim().toLowerCase();
     if (!keyword) return this.page?.items || [];
-    return (this.page?.items || []).filter((item) => item.receiptID.toLowerCase().includes(keyword) || item.stage.toLowerCase().includes(keyword));
+    return (this.page?.items || []).filter((item) => item.receiptID.toLowerCase().includes(keyword) || item.stage.toLowerCase().includes(keyword) || radarStageLabel(item.stage).toLowerCase().includes(keyword));
   }
 
   private render(): void {
@@ -386,7 +400,7 @@ class RadarDetailTimeHost {
     if (visible.length) {
       visible.forEach((item) => {
         const row = document.createElement('tr');
-        for (const [value, className] of [[item.receiptID, 'mono'], [item.stage, 'mono'], [radarDisplayTime(item.createdAt), '']] as const) {
+        for (const [value, className] of [[item.receiptID, 'mono'], [radarStageLabel(item.stage), ''], [radarDisplayTime(item.createdAt), '']] as const) {
           const cell = document.createElement('td');
           if (className) cell.className = className;
           cell.textContent = value;
@@ -491,6 +505,39 @@ class RadarDetailTimeHost {
   }
 }
 
+function projectRadarPresentation(root: HTMLElement): void {
+  const shareQR = root.querySelector<HTMLElement>('#shareQr');
+  if (shareQR?.textContent?.includes('backend_blocked')) {
+    shareQR.textContent = '分享链接暂不可用，请稍后重试。';
+    shareQR.dataset.v3RadarShareState = 'unavailable';
+  }
+  const disabledDetailCopy = root.querySelector<HTMLButtonElement>('#dCopyInline[disabled]');
+  const detailShareNotice = disabledDetailCopy?.previousElementSibling;
+  if (detailShareNotice instanceof HTMLElement && detailShareNotice.textContent.includes('backend_blocked')) {
+    detailShareNotice.textContent = '分享链接暂不可用，请稍后重试。';
+    detailShareNotice.setAttribute('role', 'alert');
+    detailShareNotice.dataset.v3RadarShareState = 'unavailable';
+  }
+  root.querySelectorAll<HTMLElement>('.stat-row .stat').forEach((card) => {
+    const label = card.querySelector<HTMLElement>('.stat-l');
+    const detail = card.querySelector<HTMLElement>('.stat-s');
+    if (label?.textContent?.trim() === 'PV · 中转页到达') label.textContent = '访问次数 · 中转页到达';
+    if (detail?.textContent?.trim() === 'wrapper 页加载次数') detail.textContent = '中转页加载次数';
+  });
+}
+
+function installRadarPresentationProjection(): void {
+  if (!['radar', 'radarDetail'].includes(document.body.dataset.page || '')) return;
+  const render = (): void => {
+    const root = document.querySelector<HTMLElement>('#stage.sec-radar');
+    if (root) projectRadarPresentation(root);
+  };
+  const observer = new MutationObserver(render);
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
+  render();
+}
+
 function installRadarDetailTimeHost(): void {
   if (document.body.dataset.page !== 'radarDetail') return;
   let host: RadarDetailTimeHost | undefined;
@@ -515,4 +562,5 @@ function installRadarDetailTimeHost(): void {
   attemptMount();
 }
 
+installRadarPresentationProjection();
 installRadarDetailTimeHost();

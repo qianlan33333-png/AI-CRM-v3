@@ -2919,11 +2919,11 @@ console.log('admin/ownerMig.html（冻结负责人迁移页 Host → Picker → 
   click(dom, root.querySelector('[data-execute]'));
   await sleep(100);
   const confirm = ownerCalls().find((call) => call.path.endsWith('/confirm'));
-  ok('Host 只在冻结 preview hash 和确认语存在时确认，并展示逐行 queued 结果', confirm?.method === 'POST' && confirm.body.preview_id === 'preview-owner-host' && confirm.body.preview_hash === 'preview-hash' && confirm.body.confirmation_phrase === 'CONFIRM' && root.querySelector('[data-execution-log]')?.textContent.includes('queued'));
+  ok('Host 只在冻结 preview hash 和确认语存在时确认，并展示逐行排队结果', confirm?.method === 'POST' && confirm.body.preview_id === 'preview-owner-host' && confirm.body.preview_hash === 'preview-hash' && confirm.body.confirmation_phrase === 'CONFIRM' && root?.dataset.ownerHandoffBatchId === 'batch-owner-host' && root.querySelector('[data-execution-log]')?.textContent.includes('排队中') && !root.querySelector('[data-execution-log]')?.textContent.includes('queued'));
   click(dom, root.querySelector('[data-read-transfer-result]'));
   await sleep(100);
   const readback = ownerCalls().find((call) => call.path.endsWith('/transfer-result'));
-  ok('企微回查是独立 POST，不从页面直接写 Provider，并回填逐行状态', readback?.method === 'POST' && root.querySelector('[data-execution-log]')?.textContent.includes('observed') && root.querySelector('[data-execution-log]')?.textContent.includes('transfer_status=1'));
+  ok('企微回查是独立 POST，不从页面直接写 Provider，并回填逐行中文状态', readback?.method === 'POST' && root.querySelector('[data-execution-log]')?.textContent.includes('已读取结果') && root.querySelector('[data-execution-log]')?.textContent.includes('企微转接已完成') && !root.querySelector('[data-execution-log]')?.textContent.includes('observed') && !root.querySelector('[data-execution-log]')?.textContent.includes('transfer_status=1'));
   dom.window.__aicrmDownload = null;
   dom.window.__aicrmDownloadRevocations = [];
   dom.window.URL.createObjectURL = () => 'blob:owner-handoff';

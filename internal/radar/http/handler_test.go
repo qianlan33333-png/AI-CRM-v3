@@ -166,7 +166,7 @@ func TestEventExportFormatsBusinessTimestampsInShanghai(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links/1/events/export", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "2026-09-05 08:01:02") || strings.Contains(response.Body.String(), "2026-09-05T00:01:02") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "2026-09-05 08:01:02") || strings.Contains(response.Body.String(), "2026-09-05T00:01:02") || !strings.Contains(response.Body.String(), "访问落地页") || !strings.Contains(response.Body.String(), "已关联客户") || strings.Contains(response.Body.String(), ",landing,resolved,") {
 		t.Fatalf("business CSV did not use Shanghai display time: status=%d body=%q", response.Code, response.Body.String())
 	}
 }

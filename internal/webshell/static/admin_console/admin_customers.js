@@ -96,7 +96,45 @@
       succeeded: "已完成",
       failed_retryable: "可恢复失败",
       failed_terminal: "终止失败",
-    })[value] || value || "—";
+    })[value] || "同步状态待确认";
+  }
+
+  function tagCommandStateLabel(value) {
+    return ({
+      preview: "预览完成", eligible: "可执行", rejected: "不可执行", accepted: "已受理",
+      queued: "排队中", attempted: "正在执行", executed: "已执行", provider_accepted: "企微已受理",
+      final_failed: "执行失败", failed: "执行失败", retryable_failed: "可重试失败",
+      outcome_unknown: "结果待核实", unavailable: "暂不可读取", reconciled: "已核对", cancelled: "已取消",
+    })[String(value || "")] || "执行状态待确认";
+  }
+
+  function tagObservationStateLabel(value) {
+    return ({ active: "已生效", inactive: "未生效", pending: "待核实", failed: "读取失败" })[String(value || "")] || "状态待确认";
+  }
+
+  function tagCommandReason(value) {
+    return ({
+      target_unavailable: "当前客户暂不可执行标签变更。",
+      provider_rejected: "企微服务未接受本次标签变更。",
+    })[String(value || "").trim()] || "执行原因待确认。";
+  }
+
+  function tagCommandErrorMessage(error) {
+    const status = Number(error?.status || 0);
+    if (status === 401) return "登录状态已失效，请重新登录后继续。";
+    if (status === 403) return "没有标签操作权限。";
+    if (status === 409) return "标签命令状态已变化，请刷新后核对。";
+    if (status === 400 || status === 422) return "标签命令填写有误，请检查后重试。";
+    if (status >= 500) return "标签服务暂不可用，请稍后重试。";
+    return "标签命令未受理，请检查网络后重试。";
+  }
+
+  function customerStatusLabel(value) {
+    return ({ active: "正常", merged: "已合并", closed: "已关闭" })[String(value || "")] || "客户状态待确认";
+  }
+
+  function orderStatusLabel(value) {
+    return ({ awaiting_prepay: "待支付", awaiting_payment: "待支付", pending_payment: "待支付", unpaid: "待支付", paid: "已支付", refunding: "退款处理中", partially_refunded: "部分退款", refunded: "已退款", closed: "已关闭", cancelled: "已取消", failed: "支付失败", payment_failed: "支付失败" })[String(value || "")] || "订单状态待确认";
   }
 
   function syncFailureDetail(code) {
@@ -235,7 +273,7 @@
     const names = (Array.isArray(items) ? items : []).map((item) => {
       const name = String(item.name || "标签名称待同步");
       const group = item.group_name ? String(item.group_name) + " / " : "";
-      return group + name + "（" + String(item.status || "unknown") + "）";
+      return group + name + "（" + tagObservationStateLabel(item.status) + "）";
     });
     return names.length ? names.join("、") : "暂无已观察标签";
   }
@@ -246,7 +284,7 @@
       const line = entry && entry.line ? entry.line : entry || {};
       const reason = line.result_reason || line.reject_reason;
       const observed = entry && entry.observed ? "；观察标签：" + observedTagSummary(entry.observed) : "";
-      return "客户 #" + String(line.customer_id || "—") + "：" + String(line.state || "unknown") + (reason ? "（" + String(reason) + "）" : "") + observed;
+      return "客户 #" + String(line.customer_id || "—") + "：" + tagCommandStateLabel(line.state) + (reason ? "（" + tagCommandReason(reason) + "）" : "") + observed;
     });
     return prefix + (detail.length ? detail.join("；") : "暂无可回读的客户结果。");
   }
@@ -315,7 +353,7 @@
         // observe any Provider completion without exposing Provider details.
       }
     } catch (error) {
-      if (resultNode) resultNode.textContent = error && error.message ? "标签命令未受理：" + error.message : "标签命令未受理。";
+      if (resultNode) resultNode.textContent = tagCommandErrorMessage(error);
     }
   }
 
@@ -511,7 +549,7 @@
         profileField("OneID", [item.oneid, ...identities].filter(Boolean).join(" · ")),
       );
       el.profileMeta.replaceChildren(
-        metaItem("客户状态", item.status),
+        metaItem("客户状态", customerStatusLabel(item.status)),
         metaItem("企业", item.corp_name),
         metaItem("客户类型", item.contact_type),
         metaItem("数据来源", item.source),
@@ -520,7 +558,7 @@
       el.detailState.hidden = true;
       el.detailContent.hidden = false;
 	  el.main360.replaceChildren(
-		sectionCard("订单统计", data.order_summary, function (target, value) { line(target, "订单总数：" + (value.total || 0)); line(target, "已支付：" + (value.paid || 0) + "，退款相关：" + (value.refunded || 0) + "，支付失败：" + (value.failed || 0)); (value.recent || []).slice(0, 10).forEach(function (order) { line(target, (order.merchant_order_no || "订单 #" + order.id) + " · " + (order.status || "")); }); }),
+		sectionCard("订单统计", data.order_summary, function (target, value) { line(target, "订单总数：" + (value.total || 0)); line(target, "已支付：" + (value.paid || 0) + "，退款相关：" + (value.refunded || 0) + "，支付失败：" + (value.failed || 0)); (value.recent || []).slice(0, 10).forEach(function (order) { line(target, (order.merchant_order_no || "订单 #" + order.id) + " · " + orderStatusLabel(order.status)); }); }),
 		sectionCard("问卷统计", data.questionnaire_summary, function (target, value) { line(target, "问卷记录：" + (value.total || 0)); (value.recent || []).forEach(function (survey) { line(target, (survey.title || "问卷") + " · " + date(survey.submitted_at)); }); })
 	  );
 	  el.sidebar360.replaceChildren(

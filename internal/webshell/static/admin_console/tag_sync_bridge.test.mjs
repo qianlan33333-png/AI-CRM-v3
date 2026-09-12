@@ -19,8 +19,11 @@ const code = readFileSync(
   new URL("./tag_sync_bridge.js", import.meta.url),
   "utf8",
 );
+assert.match(code, /标签同步未完成（\$\{tagSyncStateLabel\(sync\.state\)\}）/);
+assert.match(code, /notice\("已完成核对，请查看结果。", true\)/);
+assert.match(code, /final_failed: "执行失败"/);
 const dom = new JSDOM(
-  `<main id="stage"><button data-tag-group-card aria-pressed="true"><span>Group</span></button><table><tr><td>Known</td><td><button>复制 tag_id</button></td></tr><tr><td>Pending</td><td><button>复制 tag_id</button></td></tr></table><div><span>tag_id</span><span><code>22</code><button>复制</button></span></div></main>`,
+  `<main id="stage"><button data-tag-group-card aria-pressed="true"><span>Group</span></button><button type="button">同步企微标签</button><table><tr><td>Known</td><td><button>复制 tag_id</button></td></tr><tr><td>Pending</td><td><button>复制 tag_id</button></td></tr></table><div><span>tag_id</span><span><code>22</code><button>复制</button></span></div></main>`,
   { url: "https://test.invalid/admin/wecom-tags", runScripts: "outside-only" },
 );
 const { window } = dom;
@@ -28,6 +31,7 @@ const copies = [];
 const retries = [];
 let generation = 1;
 let retryState = "queued";
+let syncState = { state: "idle", active: false };
 Object.defineProperty(window.navigator, "clipboard", {
   value: { writeText: async (text) => copies.push(text) },
 });
@@ -42,7 +46,7 @@ window.fetch = async (url, options) => {
   if (String(url).endsWith("/sync-status"))
     return {
       ok: true,
-      json: async () => ({ sync: { state: "idle", active: false } }),
+      json: async () => ({ sync: syncState }),
     };
   return {
     ok: true,
@@ -198,4 +202,22 @@ for (const [state, label] of Object.entries({
   );
 }
 dom.window.close();
+
+let reconciledState = { state: "queued", active: true, receipt_id: 17 };
+const reconciledDom = new JSDOM(
+  `<main id="stage"><button type="button">同步企微标签</button></main>`,
+  { url: "https://test.invalid/admin/wecom-tags", runScripts: "outside-only" },
+);
+reconciledDom.window.fetch = async (url) => {
+  if (String(url).endsWith("/sync-status")) return { ok: true, json: async () => ({ sync: reconciledState }) };
+  return { ok: true, json: async () => ({ groups: [], tags: [], mutation_recoveries: [] }) };
+};
+reconciledDom.window.eval(code);
+reconciledDom.window.document.dispatchEvent(new reconciledDom.window.Event("DOMContentLoaded"));
+await new Promise((resolve) => setTimeout(resolve, 30));
+reconciledState = { state: "reconciled", active: false, receipt_id: 17 };
+await new Promise((resolve) => setTimeout(resolve, 900));
+const reconciledNotice = reconciledDom.window.document.querySelector('[role="alert"]');
+assert.equal(reconciledNotice?.textContent, "已完成核对，请查看结果。", "reconciled sync must not be described as unfinished or successful");
+reconciledDom.window.close();
 console.log("tag Host Provider ID / explicit safe recovery: PASS");

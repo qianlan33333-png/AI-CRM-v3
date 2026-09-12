@@ -36,6 +36,7 @@ let templateReads = 0;
 let broadcastRuns = [];
 let broadcastPreviewCalls = 0;
 let broadcastConfirmCalls = 0;
+let previewFailure = false;
 const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   url: "https://test.invalid/admin/automation-conversion/packages/13",
   runScripts: "outside-only",
@@ -65,6 +66,8 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
       if (url.pathname === "/api/admin/ai-audience/packages/13/automation-binding" || url.pathname === "/api/admin/ai-audience/packages/13/senders" || url.pathname === "/api/admin/ai-audience/packages/13/members") return json({ error: "not_found" }, 404);
       if (url.pathname === "/api/admin/automation-agents") return json({ items: [] });
       if (url.pathname === "/api/admin/ai-audience/packages/13/precheck") return json({ precheck: { ready: false, reasons: [] } });
+      if (url.pathname === "/api/admin/ai-audience/packages/13/refresh" && init.method === "POST") return json({ refresh_run: { id: 71, state: "queued" } }, 202);
+      if (url.pathname === "/api/admin/ai-audience/packages/13/refresh-runs/71") return json({ refresh_run: { id: 71, state: "failed", error_code: "refresh_unavailable" } });
       if (url.pathname === "/api/admin/ai-audience/packages/13" && init.method === "PATCH") {
         const body = JSON.parse(init.body);
         packageWrites.push(body);
@@ -87,6 +90,7 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         return json({ configuration: config });
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/preview") {
+        if (previewFailure) return json({ error: "provider_unavailable（上游服务错误）" }, 503);
         const body = JSON.parse(init.body);
         previewWrites.push(body);
         return json({ preview: { member_count: 1, member_digest: "member", watermark_digest: "watermark" } });
@@ -123,6 +127,17 @@ await wait(350);
 const document = dom.window.document;
 const select = document.querySelector("#templateSelect");
 if (templateReads < 3 || select.options.length !== 7 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("frozen renderer and V3 submission template were not restored after the delayed detail renderer");
+if (!select.options[0].textContent.includes("企微联系人与注册状态 · 第 1 版") || select.options[0].textContent.includes("v1")) throw new Error(`template version label was not localized: ${select.options[0].textContent}`);
+const ownerScopeLabels = [...document.querySelectorAll('[data-field-name="owner_scope"] option')].map((option) => option.textContent).join("/");
+const contactStatusLabels = [...document.querySelectorAll('[data-field-name="contact_statuses"] option')].map((option) => option.textContent).join("/");
+const registrationLabels = [...document.querySelectorAll('[data-field-name="registration_status"] option')].map((option) => option.textContent).join("/");
+if (ownerScopeLabels !== "指定负责人/全部负责人" || contactStatusLabels !== "有效/已删除" || registrationLabels !== "不限/已注册/未注册") throw new Error(`template enum labels leaked protocol values: ${JSON.stringify({ownerScopeLabels, contactStatusLabels, registrationLabels})}`);
+const initialOwnerScope = document.querySelector('[data-field-name="owner_scope"] select');
+initialOwnerScope.value = "specified";
+initialOwnerScope.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+if (!document.querySelector('[data-field-name="owner_userids"] label')?.textContent.includes("负责人标识")) throw new Error("owner identifier field leaked UserID wording");
+initialOwnerScope.value = "all";
+initialOwnerScope.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
 if (document.querySelector("#dailySelect").value !== "off" || !document.querySelector("#summaryMode").textContent.includes("每日 09:00") || !document.querySelector("#refreshScheduleNote").textContent.includes("保留原规则") || document.querySelector("#refreshScheduleNote").textContent.includes("上海时间")) throw new Error("legacy custom schedule was not presented as its actual business time");
 // The frozen renderer can finish a later asynchronous configuration read.
 // Its old cron projection must not overwrite the V3-owned business schedule
@@ -329,6 +344,17 @@ const dynamicProgress = document.querySelector("#sendRecordRows");
 if (!dynamicProgress.textContent.includes("动态生成 3 项") || !dynamicProgress.textContent.includes("失败排除 1") || !dynamicProgress.textContent.includes("未知排除 1")) throw new Error("dynamic generation progress and exclusions were not rendered");
 document.querySelector("[data-generation-run-id=\"92\"]").click();
 await wait(180);
-if (!document.querySelector("#sendRecordMeta").textContent.includes("generation_response_invalid") || !document.querySelector("#sendRecordMeta").textContent.includes("generation_call_unknown") || !document.querySelector("#sendRecordContentDetail").textContent.includes("AI 审阅与收件人")) throw new Error("dynamic generation readback did not show durable exclusions and review handoff");
+if (!document.querySelector("#sendRecordMeta").textContent.includes("生成结果无效") || !document.querySelector("#sendRecordMeta").textContent.includes("生成调用结果待核实") || document.querySelector("#sendRecordMeta").textContent.includes("generation_response_invalid") || document.querySelector("#sendRecordMeta").textContent.includes("generation_call_unknown") || !document.querySelector("#sendRecordContentDetail").textContent.includes("AI 审阅与收件人")) throw new Error("dynamic generation readback did not show durable exclusions and review handoff");
+previewFailure = true;
+document.querySelector("#templatePreviewBtn").click();
+await wait(180);
+const previewFailureText = document.querySelector("#templateStatusLine").textContent || "";
+if (!previewFailureText.includes("人群配置服务暂不可用") || previewFailureText.includes("provider_unavailable") || previewFailureText.includes("上游服务错误")) throw new Error(`template request error leaked a technical message: ${previewFailureText}`);
+document.querySelector('[data-panel="basic"]').click();
+await wait(20);
+document.querySelector("#manualRefreshBtn").click();
+await wait(1700);
+const refreshFailureText = document.querySelector("#capabilityStatus")?.textContent || "";
+if (!refreshFailureText.includes("快照刷新失败：刷新服务暂不可用") || refreshFailureText.includes("refresh_unavailable")) throw new Error(`refresh failure leaked a raw error code: ${refreshFailureText}`);
 dom.window.close();
 console.log("admin-audience-template-host-browser: PASS");
