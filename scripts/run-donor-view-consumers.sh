@@ -82,6 +82,7 @@ run_frontend_and_stage_checks() {
   node web/v3/channelAdmissionHost.test.mjs
   node web/v3/standardComponentsRefresh.test.mjs
   node web/v3/materialSaveAdapter.test.mjs
+  node web/v3/imageLibraryFilterHost.test.mjs
   node web/v3/actionFeedback.test.mjs
   node web/v3/productAdapter.upload_feedback.test.mjs
   node web/v3/radarAdapter.upload_feedback.test.mjs

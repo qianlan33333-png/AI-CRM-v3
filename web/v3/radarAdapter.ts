@@ -21,6 +21,15 @@ const originalFetch = window.fetch.bind(window);
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
+class RadarTransportError extends Error {}
+
+function radarTransportMessage(status: number, scope: 'catalog' | 'request'): string {
+  if (status === 401 || status === 403) return scope === 'catalog' ? '没有读取素材目录的权限。' : '当前请求没有操作权限。';
+  if (status === 404) return scope === 'catalog' ? '素材目录暂不可用，请刷新页面后重试。' : '请求的内容不存在或已不可用。';
+  if (status >= 500) return scope === 'catalog' ? '素材目录暂时无法读取，请稍后重试。' : '请求暂时无法完成，请稍后重试。';
+  return scope === 'catalog' ? '素材目录读取失败，请稍后重试。' : '请求未完成，请稍后重试。';
+}
+
 async function materialItems(path: string): Promise<unknown> {
   const request = new URL(path, location.origin);
   const type = request.searchParams.get('type') === 'attachment' ? 'attachment' : 'image';
@@ -35,7 +44,7 @@ async function materialItems(path: string): Promise<unknown> {
     source.searchParams.set('enabled_only', 'true');
     const response = await originalFetch(source, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
     const payload = record(await response.json().catch(() => ({})));
-    if (!response.ok) throw new Error(`素材目录读取失败（HTTP ${response.status}）`);
+    if (!response.ok) throw new RadarTransportError(radarTransportMessage(response.status, 'catalog'));
     values.push(...list(payload.items).map(record));
     const next = Number(payload.next_offset);
     if (payload.has_more !== true || !Number.isSafeInteger(next) || next <= offset) break;
@@ -55,7 +64,7 @@ function installMaterialTransport(): void {
     if (new URL(path, location.origin).pathname === '/api/admin/material-picker/items') return materialItems(path);
     if (prior) return prior(path);
     const response = await originalFetch(path, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
+    if (!response.ok) throw new RadarTransportError(radarTransportMessage(response.status, 'request'));
     return response.json();
   };
 }
@@ -162,6 +171,7 @@ function radarStageLabel(value: string): string {
     redirected: '已完成跳转',
     image_loaded: '图片已加载',
     pdf_opened: '已打开 PDF',
+    failed: '处理失败',
   } as Record<string, string>)[value] || '事件阶段待确认';
 }
 
@@ -459,9 +469,13 @@ class RadarDetailTimeHost {
   }
 
   private showError(message: string): void {
-    this.feedback.textContent = message;
+    const stale = this.resultIsStale();
+    // A prior successful page belongs to a different range. Retrying its
+    // offset would silently apply a stale navigation target to the edited
+    // range, so make the only valid next action explicit instead.
+    this.feedback.textContent = stale ? `${message}；当前筛选尚未查询，请点击“查询”。` : message;
     this.feedback.setAttribute('role', 'alert');
-    this.retryButton.hidden = false;
+    this.retryButton.hidden = stale;
     this.setLoading(false);
     this.render();
   }

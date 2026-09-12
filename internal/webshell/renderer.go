@@ -128,7 +128,7 @@ type HXCAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // MediaAssets are manifest-derived URLs for the immutable Media donor bundle.
 // They are supplied by the Media module's release-only UI adapter.
-type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS string }
+type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS, ImageLibraryFilterHostJS string }
 
 // TagsAssets are manifest-derived frozen donor bundle paths. The tag page is
 // mounted in admin_base and never publishes the donor's own shell/sidebar.
@@ -312,16 +312,21 @@ func (renderer *Renderer) RenderHXC(writer http.ResponseWriter, data AdminPageDa
 	return writeHTML(writer, http.StatusOK, body)
 }
 
-// RenderMedia mounts one immutable Media template in the v3 shell. The
-// caller supplies only a verified template extracted from web/dist; it never
-// receives an arbitrary request-controlled HTML fragment.
+// RenderMedia mounts immutable Media donor templates in the v3 shell. The
+// image library is source-owned and deliberately receives its own stable host;
+// the other Media workspaces receive only verified release templates.
 func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets MediaAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.MaterialSaveHostJS == "" || (page != "images" && page != "attach" && page != "mpLib") {
+	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.MaterialSaveHostJS == "" || (page == "images" && assets.ImageLibraryFilterHostJS == "") || (page != "images" && page != "attach" && page != "mpLib") || (page != "images" && donorTemplate == "") {
 		return errors.New("media shell assets are required")
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`
+	if page == "images" {
+		content = `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded" data-image-library-v3-root></main>`
+	} else {
+		content += `<template id="tpl">` + donorTemplate + `</template>`
+	}
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Media: true, MediaPage: page, MediaAssets: assets})
 	if err != nil {
 		return err

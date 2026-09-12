@@ -119,6 +119,17 @@ await wait(350);
 const document = dom.window.document;
 const select = document.querySelector("#templateSelect");
 if (templateReads < 3 || select.options.length !== 7 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("frozen renderer and V3 submission template were not restored after the delayed detail renderer");
+if (!select.options[0].textContent.includes("企微联系人与注册状态 · 第 1 版") || select.options[0].textContent.includes("v1")) throw new Error(`template version label was not localized: ${select.options[0].textContent}`);
+const ownerScopeLabels = [...document.querySelectorAll('[data-field-name="owner_scope"] option')].map((option) => option.textContent).join("/");
+const contactStatusLabels = [...document.querySelectorAll('[data-field-name="contact_statuses"] option')].map((option) => option.textContent).join("/");
+const registrationLabels = [...document.querySelectorAll('[data-field-name="registration_status"] option')].map((option) => option.textContent).join("/");
+if (ownerScopeLabels !== "指定负责人/全部负责人" || contactStatusLabels !== "有效/已删除" || registrationLabels !== "不限/已注册/未注册") throw new Error(`template enum labels leaked protocol values: ${JSON.stringify({ownerScopeLabels, contactStatusLabels, registrationLabels})}`);
+const initialOwnerScope = document.querySelector('[data-field-name="owner_scope"] select');
+initialOwnerScope.value = "specified";
+initialOwnerScope.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+if (!document.querySelector('[data-field-name="owner_userids"] label')?.textContent.includes("负责人标识")) throw new Error("owner identifier field leaked UserID wording");
+initialOwnerScope.value = "all";
+initialOwnerScope.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
 for (const template of templates) {
   select.value = template.key;
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));

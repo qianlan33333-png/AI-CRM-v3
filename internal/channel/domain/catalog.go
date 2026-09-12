@@ -149,10 +149,10 @@ func (channel Channel) CanPublish() bool {
 
 func ValidateChannel(channel Channel) error {
 	if !opaqueCode.MatchString(channel.Code) || !validStatus(channel.Status) || channel.ConfigVersion < 1 || channel.Version < 1 ||
-		channel.CreatedAt.IsZero() || channel.UpdatedAt.IsZero() || channel.UpdatedAt.Before(channel.CreatedAt) || ValidateConfig(channel.Config) != nil {
+		channel.CreatedAt.IsZero() || channel.UpdatedAt.IsZero() || channel.UpdatedAt.Before(channel.CreatedAt) {
 		return ErrInvalidChannel
 	}
-	return nil
+	return ValidateConfig(channel.Config)
 }
 
 func ValidateConfig(config Config) error {
@@ -160,6 +160,9 @@ func ValidateConfig(config Config) error {
 		!validOptionalText(config.WelcomeMessage, 10000) || !validOptionalHTTPS(config.QRCodeURL) || !validOptionalHTTPS(config.LinkURL) || !validOptionalHTTPS(config.FinalURL) ||
 		!validTypeCarrier(config.Type, config.Carrier) || !validMedia(config.Media) || !validEntryTag(config) || ValidateAssignment(config.Assignment) != nil {
 		return ErrInvalidChannel
+	}
+	if err := ValidateWelcomeMessageTemplate(config.WelcomeMessage); err != nil {
+		return errors.Join(ErrInvalidChannel, err)
 	}
 	return nil
 }

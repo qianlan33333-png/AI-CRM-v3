@@ -53,6 +53,13 @@ type Application interface {
 	ListOrderEffects(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error)
 }
 
+// RefundRecoveryApplication is intentionally a narrow optional read Port:
+// checkout-only adapters retain their existing Payment surface while the
+// composed admin handler can recover only a receipt scoped by its original key.
+type RefundRecoveryApplication interface {
+	FindRefundRecoveryReceipt(context.Context, domain.Provider, string, string, string) (domain.Refund, bool, error)
+}
+
 type SessionIdentityVerifier interface {
 	VerifyCode(context.Context, string) (identitydomain.VerifiedFact, error)
 }
@@ -167,6 +174,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.historyPayment(writer, request)
 	case path == "/api/admin/refunds":
 		handler.refunds(writer, request)
+	case path == "/api/admin/refunds/recovery":
+		handler.refundRecoveryReceipt(writer, request)
 	case path == "/api/public/wechat-pay/callbacks/payment" || path == "/api/public/wechat-pay/callbacks/refund":
 		handler.callback(writer, request)
 	case path == "/api/public/wechat-shop/callbacks/refund":
@@ -340,11 +349,14 @@ func (handler *Handler) refunds(writer http.ResponseWriter, request *http.Reques
 		}
 		items = append(items, map[string]any{
 			"id": row.Refund.ID, "order_id": row.OrderID, "provider": provider,
-			"order_no": row.MerchantOrder, "transaction_id": row.TransactionRef,
+			// The legacy list has no verified Order transaction projection and no
+			// effect-state read. Keep the old fields empty rather than mislabeling
+			// a digest or a refund business state as either fact.
+			"order_no": row.MerchantOrder, "transaction_id": "",
 			"refund_id": row.Refund.RefundNo, "out_refund_no": row.Refund.RefundNo,
 			"refund_amount_total": row.Refund.AmountMinor, "order_amount_minor": row.OrderAmount,
 			"currency": row.Currency, "reason": row.Refund.Reason, "status": compatRefundStatus(row.Refund.Status),
-			"external_effect_id": effectID, "external_effect_state": compatRefundStatus(row.Refund.Status),
+			"external_effect_id": effectID, "external_effect_state": "",
 			"auto_retry_allowed": false, "created_at": row.Refund.CreatedAt,
 		})
 	}
@@ -394,6 +406,73 @@ func parseRefundListQuery(request *http.Request) (domain.Provider, string, int64
 	return provider, merchantOrderNo, limit, offset, true, true
 }
 
+func parseRefundRecoveryQuery(request *http.Request) (domain.Provider, string, bool) {
+	query := request.URL.Query()
+	for key, values := range query {
+		if (key != "provider" && key != "order_no") || len(values) != 1 {
+			return "", "", false
+		}
+	}
+	merchantOrderNo := query.Get("order_no")
+	if merchantOrderNo == "" || len(merchantOrderNo) > 200 {
+		return "", "", false
+	}
+	switch query.Get("provider") {
+	case "wechat", "wechat_pay":
+		return domain.ProviderWeChatPay, merchantOrderNo, true
+	case "wechat_shop":
+		return domain.ProviderWeChatShop, merchantOrderNo, true
+	default:
+		return "", "", false
+	}
+}
+
+// refundRecoveryReceipt is a Payment-owned, non-mutating recovery read. The
+// original idempotency key stays in a request header so it is neither logged
+// in ordinary URL telemetry nor copied into browser history.
+func (handler *Handler) refundRecoveryReceipt(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	principal, err := handler.security.Authenticate(request.Context(), request)
+	if err != nil || principal.Kind != accessdomain.KindAdmin || principal.InternalID < 1 {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	provider, merchantOrderNo, ok := parseRefundRecoveryQuery(request)
+	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	if !ok || key == "" {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	recovery, ok := handler.app.(RefundRecoveryApplication)
+	if !ok {
+		writeError(writer, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	actorScope := "admin:" + strconv.FormatInt(principal.InternalID, 10)
+	// actor_binding is only a local-browser partition marker. It is neither an
+	// authorization credential nor a substitute for the principal checked on
+	// every request, and it intentionally never exposes the raw admin ID.
+	actorBindingDigest := sha256.Sum256([]byte("payment.refund.recovery.actor|" + actorScope))
+	actorBinding := fmt.Sprintf("%x", actorBindingDigest)
+	refund, found, err := recovery.FindRefundRecoveryReceipt(request.Context(), provider, merchantOrderNo, actorScope, key)
+	if err != nil {
+		resultError(writer, err)
+		return
+	}
+	if !found {
+		writeJSON(writer, http.StatusOK, map[string]any{"found": false, "actor_binding": actorBinding})
+		return
+	}
+	status := compatRefundStatus(refund.Status)
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"found": true, "receipt_id": refund.ID, "refund_no": refund.RefundNo,
+		"status": status, "actor_binding": actorBinding,
+	})
+}
+
 func (handler *Handler) shopRefund(writer http.ResponseWriter, request *http.Request) {
 	if !handler.shopWritesEnabled {
 		writeError(writer, http.StatusServiceUnavailable, "payment_provider_disabled")
@@ -421,17 +500,17 @@ func (handler *Handler) shopRefund(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	if body.Provider != "wechat_shop" || body.OrderNo == "" || !body.Checked || key == "" || !validTransactionConfirmation(body.TransactionIDConfirmation) {
+	// WeChat Shop has its own existing confirmation contract: the named field
+	// confirms this Shop order reference. Shop callbacks do not produce a
+	// verified WeChat Pay transaction_id fact, so applying the Pay guard here
+	// would reject every valid Shop refund.
+	if body.Provider != "wechat_shop" || body.OrderNo == "" || body.TransactionIDConfirmation != body.OrderNo || !body.Checked || key == "" {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	payment, err := handler.app.FindPayment(request.Context(), domain.ProviderWeChatShop, body.OrderNo)
 	if err != nil {
 		resultError(writer, err)
-		return
-	}
-	if !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
-		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	digest := sha256.Sum256([]byte(strconv.FormatInt(principal.InternalID, 10) + "\x00" + key))
@@ -586,8 +665,20 @@ func compatRefundStatus(status domain.RefundStatus) string {
 		return "outcome_unknown"
 	case domain.RefundCompleted:
 		return "completed"
-	default:
+	case domain.RefundFinalFailed:
 		return "final_failed"
+	case domain.RefundHistoryRequested:
+		return "history_requested"
+	case domain.RefundHistoryProcessing:
+		return "history_processing"
+	case domain.RefundHistoryFailed:
+		return "history_failed"
+	case domain.RefundHistoryClosed:
+		return "history_closed"
+	default:
+		// A legacy value with no documented meaning is neither a final failure
+		// nor evidence of a completed Provider effect.
+		return "unknown"
 	}
 }
 
@@ -745,16 +836,15 @@ func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
-	if !validTransactionConfirmation(body.TransactionIDConfirmation) {
-		writeError(writer, http.StatusBadRequest, "invalid_request")
-		return
-	}
 	payment, err := handler.app.GetPayment(request.Context(), paymentID)
 	if err != nil {
 		resultError(writer, err)
 		return
 	}
-	if !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
+	// This route spans providers. Only WeChat Pay has the verified callback
+	// transaction fact this confirmation checks; preserve every other provider's
+	// established contract instead of inventing a cross-provider substitute.
+	if payment.Provider == domain.ProviderWeChatPay && !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -777,7 +867,7 @@ func matchesVerifiedWeChatTransaction(payment domain.Payment, confirmation strin
 	if !validTransactionConfirmation(confirmation) || payment.ProviderTransactionDigest == "" {
 		return false
 	}
-	if payment.Provider != domain.ProviderWeChatPay && payment.Provider != domain.ProviderWeChatShop {
+	if payment.Provider != domain.ProviderWeChatPay {
 		return false
 	}
 	expected := effectport.Hash("wechatpay.transaction", confirmation)

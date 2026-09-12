@@ -33,6 +33,13 @@
     return "配置操作失败，请稍后重试。";
   };
   const visibleError = (error, fallback) => error instanceof Error && error.userMessage === true ? error.message : fallback;
+  const validationMessage = (value) => ({
+    required: "该配置项不能为空。",
+    invalid: "该配置项格式不正确。",
+    invalid_value: "该配置项的值不符合要求。",
+    out_of_range: "该配置项超出允许范围。",
+    conflict: "该配置项与当前配置冲突。",
+  })[String(value || "")] || "该配置项未通过校验。";
   const element = (tag, className, value) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -203,7 +210,7 @@
       const table = element("table", "admin-table"); table.innerHTML = "<thead><tr><th>配置项</th><th>发布值</th></tr></thead>"; const body = document.createElement("tbody");
       for (const setting of release.settings || []) { const row = document.createElement("tr"); row.append(element("td", "", setting.key), element("td", "", String(setting.value))); body.append(row); }
       table.append(body); changes.append(table); root.append(changes);
-      if (Array.isArray(release.validation_errors) && release.validation_errors.length) { const error = element("section", "admin-alert admin-alert--error"); error.append(element("strong", "", "校验未通过")); for (const item of release.validation_errors) error.append(element("p", "", `${text(item.key)}：${hasChineseText(item.error) ? text(item.error) : "该配置项未通过校验。"}`)); root.append(error); }
+      if (Array.isArray(release.validation_errors) && release.validation_errors.length) { const error = element("section", "admin-alert admin-alert--error"); error.append(element("strong", "", "校验未通过")); for (const item of release.validation_errors) error.append(element("p", "", `${text(item?.key, "配置项")}：${validationMessage(item?.error)}`)); root.append(error); }
       const operations = element("section", "admin-card"); operations.append(element("h2", "", "发布操作"), element("p", "", "校验不会改变生效配置；发布和回滚使用单个数据库事务。")); const actions = element("div", "admin-form-actions"); operations.append(actions); root.append(operations);
       const postAction = async (suffix, body) => {
         const current = await runtimeDetail(id);

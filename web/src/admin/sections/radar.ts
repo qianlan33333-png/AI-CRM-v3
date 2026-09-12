@@ -87,7 +87,7 @@ function renderList(root: HTMLElement, api: AdminApi, links: RadarLink[]): void 
     $('#shareQr').textContent = '正在读取服务端分享投影…';
     $('#shareMask').classList.add('open');
     if (api.mode !== 'http') {
-      $('#shareQr').innerHTML = '<strong>backend_blocked</strong>：测试/本地模式不使用 Mock 分享路径。';
+      $('#shareQr').textContent = '当前环境不提供分享链接。';
       return;
     }
     try {
@@ -98,9 +98,10 @@ function renderList(root: HTMLElement, api: AdminApi, links: RadarLink[]): void 
       ($('#shareCopy') as HTMLButtonElement).disabled = false;
       renderRadarQr($('#shareQr'), shareLink);
       ($('#shareQrDownload') as HTMLButtonElement).disabled = false;
-    } catch (error) {
-      $('#shareQr').innerHTML = `<strong>backend_blocked</strong>：${esc(error instanceof Error ? error.message : '服务端分享投影不可用')}`;
-      throw error;
+    } catch (_error) {
+      const message = '分享链接暂不可用，请稍后重试。';
+      $('#shareQr').textContent = message;
+      throw new Error(message);
     }
   }
 
@@ -210,13 +211,13 @@ async function renderDetail(root: HTMLElement, api: AdminApi, links: RadarLink[]
   let shareError = '';
   if (api.mode === 'http') {
     try { url = radarShareUrl(await api.getRadarSharePath(it.id)); }
-    catch (error) { shareError = error instanceof Error ? error.message : '分享路径读取失败'; }
+    catch (_error) { shareError = '分享链接暂不可用，请稍后重试。'; }
   } else {
-    shareError = '测试/本地模式不使用 Mock 分享路径';
+    shareError = '当前环境不提供分享链接。';
   }
   const shareNotice = url
     ? `<span id="dUrl">${esc(url)}</span><button class="link-btn" id="dCopyInline">复制</button>`
-    : `<span class="muted"><strong>backend_blocked</strong>：${esc(shareError)}</span><button class="link-btn" id="dCopyInline" disabled>复制</button>`;
+    : `<span class="muted">${esc(shareError)}</span><button class="link-btn" id="dCopyInline" disabled>复制</button>`;
 
   root.innerHTML = `
     <div class="crumb">客户管理后台 / 运营 / <a href="radar.html">内容雷达</a> / <b>${esc(it.title)}</b></div>
@@ -241,7 +242,7 @@ async function renderDetail(root: HTMLElement, api: AdminApi, links: RadarLink[]
     </div>
 
     <div class="stat-row">
-      <div class="card stat"><div class="stat-l">PV · 中转页到达</div><div class="stat-v">${it.total_landings.toLocaleString()}</div><div class="stat-s">wrapper 页加载次数</div></div>
+      <div class="card stat"><div class="stat-l">访问次数 · 中转页到达</div><div class="stat-v">${it.total_landings.toLocaleString()}</div><div class="stat-s">中转页加载次数</div></div>
       <div class="card stat"><div class="stat-l">UV · 授权用户</div><div class="stat-v">${it.authorized_users.toLocaleString()}</div><div class="stat-s">完成微信授权的去重人数</div></div>
       <div class="card stat"><div class="stat-l">查看次数</div><div class="stat-v">${it.view_count.toLocaleString()}</div><div class="stat-s">授权后实际查看内容次数</div></div>
       <div class="card stat"><div class="stat-l">授权转化率</div><div class="stat-v">${it.total_landings ? Math.round((it.authorized_users / it.total_landings) * 100) + '%' : '0%'}</div><div class="stat-s">UV / PV</div></div>

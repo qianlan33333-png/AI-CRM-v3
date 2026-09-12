@@ -266,6 +266,7 @@ type RefreshRoundProjection = Record<string, unknown> & {
 
 const materialRefreshBase = '/api/admin/media-preparations';
 const materialRefreshPages = new Set(['images', 'mpLib', 'attach']);
+const mediaContentChangedEvent = 'aicrm:media-content-changed';
 
 function materialObject(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -299,38 +300,27 @@ function materialCsrf(): string {
   return '';
 }
 
-function materialError(status: number, body: Record<string, unknown>): Error {
-  const code = materialString(body.code) || materialString(body.error);
-  const message = ({
-    invalid_request: '刷新请求无效，请检查后重试。',
-    idempotency_conflict: '本次刷新与已提交操作不一致，请刷新页面后重试。',
-    not_found: '对应素材或刷新记录已不存在，请刷新页面。',
-    unavailable: '素材刷新服务暂不可用，请稍后重试。',
+class MaterialUIError extends Error {}
+
+function materialError(status: number, body: Record<string, unknown>): MaterialUIError {
+  const code = materialString(body.code);
+  const known = ({
+    idempotency_conflict: '本次刷新与已提交操作不一致，请重新读取后重试。',
+    not_found: '刷新对象不存在，请重新读取刷新状态。',
+    unavailable: '刷新服务暂不可用，请稍后重试。',
   } as Record<string, string>)[code];
-  if (message) return new Error(message);
-  if (status === 401) return new Error('登录会话已失效，请重新登录。');
-  if (status === 403) return new Error('没有此操作权限。');
-  if (status === 409) return new Error('刷新状态已变化，请刷新页面后重试。');
-  if (status === 429) return new Error('请求过于频繁，请稍后重试。');
-  if (status >= 500) return new Error('素材刷新服务暂不可用，请稍后重试。');
-  return new Error('素材刷新请求未完成，请稍后重试。');
+  if (known) return new MaterialUIError(known);
+  if (status === 401) return new MaterialUIError('登录状态已失效，请重新登录后继续操作。');
+  if (status === 403) return new MaterialUIError('没有此操作权限。');
+  if (status === 404) return new MaterialUIError('刷新对象不存在，请重新读取刷新状态。');
+  if (status === 409) return new MaterialUIError('刷新状态已变化，请重新读取后重试。');
+  if (status === 400 || status === 405 || status === 422) return new MaterialUIError('刷新请求无效，请检查后重试。');
+  if (status >= 500) return new MaterialUIError('刷新服务暂不可用，请稍后重试。');
+  return new MaterialUIError('刷新请求失败，请稍后重试。');
 }
 
 function materialFailureText(error: unknown, fallback: string): string {
-  // materialError is the only source of reviewed user-facing HTTP messages.
-  // Browser/network Error messages remain technical and must not reach the page.
-  const known = error instanceof Error ? error.message : '';
-  return new Set([
-    '刷新请求无效，请检查后重试。',
-    '本次刷新与已提交操作不一致，请刷新页面后重试。',
-    '对应素材或刷新记录已不存在，请刷新页面。',
-    '素材刷新服务暂不可用，请稍后重试。',
-    '登录会话已失效，请重新登录。',
-    '没有此操作权限。',
-    '刷新状态已变化，请刷新页面后重试。',
-    '请求过于频繁，请稍后重试。',
-    '素材刷新请求未完成，请稍后重试。',
-  ]).has(known) ? known : fallback;
+  return error instanceof MaterialUIError ? error.message : fallback;
 }
 
 async function materialResponse(response: Response): Promise<Record<string, unknown>> {
@@ -378,7 +368,7 @@ function materialTypeLabel(value: unknown): string {
     case 'miniprogram':
     case 'mini_program':
     case 'miniprogram_cover': return '小程序封面';
-    default: return materialString(value) || '素材';
+    default: return '素材';
   }
 }
 
@@ -398,7 +388,7 @@ function materialStateLabel(value: unknown): string {
     case 'completed_with_failures': return '刷新失败';
     case 'outcome_unknown':
     case 'unknown': return '结果待核实';
-    default: return materialString(value) || '状态暂不可用';
+    default: return '状态暂不可用';
   }
 }
 
@@ -437,7 +427,7 @@ function materialFailureReason(item: MaterialProjection): string {
     case 'failed':
     case 'final_failed':
     case 'completed_with_failures':
-      return materialFailureHint({ failure_code: materialString(item.failure_code) });
+      return materialFailureHint(item);
     default:
       return '—';
   }
@@ -464,16 +454,12 @@ function materialProgress(item: MaterialProjection, round: RefreshRoundProjectio
   return `总计 ${total === undefined ? '—' : total} · 成功 ${successLabel} · 失败 ${failed === undefined ? '—' : failed} · 待核实 ${unknown === undefined ? '—' : unknown}`;
 }
 
-function materialSourceDisplayName(sourceRef: unknown, sourceType: unknown): string {
-  const ref = materialString(sourceRef);
-  const type = materialString(sourceType) || ref.split(':', 1)[0];
-  const id = materialStableID({ source_ref: ref } as MaterialProjection);
-  const label = materialTypeLabel(type);
-  return id ? `${label}素材 #${id}` : `${label}素材`;
-}
-
 function materialSourceName(item: MaterialProjection): string {
-  return materialString(item.file_name) || materialSourceDisplayName(item.source_ref, item.source_type);
+  if (materialString(item.file_name)) return materialString(item.file_name);
+  const source = materialString(item.source_ref);
+  const id = materialStableID(item);
+  const label = materialTypeLabel(item.source_type || source.split(':', 1)[0]);
+  return id ? `${label}素材 #${id}` : `${label}素材`;
 }
 
 function materialNextRun(value: unknown): string {
@@ -494,7 +480,7 @@ function materialFailureHint(failure: MaterialSourceFailureProjection): string {
     case 'response_unknown':
       return '刷新结果待核实，请稍后读取进度';
     case 'read_unavailable':
-      return '素材刷新服务暂不可用，请稍后重试';
+      return '刷新服务暂不可用，请稍后重试';
     case 'cancelled':
       return '刷新已取消，请重新发起';
     case 'not_supported':
@@ -684,8 +670,9 @@ class MaterialRefreshPanel {
       this.failures.forEach((failure) => {
         const entry = document.createElement('li');
         const sourceRef = materialString(failure.source_ref);
-        const source = materialSourceDisplayName(sourceRef, sourceRef.split(':', 1)[0]);
-        entry.append(document.createTextNode(`${source}：${materialFailureHint(failure)}`));
+        const id = materialStableID({ source_ref: sourceRef } as MaterialProjection);
+        const type = materialTypeLabel(sourceRef.split(':', 1)[0]);
+        entry.append(document.createTextNode(`${id ? `${type}素材 #${id}` : `${type}素材`}：${materialFailureHint(failure)}`));
         const details = document.createElement('details');
         details.style.cssText = 'margin-top:4px';
         const summary = document.createElement('summary');
@@ -793,7 +780,7 @@ class MaterialRefreshPanel {
       this.setStatus('单素材刷新已受理；完成状态可通过“刷新进度”核对。');
     } catch (error) {
       materialBusy(button, false, '立即刷新单个');
-      this.setStatus(`${materialFailureText(error, '单素材刷新失败，请检查网络后重试。')}可重试，系统会按同一次提交核对。`, true);
+      this.setStatus(`${materialFailureText(error, '单素材刷新失败，请检查网络后重试。')}可重新发起刷新。`, true);
     }
   }
 
@@ -812,7 +799,7 @@ class MaterialRefreshPanel {
       if (id !== undefined) await this.loadRound();
     } catch (error) {
       materialBusy(button, false, '立即刷新全部启用素材');
-      this.setStatus(`${materialFailureText(error, '全量刷新失败，请检查网络后重试。')}可重试，系统会按同一次提交核对。`, true);
+      this.setStatus(`${materialFailureText(error, '全量刷新失败，请检查网络后重试。')}可重新发起刷新。`, true);
     }
   }
 
@@ -840,6 +827,10 @@ function installMaterialRefreshPanel(): void {
   const region = materialScrollRegion(stage);
   if (!region) return;
   const panel = new MaterialRefreshPanel(region);
+  // Source-owned image mutations announce only after their required list
+  // readback succeeds. Reuse this panel's existing bounded read rather than
+  // duplicate refresh-state rendering in the image Host.
+  window.addEventListener(mediaContentChangedEvent, () => { void panel.load(); });
   void panel.load();
 }
 

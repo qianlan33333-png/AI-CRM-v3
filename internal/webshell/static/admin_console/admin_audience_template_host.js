@@ -28,6 +28,29 @@
     return "人群配置请求未完成，请刷新后重试。";
   };
   const templateHostMessage = (error, fallback) => error instanceof TemplateHostError ? error.message : fallback;
+  const templateLabel = (template) => ({
+    wecom_contact_registration: "企微联系人与注册状态",
+  })[template?.key] || String(template?.label || "人群模板");
+  const templateVersionLabel = (template) => `${templateLabel(template)} · 第 ${Number.isSafeInteger(Number(template?.template_version)) ? Number(template.template_version) : 1} 版`;
+  const localizedFields = (fields) => (fields || []).map((field) => ({
+    ...field,
+    label: ({ owner_userids: "负责人标识" })[field.name] || field.label || field.name,
+    enum_labels: {
+      ...(field.enum_labels || {}),
+      all: "全部负责人",
+      specified: "指定负责人",
+      active: "有效",
+      deleted: "已删除",
+      any: "不限",
+      registered: "已注册",
+      unregistered: "未注册",
+      expired: "已过期",
+      used: "已使用",
+      unused: "未使用",
+      hour: "小时",
+      day: "天",
+    },
+  }));
 
   async function request(path, options = {}) {
     const headers = new Headers({ Accept: "application/json" });
@@ -162,7 +185,7 @@
       state.templates.forEach((template) => {
         const option = document.createElement("option");
         option.value = template.key;
-        option.textContent = `${template.label} · v${template.template_version}`;
+        option.textContent = templateVersionLabel(template);
         option.disabled = !template.available;
         select.appendChild(option);
       });
@@ -218,11 +241,11 @@
       const stored = state.configuration?.definition;
       const source = stored?.template_key === template?.key ? await rehydrateOwnerUserIDs(stored.parameters) : {};
       const readOnly = ["active", "archived"].includes(state.package?.lifecycle);
-      form.setSchema(template?.fields || [], editableParameters(template?.key, source), { readOnly });
+      form.setSchema(localizedFields(template?.fields), editableParameters(template?.key, source), { readOnly });
       hydrateDateTimeFields(template, source);
       previewButton.disabled = readOnly || !template;
       saveButton.disabled = readOnly || !template;
-      byID("templateVersionBadge").textContent = template ? `${template.label} · v${template.template_version}` : "请选择模板";
+      byID("templateVersionBadge").textContent = template ? templateVersionLabel(template) : "请选择模板";
       byID("templateHistoryNote").hidden = Boolean(template);
     }
     async function load() {

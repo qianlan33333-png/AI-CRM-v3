@@ -40,7 +40,7 @@ try {
     'channel_admission_pages.js',
   ];
   for (const file of standardComponentFiles) fs.writeFileSync(path.join(source, 'assets', 'standard-components', file), `standard:${file}`);
-  for (const file of ['admin.js', 'tokens.css', 'labs.css', 'legacy.js', 'campaigns.js', 'adminAccess.js', 'adminAccess-runtime.js', 'setupWizard.js', 'setupWizard-runtime.js', 'groupOpsHistory.js', 'funnel.js', 'funnel-runtime.js', 'radar.js', 'radar-runtime.js', 'dormant.js', 'cycles-host.js', 'cycles-main.js', 'cycles-legacy.js', 'material-host.js', 'order-host.js', 'product-host.js', 'product-main.js', 'product-legacy.js', 'product-qr.js', 'channel-host.js', 'channel-main.js', 'channel-legacy.js', 'date-host.js', 'ai-host.js', 'ai-runtime.js', 'standard-host.js']) {
+  for (const file of ['admin.js', 'tokens.css', 'labs.css', 'legacy.js', 'campaigns.js', 'adminAccess.js', 'adminAccess-runtime.js', 'setupWizard.js', 'setupWizard-runtime.js', 'groupOpsHistory.js', 'funnel.js', 'funnel-runtime.js', 'radar.js', 'radar-runtime.js', 'dormant.js', 'cycles-host.js', 'cycles-main.js', 'cycles-legacy.js', 'material-host.js', 'image-filter-host.js', 'order-host.js', 'product-host.js', 'product-main.js', 'product-legacy.js', 'product-qr.js', 'channel-host.js', 'channel-main.js', 'channel-legacy.js', 'date-host.js', 'ai-host.js', 'ai-runtime.js', 'standard-host.js']) {
     fs.writeFileSync(path.join(source, 'assets', file), file);
   }
   const files = Object.fromEntries([
@@ -71,6 +71,7 @@ try {
     ['assets/cycles-main.js', { inputs: ['web/src/admin/main.ts'], imports: [{ kind: 'dynamic-import', path: 'assets/cycles-legacy.js' }] }],
     ['assets/cycles-legacy.js', { inputs: ['web/src/admin/legacy.ts'], imports: [] }],
     ['assets/material-host.js', { inputs: ['web/v3/materialSaveAdapter.ts'], imports: [] }],
+    ['assets/image-filter-host.js', { inputs: ['web/v3/imageLibraryFilterHost.ts'], imports: [] }],
     ['assets/order-host.js', { inputs: ['web/v3/orderAdapter.ts'], imports: [{ path: 'assets/product-main.js', kind: 'dynamic-import' }] }],
     ['assets/product-host.js', { inputs: ['web/v3/productAdapter.ts'], imports: [{ kind: 'import-statement', path: 'assets/product-qr.js' }, { kind: 'dynamic-import', path: 'assets/product-main.js' }] }],
     ['assets/product-main.js', { inputs: ['web/src/admin/main.ts'], imports: [{ kind: 'dynamic-import', path: 'assets/product-legacy.js' }] }],
@@ -95,7 +96,7 @@ try {
     ...standardComponentFiles.map((file) => `assets/standard-components/${file}`),
   ].map((relative) => [relative, { sha256: relative }]));
   fs.writeFileSync(path.join(source, 'asset-manifest.json'), JSON.stringify({
-    entries: { admin: 'assets/admin.js', h5: 'assets/labs.css', tokens: 'assets/tokens.css', labs: 'assets/labs.css', adminDateTimeHost: 'assets/date-host.js', operationCyclesHost: 'assets/cycles-host.js', materialSaveHost: 'assets/material-host.js', orderHost: 'assets/order-host.js', productHost: 'assets/product-host.js', couponHost: 'assets/order-host.js', channelCenterHost: 'assets/channel-host.js', standardComponentsHost: 'assets/standard-host.js', standardComponentsStableHost: 'assets/standard-host.js', channelAdmissionStyles: 'assets/labs.css', aiAssistantHost: 'assets/ai-host.js', surfaceFeedbackHost: 'assets/standard-host.js', surfaceFeedbackStyles: 'assets/labs.css', presentationStyles: 'assets/labs.css', actionFeedbackStyles: 'assets/labs.css' }, files, release_files: releaseFiles,
+    entries: { admin: 'assets/admin.js', h5: 'assets/labs.css', tokens: 'assets/tokens.css', labs: 'assets/labs.css', adminDateTimeHost: 'assets/date-host.js', operationCyclesHost: 'assets/cycles-host.js', materialSaveHost: 'assets/material-host.js', imageLibraryFilterHost: 'assets/image-filter-host.js', orderHost: 'assets/order-host.js', productHost: 'assets/product-host.js', couponHost: 'assets/order-host.js', channelCenterHost: 'assets/channel-host.js', standardComponentsHost: 'assets/standard-host.js', standardComponentsStableHost: 'assets/standard-host.js', channelAdmissionStyles: 'assets/labs.css', aiAssistantHost: 'assets/ai-host.js', surfaceFeedbackHost: 'assets/standard-host.js', surfaceFeedbackStyles: 'assets/labs.css', presentationStyles: 'assets/labs.css', actionFeedbackStyles: 'assets/labs.css' }, files, release_files: releaseFiles,
   }));
 
   for (const passive of ['coupon_form.html', 'coupon_form_runtime.js', 'coupon_styles.html', 'channel_code_form.html', 'channel_admission_pages.js']) {
@@ -159,6 +160,12 @@ try {
   }
   assert.equal(stagedManifest.entries.productHost, 'assets/product-host.js', 'Product host entry must be retained');
   for (const asset of ['assets/product-host.js', 'assets/product-main.js', 'assets/product-legacy.js', 'assets/product-qr.js']) {
+    assert.ok(stagedManifest.files[asset], `the staged manifest must include ${asset}`);
+    assert.ok(stagedManifest.release_files[asset], `the staged release manifest must include ${asset}`);
+    assert.ok(fs.existsSync(path.join(stage, asset)), `the staged release must include ${asset}`);
+  }
+  assert.equal(stagedManifest.entries.imageLibraryFilterHost, 'assets/image-filter-host.js', 'Image Library filter Host entry must be retained');
+  for (const asset of ['assets/image-filter-host.js']) {
     assert.ok(stagedManifest.files[asset], `the staged manifest must include ${asset}`);
     assert.ok(stagedManifest.release_files[asset], `the staged release manifest must include ${asset}`);
     assert.ok(fs.existsSync(path.join(stage, asset)), `the staged release must include ${asset}`);

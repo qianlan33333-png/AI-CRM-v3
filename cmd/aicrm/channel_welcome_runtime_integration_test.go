@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strconv"
@@ -11,6 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	channel "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
@@ -108,6 +112,124 @@ func TestChannelWelcomeDedicatedRiverRuntimeJourney(t *testing.T) {
 	})
 }
 
+func TestChannelWelcomePlainTextFreezesWithoutCustomerDirectoryRead(t *testing.T) {
+	fixture := newChannelWelcomeRuntimeFixtureWithWelcomeMessage(t, "欢迎来到测试渠道")
+	defer fixture.close()
+	var customerID int64
+	if err := fixture.native.QueryRow(fixture.ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := fixture.acceptWelcome(t, "runtime-plain-text-0001", fixture.now)
+	if err := fixture.unit.Within(fixture.ctx, func(tx context.Context) error {
+		return fixture.actions.AcceptEntrantActions(tx, channelport.EntrantActionCommand{
+			CallbackID: string(input.CallbackKey), CustomerID: customerdomain.CustomerID(customerID), Resolution: fixture.ready.resolution, OccurredAt: fixture.now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readingFailure := &failingWelcomeDirectoryReader{}
+	messageCipher, err := wecom.NewChannelWelcomeMessageCipher("channel-welcome-runtime-secret-0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.actions.SetWelcomeMessageDependencies(readingFailure, messageCipher); err != nil {
+		t.Fatal(err)
+	}
+	writer := &runtimeWelcomeWriter{called: make(chan runtimeWelcomeCall, 1)}
+	_, stop := fixture.startRuntime(t, writer, nil, true)
+	defer stop()
+	select {
+	case call := <-writer.called:
+		if call.message != "欢迎来到测试渠道" {
+			t.Fatalf("provider message=%q", call.message)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("plain-text welcome did not reach the local Provider boundary")
+	}
+	fixture.waitEffect(t, input, effectport.StateExecuted)
+	if readingFailure.calls != 0 {
+		t.Fatalf("plain text unexpectedly read customer directory calls=%d", readingFailure.calls)
+	}
+}
+
+func TestChannelWelcomeTemplateFreezesOneRenderedBodyBeforeProviderRetry(t *testing.T) {
+	fixture := newChannelWelcomeRuntimeFixtureWithWelcomeMessage(t, "您好{{客户名}}，{{客户名}}")
+	defer fixture.close()
+	var customerID int64
+	if err := fixture.native.QueryRow(fixture.ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.native.Exec(fixture.ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,source_version,updated_at)
+		VALUES($1,'active','初始客户名','fixture','active','channel-welcome-template',1,clock_timestamp())`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := fixture.acceptWelcome(t, "runtime-template-0001", fixture.now)
+	if err := fixture.unit.Within(fixture.ctx, func(tx context.Context) error {
+		return fixture.actions.AcceptEntrantActions(tx, channelport.EntrantActionCommand{
+			CallbackID: string(input.CallbackKey), CustomerID: customerdomain.CustomerID(customerID), Resolution: fixture.ready.resolution, OccurredAt: fixture.now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var effectRef string
+	var source, target, payload, policy effectport.Digest
+	if err := fixture.native.QueryRow(fixture.ctx, `SELECT effect_ref,source_ref_digest,effect_target_digest,effect_payload_digest,effect_policy_digest
+		FROM channel_welcome_intents WHERE callback_id=$1`, input.CallbackKey).Scan(&effectRef, &source, &target, &payload, &policy); err != nil {
+		t.Fatal(err)
+	}
+	envelope := effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindChannelWelcome, SourceRefDigest: source, TargetRefDigest: target, PayloadDigest: payload, PolicyVersionHash: policy}
+	request := channelport.WelcomeMessageFreezeRequest{EffectRef: effectRef, Envelope: envelope}
+	reader := channelEntrantActionReaderAdapter{uow: fixture.unit, source: fixture.actions}
+	type freezeResult struct {
+		message string
+		err     error
+	}
+	results := make(chan freezeResult, 2)
+	for range 2 {
+		go func() {
+			message, err := reader.FreezePublishedWelcomeMessage(fixture.ctx, request)
+			results <- freezeResult{message: message, err: err}
+		}()
+	}
+	for range 2 {
+		result := <-results
+		if result.err != nil || result.message != "您好初始客户名，初始客户名" {
+			t.Fatalf("concurrent frozen result=%+v", result)
+		}
+	}
+	var cipherText []byte
+	var snapshots int
+	if err := fixture.native.QueryRow(fixture.ctx, `SELECT ciphertext,(SELECT count(*) FROM channel_welcome_message_snapshots) FROM channel_welcome_message_snapshots`).Scan(&cipherText, &snapshots); err != nil || snapshots != 1 {
+		t.Fatalf("snapshot count=%d err=%v", snapshots, err)
+	}
+	if bytes.Contains(cipherText, []byte("初始客户名")) || bytes.Contains(cipherText, []byte("{{客户名}}")) {
+		t.Fatal("snapshot stored a plaintext template or customer name")
+	}
+	if _, err := fixture.native.Exec(fixture.ctx, `UPDATE customer_directory_projection SET display_name='后续客户名' WHERE customer_id=$1`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	frozenAfterNameChange, err := reader.FreezePublishedWelcomeMessage(fixture.ctx, request)
+	if err != nil || frozenAfterNameChange != "您好初始客户名，初始客户名" {
+		t.Fatalf("frozen message drifted after customer update message=%q err=%v", frozenAfterNameChange, err)
+	}
+	var stableSource, stableTarget, stablePayload, stablePolicy effectport.Digest
+	if err = fixture.native.QueryRow(fixture.ctx, `SELECT source_ref_digest,effect_target_digest,effect_payload_digest,effect_policy_digest FROM channel_welcome_intents WHERE callback_id=$1`, input.CallbackKey).Scan(&stableSource, &stableTarget, &stablePayload, &stablePolicy); err != nil || stableSource != source || stableTarget != target || stablePayload != payload || stablePolicy != policy {
+		t.Fatalf("effect envelope drift source=%q/%q target=%q/%q payload=%q/%q policy=%q/%q err=%v", stableSource, source, stableTarget, target, stablePayload, payload, stablePolicy, policy, err)
+	}
+	writer := &runtimeWelcomeWriter{called: make(chan runtimeWelcomeCall, 1)}
+	_, stop := fixture.startRuntime(t, writer, nil, true)
+	defer stop()
+	select {
+	case call := <-writer.called:
+		if call.message != "您好初始客户名，初始客户名" {
+			t.Fatalf("Provider received non-frozen template body %q", call.message)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("frozen template did not reach local Provider boundary")
+	}
+	fixture.waitEffect(t, input, effectport.StateExecuted)
+}
+
 type channelWelcomeRuntimeFixture struct {
 	ctx      context.Context
 	native   *pgxpool.Pool
@@ -124,6 +246,10 @@ type channelWelcomeRuntimeFixture struct {
 }
 
 func newChannelWelcomeRuntimeFixture(t *testing.T) *channelWelcomeRuntimeFixture {
+	return newChannelWelcomeRuntimeFixtureWithWelcomeMessage(t, "welcome")
+}
+
+func newChannelWelcomeRuntimeFixtureWithWelcomeMessage(t *testing.T, welcomeMessage string) *channelWelcomeRuntimeFixture {
 	t.Helper()
 	native, cleanup := channelWelcomeIntegrationPool(t)
 	pool, err := platformpostgres.Wrap(native, time.Second)
@@ -164,6 +290,12 @@ func newChannelWelcomeRuntimeFixture(t *testing.T) *channelWelcomeRuntimeFixture
 		cleanup()
 		t.Fatal(err)
 	}
+	messageCipher, err := wecom.NewChannelWelcomeMessageCipher("channel-welcome-runtime-secret-0001")
+	if err != nil {
+		pool.Close()
+		cleanup()
+		t.Fatal(err)
+	}
 	digester, err := wecom.NewHMACStateDigester([]byte("12345678901234567890123456789012"))
 	if err != nil {
 		pool.Close()
@@ -173,7 +305,7 @@ func newChannelWelcomeRuntimeFixture(t *testing.T) *channelWelcomeRuntimeFixture
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	adminID := insertChannelWelcomeAdmin(t, ctx, native)
 	states := channel.NewPostgreSQLStore()
-	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "runtime", "welcome-runtime", false, 1, 0)
+	ready := seedChannelWelcomeFixtureWithWelcomeMessage(t, ctx, unit, states, digester, adminID, "runtime", "welcome-runtime", welcomeMessage, false, 1, 0, 100)
 	inbox, err := webhook.NewService(webhook.NewPostgreSQLStore())
 	if err != nil {
 		cancel()
@@ -182,6 +314,12 @@ func newChannelWelcomeRuntimeFixture(t *testing.T) *channelWelcomeRuntimeFixture
 		t.Fatal(err)
 	}
 	actions := channel.NewEntrantActionStore(effects, nil)
+	if err = actions.SetWelcomeMessageDependencies(customerstore.PostgreSQL{}, messageCipher); err != nil {
+		cancel()
+		pool.Close()
+		cleanup()
+		t.Fatal(err)
+	}
 	grants := wecom.NewPostgreSQLWelcomeGrantStore(cipher)
 	return &channelWelcomeRuntimeFixture{
 		ctx: ctx, native: native, cleanup: func() { cancel(); pool.Close(); cleanup() }, pool: pool, unit: unit, effects: effects, insert: insert,
@@ -218,7 +356,7 @@ func (fixture *channelWelcomeRuntimeFixture) startRuntime(t *testing.T, writer *
 			t.Fatal(err)
 		}
 	}
-	provider := outbound.NewChannelEntrantProvider(reader, fixture.unit, grants, nil, nil, writer)
+	provider := outbound.NewChannelEntrantProvider(reader, reader, fixture.unit, grants, nil, nil, writer)
 	adapter := channelWelcomeRuntimeAdapter{welcome: provider, ordinary: ordinary}
 	workers := river.NewWorkers()
 	worker := externaleffects.NewWorker(effects, adapter)
@@ -307,6 +445,7 @@ func (router channelWelcomeCompletionRouter) CompleteEffect(ctx context.Context,
 type runtimeWelcomeCall struct {
 	at, deadline time.Time
 	code         string
+	message      string
 }
 
 type runtimeWelcomeWriter struct {
@@ -316,14 +455,22 @@ type runtimeWelcomeWriter struct {
 	err    error
 }
 
-func (writer *runtimeWelcomeWriter) SendWelcomeMessage(ctx context.Context, code, _ string, _ []wecomport.WelcomeAttachment) error {
+func (writer *runtimeWelcomeWriter) SendWelcomeMessage(ctx context.Context, code, message string, _ []wecomport.WelcomeAttachment) error {
 	writer.mu.Lock()
 	writer.count++
 	writer.mu.Unlock()
 	deadline, _ := ctx.Deadline()
-	writer.called <- runtimeWelcomeCall{at: time.Now().UTC(), deadline: deadline, code: code}
+	writer.called <- runtimeWelcomeCall{at: time.Now().UTC(), deadline: deadline, code: code, message: message}
 	return writer.err
 }
+
+type failingWelcomeDirectoryReader struct{ calls int }
+
+func (reader *failingWelcomeDirectoryReader) DisplayNames(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
+	reader.calls++
+	return nil, errors.New("fixture customer directory unavailable")
+}
+
 func (*runtimeWelcomeWriter) AddContactTag(context.Context, string, string, string) error { return nil }
 func (writer *runtimeWelcomeWriter) calls() int {
 	writer.mu.Lock()
