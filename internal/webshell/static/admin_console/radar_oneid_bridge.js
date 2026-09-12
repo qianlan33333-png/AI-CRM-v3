@@ -2,6 +2,27 @@
   'use strict';
   const nativeFetch = window.fetch.bind(window);
   const radarMutation = /^\/api\/admin\/radar-links(?:\/\d+)?(?:\/(?:enable|disable))?$/;
+  const radarList = /^\/api\/admin\/radar-links$/;
+  const listSummaries = new Map();
+  let listSummaryReady = Promise.resolve();
+
+  function listSummaryStatus(value) {
+    return value && value.statistics_status === 'ready' ? 'ready' : 'unavailable';
+  }
+  function rememberListSummaries(response) {
+    listSummaryReady = response.clone().json().then(function (payload) {
+      listSummaries.clear();
+      hydrated.forEach(function (value) { if (value.indexOf('list-') === 0) hydrated.delete(value); });
+      const items = payload && Array.isArray(payload.items) ? payload.items : [];
+      items.forEach(function (item) {
+        const id = Number(item && item.link_id);
+        if (Number.isSafeInteger(id) && id > 0) listSummaries.set(id, item);
+      });
+    }).catch(function () {
+      listSummaries.clear();
+    });
+    return response;
+  }
 
   window.fetch = function (input, init) {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.pathname + input.search : input.url;
@@ -40,6 +61,9 @@
         });
       });
     }
+    if (url.origin === location.origin && radarList.test(url.pathname) && method === 'GET') {
+      return nativeFetch(input, init).then(rememberListSummaries);
+    }
     return nativeFetch(input, init);
   };
 
@@ -49,22 +73,49 @@
     if (!response.ok) throw new Error('stats unavailable');
     return response.json();
   }
+  function integerText(value) {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : null;
+  }
+  function renderUnavailable(row) {
+    row.querySelectorAll('td.num').forEach(function (node) { node.textContent = '不可用'; });
+    const cells = row.querySelectorAll('td');
+    if (cells[6]) cells[6].textContent = '不可用';
+  }
+  function renderListSummary(row, value) {
+    if (listSummaryStatus(value) !== 'ready') {
+      renderUnavailable(row);
+      return;
+    }
+    const landings = integerText(value.total_landings);
+    const users = integerText(value.authorized_users);
+    const views = integerText(value.view_count);
+    if (landings === null || users === null || views === null) {
+      renderUnavailable(row);
+      return;
+    }
+    const nums = row.querySelectorAll('td.num');
+    if (nums[0]) nums[0].textContent = landings;
+    if (nums[1]) nums[1].textContent = users;
+    if (nums[2]) nums[2].textContent = views;
+    const cells = row.querySelectorAll('td');
+    if (!cells[6]) return;
+    if (value.last_viewed_at === null) {
+      cells[6].textContent = '—';
+    } else if (typeof value.last_viewed_at === 'string' && value.last_viewed_at) {
+      cells[6].textContent = value.last_viewed_at.slice(5, 16).replace('T', ' ');
+    } else {
+      cells[6].textContent = '不可用';
+    }
+  }
   async function hydrateList() {
+    await listSummaryReady;
     const rows = document.querySelectorAll('#listRows tr');
     for (const row of rows) {
       const action = row.querySelector('[data-detail]');
       const id = action && Number(action.getAttribute('data-detail'));
       if (!id || hydrated.has('list-' + id)) continue;
       hydrated.add('list-' + id);
-      try {
-        const value = await stats(id);
-        const nums = row.querySelectorAll('td.num');
-        if (nums[0]) nums[0].textContent = Number(value.total_landings || 0).toLocaleString();
-        if (nums[1]) nums[1].textContent = Number(value.authorized_users || 0).toLocaleString();
-        if (nums[2]) nums[2].textContent = Number(value.view_opens || 0).toLocaleString();
-        const cells = row.querySelectorAll('td');
-        if (cells[6] && value.last_clicked_at) cells[6].textContent = String(value.last_clicked_at).slice(5, 16).replace('T', ' ');
-      } catch (_) { hydrated.delete('list-' + id); }
+      renderListSummary(row, listSummaries.get(id));
     }
   }
   async function hydrateDetail() {
@@ -78,7 +129,10 @@
       const landings = Number(value.total_landings || 0), users = Number(value.authorized_users || 0);
       nodes[0].textContent = landings.toLocaleString(); nodes[1].textContent = users.toLocaleString();
       nodes[2].textContent = Number(value.view_opens || 0).toLocaleString(); nodes[3].textContent = landings ? Math.round(users / landings * 100) + '%' : '0%';
-    } catch (_) { hydrated.delete('detail'); }
+    } catch (_) {
+      nodes[0].textContent = '不可用'; nodes[1].textContent = '不可用';
+      nodes[2].textContent = '不可用'; nodes[3].textContent = '不可用';
+    }
   }
   async function hydrateForm() {
     if (document.body.dataset.page !== 'radarForm' || hydrated.has('form')) return;
@@ -91,7 +145,10 @@
       if (response.ok && value.link && value.link.auth_policy === 'anonymous') toggle.classList.remove('on');
     } catch (_) { hydrated.delete('form'); }
   }
-  function hydrate() { void hydrateList(); void hydrateDetail(); void hydrateForm(); }
+  function hydrate() {
+    if (!document || !document.body) return;
+    void hydrateList(); void hydrateDetail(); void hydrateForm();
+  }
   new MutationObserver(hydrate).observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener('DOMContentLoaded', hydrate);
 })();

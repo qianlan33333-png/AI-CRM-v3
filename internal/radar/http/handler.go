@@ -292,7 +292,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]any, 0, len(page.Items))
 	for _, i := range page.Items {
-		items = append(items, h.link(i.Link))
+		items = append(items, h.linkSummary(i))
 	}
 	writeJSON(w, 200, map[string]any{"items": items, "total": page.Total, "limit": page.Limit, "offset": page.Offset, "has_more": page.HasMore, "status_filter": value(r.URL.Query().Get("status"), "all"), "sort": value(r.URL.Query().Get("sort"), "updated_desc"), "local_projection": true, "real_external_call_executed": false})
 }
@@ -649,6 +649,27 @@ func (h *Handler) link(l radar.Link) map[string]any {
 		destination = h.origin + "/api/public/radar/" + string(l.PublicCode) + "/content"
 	}
 	return map[string]any{"link_id": l.ID, "public_code": l.PublicCode, "name": l.Name, "title": l.Title, "description": l.Description, "destination_url": destination, "cover_image_id": cover, "attachment_id": attachment, "auth_policy": l.AuthPolicy, "status": l.Status, "version": l.Version, "created_by": l.CreatedBy, "updated_by": l.UpdatedBy, "created_at": l.CreatedAt, "updated_at": l.UpdatedAt}
+}
+
+func (h *Handler) linkSummary(summary radarport.LinkSummary) map[string]any {
+	link := h.link(summary.Link)
+	status := summary.StatisticsStatus
+	if status != radarport.LinkStatisticsReady {
+		link["statistics_status"] = radarport.LinkStatisticsUnavailable
+		link["total_landings"] = nil
+		link["authorized_users"] = nil
+		link["authorized_views"] = nil
+		link["view_count"] = nil
+		link["last_viewed_at"] = nil
+		return link
+	}
+	link["statistics_status"] = status
+	link["total_landings"] = summary.TotalLandings
+	link["authorized_users"] = summary.AuthorizedUsers
+	link["authorized_views"] = summary.AuthorizedViews
+	link["view_count"] = summary.ViewCount
+	link["last_viewed_at"] = summary.LastViewedAt
+	return link
 }
 func (h *Handler) err(w http.ResponseWriter, e error) {
 	switch {

@@ -23,10 +23,16 @@ func (testSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.
 	return accessdomain.Principal{InternalID: 7}, nil
 }
 
-type testManager struct{ created radarport.CreateCommand }
+type testManager struct {
+	created radarport.CreateCommand
+	page    radarport.LinkPage
+}
 
 func (m *testManager) List(context.Context, radarport.ListQuery) (radarport.LinkPage, error) {
-	return radarport.LinkPage{Items: []radarport.LinkSummary{{Link: testLink()}}, Total: 1, Limit: 20}, nil
+	if m.page.Items != nil {
+		return m.page, nil
+	}
+	return radarport.LinkPage{Items: []radarport.LinkSummary{{Link: testLink(), StatisticsStatus: radarport.LinkStatisticsReady}}, Total: 1, Limit: 20}, nil
 }
 func (m *testManager) Get(context.Context, radar.RadarID) (radarport.LinkDetail, error) {
 	return radarport.LinkDetail{Link: testLink()}, nil
@@ -103,6 +109,48 @@ func TestDisabledPublicLinkIsGone(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/r/rd_abcdefghijklmnopqrstuv", nil))
 	if response.Code != http.StatusGone {
 		t.Fatalf("status=%d", response.Code)
+	}
+}
+
+func TestAdminListMapsMeasuredAndUnavailableStatisticsWithoutFallbacks(t *testing.T) {
+	lastViewedAt := time.Date(2026, 9, 12, 9, 30, 0, 0, time.UTC)
+	manager := &testManager{page: radarport.LinkPage{Items: []radarport.LinkSummary{
+		{Link: testLink(), StatisticsStatus: radarport.LinkStatisticsReady, TotalLandings: 7, AuthorizedUsers: 3, AuthorizedViews: 2, ViewCount: 4, LastViewedAt: &lastViewedAt},
+		{Link: radar.Link{ID: 2, PublicCode: "rd_zyxwvutsrqponmlkjihgfe", Name: "Unavailable", Title: "Unavailable", Content: radar.Content{Type: radar.ContentTypeLink, DestinationURL: "https://example.com/unavailable"}, AuthPolicy: radar.AuthPolicyAnonymous, Status: radar.StatusDraft, Version: 1, CreatedBy: 7, UpdatedBy: 7, CreatedAt: lastViewedAt, UpdatedAt: lastViewedAt}, StatisticsStatus: radarport.LinkStatisticsUnavailable},
+	}, Total: 2, Limit: 20}}
+	handler, err := NewHandler(manager, testQuery{}, testPublic{}, testSecurity{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			LinkID           int64   `json:"link_id"`
+			StatisticsStatus string  `json:"statistics_status"`
+			TotalLandings    *int64  `json:"total_landings"`
+			AuthorizedUsers  *int64  `json:"authorized_users"`
+			AuthorizedViews  *int64  `json:"authorized_views"`
+			ViewCount        *int64  `json:"view_count"`
+			LastViewedAt     *string `json:"last_viewed_at"`
+		} `json:"items"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("items=%+v", payload.Items)
+	}
+	ready := payload.Items[0]
+	if ready.StatisticsStatus != "ready" || ready.TotalLandings == nil || *ready.TotalLandings != 7 || ready.AuthorizedUsers == nil || *ready.AuthorizedUsers != 3 || ready.AuthorizedViews == nil || *ready.AuthorizedViews != 2 || ready.ViewCount == nil || *ready.ViewCount != 4 || ready.LastViewedAt == nil || *ready.LastViewedAt == "" {
+		t.Fatalf("ready=%+v", ready)
+	}
+	unavailable := payload.Items[1]
+	if unavailable.StatisticsStatus != "unavailable" || unavailable.TotalLandings != nil || unavailable.AuthorizedUsers != nil || unavailable.AuthorizedViews != nil || unavailable.ViewCount != nil || unavailable.LastViewedAt != nil {
+		t.Fatalf("unavailable=%+v", unavailable)
 	}
 }
 
