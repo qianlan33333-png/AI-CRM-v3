@@ -4,6 +4,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import SwaggerParser from '@apidevtools/swagger-parser';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const explicitServeMuxRoute = /\bmux\.Handle(?:Func)?\(\s*"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) (\/[^" ]*)"/g;
+const serverSourceRoots = ['internal', 'cmd'];
 
 const routeContracts = [
   ['post', '/oauth/token', 'none', null, 'internal/openplatform/http/handler.go', 'mux.HandleFunc("POST /oauth/token", handler.token)'],
@@ -45,23 +47,32 @@ const routeContracts = [
   ['get', '/api/admin/payments/history', 'adminSession', null, 'internal/payment/http/handler.go', 'case path == "/api/admin/payments/history":'],
 ];
 
-const dispatcherRequirements = [
-  ['cmd/aicrm/composition.go', 'case "owner_migration":'],
-  ['cmd/aicrm/composition.go', 'case "channel_code":'],
-  ['cmd/aicrm/composition.go', 'mux.Handle("/api/admin/common/operation-members/", groupOpsHandler)'],
+// These handlers dispatch below a prefix registration, so the literal ServeMux
+// extractor cannot infer their method/path pairs. Their active routes stay in
+// routeContracts, while this evidence makes the exception and its retired-path
+// policy explicit for review.
+const customDispatcherEvidence = [
+  ['cmd/aicrm/composition.go', 'case "owner_migration":', 'shared operation-members scope dispatch'],
+  ['cmd/aicrm/composition.go', 'case "channel_code":', 'shared operation-members scope dispatch'],
+  ['cmd/aicrm/composition.go', 'mux.Handle("/api/admin/common/operation-members/", groupOpsHandler)', 'GroupOps prefix dispatch'],
+  ['internal/groupops/http/handler.go', 'r.URL.Path == OperationMembersPath+"/sync"', 'GroupOps operation-member sync'],
+  ['internal/media/http/handler.go', 'tail == "refresh-rounds" && r.Method == http.MethodPost', 'Media preparation refresh round'],
+  ['internal/payment/http/handler.go', 'case path == "/api/admin/payments/history":', 'Payment history read projection'],
+  ['internal/openplatform/http/handler.go', 'mux.Handle(retired.Method+" "+retired.Path, http.NotFoundHandler())', 'retired Open Platform inventory routes are explicit 404 handlers and are intentionally excluded from OpenAPI'],
 ];
 
 function fail(message) {
   throw new Error(`OpenAPI route parity failed: ${message}`);
 }
 
-function securityNames(operation) {
-  if (!operation.security) return [];
-  return operation.security.flatMap(requirement => Object.keys(requirement)).sort();
+function securityRequirementGroups(operation) {
+  return (operation.security ?? [])
+    .map(requirement => Object.keys(requirement).sort())
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
 }
 
-function expectedSecurity(kind) {
-  return kind === 'none' ? [] : kind.split('+').sort();
+function expectedSecurityGroups(kind) {
+  return kind === 'none' ? [] : [kind.split('+').sort()];
 }
 
 function parametersFor(specification, route, operation) {
@@ -84,15 +95,52 @@ function sourceText(relativePath, cache) {
   return cache.get(relativePath);
 }
 
+export function extractExplicitServeMuxRoutes(root = repository) {
+  const routes = new Map();
+  function walk(relative) {
+    const directory = path.join(root, relative);
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const child = path.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        walk(child);
+        continue;
+      }
+      if (!entry.isFile() || !child.endsWith('.go') || child.endsWith('_test.go')) continue;
+      const source = fs.readFileSync(path.join(root, child), 'utf8');
+      for (const match of source.matchAll(explicitServeMuxRoute)) {
+        const method = match[1].toLowerCase();
+        const route = match[2];
+        routes.set(`${method} ${route}`, { method, route, source: child });
+      }
+    }
+  }
+  for (const sourceRoot of serverSourceRoots) walk(sourceRoot);
+  return [...routes.values()].sort((left, right) => `${left.method} ${left.route}`.localeCompare(`${right.method} ${right.route}`));
+}
+
+export function assertExplicitRoutesDocumented(specification, registrations = extractExplicitServeMuxRoutes()) {
+  for (const { method, route, source } of registrations) {
+    if (!specification.paths?.[route]?.[method]) {
+      fail(`explicit ServeMux route ${method.toUpperCase()} ${route} from ${source} is missing from OpenAPI`);
+    }
+  }
+}
+
+export function assertSecurityRequirementGroups(operation, expectedGroups, label) {
+  const actualGroups = securityRequirementGroups(operation);
+  if (JSON.stringify(actualGroups) !== JSON.stringify(expectedGroups)) {
+    fail(`${label} security must be ${JSON.stringify(expectedGroups)}`);
+  }
+}
+
 export function assertOpenAPIRouteParity(specification) {
   const cache = new Map();
+  assertExplicitRoutesDocumented(specification);
   for (const [method, route, security, idempotency, source, registration] of routeContracts) {
     const operation = specification.paths?.[route]?.[method];
     const label = `${method.toUpperCase()} ${route}`;
     if (!operation) fail(`missing active ${label}`);
-    if (JSON.stringify(securityNames(operation)) !== JSON.stringify(expectedSecurity(security))) {
-      fail(`${label} security must be ${expectedSecurity(security).join('+') || 'none'}`);
-    }
+    assertSecurityRequirementGroups(operation, expectedSecurityGroups(security), label);
     const parameters = parametersFor(specification, route, operation);
     if (idempotency === 'required-header' && !hasIdempotencyHeader(parameters, true)) {
       fail(`${label} must require Idempotency-Key`);
@@ -107,12 +155,12 @@ export function assertOpenAPIRouteParity(specification) {
       fail(`${label} is no longer registered by ${source}`);
     }
   }
-  for (const [source, requirement] of dispatcherRequirements) {
+  for (const [source, requirement, reason] of customDispatcherEvidence) {
     if (!sourceText(source, cache).includes(requirement)) {
-      fail(`shared operation-members dispatcher is missing ${requirement}`);
+      fail(`custom dispatcher evidence is missing for ${reason}: ${requirement}`);
     }
   }
-  console.log(`OpenAPI route parity: ${routeContracts.length} active operations verified`);
+  console.log(`OpenAPI route parity: ${routeContracts.length} active operations and ${extractExplicitServeMuxRoutes().length} explicit ServeMux registrations verified`);
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
