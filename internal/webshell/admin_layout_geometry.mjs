@@ -689,12 +689,54 @@ try {
           return Boolean(first) && Math.abs(box.left - first.left) <= 1 && box.width >= 300;
         });
       })(),
+      orderHeader: (() => {
+        const header=document.querySelector('#stage div[style*="height:52px"]');
+        const number=header?.querySelector('[style*="font-family"]');
+        const status=number?.nextElementSibling;
+        const headerBox=header?.getBoundingClientRect();
+        const boxes=[number,status].filter(Boolean).map(node => node.getBoundingClientRect());
+        return {
+          number: number?.textContent?.trim(), status: status?.textContent?.trim(),
+          complete: Boolean(headerBox) && header.scrollHeight <= header.clientHeight + 1 && boxes.length === 2 && boxes.every(box => box.top >= headerBox.top - 1 && box.bottom <= headerBox.bottom + 1),
+        };
+      })(),
       overflowsViewport: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
     }))()`);
-    if (!historicalMobile?.readOnly || historicalMobile?.implementationLabel || historicalMobile?.refundForm || historicalMobile?.rawStatus || !historicalMobile?.sidebarHidden || !historicalMobile?.detailPanelsStacked || historicalMobile?.overflowsViewport) throw new Error("historical order mobile presentation is invalid");
+    if (!historicalMobile?.readOnly || historicalMobile?.implementationLabel || historicalMobile?.refundForm || historicalMobile?.rawStatus || !historicalMobile?.sidebarHidden || !historicalMobile?.detailPanelsStacked || !historicalMobile?.orderHeader?.complete || historicalMobile?.orderHeader?.number !== historicalOrderReference || !historicalMobile?.orderHeader?.status || historicalMobile?.overflowsViewport) throw new Error("historical order mobile presentation is invalid");
     await capture("order-detail-history-mobile");
+    currentStep = "order-detail-native-mobile";
+    await cdp.call("Page.navigate", { url: baseURL + "/admin/orderDetail.html?id=" + encodeURIComponent(nativeOrderReference) });
+    await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && Boolean(document.querySelector('.order-refund-confirmation'))", "order-detail-native-mobile did not render its refund confirmation form");
+    await waitForFonts("order-detail-native-mobile");
+    const nativeMobile = await evaluate(cdp, `(() => {
+      const form=document.querySelector('.order-refund-confirmation');
+      const amount=form?.querySelector('input[data-order-refund-amount]');
+      const transaction=form?.querySelector('input[data-order-refund-transaction]');
+      const reason=form?.querySelector('select[data-order-refund-reason]');
+      const submit=form?.querySelector('button.btn.primary');
+      const formBox=form?.getBoundingClientRect();
+      const controls=[amount,transaction,reason,submit].filter(Boolean).map(node => node.getBoundingClientRect());
+      const submitStyle=submit ? getComputedStyle(submit) : null;
+      const header=document.querySelector('#stage div[style*="height:52px"]');
+      const number=header?.querySelector('[style*="font-family"]');
+      const status=number?.nextElementSibling;
+      const headerBox=header?.getBoundingClientRect();
+      const headerBoxes=[number,status].filter(Boolean).map(node => node.getBoundingClientRect());
+      return {
+        standardFields: Boolean(form?.classList.contains('labs')) && form?.querySelectorAll('.field').length === 4,
+        standardPrimary: submitStyle?.backgroundColor === 'rgb(51, 112, 255)' && submitStyle.color === 'rgb(255, 255, 255)' && submitStyle.borderRadius === '6px',
+        controlsFit: Boolean(formBox) && controls.length === 4 && controls.every(box => box.width >= 300 && box.right <= innerWidth + 1),
+        orderHeader: {
+          number: number?.textContent?.trim(), status: status?.textContent?.trim(),
+          complete: Boolean(headerBox) && header.scrollHeight <= header.clientHeight + 1 && headerBoxes.length === 2 && headerBoxes.every(box => box.top >= headerBox.top - 1 && box.bottom <= headerBox.bottom + 1),
+        },
+        overflowsViewport: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+      };
+    })()`);
+    if (!nativeMobile?.standardFields || !nativeMobile?.standardPrimary || !nativeMobile?.controlsFit || !nativeMobile?.orderHeader?.complete || nativeMobile?.orderHeader?.number !== nativeOrderReference || !nativeMobile?.orderHeader?.status || nativeMobile?.overflowsViewport) throw new Error("native order mobile refund form is not visually actionable");
+    await capture("order-detail-native-mobile");
   } catch (error) {
-    await recordRouteFailure("order-detail-history-mobile", error);
+    await recordRouteFailure(currentStep, error);
   } finally {
     await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
   }

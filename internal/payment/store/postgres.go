@@ -468,7 +468,7 @@ func (r *Repository) ListRefunds(ctx context.Context, limit, offset int32) ([]pa
 	rows, err := t.Query(ctx, `
 		SELECT r.id,r.payment_id,r.provider,r.refund_no,r.reason,r.amount_minor,r.status,
 			COALESCE('eer_'||r.external_effect_id::text,''),COALESCE(r.provider_refund_reference,''),COALESCE(r.provider_refund_digest,''),r.version,r.created_at,r.updated_at,
-			p.order_id,p.merchant_order_no,COALESCE(p.provider_transaction_digest,''),p.amount_minor,p.currency
+			p.order_id,p.merchant_order_no,p.amount_minor,p.currency
 		FROM payment_refunds r JOIN payments p ON p.id=r.payment_id
 		ORDER BY r.created_at DESC,r.id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
@@ -478,7 +478,7 @@ func (r *Repository) ListRefunds(ctx context.Context, limit, offset int32) ([]pa
 	result := make([]paymentport.RefundProjection, 0, limit)
 	for rows.Next() {
 		var item paymentport.RefundProjection
-		if err = rows.Scan(&item.Refund.ID, &item.Refund.PaymentID, &item.Refund.Provider, &item.Refund.RefundNo, &item.Refund.Reason, &item.Refund.AmountMinor, &item.Refund.Status, &item.Refund.EffectID, &item.Refund.ProviderRefundReference, &item.Refund.ProviderRefundDigest, &item.Refund.Version, &item.Refund.CreatedAt, &item.Refund.UpdatedAt, &item.OrderID, &item.MerchantOrder, &item.TransactionRef, &item.OrderAmount, &item.Currency); err != nil {
+		if err = rows.Scan(&item.Refund.ID, &item.Refund.PaymentID, &item.Refund.Provider, &item.Refund.RefundNo, &item.Refund.Reason, &item.Refund.AmountMinor, &item.Refund.Status, &item.Refund.EffectID, &item.Refund.ProviderRefundReference, &item.Refund.ProviderRefundDigest, &item.Refund.Version, &item.Refund.CreatedAt, &item.Refund.UpdatedAt, &item.OrderID, &item.MerchantOrder, &item.OrderAmount, &item.Currency); err != nil {
 			return nil, 0, mapError(err)
 		}
 		result = append(result, item)
@@ -502,7 +502,7 @@ func (r *Repository) ListRefundsForPayment(ctx context.Context, provider domain.
 	rows, err := t.Query(ctx, `
 		SELECT r.id,r.payment_id,r.provider,r.refund_no,r.reason,r.amount_minor,r.status,
 			COALESCE('eer_'||r.external_effect_id::text,''),COALESCE(r.provider_refund_reference,''),COALESCE(r.provider_refund_digest,''),r.version,r.created_at,r.updated_at,
-			p.order_id,p.merchant_order_no,COALESCE(p.provider_transaction_digest,''),p.amount_minor,p.currency
+			p.order_id,p.merchant_order_no,p.amount_minor,p.currency
 		FROM payment_refunds r JOIN payments p ON p.id=r.payment_id
 		WHERE p.provider=$1 AND p.merchant_order_no=$2
 		ORDER BY r.created_at DESC,r.id DESC LIMIT $3 OFFSET $4`, provider, merchantOrderNo, limit, offset)
@@ -513,7 +513,7 @@ func (r *Repository) ListRefundsForPayment(ctx context.Context, provider domain.
 	result := make([]paymentport.RefundProjection, 0, limit)
 	for rows.Next() {
 		var item paymentport.RefundProjection
-		if err = rows.Scan(&item.Refund.ID, &item.Refund.PaymentID, &item.Refund.Provider, &item.Refund.RefundNo, &item.Refund.Reason, &item.Refund.AmountMinor, &item.Refund.Status, &item.Refund.EffectID, &item.Refund.ProviderRefundReference, &item.Refund.ProviderRefundDigest, &item.Refund.Version, &item.Refund.CreatedAt, &item.Refund.UpdatedAt, &item.OrderID, &item.MerchantOrder, &item.TransactionRef, &item.OrderAmount, &item.Currency); err != nil {
+		if err = rows.Scan(&item.Refund.ID, &item.Refund.PaymentID, &item.Refund.Provider, &item.Refund.RefundNo, &item.Refund.Reason, &item.Refund.AmountMinor, &item.Refund.Status, &item.Refund.EffectID, &item.Refund.ProviderRefundReference, &item.Refund.ProviderRefundDigest, &item.Refund.Version, &item.Refund.CreatedAt, &item.Refund.UpdatedAt, &item.OrderID, &item.MerchantOrder, &item.OrderAmount, &item.Currency); err != nil {
 			return nil, 0, mapError(err)
 		}
 		result = append(result, item)

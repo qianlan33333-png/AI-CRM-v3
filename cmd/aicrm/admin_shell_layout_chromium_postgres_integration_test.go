@@ -303,7 +303,7 @@ func seedAdminShellLayoutHXC(t *testing.T, ctx context.Context, application *com
 // facts and guarded refund form against durable order/payment records.
 func seedAdminShellLayoutNativeOrder(t *testing.T, ctx context.Context, application *composedApplication, productID int64) string {
 	t.Helper()
-	const merchantOrderNo = "fixture-native-order-001"
+	const merchantOrderNo = "WXP260912030405A1B2C3D4E5F6"
 	const transactionID = "fixture-wechat-transaction-001"
 	now := time.Date(2026, time.September, 12, 3, 4, 5, 0, time.UTC)
 	var customerID, orderID int64

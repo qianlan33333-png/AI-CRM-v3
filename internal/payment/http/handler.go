@@ -349,11 +349,14 @@ func (handler *Handler) refunds(writer http.ResponseWriter, request *http.Reques
 		}
 		items = append(items, map[string]any{
 			"id": row.Refund.ID, "order_id": row.OrderID, "provider": provider,
-			"order_no": row.MerchantOrder, "transaction_id": row.TransactionRef,
+			// The legacy list has no verified Order transaction projection and no
+			// effect-state read. Keep the old fields empty rather than mislabeling
+			// a digest or a refund business state as either fact.
+			"order_no": row.MerchantOrder, "transaction_id": "",
 			"refund_id": row.Refund.RefundNo, "out_refund_no": row.Refund.RefundNo,
 			"refund_amount_total": row.Refund.AmountMinor, "order_amount_minor": row.OrderAmount,
 			"currency": row.Currency, "reason": row.Refund.Reason, "status": compatRefundStatus(row.Refund.Status),
-			"external_effect_id": effectID, "external_effect_state": compatRefundStatus(row.Refund.Status),
+			"external_effect_id": effectID, "external_effect_state": "",
 			"auto_retry_allowed": false, "created_at": row.Refund.CreatedAt,
 		})
 	}
@@ -497,17 +500,17 @@ func (handler *Handler) shopRefund(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	if body.Provider != "wechat_shop" || body.OrderNo == "" || !body.Checked || key == "" || !validTransactionConfirmation(body.TransactionIDConfirmation) {
+	// WeChat Shop has its own existing confirmation contract: the named field
+	// confirms this Shop order reference. Shop callbacks do not produce a
+	// verified WeChat Pay transaction_id fact, so applying the Pay guard here
+	// would reject every valid Shop refund.
+	if body.Provider != "wechat_shop" || body.OrderNo == "" || body.TransactionIDConfirmation != body.OrderNo || !body.Checked || key == "" {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	payment, err := handler.app.FindPayment(request.Context(), domain.ProviderWeChatShop, body.OrderNo)
 	if err != nil {
 		resultError(writer, err)
-		return
-	}
-	if !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
-		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	digest := sha256.Sum256([]byte(strconv.FormatInt(principal.InternalID, 10) + "\x00" + key))
@@ -662,8 +665,20 @@ func compatRefundStatus(status domain.RefundStatus) string {
 		return "outcome_unknown"
 	case domain.RefundCompleted:
 		return "completed"
-	default:
+	case domain.RefundFinalFailed:
 		return "final_failed"
+	case domain.RefundHistoryRequested:
+		return "history_requested"
+	case domain.RefundHistoryProcessing:
+		return "history_processing"
+	case domain.RefundHistoryFailed:
+		return "history_failed"
+	case domain.RefundHistoryClosed:
+		return "history_closed"
+	default:
+		// A legacy value with no documented meaning is neither a final failure
+		// nor evidence of a completed Provider effect.
+		return "unknown"
 	}
 }
 
@@ -821,16 +836,15 @@ func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
-	if !validTransactionConfirmation(body.TransactionIDConfirmation) {
-		writeError(writer, http.StatusBadRequest, "invalid_request")
-		return
-	}
 	payment, err := handler.app.GetPayment(request.Context(), paymentID)
 	if err != nil {
 		resultError(writer, err)
 		return
 	}
-	if !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
+	// This route spans providers. Only WeChat Pay has the verified callback
+	// transaction fact this confirmation checks; preserve every other provider's
+	// established contract instead of inventing a cross-provider substitute.
+	if payment.Provider == domain.ProviderWeChatPay && !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -853,7 +867,7 @@ func matchesVerifiedWeChatTransaction(payment domain.Payment, confirmation strin
 	if !validTransactionConfirmation(confirmation) || payment.ProviderTransactionDigest == "" {
 		return false
 	}
-	if payment.Provider != domain.ProviderWeChatPay && payment.Provider != domain.ProviderWeChatShop {
+	if payment.Provider != domain.ProviderWeChatPay {
 		return false
 	}
 	expected := effectport.Hash("wechatpay.transaction", confirmation)

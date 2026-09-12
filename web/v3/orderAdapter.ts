@@ -697,7 +697,10 @@ function appendRefundForm(parent: HTMLElement, order: DetailRecord): void {
     return;
   }
   const form = element('div');
-  form.className = 'order-refund-confirmation';
+  // `labs` is the loaded admin control system for this frozen workspace. It
+  // supplies the standard fields, controls, and primary action used by the
+  // surrounding V3 admin pages.
+  form.className = 'labs order-refund-confirmation';
   form.style.cssText = 'display:grid;gap:12px;border-top:1px solid #EFF0F1;padding-top:14px';
   const amountLabel = element('label');
   amountLabel.className = 'field';
@@ -1074,7 +1077,7 @@ function applyOrderDetailPresentation(): void {
   card.replaceChildren();
   const header = element('div');
   header.style.cssText = 'padding:12px 16px;border-bottom:1px solid #EFF0F1';
-  const heading = element('h2', '订单信息'); heading.style.cssText = 'margin:0;font-size:14px;font-weight:600';
+  const heading = element('h2', '订单详情'); heading.style.cssText = 'margin:0;font-size:14px;font-weight:600';
   const note = element('p', order.record_origin === 'native' ? '以下信息来自服务端订单事实。' : '历史订单，仅供查询。');
   note.style.cssText = 'margin:2px 0 0;font-size:12px;color:#8F959E';
   header.append(heading, note);

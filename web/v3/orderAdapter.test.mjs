@@ -150,18 +150,34 @@ const historyDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
   virtualConsole: new VirtualConsole(),
   beforeParse(window) {
     browserRuntime(window);
-    window.fetch = async () => new Response(JSON.stringify({
-      record_origin: 'v1_history', merchant_order_no: 'M-HISTORY-TEST-0001', provider: 'wechat',
-      payer_name: '测试买家', payer_id: 'customer:102', product_name: '历史测试商品', amount_yuan: '20.00', created_at: '2026-10-01T00:01:02Z', status: 'paid',
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage([
+        { refund_no: 'H-R-1', refund_amount_total: 100, status: 'history_requested', created_at: '2026-10-01T00:01:02Z' },
+        { refund_no: 'H-R-2', refund_amount_total: 100, status: 'history_processing', created_at: '2026-10-01T00:01:02Z' },
+        { refund_no: 'H-R-3', refund_amount_total: 100, status: 'history_failed', created_at: '2026-10-01T00:01:02Z' },
+        { refund_no: 'H-R-4', refund_amount_total: 100, status: 'history_closed', created_at: '2026-10-01T00:01:02Z' },
+        { refund_no: 'H-R-5', refund_amount_total: 100, status: 'legacy_unclassified', created_at: '2026-10-01T00:01:02Z' },
+      ])), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({
+        record_origin: 'v1_history', merchant_order_no: 'M-HISTORY-TEST-0001', provider: 'wechat',
+        payer_name: '测试买家', payer_id: 'customer:102', product_name: '历史测试商品', amount_yuan: '20.00', created_at: '2026-10-01T00:01:02Z', status: 'paid',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
   },
 });
 try {
   historyDom.window.eval(host);
-  await pause();
-  assert.match(historyDom.window.document.body.textContent, /历史订单，仅供查询/, 'historical users must not see V1\/V2 implementation wording');
-  assert.ok(!historyDom.window.document.body.textContent.includes('V1'), 'historical presentation must not expose a V1 technical generation label');
-  assert.match(historyDom.window.document.body.textContent, /历史记录：已支付/, 'historical paid data must remain a history fact, not a current provider-confirmed assertion');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await historyDom.window.fetch('/api/admin/refunds');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const bodyText = historyDom.window.document.body.textContent;
+  assert.match(bodyText, /历史订单，仅供查询/, 'historical users must not see V1\/V2 implementation wording');
+  assert.ok(!bodyText.includes('V1'), 'historical presentation must not expose a V1 technical generation label');
+  assert.match(bodyText, /历史记录：已支付/, 'historical paid data must remain a history fact, not a current provider-confirmed assertion');
+  for (const label of ['历史记录：已申请', '历史记录：处理中', '历史记录：失败', '历史记录：已关闭']) assert.match(bodyText, new RegExp(label), `historical refund fact ${label} must remain distinct`);
+  assert.match(bodyText, /退款状态待核对/, 'unknown historical refund values must not be presented as failed or raw machine states');
+  assert.ok(!bodyText.includes('legacy_unclassified'), 'historical unknown values must not expose a raw enum');
 } finally {
   historyDom.window.close();
 }
