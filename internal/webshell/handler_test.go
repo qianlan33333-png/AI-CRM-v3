@@ -575,7 +575,9 @@ func TestRenderCouponsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="coupons">frozen donor coupon fragment</section></template>`) || !strings.Contains(body, `data-page="coupons"`) {
+	hostAt := strings.Index(body, `<script type="module" src="/assets/coupon-host.js"></script>`)
+	donorAt := strings.Index(body, `<script type="module" src="/assets/admin.js"></script>`)
+	if response.Code != http.StatusOK || hostAt < 0 || donorAt >= 0 || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="coupons">frozen donor coupon fragment</section></template>`) || !strings.Contains(body, `data-page="coupons"`) {
 		t.Fatalf("coupon shell mismatch status=%d body=%q", response.Code, body)
 	}
 }
