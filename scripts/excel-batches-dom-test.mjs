@@ -94,8 +94,8 @@ extraRows[0] = {
 extraRows[49] = {
   ...extraRows[49],
   review_state: "approved",
-  state: "final_failed",
-  reason: "旧投影失败原因",
+  delivery_state: "final_failed",
+  failure_reason: "provider_rejected",
 };
 const receiptRows = Array.from({ length: 51 }, (_, index) => ({
   unionid: index === 50 ? "第二页回执用户" : `回执用户-${index + 1}`,
@@ -108,7 +108,12 @@ receiptRows[1] = {
   ...receiptRows[1],
   delivery_state: "unmapped_provider_state",
   sent_at: "2026-02-31T00:00:00Z",
-  failure_reason: "wecom_status_431",
+  failure_reason: "服务失败 provider_error",
+};
+receiptRows[2] = {
+  ...receiptRows[2],
+  delivery_state: "outcome_unknown",
+  failure_reason: "wecom_errcode_45009",
 };
 const json = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -399,8 +404,8 @@ assert.ok(
   "detail follows next_cursor through the second page",
 );
 assert.ok(
-  win.document.body.textContent.includes("旧投影失败原因"),
-  "state/reason projection remains readable during backend field migration",
+  win.document.body.textContent.includes("企微拒绝发送请求"),
+  "known provider rejection codes use the approved Chinese business label",
 );
 assert.ok(
   win.document.body.textContent.includes("发送成功\n2026-10-01 00:00:00"),
@@ -565,9 +570,17 @@ assert.ok(
   "invalid receipt times do not leak raw text",
 );
 assert.equal(
-  win.document.body.textContent.includes("wecom_status_431"),
+  win.document.body.textContent.includes("服务失败 provider_error"),
   false,
-  "raw receipt codes are not business-facing feedback",
+  "mixed human and machine failure text is not business-facing feedback",
+);
+assert.ok(
+  win.document.body.textContent.includes("失败原因待核对"),
+  "unknown receipt reasons use a safe Chinese fallback",
+);
+assert.ok(
+  win.document.body.textContent.includes("企微接口调用频率受限，请稍后重试"),
+  "known provider rate-limit codes use their exact Chinese business label",
 );
 assert.ok(win.document.body.textContent.includes("100.0%"));
 assert.equal(

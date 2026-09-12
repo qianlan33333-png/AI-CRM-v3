@@ -36,10 +36,28 @@ function deliveryLabel(value: unknown, empty = "待提交"): string {
   return delivery[state] || "状态待核对";
 }
 
+const deliveryFailure: Record<string, string> = {
+  title_missing: "发送内容缺少标题",
+  cover_missing: "发送内容缺少统一封面",
+  unionid_not_unique: "接收对象身份待核对",
+  unionid_unverified: "接收对象身份待核对",
+  wecom_identity_unavailable: "接收对象企微身份暂不可用",
+  target_unavailable: "接收对象暂不可用",
+  payload_unavailable: "发送内容暂不可用",
+  outcome_unknown: "发送结果待核对",
+  provider_rejected: "企微拒绝发送请求",
+  wecom_errcode_45009: "企微接口调用频率受限，请稍后重试",
+  wecom_errcode_45011: "企微接口调用频率受限，请稍后重试",
+  "wecom_errcode_-1": "企微服务暂时繁忙，请稍后核对",
+};
+
 function deliveryReason(value: unknown): string {
   const reason = typeof value === "string" ? value.trim() : "";
   if (!reason) return "—";
-  return /[\u3400-\u9fff]/.test(reason) ? reason : "失败原因待核对";
+  if (deliveryFailure[reason]) return deliveryFailure[reason];
+  if (/^wecom_errcode_-?\d+$/.test(reason)) return "企微发送未成功";
+  if (/^wecom_status_[2-4]$/.test(reason)) return "企微发送未成功";
+  return "失败原因待核对";
 }
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -822,7 +840,7 @@ class Workspace {
             String(row.text || ""),
             card(row),
             String(row.segment || "未分层"),
-            `${rowState(row)}${row.failure_reason || row.reason ? `\n${deliveryReason(row.failure_reason || row.reason)}` : ""}${row.sent_at ? `\n${displayDateTime(row.sent_at)}` : ""}`,
+            `${rowState(row)}${row.failure_reason ? `\n${deliveryReason(row.failure_reason)}` : ""}${row.sent_at ? `\n${displayDateTime(row.sent_at)}` : ""}`,
             controls,
           ];
         }),
@@ -1080,7 +1098,7 @@ class Workspace {
           String(item.sender_userid || ""),
           deliveryLabel(item.delivery_state || item.state, "状态待核对"),
           displayDateTime(item.sent_at),
-          deliveryReason(item.failure_reason || item.reason),
+          deliveryReason(item.failure_reason),
         ]),
       ),
     );
