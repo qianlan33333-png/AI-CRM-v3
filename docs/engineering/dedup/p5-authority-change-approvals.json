@@ -364,20 +364,20 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "a989789843a439d664e6d04ad75fccbef134a8865355f1d67841b3315acda79c",
-          "head_sha256": "ed7d281c29152d0fd3234eaafcc2e62b013459e9fa3a05b938172e7d09c1cc8a"
+          "head_sha256": "249dbd3cb2def7513bae70de039e27b9d0edc198cdd4976709fef38d13bdcfe4"
         },
         {
           "path": "web/donor-sources/source-index.json",
           "base_sha256": "c6e867f16e611ab8ec2b3272801ea4164cfd12d8b01e1a8a908b9e7787aeb025",
-          "head_sha256": "4d8f825f8b80436a4ed907d6fe81df00fc3eb94822ba54bb6b8f069856b8dd50"
+          "head_sha256": "2cddd0c8259b0dea4df1dd465a6cc16ad71259a9f8cb6b972a849f3f6c2828b9"
         },
         {
           "path": "web/donor-sources/source-lock.json",
           "base_sha256": "b496adea724545ca16e96e2036b4c0046d0e04d27725366eb81a8aa167e0873a",
-          "head_sha256": "e79cc88cebc9a9046d887e9de3082bb5a7d2f398309175b69c182e43629386e5"
+          "head_sha256": "367d6c9313a93ddb785b0bf69edbdd14b72b743e521d45ddf965820a4b0b550c"
         }
       ],
-      "reason": "Record the user-authorized CRM audit closeout active V3 OpenAPI route parity and the reviewed Radar list-statistics and GroupOps owner projections. Retired routes and frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
+      "reason": "Record the user-authorized CRM audit closeout active V3 OpenAPI route parity and callable request/response contracts. Retired routes and frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
       "review_reference": "docs/prd/2026-09-12-crm-audit-closeout.md AUD-08; https://github.com/qianlan33333-png/AI-CRM-v3/pull/244; https://github.com/qianlan33333-png/AI-CRM-v3/pull/246"
     }
   ]
