@@ -409,20 +409,6 @@
       const legacyActions = byID("legacyRefreshScheduleActions");
       if (legacyActions) legacyActions.hidden = true;
     });
-    [byID("incrementalSelect"), byID("dailySelect")].filter(Boolean).forEach((input) => input.addEventListener("change", () => { state.refreshChanged = true; state.refreshDraft = currentRefreshDraft(); }));
-    byID("replaceLegacyScheduleWithManualBtn")?.addEventListener("click", () => {
-      if (storedRefreshSchedule().mode !== "legacy_custom") return;
-      const incremental = byID("incrementalSelect");
-      const daily = byID("dailySelect");
-      if (incremental) incremental.value = "off";
-      if (daily) daily.value = "off";
-      state.refreshChanged = true;
-      state.refreshDraft = currentRefreshDraft();
-      const note = byID("refreshScheduleNote");
-      if (note) note.textContent = "已选择改为手动刷新；保存基础配置后将停止当前历史自定义计划。";
-      const legacyActions = byID("legacyRefreshScheduleActions");
-      if (legacyActions) legacyActions.hidden = true;
-    });
     const observer = new MutationObserver(() => {
       if (!state.ready || state.restoring || root.querySelector("[data-field-name]")) return;
       state.restoring = true;
