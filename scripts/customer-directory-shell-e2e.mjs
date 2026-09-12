@@ -153,6 +153,7 @@ try {
   if (!document.querySelector('.admin-split-grid.admin-customer-detail-layout')) fail('donor two-column detail structure is missing');
   const revealButton = profileFields.find((field) => field.querySelector('span')?.textContent?.trim() === '手机号')?.querySelector('button');
   if (!revealButton || revealButton.textContent?.trim() !== '查询') fail('detail phone query still requires a reason');
+  if (!(document.querySelector('#customer-360-sidebar')?.textContent || '').includes('风险等级：低')) fail('ready risk level is not localized');
 
   revealButton.click();
   await sleep(30);

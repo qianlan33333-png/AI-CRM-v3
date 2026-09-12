@@ -471,9 +471,14 @@
     return labels[reason] || "存在尚未确认的风险信息。";
   }
 
+  function riskLevel(level) {
+    const labels = { low: "低", medium: "中", unknown: "未知" };
+    return labels[level] || "未知";
+  }
+
   function riskCard(section) {
     const renderRisk = function (target, value, degraded) {
-      line(target, "风险等级：" + (degraded ? "未知（必要信息暂时不可用）" : (value.level || "unknown")));
+      line(target, "风险等级：" + (degraded ? "未知（必要信息暂时不可用）" : riskLevel(value.level)));
       (Array.isArray(value.reasons) ? value.reasons : []).forEach(function (reason) { line(target, riskReason(reason)); });
     };
     return sectionCard("风险摘要", section, function (target, value) {
