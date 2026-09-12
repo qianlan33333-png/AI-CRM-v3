@@ -30,7 +30,7 @@
 
 刷新项以 `(round_id, cache_key_digest)` 唯一，迁移见 [0125](/Users/qianlan/Downloads/新CRM/daily-media-refresh/migrations/0125_outbound_material_preparation.sql:83)。刷新执行在一页内和跨重启后都先按 cache key 查找并连接同一 item；见 [刷新实现](/Users/qianlan/Downloads/新CRM/daily-media-refresh/internal/outbound/material_refresh.go:179)。同内容的多个引用只创建一次上传和一个轮次成员，符合“轮次总数按唯一上传文件”的业务定义；unknown item 仍保留为 unresolved，跨日不会盲目创建另一个上传。
 
-`source_count=GREATEST(...)` 在跨页重复引用时可能少计纯审计引用数，[更新位置](/Users/qianlan/Downloads/新CRM/daily-media-refresh/internal/outbound/material_refresh.go:204)。它不参与唯一文件总数、去重、状态机或重启恢复，记录为低优先级审计精度遗留，不是交付阻断项。
+`source_count` 记录每个唯一上传文件在本轮中覆盖的来源引用数。0149 先以 `0` 保存已原子绑定 effect、尚未认领页面的成员；只有游标 compare-and-swap 成功时才在同一事务内累加页面来源数。游标未推进会在创建 effect 前失败，竞争或重入页面不会重复计数，且计数更新不覆盖已经写入的 Provider 终态。它不参与唯一文件总数、去重或状态机判定。
 
 ### Worker lease、预检与自动重试边界
 
