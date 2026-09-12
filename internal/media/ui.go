@@ -15,7 +15,7 @@ import (
 // MediaPageRenderer is implemented by the v3 webshell adapter in composition.
 // The immutable donor template is read only from the release build directory.
 type MediaPageRenderer func(http.ResponseWriter, *http.Request, string, string, MediaAssets) error
-type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS string }
+type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS, ImageLibraryFilterHostJS string }
 type mediaUI struct {
 	dist   string
 	render MediaPageRenderer
@@ -51,10 +51,14 @@ func (h *mediaUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, canonicalMediaPath(page), http.StatusSeeOther)
 		return
 	}
-	templateBody, err := h.template(page)
-	if err != nil {
-		http.Error(w, "media UI unavailable", http.StatusServiceUnavailable)
-		return
+	templateBody := ""
+	if page != "images" {
+		var err error
+		templateBody, err = h.template(page)
+		if err != nil {
+			http.Error(w, "media UI unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	assets, err := h.assets()
 	if err != nil {
@@ -113,12 +117,12 @@ func (h *mediaUI) assets() (MediaAssets, error) {
 	if err = json.Unmarshal(raw, &manifest); err != nil {
 		return MediaAssets{}, err
 	}
-	for _, name := range []string{"tokens", "labs", "admin", "materialSaveHost"} {
+	for _, name := range []string{"tokens", "labs", "admin", "materialSaveHost", "imageLibraryFilterHost"} {
 		if manifest.Entries[name] == "" {
 			return MediaAssets{}, errors.New("media bundle asset missing")
 		}
 	}
-	return MediaAssets{TokensCSS: "/media-assets/" + manifest.Entries["tokens"], LabsCSS: "/media-assets/" + manifest.Entries["labs"], AdminJS: "/media-assets/" + manifest.Entries["admin"], MaterialSaveHostJS: "/media-assets/" + manifest.Entries["materialSaveHost"]}, nil
+	return MediaAssets{TokensCSS: "/media-assets/" + manifest.Entries["tokens"], LabsCSS: "/media-assets/" + manifest.Entries["labs"], AdminJS: "/media-assets/" + manifest.Entries["admin"], MaterialSaveHostJS: "/media-assets/" + manifest.Entries["materialSaveHost"], ImageLibraryFilterHostJS: "/media-assets/" + manifest.Entries["imageLibraryFilterHost"]}, nil
 }
 func (h *mediaUI) asset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
