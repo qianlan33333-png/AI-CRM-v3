@@ -939,6 +939,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	segmentBindings.Handler.BindAudienceProductReferences(audienceProductReferenceAdapter{products: productCatalog, historical: orderRepository, uow: uow})
 	legacyAudienceSource.Orders = orderRepository
 	orderService := orderapp.NewService(uow, orderRepository)
+	commercePushService.SetFieldMappingReaders(orderService, customerStore)
 	if err = orderService.SetCheckoutCouponCoordinator(couponCheckout); err != nil {
 		return fail(err)
 	}

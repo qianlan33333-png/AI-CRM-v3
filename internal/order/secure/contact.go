@@ -40,3 +40,23 @@ func (c *ContactCipher) Encrypt(value string) ([]byte, error) {
 }
 
 func (c *ContactCipher) KeyVersion() int16 { return KeyVersion }
+
+func (c *ContactCipher) Decrypt(ciphertext []byte, version int16) (string, error) {
+	if c == nil || c.aead == nil || version != KeyVersion || len(ciphertext) < c.aead.NonceSize()+c.aead.Overhead() {
+		return "", errors.New("order contact cipher unavailable")
+	}
+	nonce := ciphertext[:c.aead.NonceSize()]
+	raw, err := c.aead.Open(nil, nonce, ciphertext[c.aead.NonceSize():], []byte("order-contact-phone:v1"))
+	if err != nil {
+		return "", errors.New("order contact verification failed")
+	}
+	if len(raw) != 14 || string(raw[:4]) != "+861" {
+		return "", errors.New("order contact invalid")
+	}
+	for _, b := range raw[1:] {
+		if b < '0' || b > '9' {
+			return "", errors.New("order contact invalid")
+		}
+	}
+	return string(raw), nil
+}

@@ -220,25 +220,80 @@
     function scan() { if (!document || !document.body) return; const box = document.getElementById('shareQrBox'); if (!box || pending.has(box)) return; pending.add(box); setTimeout(function () { if (!box.isConnected || box.childElementCount || text(box.textContent).trim()) return; const alert = document.createElement('div'); alert.setAttribute('role', 'alert'); alert.dataset.surveyQrFallback = 'true'; alert.style.cssText = 'padding:16px;color:#d93026;text-align:center;line-height:1.6'; alert.textContent = '二维码加载失败，请使用上方“复制”按钮复制链接。'; box.replaceChildren(alert); }, 1200); }
     scan(); new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
   }
-  function makeMetadataForm(payload, operationsPath, refresh) {
+  function makeMetadataForm(payload, operationsPath) {
     const push = payload.external_push || {}, metadata = push.metadata && typeof push.metadata === 'object' ? push.metadata : {};
-    const form = document.createElement('form'); form.dataset.surveyPushMetadata = 'true'; form.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0 0;padding:12px;border:1px solid #eef0f2;border-radius:6px';
-    const title = document.createElement('strong'); title.textContent = '外推参数'; title.style.cssText = 'grid-column:1/-1;font-size:13px'; form.appendChild(title);
-    [['推送类型', 'type'], ['有效期秒时间戳', 'expires_at_ts'], ['第几天', 'day'], ['频次', 'frequency'], ['备注', 'remark']].forEach(function (item) { const label = document.createElement('label'); label.textContent = item[0]; const input = document.createElement('input'); input.name = item[1]; input.value = metadata[item[1]] == null ? '' : String(metadata[item[1]]); input.style.cssText = 'display:block;width:100%;box-sizing:border-box;margin-top:4px;height:28px;border:1px solid #dee0e3;border-radius:4px'; label.appendChild(input); form.appendChild(label); });
-    const params = document.createElement('div'); params.dataset.surveyPushParams = 'true'; params.style.cssText = 'grid-column:1/-1;display:grid;gap:6px'; form.appendChild(params);
-    function paramRow(name, value) { const row = document.createElement('div'); row.style.cssText = 'display:grid;grid-template-columns:1fr 1fr auto;gap:6px'; const key = document.createElement('input'), val = document.createElement('input'), remove = document.createElement('button'); key.dataset.paramName = 'true'; key.placeholder = '参数名'; key.value = name || ''; val.dataset.paramValue = 'true'; val.placeholder = '参数值'; val.value = value || ''; remove.type = 'button'; remove.textContent = '删除'; remove.onclick = function () { row.remove(); }; row.append(key, val, remove); params.appendChild(row); }
-    Object.entries(metadata.custom_params || {}).forEach(function (item) { paramRow(item[0], item[1]); }); if (!params.children.length) paramRow('', '');
-    const add = document.createElement('button'); add.type = 'button'; add.textContent = '添加自定义参数'; add.onclick = function () { paramRow('', ''); }; form.appendChild(add);
-    const save = document.createElement('button'); save.type = 'submit'; save.textContent = '保存外推参数'; save.style.cssText = 'width:max-content;height:28px;border:0;border-radius:4px;background:#3370ff;color:#fff;padding:0 10px'; form.appendChild(save);
+    const reserved = new Set(['user_id', 'questionnaire_title', 'submitted_at', 'answers', 'phone_number', 'type', 'expires_at_ts', 'day', 'frequency', 'remark', 'assessment_result_snapshot', 'is_test', 'test_run_id', '__proto__', 'constructor', 'prototype']);
+    if (!document.getElementById('survey-push-editor-style')) {
+      const style = document.createElement('style'); style.id = 'survey-push-editor-style'; style.textContent = `
+      .survey-push-editor{min-width:0;margin-top:20px;color:#1f2937;font-size:14px}.survey-push-editor *{box-sizing:border-box}
+      .survey-push-layout>section,.survey-push-layout>aside{min-width:0}.survey-push-layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(260px,1fr);gap:24px;align-items:start}
+      .survey-push-editor h4{margin:0 0 8px;font-size:16px}.survey-push-help{color:#86909c;font-size:13px;line-height:1.6;margin:0 0 16px}
+      .survey-push-row,.survey-push-columns{display:grid;grid-template-columns:minmax(105px,1fr) 70px minmax(120px,1.2fr) 42px;gap:10px;align-items:center;margin-bottom:10px}
+      .survey-push-columns{color:#86909c;font-size:12px;padding:10px 0;border-bottom:1px solid #edf0f5}.survey-push-editor input{width:100%;min-width:0;padding:10px 12px;border:1px solid #dce1e8;border-radius:8px;background:white;font-size:14px;color:#1f2937}
+      .survey-push-editor input:focus{outline:2px solid #b6caff;border-color:#3370ff}.survey-push-editor input[readonly]{background:#f7f8fa;color:#646a73}
+      .survey-push-editor button{font:inherit;cursor:pointer;border:1px solid #dce1e8;border-radius:8px;background:white;color:#3370ff;padding:9px 12px}.survey-push-editor button:disabled{opacity:.55;cursor:default}
+      .survey-push-fixed{font-size:12px;color:#646a73;background:#f2f4f7;border-radius:5px;padding:5px;text-align:center}.survey-push-remove{padding:8px 0!important;font-size:12px!important;color:#86909c!important}
+      .survey-push-preview{border:1px solid #e6eaf0;border-radius:12px;background:#f8fafc;padding:18px;overflow:hidden}.survey-push-preview pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,monospace;color:#344054;max-height:420px;overflow:auto}
+      .survey-push-preserved{border:1px solid #dce8ff;background:#eff5ff;border-radius:8px;padding:12px;color:#476282;font-size:13px;line-height:1.7;margin-bottom:16px}
+      .survey-push-actions{display:flex;justify-content:flex-end;align-items:center;gap:12px;border-top:1px solid #edf0f5;margin-top:22px;padding-top:18px}.survey-push-save{background:#3370ff!important;color:white!important;border-color:#3370ff!important}.survey-push-error{color:#d93026;font-size:13px;min-height:20px}.survey-push-editor [aria-invalid=true]{border-color:#e5484d}
+      @media(max-width:1000px){.survey-push-layout{grid-template-columns:1fr}.survey-push-row,.survey-push-columns{grid-template-columns:minmax(80px,1fr) 54px minmax(90px,1fr) 36px;gap:6px}}
+      @media(max-width:600px){.survey-push-row,.survey-push-columns{grid-template-columns:minmax(0,1fr) 44px minmax(0,1fr) 32px;gap:4px}.survey-push-editor input{padding:8px 6px}.survey-push-fixed{padding:4px 2px}.survey-push-preview{padding:12px}.survey-push-editor button{max-width:100%;overflow-wrap:anywhere}}
+      `; document.head.appendChild(style);
+    }
+    function element(tag, label, cls) { const node = document.createElement(tag); if (label) node.textContent = label; if (cls) node.className = cls; return node; }
+    const form = element('form', '', 'survey-push-editor'); form.dataset.surveyPushMetadata = 'true';
+    const layout = element('div', '', 'survey-push-layout'), fields = element('section'), preview = element('aside', '', 'survey-push-preview');
+    fields.append(element('h4', '附加固定参数'), element('p', '填写接收方要求的参数名和固定值。问卷答案无需配置，提交时会自动附带。', 'survey-push-help'));
+    const columns = element('div', '', 'survey-push-columns'); ['参数名 key', '值来源', '参数值', ''].forEach(function (label) { columns.append(element('span', label)); }); fields.append(columns);
+    const builtins = [['type', '推送类型'], ['expires_at_ts', '有效期秒时间戳'], ['day', '第几天'], ['frequency', '频次'], ['remark', '备注']];
+    builtins.forEach(function (item) {
+      const row = element('div', '', 'survey-push-row'), key = element('input'), input = element('input'); key.value = item[0]; key.readOnly = true; key.setAttribute('aria-label', item[1] + '参数名');
+      input.name = item[0]; input.placeholder = item[1] + '（选填）'; input.setAttribute('aria-label', item[1]); input.value = metadata[item[0]] == null ? '' : String(metadata[item[0]]);
+      row.append(key, element('span', '固定值', 'survey-push-fixed'), input, element('span')); fields.append(row);
+    });
+    const params = element('div'); params.dataset.surveyPushParams = 'true'; fields.append(params);
+    function paramRow(name, value) {
+      const row = element('div', '', 'survey-push-row'), key = element('input'), val = element('input'), remove = element('button', '删除', 'survey-push-remove');
+      key.dataset.paramName = 'true'; key.placeholder = '参数名'; key.setAttribute('aria-label', '自定义参数名'); key.value = name || '';
+      val.dataset.paramValue = 'true'; val.placeholder = '输入固定文本'; val.setAttribute('aria-label', '自定义参数值'); val.value = value == null ? '' : String(value);
+      remove.type = 'button'; remove.onclick = function () { row.remove(); updatePreview(); }; row.append(key, element('span', '固定值', 'survey-push-fixed'), val, remove); params.append(row);
+    }
+    Object.entries(metadata.custom_params || {}).forEach(function (item) { paramRow(item[0], item[1]); });
+    const add = element('button', '＋ 添加字段'); add.type = 'button'; add.onclick = function () { paramRow('', ''); params.lastElementChild.querySelector('input').focus(); }; fields.append(add);
+    preview.append(element('h4', 'JSON 预览 · 固定参数'), element('div', '原有问卷 JSON 保持不变：答案、提交信息和测评结果将在提交时原样附带。这里仅预览附加参数，不读取真实答卷。', 'survey-push-preserved'));
+    const code = element('pre'); code.dataset.surveyPushPreview = 'true'; const copy = element('button', '复制参数 JSON'); copy.type = 'button'; preview.append(code, copy);
+    const errorBox = element('p', '', 'survey-push-error'); errorBox.setAttribute('role', 'alert');
+    const saveStatus = element('p', '', 'survey-push-help'); saveStatus.dataset.surveyPushSaveStatus = 'true'; saveStatus.setAttribute('role', 'status'); saveStatus.setAttribute('aria-live', 'polite');
+    const actions = element('div', '', 'survey-push-actions'), save = element('button', '保存当前维度', 'survey-push-save'); save.type = 'submit'; actions.append(save); layout.append(fields, preview); form.append(layout, errorBox, saveStatus, actions);
+    let validJSON = null, saving = false;
+    function readMetadata() {
+      const next = { custom_params: Object.create(null) }; form.querySelectorAll('[aria-invalid]').forEach(function (input) { input.removeAttribute('aria-invalid'); });
+      builtins.forEach(function (item) { const key = item[0], input = form.elements[key], value = input.value.trim(); if (!value) return;
+        const numeric = /^(day|frequency|expires_at_ts)$/.test(key), parsed = numeric ? Number(value) : value;
+        if (numeric && (!Number.isSafeInteger(parsed) || parsed < 0)) { input.setAttribute('aria-invalid', 'true'); throw new Error(item[1] + '必须是非负整数'); } next[key] = parsed;
+      });
+      params.querySelectorAll('.survey-push-row').forEach(function (row) {
+        const key = row.querySelector('[data-param-name]'), val = row.querySelector('[data-param-value]'), name = key.value;
+        if (!name || name !== name.trim() || new TextEncoder().encode(name).length > 128 || reserved.has(name) || Object.hasOwn(next.custom_params, name)) {
+          key.setAttribute('aria-invalid', 'true'); throw new Error(!name ? '请填写参数名' : reserved.has(name) ? '参数名“' + name + '”属于原有问卷字段，不能覆盖' : '参数名重复、过长或包含首尾空格');
+        }
+        next.custom_params[name] = val.value;
+      }); return next;
+    }
+    function updatePreview() {
+      try { const next = readMetadata(), flat = Object.assign(Object.create(null), next); delete flat.custom_params; Object.assign(flat, next.custom_params); validJSON = JSON.stringify(flat, null, 2); code.textContent = validJSON; errorBox.textContent = ''; copy.disabled = false; return next; }
+      catch (error) { validJSON = null; code.textContent = '请先修正左侧字段'; errorBox.textContent = error.message; copy.disabled = true; return null; }
+    }
+    copy.onclick = async function () { if (!validJSON) return; try { await navigator.clipboard.writeText(validJSON); copy.textContent = '已复制'; } catch (_) { errorBox.textContent = '复制失败，请手动选择右侧 JSON 复制'; } };
+    form.addEventListener('input', function () { saveStatus.textContent = ''; updatePreview(); }); updatePreview();
     form.addEventListener('submit', async function (event) {
-      event.preventDefault();
+      event.preventDefault(); if (saving) return; const next = updatePreview(); if (!next) return; saving = true; save.disabled = true; saveStatus.textContent = '正在保存…';
       try {
-        const next = { custom_params: {} }; ['type', 'expires_at_ts', 'day', 'frequency', 'remark'].forEach(function (key) { const value = form.elements[key].value.trim(); if (value) { const numeric = /^(day|frequency|expires_at_ts)$/.test(key), parsed = numeric ? Number(value) : value; if (numeric && (!Number.isFinite(parsed) || parsed < 0)) throw new Error('invalid metadata field'); next[key] = parsed; } });
-        params.querySelectorAll('div').forEach(function (row) { const name = row.querySelector('[data-param-name]').value.trim(), value = row.querySelector('[data-param-value]').value; if (name) next.custom_params[name] = value; });
         const reference = document.getElementById('opsConfigurationReference');
-        const saved = await adminRequest(operationsPath + '/external-push', { method: 'PUT', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ enabled: push.enabled === true, configuration_reference: reference ? reference.value.trim() : (push.configuration_reference || ''), metadata: next, configuration_version: payload.configuration_version }) });
-        payload.configuration_version = saved.configuration_version; push.enabled = saved.external_push.enabled; push.configuration_reference = saved.external_push.configuration_reference; push.metadata = saved.external_push.metadata; save.textContent = '已保存';
-      } catch (error) { save.textContent = error && (error.status === 409 || /\b409\b/.test(error.message || '')) ? '配置已更新，请重新打开后再保存' : '保存失败'; }
+        const saved = await adminRequest(operationsPath + '/external-push', { method: 'PUT', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ enabled: form.dataset.enabled === undefined ? push.enabled === true : form.dataset.enabled === 'true', configuration_reference: reference ? reference.value.trim() : (push.configuration_reference || ''), metadata: next, configuration_version: payload.configuration_version }) });
+        payload.configuration_version = saved.configuration_version; push.enabled = saved.external_push.enabled; push.configuration_reference = saved.external_push.configuration_reference; push.metadata = saved.external_push.metadata; save.textContent = '已保存'; saveStatus.textContent = '已保存当前维度';
+      } catch (error) { save.textContent = error && (error.status === 409 || /\b409\b/.test(error.message || '')) ? '配置已更新，请重新打开后再保存' : '保存失败'; errorBox.textContent = save.textContent; saveStatus.textContent = ''; }
+      finally { saving = false; save.disabled = false; }
     });
     return form;
   }
@@ -271,7 +326,35 @@
     try {
       const [payload, page] = await Promise.all([adminRequest(operationsPath, { method: 'GET', headers: { Accept: 'application/json' } }), adminRequest('/admin/questionnaires/external-push-logs?limit=100&offset=0', { method: 'GET', headers: { Accept: 'application/json' } })]);
       if (!payload || !Array.isArray(payload.items)) throw new Error('invalid operations');
-      externalCard.appendChild(makeMetadataForm(payload, operationsPath));
+      const metadataForm = makeMetadataForm(payload, operationsPath);
+      const heading = externalCard.querySelector('h3'), headingRow = heading && heading.parentElement && heading.parentElement.parentElement;
+      const oldToggle = headingRow && Array.from(headingRow.children).find(function (node) { return node.tagName === 'SPAN'; });
+      if (oldToggle) {
+        const toggleLabel = document.createElement('label'); toggleLabel.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:14px;color:#646a73';
+        const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-label', '启用问卷外推'); toggle.dataset.surveyPushEnabled = 'true'; toggle.checked = payload.external_push && payload.external_push.enabled === true;
+        toggleLabel.append(toggle, document.createTextNode('启用')); oldToggle.replaceWith(toggleLabel);
+        // Tie the host switch to the one form without invoking the frozen
+        // controller, which would rerender and discard unsaved metadata.
+        metadataForm.id = 'survey-push-configuration-form'; toggle.setAttribute('form', metadataForm.id);
+        toggle.addEventListener('change', function () { metadataForm.dataset.enabled = toggle.checked ? 'true' : 'false'; });
+        metadataForm.dataset.enabled = toggle.checked ? 'true' : 'false';
+      }
+      const help = heading && heading.parentElement.querySelector('p'); if (help) help.textContent = '问卷提交后，按已配置的目标推送原有问卷 JSON 和附加固定参数。';
+      if (!document.getElementById('opsConfigurationReference')) {
+        const label = document.createElement('label'); label.textContent = '推送目标'; label.style.cssText = 'display:block;margin:16px 0;color:#646a73;font-size:13px';
+        const target = document.createElement('select'); target.id = 'opsConfigurationReference'; target.style.cssText = 'display:block;width:100%;padding:10px;border:1px solid #dce1e8;border-radius:8px;margin-top:8px';
+        const selected = document.createElement('option'); selected.value = payload.external_push && payload.external_push.configuration_reference || ''; selected.textContent = selected.value; target.append(selected); label.append(target); externalCard.append(label);
+      }
+      externalCard.querySelectorAll('button').forEach(function (button) { if (button.textContent === '保存外部推送') button.hidden = true; });
+      externalCard.appendChild(metadataForm);
+      const headerSave = Array.from(document.querySelectorAll('button')).find(function (button) { return !externalCard.contains(button) && button.textContent.trim() === '保存当前维度'; });
+      if (headerSave) {
+        metadataForm.querySelector('button[type="submit"]').hidden = true;
+        headerSave.addEventListener('click', function (event) {
+          let panel = externalCard; while (panel && panel !== document.body) { if (panel.hidden || panel.style.display === 'none') return; panel = panel.parentElement; }
+          event.preventDefault(); event.stopImmediatePropagation(); metadataForm.requestSubmit();
+        }, true);
+      }
       installTargetSelector(payload.target_catalog_available === true ? payload.available_configuration_references : []);
       const legacyLogBoundary = Array.from((logCard.parentElement || logCard).querySelectorAll('p')).find(function (node) { return node.textContent.includes('只显示本地 queued 测试记录') || node.textContent.includes('没有 Provider 调用'); });
       if (legacyLogBoundary) { legacyLogBoundary.dataset.surveyHostLogBoundary = 'true'; legacyLogBoundary.textContent = '受控外推记录展示创建、尝试和处理回执；HTTP 受理不代表接收方业务已生效。'; }

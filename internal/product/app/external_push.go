@@ -196,6 +196,9 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 			}
 		}
 		value.Enabled, value.ConfigurationReference = command.Enabled, reference
+		if command.FieldMappingSet {
+			value.FieldMapping = command.FieldMapping
+		}
 		if command.BusinessParametersSet {
 			value.PushType, value.Day, value.Frequency, value.ExpiresAtTS, value.Remark = command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark
 			value.CustomParams = cloneCommerceExternalPushParams(command.CustomParams)
@@ -405,7 +408,8 @@ func commerceExternalPushSaveDigest(command productport.SaveExternalPushConfigur
 		CustomParams           map[string]any                      `json:"custom_params"`
 		ExpectedRevision       int64                               `json:"expected_revision"`
 		URL                    *string                             `json:"url,omitempty"`
-	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference, command.BusinessParametersSet, command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark, command.CustomParams, command.ExpectedRevision, command.URL})
+		FieldMappingUpdate     any                                 `json:"field_mapping_update,omitempty"`
+	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference, command.BusinessParametersSet, command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark, command.CustomParams, command.ExpectedRevision, command.URL, fieldMappingUpdate(command)})
 	return sha256.Sum256(payload)
 }
 
@@ -426,7 +430,7 @@ func commerceExternalPushLegacySaveReplay(command productport.SaveExternalPushCo
 	// A completed main@8ec receipt represents the old binding-only command. A
 	// post-0095 business save is a different request even if a browser reuses
 	// its key.
-	return command.URL == nil && !command.BusinessParametersSet && command.ExpiresAtTS == nil &&
+	return command.URL == nil && !command.FieldMappingSet && !command.BusinessParametersSet && command.ExpiresAtTS == nil &&
 		subtle.ConstantTimeCompare(receipt.PayloadDigest[:], legacyDigest[:]) == 1
 }
 
@@ -451,12 +455,16 @@ func commerceExternalPushConfigurationDigest(value productport.ExternalPushConfi
 		Remark                 string                              `json:"remark"`
 		CustomParams           map[string]any                      `json:"custom_params"`
 		Revision               int64                               `json:"revision"`
-	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference, value.PushType, value.Day, value.Frequency, value.ExpiresAtTS, value.Remark, value.CustomParams, value.Revision})
+		FieldMapping           *productport.FieldMapping           `json:"field_mapping,omitempty"`
+	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference, value.PushType, value.Day, value.Frequency, value.ExpiresAtTS, value.Remark, value.CustomParams, value.Revision, value.FieldMapping})
 	return sha256.Sum256(payload)
 }
 
 func validSaveCommerceExternalPush(command productport.SaveExternalPushConfigurationCommand) bool {
 	if command.ProductID < 1 || !validExternalPushKind(command.ProductKind) || command.Actor < 1 || !validIdempotencyKey(command.IdempotencyKey) || command.ExpectedRevision < 0 {
+		return false
+	}
+	if command.FieldMappingSet && (!command.BusinessParametersSet || (command.FieldMapping != nil && productport.ValidateFieldMapping(command.FieldMapping) != nil)) {
 		return false
 	}
 	reference := command.ConfigurationReference
@@ -494,6 +502,9 @@ func validExternalPushKind(value productport.ExternalPushProductKind) bool {
 
 func validExternalPushConfiguration(value productport.ExternalPushConfiguration, productID productport.ID, kind productport.ExternalPushProductKind) bool {
 	if value.ProductID != productID || value.ProductKind != kind || productID < 1 || !validExternalPushKind(kind) || value.Revision < 0 || value.UpdatedAt.IsZero() {
+		return false
+	}
+	if value.FieldMapping != nil && productport.ValidateFieldMapping(value.FieldMapping) != nil {
 		return false
 	}
 	if !validCommerceExternalPushBusiness(value) {
@@ -543,6 +554,9 @@ func cloneCommerceExternalPushParams(source map[string]any) map[string]any {
 }
 
 func sameCommerceExternalPushBusiness(left, right productport.ExternalPushConfiguration) bool {
+	if !productport.EqualFieldMappings(left.FieldMapping, right.FieldMapping) {
+		return false
+	}
 	if left.PushType != right.PushType || left.Remark != right.Remark || !sameCommerceExternalPushInteger(left.Day, right.Day) || !sameCommerceExternalPushInteger(left.Frequency, right.Frequency) || !sameCommerceExternalPushInteger(left.ExpiresAtTS, right.ExpiresAtTS) {
 		return false
 	}
@@ -671,4 +685,29 @@ func classifyCommerceExternalPush(err error) error {
 	default:
 		return ErrUnavailable
 	}
+}
+
+func fieldMappingUpdate(command productport.SaveExternalPushConfigurationCommand) any {
+	if !command.FieldMappingSet {
+		return nil
+	}
+	return struct {
+		Mapping *productport.FieldMapping `json:"mapping"`
+	}{command.FieldMapping}
+}
+
+// PreviewLegacyExternalPushConfiguration reads only a synthetic legacy payload.
+// The Outbound owner resolves its own protocol and performs no external call.
+func (service *CommerceExternalPushService) PreviewLegacyExternalPushConfiguration(ctx context.Context, productID productport.ID) (json.RawMessage, error) {
+	previewer, ok := service.effects.(outboundport.CommercePushLegacyPreviewer)
+	if !ok || ctx == nil || productID < 1 {
+		return nil, ErrUnavailable
+	}
+	var payload json.RawMessage
+	err := service.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		payload, e = previewer.PreviewLegacyCommercePushWithin(tx, int64(productID))
+		return e
+	})
+	return payload, err
 }

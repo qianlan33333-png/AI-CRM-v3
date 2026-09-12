@@ -870,3 +870,20 @@ ORDER BY o.id LIMIT 2`, provider, reference)
 	}
 	return out, nil
 }
+
+func (r *Repository) ReadContactSnapshot(ctx context.Context, orderID int64) ([]byte, int16, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	var ciphertext []byte
+	var version int16
+	err = tx.QueryRow(ctx, `SELECT phone_ciphertext,key_version FROM order_contact_snapshots WHERE order_id=$1`, orderID).Scan(&ciphertext, &version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, false, nil
+	}
+	if err != nil {
+		return nil, 0, false, mapError(err)
+	}
+	return ciphertext, version, true, nil
+}

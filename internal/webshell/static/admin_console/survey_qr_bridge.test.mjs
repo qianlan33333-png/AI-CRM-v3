@@ -82,6 +82,28 @@ form.elements.type.value = 'new'; form.querySelector('[data-param-name]').value 
 form.dispatchEvent(new dom.window.Event('submit', {bubbles:true,cancelable:true})); await wait(25);
 form.dispatchEvent(new dom.window.Event('submit', {bubbles:true,cancelable:true})); await wait(25);
 if (savedBodies.length !== 2 || savedBodies[0].configuration_version !== 3 || savedBodies[1].configuration_version !== 4 || savedBodies[0].configuration_reference !== 'push.v2' || savedBodies[1].metadata.custom_params.campaign !== 'autumn' || savedBodies.some((body) => body.enabled !== true) || savedBodies.some((body) => !body || !body.metadata)) throw new Error('parameter save did not preserve the existing binding or advance its version');
+// Editing/preview is local, preserves the original questionnaire body and
+// rejects collisions before sending a request.
+const beforePreviewCalls = rawCalls.length;
+const preview = form.querySelector('[data-survey-push-preview]');
+form.elements.type.dispatchEvent(new dom.window.Event('input', {bubbles:true}));
+if (JSON.parse(preview.textContent).campaign !== 'autumn' || rawCalls.length !== beforePreviewCalls) throw new Error('preview made a request or lost configured fixed values');
+if (!form.textContent.includes('原有问卷 JSON 保持不变') || form.textContent.includes('订单 ·')) throw new Error('survey inherited order variables or hid the preserved payload contract');
+const addField = [...form.querySelectorAll('button')].find((b) => b.textContent.includes('添加字段'));
+addField.click();
+const rows = form.querySelectorAll('[data-survey-push-params] .survey-push-row');
+const newKey = rows[rows.length - 1].querySelector('[data-param-name]');
+for (const invalid of ['campaign', 'answers', ' bad', '__proto__']) {
+ newKey.value = invalid;
+ form.dispatchEvent(new dom.window.Event('submit', {bubbles:true,cancelable:true}));
+ await wait(5);
+ if (savedBodies.length !== 2 || newKey.getAttribute('aria-invalid') !== 'true') throw new Error('invalid or reserved key reached save');
+}
+rows[rows.length - 1].querySelector('button').click();
+form.elements.day.value = '1.5';
+form.dispatchEvent(new dom.window.Event('submit', {bubbles:true,cancelable:true}));
+await wait(5);
+if (savedBodies.length !== 2 || form.elements.day.getAttribute('aria-invalid') !== 'true') throw new Error('fractional day reached save');
 dom.window.close();
 
 const conflict = new JSDOM(legacyOpsFixture(), {url:'https://test.invalid/admin/questionnaireOps.html?id=7', runScripts:'outside-only', pretendToBeVisual:true});

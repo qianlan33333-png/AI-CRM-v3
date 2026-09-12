@@ -446,3 +446,51 @@ func TestCommerceExternalPushEmptyEnabledURLRejected(t *testing.T) {
 		t.Fatal("enabled destination missing")
 	}
 }
+
+func TestCommerceMappingExplicitSwitchPreservationCASAndReplay(t *testing.T) {
+	store := &commerceExternalPushTestStore{products: map[productport.ID]productport.ExternalPushProductKind{41: productport.ExternalPushWeChatPay}, configs: map[productport.ID]productport.ExternalPushConfiguration{}, receipts: map[string]Receipt{}}
+	service, _ := newCommerceExternalPushTestService(store, &commerceExternalPushTestEffects{})
+	mapping, e := productport.DecodeFieldMapping(json.RawMessage(`{"version":1,"fields":[{"key":"amount","source":"fixed","value_type":"number","value":9007199254740993}]}`))
+	if e != nil {
+		t.Fatal(e)
+	}
+	command := productport.SaveExternalPushConfigurationCommand{ProductID: 41, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "commerce-push-config-41", Actor: 7, IdempotencyKey: "mapping-save-0001", BusinessParametersSet: true, FieldMappingSet: true, FieldMapping: mapping}
+	first, e := service.SaveExternalPushConfiguration(context.Background(), command)
+	if e != nil || first.FieldMapping == nil {
+		t.Fatalf("save %v %#v", e, first)
+	}
+	again, e := service.SaveExternalPushConfiguration(context.Background(), command)
+	if e != nil || !reflect.DeepEqual(first, again) || store.saves != 1 {
+		t.Fatalf("replay %v", e)
+	}
+	changed := command
+	changed.FieldMapping = nil
+	if _, e = service.SaveExternalPushConfiguration(context.Background(), changed); !errors.Is(e, ErrConflict) {
+		t.Fatalf("same key different mode %v", e)
+	}
+	preserve := command
+	preserve.IdempotencyKey = "mapping-save-0002"
+	preserve.ExpectedRevision = first.Revision
+	preserve.FieldMappingSet = false
+	preserve.FieldMapping = nil
+	kept, e := service.SaveExternalPushConfiguration(context.Background(), preserve)
+	if e != nil || kept.FieldMapping == nil {
+		t.Fatalf("omission lost mapping %v", e)
+	}
+	stale := command
+	stale.IdempotencyKey = "mapping-save-stale"
+	if _, e = service.SaveExternalPushConfiguration(context.Background(), stale); !errors.Is(e, ErrConflict) {
+		t.Fatalf("stale mapping %v", e)
+	}
+	clear := preserve
+	clear.IdempotencyKey = "mapping-save-0003"
+	clear.ExpectedRevision = kept.Revision
+	clear.FieldMappingSet = true
+	last, e := service.SaveExternalPushConfiguration(context.Background(), clear)
+	if e != nil || last.FieldMapping != nil {
+		t.Fatalf("explicit legacy switch %v", e)
+	}
+	if commerceExternalPushConfigurationDigest(first) == commerceExternalPushConfigurationDigest(last) {
+		t.Fatal("mode not included in configuration snapshot digest")
+	}
+}

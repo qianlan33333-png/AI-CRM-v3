@@ -1,3 +1,4 @@
+import { createFieldMappingEditor, type FieldMapping, type MappingField, type MappingPreview } from './fieldMappingEditor';
 // This is the only v3-owned browser seam for the byte-frozen Product UI.
 // It validates the authoritative lifecycle/sales projection, supplies Chinese
 // display labels, and replaces only the ordinary-product share interaction.
@@ -603,6 +604,7 @@ async function externalPushRequest(path: string, init: RequestInit): Promise<unk
 }
 
 type ExternalPushConfigurationDetails = {
+  fieldMapping?: FieldMapping;
   url: string;
   enabled: boolean;
   configurationReference: string;
@@ -665,7 +667,7 @@ function parseExternalPushConfiguration(value: unknown, page: ExternalPushPage):
   } catch {
     throw new Error('外推配置响应不完整');
   }
-  return { url: typeof item.url === 'string' ? item.url : '', enabled, configurationReference: reference, revision, pushType, day: optionalInteger('day'), frequency: optionalInteger('frequency'), expiresAtTS: optionalInteger('expires_at_ts'), remark, customParamsText: customParamsJSON };
+  return { fieldMapping: item.field_mapping == null ? undefined : item.field_mapping as FieldMapping, url: typeof item.url === 'string' ? item.url : '', enabled, configurationReference: reference, revision, pushType, day: optionalInteger('day'), frequency: optionalInteger('frequency'), expiresAtTS: optionalInteger('expires_at_ts'), remark, customParamsText: customParamsJSON };
 }
 
 function configurationBinding(page: ExternalPushPage, ownerDocument: Document): { enabled: boolean; reference: string } {
@@ -764,15 +766,62 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
   paramsLabel.append(rows, addParam, advanced);
   const actions = ownerDocument.createElement('div');
   actions.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
-  const save = button('保存外推参数', ownerDocument);
+  const save = button('保存配置', ownerDocument);
   save.dataset.externalPushConfigurationSave = '';
   const status = ownerDocument.createElement('span');
   status.dataset.externalPushConfigurationStatus = '';
+  status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   status.style.cssText = 'font-size:12px;color:#646A73';
   actions.append(save, status);
   editor.append(title, note, grid, paramsLabel, actions);
   panel.prepend(editor);
+  for(const legacySave of ownerDocument.querySelectorAll<HTMLButtonElement>(`${page.anchor} button`)) if(legacySave.textContent?.trim()==='保存当前维度') legacySave.hidden = true;
 
+  const mappingMount = ownerDocument.createElement('div');
+  mappingMount.hidden = true; mappingMount.style.display = 'none';
+  const mappingMode = ownerDocument.createElement('div');
+  mappingMode.style.cssText = 'display:flex;gap:12px;align-items:center;margin:12px 0';
+  const modeLabel = ownerDocument.createElement('span');
+  const convert = button('转换为字段映射', ownerDocument);
+  mappingMode.append(modeLabel, convert);
+  actions.before(mappingMode, mappingMount);
+  let mappingActive = false;
+  const previewMapping = async (field_mapping: FieldMapping): Promise<MappingPreview> => {
+    return await externalPushRequest(page.configurationEndpoint + '/preview', {method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({field_mapping})}) as MappingPreview;
+  };
+  const mappingEditor = createFieldMappingEditor(mappingMount, {preview:previewMapping});
+  const setMappingMode = (mapping?: FieldMapping): void => {
+    mappingActive = !!mapping;
+    mappingMount.hidden = !mappingActive;
+    // Inline display is explicit because the shared component itself is a grid.
+    mappingMount.style.display = mappingActive ? '' : 'none';
+    for (const field of [pushType, day, frequency, expiresAtTS, remark]) { field.parentElement!.hidden = mappingActive; field.parentElement!.style.display = mappingActive ? 'none' : 'grid'; }
+    paramsLabel.hidden = mappingActive; paramsLabel.style.display = mappingActive ? 'none' : 'grid';
+    convert.hidden = mappingActive;
+    modeLabel.textContent = mappingActive ? '字段映射 · 仅发送下方配置的字段' : '沿用原有推送格式';
+    if(mapping) mappingEditor.setMapping(mapping);
+  };
+  convert.addEventListener('click', () => {
+    let before: Record<string,unknown>;
+    try { before = {type:pushType.value,day:externalPushOptionalInteger(day),frequency:externalPushOptionalInteger(frequency),remark:remark.value}; }
+    catch { status.textContent='原配置包含无效字段，请先修正';return; }
+    const fields:MappingField[] = Object.entries(before).map(([key,value])=>({key,source:'fixed',value_type:value===null?'null':typeof value==='string'?'string':typeof value==='number'?'number':typeof value==='boolean'?'boolean':'json',value}));
+    const proposal:FieldMapping={version:1,fields};
+    convert.disabled=true;
+    void previewMapping(proposal).then(preview=>{
+      if(typeof (preview as MappingPreview & {legacy_payload_json?:string}).legacy_payload_json !== 'string') throw new Error('原格式预览暂不可用，未转换配置');
+      const review=ownerDocument.createElement('section');review.className='fm-editor';review.dataset.mappingConversion='';
+      const heading=ownerDocument.createElement('h4');heading.textContent='确认格式转换';
+      const description=ownerDocument.createElement('p');description.textContent='转换后只发送右侧字段，原协议的其他字段将不再发送。确认仅更新当前草稿，点击保存配置后生效。';
+      const diff=ownerDocument.createElement('div');diff.className='fm-layout';
+      const old=ownerDocument.createElement('pre');old.className='fm-json';old.textContent='转换前（原协议模拟）\n'+(typeof (preview as MappingPreview & {legacy_payload_json?:string}).legacy_payload_json === 'string' ? (preview as MappingPreview & {legacy_payload_json:string}).legacy_payload_json : '原协议包含订单、付款人、商品及投递信息；新映射仅发送右侧明确配置的字段。');
+      const next=ownerDocument.createElement('pre');next.className='fm-json';next.textContent='转换后（模拟）\n'+preview.payload_json;
+      diff.append(old,next);
+      const confirm=button('确认转换',ownerDocument);const cancel=button('取消',ownerDocument);
+      confirm.onclick=()=>{setMappingMode(proposal);review.remove();};cancel.onclick=()=>review.remove();
+      review.append(heading,description,diff,confirm,cancel);mappingMode.after(review);
+    }).catch(error=>{status.textContent=error instanceof Error?error.message:'转换预览失败';}).finally(()=>{convert.disabled=false;});
+  });
   const state = externalPushConfigurationState(page);
   let configuration: ExternalPushConfigurationDetails | undefined;
   const load = async (): Promise<void> => {
@@ -802,6 +851,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     remark.value = value.remark;
     params.value = value.customParamsText;
     renderParams();
+    setMappingMode(value.fieldMapping || (value.revision === 0 && !value.configurationReference ? {version:1,fields:[]} : undefined));
     status.textContent = `配置版本 ${value.revision}`;
   };
   save.addEventListener('click', () => {
@@ -811,34 +861,39 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     let configuredDay: number | null;
     let configuredFrequency: number | null;
     let configuredExpiresAtTS: number | null;
+    let fieldMapping: FieldMapping | undefined;
     try {
-      customParamsText = params.value.trim() || '{}';
-      const customParams = JSON.parse(customParamsText);
-      if (customParams === null || typeof customParams !== 'object') throw new Error('custom_params 必须是 JSON 对象或 key/value 列表');
+      fieldMapping = mappingActive ? mappingEditor.getMapping() : undefined;
+      customParamsText = mappingActive ? configuration.customParamsText : params.value.trim() || '{}';
+      if (!mappingActive) {
+        const customParams = JSON.parse(customParamsText);
+        if (customParams === null || typeof customParams !== 'object') throw new Error('自定义参数必须是 JSON 对象或 key/value 列表');
+      }
       binding = configurationBinding(page, ownerDocument);
       if (binding.enabled) {
         let destination: URL;
         try { destination = new URL(targetURL.value.trim()); } catch { throw new Error('请填写有效的 HTTPS 推送地址'); }
         if (destination.protocol !== 'https:' || destination.username || destination.password) throw new Error('请填写有效的 HTTPS 推送地址');
       }
-      configuredDay = externalPushOptionalInteger(day);
-      configuredFrequency = externalPushOptionalInteger(frequency);
-      configuredExpiresAtTS = externalPushOptionalInteger(expiresAtTS);
+      configuredDay = mappingActive ? configuration.day : externalPushOptionalInteger(day);
+      configuredFrequency = mappingActive ? configuration.frequency : externalPushOptionalInteger(frequency);
+      configuredExpiresAtTS = mappingActive ? configuration.expiresAtTS : externalPushOptionalInteger(expiresAtTS);
     } catch (error) {
-      showMessage(error instanceof Error ? error.message : '外推参数无效');
+      status.textContent = error instanceof Error ? error.message : '请修正配置后保存';
       return;
     }
     save.disabled = true;
     void externalPushRequest(page.configurationEndpoint, {
       method: 'PUT',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushConfigurationIdempotencyKey() },
-      body: JSON.stringify({ url: targetURL.value.trim(), enabled: binding.enabled, configuration_reference: binding.enabled ? binding.reference : '', type: pushType.value, day: configuredDay, frequency: configuredFrequency, expires_at_ts: configuredExpiresAtTS, remark: remark.value, custom_params: customParamsText, expected_revision: configuration.revision }),
+      body: JSON.stringify({ ...(fieldMapping ? {field_mapping:fieldMapping} : {}), url: targetURL.value.trim(), enabled: binding.enabled, configuration_reference: binding.enabled ? binding.reference : '', type: pushType.value, day: configuredDay, frequency: configuredFrequency, expires_at_ts: configuredExpiresAtTS, remark: remark.value, custom_params: customParamsText, expected_revision: configuration.revision }),
     }).then((saved) => {
       configuration = parseExternalPushConfiguration(saved, page);
       state.value = configuration;
       status.textContent = `配置版本 ${configuration.revision}`;
-      showMessage('外推业务参数已保存；未发送外部请求。');
-    }).catch((error) => showMessage(error instanceof Error ? error.message : '外推参数保存失败')).finally(() => { save.disabled = false; });
+      status.textContent = '配置已保存';
+      showMessage('配置已保存', true);
+    }).catch((error) => { status.textContent = error instanceof Error ? error.message : '配置保存失败'; }).finally(() => { save.disabled = false; });
   });
   void load().catch((error) => { status.textContent = error instanceof Error ? error.message : '外推配置读取失败'; });
 }
