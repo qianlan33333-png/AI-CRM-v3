@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 type materialTestEffects struct{}
@@ -58,6 +60,47 @@ func (s materialRefreshTestSources) GetSourceSnapshot(context.Context, string) (
 }
 func (s materialRefreshTestSources) ReadSourceBytes(context.Context, outboundport.MaterialSourceSnapshot) (outboundport.MaterialSourceContent, error) {
 	return outboundport.MaterialSourceContent{}, outboundport.ErrMaterialSourceChanged
+}
+
+type materialRefreshPagedSources struct {
+	mu              sync.Mutex
+	pages           map[string]outboundport.MaterialSnapshotPage
+	calls           map[string]int
+	initialReaders  int
+	initialReached  chan struct{}
+	initialContinue chan struct{}
+}
+
+func (s *materialRefreshPagedSources) ListEnabledSourceSnapshots(_ context.Context, request outboundport.MaterialSnapshotPageRequest) (outboundport.MaterialSnapshotPage, error) {
+	s.mu.Lock()
+	s.calls[request.Cursor]++
+	if request.Cursor == "" && s.initialContinue != nil {
+		s.initialReaders++
+		if s.initialReaders == 2 {
+			close(s.initialReached)
+		}
+	}
+	page, ok := s.pages[request.Cursor]
+	wait := request.Cursor == "" && s.initialContinue != nil
+	s.mu.Unlock()
+	if !ok {
+		return outboundport.MaterialSnapshotPage{}, errors.New("unexpected source cursor")
+	}
+	if wait {
+		<-s.initialContinue
+	}
+	return page, nil
+}
+func (s *materialRefreshPagedSources) GetSourceSnapshot(context.Context, string) (outboundport.MaterialSourceSnapshot, error) {
+	return outboundport.MaterialSourceSnapshot{}, outboundport.ErrMaterialSourceChanged
+}
+func (s *materialRefreshPagedSources) ReadSourceBytes(context.Context, outboundport.MaterialSourceSnapshot) (outboundport.MaterialSourceContent, error) {
+	return outboundport.MaterialSourceContent{}, outboundport.ErrMaterialSourceChanged
+}
+func (s *materialRefreshPagedSources) callCount(cursor string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[cursor]
 }
 
 type materialRefreshTestEnqueuer struct{}
@@ -374,6 +417,201 @@ func TestMaterialDailyCatchUpRoundMembershipAndRestartPostgreSQL(t *testing.T) {
 	}
 }
 
+func TestMaterialRefreshSourceCountPagingConcurrentReplayPostgreSQL(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := materialTestDatabase(t, ctx)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("same content from several enabled sources")
+	digest := sha256.Sum256(content)
+	makeSource := func(ref string) outboundport.MaterialSourceSnapshot {
+		return outboundport.MaterialSourceSnapshot{SourceRef: ref, SourceType: "image", ContentDigest: digest, FileName: "shared.png", MediaType: "image/png", SizeBytes: int64(len(content)), SnapshotVersion: 1}
+	}
+	first, second, third := makeSource("image:20"), makeSource("image:21"), makeSource("image:22")
+	sources := &materialRefreshPagedSources{
+		pages: map[string]outboundport.MaterialSnapshotPage{
+			"":       {Items: []outboundport.MaterialSourceSnapshot{first, second}, NextCursor: "page-2", Done: false},
+			"page-2": {Items: []outboundport.MaterialSourceSnapshot{third}, Done: true},
+		},
+		calls:           map[string]int{},
+		initialReached:  make(chan struct{}),
+		initialContinue: make(chan struct{}),
+	}
+	service, err := NewMaterialPreparationService(uow, materialTestEffects{}, native, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := string(effectport.Hash("material-source-count-scope"))
+	var roundID int64
+	if err = native.QueryRow(ctx, `INSERT INTO outbound_material_refresh_rounds(local_date,round_kind,operation_key_digest,state) VALUES('2026-09-12','manual',$1,'queued') RETURNING id`, string(effectport.Hash("material-source-count-round"))).Scan(&roundID); err != nil {
+		t.Fatal(err)
+	}
+	worker := NewMaterialRefreshWorker(service, scope)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			errs <- worker.Work(ctx, &river.Job[MaterialRefreshJobArgs]{Args: MaterialRefreshJobArgs{RoundID: roundID}})
+		}()
+	}
+	<-sources.initialReached
+	close(sources.initialContinue)
+	var snoozed, lostClaim int
+	for range 2 {
+		workErr := <-errs
+		var snooze *rivertype.JobSnoozeError
+		switch {
+		case errors.As(workErr, &snooze):
+			snoozed++
+		case workErr == nil:
+			lostClaim++
+		default:
+			t.Fatalf("concurrent work: %v", workErr)
+		}
+	}
+	if snoozed != 1 || lostClaim != 1 || sources.callCount("") != 2 {
+		t.Fatalf("initial workers snoozed=%d lost=%d source calls=%d", snoozed, lostClaim, sources.callCount(""))
+	}
+	var sourceCount int64
+	var effectID string
+	if err = native.QueryRow(ctx, `SELECT source_count,preparation_effect_id FROM outbound_material_refresh_items WHERE round_id=$1`, roundID).Scan(&sourceCount, &effectID); err != nil || sourceCount != 2 || effectID == "" {
+		t.Fatalf("claimed first page source_count=%d effect=%q err=%v", sourceCount, effectID, err)
+	}
+	var preparationRoundID int64
+	if err = native.QueryRow(ctx, `SELECT refresh_round_id FROM outbound_material_preparations WHERE effect_id=$1`, effectID).Scan(&preparationRoundID); err != nil || preparationRoundID != roundID {
+		t.Fatalf("preparation round audit=%d err=%v", preparationRoundID, err)
+	}
+	var cursor, state string
+	if err = native.QueryRow(ctx, `SELECT cursor,state FROM outbound_material_refresh_rounds WHERE id=$1`, roundID).Scan(&cursor, &state); err != nil || cursor != "page-2" || state != "running" {
+		t.Fatalf("claimed first page cursor=%q state=%q err=%v", cursor, state, err)
+	}
+	var effects int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM material_test_effects`).Scan(&effects); err != nil || effects != 1 {
+		t.Fatalf("concurrent page accepted effects=%d err=%v", effects, err)
+	}
+	if err = worker.Work(ctx, &river.Job[MaterialRefreshJobArgs]{Args: MaterialRefreshJobArgs{RoundID: roundID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT source_count FROM outbound_material_refresh_items WHERE round_id=$1`, roundID).Scan(&sourceCount); err != nil || sourceCount != 3 {
+		t.Fatalf("second page source_count=%d err=%v", sourceCount, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT state FROM outbound_material_refresh_rounds WHERE id=$1`, roundID).Scan(&state); err != nil || state != "waiting" || sources.callCount("page-2") != 1 {
+		t.Fatalf("terminal page state=%q calls=%d err=%v", state, sources.callCount("page-2"), err)
+	}
+	if err = worker.Work(ctx, &river.Job[MaterialRefreshJobArgs]{Args: MaterialRefreshJobArgs{RoundID: roundID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT source_count FROM outbound_material_refresh_items WHERE round_id=$1`, roundID).Scan(&sourceCount); err != nil || sourceCount != 3 || sources.callCount("") != 2 || sources.callCount("page-2") != 1 {
+		t.Fatalf("waiting replay source_count=%d calls=%d/%d err=%v", sourceCount, sources.callCount(""), sources.callCount("page-2"), err)
+	}
+	if err = completeMaterialTestEffect(ctx, uow, service, native, first, scope, effectID, effectport.StateExecuted, "uploaded"); err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.Work(ctx, &river.Job[MaterialRefreshJobArgs]{Args: MaterialRefreshJobArgs{RoundID: roundID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT state FROM outbound_material_refresh_rounds WHERE id=$1`, roundID).Scan(&state); err != nil || state != "completed" || sources.callCount("") != 2 || sources.callCount("page-2") != 1 {
+		t.Fatalf("completed waiting replay state=%q calls=%d/%d err=%v", state, sources.callCount(""), sources.callCount("page-2"), err)
+	}
+}
+
+func TestMaterialRefreshRetainsReceiptBeforePageClaimPostgreSQL(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := materialTestDatabase(t, ctx)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("receipt wins before cursor claim")
+	digest := sha256.Sum256(content)
+	source := outboundport.MaterialSourceSnapshot{SourceRef: "image:30", SourceType: "image", ContentDigest: digest, FileName: "receipt.png", MediaType: "image/png", SizeBytes: int64(len(content)), SnapshotVersion: 1}
+	sources := &materialRefreshPagedSources{pages: map[string]outboundport.MaterialSnapshotPage{"": {Items: []outboundport.MaterialSourceSnapshot{source}, Done: true}}, calls: map[string]int{}}
+	service, err := NewMaterialPreparationService(uow, materialTestEffects{}, native, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := string(effectport.Hash("material-receipt-before-claim-scope"))
+	var roundID int64
+	if err = native.QueryRow(ctx, `INSERT INTO outbound_material_refresh_rounds(local_date,round_kind,operation_key_digest,state) VALUES('2026-09-12','manual',$1,'queued') RETURNING id`, string(effectport.Hash("material-receipt-before-claim-round"))).Scan(&roundID); err != nil {
+		t.Fatal(err)
+	}
+	cache := materialCacheKey(scope, source.SourceType, source.ContentDigest, source.FileName)
+	prepared, err := service.Prepare(ctx, outboundport.MaterialRequest{MaterialSourceSnapshot: source, CorpScopeDigest: scope, ForceRefresh: true, RoundDate: "2026-09-12", RefreshRoundID: roundID, OperationKey: "round:" + strconv.FormatInt(roundID, 10) + ":" + cache})
+	if err != nil || prepared.State != "queued" || prepared.EffectID == "" {
+		t.Fatalf("prepare=%+v err=%v", prepared, err)
+	}
+	// This is the durable ordering that can occur after Prepare commits and
+	// before the worker claims its source page. The replayed worker must count
+	// the page without putting the completed item back into queued.
+	if err = completeMaterialTestEffect(ctx, uow, service, native, source, scope, prepared.EffectID, effectport.StateExecuted, "uploaded"); err != nil {
+		t.Fatal(err)
+	}
+	worker := NewMaterialRefreshWorker(service, scope)
+	if err = worker.Work(ctx, &river.Job[MaterialRefreshJobArgs]{Args: MaterialRefreshJobArgs{RoundID: roundID}}); err != nil {
+		t.Fatal(err)
+	}
+	var sourceCount int64
+	var itemState, roundState string
+	if err = native.QueryRow(ctx, `SELECT source_count,state FROM outbound_material_refresh_items WHERE round_id=$1`, roundID).Scan(&sourceCount, &itemState); err != nil || sourceCount != 1 || itemState != "executed" {
+		t.Fatalf("claimed receipt item source_count=%d state=%q err=%v", sourceCount, itemState, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT state FROM outbound_material_refresh_rounds WHERE id=$1`, roundID).Scan(&roundState); err != nil || roundState != "completed" || sources.callCount("") != 1 {
+		t.Fatalf("claimed receipt round state=%q source calls=%d err=%v", roundState, sources.callCount(""), err)
+	}
+}
+
+func TestMaterialRefreshRejectsStalledPageCursorPostgreSQL(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := materialTestDatabase(t, ctx)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("stalled source cursor")
+	digest := sha256.Sum256(content)
+	source := outboundport.MaterialSourceSnapshot{SourceRef: "image:40", SourceType: "image", ContentDigest: digest, FileName: "stalled.png", MediaType: "image/png", SizeBytes: int64(len(content)), SnapshotVersion: 1}
+	sources := &materialRefreshPagedSources{pages: map[string]outboundport.MaterialSnapshotPage{"": {Items: []outboundport.MaterialSourceSnapshot{source}, Done: false}}, calls: map[string]int{}}
+	service, err := NewMaterialPreparationService(uow, materialTestEffects{}, native, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundID int64
+	if err = native.QueryRow(ctx, `INSERT INTO outbound_material_refresh_rounds(local_date,round_kind,operation_key_digest,state) VALUES('2026-09-12','manual',$1,'queued') RETURNING id`, string(effectport.Hash("material-stalled-cursor-round"))).Scan(&roundID); err != nil {
+		t.Fatal(err)
+	}
+	worker := NewMaterialRefreshWorker(service, string(effectport.Hash("material-stalled-cursor-scope")))
+	if err = worker.Work(ctx, &river.Job[MaterialRefreshJobArgs]{Args: MaterialRefreshJobArgs{RoundID: roundID}}); !errors.Is(err, ErrMaterialPreparation) {
+		t.Fatalf("stalled page error=%v", err)
+	}
+	var effects, items int
+	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM material_test_effects),(SELECT count(*) FROM outbound_material_refresh_items WHERE round_id=$1)`, roundID).Scan(&effects, &items); err != nil || effects != 0 || items != 0 {
+		t.Fatalf("stalled page effects=%d items=%d err=%v", effects, items, err)
+	}
+	var cursor, state string
+	if err = native.QueryRow(ctx, `SELECT cursor,state FROM outbound_material_refresh_rounds WHERE id=$1`, roundID).Scan(&cursor, &state); err != nil || cursor != "" || state != "queued" || sources.callCount("") != 1 {
+		t.Fatalf("stalled page cursor=%q state=%q calls=%d err=%v", cursor, state, sources.callCount(""), err)
+	}
+}
+
 func TestMaterialAdminOperationKeyConcurrentDriftPostgreSQL(t *testing.T) {
 	ctx := context.Background()
 	native, cleanup := materialTestDatabase(t, ctx)
@@ -500,11 +738,15 @@ func materialTestDatabase(t *testing.T, ctx context.Context) (*pgxpool.Pool, fun
 	if err != nil {
 		t.Fatal(err)
 	}
+	countMigration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0149_outbound_material_refresh_source_count.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	start := strings.Index(string(raw), "CREATE TABLE outbound_material_preparations")
 	if start < 0 {
 		t.Fatal("material migration body missing")
 	}
-	if _, err = pool.Exec(ctx, string(raw)[start:]+`; CREATE TABLE material_test_effects(id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,envelope JSONB NOT NULL,lane TEXT NOT NULL); CREATE TABLE material_test_refresh_jobs(id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,round_id BIGINT NOT NULL);`); err != nil {
+	if _, err = pool.Exec(ctx, string(raw)[start:]+`;`+string(countMigration)+`; CREATE TABLE material_test_effects(id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,envelope JSONB NOT NULL,lane TEXT NOT NULL); CREATE TABLE material_test_refresh_jobs(id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,round_id BIGINT NOT NULL);`); err != nil {
 		t.Fatal(err)
 	}
 	return pool, func() {
