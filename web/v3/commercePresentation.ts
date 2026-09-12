@@ -21,6 +21,11 @@ const statusLabels: Record<CommerceStatusKind, Record<string, string>> = {
     accepted: '已受理', queued: '等待处理', attempted: '已尝试执行', executed: '已执行',
     outcome_unknown: '结果待核对', retryable_failed: '处理失败，待核对', final_failed: '处理失败',
     reconciled: '已核对', failed: '执行失败',
+    succeeded: '历史记录：外推成功',
+    unknown_after_dispatch: '历史记录：已发起，结果待核对',
+    simulated: '历史记录：模拟处理',
+    blocked: '历史记录：已拦截，外部结果待核对',
+    cancelled: '历史记录：已取消，外部结果待核对',
   },
 };
 
