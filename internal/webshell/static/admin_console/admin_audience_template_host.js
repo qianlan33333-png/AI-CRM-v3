@@ -160,14 +160,14 @@
       const minute = Number(match[1]);
       const hour = Number(match[2]);
       if (minute > 59 || hour > 23) return "历史自定义计划（保留原服务端 UTC 规则）";
-      return `每日 ${String((hour + 8) % 24).padStart(2, "0")}:${String(minute).padStart(2, "0")}（上海时间；历史自定义计划）`;
+      return `每日 ${String((hour + 8) % 24).padStart(2, "0")}:${String(minute).padStart(2, "0")}（历史自定义计划）`;
     }
 
     function refreshScheduleLabel(schedule) {
       switch (schedule.mode) {
         case "every_3m": return "每 3 分钟";
-        case "daily_0200": return "每日 02:00（上海时间）";
-        case "every_3m_plus_daily_0200": return "每 3 分钟 + 每日 02:00（上海时间）";
+        case "daily_0200": return "每日 02:00";
+        case "every_3m_plus_daily_0200": return "每 3 分钟 + 每日 02:00";
         case "legacy_custom": return legacyShanghaiSchedule(schedule.cron);
         default: return "手动";
       }

@@ -123,11 +123,11 @@ await wait(350);
 const document = dom.window.document;
 const select = document.querySelector("#templateSelect");
 if (templateReads < 3 || select.options.length !== 7 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("frozen renderer and V3 submission template were not restored after the delayed detail renderer");
-if (document.querySelector("#dailySelect").value !== "off" || !document.querySelector("#summaryMode").textContent.includes("每日 09:00") || !document.querySelector("#refreshScheduleNote").textContent.includes("保留原规则")) throw new Error("legacy custom schedule was not presented as its actual Shanghai time");
-if (!document.querySelector("#policyTimezoneInput").readOnly) throw new Error("new quiet-hours timezone must be fixed in the form");
-document.querySelector("#templateSaveBtn").click();
+if (document.querySelector("#dailySelect").value !== "off" || !document.querySelector("#summaryMode").textContent.includes("每日 09:00") || !document.querySelector("#refreshScheduleNote").textContent.includes("保留原规则") || document.querySelector("#refreshScheduleNote").textContent.includes("上海时间")) throw new Error("legacy custom schedule was not presented as its actual business time");
+if (document.querySelector("#policyTimezoneInput")) throw new Error("new quiet-hours must not expose a timezone field in the business UI");
+document.querySelector("#savePackageBtn").click();
 await wait(180);
-if (writes[0]?.refresh_mode !== "legacy_custom" || writes[0]?.refresh_cron_utc !== "0 1 * * *") throw new Error(`saving an unchanged historical schedule rewrote it: ${JSON.stringify(writes[0])}`);
+if (writes.length !== 1 || writes[0]?.refresh_mode !== "legacy_custom" || writes[0]?.refresh_cron_utc !== "0 1 * * *") throw new Error(`the Host did not exclusively preserve the old save path: ${JSON.stringify(writes)}`);
 for (const template of templates) {
   select.value = template.key;
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -275,7 +275,6 @@ if (writes.length !== 9 || previewWrites.length !== 8 || packageWrites.length !=
 document.querySelector("#policyCodeInput").value = "shanghai-quiet";
 document.querySelector("#policyNameInput").value = "上海安静时段";
 document.querySelector("#policyActionSelect").value = "record";
-document.querySelector("#policyTimezoneInput").value = "UTC";
 document.querySelector("#policyQuietHoursInput").value = "22:00-08:00";
 document.querySelector("#createPolicyBtn").click();
 await wait(180);
