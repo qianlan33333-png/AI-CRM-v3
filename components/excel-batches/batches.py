@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 HEADERS = ["unionid", "话术", "小程序 path", "发送人 userid", "标题"]
@@ -34,6 +35,22 @@ MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_FILES = 2000
 MAX_ROWS = 5000
 MAX_COVER_BYTES = 2 * 1024 * 1024
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+REPORT_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$")
+DELIVERY_LABELS = {
+    "pending_submission": "待提交",
+    "task_created_waiting_employee": "任务已创建，待员工执行",
+    "provider_accepted": "任务已创建，待员工执行",
+    "delivery_proven": "发送成功",
+    "final_failed": "明确失败",
+    "outcome_unknown": "结果待核实",
+}
+WINDOW_LABELS = {
+    "observing": "观察中",
+    "opened": "已打开",
+    "not_opened": "未打开",
+    "unavailable": "暂不可统计",
+}
 
 
 def stamp():
@@ -333,9 +350,33 @@ def _finalize_stats(stats):
 
 def _safe_csv(value):
     text = "" if value is None else str(value)
-    if text[:1] in "=+-@":
+    if text and text[0] in "=+-@":
         return "'" + text
     return text
+
+
+def _report_time(value):
+    """Format a Go RFC3339 delivery instant for a business-facing CSV.
+
+    Observations retain their original UTC text and all observation arithmetic
+    stays in UTC. Only this download boundary is localized. The bridge
+    supplies Go time.Time JSON, so a naive historical string is not an
+    established source contract and must not be guessed as local or UTC.
+    """
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str) or not REPORT_INSTANT.fullmatch(value):
+        return "时间暂时无法显示"
+    try:
+        return instant(value).astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, ValueError):
+        return "时间暂时无法显示"
+
+
+def _report_label(value, labels, empty=""):
+    if value is None or value == "":
+        return empty
+    return labels.get(value, "状态待核对") if isinstance(value, str) else "状态待核对"
 
 
 def _normalize_rows(rows):
@@ -684,8 +725,11 @@ class Service:
         report = self.report(plan_id)
         output = io.StringIO()
         writer = csv.writer(output, lineterminator="\n")
-        writer.writerow(["id", "unionid", "话术", "sender_userid", "path", "segment", "state", "sent_at", "window_12", "window_24", "window_48"])
+        writer.writerow(["行 ID", "接收人 UnionID", "话术", "发送员工 UserID", "小程序路径", "分层", "发送状态", "实际发送时间", "12 小时观察", "24 小时观察", "48 小时观察"])
         for row in report.get("rows", []):
+            windows = row.get("windows")
+            windows = windows if isinstance(windows, dict) else {}
+            state = row.get("state") or row.get("delivery_state")
             writer.writerow([
                 _safe_csv(row.get("id")),
                 _safe_csv(row.get("unionid")),
@@ -693,11 +737,11 @@ class Service:
                 _safe_csv(row.get("sender_userid")),
                 _safe_csv(row.get("path")),
                 _safe_csv(row.get("segment")),
-                _safe_csv(row.get("state", row.get("delivery_state", ""))),
-                _safe_csv(row.get("sent_at")),
-                _safe_csv(row.get("windows", {}).get("12")),
-                _safe_csv(row.get("windows", {}).get("24")),
-                _safe_csv(row.get("windows", {}).get("48")),
+                _safe_csv(_report_label(state, DELIVERY_LABELS, "状态待核对")),
+                _safe_csv(_report_time(row.get("sent_at"))),
+                _safe_csv(_report_label(windows.get("12"), WINDOW_LABELS)),
+                _safe_csv(_report_label(windows.get("24"), WINDOW_LABELS)),
+                _safe_csv(_report_label(windows.get("48"), WINDOW_LABELS)),
             ])
         return output.getvalue().encode("utf-8")
 
