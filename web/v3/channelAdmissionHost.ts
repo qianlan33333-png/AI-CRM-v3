@@ -8,11 +8,13 @@
 
 type Json = Record<string, unknown>;
 type Channel = Json & { id?: number; version?: number; config_version?: number };
+type PreservedFormFields = { qrURL: string; sceneValue: string; overflowPolicy: string };
 
 const nativeFetch = window.fetch.bind(window);
 const mutationKeys = new Map<string, string>();
 const detailEtags = new Map<string, string>();
 const detailCodes = new Map<string, string>();
+const detailPreservedFields = new Map<string, PreservedFormFields>();
 
 function escapeHTML(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
@@ -55,11 +57,56 @@ function catalogMutation(url: URL, method: string): boolean {
     method === 'PATCH' && /^\/api\/admin\/channels\/[1-9][0-9]*$/.test(url.pathname);
 }
 
-function normalizePayload(raw: string): string {
+function text(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function has(payload: Json, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(payload, name);
+}
+
+function preserveFields(channel: Json): PreservedFormFields {
+  return {
+    qrURL: has(channel, 'qr_url') ? text(channel.qr_url) : text(channel.qrcode_url),
+    sceneValue: text(channel.scene_value),
+    overflowPolicy: text(channel.overflow_policy),
+  };
+}
+
+function rememberDetail(url: URL, channel: Json): void {
+  if (!/^\/api\/admin\/channels\/[1-9][0-9]*$/.test(url.pathname)) return;
+  detailPreservedFields.set(url.pathname, preserveFields(channel));
+}
+
+function visibleFormControl(names: string[]): boolean {
+  return names.some((name) => {
+    const field = document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${name}"]`);
+    if (!field || field.disabled || field instanceof HTMLInputElement && field.type === 'hidden' || 'readOnly' in field && field.readOnly) return false;
+    for (let node: HTMLElement | null = field; node; node = node.parentElement) {
+      if (node.hidden) return false;
+    }
+    return true;
+  });
+}
+
+function preserveUnrenderedDonorFields(url: URL, payload: Json): void {
+  const current = detailPreservedFields.get(url.pathname);
+  if (!current) return;
+  const isLink = payload.channel_type === 'wecom_customer_acquisition' || payload.carrier_type === 'link';
+  if (!isLink && !visibleFormControl(['qr_url', 'qrcode_url'])) payload.qr_url = current.qrURL;
+  if (!visibleFormControl(['scene_value', 'customer_channel'])) payload.scene_value = current.sceneValue;
+  if (!visibleFormControl(['overflow_policy'])) payload.overflow_policy = current.overflowPolicy;
+}
+
+function normalizePayload(raw: string, url: URL): string {
   const payload = JSON.parse(raw || '{}') as Json;
+  const standardDonorPayload = has(payload, 'admin_action_token');
   // The standard donor still emits its obsolete action token. V3 uses the
   // authenticated session and X-CSRF-Token; strict Catalog JSON rejects it.
   delete payload.admin_action_token;
+  if (!has(payload, 'qr_url') && typeof payload.qrcode_url === 'string') payload.qr_url = payload.qrcode_url;
+  delete payload.qrcode_url;
+  if (standardDonorPayload) preserveUnrenderedDonorFields(url, payload);
   const assignees = Array.isArray(payload.assignees) ? payload.assignees : [];
   if ('assignees' in payload) delete payload.assignees;
   payload.assignment_config_json = {
@@ -132,7 +179,7 @@ function installCatalogTransport(): void {
     if (url.origin !== location.origin || !catalogMutation(url, method)) return reportDirectoryReadState(await nativeFetch(input, init), url, method);
 
     let body: string;
-    try { body = normalizePayload(bodyText(input, init)); }
+    try { body = normalizePayload(bodyText(input, init), url); }
     catch { return new Response(JSON.stringify({ ok: false, code: 'MALFORMED_REQUEST', message: '渠道保存数据无效，请检查后重试。' }), { status: 400, headers: { 'Content-Type': 'application/json' } }); }
     const headers = new Headers(init?.headers || (typeof input === 'string' || input instanceof URL ? undefined : input.headers));
     headers.set('Accept', 'application/json');
@@ -153,7 +200,11 @@ function installCatalogTransport(): void {
     headers.set('Idempotency-Key', mutationKeys.get(fingerprint) || key());
     mutationKeys.set(fingerprint, headers.get('Idempotency-Key') || '');
     const response = await nativeFetch(url, { ...init, method, body, headers, credentials: 'same-origin' });
-    if (method === 'PATCH' && response.ok) { const etag = response.headers.get('ETag'); if (etag) detailEtags.set(url.pathname, etag); }
+    if (method === 'PATCH' && response.ok) {
+      const etag = response.headers.get('ETag'); if (etag) detailEtags.set(url.pathname, etag);
+      const result = await response.clone().json().catch(() => null) as Json | null;
+      if (result?.channel && typeof result.channel === 'object' && !Array.isArray(result.channel)) rememberDetail(url, result.channel as Json);
+    }
     return catalogError(response);
   };
 }
@@ -285,6 +336,7 @@ async function currentChannel(): Promise<Channel | null> {
   const channel = payload.channel && typeof payload.channel === 'object' ? payload.channel as Channel : null;
   const etag = response.headers.get('ETag'); if (channel && etag) detailEtags.set(`/api/admin/channels/${id}`, etag);
   if (channel && typeof channel.channel_code === 'string') detailCodes.set(`/api/admin/channels/${id}`, channel.channel_code);
+  if (channel) rememberDetail(new URL(`/api/admin/channels/${id}`, location.origin), channel);
   return channel;
 }
 
