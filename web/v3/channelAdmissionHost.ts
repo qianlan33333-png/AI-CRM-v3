@@ -268,7 +268,7 @@ async function hydrateSavedAssigneeNames(channel: Channel | null): Promise<Saved
       const staffID = Number(member.staff_id); const displayName = text(member.display_name).trim();
       if (Number.isSafeInteger(staffID) && staffID > 0 && displayName) resolved.set(String(staffID), displayName);
     }
-    return { channel: savedAssigneeName(channel, source, resolved, '未找到客服目录记录'), directoryUnavailable: false };
+    return { channel: savedAssigneeName(channel, source, resolved, '当前目录未找到客服姓名'), directoryUnavailable: false };
   } catch {
     // The saved assignment remains available for edit and submit. Its staff ID
     // stays in the donor's auxiliary field, never as a synthetic name.

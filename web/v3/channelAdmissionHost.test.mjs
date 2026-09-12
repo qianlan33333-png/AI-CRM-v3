@@ -129,7 +129,7 @@ const hydratedSavedMembers = createPage({ saved: channel({ assignment_config_jso
 try {
   await waitFor(() => hydratedSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), 'saved assignment display names must hydrate before donor initialization');
   const list = hydratedSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent || '';
-  assert.equal(list.includes('未找到客服目录记录'), true, 'a directory record absent from the trusted local projection must state that its name is unavailable');
+  assert.equal(list.includes('当前目录未找到客服姓名'), true, 'a staff member absent from the bounded local directory response must state that its name is unavailable without claiming a global absence');
   assert.equal(list.includes('客服 #99'), false, 'a staff ID must remain auxiliary information rather than a synthetic customer-service name');
   assert.equal(hydratedSavedMembers.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/common/operation-members').length, 1, 'multiple saved assignees must not issue N+1 directory reads');
 } finally { hydratedSavedMembers.dom.window.close(); }
