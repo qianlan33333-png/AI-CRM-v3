@@ -3654,27 +3654,27 @@ paths:
       tags: [OpenPlatform]
       description: Client-credentials token exchange. The client authenticates with HTTP Basic credentials or matching form credentials; it is not an admin-session route.
       requestBody: {required: true, content: {application/x-www-form-urlencoded: {schema: {type: object, additionalProperties: false, required: [grant_type], properties: {grant_type: {const: client_credentials}, client_id: {type: string, minLength: 1, maxLength: 200}, client_secret: {type: string, minLength: 1, maxLength: 1024}, audience: {type: string, maxLength: 200}, scope: {type: string, maxLength: 1000}}}}}}
-      responses: {"200": {description: Short-lived machine bearer token, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformIssuedToken"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "429": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Short-lived machine bearer token, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformIssuedToken"}}}}, "400": {$ref: "#/components/responses/OpenPlatformOAuthFailure"}, "401": {$ref: "#/components/responses/OpenPlatformOAuthFailure"}, "403": {$ref: "#/components/responses/OpenPlatformOAuthFailure"}, "429": {$ref: "#/components/responses/OpenPlatformOAuthFailure"}}
   /mcp:
     get:
       operationId: getOpenPlatformMCPMetadata
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
-      responses: {"200": {description: Machine-authorized MCP transport metadata, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMCPMetadataResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Machine-authorized MCP transport metadata, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMCPMetadataResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
     post:
       operationId: invokeOpenPlatformMCP
       tags: [OpenPlatform]
-      description: JSON-RPC 2.0 machine protocol. `tools/call` for the AI review-plan operation requires `Idempotency-Key`; other MCP calls do not.
+      description: JSON-RPC 2.0 machine protocol. `tools/call` for the AI review-plan operation requires `Idempotency-Key`; other MCP calls do not. Authentication, authorization, validation, and application failures are JSON-RPC `error` results with HTTP 200.
       security: [{machineBearer: []}]
       parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformJSONRPCRequest"}}}}
-      responses: {"200": {description: JSON-RPC result or protocol error envelope, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformJSONRPCResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: JSON-RPC result or protocol/application error envelope, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformJSONRPCResponse"}}}}}
   /open/v1/capabilities:
     get:
       operationId: listOpenPlatformCapabilities
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
-      responses: {"200": {description: Machine-authorized operation catalog, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCapabilitiesResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Machine-authorized operation catalog, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCapabilitiesResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /open/v1/customers:resolve:
     post:
       operationId: resolveOpenPlatformCustomer
@@ -3682,14 +3682,14 @@ paths:
       description: Resolves only from stable evidence. It never provisions or merges a Customer.
       security: [{machineBearer: []}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerResolveRequest"}}}}
-      responses: {"200": {description: Safe resolution result, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerResolveResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Safe resolution result, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerResolveResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /open/v1/customers/{customer_id}:
     parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get:
       operationId: getOpenPlatformCustomerContext
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
-      responses: {"200": {description: Machine-authorized safe Customer context, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerContextResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Machine-authorized safe Customer context, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerContextResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /open/v1/customers/{customer_id}/activities:
     parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get:
@@ -3697,7 +3697,7 @@ paths:
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
       parameters: [{name: types, in: query, explode: true, style: form, schema: {type: array, uniqueItems: true, items: {type: string, enum: [message, survey, radar, order]}}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}, {name: cursor, in: query, schema: {type: string, minLength: 1, maxLength: 4096}}]
-      responses: {"200": {description: Bounded machine-authorized Customer activities, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerActivitiesResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Bounded machine-authorized Customer activities, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerActivitiesResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /open/v1/ai/review-plans:
     post:
       operationId: createOpenPlatformAIReviewPlan
@@ -3706,14 +3706,14 @@ paths:
       security: [{machineBearer: []}]
       parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformAIReviewPlanRequest"}}}}
-      responses: {"201": {description: Idempotent machine-authorized review plan, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformAIReviewPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"201": {description: Idempotent machine-authorized review plan, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformAIReviewPlanResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /open/v1/operations/{operation_id}:
     parameters: [{name: operation_id, in: path, required: true, description: "ai_review_plan: plus a positive plan id", schema: {type: string, pattern: "^ai_review_plan:[1-9][0-9]*$", maxLength: 200}}]
     get:
       operationId: getOpenPlatformOperation
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
-      responses: {"200": {description: Machine-authorized review-plan operation status, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOperationStatusResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Machine-authorized review-plan operation status, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOperationStatusResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /api/admin/open-platform/clients:
     get:
       operationId: listOpenPlatformClients
@@ -4011,6 +4011,13 @@ components:
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
+    OpenPlatformOAuthFailure:
+      description: OAuth client-credential failure. `invalid_source_ip` and `https_required` are emitted before OAuth Basic authentication; all other listed OAuth failures use the same JSON shape.
+      content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOAuthError"}}}
+    OpenPlatformV1Failure:
+      description: Machine V1 failure envelope. `error.code` carries the stable protocol category; `data` is null and `X-Request-ID` repeats `request_id`.
+      headers: {X-Request-ID: {required: true, schema: {type: string, minLength: 1}}}
+      content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformV1Failure"}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
     RadarLink:
@@ -6582,11 +6589,25 @@ components:
         token_type: {type: string, const: Bearer}
         expires_in: {type: integer, minimum: 1}
         scope: {type: string}
+    OpenPlatformOAuthError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: {type: string, enum: [invalid_request, unsupported_grant_type, invalid_client, invalid_scope, rate_limited, invalid_source_ip, https_required]}
     OpenPlatformV1Error:
       type: object
       additionalProperties: false
       required: [code]
       properties: {code: {type: string, enum: [authentication, permission, validation, not_found, identity_pending, identity_conflict, rate_limited, dependency_unavailable, outcome_unknown, conflict]}}
+    OpenPlatformV1Failure:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties:
+        data: {type: "null"}
+        error: {$ref: "#/components/schemas/OpenPlatformV1Error"}
+        request_id: {type: string, minLength: 1, maxLength: 128}
     OpenPlatformMCPMetadata:
       type: object
       additionalProperties: false
