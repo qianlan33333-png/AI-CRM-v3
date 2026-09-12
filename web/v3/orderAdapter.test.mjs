@@ -107,7 +107,14 @@ const detailDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
         { refund_no: 'RF-TEST-1', refund_amount_total: 2000, status: 'completed', reason: '测试退款', created_at: '2026-10-01T00:01:02+08:00' },
       ])), { status: 200, headers: { 'Content-Type': 'application/json' } });
       if (url.pathname.endsWith('/external-push-deliveries')) return new Response(JSON.stringify({
-        effects: [{ external_effect_state: 'outcome_unknown', updated_at: '2026-09-30T16:01:02Z' }],
+        effects: [
+          { external_effect_state: 'outcome_unknown', updated_at: '2026-09-30T16:01:02Z' },
+          { external_effect_state: 'succeeded', updated_at: '2026-09-30T16:01:02Z' },
+          { external_effect_state: 'unknown_after_dispatch', updated_at: '2026-09-30T16:01:02Z' },
+          { external_effect_state: 'simulated', updated_at: '2026-09-30T16:01:02Z' },
+          { external_effect_state: 'blocked', updated_at: '2026-09-30T16:01:02Z' },
+          { external_effect_state: 'cancelled', updated_at: '2026-09-30T16:01:02Z' },
+        ],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
@@ -135,6 +142,16 @@ try {
   assert.match(detailDom.window.document.body.textContent, /2026-10-01 00:01:02/, 'detail time must be fixed to Asia\/Shanghai seconds');
   assert.match(detailDom.window.document.body.textContent, /外部处理记录/, 'external feedback must remain visible in a separate Chinese section');
   assert.match(detailDom.window.document.body.textContent, /结果待核对/, 'external-effect state must not expose its raw enum');
+  for (const [raw, label] of [
+    ['succeeded', '历史记录：外推成功'],
+    ['unknown_after_dispatch', '历史记录：已发起，结果待核对'],
+    ['simulated', '历史记录：模拟处理'],
+    ['blocked', '历史记录：已拦截，外部结果待核对'],
+    ['cancelled', '历史记录：已取消，外部结果待核对'],
+  ]) {
+    assert.match(detailDom.window.document.body.textContent, new RegExp(label), `legacy effect ${raw} must have its own factual Chinese presentation`);
+    assert.ok(!detailDom.window.document.body.textContent.includes(raw), `legacy effect ${raw} must not expose a raw enum`);
+  }
   assert.ok(!detailDom.window.document.body.textContent.includes('事件时间线'), 'the donor mixed timeline must be replaced by scoped external feedback');
   assert.match(detailDom.window.document.body.textContent, /再次输入微信支付交易单号/, 'refund confirmation must ask for transaction_id, not merchant order number');
 } finally {
