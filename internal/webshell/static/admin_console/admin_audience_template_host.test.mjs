@@ -66,6 +66,8 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
       if (url.pathname === "/api/admin/ai-audience/packages/13/automation-binding" || url.pathname === "/api/admin/ai-audience/packages/13/senders" || url.pathname === "/api/admin/ai-audience/packages/13/members") return json({ error: "not_found" }, 404);
       if (url.pathname === "/api/admin/automation-agents") return json({ items: [] });
       if (url.pathname === "/api/admin/ai-audience/packages/13/precheck") return json({ precheck: { ready: false, reasons: [] } });
+      if (url.pathname === "/api/admin/ai-audience/packages/13/refresh" && init.method === "POST") return json({ refresh_run: { id: 71, state: "queued" } }, 202);
+      if (url.pathname === "/api/admin/ai-audience/packages/13/refresh-runs/71") return json({ refresh_run: { id: 71, state: "failed", error_code: "refresh_unavailable" } });
       if (url.pathname === "/api/admin/ai-audience/packages/13" && init.method === "PATCH") {
         const body = JSON.parse(init.body);
         packageWrites.push(body);
@@ -328,5 +330,11 @@ document.querySelector("#templatePreviewBtn").click();
 await wait(180);
 const previewFailureText = document.querySelector("#templateStatusLine").textContent || "";
 if (!previewFailureText.includes("人群配置服务暂不可用") || previewFailureText.includes("provider_unavailable") || previewFailureText.includes("上游服务错误")) throw new Error(`template request error leaked a technical message: ${previewFailureText}`);
+document.querySelector('[data-panel="basic"]').click();
+await wait(20);
+document.querySelector("#manualRefreshBtn").click();
+await wait(1700);
+const refreshFailureText = document.querySelector("#capabilityStatus")?.textContent || "";
+if (!refreshFailureText.includes("快照刷新失败：刷新服务暂不可用") || refreshFailureText.includes("refresh_unavailable")) throw new Error(`refresh failure leaked a raw error code: ${refreshFailureText}`);
 dom.window.close();
 console.log("admin-audience-template-host-browser: PASS");

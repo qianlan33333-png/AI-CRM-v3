@@ -152,6 +152,14 @@
     return ({ generation_response_invalid: "生成结果无效", generation_call_unknown: "生成调用结果待核实", generation_unavailable: "生成服务暂不可用" })[value] || "生成原因待确认";
   }
 
+  function refreshRunStateLabel(value) {
+    return ({ queued: "等待后台刷新", evaluating: "正在计算人群", staging: "正在整理快照", published: "快照已发布", failed: "快照刷新失败" })[value] || "刷新状态待确认";
+  }
+
+  function refreshFailureLabel(value) {
+    return ({ definition_unsupported: "人群筛选定义暂不支持", configuration_drift: "配置版本已变化", refresh_unavailable: "刷新服务暂不可用" })[value] || "刷新原因待确认";
+  }
+
   async function bootList() {
     if (!byID("audRows")) return;
     const state = { groups: [], packages: [], templates: [], groupID: null, page: 1, pageSize: 20, busy: false };
@@ -448,8 +456,8 @@
           await new Promise((resolve) => window.setTimeout(resolve, 1500));
           const current = await request(`${API}/ai-audience/packages/${packageID}/refresh-runs/${runID}`);
           if (current.refresh_run.state === "published") { setCapability("新快照已原子发布；旧快照仍可审计回看。", "ready"); await load(); return; }
-          if (current.refresh_run.state === "failed") { setCapability(`快照刷新失败：${current.refresh_run.error_code || "refresh_unavailable"}`, "unknown"); return; }
-          setCapability(`持久刷新状态：${current.refresh_run.state}`, "loading");
+          if (current.refresh_run.state === "failed") { setCapability(`快照刷新失败：${refreshFailureLabel(current.refresh_run.error_code)}`, "unknown"); return; }
+          setCapability(`快照刷新状态：${refreshRunStateLabel(current.refresh_run.state)}`, "loading");
         }
         setCapability("刷新仍在后台执行；当前页面未观察到完成，不能视为已发布。", "unknown");
       } catch (error) { const detail = errorState(error); setCapability(detail.message, detail.state); }

@@ -11,10 +11,14 @@
     return response.json();
   }
   function appendCell(row, value) { const cell = document.createElement('td'); cell.textContent = text(value || '—'); cell.style.cssText = 'padding:8px;border-bottom:1px solid #f2f3f5;vertical-align:top'; row.appendChild(cell); }
+  function logTime(value) { if (!value) return '—'; const formatted = window.AdminFmt && typeof window.AdminFmt.localTime === 'function' ? window.AdminFmt.localTime(value) : ''; return formatted || '时间暂时无法显示'; }
   function statusLabel(item) {
     if (item.status === 'queued') return '等待处理'; if (item.status === 'executed') return item.provider_result_received === true ? '已收到处理结果' : '已完成处理';
     if (item.status === 'outcome_unknown') return '处理结果待确认（不会自动重复发送）'; if (item.status === 'disabled') return '当时未启用外推配置';
     if (item.status === 'legacy_success') return '历史记录：已完成'; if (item.status === 'legacy_failed' || item.status === 'final_failed') return '未完成'; if (item.status === 'attempted') return '正在等待结果'; return '历史记录：状态待确认';
+  }
+  function failureCategoryLabel(value) {
+    return ({ provider_disabled: '外推服务未启用', provider_execution_unproven: '未能确认外部服务实际执行', provider_outcome_unknown: '外部处理结果待核对', retryable_provider_failure: '外部服务处理失败，可重试', provider_final_failure: '外部服务处理失败' })[text(value)] || (value ? '处理原因待确认' : '—');
   }
   function attemptLabel(item) { const attempt = Number.isInteger(item.provider_attempt_number) ? item.provider_attempt_number : item.attempt_count; return Number.isInteger(attempt) ? '尝试 ' + attempt + ' 次' : '尝试次数未记录'; }
   function findExternalPushCard() {
@@ -306,7 +310,7 @@
     const source = scope === 'global' ? global : current; const rows = source.filter(function (item) { return !filter.value.trim() || JSON.stringify(item).toLowerCase().includes(filter.value.trim().toLowerCase()); }); count.textContent = rows.length + ' 条';
     filter.oninput = function () { Array.from(body.querySelectorAll('tr')).forEach(function (row) { row.hidden = !row.dataset.surveySearch.includes(filter.value.trim().toLowerCase()); }); };
     if (!rows.length) { const empty = document.createElement('p'); empty.textContent = '暂无测试记录。'; card.appendChild(empty); return; }
-    const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-top:10px;font-size:12px'; const head = document.createElement('thead'), headRow = document.createElement('tr'); ['时间', '外推记录', '处理状态', '尝试情况', '备注'].forEach(function (label) { const cell = document.createElement('th'); cell.textContent = label; cell.style.cssText = 'text-align:left;padding:8px;border-bottom:1px solid #DEE0E3'; headRow.appendChild(cell); }); head.appendChild(headRow); const body = document.createElement('tbody'); rows.forEach(function (item) { const row = document.createElement('tr'); row.dataset.surveySearch = JSON.stringify(item).toLowerCase(); appendCell(row, item.occurred_at || item.updated_at || item.created_at); appendCell(row, item.source_pk || item.test_run_id || item.id); appendCell(row, statusLabel(item)); appendCell(row, attemptLabel(item)); appendCell(row, item.failure_category || (item.read_only_legacy ? '历史只读记录' : '—')); body.appendChild(row); }); table.append(head, body); card.appendChild(table);
+    const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-top:10px;font-size:12px'; const head = document.createElement('thead'), headRow = document.createElement('tr'); ['时间', '外推记录', '处理状态', '尝试情况', '备注'].forEach(function (label) { const cell = document.createElement('th'); cell.textContent = label; cell.style.cssText = 'text-align:left;padding:8px;border-bottom:1px solid #DEE0E3'; headRow.appendChild(cell); }); head.appendChild(headRow); const body = document.createElement('tbody'); rows.forEach(function (item) { const row = document.createElement('tr'); row.dataset.surveySearch = JSON.stringify(item).toLowerCase(); appendCell(row, logTime(item.occurred_at || item.updated_at || item.created_at)); appendCell(row, item.source_pk || item.test_run_id || item.id); appendCell(row, statusLabel(item)); appendCell(row, attemptLabel(item)); appendCell(row, item.failure_category ? failureCategoryLabel(item.failure_category) : (item.read_only_legacy ? '历史只读记录' : '—')); body.appendChild(row); }); table.append(head, body); card.appendChild(table);
   }
   function confirmControlledPush(button) {
     if (document.querySelector('[data-survey-host-test-confirmation]')) return;

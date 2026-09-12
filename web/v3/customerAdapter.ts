@@ -5,6 +5,8 @@
  * projections before the frozen admin entry executes. It neither creates
  * customers nor changes Customer mutations, OneID resolution, or ownership.
  */
+import { formatShanghaiDateTime } from "./adminDateTime";
+
 export {};
 
 type JSONRecord = Record<string, unknown>;
@@ -55,6 +57,23 @@ function positiveInteger(value: unknown): number | null {
 
 function availability(value: unknown): Availability {
   return text(value) === "unavailable" ? "unavailable" : "ready";
+}
+
+const messageTypeName: Record<string, string> = {
+  text: "文本",
+  image: "图片",
+  voice: "语音",
+  video: "视频",
+  file: "文件",
+  link: "链接",
+  emotion: "表情",
+  location: "位置",
+  weapp: "小程序",
+  revoke: "撤回消息",
+};
+
+function messageTypeLabel(value: unknown): string {
+  return messageTypeName[text(value)] || "消息类型待确认";
 }
 
 function json(value: unknown, status = 200): Response {
@@ -249,10 +268,10 @@ function renderAuxiliaryItems(kind: "tags" | "chat", value: unknown): void {
     row.style.cssText = "padding:8px 12px;border:1px solid #EFF0F1;border-radius:8px;background:#FAFAFB";
     const meta = document.createElement("div");
     meta.style.cssText = "font-size:11px;color:#A6AAB0;margin-bottom:4px";
-    meta.textContent = `${text(message.chat_type) === "private" ? "私聊" : "群聊"} · ${text(message.occurred_at)}`;
+    meta.textContent = `${text(message.chat_type) === "private" ? "私聊" : "群聊"} · ${formatShanghaiDateTime(text(message.occurred_at))}`;
     const type = document.createElement("div");
     type.style.cssText = "font-size:13px;color:#646A73";
-    type.textContent = `消息类型：${text(message.message_type)}`;
+    type.textContent = `消息类型：${messageTypeLabel(message.message_type)}`;
     row.append(meta, type);
     content.append(row);
   }
@@ -333,8 +352,8 @@ async function customerContext(id: number, init?: RequestInit): Promise<Response
     const item = record(value);
     return {
       chat_type: item.chat_type,
-      message_type: item.message_type,
-      sent_at: item.occurred_at,
+      message_type: messageTypeLabel(item.message_type),
+      sent_at: formatShanghaiDateTime(text(item.occurred_at)),
     };
   }) : [];
   detailPresentation.set(id, {

@@ -315,12 +315,10 @@
         location.reload();
         return;
       }
-      if (
-        completedTracked &&
-        ["final_failed", "cancelled", "reconciled"].includes(sync.state)
-      ) {
+      if (completedTracked && ["final_failed", "cancelled"].includes(sync.state)) {
         notice(`标签同步未完成（${tagSyncStateLabel(sync.state)}），已允许重新发起`, true);
       }
+      if (completedTracked && sync.state === "reconciled") notice("已完成核对，请查看结果。", true);
     } catch (_error) {
       if (active) schedule(1500);
     }

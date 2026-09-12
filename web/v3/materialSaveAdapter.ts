@@ -680,7 +680,7 @@ class MaterialRefreshPanel {
         summary.style.cursor = 'pointer';
         const technical = document.createElement('small');
         technical.style.cssText = 'display:block;margin-top:4px;color:#646A73;white-space:pre-wrap;overflow-wrap:anywhere';
-        technical.textContent = `素材引用：${sourceRef || '未提供'}\n失败代码：${materialString(failure.failure_code) || '未提供'}`;
+        technical.textContent = `素材引用：${sourceRef || '未提供'}\n失败说明：${materialFailureHint(failure)}`;
         details.append(summary, technical);
         entry.append(details);
         list.append(entry);

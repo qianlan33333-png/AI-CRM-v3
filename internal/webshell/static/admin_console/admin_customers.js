@@ -133,6 +133,10 @@
     return ({ active: "正常", merged: "已合并", closed: "已关闭" })[String(value || "")] || "客户状态待确认";
   }
 
+  function orderStatusLabel(value) {
+    return ({ awaiting_prepay: "待支付", awaiting_payment: "待支付", pending_payment: "待支付", unpaid: "待支付", paid: "已支付", refunding: "退款处理中", partially_refunded: "部分退款", refunded: "已退款", closed: "已关闭", cancelled: "已取消", failed: "支付失败", payment_failed: "支付失败" })[String(value || "")] || "订单状态待确认";
+  }
+
   function syncFailureDetail(code) {
     if (String(code || "").startsWith("retry_exhausted:")) {
       return "自动恢复次数已用尽；已保留已提交进度，等待管理员处理。";
@@ -554,7 +558,7 @@
       el.detailState.hidden = true;
       el.detailContent.hidden = false;
 	  el.main360.replaceChildren(
-		sectionCard("订单统计", data.order_summary, function (target, value) { line(target, "订单总数：" + (value.total || 0)); line(target, "已支付：" + (value.paid || 0) + "，退款相关：" + (value.refunded || 0) + "，支付失败：" + (value.failed || 0)); (value.recent || []).slice(0, 10).forEach(function (order) { line(target, (order.merchant_order_no || "订单 #" + order.id) + " · " + (order.status || "")); }); }),
+		sectionCard("订单统计", data.order_summary, function (target, value) { line(target, "订单总数：" + (value.total || 0)); line(target, "已支付：" + (value.paid || 0) + "，退款相关：" + (value.refunded || 0) + "，支付失败：" + (value.failed || 0)); (value.recent || []).slice(0, 10).forEach(function (order) { line(target, (order.merchant_order_no || "订单 #" + order.id) + " · " + orderStatusLabel(order.status)); }); }),
 		sectionCard("问卷统计", data.questionnaire_summary, function (target, value) { line(target, "问卷记录：" + (value.total || 0)); (value.recent || []).forEach(function (survey) { line(target, (survey.title || "问卷") + " · " + date(survey.submitted_at)); }); })
 	  );
 	  el.sidebar360.replaceChildren(

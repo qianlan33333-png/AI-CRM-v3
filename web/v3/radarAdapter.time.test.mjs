@@ -14,8 +14,6 @@ const frozenRadar = (await build({
   },
   bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, minify: true, logLevel: 'warning',
 })).outputFiles[0].text;
-assert.equal(frozenRadar.includes('backend_blocked'), false, 'the source-owned Radar renderer must not expose implementation capability labels');
-assert.equal(frozenRadar.includes('wrapper 页加载次数'), false, 'the source-owned Radar renderer must use a business-facing visit label');
 
 const wait = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 async function waitFor(check, label) {
@@ -90,12 +88,18 @@ const api = {
   loadDb: async () => ({
     radarLinks: [{ id: 11, title: '上海时间雷达', target_type: 'link', original_url: 'https://example.test', file_name_snapshot: '', media_item_id: '', enabled: true, auth_required: true, staff_id: '7', total_landings: 2, authorized_users: 1, view_count: 1 }],
   }),
-  getRadarSharePath: async () => '/r/rd_abcdefghijklmnopqrstuv',
+  getRadarSharePath: async () => { throw new Error('provider share unavailable'); },
 };
 await dom.window.FrozenRadar.mountRadar(dom.window.document.querySelector('#stage'), api, { view: 'detail', id: 11 });
 await waitFor(() => dom.window.document.querySelector('[data-v3-radar-event-host]'), 'the V3 Radar event Host replaces the frozen filters and table');
 await waitFor(() => dom.window.document.querySelector('[data-v3-radar-event-host] tbody')?.textContent?.includes('2026-09-05 08:01:02'), 'the initial event page renders Shanghai seconds');
+await waitFor(() => dom.window.document.querySelector('#dCopyInline')?.disabled === true && dom.window.document.querySelector('.stat-row .stat-l')?.textContent?.includes('访问次数'), 'the V3 Radar presentation Host replaces only the frozen detail labels after render');
 const document = dom.window.document;
+const detailText = document.querySelector('#stage')?.textContent || '';
+assert.ok(detailText.includes('分享链接暂不可用，请稍后重试。'), 'the source-owned projection gives a Chinese detail-share failure');
+assert.equal(detailText.includes('backend_blocked'), false, 'the visible detail must not expose the frozen implementation label');
+assert.equal(detailText.includes('wrapper 页加载次数'), false, 'the visible detail must not expose the frozen implementation label');
+assert.equal(document.querySelector('#dCopyInline')?.disabled, true, 'the source-owned projection must retain the frozen disabled copy action');
 const hostRoot = document.querySelector('[data-v3-radar-event-host]');
 assert.ok(hostRoot?.textContent?.includes('2026-09-05 08:01:02'));
 assert.equal(hostRoot?.textContent?.includes('T00:01:02'), false, 'user-visible event time must not expose RFC3339');
@@ -171,4 +175,28 @@ assert.equal([...hostRoot.querySelectorAll('button')].find((button) => button.te
 assert.equal(editedRangeQuery?.disabled, false, 'the query action remains available after the edited-range request fails');
 dom.window.dispatchEvent(new dom.window.Event('pagehide'));
 dom.window.close();
-console.log('radar event time Host filters, pagination, retry, CSV and Shanghai display: PASS');
+
+const presentationDom = new JSDOM('<!doctype html><body data-page="radar"><main id="stage"></main></body>', {
+  url: 'https://test.invalid/admin/radar.html', runScripts: 'dangerously', pretendToBeVisual: true,
+  beforeParse(window) {
+    window.Response = Response;
+    window.Headers = Headers;
+    window.AICRMStandardComponents = { ready: () => new Promise(() => {}) };
+    window.fetch = async () => new Response(JSON.stringify({ code: 'unexpected' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  },
+});
+presentationDom.window.eval(host);
+presentationDom.window.eval(frozenRadar);
+await presentationDom.window.FrozenRadar.mountRadar(presentationDom.window.document.querySelector('#stage'), {
+  mode: 'local',
+  loadDb: async () => ({ radarLinks: [{ id: 12, title: '本地雷达', target_type: 'link', original_url: 'https://example.test', file_name_snapshot: '', media_item_id: '', enabled: true, auth_required: true, staff_id: '7', total_landings: 2, authorized_users: 1, view_count: 1, last_viewed_at: '' }] }),
+}, { view: 'list' });
+presentationDom.window.document.querySelector('[data-share="12"]')?.click();
+await waitFor(() => presentationDom.window.document.querySelector('#shareQr')?.dataset.v3RadarShareState === 'unavailable', 'the V3 Radar projection replaces the frozen list-share failure');
+const shareQR = presentationDom.window.document.querySelector('#shareQr');
+assert.equal(shareQR?.textContent, '分享链接暂不可用，请稍后重试。');
+assert.equal(shareQR?.textContent?.includes('backend_blocked'), false);
+assert.equal(presentationDom.window.document.querySelector('#shareCopy')?.disabled, true, 'the list-share projection retains the frozen disabled copy action');
+presentationDom.window.dispatchEvent(new presentationDom.window.Event('pagehide'));
+presentationDom.window.close();
+console.log('radar event time Host filters, pagination, CSV, Shanghai display and source-owned presentation: PASS');

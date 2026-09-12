@@ -111,6 +111,7 @@ try {
 }
 
 let tagRetry = false;
+let chatRetry = false;
 const detailRequests = [];
 const detail = documentWithHost("customerDetail.html", "?id=7", (window) => async (input, init = {}) => {
   const url = new URL(typeof input === "string" ? input : input.url, window.location.origin);
@@ -118,7 +119,7 @@ const detail = documentWithHost("customerDetail.html", "?id=7", (window) => asyn
   if (url.pathname === "/api/admin/customers/7/360") {
     return response({
       tags_status: "unavailable",
-      chat: { status: "unavailable" },
+      chat: { status: chatRetry ? "ready" : "unavailable" },
       profile: {
         status: "ready",
         data: {
@@ -136,7 +137,11 @@ const detail = documentWithHost("customerDetail.html", "?id=7", (window) => asyn
   if (url.pathname === "/api/admin/customers/7/tags") {
     return tagRetry ? response({ status: "ready", items: [{ id: 8, name: "已恢复标签" }] }) : response({ code: "unavailable" }, 503);
   }
-  if (url.pathname === "/api/admin/customers/7/chat-activity") return response({ code: "unavailable" }, 503);
+  if (url.pathname === "/api/admin/customers/7/chat-activity") {
+    return chatRetry
+      ? response({ status: "ready", items: [{ chat_type: "private", message_type: "text", occurred_at: "2026-09-07T00:00:00Z" }] })
+      : response({ code: "unavailable" }, 503);
+  }
   if (url.pathname === "/api/v1/customers/7/survey-answers") return response({ items: [], total: 0 });
   return response({ code: "unexpected" }, 500);
 });
@@ -168,6 +173,26 @@ try {
   }
   if (!detailRequests.some((request) => request.path === "/api/admin/customers/7/tags")) {
     fail("tag retry did not reach the Customer-owned auxiliary endpoint");
+  }
+  chatRetry = true;
+  const chatRetryButton = document.querySelector('[data-customer-auxiliary-retry="chat"]');
+  if (!chatRetryButton) fail("chat retry is absent from the actual frozen detail Host");
+  chatRetryButton.click();
+  await sleep(80);
+  const chatSummary = [...document.querySelectorAll("div")].find((element) => element.textContent?.trim() === "私聊 · 2026-09-07 08:00:00");
+  if (!chatSummary || document.body.textContent?.includes("2026-09-07T00:00:00Z")) {
+    fail("chat summary did not render Shanghai seconds without RFC3339");
+  }
+  const projected = await (await detail.window.fetch("/api/v1/customers/7/context")).json();
+  if (projected.chat.items[0]?.sent_at !== "2026-09-07 08:00:00" || projected.chat.items[0]?.message_type !== "文本") {
+    fail("frozen customer context did not receive Chinese message metadata and Shanghai summary time");
+  }
+  const refresh = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "刷新记录");
+  if (!refresh) fail("frozen customer detail did not retain its refresh control");
+  refresh.click();
+  await sleep(120);
+  if (!document.body.textContent?.includes("私聊 · 2026-09-07 08:00:00") || !document.body.textContent?.includes("消息类型：文本") || document.body.textContent?.includes("2026-09-07T00:00:00Z")) {
+    fail("frozen customer detail did not render the projected Shanghai time and Chinese message type directly");
   }
 } finally {
   // See the list fixture above.

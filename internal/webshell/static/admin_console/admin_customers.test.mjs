@@ -61,4 +61,33 @@ await new Promise((resolve) => setTimeout(resolve, 20));
 const tagFailure = dom.window.document.querySelector("#customer-tag-batch-result").textContent || "";
 if (!tagFailure.includes("标签服务暂不可用") || tagFailure.includes("provider_unavailable") || tagFailure.includes("上游错误")) throw new Error(`tag failure leaked technical detail: ${tagFailure}`);
 dom.window.close();
+
+const detailDom = new JSDOM(`<!doctype html>
+<div data-customer-directory-root data-customers-url="/api/admin/customers" data-sync-url="/api/admin/customer-sync-runs" data-tag-preview-url="/api/v1/customer-tag-commands/preview" data-tag-command-url="/api/v1/customer-tag-commands" data-tags-url="/api/admin/wecom/tags">
+  <div id="customer-page-alert"></div><div id="customer-profile-name"></div>
+  <div id="customer-detail-state"></div><div id="customer-detail-content" hidden></div>
+  <div id="customer-detail-fields"></div><div id="customer-profile-meta"></div>
+  <div id="customer-phone-ephemeral" hidden></div>
+  <div id="customer-360-sections" hidden><div id="customer-360-main"></div><div id="customer-360-sidebar"></div></div>
+</div>`, { url: "https://test.invalid/admin/customers/42", runScripts: "outside-only" });
+detailDom.window.Headers = Headers;
+detailDom.window.AdminDateTime = {};
+detailDom.window.AdminFmt = { localTime: (value) => value === "2026-09-05T00:00:00Z" ? "2026-09-05 08:00:00" : "时间暂不可用", whenAdminDateTimeReady: (ready) => ready(detailDom.window.AdminDateTime) };
+detailDom.window.fetch = async (input) => {
+  const url = new URL(String(input), detailDom.window.location.origin);
+  if (url.pathname !== "/api/admin/customers/42/360") throw new Error("unexpected detail request: " + url.pathname);
+  return { ok: true, status: 200, json: async () => ({
+    profile: { status: "ready", data: { customer_id: 42, display_name: "测试客户", oneid: "cus_42", status: "active", last_synced_at: "2026-09-05T00:00:00Z" } },
+    identity_summary: { status: "ready", data: { identities: [], phones: [] } },
+    order_summary: { status: "ready", data: { total: 1, paid: 1, refunded: 0, failed: 0, recent: [{ id: 71, merchant_order_no: "MO-71", status: "paid" }] } },
+    questionnaire_summary: { status: "ready", data: { total: 0, recent: [] } },
+    risk: { status: "ready", data: { level: "low", reasons: [] } },
+    recent_touchpoints: { status: "ready", data: [] },
+  }) };
+};
+detailDom.window.eval(script);
+await new Promise((resolve) => setTimeout(resolve, 20));
+const detailText = detailDom.window.document.getElementById("customer-360-main")?.textContent || "";
+if (!detailText.includes("MO-71 · 已支付") || detailText.includes("MO-71 · paid")) throw new Error(`recent order status leaked a machine value: ${detailText}`);
+detailDom.window.close();
 console.log("admin-customers-browser: PASS");

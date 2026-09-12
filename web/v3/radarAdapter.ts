@@ -514,6 +514,39 @@ class RadarDetailTimeHost {
   }
 }
 
+function projectRadarPresentation(root: HTMLElement): void {
+  const shareQR = root.querySelector<HTMLElement>('#shareQr');
+  if (shareQR?.textContent?.includes('backend_blocked')) {
+    shareQR.textContent = '分享链接暂不可用，请稍后重试。';
+    shareQR.dataset.v3RadarShareState = 'unavailable';
+  }
+  const disabledDetailCopy = root.querySelector<HTMLButtonElement>('#dCopyInline[disabled]');
+  const detailShareNotice = disabledDetailCopy?.previousElementSibling;
+  if (detailShareNotice instanceof HTMLElement && detailShareNotice.textContent.includes('backend_blocked')) {
+    detailShareNotice.textContent = '分享链接暂不可用，请稍后重试。';
+    detailShareNotice.setAttribute('role', 'alert');
+    detailShareNotice.dataset.v3RadarShareState = 'unavailable';
+  }
+  root.querySelectorAll<HTMLElement>('.stat-row .stat').forEach((card) => {
+    const label = card.querySelector<HTMLElement>('.stat-l');
+    const detail = card.querySelector<HTMLElement>('.stat-s');
+    if (label?.textContent?.trim() === 'PV · 中转页到达') label.textContent = '访问次数 · 中转页到达';
+    if (detail?.textContent?.trim() === 'wrapper 页加载次数') detail.textContent = '中转页加载次数';
+  });
+}
+
+function installRadarPresentationProjection(): void {
+  if (!['radar', 'radarDetail'].includes(document.body.dataset.page || '')) return;
+  const render = (): void => {
+    const root = document.querySelector<HTMLElement>('#stage.sec-radar');
+    if (root) projectRadarPresentation(root);
+  };
+  const observer = new MutationObserver(render);
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
+  render();
+}
+
 function installRadarDetailTimeHost(): void {
   if (document.body.dataset.page !== 'radarDetail') return;
   let host: RadarDetailTimeHost | undefined;
@@ -538,4 +571,5 @@ function installRadarDetailTimeHost(): void {
   attemptMount();
 }
 
+installRadarPresentationProjection();
 installRadarDetailTimeHost();

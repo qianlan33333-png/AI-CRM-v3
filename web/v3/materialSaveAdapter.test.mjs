@@ -433,7 +433,7 @@ for (const spec of [
   const missingSource = dom.window.document.querySelector("[data-material-source-failures] li");
   if (!panelText.includes("需要补传的原文件") || !missingSource?.childNodes[0]?.textContent?.includes("附件素材 #19：原文件缺失，请补传")) fail("missing source was not kept as a locateable Chinese re-upload item");
   if (missingSource?.querySelector("details")?.open || !missingSource?.querySelector("summary")?.textContent?.includes("技术详情")) fail("material source diagnostics must remain collapsed by default");
-  if (!missingSource?.querySelector("details")?.textContent?.includes("attachment:19") || !missingSource?.querySelector("details")?.textContent?.includes("source_bytes_missing")) fail("collapsed material diagnostics lost traceable evidence");
+  if (!missingSource?.querySelector("details")?.textContent?.includes("attachment:19") || !missingSource?.querySelector("details")?.textContent?.includes("原文件缺失，请补传") || missingSource?.querySelector("details")?.textContent?.includes("source_bytes_missing")) fail("collapsed material diagnostics leaked a raw failure code or lost the safe recovery hint");
   const uploadedRow = [...dom.window.document.querySelectorAll("#material-refresh-panel tr")].find((row) => row.textContent?.includes("expired-by-clock.png"));
   if (!uploadedRow || uploadedRow.querySelectorAll("td")[6]?.textContent?.trim() !== "—") fail("a successful uploaded receipt was rendered as a failure reason");
   if (![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "立即刷新全部启用素材")?.classList.contains("admin-button--primary")) fail("manual refresh did not use the existing primary-button styling");
