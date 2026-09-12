@@ -415,7 +415,7 @@ for (const spec of [
   if (!dom.window.document.querySelector("[data-material-refresh-status]")?.textContent?.includes("正在读取")) fail("material preparation loading state is not visible");
   releasePreparation();
   await waitFor(() => !![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "重试读取刷新状态"), "material preparation read error did not expose a retry action");
-  if (!dom.window.document.querySelector("[data-material-refresh-status]")?.textContent?.includes("read_unavailable")) fail("material preparation read error was hidden");
+  if (!dom.window.document.querySelector("[data-material-refresh-status]")?.textContent?.includes("刷新请求失败（HTTP 503）")) fail("material preparation read error was not presented in Chinese");
   [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "重试读取刷新状态").click();
   await waitFor(() => dom.window.document.querySelector("#material-refresh-panel")?.textContent?.includes("cover.png"), "material preparation contract did not render after manual retry");
   const panelText = dom.window.document.querySelector("#material-refresh-panel")?.textContent || "";
@@ -429,7 +429,7 @@ for (const spec of [
     !panelText.includes("当日刷新进度暂不可用") ||
     !panelText.includes("下次运行")
   ) fail("material credential availability was inferred from the refresh state or expiry incorrectly");
-  if (!panelText.includes("需要补传的原文件") || !panelText.includes("attachment:19：原文件缺失，请补传（source_bytes_missing）")) fail("missing source was not kept as a locateable re-upload item");
+  if (!panelText.includes("需要补传的原文件") || !panelText.includes("attachment:19：原文件缺失，请补传") || panelText.includes("source_bytes_missing")) fail("missing source was not kept as a locateable Chinese re-upload item");
   const uploadedRow = [...dom.window.document.querySelectorAll("#material-refresh-panel tr")].find((row) => row.textContent?.includes("expired-by-clock.png"));
   if (!uploadedRow || uploadedRow.querySelectorAll("td")[6]?.textContent?.trim() !== "—") fail("a successful uploaded receipt was rendered as a failure reason");
   if (![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "立即刷新全部启用素材")?.classList.contains("admin-button--primary")) fail("manual refresh did not use the existing primary-button styling");

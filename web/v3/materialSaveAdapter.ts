@@ -299,8 +299,11 @@ function materialCsrf(): string {
 }
 
 function materialError(status: number, body: Record<string, unknown>): Error {
-  const message = materialString(body.message) || materialString(body.error) || materialString(body.code);
-  return new Error(message || (status === 403 ? '没有此操作权限' : `刷新请求失败（HTTP ${status}）`));
+  if (status === 403) return new Error('没有此操作权限');
+  // Refresh responses can contain provider error codes. Keep the operational
+  // state readable instead of surfacing an internal enum in the workspace.
+  void body;
+  return new Error(`刷新请求失败（HTTP ${status}）`);
 }
 
 async function materialResponse(response: Response): Promise<Record<string, unknown>> {
@@ -337,12 +340,14 @@ function materialFormatTime(value: unknown): string {
   const raw = materialString(value);
   if (!raw) return '—';
   const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return raw;
-  return new Intl.DateTimeFormat('zh-CN', {
+  if (Number.isNaN(parsed.getTime())) return '时间暂不可用';
+  const parts = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(parsed).replace(/\//g, '-');
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(parsed);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value || '00';
+  return `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}:${part('second')}`;
 }
 
 function materialTypeLabel(value: unknown): string {
@@ -353,7 +358,7 @@ function materialTypeLabel(value: unknown): string {
     case 'miniprogram':
     case 'mini_program':
     case 'miniprogram_cover': return '小程序封面';
-    default: return materialString(value) || '素材';
+    default: return '素材';
   }
 }
 
@@ -373,7 +378,7 @@ function materialStateLabel(value: unknown): string {
     case 'completed_with_failures': return '刷新失败';
     case 'outcome_unknown':
     case 'unknown': return '结果待核实';
-    default: return materialString(value) || '状态暂不可用';
+    default: return '状态暂不可用';
   }
 }
 
@@ -412,7 +417,7 @@ function materialFailureReason(item: MaterialProjection): string {
     case 'failed':
     case 'final_failed':
     case 'completed_with_failures':
-      return materialString(item.failure_code) || '刷新失败';
+      return materialFailureHint(item);
     default:
       return '—';
   }
@@ -445,7 +450,7 @@ function materialSourceName(item: MaterialProjection): string {
 
 function materialNextRun(value: unknown): string {
   const next = materialFormatTime(value);
-  return next === '—' ? '每天 02:00（北京时间）' : `${next}（北京时间）`;
+  return next === '—' ? '每天 02:00' : next;
 }
 
 function materialFailureHint(failure: MaterialSourceFailureProjection): string {
@@ -640,8 +645,7 @@ class MaterialRefreshPanel {
       this.failures.forEach((failure) => {
         const entry = document.createElement('li');
         const sourceRef = materialString(failure.source_ref) || '未知素材';
-        const code = materialString(failure.failure_code) || 'source_unavailable';
-        entry.textContent = `${sourceRef}：${materialFailureHint(failure)}（${code}）`;
+        entry.textContent = `${sourceRef}：${materialFailureHint(failure)}`;
         list.append(entry);
       });
       missing.append(list);

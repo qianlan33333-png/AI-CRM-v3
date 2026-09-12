@@ -1,9 +1,9 @@
 // The image library is a V3-owned workspace. It reads the existing Media
 // contract directly and leaves all mutations on the existing typed DTO and
 // MaterialSaveHost path; no donor controller or generated template is mounted.
-import { imagePageDto, saveImageItemDto, deleteImageItemDto } from "../src/api/admin";
-import { getLegacyImageList } from "../src/api/generated/p4-media-compat/p4-media-compat";
-import { apiRequestOptions, unwrapGenerated } from "../src/api/transport";
+import { imagePageDto, saveImageItemDto } from "../src/api/admin";
+import { deleteLegacyImage, getLegacyImageList } from "../src/api/generated/p4-media-compat/p4-media-compat";
+import { ApiError, apiRequestOptions, unwrapGenerated } from "../src/api/transport";
 import type { ImageItem } from "../src/shared/api/types";
 
 const PAGE_SIZE = 20;
@@ -18,9 +18,18 @@ type ImageListResponse = {
 };
 
 type Dialog =
-  | { kind: "upload"; error: string }
-  | { kind: "edit"; item: ImageItem; error: string }
+  | { kind: "upload"; error: string; readbackPending?: boolean }
+  | { kind: "edit"; item: ImageItem; error: string; readbackPending?: boolean }
   | undefined;
+
+type LoadResult = "success" | "failed" | "aborted";
+
+type DeleteIntent = {
+  itemID: string;
+  key: string;
+  readbackOffset: number;
+  inFlight: boolean;
+};
 
 function errorText(error: unknown): string {
   return error instanceof Error && error.message ? error.message : "图片素材读取失败";
@@ -29,42 +38,66 @@ function errorText(error: unknown): string {
 function button(label: string, kind: "primary" | "secondary" | "danger" = "secondary"): HTMLButtonElement {
   const node = document.createElement("button");
   node.type = "button";
-  node.className = `admin-button admin-button--${kind === "danger" ? "secondary" : kind}`;
+  node.className = `admin-button admin-button--${kind}`;
   node.textContent = label;
-  if (kind === "danger") {
-    node.style.borderColor = "#FBC4C2";
-    node.style.color = "#D83931";
-    node.style.background = "#FFF5F5";
-  }
   return node;
 }
 
 function field(label: string, input: HTMLInputElement): HTMLLabelElement {
   const wrap = document.createElement("label");
-  wrap.style.cssText = "display:grid;gap:6px;font-size:12px;color:#646A73;font-weight:500";
+  wrap.className = "admin-field";
   const title = document.createElement("span");
   title.textContent = label;
-  input.style.cssText = "height:34px;width:100%;border:1px solid #DEE0E3;border-radius:6px;padding:0 10px;font-size:13px;box-sizing:border-box;background:#fff;color:#1F2329";
   wrap.append(title, input);
   return wrap;
+}
+
+function chinaTime(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "时间暂不可用";
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(parsed);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value || "00";
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`;
+}
+
+function imageDeleteMutationKey(): string {
+  return `image-delete-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }
 
 class ImageLibraryHost {
   private readonly stage: HTMLElement;
   private readonly scroll: HTMLElement;
   private readonly workspace: HTMLElement;
+  private readonly headerNode: HTMLElement;
+  private readonly toolbarNode: HTMLElement;
+  private readonly stateNode: HTMLElement;
+  private readonly cardsNode: HTMLElement;
+  private readonly paginationNode: HTMLElement;
+  private readonly dialogLayer: HTMLElement;
+  private queryInput!: HTMLInputElement;
+  private includeInactiveInput!: HTMLInputElement;
   private items: ImageItem[] = [];
   private query = "";
   private includeInactive = false;
+  // Offset always identifies the last successfully-read page. A requested
+  // page stays separate until its response validates, so a failed next page
+  // cannot make the visible page controls skip ahead.
   private offset = 0;
+  private failedOffset?: number;
   private total = 0;
   private loading = false;
+  private searchPending = false;
   private error = "";
   private hasSuccessfulRead = false;
   private dialog: Dialog;
   private readGeneration = 0;
   private readAbort?: AbortController;
   private searchTimer?: number;
+  private deleteIntent?: DeleteIntent;
 
   constructor(stage: HTMLElement) {
     this.stage = stage;
@@ -77,8 +110,18 @@ class ImageLibraryHost {
     this.workspace = document.createElement("section");
     this.workspace.dataset.imageLibraryWorkspace = "true";
     this.workspace.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-content:start";
+    this.headerNode = this.header();
+    this.toolbarNode = this.toolbar();
+    this.stateNode = document.createElement("section");
+    this.cardsNode = document.createElement("section");
+    this.cardsNode.dataset.imageLibraryCards = "true";
+    this.cardsNode.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px";
+    this.paginationNode = document.createElement("section");
+    this.dialogLayer = document.createElement("section");
+    this.dialogLayer.dataset.imageLibraryDialogLayer = "true";
+    this.workspace.append(this.headerNode, this.toolbarNode, this.stateNode, this.cardsNode, this.paginationNode);
     this.scroll.append(this.workspace);
-    this.stage.replaceChildren(this.scroll);
+    this.stage.replaceChildren(this.scroll, this.dialogLayer);
   }
 
   start(): void {
@@ -88,15 +131,24 @@ class ImageLibraryHost {
 
   private scheduleSearch(value: string): void {
     this.query = value;
-    this.offset = 0;
+    // Abort and invalidate immediately. The debounce waits only to start the
+    // new request; an older response must never describe the newly typed text.
+    this.readAbort?.abort();
+    this.readAbort = undefined;
+    this.readGeneration += 1;
+    this.loading = false;
+    this.searchPending = true;
+    this.failedOffset = undefined;
+    this.error = "";
     if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer);
     this.searchTimer = window.setTimeout(() => {
       this.searchTimer = undefined;
       void this.load(0);
     }, SEARCH_DELAY_MS);
+    this.render();
   }
 
-  private async load(offset = this.offset): Promise<void> {
+  private async load(offset = this.offset): Promise<LoadResult> {
     if (this.searchTimer !== undefined) {
       window.clearTimeout(this.searchTimer);
       this.searchTimer = undefined;
@@ -105,18 +157,21 @@ class ImageLibraryHost {
     const abort = new AbortController();
     this.readAbort = abort;
     const generation = ++this.readGeneration;
-    this.offset = offset;
     this.loading = true;
+    this.searchPending = false;
+    this.failedOffset = undefined;
     this.error = "";
     this.render();
     try {
+      const query = this.query.trim();
+      const includeInactive = this.includeInactive;
       const payload = unwrapGenerated(await getLegacyImageList({
         limit: String(PAGE_SIZE),
         offset: String(offset),
-        enabled_only: this.includeInactive ? "false" : "true",
-        ...(this.query.trim() ? { q: this.query.trim() } : {}),
+        enabled_only: includeInactive ? "false" : "true",
+        ...(query ? { q: query } : {}),
       }, apiRequestOptions({ signal: abort.signal }))) as ImageListResponse;
-      if (generation !== this.readGeneration) return;
+      if (generation !== this.readGeneration) return "aborted";
       const rawItems = Array.isArray(payload.items) ? payload.items : [];
       const total = Number(payload.total);
       const responseLimit = Number(payload.limit);
@@ -129,22 +184,28 @@ class ImageLibraryHost {
       this.offset = offset;
       this.hasSuccessfulRead = true;
       this.error = "";
+      this.failedOffset = undefined;
+      return "success";
     } catch (error) {
-      if (generation !== this.readGeneration || (error instanceof DOMException && error.name === "AbortError")) return;
+      if (generation !== this.readGeneration || (error instanceof DOMException && error.name === "AbortError")) return "aborted";
       this.error = errorText(error);
+      this.failedOffset = offset;
+      return "failed";
     } finally {
-      if (generation !== this.readGeneration) return;
-      this.loading = false;
-      this.render();
+      if (generation === this.readGeneration) {
+        this.loading = false;
+        this.render();
+      }
     }
   }
 
   private render(): void {
-    const preservedScrollTop = this.scroll.scrollTop;
-    this.workspace.replaceChildren();
-    this.workspace.append(this.header(), this.toolbar(), this.stateLine(), this.cards(), this.pagination());
-    if (this.dialog) this.workspace.append(this.modal());
-    this.scroll.scrollTop = preservedScrollTop;
+    // Toolbar and modal are long-lived DOM. Only the data-bearing regions are
+    // updated after a read, preserving focus, selected files, and in-progress
+    // edits while a request completes.
+    this.renderState();
+    this.renderCards();
+    this.renderPagination();
   }
 
   private header(): HTMLElement {
@@ -160,45 +221,47 @@ class ImageLibraryHost {
     title.style.cssText = "margin:3px 0 0;font-size:16px;font-weight:600;line-height:22px;color:#1F2329";
     titles.append(crumb, title);
     const upload = button("上传图片", "primary");
-    upload.addEventListener("click", () => { this.dialog = { kind: "upload", error: "" }; this.render(); });
+    upload.addEventListener("click", () => this.openDialog({ kind: "upload", error: "" }));
     header.append(titles, upload);
     return header;
   }
 
   private toolbar(): HTMLElement {
     const toolbar = document.createElement("section");
-    toolbar.className = "admin-toolbar";
+    toolbar.className = "admin-filter-bar admin-toolbar";
     toolbar.style.cssText = "background:#fff;border:1px solid #DEE0E3;border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap";
     const input = document.createElement("input");
     input.type = "search";
-    input.value = this.query;
     input.placeholder = "搜索素材名或标签";
     input.dataset.imageLibraryQuery = "true";
     input.setAttribute("aria-label", "搜索图片素材");
-    input.style.cssText = "height:32px;flex:1 1 240px;border:1px solid #DEE0E3;border-radius:6px;padding:0 10px;font-size:13px;background:#fff";
+    input.style.cssText = "flex:1 1 240px";
     input.addEventListener("input", () => this.scheduleSearch(input.value));
+    this.queryInput = input;
     const includeLabel = document.createElement("label");
     includeLabel.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;color:#646A73;margin-left:auto;cursor:pointer";
     const include = document.createElement("input");
     include.type = "checkbox";
-    include.checked = this.includeInactive;
     include.dataset.imageLibraryIncludeInactive = "true";
     include.setAttribute("aria-label", "包含已停用图片");
-    include.addEventListener("change", () => { this.includeInactive = include.checked; this.offset = 0; void this.load(0); });
+    include.addEventListener("change", () => { this.includeInactive = include.checked; void this.load(0); });
+    this.includeInactiveInput = include;
     includeLabel.append(include, document.createTextNode("含已停用"));
     const reset = button("重置");
     reset.dataset.imageLibraryReset = "true";
     reset.addEventListener("click", () => {
       this.query = "";
       this.includeInactive = false;
-      this.offset = 0;
+      this.queryInput.value = "";
+      this.includeInactiveInput.checked = false;
       void this.load(0);
     });
     toolbar.append(input, includeLabel, reset);
     return toolbar;
   }
 
-  private stateLine(): HTMLElement {
+  private renderState(): void {
+    this.stateNode.replaceChildren();
     const line = document.createElement("p");
     line.dataset.imageLibraryFilterFeedback = "true";
     line.style.cssText = "margin:0;color:#646A73;font-size:13px;line-height:20px;min-height:20px";
@@ -208,30 +271,39 @@ class ImageLibraryHost {
       line.textContent = this.hasSuccessfulRead
         ? `图片素材读取失败，仍显示上一次成功结果：${this.error}`
         : `图片素材读取失败：${this.error}`;
+      this.stateNode.append(line);
+      if (this.failedOffset !== undefined) {
+        const retry = button("重试读取");
+        retry.dataset.imageLibraryRetry = "true";
+        retry.style.marginLeft = "8px";
+        retry.addEventListener("click", () => void this.load(this.failedOffset));
+        this.stateNode.append(retry);
+      }
+      return;
     } else if (this.loading) {
       line.setAttribute("role", "status");
       line.textContent = "正在读取图片素材…";
+    } else if (this.searchPending) {
+      line.setAttribute("role", "status");
+      line.textContent = "等待输入完成后搜索…";
     } else if (this.hasSuccessfulRead) {
       line.setAttribute("role", "status");
       line.textContent = `显示 ${this.items.length ? this.offset + 1 : 0}-${this.offset + this.items.length} / ${this.total}`;
     }
-    return line;
+    this.stateNode.append(line);
   }
 
-  private cards(): HTMLElement {
-    const grid = document.createElement("section");
-    grid.dataset.imageLibraryCards = "true";
-    grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px";
+  private renderCards(): void {
+    this.cardsNode.replaceChildren();
     if (!this.loading && !this.error && this.hasSuccessfulRead && this.items.length === 0) {
       const empty = document.createElement("p");
       empty.dataset.imageLibraryEmpty = "true";
       empty.textContent = "没有符合当前筛选条件的图片素材。";
       empty.style.cssText = "grid-column:1/-1;margin:0;padding:24px;border:1px dashed #DEE0E3;border-radius:8px;background:#fff;color:#646A73;text-align:center";
-      grid.append(empty);
-      return grid;
+      this.cardsNode.append(empty);
+      return;
     }
-    for (const item of this.items) grid.append(this.card(item));
-    return grid;
+    for (const item of this.items) this.cardsNode.append(this.card(item));
   }
 
   private card(item: ImageItem): HTMLElement {
@@ -241,13 +313,13 @@ class ImageLibraryHost {
     preview.src = item.thumbnailUrl || "";
     preview.alt = item.name;
     preview.style.cssText = "display:block;width:100%;height:128px;object-fit:cover;background:#EFF4FF;border-bottom:1px solid #EFF0F1;cursor:pointer";
-    preview.addEventListener("click", () => { this.dialog = { kind: "edit", item, error: "" }; this.render(); });
+    preview.addEventListener("click", () => this.openDialog({ kind: "edit", item, error: "" }));
     const body = document.createElement("div");
     body.style.cssText = "padding:10px 12px";
     const name = document.createElement("strong");
     name.textContent = item.name;
     name.style.cssText = "display:block;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;color:#1F2329";
-    name.addEventListener("click", () => { this.dialog = { kind: "edit", item, error: "" }; this.render(); });
+    name.addEventListener("click", () => this.openDialog({ kind: "edit", item, error: "" }));
     const detail = document.createElement("div");
     detail.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px";
     const size = document.createElement("span");
@@ -255,23 +327,28 @@ class ImageLibraryHost {
     size.style.cssText = "font-size:12px;color:#A6AAB0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
     const tag = document.createElement("span");
     tag.textContent = item.tag || "未分类";
-    tag.style.cssText = "display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:4px;background:#F2F3F5;color:#646A73;font-size:11px;white-space:nowrap";
-    detail.append(size, tag);
+    tag.style.cssText = "display:inline-flex;align-items:center;min-width:0;max-width:76px;height:20px;padding:0 7px;border-radius:4px;background:#F2F3F5;color:#646A73;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    const state = document.createElement("span");
+    state.className = "admin-chip";
+    state.textContent = item.enabled ? "已启用" : "已停用";
+    state.style.cssText = `min-height:20px;padding:0 7px;font-size:11px;${item.enabled ? "color:#237804;background:#F6FFED" : "color:#8F959E;background:#F2F3F5"}`;
+    detail.append(size, tag, state);
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #F5F6F7";
     const time = document.createElement("span");
-    time.textContent = item.uploadedAt;
+    time.textContent = chinaTime(item.uploadedAt);
     time.style.cssText = "font-size:11px;color:#A6AAB0";
     const edit = button("编辑");
     edit.style.cssText = "height:24px;padding:0 8px;border:0;border-radius:4px;background:transparent;color:#245BDB;font-size:12px;cursor:pointer";
-    edit.addEventListener("click", () => { this.dialog = { kind: "edit", item, error: "" }; this.render(); });
+    edit.addEventListener("click", () => this.openDialog({ kind: "edit", item, error: "" }));
     actions.append(time, edit);
     body.append(name, detail, actions);
     card.append(preview, body);
     return card;
   }
 
-  private pagination(): HTMLElement {
+  private renderPagination(): void {
+    this.paginationNode.replaceChildren();
     const nav = document.createElement("nav");
     nav.dataset.imageLibraryPagination = "true";
     nav.setAttribute("aria-label", "图片素材分页");
@@ -283,19 +360,33 @@ class ImageLibraryHost {
     next.disabled = this.loading || this.offset + this.items.length >= this.total;
     next.addEventListener("click", () => void this.load(this.offset + PAGE_SIZE));
     nav.append(previous, next);
-    return nav;
+    this.paginationNode.append(nav);
   }
 
-  private modal(): HTMLElement {
-    const dialog = this.dialog;
-    if (!dialog) return document.createElement("div");
+  private openDialog(dialog: Exclude<Dialog, undefined>): void {
+    this.dialog = dialog;
+    this.dialogLayer.replaceChildren(this.modal(dialog));
+    if (dialog.kind === "edit" && this.deleteIntent?.itemID === dialog.item.resourceId) {
+      this.setDeleteBusy(true);
+      this.setDialogError("删除结果暂不可确认。请重新读取列表核对，勿重复删除。");
+      this.setDialogAction("重新读取列表", "delete-verify");
+    }
+  }
+
+  private closeDialog(): void {
+    this.dialog = undefined;
+    this.dialogLayer.replaceChildren();
+  }
+
+  private modal(dialog: Exclude<Dialog, undefined>): HTMLElement {
     const overlay = document.createElement("section");
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
-    overlay.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.34);z-index:80;display:flex;align-items:center;justify-content:center;padding:24px";
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.34);z-index:80;display:flex;align-items:center;justify-content:center;overflow:auto;padding:16px;box-sizing:border-box";
     const panel = document.createElement("form");
     panel.dataset.imageLibraryDialog = "true";
-    panel.style.cssText = "width:min(520px,100%);background:#fff;border-radius:12px;box-shadow:0 24px 64px rgba(15,23,42,.22);overflow:hidden";
+    panel.className = "admin-modal";
+    panel.style.cssText = "width:min(520px,100%);max-height:calc(100dvh - 32px);margin:auto;padding:0;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden";
     panel.addEventListener("submit", (event) => {
       event.preventDefault();
       panel.querySelector<HTMLButtonElement>("[data-image-library-dialog-submit]")?.click();
@@ -307,10 +398,12 @@ class ImageLibraryHost {
     const close = button("×");
     close.setAttribute("aria-label", "关闭弹窗");
     close.style.cssText = "width:28px;height:28px;padding:0;border:0;border-radius:6px;background:#F2F3F5;color:#646A73;font-size:14px";
-    close.addEventListener("click", () => { this.dialog = undefined; this.render(); });
+    close.addEventListener("click", () => this.closeDialog());
     heading.append(title, close);
     const fields = document.createElement("div");
-    fields.style.cssText = "padding:18px;display:grid;gap:14px";
+    fields.dataset.imageLibraryDialogFields = "true";
+    fields.className = "admin-form-grid admin-form-grid--stacked";
+    fields.style.cssText = "padding:18px;overflow:auto;flex:1 1 auto;align-content:start";
     if (dialog.kind === "upload") {
       const file = document.createElement("input");
       file.id = "fImgUpFile";
@@ -346,7 +439,7 @@ class ImageLibraryHost {
       enabled.type = "checkbox";
       enabled.checked = dialog.item.enabled;
       const enabledLabel = document.createElement("label");
-      enabledLabel.style.cssText = "display:flex;align-items:center;gap:8px;font-size:13px;color:#344054";
+      enabledLabel.className = "admin-checkbox";
       enabledLabel.append(enabled, document.createTextNode("启用此图片素材"));
       fields.append(enabledLabel);
     }
@@ -363,21 +456,38 @@ class ImageLibraryHost {
     const left = document.createElement("div");
     if (dialog.kind === "edit") {
       const remove = button("删除", "danger");
+      remove.dataset.imageLibraryDelete = "true";
       remove.addEventListener("click", () => void this.remove(dialog.item));
       left.append(remove);
     }
     const right = document.createElement("div");
     right.style.cssText = "display:flex;gap:8px";
     const cancel = button("取消");
-    cancel.addEventListener("click", () => { this.dialog = undefined; this.render(); });
+    cancel.addEventListener("click", () => this.closeDialog());
     const submit = button(dialog.kind === "upload" ? "上传" : "保存", "primary");
     submit.dataset.imageLibraryDialogSubmit = "true";
     // MaterialSaveHost deliberately marks this button busy in capture phase.
     // Bind the write on click (like the frozen donor) so that busy marking does
     // not suppress native form submission before our handler can run.
     submit.addEventListener("click", () => {
-      if (dialog.kind === "upload") void this.submitUpload(panel);
-      else void this.submitEdit(panel, dialog.item);
+      const action = submit.dataset.imageLibraryDialogAction;
+      if (action === "delete-verify") {
+        void this.verifyDelete();
+        return;
+      }
+      if (action === "delete-retry") {
+        void this.retryDelete();
+        return;
+      }
+      const current = this.dialog;
+      if (!current) return;
+      if (current.readbackPending) {
+        void this.retryReadback();
+      } else if (current.kind === "upload") {
+        void this.submitUpload(panel);
+      } else {
+        void this.submitEdit(panel, current.item);
+      }
     });
     right.append(cancel, submit);
     footer.append(left, right);
@@ -407,8 +517,7 @@ class ImageLibraryHost {
         enabled: true,
         uploadedAt: "刚刚",
       });
-      this.dialog = undefined;
-      await this.load(this.offset);
+      await this.readbackAfterMutation();
     } catch (error) {
       this.setDialogError(errorText(error));
     }
@@ -426,30 +535,136 @@ class ImageLibraryHost {
         tags: this.formValue(form, "fImgTags"),
         enabled: Boolean(form.querySelector<HTMLInputElement>("#fImgEnabled")?.checked),
       });
-      this.dialog = undefined;
-      await this.load(this.offset);
+      await this.readbackAfterMutation();
     } catch (error) {
       this.setDialogError(errorText(error));
     }
   }
 
   private async remove(item: ImageItem): Promise<void> {
+    if (this.deleteIntent?.inFlight) return;
     if (!window.confirm(`确认删除「${item.name}」？删除后不可恢复。`)) return;
+    if (!item.resourceId) {
+      this.setDialogError("图片素材标识无效，请重新读取列表后再删除。");
+      return;
+    }
+    const readbackOffset = this.items.length === 1 && this.offset > 0 ? Math.max(0, this.offset - PAGE_SIZE) : this.offset;
+    const existing = this.deleteIntent?.itemID === item.resourceId ? this.deleteIntent : undefined;
+    const intent: DeleteIntent = existing || {
+      itemID: item.resourceId,
+      key: imageDeleteMutationKey(),
+      readbackOffset,
+      inFlight: false,
+    };
+    this.deleteIntent = intent;
+    await this.dispatchDelete(intent);
+  }
+
+  private async retryDelete(): Promise<void> {
+    const intent = this.deleteIntent;
+    const dialog = this.dialog;
+    if (!intent || intent.inFlight || !dialog || dialog.kind !== "edit" || dialog.item.resourceId !== intent.itemID) return;
+    await this.dispatchDelete(intent);
+  }
+
+  private async dispatchDelete(intent: DeleteIntent): Promise<void> {
+    intent.inFlight = true;
+    this.setDeleteBusy(true);
     try {
-      // The typed helper is the same existing compatibility path as the donor
-      // UI. The Media handler mints a per-request key for legacy delete calls.
-      await deleteImageItemDto(item);
-      this.dialog = undefined;
-      const nextOffset = this.items.length === 1 && this.offset > 0 ? Math.max(0, this.offset - PAGE_SIZE) : this.offset;
-      await this.load(nextOffset);
+      // This explicit key reaches the Media receipt. A retry keeps the exact
+      // same delete intent instead of falling through the legacy per-request
+      // server compatibility key.
+      await unwrapGenerated(await deleteLegacyImage(intent.itemID, undefined, apiRequestOptions({ headers: { "Idempotency-Key": intent.key } })));
+      intent.inFlight = false;
+      await this.verifyDelete();
     } catch (error) {
-      this.setDialogError(errorText(error));
+      intent.inFlight = false;
+      if (error instanceof ApiError && error.status > 0) {
+        this.deleteIntent = undefined;
+        this.setDeleteBusy(false);
+        this.setDialogError(errorText(error));
+        return;
+      }
+      // A transport loss can happen after the transaction commits. Do not
+      // enable a fresh delete; retain this key and make the next action a
+      // readback check, followed by a same-key retry only if still present.
+      this.setDialogError("删除结果暂不可确认。请重新读取列表核对，勿重复删除。");
+      this.setDialogAction("重新读取列表", "delete-verify");
+    }
+  }
+
+  private async verifyDelete(): Promise<void> {
+    const intent = this.deleteIntent;
+    if (!intent) return;
+    const result = await this.load(intent.readbackOffset);
+    if (result === "aborted") return;
+    if (result === "failed") {
+      this.setDialogError("删除结果暂不可确认；列表回读失败。请重新读取列表核对，勿重复删除。");
+      this.setDialogAction("重新读取列表", "delete-verify");
+      return;
+    }
+    if (!this.items.some((item) => item.resourceId === intent.itemID)) {
+      this.deleteIntent = undefined;
+      this.closeDialog();
+      return;
+    }
+    this.setDialogError("删除尚未在列表中确认。可按原操作重试删除。");
+    this.setDialogAction("按原操作重试删除", "delete-retry");
+  }
+
+  private setDeleteBusy(busy: boolean): void {
+    const remove = this.dialogLayer.querySelector<HTMLButtonElement>("[data-image-library-delete]");
+    if (remove) remove.disabled = busy || Boolean(this.deleteIntent);
+  }
+
+  private setDialogAction(label: string, action: "delete-verify" | "delete-retry"): void {
+    const submit = this.dialogLayer.querySelector<HTMLButtonElement>("[data-image-library-dialog-submit]");
+    if (!submit) return;
+    submit.textContent = label;
+    submit.dataset.imageLibraryDialogAction = action;
+    submit.disabled = false;
+  }
+
+  private async readbackAfterMutation(offset = this.offset): Promise<void> {
+    const result = await this.load(offset);
+    if (result === "success") {
+      this.closeDialog();
+    } else if (result === "failed") {
+      this.markSavedButUnread();
+    }
+  }
+
+  private async retryReadback(): Promise<void> {
+    if (this.deleteIntent) {
+      await this.verifyDelete();
+      return;
+    }
+    const result = await this.load(this.offset);
+    if (result === "success") this.closeDialog();
+    else if (result === "failed") this.markSavedButUnread();
+  }
+
+  private markSavedButUnread(): void {
+    if (!this.dialog) return;
+    const value = "素材已保存，但列表回读失败；编辑内容已保留。请重新读取确认，勿重复提交。";
+    this.dialog = this.dialog.kind === "upload"
+      ? { ...this.dialog, error: value, readbackPending: true }
+      : { ...this.dialog, error: value, readbackPending: true };
+    this.setDialogError(value);
+    const panel = this.dialogLayer.querySelector<HTMLFormElement>("form[data-image-library-dialog]");
+    const submit = panel?.querySelector<HTMLButtonElement>("[data-image-library-dialog-submit]");
+    if (submit) {
+      submit.textContent = "重新读取列表";
+      submit.disabled = false;
     }
   }
 
   private setDialogError(value: string): void {
     if (!this.dialog) return;
-    const panel = document.querySelector<HTMLFormElement>("form[data-image-library-dialog]");
+    this.dialog = this.dialog.kind === "upload"
+      ? { ...this.dialog, error: value }
+      : { ...this.dialog, error: value };
+    const panel = this.dialogLayer.querySelector<HTMLFormElement>("form[data-image-library-dialog]");
     if (panel) {
       let feedback = panel.querySelector<HTMLElement>("[data-image-library-mutation-feedback]");
       if (!feedback) {
@@ -464,10 +679,7 @@ class ImageLibraryHost {
       // the user can correct the request and retry from the same dialog.
       return;
     }
-    this.dialog = this.dialog.kind === "upload"
-      ? { kind: "upload", error: value }
-      : { kind: "edit", item: this.dialog.item, error: value };
-    this.render();
+    this.openDialog(this.dialog);
   }
 }
 
