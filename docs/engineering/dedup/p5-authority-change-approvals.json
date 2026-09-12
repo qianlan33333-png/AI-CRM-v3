@@ -379,6 +379,28 @@
       ],
       "reason": "Record the user-authorized CRM audit closeout active V3 OpenAPI route parity, callable request/response contracts, and actual Open Platform OAuth/V1 error envelopes. Retired routes and frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
       "review_reference": "docs/prd/2026-09-12-crm-audit-closeout.md AUD-08; https://github.com/qianlan33333-png/AI-CRM-v3/pull/244; https://github.com/qianlan33333-png/AI-CRM-v3/pull/246"
+    },
+    {
+      "base_commit": "46887f9d6b9f345e15de69cdc5c03907da805ae9",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "a989789843a439d664e6d04ad75fccbef134a8865355f1d67841b3315acda79c",
+          "head_sha256": "aee412088dd2a7ed23a91c49397f3f8731a3d2ad739dc78f90a4a9259d207b40"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "c6e867f16e611ab8ec2b3272801ea4164cfd12d8b01e1a8a908b9e7787aeb025",
+          "head_sha256": "bdba25811ad4a8f25ff172f910f3e4b202f8c3f58c7f44e14fdc1e399f286e08"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "b496adea724545ca16e96e2036b4c0046d0e04d27725366eb81a8aa167e0873a",
+          "head_sha256": "8e663852d2664cab97cdd3b07f86261f106830ed32906896a829aa6c4f521259"
+        }
+      ],
+      "reason": "Record the user-authorized CRM audit closeout active V3 route parity together with the bounded Operation Cycle strategy-summary contract and observable retirement of the unscoped Excel import writer. Frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
+      "review_reference": "docs/prd/2026-09-12-crm-audit-closeout.md AUD-08; https://github.com/qianlan33333-png/AI-CRM-v3/pull/247; https://github.com/qianlan33333-png/AI-CRM-v3/pull/248"
     }
   ]
 }
