@@ -49,6 +49,8 @@ sha_missing_runtime_config_history=6060606060606060606060606060606060606060
 sha_missing_0092=7070707070707070707070707070707070707070
 sha_missing_owner_handoff_history=8080808080808080808080808080808080808080
 sha_missing_0095=9090909090909090909090909090909090909090
+sha_missing_0146=1461461461461461461461461461461461461461
+sha_missing_0147=1471471471471471471471471471471471471471
 sha_missing_commerce_push_history=abababababababababababababababababababab
 sha_missing_open_platform_history=bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc
 sha_missing_0096=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
@@ -205,6 +207,8 @@ make_release() {
     0093_customer_tag_commands.sql \
     0094_runtime_config_releases.sql \
     0095_product_external_push.sql \
+    0146_product_external_push_field_mapping.sql \
+    0147_outbound_commerce_mapping_mode.sql \
     0096_open_platform.sql \
     0097_segment_audience_mutation_actor.sql \
     0098_message_archive_historical_projection.sql \
@@ -341,6 +345,8 @@ for missing_release in \
   "$sha_missing_0094:migrations/0094_runtime_config_releases.sql" \
   "$sha_missing_runtime_config_history:bin/migrate-v2-runtime-config-releases" \
   "$sha_missing_0095:migrations/0095_product_external_push.sql" \
+  "$sha_missing_0146:migrations/0146_product_external_push_field_mapping.sql" \
+  "$sha_missing_0147:migrations/0147_outbound_commerce_mapping_mode.sql" \
   "$sha_missing_commerce_push_history:bin/migrate-v2-commerce-external-push-history" \
   "$sha_missing_0096:migrations/0096_open_platform.sql" \
   "$sha_missing_0097:migrations/0097_segment_audience_mutation_actor.sql" \
