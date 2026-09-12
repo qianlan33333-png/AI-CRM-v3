@@ -192,6 +192,8 @@
       if (summary) summary.textContent = label;
       const note = byID("refreshScheduleNote");
       if (note) note.textContent = schedule.mode === "legacy_custom" ? `${label}。未调整刷新选项时，保存其他配置会保留原规则。` : `当前计划：${label}。`;
+      const legacyActions = byID("legacyRefreshScheduleActions");
+      if (legacyActions) legacyActions.hidden = schedule.mode !== "legacy_custom";
     }
 
     async function rehydrateOwnerUserIDs(parameters) {
@@ -340,6 +342,18 @@
       render().catch((error) => setStatus(error.message, "error"));
     });
     [byID("incrementalSelect"), byID("dailySelect")].filter(Boolean).forEach((input) => input.addEventListener("change", () => { state.refreshChanged = true; }));
+    byID("replaceLegacyScheduleWithManualBtn")?.addEventListener("click", () => {
+      if (storedRefreshSchedule().mode !== "legacy_custom") return;
+      const incremental = byID("incrementalSelect");
+      const daily = byID("dailySelect");
+      if (incremental) incremental.value = "off";
+      if (daily) daily.value = "off";
+      state.refreshChanged = true;
+      const note = byID("refreshScheduleNote");
+      if (note) note.textContent = "已选择改为手动刷新；保存基础配置后将停止当前历史自定义计划。";
+      const legacyActions = byID("legacyRefreshScheduleActions");
+      if (legacyActions) legacyActions.hidden = true;
+    });
     const observer = new MutationObserver(() => {
       if (!state.ready || state.restoring || root.querySelector("[data-field-name]")) return;
       state.restoring = true;
