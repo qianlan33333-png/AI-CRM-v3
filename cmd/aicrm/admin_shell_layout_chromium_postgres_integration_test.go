@@ -358,6 +358,25 @@ func seedAdminShellLayoutRadar(t *testing.T, ctx context.Context, application *c
 		VALUES($1,1,'{}'::jsonb,1,$2)`, radarID, now); err != nil {
 		t.Fatal(err)
 	}
+	var sessionID int64
+	if err = application.pool.Native().QueryRow(ctx, `
+		INSERT INTO radar_view_sessions(
+			session_digest,radar_id,radar_version,attribution_status,expires_at,created_at
+		) VALUES(
+			decode(repeat('1a',32),'hex'),$1,1,'anonymous',$2::timestamptz + interval '1 hour',$2
+		) RETURNING id`, radarID, now).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = application.pool.Native().Exec(ctx, `
+		INSERT INTO radar_events(
+			receipt_id,radar_id,radar_version,session_id,stage,attribution_status,
+			key_digest,payload_digest,occurred_at,created_at
+		) VALUES(
+			'rre_00000000000000000000000000000001',$1,1,$2,'image_loaded','anonymous',
+			decode(repeat('2b',32),'hex'),decode(repeat('3c',32),'hex'),$3,$3
+		)`, radarID, sessionID, now); err != nil {
+		t.Fatal(err)
+	}
 	return radarID
 }
 

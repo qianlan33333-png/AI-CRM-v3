@@ -20,6 +20,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/presentationtime"
 )
 
 const (
@@ -761,7 +762,7 @@ func encodeCSV(orders []domain.Order) []byte {
 		if len(snapshot.Items) > 0 {
 			productCode, productName = snapshot.Items[0].ProductCode, snapshot.Items[0].ProductName
 		}
-		values := []string{snapshot.CreatedAt.UTC().Format(time.RFC3339Nano), snapshot.MerchantOrderNo, snapshot.ProviderTransactionNo, string(snapshot.Provider), optionalID(snapshot.PayerCustomerID), optionalID(snapshot.BeneficiaryCustomerID), productCode, productName, strconv.FormatInt(snapshot.Amount.AmountMinor, 10), snapshot.Amount.Currency, string(snapshot.Status), string(snapshot.RecordOrigin)}
+		values := []string{presentationtime.FormatShanghaiDateTime(snapshot.CreatedAt), snapshot.MerchantOrderNo, snapshot.ProviderTransactionNo, string(snapshot.Provider), optionalID(snapshot.PayerCustomerID), optionalID(snapshot.BeneficiaryCustomerID), productCode, productName, strconv.FormatInt(snapshot.Amount.AmountMinor, 10), snapshot.Amount.Currency, string(snapshot.Status), string(snapshot.RecordOrigin)}
 		for index, value := range values {
 			if index > 0 {
 				builder.WriteByte(',')

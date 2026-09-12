@@ -155,13 +155,9 @@
   }
 
   function displayDate(value) {
-    const date = new Date(String(value || ""));
-    if (Number.isNaN(date.getTime())) return "—";
-    try {
-      return date.toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" });
-    } catch (_error) {
-      return "—";
-    }
+    if (!value) return "—";
+    const formatted = window.AdminFmt && typeof window.AdminFmt.localTime === "function" ? window.AdminFmt.localTime(value) : "";
+    return formatted || "时间暂时无法显示";
   }
 
   function setState(element, title, detail, tone) {
@@ -515,7 +511,18 @@
   if (elements.candidatesRefresh) elements.candidatesRefresh.addEventListener("click", function () { loadList("candidates"); });
   if (elements.hxcConflictsRefresh) elements.hxcConflictsRefresh.addEventListener("click", loadHXCConflicts);
 
-  loadList("conflicts");
-  loadList("candidates");
-  loadHXCConflicts();
+  const startInitialLists = function () {
+    loadList("conflicts");
+    loadList("candidates");
+    loadHXCConflicts();
+  };
+  if (window.AdminFmt && typeof window.AdminFmt.whenAdminDateTimeReady === "function") {
+    window.AdminFmt.whenAdminDateTimeReady(startInitialLists, function () {
+      showAlert("时间暂时无法显示，请刷新重试。", "error");
+      startInitialLists();
+    });
+  } else {
+    showAlert("时间暂时无法显示，请刷新重试。", "error");
+    startInitialLists();
+  }
 }());

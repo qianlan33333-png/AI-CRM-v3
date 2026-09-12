@@ -16,6 +16,8 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}<script>${script}</
   url: `${origin}/admin/customers`, runScripts: 'dangerously', pretendToBeVisual: true,
   beforeParse(window) {
     window.Headers = Headers;
+    window.AdminDateTime = {};
+    window.AdminFmt = { localTime: (value) => value === '2026-09-06T00:00:00Z' ? '2026-09-06 08:00:00' : '时间暂不可用', whenAdminDateTimeReady: (ready) => ready(window.AdminDateTime) };
     window.confirm = () => true;
     window.fetch = async (input, options = {}) => {
       const url = new URL(String(input), window.location.origin);

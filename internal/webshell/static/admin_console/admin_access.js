@@ -148,13 +148,8 @@
   function lastLoginText(value) {
     const raw = String(value || "").trim();
     if (!raw) return "从未登录";
-    const date = new Date(raw);
-    if (Number.isNaN(date.getTime())) return raw;
-    try {
-      return date.toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" });
-    } catch (_error) {
-      return raw;
-    }
+    const formatted = window.AdminFmt && typeof window.AdminFmt.localTime === "function" ? window.AdminFmt.localTime(raw) : "";
+    return formatted || "时间暂时无法显示";
   }
 
   function actionButton(label, action, user) {
@@ -423,5 +418,14 @@
     });
   });
 
-  loadUsers();
+  const startUsers = function () { void loadUsers(); };
+  if (window.AdminFmt && typeof window.AdminFmt.whenAdminDateTimeReady === "function") {
+    window.AdminFmt.whenAdminDateTimeReady(startUsers, function () {
+      setAlert("时间暂时无法显示，请刷新重试。", "error");
+      startUsers();
+    });
+  } else {
+    setAlert("时间暂时无法显示，请刷新重试。", "error");
+    startUsers();
+  }
 }());

@@ -3108,7 +3108,7 @@ console.log('h5/result.html（真实结果与失败关闭）');
   const d = dom.window.document;
   const call = dom.window.__h5HttpTest.calls[0];
   ok('结果token通过POST body查询真实结果', call?.path === '/api/public/survey-submission-results/query' && call.method === 'POST' && call.query === '' && call.body.result_token === 'r'.repeat(43));
-  ok('结果只显示真实编号/版本/时间/本地效果，不伪造82分报告', !!d.querySelector('[data-h5-result]') && d.body.textContent.includes('901') && d.body.textContent.includes('v' + h5Result.definition_version) && d.body.textContent.includes(new Date(h5Result.submitted_at).toLocaleString('zh-CN', { hour12: false })) && !d.body.textContent.includes('你的增长基本盘不错') && !d.body.textContent.includes('总分 / 100'));
+  ok('结果只显示真实编号/版本/上海时间/本地效果，不伪造82分报告', !!d.querySelector('[data-h5-result]') && d.body.textContent.includes('901') && d.body.textContent.includes('v' + h5Result.definition_version) && d.body.textContent.includes('2026-08-28 17:30:00') && !d.body.textContent.includes('2026-08-28T09:30:00') && !d.body.textContent.includes('你的增长基本盘不错') && !d.body.textContent.includes('总分 / 100'));
   ok('结果页提供纯本地返回出口，不发请求', !!d.querySelector('[data-h5-local-exit]'));
   dom.window.close();
 }

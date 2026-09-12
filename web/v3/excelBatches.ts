@@ -2,6 +2,8 @@ import { runAction } from "./actionFeedback";
 
 // Browser host only: it never resolves identity, enqueues work, or calls WeCom.
 // It submits the versioned, CSRF-protected commands defined in the batch API.
+import { formatShanghaiDateTime } from "./adminDateTime";
+
 type Obj = Record<string, any>;
 const base = "/api/admin/operation-batches";
 const states: Record<string, string> = {
@@ -21,6 +23,12 @@ const delivery: Record<string, string> = {
   final_failed: "明确失败",
   outcome_unknown: "结果待核实",
 };
+
+function displayDateTime(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const formatted = formatShanghaiDateTime(value);
+  return formatted === "未提供" ? "时间暂时无法显示" : formatted;
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -978,7 +986,7 @@ class Workspace {
     parent.append(
       el(
         "p",
-        `报告按每人实际成功发送时间计算；结果未知先进入对账，不会换 key 重发。${report?.updated_at ? ` 最近采集：${report.updated_at}` : ""}`,
+        `报告按每人实际成功发送时间计算；结果未知先进入对账，不会换 key 重发。${report?.updated_at ? ` 最近采集：${displayDateTime(report.updated_at)}` : ""}`,
       ),
     );
     if (report) {
@@ -1214,7 +1222,7 @@ class Workspace {
             : item.cover_digest
               ? "已上传内容"
               : "—",
-          String(item.created_at || ""),
+          displayDateTime(item.created_at),
           action("只读查看", async () => {
             const detail = await readAllPages(
               `${base}/${id}/versions/${item.content_version || item.version}`,

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/presentationtime"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
 )
 
@@ -706,7 +707,7 @@ func (h *Handler) export(w http.ResponseWriter, r *http.Request, id int64) {
 			if s.Identity.CustomerID != nil {
 				customer = fmt.Sprint(*s.Identity.CustomerID)
 			}
-			_ = writer.Write([]string{fmt.Sprint(s.ID), s.SubmittedAt.Format("2006-01-02T15:04:05Z07:00"), string(s.Identity.State), customer, fmt.Sprint(s.TotalScore)})
+			_ = writer.Write([]string{fmt.Sprint(s.ID), presentationtime.FormatShanghaiDateTime(s.SubmittedAt), string(s.Identity.State), customer, fmt.Sprint(s.TotalScore)})
 		}
 		writer.Flush()
 		if writer.Error() != nil || len(page.Items) == 0 || int64(offset)+int64(len(page.Items)) >= page.Total {
