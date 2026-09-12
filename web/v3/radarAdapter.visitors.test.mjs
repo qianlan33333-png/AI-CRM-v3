@@ -48,6 +48,7 @@ let failSecondPage = true;
 let invalidCSVResponse = false;
 let exportFailureStatus = 0;
 let heldRequest;
+let exportedCSV = '';
 const initialVisitors = [
   visitor({ nickname: '陈访客', external_contact_id: 'external-contact-001', external_contact_status: 'available', oneid: 'CID-88', attribution_status: 'resolved' }),
   visitor({ external_contact_status: 'missing', oneid: 'CID-89', attribution_status: 'resolved' }),
@@ -74,7 +75,8 @@ const dom = new JSDOM('<!doctype html><body data-page="radarDetail"><main id="st
       if (url.pathname === '/api/admin/radar-links/11/visitors/export') {
         if (exportFailureStatus) return response({ code: exportFailureStatus === 401 ? 'unauthorized' : 'forbidden' }, exportFailureStatus);
         if (invalidCSVResponse) return new Response('<!doctype html><title>sign in</title>', { status: 200, headers: { 'Content-Type': 'text/html' } });
-        return new Response('昵称,外部联系人ID,OneID,打开时间\n陈访客,external-contact-001,CID-88,2026-09-05 08:01:02\n', { status: 200, headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store' } });
+        exportedCSV = '昵称,外部联系人ID,外部联系人ID状态,OneID,打开时间,身份状态\n陈访客,external-contact-001,可确认,CID-88,2026-09-05 08:01:02,已关联客户\n';
+        return new Response(exportedCSV, { status: 200, headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store' } });
       }
       if (url.pathname !== '/api/admin/radar-links/11/visitors') return response({ code: 'unexpected' }, 500);
       const search = url.searchParams.get('search') || '';
@@ -149,6 +151,7 @@ assert.equal(exportRequest.headers.get('X-CSRF-Token'), 'visitor-csrf', 'CSV exp
 assert.equal(exportRequest.cache, 'no-store', 'CSV export is not browser-cached');
 await waitFor(() => hostRoot.textContent.includes('已导出 CSV。'), 'CSV completion is visible');
 assert.equal(downloads, 1, 'only a verified CSV response downloads');
+assert.deepEqual(exportedCSV.trimEnd().split('\n')[0].split(','), ['昵称', '外部联系人ID', '外部联系人ID状态', 'OneID', '打开时间', '身份状态'], 'the mocked CSV shape matches the six-column visitor export contract');
 
 invalidCSVResponse = true;
 document.querySelector('#dExport').click();
