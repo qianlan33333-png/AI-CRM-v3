@@ -436,32 +436,13 @@ const finalDeleteKey = finalDeleteCalls()[0]?.headers["idempotency-key"];
 assert.ok(finalDeleteKey?.startsWith("image-delete-"), "DELETE 5xx did not retain the controlled delete key");
 assert.equal(finalRemove.disabled, true, "DELETE 5xx re-enabled a new destructive action instead of retaining the intent");
 
-// A dismissed outcome-unknown deletion keeps its original idempotency intent.
-// Deleting a different image must be blocked until the original exact-resource
-// read is reconciled, rather than replacing the earlier key in memory.
+// An outcome-unknown deletion cannot be dismissed: the exact-resource
+// verification action stays reachable even if a subsequent list read would no
+// longer include this card.
 dom.window.document.querySelector('button[aria-label="关闭弹窗"]')?.click();
-const finalPrevious = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "上一页");
-assert.ok(finalPrevious, "final-page previous control missing before a second delete attempt");
-finalPrevious.click();
-await waitFor(() => dom.window.document.body.textContent.includes("新的搜索结果"), "could not return to a different image while the original deletion was unknown");
-const differentEdit = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
-assert.ok(differentEdit, "different image edit action missing while original deletion was unknown");
-differentEdit.click();
-await waitFor(() => Boolean(dom.window.document.querySelector("#fImgName")), "different image dialog did not open");
-const differentRemove = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "删除");
-assert.ok(differentRemove, "different image delete action missing while original deletion was unknown");
-differentRemove.click();
-await waitFor(() => dom.window.document.body.textContent.includes("另一张图片素材的删除结果暂不可确认"), "a second delete was not blocked while the original outcome remained unknown");
-assert.equal(calls.filter((call) => call.path === "/api/admin/image-library/12" && call.method === "DELETE").length, 0, "a second delete replaced the original outcome-unknown intent");
-dom.window.document.querySelector('button[aria-label="关闭弹窗"]')?.click();
-const finalNextAgain = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "下一页");
-assert.ok(finalNextAgain, "final-page next control missing when returning to the original deletion");
-finalNextAgain.click();
-await waitFor(() => dom.window.document.body.textContent.includes("第二页素材"), "could not return to the original deletion item");
-const finalEditAgain = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
-assert.ok(finalEditAgain, "original deletion edit action missing after opening another dialog");
-finalEditAgain.click();
-await waitFor(() => [...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "重新核对删除结果"), "original delete intent did not retain its exact-resource verification action");
+await waitFor(() => dom.window.document.body.textContent.includes("请先点击“重新核对删除结果”"), "outcome-unknown delete dialog could be closed before exact-resource verification");
+assert.ok(dom.window.document.querySelector("#fImgName"), "outcome-unknown delete dialog disappeared before verification");
+assert.ok([...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "重新核对删除结果"), "outcome-unknown delete did not keep its exact-resource verification action reachable");
 const listCallsBeforeFiveXXVerification = calls.filter((call) => call.path === "/api/admin/image-library" && call.method === "GET").length;
 dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
 await waitFor(() => [...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "按原操作重试删除"), "single-image read did not expose same-key retry after DELETE 5xx");

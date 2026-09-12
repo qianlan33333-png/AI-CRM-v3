@@ -432,6 +432,14 @@ class ImageLibraryHost {
 
   private closeDialog(expectedDialogID?: number): void {
     if (expectedDialogID !== undefined && !this.dialogMatches(expectedDialogID)) return;
+    if (expectedDialogID !== undefined && this.deleteIntent?.dialogID === expectedDialogID) {
+      // The exact-resource check is the only safe way to settle an
+      // outcome-unknown delete. Keeping this dialog open leaves that action
+      // reachable even when a later list refresh no longer includes the card.
+      this.setDialogError("删除结果暂不可确认。请先点击“重新核对删除结果”，确认后再关闭。", expectedDialogID);
+      this.setDialogAction("重新核对删除结果", "delete-verify", expectedDialogID);
+      return;
+    }
     this.dialog = undefined;
     this.dialogLayer.replaceChildren();
   }
