@@ -29,6 +29,7 @@ let failSecondPage = true;
 let holdFilteredQuery = false;
 let resolveHeldQuery;
 let invalidCSVResponse = false;
+let failCurrentFilteredQuery = false;
 let downloads = 0;
 const event = (suffix, stage = 'image_loaded') => ({
   receipt_id: `rre_${suffix.padStart(32, '0')}`,
@@ -66,6 +67,9 @@ const dom = new JSDOM('<!doctype html><body data-page="radarDetail"><main id="st
       const offset = Number(url.searchParams.get('offset') || '0');
       if (holdFilteredQuery && offset === 0 && url.searchParams.get('start_at') === '2026-09-08T00:00:00.000Z') {
         return await new Promise((resolve) => { resolveHeldQuery = resolve; });
+      }
+      if (failCurrentFilteredQuery && offset === 0 && url.searchParams.get('start_at') === '2026-09-09T00:00:00.000Z') {
+        return new Response(JSON.stringify({ code: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } });
       }
       if (offset === 100 && failSecondPage) {
         failSecondPage = false;
@@ -148,6 +152,17 @@ resolveHeldQuery(new Response(JSON.stringify(page(0, true)), { status: 200, head
 await waitFor(() => hostRoot.textContent.includes('筛选已变更，请查询后查看结果。'), 'an old in-flight response remains visibly stale after the filter changes');
 assert.equal(document.querySelector('#dExport')?.disabled, true, 'a completed stale response does not re-enable export');
 assert.equal(next.disabled, true, 'a completed stale response does not re-enable pagination');
+await waitFor(() => [...hostRoot.querySelectorAll('button')].find((button) => button.textContent === '查询')?.disabled === false, 'the first query has settled before the edited-range retry');
+failCurrentFilteredQuery = true;
+end.value = '2026-09-09T10:00:00';
+end.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+const editedRangeQuery = [...hostRoot.querySelectorAll('button')].find((button) => button.textContent === '查询');
+assert.equal(editedRangeQuery?.disabled, false, 'the query action remains available before retrying an edited range');
+editedRangeQuery?.click();
+await wait(30);
+await waitFor(() => hostRoot.textContent.includes('当前筛选尚未查询，请点击“查询”。'), 'a failed query against an edited range gives the user a concrete next action');
+assert.equal([...hostRoot.querySelectorAll('button')].find((button) => button.textContent === '重试')?.hidden, true, 'a stale retry button is hidden because its old offset is not valid for the edited range');
+assert.equal(editedRangeQuery?.disabled, false, 'the query action remains available after the edited-range request fails');
 dom.window.dispatchEvent(new dom.window.Event('pagehide'));
 dom.window.close();
 console.log('radar event time Host filters, pagination, retry, CSV and Shanghai display: PASS');

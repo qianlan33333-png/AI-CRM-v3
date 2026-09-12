@@ -446,9 +446,13 @@ class RadarDetailTimeHost {
   }
 
   private showError(message: string): void {
-    this.feedback.textContent = message;
+    const stale = this.resultIsStale();
+    // A prior successful page belongs to a different range. Retrying its
+    // offset would silently apply a stale navigation target to the edited
+    // range, so make the only valid next action explicit instead.
+    this.feedback.textContent = stale ? `${message}；当前筛选尚未查询，请点击“查询”。` : message;
     this.feedback.setAttribute('role', 'alert');
-    this.retryButton.hidden = false;
+    this.retryButton.hidden = stale;
     this.setLoading(false);
     this.render();
   }
