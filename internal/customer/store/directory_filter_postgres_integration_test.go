@@ -84,7 +84,9 @@ func TestSearchRadarVisitorCustomersEscapesWildcardCharactersPostgreSQL(t *testi
 		(1,'active','literal%percent','','CID-1','','','active',NULL,CURRENT_TIMESTAMP),
 		(2,'active','literal_under','','CID-2','','','active',NULL,CURRENT_TIMESTAMP),
 		(3,'active','literal\\slash','','CID-3','','','active',NULL,CURRENT_TIMESTAMP),
-		(4,'active','ordinary','','CID-4','','','active',NULL,CURRENT_TIMESTAMP)`); err != nil {
+		(4,'active','ordinary','','CID-4','','','active',NULL,CURRENT_TIMESTAMP),
+		(5,'active','canonical-dirty','','WRONG-CACHED-LABEL','','','active',NULL,CURRENT_TIMESTAMP),
+		(6,'active','canonical-missing','','','','','active',NULL,CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatal(err)
 	}
 	pool, err := platformpostgres.Wrap(native, time.Second)
@@ -117,6 +119,38 @@ func TestSearchRadarVisitorCustomersEscapesWildcardCharactersPostgreSQL(t *testi
 				t.Fatalf("search %q ids=%v want [%d]", testCase.search, ids, testCase.want)
 			}
 		})
+	}
+	for _, testCase := range []struct {
+		search string
+		want   customerdomain.CustomerID
+	}{
+		{search: "CID-5", want: 5},
+		{search: "CID-6", want: 6},
+	} {
+		t.Run("canonical_"+testCase.search, func(t *testing.T) {
+			var ids []customerdomain.CustomerID
+			if err := uow.Within(ctx, func(tx context.Context) error {
+				var readErr error
+				ids, readErr = PostgreSQL{}.SearchRadarVisitorCustomers(tx, testCase.search, 10)
+				return readErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(ids) != 1 || ids[0] != testCase.want {
+				t.Fatalf("canonical search %q ids=%v want [%d]", testCase.search, ids, testCase.want)
+			}
+		})
+	}
+	var stale []customerdomain.CustomerID
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		stale, readErr = PostgreSQL{}.SearchRadarVisitorCustomers(tx, "WRONG-CACHED-LABEL", 10)
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("mutable directory oneid label participated in search: %v", stale)
 	}
 }
 

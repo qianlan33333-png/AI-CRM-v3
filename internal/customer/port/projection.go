@@ -51,13 +51,13 @@ type DirectoryContactDisplayReader interface {
 // neither contact values nor identity evidence.
 type RadarVisitorDirectoryDisplay struct {
 	DisplayName string
-	OneIDLabel  string
 }
 
-// RadarVisitorDirectoryReader exposes safe directory labels for the Radar
-// admin visitor projection. The caller already holds Customer IDs from its
-// own read model; this boundary never resolves, provisions, or links an
-// identity.
+// RadarVisitorDirectoryReader exposes safe directory names and canonical-label
+// search candidates for the Radar admin visitor projection. The caller already
+// holds Customer IDs from its own read model; this boundary never resolves,
+// provisions, or links an identity. Returned labels must derive from the
+// canonical CustomerID, never a mutable directory oneid_label cache.
 type RadarVisitorDirectoryReader interface {
 	RadarVisitorDisplays(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]RadarVisitorDirectoryDisplay, error)
 	SearchRadarVisitorCustomers(context.Context, string, int) ([]customerdomain.CustomerID, error)

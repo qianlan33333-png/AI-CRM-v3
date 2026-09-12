@@ -56,7 +56,7 @@ func (PostgreSQL) RadarVisitorDisplays(ctx context.Context, customerIDs []custom
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT customer_id,display_name,oneid_label FROM customer_directory_projection WHERE customer_id=ANY($1)`, ids)
+	rows, err := tx.Query(ctx, `SELECT customer_id,display_name FROM customer_directory_projection WHERE customer_id=ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (PostgreSQL) RadarVisitorDisplays(ctx context.Context, customerIDs []custom
 	for rows.Next() {
 		var id customerdomain.CustomerID
 		var display customerport.RadarVisitorDirectoryDisplay
-		if err = rows.Scan(&id, &display.DisplayName, &display.OneIDLabel); err != nil {
+		if err = rows.Scan(&id, &display.DisplayName); err != nil {
 			return nil, err
 		}
 		result[id] = display
@@ -83,7 +83,7 @@ func (PostgreSQL) SearchRadarVisitorCustomers(ctx context.Context, search string
 	}
 	value := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search)
 	rows, err := tx.Query(ctx, `SELECT customer_id FROM customer_directory_projection
-		WHERE display_name ILIKE '%'||$1||'%' ESCAPE '\' OR oneid_label ILIKE '%'||$1||'%' ESCAPE '\'
+		WHERE display_name ILIKE '%'||$1||'%' ESCAPE '\'
 		ORDER BY customer_id LIMIT $2`, value, limit)
 	if err != nil {
 		return nil, err
@@ -97,7 +97,21 @@ func (PostgreSQL) SearchRadarVisitorCustomers(ctx context.Context, search string
 		}
 		result = append(result, id)
 	}
-	return result, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if canonical, valid := customerdomain.ParseCanonicalOneIDLabel(search); valid {
+		for _, existing := range result {
+			if existing == canonical {
+				return result, nil
+			}
+		}
+		// The canonical label is derived solely from CustomerID. Identity owns
+		// the subsequent existence and lineage check; do not trust or repair
+		// the mutable directory oneid_label cache here.
+		result = append(result, canonical)
+	}
+	return result, nil
 }
 
 func (PostgreSQL) DisplayNames(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {

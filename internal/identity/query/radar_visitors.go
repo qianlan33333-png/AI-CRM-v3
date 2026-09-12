@@ -122,7 +122,11 @@ func (PostgreSQL) SearchAdminRadarVisitorCustomers(ctx context.Context, corpScop
 		return nil, err
 	}
 	externalRows.Close()
-	ids, err = uniqueAdminRadarVisitorInt64s(ids, maximumAdminRadarVisitorCandidates)
+	ids, err = uniqueAdminRadarVisitorInt64s(ids, maximumAdminRadarVisitorCandidates+1)
+	if err != nil {
+		return nil, err
+	}
+	ids, err = adminRadarVisitorExistingCustomerIDs(ctx, tx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +143,7 @@ func (PostgreSQL) SearchAdminRadarVisitorCustomers(ctx context.Context, corpScop
 // adminRadarVisitorCanonicalRoots is the batch counterpart to
 // CanonicalLineage. It does not silently omit malformed Customer roots: every
 // submitted source needs exactly one terminal non-merged customer, reached in
-// at most 128 pointers and without a cycle or invalid terminal pointer.
+// at most 127 pointers and without a cycle or invalid terminal pointer.
 func adminRadarVisitorCanonicalRoots(ctx context.Context, tx pgx.Tx, ids []int64) (map[customerdomain.CustomerID]customerdomain.CustomerID, error) {
 	rows, err := tx.Query(ctx, `WITH RECURSIVE input(source_customer_id) AS (
 		SELECT DISTINCT source_customer_id FROM unnest($1::bigint[]) AS input(source_customer_id)
@@ -150,7 +154,7 @@ func adminRadarVisitorCanonicalRoots(ctx context.Context, tx pgx.Tx, ids []int64
 		SELECT lineage.source_customer_id,c.id,c.status,c.merged_into_customer_id,lineage.depth+1,lineage.visited||c.id,c.id=ANY(lineage.visited)
 		FROM lineage JOIN customers c ON c.id=lineage.merged_into_customer_id
 		WHERE lineage.status='merged' AND lineage.merged_into_customer_id IS NOT NULL
-			AND lineage.depth<128 AND NOT lineage.cycle
+			AND lineage.depth<127 AND NOT lineage.cycle
 	), summary AS (
 		SELECT input.source_customer_id,
 			COALESCE((SELECT l.customer_id FROM lineage l WHERE l.source_customer_id=input.source_customer_id
@@ -161,7 +165,7 @@ func adminRadarVisitorCanonicalRoots(ctx context.Context, tx pgx.Tx, ids []int64
 				WHEN EXISTS (SELECT 1 FROM lineage l WHERE l.source_customer_id=input.source_customer_id AND l.cycle) THEN 'cycle'
 				WHEN EXISTS (SELECT 1 FROM lineage l WHERE l.source_customer_id=input.source_customer_id AND l.status='merged' AND l.merged_into_customer_id IS NULL) THEN 'broken_merged_pointer'
 				WHEN EXISTS (SELECT 1 FROM lineage l WHERE l.source_customer_id=input.source_customer_id AND l.status<>'merged' AND l.merged_into_customer_id IS NOT NULL) THEN 'invalid_terminal_pointer'
-				WHEN EXISTS (SELECT 1 FROM lineage l WHERE l.source_customer_id=input.source_customer_id AND l.status='merged' AND l.depth=128) THEN 'too_deep'
+				WHEN EXISTS (SELECT 1 FROM lineage l WHERE l.source_customer_id=input.source_customer_id AND l.status='merged' AND l.depth=127) THEN 'too_deep'
 				WHEN NOT EXISTS (SELECT 1 FROM lineage l WHERE l.source_customer_id=input.source_customer_id AND l.status<>'merged' AND l.merged_into_customer_id IS NULL AND NOT l.cycle) THEN 'missing_terminal'
 				ELSE ''
 			END AS issue
@@ -195,19 +199,43 @@ func adminRadarVisitorCanonicalRoots(ctx context.Context, tx pgx.Tx, ids []int64
 	return roots, nil
 }
 
+// adminRadarVisitorExistingCustomerIDs makes an exact CID search for a
+// deleted or nonexistent Customer a normal empty search while preserving a
+// fail-closed error for any existing malformed lineage.
+func adminRadarVisitorExistingCustomerIDs(ctx context.Context, tx pgx.Tx, ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return []int64{}, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT id FROM customers WHERE id=ANY($1::bigint[]) ORDER BY id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]int64, 0, len(ids))
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func adminRadarVisitorLineageMembers(ctx context.Context, tx pgx.Tx, roots []int64, limit int) ([]customerdomain.CustomerID, error) {
 	rows, err := tx.Query(ctx, `WITH RECURSIVE root(customer_id) AS (
 		SELECT DISTINCT customer_id FROM unnest($1::bigint[]) AS root(customer_id)
-	), descendants(customer_id,depth,visited,cycle) AS (
-		SELECT customer_id,0,ARRAY[customer_id],false FROM root
+	), descendants(customer_id,visited,cycle) AS (
+		SELECT customer_id,ARRAY[customer_id],false FROM root
 		UNION ALL
-		SELECT c.id,descendants.depth+1,descendants.visited||c.id,c.id=ANY(descendants.visited)
+		SELECT c.id,descendants.visited||c.id,c.id=ANY(descendants.visited)
 		FROM descendants JOIN customers c ON c.merged_into_customer_id=descendants.customer_id
-		WHERE c.status='merged' AND descendants.depth<128 AND NOT descendants.cycle
+		WHERE c.status='merged' AND NOT descendants.cycle
 	), invalid AS (
-		SELECT EXISTS(SELECT 1 FROM descendants WHERE cycle)
-			OR EXISTS(SELECT 1 FROM descendants d JOIN customers c ON c.merged_into_customer_id=d.customer_id
-				WHERE c.status='merged' AND d.depth=128 AND NOT c.id=ANY(d.visited)) AS bad
+		SELECT EXISTS(SELECT 1 FROM descendants WHERE cycle) AS bad
 	) SELECT descendants.customer_id,invalid.bad FROM descendants CROSS JOIN invalid
 	WHERE NOT descendants.cycle ORDER BY descendants.customer_id LIMIT $2`, roots, limit)
 	if err != nil {

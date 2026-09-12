@@ -86,17 +86,43 @@ func TestAdminRadarVisitorIdentityProjectionMatchesCanonicalLineageAndFailsClose
 	}
 	assertCanonicalAgreementFailure(t, ctx, uow, reader, "cycle", customerdomain.CustomerID(cycleLeft), query.ErrInvalidQuery)
 
-	chain := make([]int64, 0, 130)
-	for index := 0; index < 130; index++ {
+	withinBoundary := insertRadarVisitorMergeChain(t, native, 127)
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		lineage, readErr := reader.CanonicalLineage(tx, customerdomain.CustomerID(withinBoundary[0]))
+		if readErr != nil {
+			return readErr
+		}
+		if len(lineage) != len(withinBoundary) || lineage[len(lineage)-1] != customerdomain.CustomerID(withinBoundary[len(withinBoundary)-1]) {
+			t.Fatalf("127-pointer existing lineage root=%v", lineage)
+		}
+		projection, readErr := reader.AdminRadarVisitorIdentities(tx, "wecom-corp:radar-visitor", []customerdomain.CustomerID{customerdomain.CustomerID(withinBoundary[0])})
+		if readErr != nil {
+			return readErr
+		}
+		if projection[customerdomain.CustomerID(withinBoundary[0])].CanonicalCustomerID != customerdomain.CustomerID(withinBoundary[len(withinBoundary)-1]) {
+			t.Fatalf("127-pointer batch projection=%+v", projection)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	overBoundary := insertRadarVisitorMergeChain(t, native, 128)
+	assertCanonicalAgreementFailure(t, ctx, uow, reader, "depth", customerdomain.CustomerID(overBoundary[0]), query.ErrInvalidQuery)
+}
+
+func insertRadarVisitorMergeChain(t *testing.T, native *pgxpool.Pool, pointers int) []int64 {
+	t.Helper()
+	chain := make([]int64, 0, pointers+1)
+	for index := 0; index <= pointers; index++ {
 		id := insertRadarVisitorCustomer(t, native, "active", nil)
 		if len(chain) > 0 {
-			if _, err = native.Exec(ctx, `UPDATE customers SET status='merged',merged_into_customer_id=$2,merged_at=CURRENT_TIMESTAMP WHERE id=$1`, chain[len(chain)-1], id); err != nil {
+			if _, err := native.Exec(context.Background(), `UPDATE customers SET status='merged',merged_into_customer_id=$2,merged_at=CURRENT_TIMESTAMP WHERE id=$1`, chain[len(chain)-1], id); err != nil {
 				t.Fatal(err)
 			}
 		}
 		chain = append(chain, id)
 	}
-	assertCanonicalAgreementFailure(t, ctx, uow, reader, "depth", customerdomain.CustomerID(chain[0]), query.ErrInvalidQuery)
+	return chain
 }
 
 func assertCanonicalAgreementFailure(t *testing.T, ctx context.Context, uow platformport.UnitOfWork, reader query.PostgreSQL, name string, id customerdomain.CustomerID, expected error) {

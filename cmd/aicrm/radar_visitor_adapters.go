@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
@@ -112,9 +111,9 @@ func (adapter radarVisitorPresentationAdapter) PresentRadarVisitors(ctx context.
 		if display.DisplayName != "" {
 			item.Nickname = pointer(display.DisplayName)
 		}
-		oneID := display.OneIDLabel
+		oneID := customerdomain.CanonicalOneIDLabel(identity.CanonicalCustomerID)
 		if oneID == "" {
-			oneID = "CID-" + strconv.FormatInt(int64(identity.CanonicalCustomerID), 10)
+			return nil, fmt.Errorf("radar visitor canonical OneID unavailable: %w", radarport.ErrUnavailable)
 		}
 		item.OneID = pointer(oneID)
 		items = append(items, item)
