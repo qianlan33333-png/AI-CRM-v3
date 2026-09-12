@@ -11,7 +11,12 @@ import { formatShanghaiDateTime } from './adminDateTime';
 
 type OrderController = { page: string; api: { mode: string }; state: { orderFilters: Record<string, string> } };
 type DetailRecord = Record<string, unknown>;
-type DetailContext = { order?: DetailRecord; items?: unknown[]; refunds?: unknown[]; effects?: unknown[]; refundsUnavailable?: boolean };
+type RefundScope = { provider: 'wechat' | 'wechat_shop'; orderNo: string };
+type RefundIntentRequest = { provider: 'wechat'; order_no: string; refund_amount_total: number; reason: string; transaction_id_confirmation: string; checked: true };
+type RefundIntentCandidate = Omit<RefundIntentRequest, 'checked'> & { checked: boolean };
+type RefundIntentState = 'submitting' | 'accepted' | 'unknown';
+type RefundIntent = { idempotencyKey: string; fingerprint: string; request: RefundIntentRequest; state: RefundIntentState };
+type DetailContext = { order?: DetailRecord; items?: unknown[]; refunds?: unknown[]; effects?: unknown[]; refundsUnavailable?: boolean; effectsUnavailable?: boolean };
 
 const orderPrototype = AdminController.prototype as unknown as { renderVals(this: OrderController): Record<string, any> };
 const donorRenderOrders = orderPrototype.renderVals;
@@ -30,6 +35,7 @@ orderPrototype.renderVals = function () {
 
 const originalFetch = globalThis.fetch.bind(globalThis);
 let detailContext: DetailContext = {};
+const refundIntents = new Map<string, RefundIntent>();
 
 function inputValue(id: string): string {
   const element = document.getElementById(id);
@@ -95,12 +101,27 @@ function orderReference(row: HTMLTableRowElement): string | undefined {
   return value || undefined;
 }
 
-function refundScope(order: DetailRecord | undefined): { provider: string; orderNo: string } | undefined {
+function refundScope(order: DetailRecord | undefined): RefundScope | undefined {
   if (!order) return undefined;
   const orderNo = text(order.merchant_order_no, '');
   const rawProvider = text(order.provider, '');
+  // Order detail normalizes WeChat Pay to `wechat`; preserve the API's
+  // documented legacy alias only while reading older rows.
   const provider = rawProvider === 'wechat_pay' ? 'wechat' : rawProvider;
   return orderNo && (provider === 'wechat' || provider === 'wechat_shop') ? { provider, orderNo } : undefined;
+}
+
+function refundIntentScope(scope: RefundScope): string {
+  return `${scope.provider}\u0000${scope.orderNo}`;
+}
+
+function createRefundIdempotencyKey(): string {
+  const nonce = globalThis.crypto?.randomUUID?.();
+  return `order-refund-${nonce || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function refundIntentFingerprint(request: RefundIntentRequest | RefundIntentCandidate): string {
+  return JSON.stringify(request);
 }
 
 function emptyScopedRefundPage(): Response {
@@ -125,9 +146,21 @@ function captureDetailResponse(kind: keyof DetailContext, response: Response): v
       if (order) detailContext.order = order;
     } else if (kind === 'items' || kind === 'refunds' || kind === 'effects') {
       detailContext[kind] = arrayField(payload, kind === 'items' ? 'items' : kind, 'items');
+      if (kind === 'refunds') detailContext.refundsUnavailable = false;
+      if (kind === 'effects') detailContext.effectsUnavailable = false;
     }
     schedulePresentation();
-  }).catch(() => { /* The donor keeps malformed-response handling. */ });
+  }).catch(() => {
+    if (kind === 'refunds') detailContext.refundsUnavailable = true;
+    if (kind === 'effects') detailContext.effectsUnavailable = true;
+    schedulePresentation();
+  });
+}
+
+function markDetailReadUnavailable(kind: 'refunds' | 'effects'): void {
+  if (kind === 'refunds') detailContext.refundsUnavailable = true;
+  else detailContext.effectsUnavailable = true;
+  schedulePresentation();
 }
 
 // Never permit the frozen detail renderer to request the global refund page.
@@ -202,11 +235,16 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   }
 
   const response = await originalFetch(url.toString(), init);
-  if (isOrderDetailPage() && response.ok) {
-    if (/^\/api\/admin\/orders\/[^/]+$/.test(url.pathname)) captureDetailResponse('order', response);
-    else if (/^\/api\/admin\/orders\/[^/]+\/items$/.test(url.pathname)) captureDetailResponse('items', response);
-    else if (url.pathname === '/api/admin/refunds') captureDetailResponse('refunds', response);
-    else if (/^\/api\/admin\/wechat-pay\/orders\/[^/]+\/external-push-deliveries$/.test(url.pathname)) captureDetailResponse('effects', response);
+  if (isOrderDetailPage()) {
+    if (/^\/api\/admin\/orders\/[^/]+$/.test(url.pathname) && response.ok) captureDetailResponse('order', response);
+    else if (/^\/api\/admin\/orders\/[^/]+\/items$/.test(url.pathname) && response.ok) captureDetailResponse('items', response);
+    else if (url.pathname === '/api/admin/refunds') {
+      if (response.ok) captureDetailResponse('refunds', response);
+      else markDetailReadUnavailable('refunds');
+    } else if (/^\/api\/admin\/wechat-pay\/orders\/[^/]+\/external-push-deliveries$/.test(url.pathname)) {
+      if (response.ok) captureDetailResponse('effects', response);
+      else markDetailReadUnavailable('effects');
+    }
   }
   if (url.pathname !== '/api/admin/orders' || !response.ok) return response;
   try {
@@ -244,6 +282,14 @@ function applyOrderPresentation(): void {
     }
     const internal = cells[2].querySelector<HTMLElement>('div:nth-child(2)');
     if (internal && !internal.hidden) internal.hidden = true;
+    const statusCell = cells[5];
+    if (statusCell) {
+      const label = statusCell.querySelector<HTMLElement>('span') || statusCell;
+      const status = label.dataset.orderStatus || label.textContent?.trim() || '';
+      if (!label.dataset.orderStatus) label.dataset.orderStatus = status;
+      const localized = commerceStatusLabel('order', status);
+      if (label.textContent !== localized) label.textContent = localized;
+    }
   });
 }
 
@@ -307,12 +353,42 @@ function money(value: unknown): string {
   return /^\d+(?:\.\d{1,2})?$/.test(amount) ? `¥${amount}` : '金额待确认';
 }
 
+function minorAmountValue(value: unknown): number | undefined {
+  const normalized = typeof value === 'number' ? value : typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : NaN;
+  return Number.isSafeInteger(normalized) && normalized >= 0 ? normalized : undefined;
+}
+
+function decimalFromMinor(value: number): string {
+  return `${Math.floor(value / 100)}.${String(value % 100).padStart(2, '0')}`;
+}
+
+function moneyFromMinor(value: unknown): string {
+  const minor = minorAmountValue(value);
+  return minor == null ? '金额待确认' : `¥${decimalFromMinor(minor)}`;
+}
+
+function minorAmount(raw: string): number | undefined {
+  const match = raw.trim().match(/^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/);
+  if (!match) return undefined;
+  const minor = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0') || '0');
+  return Number.isSafeInteger(minor) && minor > 0 ? minor : undefined;
+}
+
+function appendRefundReadbackControl(parent: HTMLElement, scope: RefundScope): void {
+  const control = element('button', '读取当前订单退款记录') as HTMLButtonElement;
+  control.type = 'button';
+  control.addEventListener('click', () => { void refreshRefundReadback(scope); });
+  parent.appendChild(control);
+}
+
 function replaceRefundPanel(order: DetailRecord): void {
   const native = order.record_origin === 'native';
   const oldPanel = panelForHeading((heading) => heading === '申请退款' || heading === '退款确认' || heading === '退款' || heading.includes('历史只读') || heading === '历史订单，仅供查询');
   if (!oldPanel) return;
   const refunds = detailContext.refunds || [];
-  const fingerprint = JSON.stringify({ native, transaction: order.transaction_id, provider: order.provider, refunds, unavailable: detailContext.refundsUnavailable });
+  const scope = refundScope(order);
+  const intent = scope ? refundIntents.get(refundIntentScope(scope)) : undefined;
+  const fingerprint = JSON.stringify({ native, transaction: order.transaction_id, provider: order.provider, refundable: order.refundable_amount_total, refunds, unavailable: detailContext.refundsUnavailable, intent: intent?.state, intentPayload: intent?.fingerprint });
   if (oldPanel.dataset.orderRefundFingerprint === fingerprint) return;
   oldPanel.dataset.orderRefundFingerprint = fingerprint;
   oldPanel.replaceChildren();
@@ -321,7 +397,7 @@ function replaceRefundPanel(order: DetailRecord): void {
   const title = element('h2', native ? '退款' : '历史订单，仅供查询');
   title.style.cssText = 'margin:0;font-size:14px;font-weight:600';
   const description = element('p', native
-    ? '提交前请核对商品、金额和已核验的微信支付交易单号。退款结果以后续退款记录为准。'
+    ? '提交前请核对商品、可退金额和已核验的微信支付交易单号。退款结果以后续退款记录为准。'
     : '该订单保留历史事实，仅供查询，不支持退款确认。');
   description.style.cssText = 'margin:2px 0 0;font-size:12px;color:#8F959E';
   header.append(title, description);
@@ -329,7 +405,7 @@ function replaceRefundPanel(order: DetailRecord): void {
   const body = element('div');
   body.style.cssText = 'padding:16px;display:grid;gap:10px';
   if (detailContext.refundsUnavailable) {
-    const warning = element('p', '退款记录暂不可读取，为避免混入其他订单记录，本页未展示退款列表。');
+    const warning = element('p', '退款记录暂不可读取，为避免混入其他订单记录，本页未展示退款列表，也不能确认新的退款申请。');
     warning.style.cssText = 'margin:0;color:#8F5A16;font-size:13px';
     body.appendChild(warning);
   } else if (refunds.length === 0) {
@@ -340,7 +416,7 @@ function replaceRefundPanel(order: DetailRecord): void {
       if (!refund) continue;
       const row = element('div');
       row.style.cssText = 'padding:10px;border:1px solid #EFF0F1;border-radius:6px;display:grid;gap:4px';
-      row.append(element('strong', `${commerceStatusLabel('refund', refund.status)} · ${money(Number(refund.amount_minor || 0) / 100)}`));
+      row.append(element('strong', `${commerceStatusLabel('refund', refund.status)} · ${moneyFromMinor(refund.refund_amount_total)}`));
       row.append(element('span', formatShanghaiDateTime(refund.created_at)));
       const reason = text(refund.reason, '');
       if (reason) row.append(element('span', reason));
@@ -351,30 +427,43 @@ function replaceRefundPanel(order: DetailRecord): void {
   oldPanel.appendChild(body);
 }
 
-function minorAmount(raw: string): number | undefined {
-  const match = raw.trim().match(/^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/);
-  if (!match) return undefined;
-  const minor = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0') || '0');
-  return Number.isSafeInteger(minor) && minor > 0 ? minor : undefined;
-}
-
 function appendRefundForm(parent: HTMLElement, order: DetailRecord): void {
   const scope = refundScope(order);
   if (!scope || scope.provider !== 'wechat') {
     parent.appendChild(element('p', '当前支付来源暂不支持在本页确认退款。'));
     return;
   }
+  if (detailContext.refundsUnavailable) return;
   const transactionID = text(order.transaction_id, '');
   if (!transactionID) {
     parent.appendChild(element('p', '无法确认退款：未获得已核验的微信支付交易单号。'));
     return;
   }
+  const refundableMinor = minorAmountValue(order.refundable_amount_total);
+  if (refundableMinor == null) {
+    parent.appendChild(element('p', '无法确认退款：可退金额待确认。'));
+    return;
+  }
+  if (refundableMinor < 1) {
+    parent.appendChild(element('p', '当前订单没有可退金额，不能确认退款。'));
+    return;
+  }
+  const existing = refundIntents.get(refundIntentScope(scope));
+  if (existing) {
+    parent.appendChild(element('p', existing.state === 'unknown'
+      ? '退款申请结果待核对。为避免重复申请，本次退款内容已锁定；仅可读取当前订单退款记录。'
+      : existing.state === 'submitting'
+        ? '退款申请正在提交。为避免重复申请，请勿再次提交或修改退款内容。'
+        : '退款申请已受理。请以当前订单退款记录中的后续状态为准。'));
+    appendRefundReadbackControl(parent, scope);
+    return;
+  }
   const form = element('div');
   form.style.cssText = 'display:grid;gap:12px;border-top:1px solid #EFF0F1;padding-top:14px';
   const amountLabel = element('label');
-  amountLabel.append(element('span', '退款金额'));
+  amountLabel.append(element('span', `退款金额（最多 ${moneyFromMinor(refundableMinor)}）`));
   const amount = document.createElement('input');
-  amount.type = 'text'; amount.value = text(order.amount_yuan, ''); amount.inputMode = 'decimal'; amount.dataset.orderRefundAmount = '';
+  amount.type = 'text'; amount.value = decimalFromMinor(refundableMinor); amount.inputMode = 'decimal'; amount.dataset.orderRefundAmount = '';
   amountLabel.appendChild(amount);
   const confirmationLabel = element('label');
   confirmationLabel.append(element('span', '再次输入微信支付交易单号'));
@@ -389,7 +478,7 @@ function appendRefundForm(parent: HTMLElement, order: DetailRecord): void {
   reasonLabel.appendChild(reason);
   const checkedLabel = element('label');
   const checked = document.createElement('input'); checked.type = 'checkbox'; checked.dataset.orderRefundChecked = '';
-  checkedLabel.append(checked, document.createTextNode('已核对付款人、商品、金额、支付来源和微信支付交易单号'));
+  checkedLabel.append(checked, document.createTextNode('已核对付款人、商品、可退金额、支付来源和微信支付交易单号'));
   const submit = element('button', '确认提交退款申请') as HTMLButtonElement;
   submit.type = 'button';
   submit.addEventListener('click', () => { void submitRefundConfirmation(order, scope, amount, confirmation, reason, checked, submit); });
@@ -397,41 +486,166 @@ function appendRefundForm(parent: HTMLElement, order: DetailRecord): void {
   parent.appendChild(form);
 }
 
-async function submitRefundConfirmation(order: DetailRecord, scope: { provider: string; orderNo: string }, amount: HTMLInputElement, confirmation: HTMLInputElement, reason: HTMLSelectElement, checked: HTMLInputElement, submit: HTMLButtonElement): Promise<void> {
-  const amountMinor = minorAmount(amount.value);
-  if (!amountMinor || !checked.checked || !confirmation.value.trim()) {
+async function refreshRefundReadback(scope: RefundScope): Promise<boolean> {
+  const query = new URLSearchParams({ provider: scope.provider, order_no: scope.orderNo });
+  try {
+    const refundsResponse = await originalFetch(`/api/admin/refunds?${query.toString()}`, { credentials: 'same-origin' });
+    if (!refundsResponse.ok) {
+      detailContext.refundsUnavailable = true;
+      schedulePresentation();
+      showOrderMessage('当前订单退款记录暂不可读取，请稍后仅重新读取记录，勿重复提交退款申请。');
+      return false;
+    }
+    const refundsPayload = await refundsResponse.json();
+    detailContext.refunds = arrayField(refundsPayload, 'refunds', 'items');
+    detailContext.refundsUnavailable = false;
+    const reference = detailReference();
+    if (reference) {
+      const orderResponse = await originalFetch(`/api/admin/orders/${encodeURIComponent(reference)}`, { credentials: 'same-origin' });
+      if (orderResponse.ok) {
+        const order = asRecord(await orderResponse.json());
+        if (order) detailContext.order = order;
+      }
+    }
+    schedulePresentation();
+    return true;
+  } catch {
+    detailContext.refundsUnavailable = true;
+    schedulePresentation();
+    showOrderMessage('当前订单退款记录暂不可读取，请稍后仅重新读取记录，勿重复提交退款申请。');
+    return false;
+  }
+}
+
+function candidateRefundRequest(scope: RefundScope, amount: HTMLInputElement, confirmation: HTMLInputElement, reason: HTMLSelectElement, checked: HTMLInputElement): RefundIntentCandidate {
+  return {
+    provider: 'wechat', order_no: scope.orderNo, refund_amount_total: minorAmount(amount.value) ?? -1,
+    reason: reason.value, transaction_id_confirmation: confirmation.value.trim(), checked: checked.checked,
+  };
+}
+
+function activeRefundIntentMessage(intent: RefundIntent, candidate: RefundIntentCandidate): string {
+  if (refundIntentFingerprint(candidate) !== intent.fingerprint) return '退款申请结果待核对，退款金额、原因和交易单号已锁定，不能修改后另行申请。';
+  if (intent.state === 'submitting') return '退款申请正在提交，请勿重复提交。';
+  if (intent.state === 'unknown') return '退款申请结果待核对，请先读取当前订单退款记录，不能重复提交。';
+  return '退款申请已受理，请读取当前订单退款记录查看后续状态。';
+}
+
+async function submitRefundConfirmation(order: DetailRecord, scope: RefundScope, amount: HTMLInputElement, confirmation: HTMLInputElement, reason: HTMLSelectElement, checked: HTMLInputElement, submit: HTMLButtonElement): Promise<void> {
+  const candidate = candidateRefundRequest(scope, amount, confirmation, reason, checked);
+  const intentScope = refundIntentScope(scope);
+  const active = refundIntents.get(intentScope);
+  if (active) {
+    showOrderMessage(activeRefundIntentMessage(active, candidate));
+    return;
+  }
+  const refundableMinor = minorAmountValue(order.refundable_amount_total);
+  if (!candidate.refund_amount_total || !candidate.checked || !candidate.transaction_id_confirmation) {
     showOrderMessage('请完整核对退款金额，并勾选确认后输入已核验的微信支付交易单号。');
     return;
   }
-  const requestBody = {
-    provider: 'wechat', order_no: scope.orderNo, refund_amount_total: amountMinor,
-    reason: reason.value, transaction_id_confirmation: confirmation.value.trim(), checked: true,
-  };
+  if (refundableMinor == null || candidate.refund_amount_total > refundableMinor) {
+    showOrderMessage('退款金额不能超过当前可退金额。');
+    return;
+  }
+  const expectedTransactionID = text(order.transaction_id, '');
+  if (!expectedTransactionID || candidate.transaction_id_confirmation !== expectedTransactionID) {
+    showOrderMessage('输入的微信支付交易单号与当前订单不一致，不能确认退款。');
+    return;
+  }
+  const request: RefundIntentRequest = { ...candidate, checked: true };
+  const intent: RefundIntent = { idempotencyKey: createRefundIdempotencyKey(), request, fingerprint: refundIntentFingerprint(request), state: 'submitting' };
+  refundIntents.set(intentScope, intent);
   submit.disabled = true;
   try {
-    const idempotencyKey = globalThis.crypto?.randomUUID?.() || `order-refund-${Date.now()}`;
     const response = await originalFetch(`/api/admin/wechat-pay/orders/${encodeURIComponent(scope.orderNo)}/refunds`, apiRequestOptions({
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(requestBody),
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.idempotencyKey }, body: JSON.stringify(request),
     }));
     if (!response.ok) {
-      showOrderMessage('退款确认未通过，请核对交易单号、金额和订单信息后重试。');
+      if (response.status >= 400 && response.status < 500) {
+        refundIntents.delete(intentScope);
+        submit.disabled = false;
+        showOrderMessage('退款确认未通过，请核对交易单号、可退金额和订单信息后重新填写。');
+        return;
+      }
+      intent.state = 'unknown';
+      schedulePresentation();
+      showOrderMessage('退款申请结果待核对。为避免重复申请，本次退款内容已锁定；请读取当前订单退款记录。');
       return;
     }
-    showOrderMessage('退款申请已受理，实际退款结果请以后的退款记录为准。');
-    detailContext.refunds = undefined;
+    intent.state = 'accepted';
     schedulePresentation();
+    const readBack = await refreshRefundReadback(scope);
+    showOrderMessage(readBack
+      ? '退款申请已受理，已读取当前订单退款记录。实际退款结果以记录状态为准。'
+      : '退款申请已受理，但退款记录暂不可读取。请稍后仅重新读取当前订单退款记录。');
   } catch {
-    showOrderMessage('退款申请暂时无法提交，请稍后重试。');
-  } finally { submit.disabled = false; }
+    intent.state = 'unknown';
+    schedulePresentation();
+    showOrderMessage('退款申请结果待核对。为避免重复申请，本次退款内容已锁定；请读取当前订单退款记录。');
+  }
+}
+
+function applyOrderDetailStatusBadge(order: DetailRecord): void {
+  const orderNo = text(order.merchant_order_no, '');
+  if (!orderNo) return;
+  const headerNumber = Array.from(document.querySelectorAll<HTMLSpanElement>('span')).find((candidate) => candidate.textContent?.trim() === orderNo && candidate.parentElement?.children.length === 2);
+  const statusBadge = headerNumber?.nextElementSibling;
+  if (!(statusBadge instanceof HTMLElement)) return;
+  const label = order.record_origin === 'native'
+    ? commerceStatusLabel('order', order.status_label || order.status)
+    : `历史记录：${commerceStatusLabel('order', order.status_label || order.status)}`;
+  if (statusBadge.textContent !== label) statusBadge.textContent = label;
+}
+
+function replaceExternalEffectsPanel(): void {
+  const panel = panelForHeading((heading) => heading === '事件时间线' || heading === '外部处理记录');
+  if (!panel) return;
+  const effects = detailContext.effects || [];
+  const fingerprint = JSON.stringify({ effects, unavailable: detailContext.effectsUnavailable });
+  if (panel.dataset.orderEffectsFingerprint === fingerprint) return;
+  panel.dataset.orderEffectsFingerprint = fingerprint;
+  panel.replaceChildren();
+  const header = element('div');
+  header.style.cssText = 'padding:12px 16px;border-bottom:1px solid #EFF0F1';
+  const heading = element('h2', '外部处理记录');
+  heading.style.cssText = 'margin:0;font-size:14px;font-weight:600';
+  const description = element('p', '以下为当前订单关联的外部处理状态。');
+  description.style.cssText = 'margin:2px 0 0;font-size:12px;color:#8F959E';
+  header.append(heading, description);
+  panel.appendChild(header);
+  const body = element('div');
+  body.style.cssText = 'padding:16px;display:grid;gap:10px';
+  if (detailContext.effectsUnavailable) {
+    body.appendChild(element('p', '外部处理记录暂不可读取。'));
+  } else if (effects.length === 0) {
+    body.appendChild(element('p', '当前订单没有外部处理记录。'));
+  } else {
+    for (const raw of effects) {
+      const effect = asRecord(raw);
+      if (!effect) continue;
+      const row = element('div');
+      row.style.cssText = 'padding:10px;border:1px solid #EFF0F1;border-radius:6px;display:grid;gap:4px';
+      row.append(element('strong', commerceStatusLabel('effect', effect.external_effect_state || effect.state || effect.status)));
+      row.append(element('span', formatShanghaiDateTime(effect.updated_at || effect.created_at)));
+      body.appendChild(row);
+    }
+  }
+  panel.appendChild(body);
 }
 
 function applyOrderDetailPresentation(): void {
   if (!isOrderDetailPage() || !detailContext.order) return;
   const order = detailContext.order;
+  applyOrderDetailStatusBadge(order);
   const card = document.querySelector<HTMLElement>('[data-order-detail-fingerprint]') || panelForHeading((heading) => heading === '订单详情');
   if (!card) return;
   const fingerprint = JSON.stringify({ order, items: detailContext.items?.map(asRecord), refunds: detailContext.refunds?.map(asRecord), unavailable: detailContext.refundsUnavailable });
-  if (card.dataset.orderDetailFingerprint === fingerprint) { replaceRefundPanel(order); return; }
+  if (card.dataset.orderDetailFingerprint === fingerprint) {
+    replaceExternalEffectsPanel();
+    replaceRefundPanel(order);
+    return;
+  }
   card.dataset.orderDetailFingerprint = fingerprint;
   card.replaceChildren();
   const header = element('div');
@@ -460,9 +674,9 @@ function applyOrderDetailPresentation(): void {
   appendDetailSection(card, '商品与金额', [
     ['商品名称', names.join('、') || text(order.product_name, '未提供')],
     ['付款金额', money(order.amount_yuan)],
+    ['当前可退金额', moneyFromMinor(order.refundable_amount_total)],
   ]);
-  const timeline = panelForHeading((label) => label === '事件时间线');
-  if (timeline) timeline.hidden = true;
+  replaceExternalEffectsPanel();
   replaceRefundPanel(order);
 }
 

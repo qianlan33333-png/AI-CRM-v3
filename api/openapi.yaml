@@ -2997,7 +2997,7 @@ paths:
       tags: [Transactions]
       security: [{adminSession: []}]
       parameters:
-        - {name: provider, in: query, required: false, description: "When filtering an order detail, must be paired with order_no. all or omitted lists all local payment refunds.", schema: {type: string, enum: [all, wechat, wechat_shop]}}
+        - {name: provider, in: query, required: false, description: "When filtering an order detail, must be paired with order_no. all or omitted lists all local payment refunds; wechat_pay is a legacy query alias for wechat.", schema: {type: string, enum: [all, wechat, wechat_pay, wechat_shop]}}
         - {name: order_no, in: query, required: false, description: "Merchant order number; valid only with provider because the provider/order pair identifies one Payment.", schema: {type: string, minLength: 1, maxLength: 200}}
         - {$ref: "#/components/parameters/Limit"}
         - {$ref: "#/components/parameters/Offset"}

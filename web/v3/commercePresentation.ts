@@ -7,17 +7,20 @@ export type CommerceStatusKind = 'order' | 'refund' | 'effect';
 
 const statusLabels: Record<CommerceStatusKind, Record<string, string>> = {
   order: {
-    awaiting_prepay: '待支付', awaiting_payment: '待支付', paid: '已支付',
-    refunding: '退款处理中', refunded: '已退款', closed: '已关闭', failed: '支付失败',
+    awaiting_prepay: '待支付', awaiting_payment: '待支付', pending_payment: '待支付', unpaid: '待支付',
+    paid: '已支付', refunding: '退款处理中', partially_refunded: '部分退款', refunded: '已退款',
+    closed: '已关闭', cancelled: '已取消', failed: '支付失败', payment_failed: '支付失败',
   },
   refund: {
     requested: '退款申请已提交', effect_accepted: '退款申请已受理', processing: '退款处理中',
-    completed: '退款完成', final_failed: '退款失败', history_requested: '历史退款申请',
-    history_processing: '历史退款处理中', history_failed: '历史退款失败', history_closed: '历史退款已关闭',
+    outcome_unknown: '退款结果待核对', completed: '退款完成', retryable_failed: '退款失败，待核对',
+    final_failed: '退款失败', history_requested: '历史退款申请', history_processing: '历史退款处理中',
+    history_failed: '历史退款失败', history_closed: '历史退款已关闭',
   },
   effect: {
     accepted: '已受理', queued: '等待处理', attempted: '已尝试执行', executed: '已执行',
-    outcome_unknown: '结果待核对', reconciled: '已核对', failed: '执行失败',
+    outcome_unknown: '结果待核对', retryable_failed: '处理失败，待核对', final_failed: '处理失败',
+    reconciled: '已核对', failed: '执行失败',
   },
 };
 
