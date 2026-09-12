@@ -13,6 +13,9 @@ assert.equal(formatShanghaiDateTime('2026-10-01 24:00:00', 'shanghai_wall_clock'
 assert.equal(formatShanghaiDateTime('2026-10-01 00:01:02'), '未提供', 'an unknown naive source must not be treated as browser local or UTC');
 assert.equal(formatShanghaiDateTime('2026-10-01 00:01:02', 'shanghai_wall_clock'), '2026-10-01 00:01:02');
 assert.equal(shanghaiDateTimeLocalToRFC3339('2026-10-01T00:00'), '2026-09-30T16:00:00.000Z');
+assert.equal(shanghaiDateTimeLocalToRFC3339('2026-10-01T00:00:00.000'), '2026-09-30T16:00:00.000Z', 'datetime-local .000 must remain a valid Shanghai instant');
+assert.equal(shanghaiDateTimeLocalToRFC3339('2026-10-01T00:00:00.125'), '2026-09-30T16:00:00.125Z', 'datetime-local milliseconds must remain part of the UTC instant');
+assert.equal(shanghaiDateTimeLocalToRFC3339('2026-10-01T00:00:00.1234'), undefined, 'datetime-local cannot claim more precision than its browser control supports');
 assert.equal(shanghaiDateTimeLocalToRFC3339('2026-02-29T00:00'), undefined);
 assert.equal(shanghaiDateTimeLocalToRFC3339('2026-10-01T24:00'), undefined);
 assert.deepEqual(shanghaiCalendarDateRange('2026-10-01'), {
