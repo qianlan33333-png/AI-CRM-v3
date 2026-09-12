@@ -74,4 +74,5 @@ OneID/持久化/效果总判断：客户、身份、归属和 HXC 项目复用 I
 - 修复前基线已有独立 PostgreSQL 16.13 的 16 个领域、86 个 package 全部通过且 0 skip；该证据只用于确认测试基线，不代表当前缺陷已经关闭。没有测试数据库时的 skip 只能记录为未验证。
 - 最初的只读审计阶段没有生产数据库写、Provider 调用、支付、退款、消息发送或配置变更。之后用户授权的单次渠道验收产生了欢迎和入渠标签两份分离的 executed/provider receipt，且用户实际收到欢迎；这是旧版本原样发送 `{{客户名}}` 的根因证据，不能写成 #257 已上线或变量验收通过。
 - 发布前核验只检查了 4 个 key 的有效性和实际进程 6 个允许列表开关的布尔结果，未输出 Secret 原值。测试券窗口的正式浏览器核验只确认配置可见性与日期有效，券仍未发布；“删除草稿”是仅限未发行 draft 的真实写入口，本轮未点击，不能将其作为只读验收的一部分。
+- 2026-09-13 的生产匿名外部效果聚合预检：`river_job` 没有未终结任务，`webhook_inbox` 没有可领取的 received/processing/retryable 项，External Effects 也没有 queued、attempted 或 retryable_failed 项；发布重启不会因现存待办自行发起新的 Provider 调用。现存非终态只剩两条历史 `outcome_unknown`：一条 Payment-owned prepay（即 MIG-06 已单列的 Payment #924 / effect #21 风险）和一条 Outbound-owned 素材效果；两者都没有当前 River job，均不得因发布、健康检查或新版本自动 retry/reconcile。该聚合不代替这两条未知结果的既有人工对账，也不代表未来新 webhook 或正常业务写入。
 - 发布后线上 SHA、HTTPS、登录态页面与 Provider/回执证据，必须用最终应用 main SHA 的独立本地产物和构建清单核对，不能以其后文档提交形成自引用证据。
