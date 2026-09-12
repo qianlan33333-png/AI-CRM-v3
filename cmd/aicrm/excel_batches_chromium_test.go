@@ -221,6 +221,20 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		if invalid := authenticatedAdminGet(t, application.handler, session, "/api/admin/operation-batches/strategy-summaries?limit=101&offset=0"); invalid.Code != http.StatusBadRequest {
 			t.Fatalf("unbounded summary limit: %d %s", invalid.Code, invalid.Body.String())
 		}
+		for _, path := range []string{
+			"/api/admin/operation-batches/strategy-summaries?limit=&offset=0",
+			"/api/admin/operation-batches/strategy-summaries?limit=20&offset=",
+		} {
+			if invalid := authenticatedAdminGet(t, application.handler, session, path); invalid.Code != http.StatusBadRequest {
+				t.Fatalf("empty summary page argument path=%s status=%d body=%s", path, invalid.Code, invalid.Body.String())
+			}
+		}
+		// The route must not expose a next offset which it later refuses. Offset
+		// 10,020 used to be rejected by an artificial 10,000 cap, even though a
+		// full page at 10,000 could return it. It is now a valid, replayable read.
+		if beyondFormerOffsetCap := readSummary(10020); beyondFormerOffsetCap.Offset != 10020 || len(beyondFormerOffsetCap.Items) != 0 || beyondFormerOffsetCap.HasMore || beyondFormerOffsetCap.NextOffset != nil {
+			t.Fatalf("summary page beyond former offset cap=%+v", beyondFormerOffsetCap)
+		}
 
 		write := func(method, path, idempotencyKey string, body []byte) *httptest.ResponseRecorder {
 			req := httptest.NewRequest(method, path, bytes.NewReader(body))

@@ -137,15 +137,15 @@ func strategySummaryPageRequest(r *http.Request) (int32, int32, error) {
 		}
 	}
 	limit, offset := strategySummaryDefaultLimit, int32(0)
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		value, err := strconv.ParseInt(raw, 10, 32)
+	if values, present := r.URL.Query()["limit"]; present {
+		value, err := strconv.ParseInt(values[0], 10, 32)
 		if err != nil {
 			return 0, 0, app.ErrInvalid
 		}
 		limit = int32(value)
 	}
-	if raw := r.URL.Query().Get("offset"); raw != "" {
-		value, err := strconv.ParseInt(raw, 10, 32)
+	if values, present := r.URL.Query()["offset"]; present {
+		value, err := strconv.ParseInt(values[0], 10, 32)
 		if err != nil {
 			return 0, 0, app.ErrInvalid
 		}
@@ -213,11 +213,14 @@ func (b *Bridge) strategySummaryPage(ctx context.Context, limit, offset int32) (
 	}
 	// READ COMMITTED permits a strategy deletion between the count and page
 	// statements. Do not manufacture a next offset that equals the current one
-	// for an empty stale page; the host can then move the user back safely.
-	hasMore := len(items) > 0 && int64(offset)+int64(len(items)) < int64(page.Total)
+	// for an empty stale page; the host can then move the user back safely. The
+	// shared Port accepts int32 offsets, so only emit a next offset which its
+	// own request parser can replay without an integer wrap.
+	next := int64(offset) + int64(len(items))
+	hasMore := len(items) > 0 && next < int64(page.Total) && next <= int64(operationport.StrategyPageMaximumOffset)
 	var nextOffset any
 	if hasMore {
-		nextOffset = offset + int32(len(items))
+		nextOffset = int32(next)
 	}
 	return map[string]any{"items": items, "total": page.Total, "limit": limit, "offset": offset, "has_more": hasMore, "next_offset": nextOffset}, nil
 }

@@ -9,14 +9,17 @@ import (
 )
 
 const (
-	StatusQueued              = "queued"
-	StatusClaimed             = "claimed"
-	StatusThreadBound         = "thread_bound"
-	StatusTurnStarted         = "turn_started"
-	StatusCompleted           = "completed"
-	StatusFailed              = "failed"
-	StrategyPageMaximumLimit  = int32(100)
-	StrategyPageMaximumOffset = int32(10000)
+	StatusQueued             = "queued"
+	StatusClaimed            = "claimed"
+	StatusThreadBound        = "thread_bound"
+	StatusTurnStarted        = "turn_started"
+	StatusCompleted          = "completed"
+	StatusFailed             = "failed"
+	StrategyPageMaximumLimit = int32(100)
+	// PostgreSQL OFFSET is supplied by the existing int32 strategy-page Port.
+	// Keep the bound at that representation limit, rather than presenting a
+	// smaller page ceiling that a returned next_offset can cross.
+	StrategyPageMaximumOffset = int32(2147483647)
 )
 
 type Strategy struct {
