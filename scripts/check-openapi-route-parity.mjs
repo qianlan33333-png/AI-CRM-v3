@@ -45,6 +45,18 @@ const routeContracts = [
   ['post', '/api/admin/media-preparations/{source_ref}/prepare', 'adminSession+csrfHeader', 'optional-header', 'internal/media/http/handler.go', 'strings.HasSuffix(tail, "/prepare") && r.Method == http.MethodPost'],
   ['post', '/api/admin/common/operation-members/sync', 'adminSession+csrfHeader', 'required-header', 'internal/groupops/http/handler.go', 'r.URL.Path == OperationMembersPath+"/sync"'],
   ['get', '/api/admin/payments/history', 'adminSession', null, 'internal/payment/http/handler.go', 'case path == "/api/admin/payments/history":'],
+  ['get', '/api/admin/operation-batches/strategy-summaries', 'adminSession', null, 'internal/aiassistant/excel/bridge.go', 'case r.Method == http.MethodGet && len(parts) == 1 && parts[0] == "strategy-summaries":'],
+];
+
+const retiredRouteContracts = [
+  [
+    'post',
+    '/api/admin/operation-batches/imports',
+    'internal/aiassistant/excel/bridge.go',
+    'case r.Method == "POST" && len(parts) == 1 && parts[0] == "imports":',
+    'POST /api/admin/operation-batches/strategies/{strategy_key}/imports',
+    '410 legacy_write_disabled',
+  ],
 ];
 
 // These handlers dispatch below a prefix registration, so the literal ServeMux
@@ -58,6 +70,7 @@ const customDispatcherEvidence = [
   ['internal/groupops/http/handler.go', 'r.URL.Path == OperationMembersPath+"/sync"', 'GroupOps operation-member sync'],
   ['internal/media/http/handler.go', 'tail == "refresh-rounds" && r.Method == http.MethodPost', 'Media preparation refresh round'],
   ['internal/payment/http/handler.go', 'case path == "/api/admin/payments/history":', 'Payment history read projection'],
+  ['cmd/aicrm/composition.go', 'adminAPIs.Handle("/api/admin/operation-batches", excelBridge)', 'Excel batch prefix dispatch'],
   ['internal/openplatform/http/handler.go', 'mux.Handle(retired.Method+" "+retired.Path, http.NotFoundHandler())', 'retired Open Platform inventory routes are explicit 404 handlers and are intentionally excluded from OpenAPI'],
 ];
 
@@ -133,6 +146,18 @@ export function assertSecurityRequirementGroups(operation, expectedGroups, label
   }
 }
 
+export function assertRetiredRoutesAbsent(specification, retiredRoutes = retiredRouteContracts) {
+  const cache = new Map();
+  for (const [method, route, source, registration, replacement, behavior] of retiredRoutes) {
+    if (specification.paths?.[route]?.[method]) {
+      fail(`retired ${method.toUpperCase()} ${route} must remain absent from OpenAPI; runtime returns ${behavior} and callers must use ${replacement}`);
+    }
+    if (!sourceText(source, cache).includes(registration)) {
+      fail(`retired ${method.toUpperCase()} ${route} no longer has observable ${behavior} evidence in ${source}`);
+    }
+  }
+}
+
 export function assertOpenAPIRouteParity(specification) {
   const cache = new Map();
   assertExplicitRoutesDocumented(specification);
@@ -155,6 +180,7 @@ export function assertOpenAPIRouteParity(specification) {
       fail(`${label} is no longer registered by ${source}`);
     }
   }
+  assertRetiredRoutesAbsent(specification);
   for (const [source, requirement, reason] of customDispatcherEvidence) {
     if (!sourceText(source, cache).includes(requirement)) {
       fail(`custom dispatcher evidence is missing for ${reason}: ${requirement}`);

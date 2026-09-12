@@ -15,17 +15,17 @@ paths:
         "200": {description: "Existing AI review plans created from Excel", content: {application/json: {schema: {type: object, properties: {items: {type: array, items: {$ref: "#/components/schemas/AIAssistantPlan"}}}}}}}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
-  /api/admin/operation-batches/imports:
-    post:
-      operationId: importExcelOperationBatch
-      tags: [AIAssistant]
-      security: [{adminSession: [], csrfHeader: []}]
+  /api/admin/operation-batches/strategy-summaries:
+    get:
+      operationId: listOperationExcelBatchStrategySummaries
+      tags: [AIAssistant, OperationCycles]
+      description: "Returns one bounded Operation Cycle strategy page and one AI Assistant aggregate for its latest Excel batch facts. Viewer, admin, and super-admin sessions with AI Assistant read permission may call it. Only `limit` and `offset` are accepted once each; empty, repeated, unknown, or out-of-range query values return 400. An unreadable strategy source fails the whole page; an unreadable AI Assistant aggregate is represented per item as `latest_batch_status: unavailable` with `latest_batch: null`."
+      security: [{adminSession: []}]
       parameters:
-        - {$ref: "#/components/parameters/IdempotencyKey"}
-        - {name: new, in: query, schema: {type: string, enum: ["1"]}, description: "Explicitly create a new batch even for an identical file"}
-      requestBody: {required: true, content: {application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {schema: {type: string, format: binary}}}}
+        - {name: limit, in: query, description: Optional once. Defaults to 20; accepted values are 1 through 100., schema: {type: integer, format: int32, minimum: 1, maximum: 100, default: 20}}
+        - {name: offset, in: query, description: Optional once. Defaults to 0; accepted values are 0 through 2147483647., schema: {type: integer, format: int32, minimum: 0, maximum: 2147483647, default: 0}}
       responses:
-        "200": {description: "Created or replayed native AI review plan; no identity resolution or send", content: {application/json: {schema: {type: object, properties: {plan: {$ref: "#/components/schemas/AIAssistantPlan"}, replayed: {type: boolean}}}}}}
+        "200": {description: "Bounded strategy page. `latest_batch_status: ready` with `latest_batch: null` means that the strategy is known to have no batch; `unavailable` never means no batch.", content: {application/json: {schema: {$ref: "#/components/schemas/OperationExcelBatchStrategySummaryPage"}}}}
         "400": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
@@ -4333,6 +4333,67 @@ components:
         path: {type: string, maxLength: 1024}
         title: {type: string, maxLength: 512}
         cover_digest: {type: string, pattern: "^(sha256:[a-f0-9]{64})?$", description: "Empty until an operator uploads the batch cover; approval requires a valid digest"}
+    OperationExcelBatchSummary:
+      type: object
+      additionalProperties: false
+      required: [total_rows, excluded_rows, empty_title_rows, expected_tasks]
+      properties:
+        total_rows: {type: integer, minimum: 0}
+        excluded_rows: {type: integer, minimum: 0}
+        empty_title_rows: {type: integer, minimum: 0}
+        expected_tasks: {type: integer, minimum: 0}
+    OperationExcelLatestBatch:
+      type: object
+      additionalProperties: false
+      required: [id, batch_key, operation_cycle_strategy_key, state, version, file_digest, cover_digest, cover_image_id, current_content_version, source_kind, segment_source, created_at, summary]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        batch_key: {type: string, minLength: 1, maxLength: 128}
+        operation_cycle_strategy_key: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$'}
+        state: {$ref: "#/components/schemas/AIAssistantPlanState"}
+        version: {type: integer, format: int64, minimum: 1}
+        file_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        cover_digest: {type: string, pattern: "^(sha256:[a-f0-9]{64})?$"}
+        cover_image_id: {type: integer, format: int64, minimum: 0}
+        current_content_version: {type: integer, format: int32, minimum: 1}
+        source_kind: {type: string, minLength: 1, maxLength: 80}
+        segment_source: {type: string, minLength: 1, maxLength: 80}
+        created_at: {type: string, format: date-time}
+        summary: {$ref: "#/components/schemas/OperationExcelBatchSummary"}
+    OperationExcelBatchStrategySummary:
+      type: object
+      additionalProperties: false
+      required: [strategy_key, title, status, version, snapshot, latest_batch_status, latest_batch]
+      properties:
+        strategy_key: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$'}
+        title: {type: string, minLength: 1, maxLength: 200}
+        status: {type: string, enum: [draft, active, paused, archived]}
+        version: {type: integer, format: int32, minimum: 1}
+        snapshot: {type: object, additionalProperties: true}
+        latest_batch_status: {type: string, enum: [ready, unavailable]}
+        latest_batch:
+          oneOf:
+            - type: "null"
+            - {$ref: "#/components/schemas/OperationExcelLatestBatch"}
+      allOf:
+        - if: {properties: {latest_batch_status: {const: unavailable}}}
+          then: {properties: {latest_batch: {type: "null"}}}
+    OperationExcelBatchStrategySummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, total, limit, offset, has_more, next_offset]
+      properties:
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OperationExcelBatchStrategySummary"}}
+        total: {type: integer, minimum: 0}
+        limit: {type: integer, format: int32, minimum: 1, maximum: 100}
+        offset: {type: integer, format: int32, minimum: 0, maximum: 2147483647}
+        has_more: {type: boolean}
+        next_offset: {type: [integer, "null"], format: int32, minimum: 0, maximum: 2147483647, description: A replayable next accepted offset only when `has_more` is true; otherwise null.}
+      allOf:
+        - if: {properties: {has_more: {const: false}}}
+          then: {properties: {next_offset: {type: "null"}}}
+        - if: {properties: {has_more: {const: true}}}
+          then: {properties: {next_offset: {type: integer, format: int32, minimum: 1, maximum: 2147483647}}}
     AIAssistantContentBlock:
       type: object
       additionalProperties: false
