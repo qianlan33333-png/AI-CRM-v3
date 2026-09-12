@@ -306,12 +306,19 @@ func (service ExternalContactLifecycle) correlateEntrant(ctx context.Context, fa
 	}
 	switch resolution.Status {
 	case channeldomain.StateAttributed:
+		skipped := false
 		if service.Actions != nil {
 			if err := service.Actions.AcceptEntrantActions(ctx, channelport.EntrantActionCommand{CallbackID: fact.CallbackID, CustomerID: customerID, Resolution: resolution, WelcomeGrantRef: fact.WelcomeGrantRef, OccurredAt: fact.OccurredAt}); err != nil {
-				return err
+				if !errors.Is(err, channelport.ErrEntrantActionsSkippedInactiveChannel) {
+					return err
+				}
+				skipped = true
 			}
 		}
 		result.Outcomes = append(result.Outcomes, OutcomeChannelAttributed)
+		if skipped {
+			result.Outcomes = append(result.Outcomes, OutcomeIgnored)
+		}
 	case channeldomain.StateUnmatched:
 		result.Outcomes = append(result.Outcomes, OutcomeChannelUnmatched)
 	case channeldomain.StateAmbiguous:
