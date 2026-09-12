@@ -21,6 +21,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/presentationtime"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/radar"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
 )
@@ -455,7 +456,7 @@ func (h *Handler) exportEvents(w http.ResponseWriter, r *http.Request, id radar.
 	writer := csv.NewWriter(&buffer)
 	_ = writer.Write([]string{"receipt_id", "stage", "attribution", "customer_ref", "occurred_at"})
 	for _, event := range page.Items {
-		_ = writer.Write([]string{event.ReceiptID, string(event.Stage), string(event.Attribution), event.CustomerRef, event.OccurredAt.UTC().Format(time.RFC3339Nano)})
+		_ = writer.Write([]string{event.ReceiptID, string(event.Stage), string(event.Attribution), event.CustomerRef, presentationtime.FormatShanghaiDateTime(event.OccurredAt)})
 	}
 	writer.Flush()
 	if writer.Error() != nil {

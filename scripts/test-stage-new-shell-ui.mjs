@@ -18,7 +18,7 @@ const surfaceFeedbackStyles = sourceManifest.entries?.surfaceFeedbackStyles;
 assert.equal(sourceManifest.files?.[surfaceFeedbackHost]?.entry_point, 'web/v3/surfaceFeedbackHost.ts', 'surface feedback Host must be V3-owned');
 assert.equal(sourceManifest.files?.[surfaceFeedbackStyles]?.entry_point, 'web/v3/surfaceFeedback.css', 'surface feedback styles must be V3-owned');
 const entryKeys = [
-  'admin', 'adminSessionHost', 'standardComponentsHost', 'standardComponentsStableHost', 'tokens', 'labs',
+  'admin', 'adminSessionHost', 'standardComponentsHost', 'adminDateTimeHost', 'standardComponentsStableHost', 'tokens', 'labs',
   'operationCyclesHost', 'materialSaveHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'radarHost',
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost',
 ];

@@ -106,65 +106,45 @@ function bootOutputReviewForms() {
   });
 }
 
-function formatRelativeTime(input) {
+function formatShanghaiTime(input) {
   if (input === null || input === undefined || input === "") {
     return "";
   }
-  const date = input instanceof Date ? input : new Date(input);
-  if (Number.isNaN(date.getTime())) {
-    return String(input);
+  let raw = input;
+  if (input instanceof Date) {
+    if (Number.isNaN(input.getTime())) return "时间暂时无法显示";
+    raw = input.toISOString();
   }
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSec = Math.round(diffMs / 1000);
-  const diffMin = Math.round(diffSec / 60);
-  const sameDay =
-    now.getFullYear() === date.getFullYear() &&
-    now.getMonth() === date.getMonth() &&
-    now.getDate() === date.getDate();
-
-  if (Math.abs(diffSec) < 45) return "刚刚";
-  if (Math.abs(diffMin) < 60) {
-    return diffMin >= 0 ? `${diffMin} 分钟前` : `${-diffMin} 分钟后`;
-  }
-  if (sameDay) {
-    return `今天 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-  }
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (
-    yesterday.getFullYear() === date.getFullYear() &&
-    yesterday.getMonth() === date.getMonth() &&
-    yesterday.getDate() === date.getDate()
-  ) {
-    return `昨天 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-  }
-  if (now.getFullYear() === date.getFullYear()) {
-    return `${date.getMonth() + 1}月${date.getDate()}日`;
-  }
-  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+  const formatter = window.AdminDateTime;
+  if (!formatter || typeof formatter.formatShanghaiDateTime !== "function") return "时间暂时无法显示";
+  const value = formatter.formatShanghaiDateTime(raw);
+  return value === "未提供" ? "时间暂时无法显示" : value;
 }
 
-function formatLocalTime(input) {
-  if (input === null || input === undefined || input === "") {
-    return "";
-  }
-  const date = input instanceof Date ? input : new Date(input);
-  if (Number.isNaN(date.getTime())) {
-    return String(input);
-  }
-  return date.toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function whenAdminDateTimeReady(onReady, onUnavailable) {
+  const current = () => window.AdminDateTime && typeof window.AdminDateTime.formatShanghaiDateTime === "function" ? window.AdminDateTime : null;
+  let readyDispatched = false;
+  let unavailableShown = false;
+  const notifyReady = () => {
+    const bridge = current();
+    if (!bridge || readyDispatched) return false;
+    readyDispatched = true;
+    onReady(bridge);
+    return true;
+  };
+  if (notifyReady()) return;
+  window.addEventListener("aicrm:admin-date-time-ready", notifyReady);
+  window.setTimeout(() => {
+    if (notifyReady() || unavailableShown) return;
+    unavailableShown = true;
+    if (typeof onUnavailable === "function") onUnavailable();
+  }, 3000);
 }
 
 window.AdminFmt = Object.assign(window.AdminFmt || {}, {
-  relativeTime: formatRelativeTime,
-  localTime: formatLocalTime,
+  relativeTime: formatShanghaiTime,
+  localTime: formatShanghaiTime,
+  whenAdminDateTimeReady,
 });
 
 document.addEventListener("DOMContentLoaded", () => {

@@ -52,6 +52,11 @@ function createPage({ saved = channel(), mutations = [], creates = [], resourceI
     virtualConsole: new VirtualConsole(),
     beforeParse(window) {
       window.Request = Request; window.Response = Response; window.Headers = Headers;
+      const NativeDate = window.Date;
+      window.Date = class FixedDate extends NativeDate {
+        constructor(...args) { super(...(args.length ? args : ['2026-09-30T16:01:02Z'])); }
+        static now() { return NativeDate.parse('2026-09-30T16:01:02Z'); }
+      };
       window.AdminConsole = { showToast() {} };
       window.AICRMStandardComponents = { ready: async () => undefined };
       window.AICRMSendContentComposer = { mount(_container, options) { window.__channelComposerOptions = options; } };
@@ -178,7 +183,7 @@ try {
   document.querySelector('[name="channel_name"]').value = '首个可见编辑';
   save.click();
   await waitFor(() => preserved.calls.filter((call) => call.method === 'PATCH').length === 1, 'first QR save must issue one PATCH');
-  await waitFor(() => document.querySelector('[data-channel-save-feedback]')?.textContent.includes('保存成功'), 'first QR save must finish');
+  await waitFor(() => document.querySelector('[data-channel-save-feedback]')?.textContent === '保存成功。 2026-10-01 00:01:02', 'channel save feedback must use the Shanghai formatter with a full date and seconds');
   const first = preserved.calls.filter((call) => call.method === 'PATCH')[0];
   const firstPayload = JSON.parse(first.body);
   assert.equal(firstPayload.qr_url, 'https://example.invalid/qr-v7', 'unrendered QR URL must retain the Catalog value');

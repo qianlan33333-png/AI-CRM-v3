@@ -51,14 +51,22 @@
     if (!values.length) throw new Error(`${label}不能为空。`);
     return values.map((item) => convert(item, label));
   };
-  const canonicalTimestamp = (value, label) => {
+  const canonicalTimestamp = (value, label, preserved) => {
     if (value === null || value === undefined || value === "") return "";
-    const parsed = new Date(String(value));
-    if (Number.isNaN(parsed.getTime())) throw new Error(`${label}必须是有效日期时间。`);
-    return parsed.toISOString();
+    // datetime-local cannot retain fractional seconds.  When the visible
+    // Shanghai value is unchanged, retain the exact stored RFC3339 instant
+    // rather than truncating its existing precision through the form.
+    if (typeof preserved === "string" && value === preserved) return preserved;
+    const dateTime = window.AdminDateTime;
+    if (!dateTime || typeof dateTime.shanghaiDateTimeLocalToRFC3339 !== "function") {
+      throw new Error("时间筛选暂不可用，请刷新重试。");
+    }
+    const converted = dateTime.shanghaiDateTimeLocalToRFC3339(String(value));
+    if (!converted) throw new Error(`${label}必须是有效日期时间。`);
+    return converted;
   };
 
-  function canonicalDefinition(templateKey, value) {
+  function canonicalDefinition(templateKey, value, preservedDateTimes = {}) {
     const parameters = { ...value };
     if (parameters.owner_scope === "all") parameters.owner_userids = [];
     if (templateKey === "questionnaire_submissions") {
@@ -76,8 +84,8 @@
     } else if (templateKey === "paid_order") {
       parameters.product_codes = requiredList(parameters.products, "商品", canonicalProductReference);
       delete parameters.products;
-      parameters.paid_at_from = canonicalTimestamp(parameters.paid_at_from, "支付时间起点");
-      parameters.paid_at_to = canonicalTimestamp(parameters.paid_at_to, "支付时间终点");
+      parameters.paid_at_from = canonicalTimestamp(parameters.paid_at_from, "支付时间起点", preservedDateTimes.paid_at_from);
+      parameters.paid_at_to = canonicalTimestamp(parameters.paid_at_to, "支付时间终点", preservedDateTimes.paid_at_to);
     } else if (templateKey === "channel_entry") {
       parameters.channel_codes = requiredList(parameters.channels, "渠道", canonicalReference);
       delete parameters.channels;
@@ -119,7 +127,7 @@
     const form = window.TemplateParameterForm.create(root);
     const legacyDefinition = byID("packageDefinitionInput");
     if (legacyDefinition?.closest(".ai-field")) legacyDefinition.closest(".ai-field").hidden = true;
-    const state = { package: null, configuration: null, templates: [], selectedTemplate: "", ready: false, restoring: false };
+    const state = { package: null, configuration: null, templates: [], selectedTemplate: "", ready: false, restoring: false, initialDateTimes: {} };
     const setStatus = (message, kind = "") => { status.textContent = message; status.dataset.state = kind; };
     const templateFor = () => state.templates.find((item) => item.key === state.selectedTemplate);
 
@@ -161,12 +169,36 @@
       const result = await request(`${api}/packages/${id}/owner-references?${query}`);
       return { ...parameters, owner_userids: result.owner_userids || [] };
     }
+    function fieldInput(name) {
+      const field = [...root.querySelectorAll("[data-field-name]")].find((node) => node.dataset.fieldName === name);
+      return field?.querySelector('input[type="datetime-local"]') || null;
+    }
+    function hydrateDateTimeFields(template, source) {
+      const dateTime = window.AdminDateTime;
+      if (!dateTime || typeof dateTime.datetimeLocalValue !== "function") {
+        throw new Error("时间暂时无法显示，请刷新重试。");
+      }
+      const initialDateTimes = {};
+      for (const field of template?.fields || []) {
+        if (field.type !== "datetime") continue;
+        const input = fieldInput(field.name);
+        const stored = typeof source?.[field.name] === "string" ? source[field.name] : "";
+        const visible = stored ? dateTime.datetimeLocalValue(stored) : "";
+        if (input) input.value = visible;
+        // Browser implementations may normalize an assigned datetime-local
+        // string (for example by adding .000).  Compare against the exact
+        // control value, not the pre-assignment helper string.
+        initialDateTimes[field.name] = { stored, visible: input?.value || visible };
+      }
+      state.initialDateTimes = initialDateTimes;
+    }
     async function render() {
       const template = templateFor();
       const stored = state.configuration?.definition;
       const source = stored?.template_key === template?.key ? await rehydrateOwnerUserIDs(stored.parameters) : {};
       const readOnly = ["active", "archived"].includes(state.package?.lifecycle);
       form.setSchema(template?.fields || [], editableParameters(template?.key, source), { readOnly });
+      hydrateDateTimeFields(template, source);
       previewButton.disabled = readOnly || !template;
       saveButton.disabled = readOnly || !template;
       byID("templateVersionBadge").textContent = template ? `${template.label} · v${template.template_version}` : "请选择模板";
@@ -187,7 +219,25 @@
     function currentDefinition() {
       const template = templateFor();
       if (!template) throw new Error("请选择模板。");
-      return canonicalDefinition(template.key, form.getValue());
+      const value = form.getValue();
+      // The frozen renderer serializes datetime-local through browser-local
+      // Date parsing. Read the same visible inputs at the Host boundary before
+      // canonicalizing so an admin's Shanghai wall clock is never reinterpreted
+      // by the browser timezone.
+      const preservedDateTimes = {};
+      for (const field of template.fields || []) {
+        if (field.type !== "datetime") continue;
+        const input = fieldInput(field.name);
+        const visible = input?.value || "";
+        const initial = state.initialDateTimes[field.name];
+        if (initial?.stored && visible === initial.visible) {
+          value[field.name] = initial.stored;
+          preservedDateTimes[field.name] = initial.stored;
+        } else {
+          value[field.name] = visible || null;
+        }
+      }
+      return canonicalDefinition(template.key, value, preservedDateTimes);
     }
     function prepareDetailSave() {
       if (!legacyDefinition) throw new Error("基础配置控件不可用。");
@@ -260,5 +310,17 @@
     } catch (error) { setStatus(error.message || "模板表单无法加载。", "error"); }
   }
 
-  document.addEventListener("DOMContentLoaded", () => { void start(); });
+  document.addEventListener("DOMContentLoaded", () => {
+    const begin = () => { void start(); };
+    const unavailable = () => {
+      const status = byID("templateStatusLine");
+      if (status) {
+        status.textContent = "时间暂时无法显示，请刷新重试。";
+        status.dataset.state = "error";
+      }
+    };
+    if (window.AdminFmt && typeof window.AdminFmt.whenAdminDateTimeReady === "function") {
+      window.AdminFmt.whenAdminDateTimeReady(begin, unavailable);
+    } else unavailable();
+  });
 })();

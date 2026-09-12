@@ -7,7 +7,11 @@
   const byID = (id) => document.getElementById(id);
   const text = (value, fallback = "—") => value === null || value === undefined || value === "" ? fallback : String(value);
   const escapeHTML = (value) => text(value, "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
-  const formatTime = (value) => value ? (window.AdminFmt?.localTime(value) || text(value)) : "—";
+  const formatTime = (value) => {
+    if (!value) return "—";
+    const formatted = window.AdminFmt && typeof window.AdminFmt.localTime === "function" ? window.AdminFmt.localTime(value) : "";
+    return formatted || "时间暂时无法显示";
+  };
   const requestKey = (scope) => `${scope}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
   const csrf = () => {
     for (const part of document.cookie.split(";")) {

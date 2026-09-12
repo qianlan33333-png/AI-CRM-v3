@@ -72,7 +72,11 @@
     worker: "后台任务服务",
     "effects-worker": "受控执行服务",
   }[role] || "相应服务");
-  const formatDate = (value) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "-";
+  const formatDate = (value) => {
+    if (!value) return "-";
+    const formatted = window.AdminFmt && typeof window.AdminFmt.localTime === "function" ? window.AdminFmt.localTime(value) : "";
+    return formatted || "时间暂时无法显示";
+  };
   const runtimeList = async () => request(API);
   const runtimeDetail = async (id) => request(`${API}/${encodeURIComponent(String(id))}`);
   const showList = async () => {
@@ -203,9 +207,14 @@
   };
 
   if (page === "runtimeConfigCenter" || page === "runtimeConfigCategory") return;
-  if (page === "runtimeReleaseNew") void showNew();
-  else if (page === "runtimeReleaseDetail") {
-    const id = Number(new URL(location.href).pathname.split("/").filter(Boolean).at(-1));
-    if (Number.isSafeInteger(id) && id > 0) void showDetail(id); else void showList();
-  } else void showList();
+  const start = function () {
+    if (page === "runtimeReleaseNew") void showNew();
+    else if (page === "runtimeReleaseDetail") {
+      const id = Number(new URL(location.href).pathname.split("/").filter(Boolean).at(-1));
+      if (Number.isSafeInteger(id) && id > 0) void showDetail(id); else void showList();
+    } else void showList();
+  };
+  if (window.AdminFmt && typeof window.AdminFmt.whenAdminDateTimeReady === "function") {
+    window.AdminFmt.whenAdminDateTimeReady(start, function () { start(); });
+  } else start();
 })();

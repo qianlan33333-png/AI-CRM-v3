@@ -67,7 +67,7 @@ console.log('survey mobile release shell: PASS');
 // A session miss auto-starts once; callback failure or a lost cookie cannot loop.
 const {build} = await import('esbuild');
 const {runInNewContext} = await import('node:vm');
-const compiled = await build({entryPoints:[path.join(root,'web/src/h5/controller.ts')],bundle:true,write:false,format:'iife',globalName:'AuthController',plugins:[{name:'auth-controller-dependencies',setup(b){b.onResolve({filter:/^\.\.\//},args=>({path:args.path,namespace:'auth-dependency'}));b.onLoad({filter:/.*/,namespace:'auth-dependency'},()=>({contents:'export class PageBase {} export class ApiError extends Error {} export const toast=()=>{}; export const readPublicSurvey=()=>{}; export const readSurveyResult=()=>{}; export const submitSurvey=()=>{};',loader:'js'}));}}]});
+const compiled = await build({entryPoints:[path.join(root,'web/src/h5/controller.ts')],bundle:true,write:false,format:'iife',globalName:'AuthController',plugins:[{name:'auth-controller-dependencies',setup(b){b.onResolve({filter:/^\.\.\//},args=>({path:args.path,namespace:'auth-dependency'}));b.onLoad({filter:/.*/,namespace:'auth-dependency'},()=>({contents:'export class PageBase {} export class ApiError extends Error {} export const toast=()=>{}; export const readPublicSurvey=()=>{}; export const readSurveyResult=()=>{}; export const submitSurvey=()=>{}; export const formatShanghaiDateTime=(value)=>value;',loader:'js'}));}}]});
 const marker = new Map();
 async function authRun(status, search='?slug=survey', userAgent='MicroMessenger') {
   const redirects=[], calls=[];

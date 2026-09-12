@@ -2,6 +2,7 @@ import { PageBase, type Vals } from '../shared/ui/runtime';
 import { readPublicSurvey, readSurveyResult, submitSurvey } from '../api/public-survey';
 import { toast } from '../shared/ui/feedback';
 import { ApiError } from '../api/transport';
+import { formatShanghaiDateTime } from '../../v3/adminDateTime';
 
 import type {
   PublicSurveyDefinition,
@@ -272,7 +273,7 @@ export class H5Controller extends PageBase {
     return {
       loading: this.loading, error: errorText, errorEmpty: !errorText, ready, result: this.result,
 	  isAssessmentResult: this.result?.mode === 'assessment', resultTitle: this.result?.questionnaire_title || '问卷结果', totalScore: Number(this.result?.total_score || 0), overallTitle: assessment.overall_level?.title || '已完成', overallSummary: assessment.overall_level?.summary || '', dimensions,
-      resultTime: this.result ? new Date(this.result.submitted_at).toLocaleString('zh-CN', { hour12: false }) : '',
+      resultTime: this.result ? formatShanghaiDateTime(this.result.submitted_at) : '',
       notWechatUA: !/MicroMessenger/i.test(navigator.userAgent || ''),
 	  authRetry: !!this.error && /MicroMessenger/i.test(navigator.userAgent || ''),
 	  wechatUA: /MicroMessenger/i.test(navigator.userAgent || ''),

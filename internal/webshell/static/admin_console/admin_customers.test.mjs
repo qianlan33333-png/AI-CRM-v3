@@ -18,6 +18,8 @@ const dom = new JSDOM(html, { url: "https://test.invalid/admin/customers", runSc
 dom.window.Headers = Headers;
 dom.window.document.cookie = "aicrm_admin_csrf=test-csrf; path=/";
 dom.window.confirm = () => true;
+dom.window.AdminDateTime = {};
+dom.window.AdminFmt = { localTime: (value) => value === "2026-09-05T00:00:00Z" ? "2026-09-05 08:00:00" : "时间暂不可用", whenAdminDateTimeReady: (ready) => ready(dom.window.AdminDateTime) };
 const tagCalls = [];
 dom.window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), dom.window.location.origin);
@@ -33,6 +35,7 @@ dom.window.eval(script);
 await new Promise((resolve) => setTimeout(resolve, 20));
 
 const links = [...dom.window.document.querySelectorAll("#customer-list-body a")];
+if (!dom.window.document.querySelector("#customer-list-body")?.textContent.includes("2026-09-05 08:00:00")) throw new Error("customer timestamp did not use exact Shanghai seconds");
 if (!links.some((link) => link.textContent === "查看档案" && link.getAttribute("href") === "/admin/customers/42")) throw new Error("existing customer profile entry was not preserved");
 if (!links.some((link) => link.textContent === "会话存档" && link.getAttribute("href") === "/admin/message-archive/customers/42")) throw new Error("selected canonical customer did not receive a message archive entry");
 const checkbox = dom.window.document.querySelector('input[type="checkbox"]');

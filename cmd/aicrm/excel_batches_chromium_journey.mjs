@@ -305,6 +305,34 @@ try {
     `document.querySelector('[role=status]')?.textContent.includes('企微任务意图已创建')&&!([...document.querySelectorAll('.xeb-detail-main button')].some(b=>b.textContent==='审核通过并创建企微群发任务'))`,
     "single approval did not queue one target",
   );
+  await evaluate(
+    cdp,
+    `document.querySelector('.xeb-detail-nav button[data-tab="effects"]').click();true`,
+  );
+  await waitFor(
+    cdp,
+    `document.querySelector('.xeb-detail-main')?.textContent.includes('最近采集：2026-09-07 09:02:03')&&!document.querySelector('.xeb-detail-main')?.textContent.includes('2026-09-07T01:02:03')`,
+    "report timestamp was not rendered as a Shanghai whole-second value",
+  );
+  await evaluate(
+    cdp,
+    `document.querySelector('.xeb-detail-nav button[data-tab="content"]').click();true`,
+  );
+  await waitFor(
+    cdp,
+    `Boolean([...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='查看旧版本'))`,
+    "content tab did not restore the historical-version entry",
+  );
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='查看旧版本').click();true`,
+  );
+  await waitFor(
+    cdp,
+    `/\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}/.test(document.querySelector('dialog[open]')?.textContent||'')&&!/\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}/.test(document.querySelector('dialog[open]')?.textContent||'')`,
+    "historical-version timestamp was not rendered as a Shanghai whole-second value",
+  );
+  await evaluate(cdp, `document.querySelector('dialog[open] button')?.click();true`);
   await cdp.call("Page.reload");
   await waitFor(
     cdp,

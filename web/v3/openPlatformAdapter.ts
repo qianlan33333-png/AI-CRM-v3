@@ -1,3 +1,5 @@
+import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
+
 type ClientSummary = {
   client_id: string;
   display_name: string;
@@ -167,24 +169,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 function dateTimeLocalValue(value?: string): string {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return '';
-  const pad = (part: number): string => String(part).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const formatted = formatShanghaiDateTime(value);
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(formatted) ? formatted.replace(' ', 'T') : '';
+}
+
+function comparableShanghaiDateTimeLocal(value: string): string {
+  const converted = shanghaiDateTimeLocalToRFC3339(value);
+  return converted ? dateTimeLocalValue(converted) : '';
 }
 
 function unchangedDateTimeLocal(value: string, initial: string): boolean {
-  if (!value || !initial) return false;
-  const current = new Date(value).valueOf();
-  const original = new Date(initial).valueOf();
-  return !Number.isNaN(current) && current === original;
+  const current = comparableShanghaiDateTimeLocal(value);
+  const original = comparableShanghaiDateTimeLocal(initial);
+  return Boolean(current && original && current === original);
 }
 
 function formatTime(value?: string): string {
-  if (!value) return '未设置';
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.valueOf()) ? '未设置' : parsed.toLocaleString('zh-CN', { hour12: false });
+  return value ? formatShanghaiDateTime(value) : '未设置';
 }
 
 function exactV1Capabilities(items: OperationDescriptor[]): string[] {
@@ -440,9 +441,14 @@ async function boot(): Promise<void> {
       }
       try {
         const scope = safeOwnerScope(ownerScope.value);
+        const convertedExpiry = expires.value ? shanghaiDateTimeLocalToRFC3339(expires.value) : null;
+        if (expires.value && !convertedExpiry) {
+          setStatus(message, '到期时间格式无效，请填写有效时间后保存。', true);
+          return;
+        }
         await request<{ client: ClientSummary }>(`/api/admin/open-platform/clients/${encodeURIComponent(client.client_id)}`, {
           method: 'PATCH',
-          body: JSON.stringify({ display_name: displayName.value.trim(), audiences: [V1_AUDIENCE], scopes, capabilities: granted, allowed_cidrs: cidrs(ips.value), token_ttl_seconds: ttlSeconds, owner_scope: scope, expires_at: unchangedDateTimeLocal(expires.value, initialExpiresLocal) ? initialExpiresAt ?? null : (expires.value ? new Date(expires.value).toISOString() : null) }),
+          body: JSON.stringify({ display_name: displayName.value.trim(), audiences: [V1_AUDIENCE], scopes, capabilities: granted, allowed_cidrs: cidrs(ips.value), token_ttl_seconds: ttlSeconds, owner_scope: scope, expires_at: unchangedDateTimeLocal(expires.value, initialExpiresLocal) ? initialExpiresAt ?? null : convertedExpiry }),
         });
         await refresh();
       } catch {

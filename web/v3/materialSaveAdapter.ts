@@ -4,6 +4,7 @@
 
 export {};
 import { clearActionBusy, setActionBusy } from './actionFeedback';
+import { formatShanghaiDateTime } from './adminDateTime';
 
 type SaveState = {
   button: HTMLButtonElement;
@@ -336,13 +337,8 @@ async function materialPost(path: string, body: Record<string, unknown>, idempot
 function materialFormatTime(value: unknown): string {
   const raw = materialString(value);
   if (!raw) return '—';
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return raw;
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(parsed).replace(/\//g, '-');
+  const formatted = formatShanghaiDateTime(raw);
+  return formatted === '未提供' ? '时间暂不可用' : formatted;
 }
 
 function materialTypeLabel(value: unknown): string {
@@ -445,7 +441,7 @@ function materialSourceName(item: MaterialProjection): string {
 
 function materialNextRun(value: unknown): string {
   const next = materialFormatTime(value);
-  return next === '—' ? '每天 02:00（北京时间）' : `${next}（北京时间）`;
+  return next === '—' ? '每天 02:00' : next;
 }
 
 function materialFailureHint(failure: MaterialSourceFailureProjection): string {
@@ -592,7 +588,7 @@ class MaterialRefreshPanel {
     title.textContent = '素材刷新状态';
     title.style.cssText = 'margin:0;font-size:14px';
     const note = document.createElement('p');
-    note.textContent = '启用图片、附件和小程序封面每天 02:00（北京时间）全量刷新；刷新只更新临时凭据，不触发群发。';
+    note.textContent = '启用图片、附件和小程序封面每天 02:00 全量刷新；刷新只更新临时凭据，不触发群发。';
     note.style.cssText = 'margin:4px 0 0;color:#646A73;font-size:12px;line-height:18px';
     titleWrap.append(title, note);
     const all = document.createElement('button');

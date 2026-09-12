@@ -21,6 +21,8 @@ const dom = new JSDOM('<!doctype html><html><body data-runtime-config-page="runt
   url: "https://test.invalid/admin/config/releases/new", runScripts: "outside-only", pretendToBeVisual: true,
   beforeParse(window) {
     window.Headers = globalThis.Headers;
+    window.AdminDateTime = {};
+    window.AdminFmt = { localTime: (value) => value === "2026-09-06T00:00:00Z" ? "2026-09-06 08:00:00" : value === "2026-09-06T00:01:00Z" ? "2026-09-06 08:01:00" : "时间暂不可用", whenAdminDateTimeReady: (ready) => ready(window.AdminDateTime) };
     window.document.cookie = "aicrm_admin_session=session";
     window.document.cookie = `aicrm_admin_csrf=${"c".repeat(43)}`;
     window.fetch = async (input, init = {}) => {
@@ -56,6 +58,7 @@ const paths = actual.map((call) => call.path).join(",");
 if (paths !== "/api/admin/config/runtime-releases,/api/admin/config/runtime-releases/1/validate,/api/admin/config/runtime-releases/1/publish,/api/admin/config/runtime-releases/1/rollback") throw new Error(`release operation sequence=${paths}`);
 if (actual[0].body.expected_base_revision !== 0 || actual[0].body.settings[0].value !== 2 || actual[2].body.expected_checksum !== "b".repeat(64) || actual.some((call) => !call.body.admin_action_token) || actual.some((call) => !call.headers.get("X-CSRF-Token") || !call.headers.get("Idempotency-Key"))) throw new Error("host did not supply current revision, checksum, CSRF, idempotency key and action proof");
 if (!dom.window.document.body.textContent.includes("已创建并发布回滚记录")) throw new Error("rollback result was not rendered");
+if (!dom.window.document.body.textContent.includes("2026-09-06 08:00:00")) throw new Error("runtime release timestamp did not use exact Shanghai seconds");
 if (rollback.textContent !== "用此版本回滚") throw new Error(`rollback label=${rollback.textContent}`);
 dom.window.close();
 console.log("runtime_config_releases_host: PASS");

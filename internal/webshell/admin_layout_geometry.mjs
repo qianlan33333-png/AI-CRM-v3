@@ -298,6 +298,34 @@ try {
     })()`);
     if (!radar?.stage || radar.paddingLeft !== "20px" || radar.paddingTop !== "16px" || !radar.crumbHidden || !radar.titleHidden || !radar.emptyPageHeadHidden || !radar.actionVisible) throw new Error(label + " V3 title/action layout invalid");
   };
+  const assertRadarDetailTimeHost = async () => {
+    const detail = await evaluate(cdp, `(() => {
+      const host=document.querySelector('[data-v3-radar-event-host]');
+      const inputs=host ? Array.from(host.querySelectorAll('input')).map(node => node.type) : [];
+      const text=String(host?.textContent || '');
+      return {host:Boolean(host),inputs,oldRows:Boolean(document.querySelector('#dRows')),time:text.includes('2026-09-07 09:02:03'),raw:text.includes('2026-09-07T01:02:03'),exportVisible:Boolean(document.querySelector('#dExport')) && getComputedStyle(document.querySelector('#dExport')).display !== 'none'};
+    })()`);
+    if (!detail?.host || detail.inputs.join(',') !== 'text,datetime-local,datetime-local' || detail.oldRows || !detail.time || detail.raw || !detail.exportVisible) throw new Error("radar detail Shanghai time Host did not replace the frozen query surface");
+  };
+  const assertRadarDetailNarrow = async () => {
+    try {
+      for (const width of [780, 390]) {
+        await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 844 });
+        await waitFor(cdp, "Boolean(document.querySelector('[data-v3-radar-event-host]'))", "radar detail Host disappeared at narrow width");
+        const narrow = await evaluate(cdp, `(() => {
+          const host=document.querySelector('[data-v3-radar-event-host]');
+          const exportButton=document.querySelector('#dExport');
+          const tableScroll=host?.querySelector('table.tbl')?.parentElement;
+          const visible=node => { if (!node) return false; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
+          const exportRect=exportButton?.getBoundingClientRect();
+          return {overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,host:visible(host),exportVisible:visible(exportButton),exportInside:!exportRect || (exportRect.left >= -1 && exportRect.right <= innerWidth + 1),tableScrollable:Boolean(tableScroll) && getComputedStyle(tableScroll).overflowX !== 'visible'};
+        })()`);
+        if (!narrow?.host || !narrow.exportVisible || !narrow.exportInside || narrow.overflow || !narrow.tableScrollable) throw new Error(`radar detail ${width}px responsive geometry invalid`);
+      }
+    } finally {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+    }
+  };
   const assertOwnerHandoffLayout = async label => {
     await assertLayout("standard", label, "[data-owner-picker=\"source\"]");
     const owner = await evaluate(cdp, `(() => {
@@ -579,8 +607,11 @@ try {
   const radarMounted = await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#btnNew'))", "radar", "standard", ".sec-radar .page-head", false, true);
   if (radarMounted) await recordGeometry("radar", () => assertRadarLayout("radar", "#btnNew"), true);
   const radarNumericID = Number(radarID);
-  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarNumericID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit'))", "radar-detail", "standard", "#dEdit", false);
-  if (radarDetailMounted) await recordGeometry("radar-detail", () => assertRadarLayout("radar-detail", "#dEdit", "#dEdit"), true);
+  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarNumericID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit')) && Boolean(document.querySelector('[data-v3-radar-event-host]')) && document.querySelector('[data-v3-radar-event-host]')?.textContent?.includes('2026-09-07 09:02:03')", "radar-detail", "standard", "#dEdit", false);
+  if (radarDetailMounted) {
+    await recordGeometry("radar-detail", async () => { await assertRadarLayout("radar-detail", "#dEdit", "#dEdit"); await assertRadarDetailTimeHost(); }, true);
+    await recordGeometry("radar-detail-narrow", assertRadarDetailNarrow, false);
+  }
   const radarFormMounted = await navigate("/admin/radarForm.html", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#fSave'))", "radar-form", "standard", "#fSave", false);
   if (radarFormMounted) await recordGeometry("radar-form", () => assertRadarLayout("radar-form", "#fSave", "#fSave"), true);
   await navigate("/admin/wecom-tags", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "tags", "embedded", embeddedTitle, true, true);
