@@ -388,6 +388,19 @@ function hydrateChannelDonor(root: HTMLElement, channel: Channel | null): void {
   const auto = root.querySelector<HTMLInputElement>('[name="auto_accept_friend"]'); if (auto) auto.checked = Boolean(source.auto_accept_friend);
   root.querySelectorAll<HTMLElement>('[data-historical-scene-values]').forEach((node) => { node.hidden = !Array.isArray(source.historical_scene_values) || source.historical_scene_values.length === 0; });
 }
+
+// This is explanatory UI only. The server remains the sole template parser and
+// rejects every marker except the exact supported token at save time.
+function installWelcomeTemplateHelp(root: HTMLElement): void {
+  const input = root.querySelector<HTMLTextAreaElement>('[data-welcome-message]');
+  if (!input || root.querySelector('#channel-welcome-template-help')) return;
+  const hint = document.createElement('div');
+  hint.id = 'channel-welcome-template-help';
+  hint.className = 'form-text';
+  hint.textContent = '欢迎语仅支持变量 {{客户名}}。客户姓名暂缺时会显示“朋友”；发送前由服务端冻结正文，页面不模拟替换。';
+  input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), hint.id].filter(Boolean).join(' '));
+  input.insertAdjacentElement('afterend', hint);
+}
 async function executeChannelDonorScript(): Promise<void> {
   // Load the byte-preserved donor IIFE as a same-origin resource. This keeps
   // production CSP intact: no inline script and no unsafe-eval are required.
@@ -449,6 +462,7 @@ export async function startChannelAdmissionHost(): Promise<void> {
     mount.innerHTML = await channelFormMarkup(channel);
     const root = mount.querySelector<HTMLElement>('[data-channel-admission-page]'); if (!root) throw new Error('标准渠道表单挂载失败');
     hydrateChannelDonor(root, channel);
+    installWelcomeTemplateHelp(root);
     if (hydrated.directoryUnavailable) showSavedAssigneeDirectoryUnavailable(root);
     if (channel) {
       const codeInput = root.querySelector<HTMLInputElement>('[name="channel_code"]');
