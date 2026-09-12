@@ -129,9 +129,8 @@ func (channel Channel) Update(command UpdateChannel, now time.Time) (Channel, er
 	if command.Code != channel.Code {
 		return Channel{}, ErrImmutableCode
 	}
-	if channel.Status == StatusArchived {
-		return Channel{}, ErrInvalidTransition
-	}
+	// Archive controls availability, not editability. Configuration changes
+	// preserve the requested status and create a new immutable version.
 	updated := channel
 	updated.Status = command.Status
 	updated.Config = command.Config

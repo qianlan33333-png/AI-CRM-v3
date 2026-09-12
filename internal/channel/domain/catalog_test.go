@@ -35,22 +35,28 @@ func TestCatalogValidChannelAndImmutableCode(t *testing.T) {
 	}
 }
 
-func TestCatalogArchivedIsTerminalAndCannotPublish(t *testing.T) {
+func TestCatalogArchivedCanEditAndExplicitlyReactivate(t *testing.T) {
 	now := time.Now()
 	channel, err := NewChannel(CreateChannel{Code: "archived", Status: StatusArchived, Config: validCatalogConfig()}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if channel.CanPublish() {
-		t.Fatal("archived channel can publish")
+	config := channel.Config
+	config.Assignment.Assignees = []Assignee{{StaffID: 42, Priority: 1, Ratio: 100}}
+	edited, err := channel.Update(UpdateChannel{ExpectedVersion: 1, Code: channel.Code, Status: StatusArchived, Config: config}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err = channel.Update(UpdateChannel{ExpectedVersion: 1, Code: channel.Code, Status: StatusActive, Config: validCatalogConfig()}, now.Add(time.Second))
-	if !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("expected terminal archived status, got %v", err)
+	if edited.CanPublish() || edited.Status != StatusArchived || edited.Version != 2 || edited.ConfigVersion != 2 || edited.Config.Assignment.Assignees[0].StaffID != 42 {
+		t.Fatalf("unexpected archived edit: %+v", edited)
 	}
-	_, err = channel.Update(UpdateChannel{ExpectedVersion: 1, Code: channel.Code, Status: StatusArchived, Config: validCatalogConfig()}, now.Add(time.Second))
-	if !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("expected archived configuration to be immutable, got %v", err)
+	active, err := edited.Update(UpdateChannel{ExpectedVersion: 2, Code: edited.Code, Status: StatusActive, Config: edited.Config}, now.Add(2*time.Second))
+	if err != nil || !active.CanPublish() {
+		t.Fatalf("explicit reactivation: %+v %v", active, err)
+	}
+	_, err = edited.Update(UpdateChannel{ExpectedVersion: 1, Code: edited.Code, Status: StatusArchived, Config: config}, now.Add(2*time.Second))
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale archived edit: %v", err)
 	}
 }
 
