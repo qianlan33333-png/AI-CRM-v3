@@ -1427,6 +1427,20 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wechat-pay/products/{product_id}/external-push/preview:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    post:
+      operationId: previewWechatPayProductExternalPush
+      tags: [Products]
+      description: Pure compilation of server synthetic samples only; no acceptance or Provider call.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [field_mapping], properties: {field_mapping: {$ref: "#/components/schemas/CommerceFieldMapping"}}}}}}
+      responses:
+        "200": {description: Synthetic exact mapped body, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceFieldMappingPreview"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
   /api/admin/wechat-pay/products/{product_id}/external-push/test:
     parameters: [{$ref: "#/components/parameters/ProductID"}]
     post:
@@ -1466,6 +1480,20 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/external-push/preview:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    post:
+      operationId: previewServicePeriodProductExternalPush
+      tags: [Products]
+      description: Pure compilation of server synthetic samples only; no acceptance or Provider call.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [field_mapping], properties: {field_mapping: {$ref: "#/components/schemas/CommerceFieldMapping"}}}}}}
+      responses:
+        "200": {description: Synthetic exact mapped body, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceFieldMappingPreview"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
   /api/admin/service-period-products/{service_product_id}/external-push/test:
     parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
     post:
@@ -4774,11 +4802,43 @@ components:
         public_path: {type: string, pattern: "^/p/service_period/[1-9][0-9]*$"}
         local_only: {const: true}
         real_external_call_executed: {const: false}
+    CommerceFieldMapping:
+      type: object
+      additionalProperties: false
+      required: [version, fields]
+      properties:
+        version: {const: 1}
+        fields:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: object
+            additionalProperties: false
+            required: [key, source, value_type]
+            properties:
+              key: {type: string, minLength: 1, maxLength: 128, description: Unique UTF8 key without surrounding whitespace or control characters. Prototype keys are forbidden.}
+              source: {type: string, enum: [fixed, variable]}
+              value_type: {type: string, enum: [string, number, boolean, "null", json]}
+              value: {description: Fixed typed JSON; json means object or array. Numbers retain exact decimal precision.}
+              variable: {type: string, enum: [order.mobile, payer.nickname, order.paid_amount_minor]}
+    CommerceFieldMappingPreview:
+      type: object
+      additionalProperties: false
+      required: [payload, payload_json, synthetic, real_external_call_executed]
+      properties:
+        payload: {type: object, additionalProperties: true}
+        payload_json: {type: string}
+        legacy_payload_json: {type: string, description: Synthetic legacy paid protocol from the Outbound owner.}
+        legacy_preview_unavailable: {type: boolean}
+        synthetic: {const: true}
+        real_external_call_executed: {const: false}
     CommerceExternalPushConfigurationRequest:
       type: object
       additionalProperties: false
       required: [enabled]
       properties:
+        field_mapping: {oneOf: [{$ref: "#/components/schemas/CommerceFieldMapping"}, {type: "null"}], description: Omission preserves existing mode; explicit null selects legacy.}
         enabled: {type: boolean}
         url: {type: string, maxLength: 4096, description: Outbound-owned HTTPS webhook address; empty clears the per-product target.}
         type: {type: string, maxLength: 200}
@@ -4796,6 +4856,7 @@ components:
       properties:
         product_id: {$ref: "#/components/schemas/PositiveID"}
         product_kind: {type: string, enum: [wechat_pay, service_period]}
+        field_mapping: {oneOf: [{$ref: "#/components/schemas/CommerceFieldMapping"}, {type: "null"}], description: Omission preserves existing mode; explicit null selects legacy.}
         enabled: {type: boolean}
         url: {type: string, maxLength: 4096, description: Outbound-owned HTTPS webhook address; empty clears the per-product target.}
         type: {type: string, maxLength: 200}
