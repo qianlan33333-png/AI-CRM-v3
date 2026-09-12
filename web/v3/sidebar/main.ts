@@ -3,6 +3,7 @@
 // send-receipt controls; the overlay can only call this narrow boundary.
 
 import { orderStatusLabel } from "./tabs/local-contract";
+import { formatShanghaiDateTime } from "../adminDateTime";
 
 type Json = Record<string, any>;
 type RequestOptions = RequestInit & { timeoutMs?: number; retryCount?: number; retryDelayMs?: number };
@@ -97,8 +98,8 @@ function formatMoney(minor: unknown, currency = "CNY"): string {
 }
 
 function date(value: unknown): string {
-  const parsed = new Date(String(value ?? ""));
-  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().replace("T", " ").slice(0, 16);
+  const formatted = formatShanghaiDateTime(value);
+  return formatted === "未提供" ? "" : formatted;
 }
 
 function idempotency(scope: string): string {

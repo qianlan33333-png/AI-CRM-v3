@@ -13,8 +13,9 @@ import (
 // PresentationAssets is browser presentation only, shared by server-rendered
 // pages and generated documents. It introduces no domain/API dependencies.
 type PresentationAssets struct {
-	Script string
-	Styles []string
+	Script              string
+	Styles              []string
+	AdminDateTimeScript string
 }
 
 var emptyPresentationStage = regexp.MustCompile(`(<main\b[^>]*\bid="stage"[^>]*>)\s*(</main>)`)
@@ -28,26 +29,44 @@ func presentationFunctions(distDir string) (template.FuncMap, error) {
 		}
 		if err == nil {
 			var manifest struct {
-				Entries map[string]string `json:"entries"`
+				Entries      map[string]string `json:"entries"`
+				ReleaseFiles map[string]any    `json:"release_files"`
 			}
 			if err := json.Unmarshal(contents, &manifest); err != nil {
 				return nil, err
 			}
 			// A raw donor build is also used by older fixtures. Only enable the
 			// presentation seam once its complete Host closure has been built.
+			validEntry := func(key string) (string, error) {
+				entry := manifest.Entries[key]
+				if !strings.HasPrefix(entry, "assets/") || strings.Contains(entry, "..") || strings.ContainsAny(entry, "\\?#") {
+					return "", fmt.Errorf("invalid presentation asset: %s", key)
+				}
+				if _, err := os.Stat(filepath.Join(distDir, filepath.FromSlash(entry))); err != nil {
+					return "", fmt.Errorf("missing presentation asset: %s", key)
+				}
+				return "/" + entry, nil
+			}
+			if manifest.Entries["adminDateTimeHost"] == "" && len(manifest.ReleaseFiles) > 0 {
+				return nil, fmt.Errorf("required production presentation asset is absent: adminDateTimeHost")
+			}
+			if manifest.Entries["adminDateTimeHost"] != "" {
+				script, err := validEntry("adminDateTimeHost")
+				if err != nil {
+					return nil, err
+				}
+				assets.AdminDateTimeScript = script
+			}
 			if manifest.Entries["surfaceFeedbackHost"] != "" {
 				for _, key := range []string{"surfaceFeedbackHost", "surfaceFeedbackStyles", "actionFeedbackStyles", "presentationStyles"} {
-					entry := manifest.Entries[key]
-					if !strings.HasPrefix(entry, "assets/") || strings.Contains(entry, "..") || strings.ContainsAny(entry, "\\?#") {
-						return nil, fmt.Errorf("invalid presentation asset: %s", key)
-					}
-					if _, err := os.Stat(filepath.Join(distDir, filepath.FromSlash(entry))); err != nil {
-						return nil, fmt.Errorf("missing presentation asset: %s", key)
+					entry, err := validEntry(key)
+					if err != nil {
+						return nil, err
 					}
 					if key == "surfaceFeedbackHost" {
-						assets.Script = "/" + entry
+						assets.Script = entry
 					} else {
-						assets.Styles = append(assets.Styles, "/"+entry)
+						assets.Styles = append(assets.Styles, entry)
 					}
 				}
 			}

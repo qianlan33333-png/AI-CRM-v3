@@ -81,8 +81,9 @@
   }
 
   function date(value) {
-    const item = new Date(value || "");
-    return Number.isNaN(item.getTime()) ? "—" : item.toLocaleString("zh-CN");
+    if (!value) return "—";
+    const formatted = window.AdminFmt && typeof window.AdminFmt.localTime === "function" ? window.AdminFmt.localTime(value) : "";
+    return formatted || "时间暂时无法显示";
   }
 
   function syncLabel(value) {
@@ -579,11 +580,22 @@
   if (el.previous) el.previous.addEventListener("click", function () { if (pageIndex > 0) loadList(pageCursors[pageIndex - 1], "previous"); });
   if (el.next) el.next.addEventListener("click", function () { if (nextCursor) loadList(nextCursor, "next"); });
   if (el.syncStart) el.syncStart.addEventListener("click", startSync);
-  void loadTagSelectors();
-  const match = location.pathname.match(/^\/admin\/customers\/([1-9][0-9]*)$/);
-  if (match) loadDetail(match[1]);
-  else {
-    loadSync();
-    loadList("", "reset");
+  const startInitialLoads = function () {
+    void loadTagSelectors();
+    const match = location.pathname.match(/^\/admin\/customers\/([1-9][0-9]*)$/);
+    if (match) loadDetail(match[1]);
+    else {
+      loadSync();
+      loadList("", "reset");
+    }
+  };
+  if (window.AdminFmt && typeof window.AdminFmt.whenAdminDateTimeReady === "function") {
+    window.AdminFmt.whenAdminDateTimeReady(startInitialLoads, function () {
+      showAlert("时间暂时无法显示，请刷新重试。", false);
+      startInitialLoads();
+    });
+  } else {
+    showAlert("时间暂时无法显示，请刷新重试。", false);
+    startInitialLoads();
   }
 })();

@@ -20,6 +20,8 @@ const dom = new JSDOM('<!doctype html><html><body data-runtime-config-page="runt
   url: `${baseURL}/admin/config/releases/new`, runScripts: "outside-only", pretendToBeVisual: true,
   beforeParse(window) {
     window.Headers = globalThis.Headers;
+    window.AdminDateTime = {};
+    window.AdminFmt = { localTime: () => "2030-01-02 03:04:05", whenAdminDateTimeReady: (ready) => ready(window.AdminDateTime) };
     window.document.cookie = "aicrm_admin_session=runtime-release-browser";
     window.document.cookie = `aicrm_admin_csrf=${"c".repeat(43)}`;
     window.fetch = (input, init = {}) => {

@@ -42,6 +42,11 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   beforeParse(window) {
     window.Headers = globalThis.Headers;
     window.structuredClone = globalThis.structuredClone;
+    window.AdminDateTime = {
+      datetimeLocalValue: (value) => value === "2026-09-05T00:00:00.000Z" || value === "2026-09-05T00:00:00.611265Z" ? "2026-09-05T08:00:00" : value === "2026-09-05T01:00:00.000Z" || value === "2026-09-05T01:00:00.125Z" ? "2026-09-05T09:00:00" : "",
+      shanghaiDateTimeLocalToRFC3339: (value) => value === "2026-09-05T08:00" || value === "2026-09-05T08:00:00" ? "2026-09-05T00:00:00.000Z" : value === "2026-09-05T09:00" || value === "2026-09-05T09:00:00" ? "2026-09-05T01:00:00.000Z" : undefined,
+    };
+    window.AdminFmt = { localTime: () => "2026-09-05 20:00:00", whenAdminDateTimeReady: (ready) => ready(window.AdminDateTime) };
     window.fetch = async (input, init = {}) => {
       const url = new URL(String(input), window.location.origin);
       if (url.pathname === "/api/admin/ai-audience/packages/13" && (!init.method || init.method === "GET")) return json({ package: { id: 13, name: "原人群", code: "legacy-audience", version: packageVersion, lifecycle: "paused" } });
@@ -69,6 +74,12 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         const body = JSON.parse(init.body);
         writes.push(body);
         const parameters = { ...body.definition.parameters };
+        if (body.definition.template_key === "paid_order" && parameters.paid_at_from === "2026-09-05T00:00:00.000Z" && parameters.paid_at_to === "2026-09-05T01:00:00.000Z") {
+          // The storage contract may retain sub-second source precision even
+          // though the editable control deliberately displays whole seconds.
+          parameters.paid_at_from = "2026-09-05T00:00:00.611265Z";
+          parameters.paid_at_to = "2026-09-05T01:00:00.125Z";
+        }
         parameters.owner_staff_ids = parameters.owner_scope === "specified" ? ["9"] : [];
         delete parameters.owner_userids;
         config = { ...config, version: config.version + 1, refresh_cron_utc: body.refresh_cron_utc, definition: { ...body.definition, parameters } };
@@ -162,10 +173,25 @@ await saveTemplate("paid_order", () => {
   setSpecifiedOwner();
 }, (definition) => {
   const parameters = definition.parameters;
-  if (definition.template_key !== "paid_order" || parameters.product_codes.join(",") !== "course-v3" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.]\d{3}Z$/.test(parameters.paid_at_from) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.]\d{3}Z$/.test(parameters.paid_at_to) || parameters.owner_userids.join(",") !== "bob") throw new Error(`paid parameters=${JSON.stringify(definition)}`);
+  if (definition.template_key !== "paid_order" || parameters.product_codes.join(",") !== "course-v3" || parameters.paid_at_from !== "2026-09-05T00:00:00.000Z" || parameters.paid_at_to !== "2026-09-05T01:00:00.000Z" || parameters.owner_userids.join(",") !== "bob") throw new Error(`paid parameters=${JSON.stringify(definition)}`);
 }, () => {
-  if (fieldInput("products").value !== "course-v3" || fieldInput("owner_userids").value !== "bob") throw new Error("paid references or owner did not reopen");
+  if (fieldInput("products").value !== "course-v3" || fieldInput("paid_at_from").value !== "2026-09-05T08:00" || fieldInput("paid_at_to").value !== "2026-09-05T09:00" || fieldInput("owner_userids").value !== "bob") throw new Error("paid references, Shanghai datetimes, or owner did not reopen");
 });
+// A datetime-local control displays whole seconds.  The stored response above
+// carries fractional RFC3339 precision, so saving another condition must keep
+// that existing instant byte-for-byte when its visible Shanghai value remains
+// unchanged.
+select.value = "paid_order";
+select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+await wait(20);
+if (fieldInput("paid_at_from").value !== "2026-09-05T08:00" || fieldInput("paid_at_to").value !== "2026-09-05T09:00") throw new Error("fractional paid datetimes did not reopen as Shanghai wall-clock values");
+fieldInput("require_active_wecom_contact").checked = false;
+document.querySelector("#templatePreviewBtn").click();
+await wait(180);
+if (previewWrites.at(-1)?.definition?.parameters?.paid_at_from !== "2026-09-05T00:00:00.611265Z" || previewWrites.at(-1)?.definition?.parameters?.paid_at_to !== "2026-09-05T01:00:00.125Z") throw new Error(`unchanged paid datetime preview lost fractional precision: ${JSON.stringify(previewWrites.at(-1))}`);
+document.querySelector("#templateSaveBtn").click();
+await wait(180);
+if (writes.at(-1)?.definition?.parameters?.paid_at_from !== "2026-09-05T00:00:00.611265Z" || writes.at(-1)?.definition?.parameters?.paid_at_to !== "2026-09-05T01:00:00.125Z") throw new Error(`unchanged paid datetime save lost fractional precision: ${JSON.stringify(writes.at(-1))}`);
 await saveTemplate("channel_entry", () => {
   fieldInput("channels").value = "渠道标题";
   fieldInput("entered_days_min").value = "2";
@@ -234,7 +260,7 @@ await saveTemplate("questionnaire_choice_answers", () => {
   const rows = document.querySelectorAll('[data-field-name="conditions"] .template-condition-row');
   if (fieldInput("questionnaire").value !== "客户调研" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "内容\n投放" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
 });
-if (writes.length !== 7 || previewWrites.length !== 7 || packageWrites.length !== 7) throw new Error(`seven-form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
+if (writes.length !== 8 || previewWrites.length !== 8 || packageWrites.length !== 8) throw new Error(`form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
 // The frozen detail page owns this action: a user clicks the real preview and
 // confirmation controls, then is taken to the existing AI review/recipients
 // page instead of an Automation-only recipient drawer.

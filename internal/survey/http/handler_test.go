@@ -45,6 +45,8 @@ type routeSurvey struct {
 	surveyport.PublicApplication
 	surveyport.SubmissionApplication
 	questionnaire surveyport.Questionnaire
+	submissions   []surveyport.Submission
+	exportCalls   int
 }
 
 func (s *routeSurvey) ReadPublic(_ context.Context, slug string) (surveyport.Questionnaire, error) {
@@ -52,6 +54,15 @@ func (s *routeSurvey) ReadPublic(_ context.Context, slug string) (surveyport.Que
 		return surveyport.Questionnaire{}, surveyport.ErrNotFound
 	}
 	return s.questionnaire, nil
+}
+
+func (s *routeSurvey) ListSubmissions(context.Context, surveyport.ID, int32, int32, surveyport.IdentityState) (surveyport.SubmissionPage, error) {
+	return surveyport.SubmissionPage{Items: s.submissions, Total: int64(len(s.submissions)), Limit: int32(len(s.submissions))}, nil
+}
+
+func (s *routeSurvey) RecordExport(context.Context, surveyport.ID, int64, string) error {
+	s.exportCalls++
+	return nil
 }
 
 type routeSecurity struct{}
@@ -154,6 +165,21 @@ func TestPublicPublishUsesExplicitQuestionnaireVersionCAS(t *testing.T) {
 	handler.ServeHTTP(currentResponse, current)
 	if currentResponse.Code != nethttp.StatusOK || definitions.publishedExpected != 4 || definitions.questionnaire.Status != surveyport.StatusPublished {
 		t.Fatalf("current public publish response=%d expected=%d questionnaire=%+v body=%s", currentResponse.Code, definitions.publishedExpected, definitions.questionnaire, currentResponse.Body.String())
+	}
+}
+
+func TestQuestionnaireExportFormatsBusinessTimestampsInShanghai(t *testing.T) {
+	survey := &routeSurvey{submissions: []surveyport.Submission{{
+		ID: 8, QuestionnaireID: 7, SubmittedAt: time.Date(2026, time.September, 5, 0, 1, 2, 611265000, time.UTC),
+	}}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(nethttp.MethodGet, "/api/admin/questionnaires/7/export", nil))
+	if response.Code != nethttp.StatusOK || survey.exportCalls != 1 || !strings.Contains(response.Body.String(), "2026-09-05 08:01:02") || strings.Contains(response.Body.String(), "2026-09-05T00:01:02") {
+		t.Fatalf("business CSV did not use Shanghai display time: status=%d calls=%d body=%q", response.Code, survey.exportCalls, response.Body.String())
 	}
 }
 

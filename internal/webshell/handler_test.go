@@ -859,6 +859,27 @@ func TestSurveyQRBridgeBrowserFallback(t *testing.T) {
 	}
 }
 
+func TestAdminConsoleDateTimeReadiness(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate repository")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/admin_console_datetime.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("admin console date/time readiness failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "admin-console date-time readiness: PASS") {
+		t.Fatalf("admin console date/time readiness did not report success: %q", output.String())
+	}
+}
+
 func TestMessageArchiveBrowserPrivateImageContract(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is unavailable")
