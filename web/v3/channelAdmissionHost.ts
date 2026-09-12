@@ -12,6 +12,7 @@ type Channel = Json & { id?: number; version?: number; config_version?: number }
 const nativeFetch = window.fetch.bind(window);
 const mutationKeys = new Map<string, string>();
 const detailEtags = new Map<string, string>();
+const detailCodes = new Map<string, string>();
 
 function escapeHTML(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
@@ -138,15 +139,19 @@ function installCatalogTransport(): void {
     headers.set('Content-Type', 'application/json');
     const token = csrf();
     if (token) headers.set('X-CSRF-Token', token);
-    const fingerprint = `${method}:${url.pathname}:${body}`;
-    headers.set('Idempotency-Key', mutationKeys.get(fingerprint) || key());
-    mutationKeys.set(fingerprint, headers.get('Idempotency-Key') || '');
-
+    if (method === 'PATCH' && detailCodes.has(url.pathname) && JSON.parse(body).channel_code !== detailCodes.get(url.pathname)) {
+      return new Response(JSON.stringify({ ok: false, code: 'CHANNEL_CODE_IMMUTABLE', message: '已有渠道编码不可修改；请恢复原编码后保存其他配置。' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+    }
     if (method === 'PATCH' && !headers.has('If-Match')) {
       const etag = detailEtags.get(url.pathname);
       if (!etag) return new Response(JSON.stringify({ ok: false, code: 'CHANNEL_VERSION_UNAVAILABLE', message: '未取得打开此渠道时的版本，当前草稿未保存。请刷新后手动合并再保存。' }), { status: 503, headers: { 'Content-Type': 'application/json' } });
       headers.set('If-Match', etag);
     }
+    // Expected version participates in the server receipt payload. A later
+    // save at a new version is a new command; uncertain retries keep its key.
+    const fingerprint = `${method}:${url.pathname}:${headers.get('If-Match') || ''}:${body}`;
+    headers.set('Idempotency-Key', mutationKeys.get(fingerprint) || key());
+    mutationKeys.set(fingerprint, headers.get('Idempotency-Key') || '');
     const response = await nativeFetch(url, { ...init, method, body, headers, credentials: 'same-origin' });
     if (method === 'PATCH' && response.ok) { const etag = response.headers.get('ETag'); if (etag) detailEtags.set(url.pathname, etag); }
     return catalogError(response);
@@ -279,6 +284,7 @@ async function currentChannel(): Promise<Channel | null> {
   const payload = await response.json() as Json;
   const channel = payload.channel && typeof payload.channel === 'object' ? payload.channel as Channel : null;
   const etag = response.headers.get('ETag'); if (channel && etag) detailEtags.set(`/api/admin/channels/${id}`, etag);
+  if (channel && typeof channel.channel_code === 'string') detailCodes.set(`/api/admin/channels/${id}`, channel.channel_code);
   return channel;
 }
 
@@ -320,6 +326,18 @@ export async function startChannelAdmissionHost(): Promise<void> {
     mount.innerHTML = await channelFormMarkup(channel);
     const root = mount.querySelector<HTMLElement>('[data-channel-admission-page]'); if (!root) throw new Error('标准渠道表单挂载失败');
     hydrateChannelDonor(root, channel);
+    if (channel) {
+      const codeInput = root.querySelector<HTMLInputElement>('[name="channel_code"]');
+      if (codeInput) {
+        codeInput.readOnly = true;
+        codeInput.setAttribute('aria-describedby', 'channel-code-fixed-hint');
+        const hint = document.createElement('div');
+        hint.id = 'channel-code-fixed-hint';
+        hint.className = 'form-text';
+        hint.textContent = '编码创建后固定，用于识别渠道；名称及其他配置可继续修改。';
+        codeInput.insertAdjacentElement('afterend', hint);
+      }
+    }
     await (window as Window & { AICRMStandardComponents?: { ready?: () => Promise<void> } }).AICRMStandardComponents?.ready?.();
     installChannelPickerIdentityAdapter();
     await executeChannelDonorScript();
