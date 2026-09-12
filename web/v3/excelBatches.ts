@@ -41,7 +41,6 @@ function deliveryReason(value: unknown): string {
   if (!reason) return "—";
   return /[\u3400-\u9fff]/.test(reason) ? reason : "失败原因待核对";
 }
-
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   text?: string,
