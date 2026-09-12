@@ -9,6 +9,7 @@
 type Json = Record<string, unknown>;
 type Channel = Json & { id?: number; version?: number; config_version?: number };
 type PreservedFormFields = { qrURL: string; sceneValue: string; overflowPolicy: string };
+type SavedAssigneeNameHydration = { channel: Channel | null; directoryUnavailable: boolean };
 
 const nativeFetch = window.fetch.bind(window);
 const mutationKeys = new Map<string, string>();
@@ -235,35 +236,54 @@ async function channelOperationMembers(): Promise<Json[]> {
   }
 }
 
-async function hydrateSavedAssigneeNames(channel: Channel | null): Promise<Channel | null> {
-  if (!channel) return null;
+function savedAssignees(channel: Channel): { config: Json; assignees: unknown[] } | null {
   const config = channel.assignment_config_json;
-  if (!config || typeof config !== 'object' || Array.isArray(config) || !Array.isArray((config as Json).assignees)) return channel;
+  if (!config || typeof config !== 'object' || Array.isArray(config) || !Array.isArray((config as Json).assignees)) return null;
   const assignees = (config as Json).assignees as unknown[];
-  if (!assignees.some((item) => Number((item as Json | null)?.staff_id) > 0)) return channel;
+  return { config: config as Json, assignees };
+}
+
+function savedAssigneeName(channel: Channel, source: { config: Json; assignees: unknown[] }, names: Map<string, string>, fallback: string): Channel {
+  return {
+    ...channel,
+    assignment_config_json: {
+      ...source.config,
+      assignees: source.assignees.map((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+        const member = item as Json; const staffID = Number(member.staff_id);
+        if (!Number.isSafeInteger(staffID) || staffID < 1) return member;
+        return { ...member, display_name: names.get(String(staffID)) || fallback };
+      }),
+    },
+  };
+}
+
+async function hydrateSavedAssigneeNames(channel: Channel | null): Promise<SavedAssigneeNameHydration> {
+  if (!channel) return { channel: null, directoryUnavailable: false };
+  const source = savedAssignees(channel);
+  if (!source || !source.assignees.some((item) => Number((item as Json | null)?.staff_id) > 0)) return { channel, directoryUnavailable: false };
   try {
     const resolved = new Map<string, string>();
     for (const member of await channelOperationMembers()) {
       const staffID = Number(member.staff_id); const displayName = text(member.display_name).trim();
       if (Number.isSafeInteger(staffID) && staffID > 0 && displayName) resolved.set(String(staffID), displayName);
     }
-    if (!resolved.size) return channel;
-    return {
-      ...channel,
-      assignment_config_json: {
-        ...(config as Json),
-        assignees: assignees.map((item) => {
-          if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-          const member = item as Json; const displayName = resolved.get(String(Number(member.staff_id)));
-          return displayName ? { ...member, display_name: displayName } : member;
-        }),
-      },
-    };
+    return { channel: savedAssigneeName(channel, source, resolved, '未找到客服目录记录'), directoryUnavailable: false };
   } catch {
-    // The saved IDs remain visible as their existing fallback labels. A local
-    // directory read failure must not discard or mutate a channel definition.
-    return channel;
+    // The saved assignment remains available for edit and submit. Its staff ID
+    // stays in the donor's auxiliary field, never as a synthetic name.
+    return { channel: savedAssigneeName(channel, source, new Map(), '客服姓名暂不可用'), directoryUnavailable: true };
   }
+}
+
+function showSavedAssigneeDirectoryUnavailable(root: HTMLElement): void {
+  if (root.querySelector('#channel-directory-read-notice')) return;
+  const notice = document.createElement('div');
+  notice.id = 'channel-directory-read-notice';
+  notice.setAttribute('role', 'status');
+  notice.className = 'save-feedback is-error';
+  notice.textContent = '客服姓名暂不可用；已保留客服选择和配置，刷新后可重新核对。';
+  root.prepend(notice);
 }
 
 function channelBootstrap(channel: Channel | null): Json {
@@ -423,11 +443,13 @@ function installChannelPickerIdentityAdapter(): void {
 export async function startChannelAdmissionHost(): Promise<void> {
   installCatalogTransport();
   try {
-    const channel = await hydrateSavedAssigneeNames(await currentChannel());
+    const hydrated = await hydrateSavedAssigneeNames(await currentChannel());
+    const channel = hydrated.channel;
     const mount = document.querySelector('main') || document.body;
     mount.innerHTML = await channelFormMarkup(channel);
     const root = mount.querySelector<HTMLElement>('[data-channel-admission-page]'); if (!root) throw new Error('标准渠道表单挂载失败');
     hydrateChannelDonor(root, channel);
+    if (hydrated.directoryUnavailable) showSavedAssigneeDirectoryUnavailable(root);
     if (channel) {
       const codeInput = root.querySelector<HTMLInputElement>('[name="channel_code"]');
       if (codeInput) {

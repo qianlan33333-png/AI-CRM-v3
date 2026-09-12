@@ -129,13 +129,16 @@ const hydratedSavedMembers = createPage({ saved: channel({ assignment_config_jso
 try {
   await waitFor(() => hydratedSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), 'saved assignment display names must hydrate before donor initialization');
   const list = hydratedSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent || '';
-  assert.equal(list.includes('客服 #99'), true, 'a directory record absent from the trusted local projection must retain its staff-ID fallback');
+  assert.equal(list.includes('未找到客服目录记录'), true, 'a directory record absent from the trusted local projection must state that its name is unavailable');
+  assert.equal(list.includes('客服 #99'), false, 'a staff ID must remain auxiliary information rather than a synthetic customer-service name');
   assert.equal(hydratedSavedMembers.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/common/operation-members').length, 1, 'multiple saved assignees must not issue N+1 directory reads');
 } finally { hydratedSavedMembers.dom.window.close(); }
 
 const unavailableSavedMembers = createPage({ operationMembers: { status: 503, payload: { ok: false, error: 'staff_directory_unavailable' } } });
 try {
-  await waitFor(() => unavailableSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('客服 #12'), 'a directory failure must preserve the saved staff-ID fallback and form');
+  await waitFor(() => unavailableSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('客服姓名暂不可用'), 'a directory failure must preserve the saved selection while stating that its name is unavailable');
+  assert.equal(unavailableSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('客服 #12'), false, 'a staff ID must not stand in for a name when the directory is unavailable');
+  assert.equal(unavailableSavedMembers.dom.window.document.querySelector('#channel-directory-read-notice')?.textContent.includes('客服姓名暂不可用'), true, 'a directory failure must show an explicit page-level unavailable state');
   assert.equal(unavailableSavedMembers.calls.filter((call) => call.method === 'PATCH' || call.method === 'POST').length, 0, 'directory fallback must not mutate saved channel configuration');
 } finally { unavailableSavedMembers.dom.window.close(); }
 
