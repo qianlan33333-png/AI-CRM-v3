@@ -26,11 +26,12 @@ const templates = [
   { key: "member_usage_status", label: "会员与真实使用状态", template_version: 1, available: true, fields: [...ownerFields, { name: "service_period", label: "服务期", type: "enum", enum: ["any", "active", "expired"], default: "active" }, { name: "registration_status", label: "注册状态", type: "enum", enum: ["any", "registered", "unregistered"], default: "any" }, { name: "usage_status", label: "真实使用状态", type: "enum", enum: ["any", "used", "unused"], default: "any" }, { name: "membership_tiers", label: "会员层级", type: "string_list", default: [] }, { name: "membership_statuses", label: "会员状态", type: "string_list", default: [] }] },
 ];
 templates.push({ key: "questionnaire_submissions", label: "问卷提交", template_version: 1, available: true, fields: [{name: "questionnaires", label: "问卷", type: "reference_list", reference: "questionnaire", required: true}, ...ownerFields, {name: "require_wecom_identity", label: "要求已识别企微身份", type: "boolean", default: true}] });
-let config = { id: 4, package_id: 13, version: 1, refresh_cron_utc: "", definition: { schema_version: 1, template_key: "wecom_contact_registration", parameters: { owner_scope: "all", owner_staff_ids: [], contact_statuses: ["active"], registration_status: "any" } } };
+let config = { id: 4, package_id: 13, version: 1, refresh_cron_utc: "0 1 * * *", refresh_mode: "legacy_custom", definition: { schema_version: 1, template_key: "wecom_contact_registration", parameters: { owner_scope: "all", owner_staff_ids: [], contact_statuses: ["active"], registration_status: "any" } } };
 let packageVersion = 3;
 const writes = [];
 const previewWrites = [];
 const packageWrites = [];
+const policyWrites = [];
 let templateReads = 0;
 let broadcastRuns = [];
 let broadcastPreviewCalls = 0;
@@ -82,7 +83,7 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         }
         parameters.owner_staff_ids = parameters.owner_scope === "specified" ? ["9"] : [];
         delete parameters.owner_userids;
-        config = { ...config, version: config.version + 1, refresh_cron_utc: body.refresh_cron_utc, definition: { ...body.definition, parameters } };
+        config = { ...config, version: config.version + 1, refresh_cron_utc: body.refresh_cron_utc, refresh_mode: body.refresh_mode, definition: { ...body.definition, parameters } };
         return json({ configuration: config });
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/preview") {
@@ -105,6 +106,11 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         { id: 3, customer_id: 103, sender_staff_id: 8, effect_id: "eer_203", state: "outcome_unknown", failure_code: "generation_call_unknown" },
       ] });
       if (url.pathname === "/api/admin/automation-runs" && (!init.method || init.method === "GET")) return json({ items: broadcastRuns, next_cursor: "" });
+      if (url.pathname === "/api/admin/automations" && init.method === "POST") {
+        policyWrites.push(JSON.parse(init.body));
+        return json({ policy: { id: 31 } });
+      }
+      if (url.pathname === "/api/admin/automations" && (!init.method || init.method === "GET")) return json({ items: [] });
       return json({ error: `unexpected ${url.pathname}` }, 500);
     };
   },
@@ -117,6 +123,11 @@ await wait(350);
 const document = dom.window.document;
 const select = document.querySelector("#templateSelect");
 if (templateReads < 3 || select.options.length !== 7 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("frozen renderer and V3 submission template were not restored after the delayed detail renderer");
+if (document.querySelector("#dailySelect").value !== "off" || !document.querySelector("#summaryMode").textContent.includes("每日 09:00") || !document.querySelector("#refreshScheduleNote").textContent.includes("保留原规则")) throw new Error("legacy custom schedule was not presented as its actual Shanghai time");
+if (!document.querySelector("#policyTimezoneInput").readOnly) throw new Error("new quiet-hours timezone must be fixed in the form");
+document.querySelector("#templateSaveBtn").click();
+await wait(180);
+if (writes[0]?.refresh_mode !== "legacy_custom" || writes[0]?.refresh_cron_utc !== "0 1 * * *") throw new Error(`saving an unchanged historical schedule rewrote it: ${JSON.stringify(writes[0])}`);
 for (const template of templates) {
   select.value = template.key;
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -165,7 +176,7 @@ await saveTemplate("wecom_contact_registration", () => {
 }, () => {
   if (fieldInput("owner_scope").value !== "all" || !fieldInput("contact_statuses").options[0].selected) throw new Error("WeCom all-scope values did not reopen");
 });
-if (packageWrites[0]?.name !== "已更新的人群" || writes[0]?.refresh_mode !== "daily_0200" || writes[0]?.refresh_cron_utc !== "") throw new Error(`template save bypassed basic configuration or refresh mode: ${JSON.stringify({ packageWrites, writes })}`);
+if (packageWrites[1]?.name !== "已更新的人群" || writes[1]?.refresh_mode !== "daily_0200" || writes[1]?.refresh_cron_utc !== "") throw new Error(`template save bypassed basic configuration or refresh mode: ${JSON.stringify({ packageWrites, writes })}`);
 await saveTemplate("paid_order", () => {
   fieldInput("products").value = "course-v3";
   fieldInput("paid_at_from").value = "2026-09-05T08:00";
@@ -260,7 +271,19 @@ await saveTemplate("questionnaire_choice_answers", () => {
   const rows = document.querySelectorAll('[data-field-name="conditions"] .template-condition-row');
   if (fieldInput("questionnaire").value !== "客户调研" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "内容\n投放" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
 });
-if (writes.length !== 8 || previewWrites.length !== 8 || packageWrites.length !== 8) throw new Error(`form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
+if (writes.length !== 9 || previewWrites.length !== 8 || packageWrites.length !== 9) throw new Error(`form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
+document.querySelector("#policyCodeInput").value = "shanghai-quiet";
+document.querySelector("#policyNameInput").value = "上海安静时段";
+document.querySelector("#policyActionSelect").value = "record";
+document.querySelector("#policyTimezoneInput").value = "UTC";
+document.querySelector("#policyQuietHoursInput").value = "22:00-08:00";
+document.querySelector("#createPolicyBtn").click();
+await wait(180);
+if (policyWrites.length !== 1 || policyWrites[0]?.quiet_hours?.timezone !== "Asia/Shanghai" || policyWrites[0]?.quiet_hours?.start !== "22:00" || policyWrites[0]?.quiet_hours?.end !== "08:00") throw new Error(`new quiet-hours did not use fixed Shanghai wall time: ${JSON.stringify(policyWrites)}`);
+document.querySelector("#policyQuietHoursInput").value = "29:00-08:00";
+document.querySelector("#createPolicyBtn").click();
+await wait(40);
+if (policyWrites.length !== 1) throw new Error("invalid quiet-hours input reached the automation write route");
 // The frozen detail page owns this action: a user clicks the real preview and
 // confirmation controls, then is taken to the existing AI review/recipients
 // page instead of an Automation-only recipient drawer.
