@@ -379,7 +379,9 @@
     }
     window.OperationMemberPicker.open({
       value,
-      title: title || "选择运营人员",
+      context: "group_ops_owner",
+      selection: { mode: "single", max: 1 },
+      title: title || "选择负责人",
       scope: "group_ops",
       page_size: 100,
       onSelect: (member) => {
@@ -419,7 +421,7 @@
     if (action === "save-webhook") return saveWebhook();
     if (action === "pick-create-owner") return openMemberPicker({
       fieldName: "create_owner_userid",
-      title: "选择运营人员",
+      title: "选择负责人",
       value: currentFormValue("create_owner_userid"),
       onPicked: (member) => {
         state.createOwner = member;
@@ -427,7 +429,7 @@
     });
     if (action === "pick-plan-owner") return openMemberPicker({
       fieldName: "owner_userid",
-      title: "选择运营人员",
+      title: "选择负责人",
       value: currentFormValue("owner_userid") || (state.plan || {}).owner_userid,
       onPicked: (member) => {
         if (state.plan) {

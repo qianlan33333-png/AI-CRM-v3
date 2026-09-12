@@ -15,6 +15,12 @@
     selected: null,
     confirmed: null,
     onSelect: null,
+    context: "operation_member",
+    title: "选择运营人员",
+    description: "从企微客服列表选择人员。",
+    confirmLabel: "确认选择",
+    searchPlaceholder: "搜索姓名或 userID",
+    refreshLabel: "刷新客服",
     multiple: false,
     max: 1,
     selectedMembers: [],
@@ -29,6 +35,24 @@
     pageSize: "",
     includeInactive: null,
     allowRefresh: true,
+  };
+
+  const pickerContexts = {
+    operation_member: {
+      title: "选择运营人员",
+      description: "从企微客服列表选择人员。",
+      confirmLabel: "确认选择",
+    },
+    group_ops_owner: {
+      title: "选择负责人",
+      description: "从企微客服列表选择一位负责人。",
+      confirmLabel: "确认负责人",
+    },
+    channel_assignees: {
+      title: "选择企微客服",
+      description: "从企微客服列表勾选后加入当前渠道。",
+      confirmLabel: "确认添加",
+    },
   };
 
   function memberLabel(member) {
@@ -209,14 +233,6 @@
         border-top: 1px solid var(--line, #e5e7eb);
         background: var(--panel-strong, #fff);
       }
-      @media (max-width: 820px) {
-        .operation-member-picker__search {
-          grid-template-columns: 1fr;
-        }
-        .operation-member-picker__panel {
-          max-height: 94vh;
-        }
-      }
       /* Supplied AI-CRM design package: compact Lark-style member selector. */
       .operation-member-picker { padding: 20px; background: rgba(31,35,41,.46); }
       .operation-member-picker__panel,.member-modal__panel { width:min(760px,100%);max-height:min(560px,92vh);border:1px solid #dee0e3;border-radius:10px;background:#fff;box-shadow:0 12px 36px rgba(31,35,41,.24); }
@@ -232,6 +248,14 @@
       .operation-member-picker__name { font-weight:600; }
       .operation-member-picker__user-id { color:#8f959e;font-size:12px; }
       .operation-member-picker__actions,.member-modal__actions { padding:10px 16px;gap:8px;border-color:#eff0f1; }
+      /* Keep the narrow layout after the compact component overrides above. */
+      @media (max-width: 820px) {
+        .operation-member-picker { padding: 12px; }
+        .operation-member-picker__panel,.member-modal__panel { max-height:94vh; }
+        .operation-member-picker__search,.member-modal__search { grid-template-columns:1fr; }
+        .operation-member-picker__search .admin-button,.member-modal__search .admin-button { width:100%; }
+        .operation-member-picker__actions,.member-modal__actions { flex-wrap:wrap; }
+      }
     `;
     document.head.appendChild(style);
   }
@@ -250,7 +274,7 @@
         <div class="operation-member-picker__head member-modal__head">
           <div>
             <h2 id="operation-member-picker-title" data-operation-member-title>选择运营人员</h2>
-            <p>从企微客服列表勾选，确认后加入当前渠道。最多 5 个。</p>
+            <p data-operation-member-description>从企微客服列表选择人员。</p>
           </div>
           <button class="operation-member-picker__close admin-button admin-button--secondary" type="button" data-operation-member-close>关闭</button>
         </div>
@@ -331,8 +355,9 @@
     return url;
   }
 
-  function renderEmpty(text) {
-    return `<div class="operation-member-picker__empty">${escapeHtml(text)}</div>`;
+  function renderEmpty(text, role) {
+    const announcement = role ? ` role="${role}"` : "";
+    return `<div class="operation-member-picker__empty"${announcement}>${escapeHtml(text)}</div>`;
   }
 
   function render() {
@@ -343,26 +368,24 @@
     if (refreshButton) {
       refreshButton.hidden = !state.allowRefresh;
       refreshButton.disabled = state.loading;
-      refreshButton.textContent = state.loading ? "刷新中" : "刷新客服";
+      refreshButton.textContent = state.loading ? "刷新中" : state.refreshLabel;
     }
     if (confirmButton) {
-      if (state.multiple) {
-        confirmButton.disabled = !state.selectedMembers.length;
-      } else {
-        confirmButton.disabled = !state.selected;
-      }
+      confirmButton.textContent = state.confirmLabel;
+      confirmButton.disabled = state.loading || (state.multiple ? !state.selectedMembers.length : !state.selected);
     }
     if (!list) return;
+    list.setAttribute("aria-busy", state.loading ? "true" : "false");
     if (state.loading) {
-      list.innerHTML = renderEmpty("正在加载人员...");
+      list.innerHTML = renderEmpty("正在加载人员...", "status");
       return;
     }
     if (state.errorMessage) {
-      list.innerHTML = renderEmpty(state.errorMessage);
+      list.innerHTML = renderEmpty(state.errorMessage, "alert");
       return;
     }
     if (!state.items.length) {
-      list.innerHTML = renderEmpty("没有找到匹配人员");
+      list.innerHTML = renderEmpty("没有找到匹配人员", "status");
       return;
     }
     list.innerHTML = state.items.map((member) => {
@@ -486,6 +509,29 @@
     modal.setAttribute("aria-hidden", "true");
   }
 
+  function selectionOptions(options) {
+    const selection = options && typeof options.selection === "object" && options.selection ? options.selection : {};
+    const mode = String(selection.mode || (options.multiple ? "multiple" : "single")).trim().toLowerCase();
+    const multiple = mode === "multiple";
+    const requestedMax = selection.max ?? options.max ?? (multiple ? 5 : 1);
+    const max = Number(requestedMax);
+    return { multiple, max: multiple ? (Number.isSafeInteger(max) && max > 0 ? max : 5) : 1 };
+  }
+
+  function pickerCopy(options, multiple, max) {
+    const context = String(options.context || "operation_member").trim();
+    const preset = pickerContexts[context] || pickerContexts.operation_member;
+    const description = String(options.description || preset.description).trim();
+    return {
+      context,
+      title: String(options.title || preset.title).trim() || pickerContexts.operation_member.title,
+      description: multiple ? `${description} 本次最多选择 ${max} 人。` : description,
+      confirmLabel: String(options.confirmLabel || preset.confirmLabel).trim() || pickerContexts.operation_member.confirmLabel,
+      searchPlaceholder: String(options.searchPlaceholder || "搜索姓名或 userID").trim() || "搜索姓名或 userID",
+      refreshLabel: String(options.refreshLabel || "刷新客服").trim() || "刷新客服",
+    };
+  }
+
   async function open(options = {}) {
     const modal = ensureModal();
     const value = String(options.value || options.selectedUserId || "").trim();
@@ -493,8 +539,16 @@
     state.pageSize = String(options.page_size || options.pageSize || "").trim();
     state.includeInactive = optionBool(options, "includeInactive", "include_inactive");
     state.allowRefresh = optionBool(options, "allowRefresh", "allow_refresh") !== false;
-    state.multiple = Boolean(options.multiple);
-    state.max = Math.max(1, Number(options.max || (state.multiple ? 5 : 1)) || 1);
+    const selection = selectionOptions(options);
+    const copy = pickerCopy(options, selection.multiple, selection.max);
+    state.context = copy.context;
+    state.title = copy.title;
+    state.description = copy.description;
+    state.confirmLabel = copy.confirmLabel;
+    state.searchPlaceholder = copy.searchPlaceholder;
+    state.refreshLabel = copy.refreshLabel;
+    state.multiple = selection.multiple;
+    state.max = selection.max;
     state.disabledUserIds = (Array.isArray(options.disabledUserIds) ? options.disabledUserIds : []).map((item) => String(item || "").trim()).filter(Boolean);
     state.confirmed = options.selectedMember || (value ? { user_id: value, display_name: options.selectedLabel || value, avatar_url: "" } : null);
     state.selected = state.confirmed;
@@ -506,9 +560,13 @@
     state.selectedMembers = state.confirmedMembers.slice();
     state.onSelect = options.onSelect || options.onConfirm || null;
     clearTimeout(state.debounceTimer);
-    modal.querySelector("[data-operation-member-title]").textContent = options.title || "选择运营人员";
+    modal.querySelector("[data-operation-member-title]").textContent = state.title;
+    modal.querySelector("[data-operation-member-description]").textContent = state.description;
     const search = modal.querySelector("[data-operation-member-search]");
-    if (search) search.value = "";
+    if (search) {
+      search.value = "";
+      search.placeholder = state.searchPlaceholder;
+    }
     modal.hidden = false;
     modal.setAttribute("aria-hidden", "false");
     await load();

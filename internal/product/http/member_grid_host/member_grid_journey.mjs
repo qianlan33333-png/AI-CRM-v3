@@ -95,7 +95,7 @@ async function runInternalJourney() {
   const {window, document, html, scripts} = first;
   assert.match(html, /data-service-product-id="7"/, 'the established product-data URL must render the frozen grid host');
   assert.deepEqual(scripts, [
-    '/assets/standard-components/operation_member_picker.js',
+    '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948',
     '/service-period-member-grid-assets/member_grid_host.js',
     '/service-period-member-grid-assets/member_grid_state.js',
     '/service-period-member-grid-assets/member_grid_share.js',

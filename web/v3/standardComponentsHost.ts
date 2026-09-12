@@ -66,7 +66,7 @@ document.addEventListener('click', (event) => {
 }, true);
 
 const scripts = [
-  '/assets/standard-components/operation_member_picker.js',
+  '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948',
   '/assets/standard-components/group_chat_picker.js',
   '/assets/standard-components/material_picker.js',
   '/assets/standard-components/send_content_composer.js',
