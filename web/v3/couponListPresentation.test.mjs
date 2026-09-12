@@ -26,7 +26,7 @@ const calls = [];
 const errors = [];
 const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', (error) => errors.push(error));
-const dom = new JSDOM(`<!doctype html><body data-page="coupons"><main id="stage"></main><template id="tpl">${template}</template></body>`, {
+const dom = new JSDOM(`<!doctype html><body class="admin-shell" data-page="coupons"><main id="stage"></main><template id="tpl">${template}</template></body>`, {
   url: 'https://test.invalid/admin/coupons', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole,
   beforeParse(window) {
     window.Request = Request; window.Response = Response; window.Headers = Headers;
@@ -61,6 +61,11 @@ try {
   assert.ok(table, 'Host must mark the coupon presentation table');
   assert.equal(table.style.minWidth, '860px', '390px uses a horizontal-scrolling presentation instead of clipped columns');
   assert.equal(table.parentElement.style.overflowX, 'auto');
+  assert.equal(table.parentElement.dataset.couponPresentationCard, 'true');
+  assert.equal(table.parentElement.getAttribute('aria-label'), '优惠券列表；可横向滚动查看完整列');
+  assert.equal(table.previousElementSibling?.textContent, '左右滑动查看领取时间范围、状态和操作');
+  assert.equal(table.previousElementSibling?.previousElementSibling?.dataset.couponPresentationToolbar, 'true');
+  assert.ok(document.querySelector('style[data-coupon-page-mobile-layout]')?.textContent.includes('data-coupon-presentation-toolbar'), 'Coupon Host must install a route-scoped mobile layout instead of changing the global shell');
   const before = calls.filter((call) => call.url.pathname === '/api/admin/coupons').length;
   const input = document.querySelector('input[placeholder="搜索优惠券名称"]');
   input.value = '普通';

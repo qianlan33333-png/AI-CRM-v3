@@ -416,6 +416,34 @@ function couponStatusLabel(value: unknown): string {
   } as Record<string, string>)[String(value)] || '状态待确认';
 }
 
+function installCouponPageMobileLayout(): void {
+  if (!['coupons', 'couponForm', 'couponData'].includes(document.body.dataset.page || '') || document.querySelector('style[data-coupon-page-mobile-layout]')) return;
+  const style = document.createElement('style');
+  style.dataset.couponPageMobileLayout = '';
+  // These selectors are deliberately confined to Coupon routes.  The shell is
+  // production markup, while the frozen Coupon workspace keeps its own DOM.
+  style.textContent = `
+@media (max-width: 600px) {
+  body.admin-shell:is([data-page="coupons"], [data-page="couponForm"], [data-page="couponData"]) .admin-layout { display: block; min-width: 0; }
+  body.admin-shell:is([data-page="coupons"], [data-page="couponForm"], [data-page="couponData"]) .admin-sidebar { display: none; }
+  body.admin-shell:is([data-page="coupons"], [data-page="couponForm"], [data-page="couponData"]) .admin-main-wrap { min-width: 0; padding: 0; gap: 0; }
+  body.admin-shell:is([data-page="coupons"], [data-page="couponForm"], [data-page="couponData"]) #stage,
+  body.admin-shell:is([data-page="coupons"], [data-page="couponForm"], [data-page="couponData"]) #stage > div { min-width: 0; width: 100%; }
+  body.admin-shell[data-page="coupons"] #stage > div > div[style*="height:52px"] { height: auto !important; min-height: 52px; padding: 8px 12px !important; flex-wrap: wrap; }
+  body.admin-shell[data-page="coupons"] #stage > div > div[style*="height:52px"] > div:last-child { margin-left: auto; }
+  body.admin-shell[data-page="coupons"] #stage > div > div[style*="overflow:auto"] { padding: 12px !important; overflow: visible !important; }
+  body.admin-shell[data-page="coupons"] [data-coupon-presentation-card] > div:first-child { flex-wrap: wrap; align-items: flex-start !important; gap: 10px !important; }
+  body.admin-shell[data-page="coupons"] [data-coupon-presentation-card] > div:first-child h2 { flex: 0 0 auto; min-width: max-content; white-space: nowrap; }
+  body.admin-shell[data-page="coupons"] [data-coupon-presentation-toolbar] { display: flex; flex: 1 1 100%; flex-wrap: wrap; min-width: 0; }
+  body.admin-shell[data-page="coupons"] [data-coupon-presentation-toolbar] input { flex: 1 1 180px; width: auto !important; min-width: 0; }
+  body.admin-shell[data-page="coupons"] [data-coupon-presentation-toolbar] select { flex: 0 1 auto; min-width: 96px; }
+  body.admin-shell[data-page="coupons"] .coupon-list-scroll-hint { display: block; margin: 0; padding: 8px 16px; border-bottom: 1px solid #eff0f1; color: #646a73; font-size: 12px; line-height: 18px; }
+}
+.coupon-list-scroll-hint { display: none; }
+`;
+  document.head.append(style);
+}
+
 function installCouponListBridge(): void {
   if (document.body.dataset.page !== 'coupons') return;
   const originalLoadDb = api.loadDb.bind(api);
@@ -455,7 +483,20 @@ function installCouponListBridge(): void {
     table.dataset.couponPresentationList = 'true';
     table.style.minWidth = '860px';
     const card = table.parentElement;
-    if (card instanceof HTMLElement) { card.style.overflowX = 'auto'; card.style.overflowY = 'hidden'; }
+    if (card instanceof HTMLElement) {
+      card.dataset.couponPresentationCard = 'true';
+      card.style.overflowX = 'auto'; card.style.overflowY = 'hidden';
+      card.tabIndex = 0;
+      card.setAttribute('aria-label', '优惠券列表；可横向滚动查看完整列');
+      const toolbar = table.previousElementSibling;
+      if (toolbar instanceof HTMLElement) toolbar.dataset.couponPresentationToolbar = 'true';
+      let hint = card.querySelector<HTMLElement>('.coupon-list-scroll-hint');
+      if (!hint) {
+        hint = document.createElement('p'); hint.className = 'coupon-list-scroll-hint';
+        hint.textContent = '左右滑动查看领取时间范围、状态和操作';
+        table.before(hint);
+      }
+    }
   };
   new MutationObserver(applyPresentation).observe(document.documentElement, { childList: true, subtree: true });
   applyPresentation();
@@ -485,6 +526,7 @@ async function mountCouponEditor(): Promise<void> {
   }
 }
 new MutationObserver(() => { void mountCouponEditor(); }).observe(document.documentElement, { childList: true, subtree: true });
+installCouponPageMobileLayout();
 void mountCouponEditor();
 installCouponListBridge();
 
