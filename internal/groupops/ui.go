@@ -180,8 +180,10 @@ func (h *groupOpsUI) assets(standard bool) (GroupOpsAssets, error) {
 		return GroupOpsAssets{}, err
 	}
 	var manifest struct {
-		Entries map[string]string          `json:"entries"`
-		Files   map[string]json.RawMessage `json:"files"`
+		Entries map[string]string `json:"entries"`
+		Files   map[string]struct {
+			SHA256 string `json:"sha256"`
+		} `json:"files"`
 	}
 	if err = json.Unmarshal(raw, &manifest); err != nil {
 		return GroupOpsAssets{}, err
@@ -197,6 +199,17 @@ func (h *groupOpsUI) assets(standard bool) (GroupOpsAssets, error) {
 			return "", err
 		}
 		return "/groupops-assets/" + value, nil
+	}
+	getVersioned := func(value string) (string, error) {
+		asset, getErr := get(value)
+		if getErr != nil {
+			return "", getErr
+		}
+		sum := manifest.Files[value].SHA256
+		if len(sum) != 64 {
+			return asset, nil
+		}
+		return asset + "?v=" + sum[:16], nil
 	}
 	entry := func(name string) (string, error) {
 		value := manifest.Entries[name]
@@ -241,7 +254,12 @@ func (h *groupOpsUI) assets(standard bool) (GroupOpsAssets, error) {
 		"assets/standard-components/material_picker.css": &assets.MaterialPickerCSS, "assets/standard-components/material_picker.js": &assets.MaterialPickerJS,
 		"assets/standard-components/send_content_composer.css": &assets.ComposerCSS, "assets/standard-components/send_content_composer.js": &assets.ComposerJS,
 	} {
-		if *target, err = get(name); err != nil {
+		if name == "assets/standard-components/operation_member_picker.js" {
+			*target, err = getVersioned(name)
+		} else {
+			*target, err = get(name)
+		}
+		if err != nil {
 			return GroupOpsAssets{}, err
 		}
 	}

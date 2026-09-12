@@ -65,3 +65,29 @@ for (const syncStatus of [200,503]) {
  } finally {dom.window.close();}
 }
 console.log('frozen staff selector refresh success and failure retention: PASS');
+
+// The shared picker accepts an explicit selection contract. A multi-select
+// limit must stay a finite, positive integer and the owner context is always
+// single-select, regardless of an accidental caller-supplied limit.
+{
+ const dom=new JSDOM('<!doctype html><body></body>',{url:'https://test.invalid/admin/channels/17/edit',runScripts:'dangerously',beforeParse(w){
+  w.Request=Request;w.Response=Response;w.Headers=Headers;
+  w.AdminApi={responseErrorMessage:(_r,_d,f)=>f,errorMessage:(e,f)=>e?.message||f};
+  w.fetch=async()=>new Response(JSON.stringify({items:[{staff_id:12,user_id:'alice',display_name:'Alice'}]}),{status:200});
+ }});
+ try {
+  dom.window.eval(picker);
+  for (const invalidMax of [Infinity, 1.5, 0, -1]) {
+   await dom.window.OperationMemberPicker.open({context:'channel_assignees',selection:{mode:'multiple',max:invalidMax}});
+   assert.match(dom.window.document.querySelector('[data-operation-member-description]').textContent,/本次最多选择 5 人/);
+   assert.equal(dom.window.document.querySelectorAll('input[type="checkbox"]').length,1);
+  }
+  await dom.window.OperationMemberPicker.open({context:'group_ops_owner',selection:{mode:'single',max:8}});
+  assert.equal(dom.window.document.querySelector('[data-operation-member-title]').textContent,'选择负责人');
+  assert.match(dom.window.document.querySelector('[data-operation-member-description]').textContent,/选择一位负责人/);
+  assert.doesNotMatch(dom.window.document.querySelector('[data-operation-member-description]').textContent,/最多选择/);
+  assert.equal(dom.window.document.querySelectorAll('input[type="checkbox"]').length,0);
+  assert.equal(dom.window.document.querySelector('[data-operation-member-confirm]').textContent,'确认负责人');
+ } finally {dom.window.close();}
+}
+console.log('frozen staff selector selection contract: PASS');
