@@ -56,6 +56,9 @@ function catalogMutation(url: URL, method: string): boolean {
 
 function normalizePayload(raw: string): string {
   const payload = JSON.parse(raw || '{}') as Json;
+  // The standard donor still emits its obsolete action token. V3 uses the
+  // authenticated session and X-CSRF-Token; strict Catalog JSON rejects it.
+  delete payload.admin_action_token;
   const assignees = Array.isArray(payload.assignees) ? payload.assignees : [];
   if ('assignees' in payload) delete payload.assignees;
   payload.assignment_config_json = {
@@ -75,15 +78,24 @@ function normalizePayload(raw: string): string {
   return JSON.stringify(payload);
 }
 
-function catalogError(response: Response): Response {
-  if (response.status !== 409) return response;
+async function catalogError(response: Response): Promise<Response> {
+  if (response.ok) return response;
+  const source = await response.clone().json().catch(() => ({})) as Json;
+  const code = typeof source.code === 'string' ? source.code : '';
+  const messages: Record<string, string> = {
+    MALFORMED_REQUEST: '渠道保存数据不符合要求，请检查名称、编码、客服和标签后重试。',
+    FORBIDDEN: '当前账号没有保存渠道的权限，请联系管理员。',
+    UNAUTHORIZED: '登录已失效，请重新登录后保存。',
+    CHANNEL_CODE_CONFLICT: '渠道编码已被使用，请更换编码后保存。',
+  };
+  const message = response.status === 409
+    ? '渠道配置或编码发生冲突；当前草稿已保留。请重新读取最新配置后核对再保存。'
+    : messages[code] || `渠道保存失败（HTTP ${response.status}），当前草稿已保留，请稍后重试。`;
   const headers = new Headers(response.headers);
   headers.set('Content-Type', 'application/json');
-  return new Response(JSON.stringify({
-    ok: false,
-    code: 'CHANNEL_VERSION_CONFLICT',
-    message: '渠道配置已被其他人更新；当前草稿已保留。请重新读取最新配置后手动合并再保存。',
-  }), { status: response.status, statusText: response.statusText, headers });
+  headers.delete('Content-Length');
+  return new Response(JSON.stringify({ ok: false, code: response.status === 409 ? 'CHANNEL_VERSION_CONFLICT' : code, message }),
+    { status: response.status, statusText: response.statusText, headers });
 }
 
 function installErrorFormatter(): void {
@@ -92,6 +104,7 @@ function installErrorFormatter(): void {
   adminAPI.formatErrorValue = (value: unknown): string => {
     const source = value && typeof value === 'object' ? value as Json : {};
     if (source.code === 'CHANNEL_VERSION_CONFLICT') return String(source.message);
+    if (typeof source.message === 'string' && source.message) return source.message;
     if (typeof previous === 'function') return String(previous(value) || '');
     return typeof source.message === 'string' ? source.message : '';
   };

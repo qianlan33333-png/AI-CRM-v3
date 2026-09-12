@@ -62,6 +62,11 @@ function createPage({ saved = channel(), mutations = [], creates = [], resourceI
         const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method)).toUpperCase();
         const headers = new Headers(init.headers || (typeof input === 'string' ? undefined : input.headers));
         calls.push({ path: url.pathname, method, headers, body: init.body || '' });
+        if (['PATCH', 'POST'].includes(method) && /^\/api\/admin\/channels(?:\/[0-9]+)?$/.test(url.pathname)) {
+          const allowed = new Set(['channel_type','carrier_type','channel_name','channel_code','scene_value','qr_url','status','owner_staff_id','customer_channel','link_url','final_url','welcome_message','welcome_image_library_ids','welcome_miniprogram_library_ids','welcome_attachment_library_ids','welcome_group_invite_library_ids','auto_accept_friend','entry_tag_id','entry_tag_name','entry_tag_group_name','assignment_mode','assignment_strategy','overflow_policy','assignment_config_json']);
+          const unknown = Object.keys(JSON.parse(init.body || '{}')).filter((name) => !allowed.has(name));
+          if (unknown.length) return response({code:'MALFORMED_REQUEST'}, 400);
+        }
         if (method === 'GET' && url.pathname === '/api/admin/common/operation-members') return response({ items: [{staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服'}] });
         if (method === 'GET' && url.pathname === '/assets/standard-components/channel_code_form.html') return new Response(donorForm, { status: 200 });
         if (method === 'GET' && url.pathname === '/api/admin/channels/17') return response({ ok: true, channel: saved }, 200, { ETag: '"7"' });
@@ -131,6 +136,7 @@ try {
   const patch = conflict.calls.find((call) => call.method === 'PATCH');
   assert.ok(patch, 'save must issue one PATCH');
   assert.equal(patch.headers.get('If-Match'), '"7"', 'PATCH must use the server ETag');
+  assert.equal(Object.hasOwn(JSON.parse(patch.body), 'admin_action_token'), false, 'legacy donor action token must not reach strict Catalog decoder');
   assert.match(patch.headers.get('Idempotency-Key'), /^channel-/, 'PATCH must carry a stable idempotency key');
   const payload = JSON.parse(patch.body);
   assert.ok(Array.isArray(payload.assignment_config_json.assignees), 'standard assignees must map to the V3 Catalog DTO');
