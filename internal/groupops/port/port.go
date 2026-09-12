@@ -41,6 +41,19 @@ type Plan struct {
 	UpdatedBy int64      `json:"updated_by"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+	Owner     PlanOwner  `json:"owner"`
+}
+
+// PlanOwner is the read-only responsible-member projection for a plan. It
+// joins the plan's persisted local staff key to the Group Ops-owned directory;
+// it does not create or resolve a customer identity.
+type PlanOwner struct {
+	StaffID              int64  `json:"staff_id,omitempty"`
+	SenderUserID         string `json:"sender_userid,omitempty"`
+	DisplayName          string `json:"display_name,omitempty"`
+	NameSource           string `json:"name_source,omitempty"`
+	ProfileReadState     string `json:"profile_read_state,omitempty"`
+	ProfileReadErrorCode string `json:"profile_read_error_code,omitempty"`
 }
 
 type PlanListItem struct {

@@ -116,6 +116,22 @@ try {
   assert.ok([...document.querySelectorAll('[data-link-section]')].every((node) => !node.hidden), 'acquisition links expose every standard link-only donor control');
 } finally { stable.dom.window.close(); }
 
+// The standard channel entry point disables adding once all five places are
+// occupied. That keeps a remaining capacity of zero from invoking the legacy
+// picker call, whose historical max fallback was one.
+const capped = createPage({ saved: channel({ assignment_config_json: { assignees: Array.from({ length: 5 }, (_, index) => ({
+  staff_id: index + 1, priority: index + 1, ratio_percent: index === 0 ? 100 : 0, max_scans_24h: 100,
+})) } }) });
+try {
+  await waitFor(() => capped.dom.window.document.querySelector('[data-channel-admission-page]'), 'capped channel form must mount');
+  await waitFor(() => capped.dom.window.__channelComposerOptions, 'capped channel donor must initialize');
+  const add = capped.dom.window.document.querySelector('[data-add-channel-assignee]');
+  assert.equal(capped.dom.window.document.querySelector('[data-assignee-count]')?.textContent, '5 / 5');
+  assert.equal(add.disabled, true, 'a channel with no remaining assignee capacity must not open the picker');
+  add.click();
+  assert.equal(capped.dom.window.__pickerOptions, undefined, 'a disabled capped entry point must not fall back to one additional picker slot');
+} finally { capped.dom.window.close(); }
+
 // A real Host save supplies Catalog's complete replacement DTO, server ETag
 // and stable idempotency receipt. It does not make a second write for 409.
 const conflict = createPage({ mutations: [{ status: 409, payload: { code: 'VERSION_CONFLICT' } }] });
@@ -234,6 +250,9 @@ try {
   await waitFor(() => document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), 'new channel picker result must enter assignment state');
   document.querySelector('[data-add-channel-assignee]').click();
   await waitFor(() => created.dom.window.__pickerOptions.disabledUserIds?.includes('wecom-alice'), 'existing local assignee IDs must disable the corresponding real WeCom ID in the shared picker');
+  assert.equal(created.dom.window.__pickerOptions.context, 'channel_assignees', 'the channel Host must declare the shared picker business context');
+  assert.deepEqual(JSON.parse(JSON.stringify(created.dom.window.__pickerOptions.selection)), { mode: 'multiple', max: 4 }, 'the channel Host must retain the donor remaining-capacity limit through the explicit multi-select contract');
+  assert.equal(created.dom.window.__pickerOptions.multiple, true, 'the channel Host must retain the donor multi-select behavior');
   document.querySelector('[data-save-channel]').click();
   await waitFor(() => created.calls.some((call) => call.method === 'POST' && call.path === '/api/admin/channels'), 'new channel must submit one Catalog create');
   const post = created.calls.find((call) => call.method === 'POST' && call.path === '/api/admin/channels');

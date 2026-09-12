@@ -617,7 +617,7 @@ func TestOwnerHandoffFrozenDonorAssetAndHostBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	pickerSum := sha256.Sum256(picker)
-	if got := hex.EncodeToString(pickerSum[:]); got != "bd84ce78ccb834f170548dea76cb99f6434978bc21211a9ec843dd2bf7ebabea" || !bytes.Contains(picker, []byte("OperationMemberPicker")) || !bytes.Contains(picker, []byte("/api/admin/common/operation-members")) {
+	if got := hex.EncodeToString(pickerSum[:]); got != "1b12b405d737794808dd1b998ccfa8c6eb77dd4d7c22e69380b428fb89a69e70" || !bytes.Contains(picker, []byte("OperationMemberPicker")) || !bytes.Contains(picker, []byte("/api/admin/common/operation-members")) {
 		t.Fatalf("shared frozen picker contract changed hash=%s", got)
 	}
 	if !bytes.Contains(host, []byte("owner_migration_dd8d60d.html")) || !bytes.Contains(host, []byte("operation_member_picker_dd8d60d.js")) || !bytes.Contains(host, []byte("OperationMemberPicker")) || bytes.Contains(host, []byte("data-owner-picker-options")) {
