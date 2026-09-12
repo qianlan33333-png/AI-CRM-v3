@@ -28,14 +28,14 @@
     {
       "id": "production-1da6a57139ade71f33de45e818e5e6fb3199f3ea",
       "library_id": "production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f",
+      "source_repository": "https://github.com/qianlan33333-png/AI-CRM.git",
+      "source_commit": "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f",
       "canonical_path": "web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js",
       "source_path": "aicrm_next/app/admin_console/static/admin_console/image_resource_loader.js",
       "source_git_blob_sha": "1da6a57139ade71f33de45e818e5e6fb3199f3ea",
       "content_sha256": "38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d",
       "bytes": 14096,
-      "mode": "100644",
-      "source_repository": "https://github.com/qianlan33333-png/AI-CRM.git",
-      "source_commit": "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f"
+      "mode": "100644"
     },
     {
       "id": "v2-0143e5cfc32d1a7d9c5a5e94cec9ef71ba201e1c",
@@ -902,15 +902,15 @@
       "mode": "100644"
     },
     {
-      "id": "v3-openapi-e8d9e3825905ef810766eed931ef6ffd7af369f8",
-      "library_id": "v3-api-d0b74d416ca2a75ee2acf403731271a046c3f663",
+      "id": "v3-openapi-3f64804719834842cee2493d1a991ccac2c01991",
+      "library_id": "v3-api-db546eab5b43db9660c25d7fb3b7c5b33e4fd4de",
       "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v3.git",
-      "source_commit": "d0b74d416ca2a75ee2acf403731271a046c3f663",
+      "source_commit": "db546eab5b43db9660c25d7fb3b7c5b33e4fd4de",
       "canonical_path": "api/openapi.yaml",
       "source_path": "api/openapi.yaml",
-      "source_git_blob_sha": "e8d9e3825905ef810766eed931ef6ffd7af369f8",
-      "content_sha256": "709e24c1778e5af51b7e127ebba797f3ba7af9f76d269b147c32b87e07b4aee2",
-      "bytes": 574695,
+      "source_git_blob_sha": "3f64804719834842cee2493d1a991ccac2c01991",
+      "content_sha256": "e70bf3092c095cfa91a545181f3da6fb5c10f6056930e96acd4d0fac6ff5c19e",
+      "bytes": 578180,
       "mode": "100644"
     }
   ]
