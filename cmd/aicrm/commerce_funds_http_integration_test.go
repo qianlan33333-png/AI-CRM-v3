@@ -861,7 +861,8 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 		t.Fatalf("out-of-order status=%d body=%s", unknown.Code, unknown.Body.String())
 	}
 
-	paymentBody, paymentHeaders := commerceFundsSignedCallback(t, platformKey, apiKey, "commerce-funds-payment", "TRANSACTION.SUCCESS", map[string]any{"appid": "app", "mchid": "mch", "out_trade_no": merchant, "transaction_id": "tx-commerce-funds", "trade_state": "SUCCESS", "success_time": now.Add(time.Second).Format(time.RFC3339Nano), "amount": map[string]any{"total": 1000, "currency": "CNY"}})
+	const verifiedTransactionID = "tx-commerce-funds"
+	paymentBody, paymentHeaders := commerceFundsSignedCallback(t, platformKey, apiKey, "commerce-funds-payment", "TRANSACTION.SUCCESS", map[string]any{"appid": "app", "mchid": "mch", "out_trade_no": merchant, "transaction_id": verifiedTransactionID, "trade_state": "SUCCESS", "success_time": now.Add(time.Second).Format(time.RFC3339Nano), "amount": map[string]any{"total": 1000, "currency": "CNY"}})
 	badHeaders := paymentHeaders.Clone()
 	badHeaders.Set("Wechatpay-Signature", "bad")
 	bad := httptest.NewRecorder()
@@ -942,7 +943,7 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 		t.Fatalf("revoked commerce target made a receiver call: deliveries=%d", policyRejectedDeliveries)
 	}
 
-	firstRefund := commerceFundsRequestRefund(t, handler, paymentID, 300, "commerce-funds-first-refund", "commerce-funds-first-refund-key")
+	firstRefund := commerceFundsRequestRefund(t, handler, paymentID, 300, "commerce-funds-first-refund", "commerce-funds-first-refund-key", verifiedTransactionID)
 	firstRefundBody, firstRefundHeaders := commerceFundsSignedCallback(t, platformKey, apiKey, "commerce-funds-refund-1", "REFUND.SUCCESS", map[string]any{"appid": "app", "mchid": "mch", "out_refund_no": firstRefund, "refund_id": "provider-refund-1", "refund_status": "SUCCESS", "success_time": now.Add(2 * time.Second).Format(time.RFC3339Nano), "amount": map[string]any{"refund": 300, "total": 1000, "currency": "CNY"}})
 	firstRefundResponse := httptest.NewRecorder()
 	handler.ServeHTTP(firstRefundResponse, commerceFundsCallbackRequest("/api/public/wechat-pay/callbacks/refund", firstRefundBody, firstRefundHeaders))
@@ -967,7 +968,7 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 		refundWait.Add(1)
 		go func() {
 			defer refundWait.Done()
-			result := commerceFundsRefundRequest(handler, paymentID, 700, "commerce-funds-final-refund-"+strconv.Itoa(index), "commerce-funds-final-refund-key-"+strconv.Itoa(index))
+			result := commerceFundsRefundRequest(handler, paymentID, 700, "commerce-funds-final-refund-"+strconv.Itoa(index), "commerce-funds-final-refund-key-"+strconv.Itoa(index), verifiedTransactionID)
 			attempts <- refundAttempt{code: result.code, refundNo: result.refundNo}
 		}()
 	}
@@ -1050,20 +1051,20 @@ func commerceFundsCookie(t *testing.T, cookies []*http.Cookie, name string) *htt
 	return nil
 }
 
-func commerceFundsRequestRefund(t *testing.T, handler http.Handler, paymentID, amount int64, refundNo, key string) string {
+func commerceFundsRequestRefund(t *testing.T, handler http.Handler, paymentID, amount int64, refundNo, key, verifiedTransactionID string) string {
 	t.Helper()
-	result := commerceFundsRefundRequest(handler, paymentID, amount, refundNo, key)
+	result := commerceFundsRefundRequest(handler, paymentID, amount, refundNo, key, verifiedTransactionID)
 	if result.code != http.StatusAccepted || result.refundNo != refundNo {
 		t.Fatalf("refund status=%d refund=%q body=%s", result.code, result.refundNo, result.body)
 	}
 	return result.refundNo
 }
-func commerceFundsRefundRequest(handler http.Handler, paymentID, amount int64, refundNo, key string) struct {
+func commerceFundsRefundRequest(handler http.Handler, paymentID, amount int64, refundNo, key, verifiedTransactionID string) struct {
 	code     int
 	refundNo string
 	body     string
 } {
-	request := httptest.NewRequest(http.MethodPost, "/api/admin/payments/"+strconv.FormatInt(paymentID, 10)+"/refunds", bytes.NewReader(commerceFundsJSONNoTest(map[string]any{"amount_minor": amount, "refund_no": refundNo, "reason": "用户申请退款"})))
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/payments/"+strconv.FormatInt(paymentID, 10)+"/refunds", bytes.NewReader(commerceFundsJSONNoTest(map[string]any{"amount_minor": amount, "refund_no": refundNo, "reason": "用户申请退款", "transaction_id_confirmation": verifiedTransactionID})))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", key)
 	response := httptest.NewRecorder()

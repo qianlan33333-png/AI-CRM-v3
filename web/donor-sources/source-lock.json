@@ -903,9 +903,9 @@
     },
     {
       "id": "v3-openapi-e8d9e3825905ef810766eed931ef6ffd7af369f8",
-      "library_id": "v3-api-335fa554efc8071d0778f44c514f8eebe8e8346c",
+      "library_id": "v3-api-d7e328afc805ebf4e54011f393a95a18a2c407d9",
       "source_repository": "https://github.com/qianlan33333-png/AI-CRM-v3.git",
-      "source_commit": "335fa554efc8071d0778f44c514f8eebe8e8346c",
+      "source_commit": "d7e328afc805ebf4e54011f393a95a18a2c407d9",
       "canonical_path": "api/openapi.yaml",
       "source_path": "api/openapi.yaml",
       "source_git_blob_sha": "e8d9e3825905ef810766eed931ef6ffd7af369f8",
