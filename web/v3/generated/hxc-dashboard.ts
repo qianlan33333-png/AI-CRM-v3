@@ -468,10 +468,69 @@ export interface HXCSourceConflictIgnoreResponse {
   replayed: boolean;
 }
 
+export type OpenPlatformOAuthErrorError =
+  (typeof OpenPlatformOAuthErrorError)[keyof typeof OpenPlatformOAuthErrorError];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const OpenPlatformOAuthErrorError = {
+  invalid_request: "invalid_request",
+  unsupported_grant_type: "unsupported_grant_type",
+  invalid_client: "invalid_client",
+  invalid_scope: "invalid_scope",
+  rate_limited: "rate_limited",
+  invalid_source_ip: "invalid_source_ip",
+  https_required: "https_required",
+} as const;
+
+export interface OpenPlatformOAuthError {
+  error: OpenPlatformOAuthErrorError;
+}
+
+export type OpenPlatformV1ErrorCode =
+  (typeof OpenPlatformV1ErrorCode)[keyof typeof OpenPlatformV1ErrorCode];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const OpenPlatformV1ErrorCode = {
+  authentication: "authentication",
+  permission: "permission",
+  validation: "validation",
+  not_found: "not_found",
+  identity_pending: "identity_pending",
+  identity_conflict: "identity_conflict",
+  rate_limited: "rate_limited",
+  dependency_unavailable: "dependency_unavailable",
+  outcome_unknown: "outcome_unknown",
+  conflict: "conflict",
+} as const;
+
+export interface OpenPlatformV1Error {
+  code: OpenPlatformV1ErrorCode;
+}
+
+export interface OpenPlatformV1Failure {
+  data: null;
+  error: OpenPlatformV1Error;
+  /**
+   * @minLength 1
+   * @maxLength 128
+   */
+  request_id: string;
+}
+
 /**
  * Dependency or provider unavailable
  */
 export type UnavailableResponse = ErrorResponse;
+
+/**
+ * OAuth client-credential failure. `invalid_source_ip` and `https_required` are emitted before OAuth Basic authentication; all other listed OAuth failures use the same JSON shape.
+ */
+export type OpenPlatformOAuthFailureResponse = OpenPlatformOAuthError;
+
+/**
+ * Machine V1 failure envelope. `error.code` carries the stable protocol category; `data` is null and `X-Request-ID` repeats `request_id`.
+ */
+export type OpenPlatformV1FailureResponse = OpenPlatformV1Failure;
 
 export type MutationOKResponse = {
   ok: "true";
