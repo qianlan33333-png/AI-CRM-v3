@@ -147,6 +147,78 @@ try {
   assert.equal(conflict.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/channels/17').length, 1, '409 must use the ETag read with the page and never preflight-read a newer version');
 } finally { conflict.dom.window.close(); }
 
+// The frozen QR donor has no controls for these Catalog fields. A visible
+// change must therefore retain their current values, and each accepted save
+// becomes the baseline for the next CAS command.
+const initialHiddenFields = channel({ qr_url: 'https://example.invalid/qr-v7', scene_value: 'state-v7', overflow_policy: 'least_loaded' });
+const preserved = createPage({ saved: initialHiddenFields, mutations: [
+  { headers: { ETag: '"8"' }, payload: { ok: true, channel: channel({ version: 8, qr_url: 'https://example.invalid/qr-v8', scene_value: 'state-v8', overflow_policy: 'next_available' }) } },
+  { headers: { ETag: '"9"' }, payload: { ok: true, channel: channel({ version: 9, qr_url: 'https://example.invalid/qr-v9', scene_value: 'state-v9', overflow_policy: 'next_available' }) } },
+] });
+try {
+  await waitFor(() => preserved.dom.window.__channelComposerOptions, 'QR edit interactions ready');
+  const document = preserved.dom.window.document;
+  const save = document.querySelector('[data-save-channel]');
+  document.querySelector('[name="channel_name"]').value = '首个可见编辑';
+  save.click();
+  await waitFor(() => preserved.calls.filter((call) => call.method === 'PATCH').length === 1, 'first QR save must issue one PATCH');
+  await waitFor(() => document.querySelector('[data-channel-save-feedback]')?.textContent.includes('保存成功'), 'first QR save must finish');
+  const first = preserved.calls.filter((call) => call.method === 'PATCH')[0];
+  const firstPayload = JSON.parse(first.body);
+  assert.equal(firstPayload.qr_url, 'https://example.invalid/qr-v7', 'unrendered QR URL must retain the Catalog value');
+  assert.equal(firstPayload.scene_value, 'state-v7', 'unrendered State must retain the Catalog value');
+  assert.equal(firstPayload.overflow_policy, 'least_loaded', 'unrendered overflow policy must retain the Catalog value');
+  assert.equal(firstPayload.qrcode_url, undefined, 'Catalog transport must only emit qr_url');
+  document.querySelector('[name="channel_name"]').value = '第二个可见编辑';
+  save.click();
+  await waitFor(() => preserved.calls.filter((call) => call.method === 'PATCH').length === 2, 'second QR save must issue one PATCH');
+  const second = preserved.calls.filter((call) => call.method === 'PATCH')[1];
+  const secondPayload = JSON.parse(second.body);
+  assert.equal(second.headers.get('If-Match'), '"8"', 'second save must use the accepted ETag');
+  assert.equal(secondPayload.qr_url, 'https://example.invalid/qr-v8', 'second save must use the accepted QR URL baseline');
+  assert.equal(secondPayload.scene_value, 'state-v8', 'second save must use the accepted State baseline');
+  assert.equal(secondPayload.overflow_policy, 'next_available', 'second save must use the accepted overflow baseline');
+} finally { preserved.dom.window.close(); }
+
+// Switching to a link exposes customer_channel. Its deliberately empty value
+// must clear State, and the link transition must not restore the former QR URL.
+const switchedCarrier = createPage({ saved: initialHiddenFields });
+try {
+  await waitFor(() => switchedCarrier.dom.window.__channelComposerOptions, 'carrier switch interactions ready');
+  const document = switchedCarrier.dom.window.document;
+  document.querySelector('[data-channel-type-card="wecom_customer_acquisition"]').click();
+  document.querySelector('[name="customer_channel"]').value = '';
+  document.querySelector('[data-save-channel]').click();
+  await waitFor(() => switchedCarrier.calls.filter((call) => call.method === 'PATCH').length === 1, 'carrier switch must issue one PATCH');
+  const payload = JSON.parse(switchedCarrier.calls.find((call) => call.method === 'PATCH').body);
+  assert.equal(payload.qr_url, '', 'carrier switch must keep its explicit QR clear');
+  assert.equal(payload.scene_value, '', 'visible customer_channel clear must reach scene_value');
+  assert.equal(payload.customer_channel, '', 'visible customer_channel clear must remain explicit');
+  assert.equal(payload.overflow_policy, 'least_loaded', 'still-unrendered overflow policy must remain intact');
+} finally { switchedCarrier.dom.window.close(); }
+
+// The Host only preserves fields omitted by the frozen donor. A visible QR
+// control (including a future donor variant) and direct Catalog callers keep
+// explicit empty values, while the legacy qrcode_url input alias normalizes
+// to Catalog's sole qr_url key.
+const explicitClear = createPage({ saved: initialHiddenFields });
+try {
+  await waitFor(() => explicitClear.dom.window.__channelComposerOptions, 'explicit-clear interactions ready');
+  const document = explicitClear.dom.window.document;
+  const input = document.createElement('input'); input.name = 'qr_url'; input.value = '';
+  document.querySelector('[data-channel-form]').append(input);
+  document.querySelector('[data-save-channel]').click();
+  await waitFor(() => explicitClear.calls.filter((call) => call.method === 'PATCH').length === 1, 'visible QR control save must issue one PATCH');
+  assert.equal(JSON.parse(explicitClear.calls.find((call) => call.method === 'PATCH').body).qr_url, '', 'a visible QR control may explicitly clear its value');
+  const direct = await explicitClear.dom.window.fetch('/api/admin/channels/17', { method: 'PATCH', headers: { 'If-Match': '"8"' }, body: JSON.stringify({ channel_code: 'origin-code', channel_name: '直接调用', qrcode_url: '', scene_value: '', overflow_policy: '', assignees: [] }) });
+  assert.equal(direct.status, 200, 'direct Catalog callers remain accepted');
+  const directPayload = JSON.parse(explicitClear.calls.filter((call) => call.method === 'PATCH')[1].body);
+  assert.equal(directPayload.qr_url, '', 'qrcode_url alias must normalize to the sole Catalog key');
+  assert.equal(directPayload.qrcode_url, undefined, 'legacy alias must not reach strict Catalog JSON');
+  assert.equal(directPayload.scene_value, '', 'direct explicit State clear must not be restored');
+  assert.equal(directPayload.overflow_policy, '', 'direct explicit overflow clear must not be restored');
+} finally { explicitClear.dom.window.close(); }
+
 // A new channel follows the same full DTO path. Adding a member is required
 // before the Catalog accepts its assignment and the receipt identifies the
 // one logical create, rather than a panel-by-panel partial write.
