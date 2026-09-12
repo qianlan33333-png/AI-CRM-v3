@@ -164,6 +164,18 @@ async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
     throw new Error(responseMessage(data, `HTTP ${response.status}`));
   return data;
 }
+function planOwner(value: Json): Json {
+  const owner = value.owner && typeof value.owner === "object" ? value.owner : {};
+  const staffID = Number(owner.staff_id);
+  if (!Number.isSafeInteger(staffID) || staffID < 1)
+    return { owner_userid: "", owner_name: "未配置负责人", owner_state: "unconfigured" };
+  const name = String(owner.display_name || "").trim();
+  if (owner.profile_read_state === "ready" && owner.name_source === "wecom_profile" && name)
+    return { owner_userid: String(staffID), owner_name: name, owner_state: "ready" };
+  if (owner.profile_read_state === "unavailable")
+    return { owner_userid: String(staffID), owner_name: "负责人目录不可用", owner_state: "directory_unavailable" };
+  return { owner_userid: String(staffID), owner_name: "负责人目录未同步", owner_state: "directory_pending" };
+}
 function plan(value: Json): Json {
   const id = Number(value.plan_id);
   revisions.set(id, Number(value.revision || 0));
@@ -174,8 +186,7 @@ function plan(value: Json): Json {
     plan_type: value.plan_type || "standard",
     status: value.status === "paused" ? "disabled" : value.status,
     revision: Number(value.revision || 0),
-    owner_userid: "",
-    owner_name: "",
+    ...planOwner(value),
     queue_count: Number(value.queue_count || 0),
     bound_group_count: null,
     today_estimated_reach: null,
@@ -447,21 +458,14 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   }
   if (id && url === `${base}/plans/${id}` && method === "GET") {
     const value = await detail(id);
-    const projected = plan(value.plan);
-    const owner = (value.members || [])[0];
-    if (owner?.staff_id) {
-      // The saved local key is authoritative even if the presentation directory
-      // is unavailable or no longer contains this member.
-      projected.owner_userid = String(owner.staff_id);
-      projected.owner_name = "姓名待同步";
-      try {
-        const directory = await nativeRequest(`${operationMembersPath}?scope=group_ops&page_size=100`);
-        const member = (directory.items || []).find((item: Json) => String(item.staff_id) === projected.owner_userid);
-        if (member) projected.owner_name = memberDisplayName(member);
-      } catch {
-        // A profile read failure must not erase an existing owner binding.
-      }
-    }
+    const rawPlan = value.plan || {};
+    // A short-lived compatibility fallback preserves the local staff key when
+    // a browser reads a server that predates the owner projection. It never
+    // makes a second directory request or invents a profile name.
+    const legacyOwner = (value.members || [])[0];
+    const projected = plan(rawPlan.owner || !legacyOwner?.staff_id
+      ? rawPlan
+      : { ...rawPlan, owner: { staff_id: legacyOwner.staff_id } });
     const values = await summary(id);
     const view = planSummaryViews.get(id) || {};
     Object.assign(view, values);

@@ -30,10 +30,10 @@ const foreignRequests = [];
 const foreignPayload = { items: [{ staff_id: 5, sender_userid: "external-user", display_name: "External name" }] };
 let nodes = [];
 let savedOwner = [];
-let memberDirectory = [];
-let memberDirectoryStatus = 200;
+let operationMemberReads = 0;
+let ownerProjection = { staff_id: 7, sender_userid: "real-owner", display_name: "真实昵称 · 完整姓名", name_source: "wecom_profile", profile_read_state: "ready" };
 const detail = () => ({
-  plan: { plan_id: 41, name: "浏览器计划", revision: 7, status: "draft", plan_type: "standard" },
+  plan: { plan_id: 41, name: "浏览器计划", revision: 7, status: "draft", plan_type: "standard", owner: ownerProjection },
   nodes,
   members: savedOwner,
 });
@@ -47,7 +47,8 @@ window.fetch = async (input, init = {}) => {
     return new Response(JSON.stringify(detail()), { status: 200, headers: { "content-type": "application/json" } });
   }
   if (url.pathname === "/api/admin/common/operation-members") {
-    return new Response(JSON.stringify({ items: memberDirectory }), { status: memberDirectoryStatus });
+    operationMemberReads += 1;
+    return new Response(JSON.stringify({ items: [] }), { status: 200 });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/groups") {
     return new Response(JSON.stringify({ items: [], has_more: false }), { status: 200 });
@@ -112,21 +113,22 @@ assert.equal(mutations[1].position, 2, "out-of-range donor edit order must retai
 assert.equal(mutations[1].expected_revision, 7);
 assert.equal(mutations[1].action_title, "编辑保留位置");
 savedOwner = [{ staff_id: 7 }];
-memberDirectory = [
-  { staff_id: 9, sender_userid: "7", display_name: "不能按外部 ID 误匹配" },
-  { staff_id: 7, sender_userid: "real-owner", display_name: "真实昵称 · 完整姓名", name_source: "wecom_profile" },
-];
+const ownerReadsBeforeProjection = operationMemberReads;
 let projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
 assert.equal(projectedOwner.owner_userid, "7");
-assert.equal(projectedOwner.owner_name, "真实昵称 · 完整姓名", "overview resolves the saved local staff key to its real display name");
-memberDirectory = [];
-projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
-assert.equal(projectedOwner.owner_userid, "7", "missing profile must preserve the saved owner binding");
-assert.equal(projectedOwner.owner_name, "姓名待同步");
-memberDirectoryStatus = 503;
+assert.equal(projectedOwner.owner_name, "真实昵称 · 完整姓名", "overview reads the server-owned responsible-member projection");
+assert.equal(operationMemberReads, ownerReadsBeforeProjection, "detail must not perform a second operation-member directory read");
+ownerProjection = { staff_id: 7, display_name: "保留的历史姓名", name_source: "wecom_profile", profile_read_state: "unavailable", profile_read_error_code: "provider_unavailable" };
 projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
 assert.equal(projectedOwner.owner_userid, "7", "directory outage must preserve the saved owner binding");
-assert.equal(projectedOwner.owner_name, "姓名待同步");
+assert.equal(projectedOwner.owner_name, "负责人目录不可用", "directory outage remains distinct from an unconfigured owner");
+ownerProjection = { staff_id: 7 };
+projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+assert.equal(projectedOwner.owner_name, "负责人目录未同步", "a missing directory row remains explicit");
+ownerProjection = {};
+projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+assert.equal(projectedOwner.owner_userid, "");
+assert.equal(projectedOwner.owner_name, "未配置负责人", "an unconfigured owner stays distinct from directory states");
 console.log("groupops-host-adapter: PASS");
 dom.window.close();
 
@@ -183,7 +185,14 @@ fullWindow.fetch = async (input, init = {}) => {
   const method = String(init.method || "GET").toUpperCase();
   const body = init.body ? JSON.parse(String(init.body)) : null;
   calls.push({ path: url.pathname + url.search, method, body });
-  const detailPayload = () => ({ plan: clone(state.plan), members: clone(state.members), group_assets: clone(state.group_assets), nodes: clone(state.nodes) });
+  const ownerFor = (staffID) => ({
+    staff_id: staffID,
+    sender_userid: staffID === 9 ? "wecom-replacement" : "wecom-owner",
+    display_name: staffID === 9 ? "九号运营" : "一号运营",
+    name_source: "wecom_profile",
+    profile_read_state: "ready",
+  });
+  const detailPayload = () => ({ plan: { ...clone(state.plan), owner: ownerFor(Number(state.members[0]?.staff_id || 0)) }, members: clone(state.members), group_assets: clone(state.group_assets), nodes: clone(state.nodes) });
   if (url.pathname === "/api/admin/common/operation-members" && method === "GET") {
     return response({
       scope: "group_ops",
@@ -266,6 +275,11 @@ try {
 
   fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
   await waitFor(() => fullWindow.document.querySelectorAll("[data-operation-member-row]").length === 2, "owner picker did not render both local staff");
+  assert.equal(fullWindow.document.querySelector('[data-operation-member-title]')?.textContent, "选择负责人", "Group Ops must declare the owner-selection context");
+  assert.match(fullWindow.document.querySelector('[data-operation-member-description]')?.textContent || "", /选择一位负责人/, "single owner selection must state its own business purpose");
+  assert.equal(fullWindow.document.querySelector('[data-operation-member-description]')?.textContent.includes("最多"), false, "single owner selection must not claim the channel member limit");
+  assert.equal(fullWindow.document.querySelector('[data-operation-member-picker] input[type="checkbox"]'), null, "Group Ops owner selection must use the single-select control");
+  assert.equal(fullWindow.document.querySelector('[data-operation-member-confirm]')?.textContent, "确认负责人", "single owner selection must keep the standard primary action explicit");
   assert.equal(fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] .operation-member-picker__name')?.textContent, "九号运营");
   assert.equal(fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] .operation-member-picker__user-id')?.textContent, "wecom-replacement");
   fullWindow.document.querySelector('[data-operation-member-refresh]').click();
@@ -417,7 +431,7 @@ try {
 
 // List lifecycle controls must give a visible in-flight state, submit exactly
 // once, and only show enabled after the V3 command response has been read.
-let listPlan = { plan_id: 13, name: "授权测试群计划", revision: 8, status: "disabled", plan_type: "standard" };
+let listPlan = { plan_id: 13, name: "授权测试群计划", revision: 8, status: "disabled", plan_type: "standard", owner: { staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营", name_source: "wecom_profile", profile_read_state: "ready" } };
 let enableCalls = 0;
 let releaseEnable;
 const listJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`, {
@@ -467,4 +481,89 @@ try {
   console.log("groupops-enable-dom: PASS");
 } finally {
   listJourney.window.close();
+}
+
+// Archived plans are terminal in both projected list and detail views. The
+// browser must not render an enable/delete path or a writable detail control.
+const archivedPlan = {
+  plan_id: 77,
+  name: "已归档群运营计划",
+  revision: 12,
+  status: "archived",
+  plan_type: "standard",
+  owner: {
+    staff_id: 7,
+    sender_userid: "wecom-owner",
+    display_name: "一号运营",
+    name_source: "wecom_profile",
+    profile_read_state: "ready",
+  },
+};
+const archivedListJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/ui",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const archivedListWindow = archivedListJourney.window;
+archivedListWindow.Headers = Headers;
+archivedListWindow.Response = Response;
+Object.defineProperty(archivedListWindow, "crypto", { configurable: true, value: crypto });
+archivedListWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), archivedListWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return response({ items: [clone(archivedPlan)], total: 1 });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/77" && method === "GET") return response({ plan: clone(archivedPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+  throw new Error(`unexpected archived-list request ${method} ${url.pathname}`);
+};
+try {
+  archivedListWindow.eval(pickerSource);
+  archivedListWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => archivedListWindow.document.body.textContent.includes("已归档"), "archived list status did not render");
+  assert(archivedListWindow.document.body.textContent.includes("一号运营"), "list must render the same trusted owner projection as detail");
+  assert.equal(archivedListWindow.document.querySelector('[data-action="enable-plan"]'), null, "archived list must not render an enable action");
+  assert.equal(archivedListWindow.document.querySelector('[data-action="delete-plan"]'), null, "archived list must not offer a repeat archive action");
+  console.log("groupops-archived-list-dom: PASS");
+} finally {
+  archivedListJourney.window.close();
+}
+
+const archivedWrites = [];
+const archivedDetailJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="77"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/77",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const archivedDetailWindow = archivedDetailJourney.window;
+archivedDetailWindow.Headers = Headers;
+archivedDetailWindow.Response = Response;
+Object.defineProperty(archivedDetailWindow, "crypto", { configurable: true, value: crypto });
+archivedDetailWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), archivedDetailWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  if (method !== "GET") archivedWrites.push({ path: url.pathname, method });
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/77" && method === "GET") return response({ plan: clone(archivedPlan), members: [{ staff_id: 7 }], group_assets: [{ asset_reference: "archived-group" }], nodes: [{ node_id: 11, position: 1, kind: "message", day_index: 1, scheduled_time: "20:00", trigger_time_label: "20:00", action_title: "已归档动作", node_status: "active", message_text: "只读内容", delay_minutes: 0, material_plan: { references: [] } }] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [{ chat_reference: "archived-group", owner_staff_id: 7, display_name: "已归档群", member_count: 2, external_member_count: 1 }], total: 1, limit: 200, offset: 0, has_more: false });
+  throw new Error(`unexpected archived-detail request ${method} ${url.pathname}`);
+};
+try {
+  archivedDetailWindow.eval(pickerSource);
+  archivedDetailWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => archivedDetailWindow.document.querySelector('[name="plan_name"]'), "archived detail did not render");
+  assert.equal(archivedDetailWindow.document.querySelector('[name="plan_name"]')?.disabled, true, "archived plan name must be read-only");
+  assert.equal(archivedDetailWindow.document.querySelector('[name="status"]')?.value, "archived", "archived detail must keep the terminal status selected");
+  assert.equal(archivedDetailWindow.document.querySelector('[data-action="save-plan"]'), null, "archived detail must not render a base save action");
+  assert.equal(archivedDetailWindow.document.querySelector('[data-action="save-active-detail-panel"]')?.disabled, true, "archived detail must disable save-current-dimension");
+  assert.equal(archivedDetailWindow.document.querySelector('[data-action="pick-plan-owner"]'), null, "archived detail must not offer owner changes");
+  archivedDetailWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  assert.equal(archivedDetailWindow.document.querySelector('[data-action="open-group-picker"]'), null, "archived detail must not offer group binding");
+  archivedDetailWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="nodes"]').click();
+  assert.equal(archivedDetailWindow.document.querySelector('[data-action="open-node-modal"]'), null, "archived detail must not offer node creation");
+  assert.equal(archivedDetailWindow.document.querySelector('[data-action="edit-node"]'), null, "archived detail must not offer node edits");
+  assert.deepEqual(archivedWrites, [], "archived UI navigation must not submit a write");
+  console.log("groupops-archived-detail-dom: PASS");
+} finally {
+  archivedDetailJourney.window.close();
 }

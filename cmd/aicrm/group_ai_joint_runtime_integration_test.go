@@ -56,7 +56,7 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 	native, cleanup := aiAssistantHTTPJourneyPool(t)
 	defer cleanup()
 	ctx := context.Background()
-	for _, migration := range []string{"0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql"} {
+	for _, migration := range []string{"0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql"} {
 		if err := applyAIAssistantHTTPJourneyMigration(ctx, native, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration, err)
 		}
@@ -332,7 +332,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	ctx := context.Background()
 	native, cleanup := automationAudienceRuntimePool(t)
 	defer cleanup()
-	for _, migration := range []string{"0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql"} {
+	for _, migration := range []string{"0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql"} {
 		if err := applyAIAssistantHTTPJourneyMigration(ctx, native, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration, err)
 		}
