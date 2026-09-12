@@ -112,6 +112,26 @@ body[data-ui-surface="share"] th { font-size: 14px; font-weight: 500; background
 body[data-ui-surface="share"] button { min-height: 44px; min-width: 44px; padding: 8px 16px; border: 1px solid #dee0e3; border-radius: 6px; background: white; color: #245bdb; font-size: 16px; line-height: 24px; font-weight: 500; }
 body[data-ui-surface="share"] [data-share-read-error] { margin: 12px 0; color: #b42318; }
 @media (max-width: 600px) {
+  /* Order detail is the only frozen workspace where the narrow screen is a
+     task page. Keep its source-owned panels readable instead of stacking the
+     desktop navigation above a squeezed two-column ledger. */
+  body.admin-shell[data-page="orderDetail"] .admin-layout { display: block; min-width: 0; }
+  body.admin-shell[data-page="orderDetail"] .admin-sidebar { display: none; }
+  body.admin-shell[data-page="orderDetail"] .admin-main-wrap { min-width: 0; padding: 0; }
+  body.admin-shell[data-page="orderDetail"] :is(.order-host-layout, #stage) { min-width: 0; width: 100%; }
+  body.admin-shell[data-page="orderDetail"] [data-order-detail-layout] {
+    grid-template-columns: minmax(0, 1fr) !important;
+    padding: 12px !important;
+    gap: 12px !important;
+  }
+  body.admin-shell[data-page="orderDetail"] [data-order-detail-section] { padding: 12px !important; }
+  body.admin-shell[data-page="orderDetail"] [data-order-detail-grid] {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 4px !important;
+  }
+  body.admin-shell[data-page="orderDetail"] :is([data-order-refund-panel], [data-order-effects-panel], .order-refund-confirmation) { min-width: 0; }
+  body.admin-shell[data-page="orderDetail"] .order-refund-confirmation :is(input, select, button) { max-width: 100%; }
+
   body[data-ui-surface="share"] .ix-wrap { padding: 20px 16px max(20px, env(safe-area-inset-bottom)); }
   body[data-ui-surface="share"] #stage > main > button { width: 100%; }
   body[data-ui-surface="h5"] .h5-backdrop { padding: 0; }

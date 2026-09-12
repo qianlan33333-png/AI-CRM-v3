@@ -15,8 +15,11 @@ type RefundScope = { provider: 'wechat' | 'wechat_shop'; orderNo: string };
 type RefundIntentRequest = { provider: 'wechat'; order_no: string; refund_amount_total: number; reason: string; transaction_id_confirmation: string; checked: true };
 type RefundIntentCandidate = Omit<RefundIntentRequest, 'checked'> & { checked: boolean };
 type RefundIntentState = 'submitting' | 'accepted' | 'unknown';
-type RefundIntent = { idempotencyKey: string; fingerprint: string; request: RefundIntentRequest; state: RefundIntentState };
-type DetailContext = { order?: DetailRecord; items?: unknown[]; refunds?: unknown[]; effects?: unknown[]; refundsUnavailable?: boolean; effectsUnavailable?: boolean };
+type RefundReceipt = { id: number; refundNo: string };
+type RefundIntent = { idempotencyKey: string; payloadDigest: string; state: RefundIntentState; actorBinding: string; receipt?: RefundReceipt };
+type DurableRefundIntent = { provider: RefundScope['provider']; order_no: string; idempotency_key: string; payload_digest: string; state: RefundIntentState; actor_binding: string; receipt_id?: number; receipt_refund_no?: string };
+type RefundRecovery = { actorBinding: string; receipt: RefundReceipt | null };
+type DetailContext = { order?: DetailRecord; items?: unknown[]; refunds?: unknown[]; effects?: unknown[]; refundsUnavailable?: boolean; orderRefreshUnavailable?: boolean; effectsUnavailable?: boolean };
 
 const orderPrototype = AdminController.prototype as unknown as { renderVals(this: OrderController): Record<string, any> };
 const donorRenderOrders = orderPrototype.renderVals;
@@ -36,6 +39,12 @@ orderPrototype.renderVals = function () {
 const originalFetch = globalThis.fetch.bind(globalThis);
 let detailContext: DetailContext = {};
 const refundIntents = new Map<string, RefundIntent>();
+const pendingRefundIntentScopes = new Set<string>();
+const refundIntentStorageKey = 'aicrm.order-refund-intents.v1';
+const refundActorBindings = new Map<string, string>();
+const refundActorBindingLoads = new Set<string>();
+const refundActorBindingStates = new Map<string, 'loading' | 'unavailable'>();
+let refundIntentStorageUnsafe = false;
 
 function inputValue(id: string): string {
   const element = document.getElementById(id);
@@ -111,7 +120,11 @@ function refundScope(order: DetailRecord | undefined): RefundScope | undefined {
   return orderNo && (provider === 'wechat' || provider === 'wechat_shop') ? { provider, orderNo } : undefined;
 }
 
-function refundIntentScope(scope: RefundScope): string {
+function refundIntentScope(scope: RefundScope, actorBinding: string): string {
+  return `${scope.provider}\u0000${scope.orderNo}\u0000${actorBinding}`;
+}
+
+function refundRequestScope(scope: RefundScope): string {
   return `${scope.provider}\u0000${scope.orderNo}`;
 }
 
@@ -120,8 +133,149 @@ function createRefundIdempotencyKey(): string {
   return `order-refund-${nonce || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 }
 
-function refundIntentFingerprint(request: RefundIntentRequest | RefundIntentCandidate): string {
-  return JSON.stringify(request);
+function isRefundIntentState(value: unknown): value is RefundIntentState {
+  return value === 'submitting' || value === 'accepted' || value === 'unknown';
+}
+
+function loadDurableRefundIntents(): DurableRefundIntent[] | undefined {
+  refundIntentStorageUnsafe = false;
+  try {
+    const stored = globalThis.localStorage?.getItem(refundIntentStorageKey);
+    const values = stored ? JSON.parse(stored) : [];
+    if (!Array.isArray(values)) throw new Error('refund intent storage must be an array');
+    const records: DurableRefundIntent[] = [];
+    for (const value of values) {
+      const record = asRecord(value);
+      if (!(record
+        && (record.provider === 'wechat' || record.provider === 'wechat_shop')
+        && typeof record.order_no === 'string' && record.order_no.length > 0 && record.order_no.length <= 200
+        && typeof record.idempotency_key === 'string' && record.idempotency_key.length > 0 && record.idempotency_key.length <= 200
+        && typeof record.payload_digest === 'string' && /^[a-f0-9]{64}$/.test(record.payload_digest)
+        && typeof record.actor_binding === 'string' && /^[a-f0-9]{64}$/.test(record.actor_binding)
+        && ((record.receipt_id == null && record.receipt_refund_no == null)
+          || (Number.isSafeInteger(record.receipt_id) && Number(record.receipt_id) > 0
+            && typeof record.receipt_refund_no === 'string' && record.receipt_refund_no.length > 0 && record.receipt_refund_no.length <= 200))
+        && isRefundIntentState(record.state))) throw new Error('refund intent storage has an invalid record');
+      records.push(record as DurableRefundIntent);
+    }
+    return records;
+  } catch {
+    refundIntentStorageUnsafe = true;
+    return undefined;
+  }
+}
+
+function persistRefundIntent(scope: RefundScope, intent: RefundIntent): boolean {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return false;
+    const existing = loadDurableRefundIntents();
+    if (!existing) return false;
+    const records = existing.filter((record) => !(record.provider === scope.provider && record.order_no === scope.orderNo && record.actor_binding === intent.actorBinding));
+    records.push({
+      provider: scope.provider, order_no: scope.orderNo, idempotency_key: intent.idempotencyKey, payload_digest: intent.payloadDigest, state: intent.state, actor_binding: intent.actorBinding,
+      ...(intent.receipt ? { receipt_id: intent.receipt.id, receipt_refund_no: intent.receipt.refundNo } : {}),
+    });
+    storage.setItem(refundIntentStorageKey, JSON.stringify(records));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearRefundIntent(scope: RefundScope, actorBinding: string): boolean {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return false;
+    const existing = loadDurableRefundIntents();
+    if (!existing) return false;
+    const remaining = existing.filter((record) => !(record.provider === scope.provider && record.order_no === scope.orderNo && record.actor_binding === actorBinding));
+    storage.setItem(refundIntentStorageKey, JSON.stringify(remaining));
+    refundIntents.delete(refundIntentScope(scope, actorBinding));
+    return true;
+  } catch {
+    // A blocked browser store fails closed before a new mutation and cannot
+    // turn a previously accepted request into a retry.
+    return false;
+  }
+}
+
+function readRefundIntent(scope: RefundScope, actorBinding: string): RefundIntent | undefined {
+  const existing = loadDurableRefundIntents();
+  if (!existing) return undefined;
+  const intentScope = refundIntentScope(scope, actorBinding);
+  const memory = refundIntents.get(intentScope);
+  if (memory) return memory;
+  const persisted = existing.find((record) => record.provider === scope.provider && record.order_no === scope.orderNo && record.actor_binding === actorBinding);
+  if (!persisted) return undefined;
+  const intent = {
+    idempotencyKey: persisted.idempotency_key, payloadDigest: persisted.payload_digest, state: persisted.state, actorBinding,
+    ...(persisted.receipt_id != null && persisted.receipt_refund_no != null ? { receipt: { id: persisted.receipt_id, refundNo: persisted.receipt_refund_no } } : {}),
+  };
+  refundIntents.set(intentScope, intent);
+  return intent;
+}
+
+async function refundPayloadDigest(request: RefundIntentRequest): Promise<string | undefined> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return undefined;
+  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(request)));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function isRecognizedRefundRejection(response: Response): Promise<boolean> {
+  if (![400, 401, 403, 404, 409].includes(response.status)) return false;
+  try {
+    const body = asRecord(await response.clone().json());
+    const code = text(body?.code, '');
+    return ['invalid_request', 'unauthorized', 'forbidden', 'not_found', 'conflict'].includes(code);
+  } catch {
+    return false;
+  }
+}
+
+function legacyRefundAcceptance(value: unknown): RefundReceipt | undefined {
+  const receipt = asRecord(value);
+  if (!(receipt
+    && Number.isSafeInteger(receipt.id) && Number(receipt.id) > 0
+    && typeof receipt.refund_id === 'string' && receipt.refund_id.trim().length > 0
+    && typeof receipt.out_refund_no === 'string' && receipt.out_refund_no.trim().length > 0
+    && typeof receipt.external_effect_id === 'string' && receipt.external_effect_id.trim().length > 0
+    && typeof receipt.auto_retry_allowed === 'boolean' && receipt.auto_retry_allowed === false
+    && typeof receipt.status === 'string' && ['pending_external_gate', 'outcome_unknown', 'completed', 'final_failed'].includes(receipt.status))) return undefined;
+  return { id: Number(receipt.id), refundNo: receipt.refund_id.trim() };
+}
+
+function isTerminalRefund(refund: DetailRecord): boolean {
+  return refund.status === 'completed' || refund.status === 'final_failed';
+}
+
+function hasNonTerminalRefund(refunds: unknown[]): boolean {
+  return refunds.map(asRecord).some((refund) => refund != null && !isTerminalRefund(refund));
+}
+
+function hasMatchingTerminalReceipt(intent: RefundIntent, refunds: unknown[]): boolean {
+  if (intent.state !== 'accepted' || !intent.receipt) return false;
+  return refunds.map(asRecord).some((refund) => refund != null
+    && Number(refund.id) === intent.receipt?.id
+    && typeof refund.refund_id === 'string' && refund.refund_id === intent.receipt.refundNo
+    && isTerminalRefund(refund));
+}
+
+function refreshedOrderForScope(value: unknown, scope: RefundScope): DetailRecord | undefined {
+  const order = asRecord(value);
+  if (!order || refundScope(order)?.provider !== scope.provider || refundScope(order)?.orderNo !== scope.orderNo) return undefined;
+  return minorAmountValue(order.refundable_amount_total) == null ? undefined : order;
+}
+
+function refundPage(value: unknown): unknown[] | undefined {
+  const page = asRecord(value);
+  if (!page || !Array.isArray(page.items) || !Array.isArray(page.refunds)
+    || !Number.isSafeInteger(page.total) || Number(page.total) < 0
+    || !Number.isSafeInteger(page.limit) || Number(page.limit) < 1
+    || !Number.isSafeInteger(page.offset) || Number(page.offset) < 0
+    || typeof page.has_more !== 'boolean') return undefined;
+  return page.refunds;
 }
 
 function emptyScopedRefundPage(): Response {
@@ -144,9 +298,16 @@ function captureDetailResponse(kind: keyof DetailContext, response: Response): v
     if (kind === 'order') {
       const order = asRecord(payload);
       if (order) detailContext.order = order;
-    } else if (kind === 'items' || kind === 'refunds' || kind === 'effects') {
+    } else if (kind === 'refunds') {
+      const refunds = refundPage(payload);
+      if (!refunds) {
+        detailContext.refundsUnavailable = true;
+      } else {
+        detailContext.refunds = refunds;
+        detailContext.refundsUnavailable = false;
+      }
+    } else if (kind === 'items' || kind === 'effects') {
       detailContext[kind] = arrayField(payload, kind === 'items' ? 'items' : kind, 'items');
-      if (kind === 'refunds') detailContext.refundsUnavailable = false;
       if (kind === 'effects') detailContext.effectsUnavailable = false;
     }
     schedulePresentation();
@@ -234,7 +395,14 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     url.searchParams.set('order_no', scope.orderNo);
   }
 
-  const response = await originalFetch(url.toString(), init);
+  let response: Response;
+  try {
+    response = await originalFetch(url.toString(), init);
+  } catch (error) {
+    if (isOrderDetailPage() && url.pathname === '/api/admin/refunds') markDetailReadUnavailable('refunds');
+    else if (isOrderDetailPage() && /^\/api\/admin\/wechat-pay\/orders\/[^/]+\/external-push-deliveries$/.test(url.pathname)) markDetailReadUnavailable('effects');
+    throw error;
+  }
   if (isOrderDetailPage()) {
     if (/^\/api\/admin\/orders\/[^/]+$/.test(url.pathname) && response.ok) captureDetailResponse('order', response);
     else if (/^\/api\/admin\/orders\/[^/]+\/items$/.test(url.pathname) && response.ok) captureDetailResponse('items', response);
@@ -318,6 +486,16 @@ function panelForHeading(predicate: (heading: string) => boolean): HTMLElement |
   return panel instanceof HTMLElement ? panel : undefined;
 }
 
+function detailLayoutFor(card: HTMLElement): HTMLElement | undefined {
+  let candidate = card.parentElement;
+  while (candidate && candidate.id !== 'stage') {
+    const style = getComputedStyle(candidate);
+    if (style.display === 'grid' && style.gridTemplateColumns.trim().split(/\s+/).length > 1) return candidate;
+    candidate = candidate.parentElement;
+  }
+  return undefined;
+}
+
 function element(tag: string, textContent?: string): HTMLElement {
   const item = document.createElement(tag);
   if (textContent != null) item.textContent = textContent;
@@ -326,10 +504,12 @@ function element(tag: string, textContent?: string): HTMLElement {
 
 function appendDetailSection(parent: HTMLElement, heading: string, entries: Array<[string, string]>): void {
   const section = element('section');
+  section.dataset.orderDetailSection = '';
   section.style.cssText = 'padding:14px 16px;border-top:1px solid #EFF0F1';
   const title = element('h3', heading);
   title.style.cssText = 'margin:0 0 10px;font-size:14px;font-weight:600;color:#1F2329';
   const grid = element('div');
+  grid.dataset.orderDetailGrid = '';
   grid.style.cssText = 'display:grid;grid-template-columns:112px minmax(0,1fr);gap:8px 16px;align-items:baseline';
   for (const [label, value] of entries) {
     const key = element('span', label);
@@ -374,10 +554,11 @@ function minorAmount(raw: string): number | undefined {
   return Number.isSafeInteger(minor) && minor > 0 ? minor : undefined;
 }
 
-function appendRefundReadbackControl(parent: HTMLElement, scope: RefundScope): void {
+function appendRefundReadbackControl(parent: HTMLElement, scope: RefundScope, intent?: RefundIntent): void {
   const control = element('button', '读取当前订单退款记录') as HTMLButtonElement;
   control.type = 'button';
-  control.addEventListener('click', () => { void refreshRefundReadback(scope); });
+  control.className = 'btn';
+  control.addEventListener('click', () => { void (intent ? recoverRefundIntent(scope, intent) : refreshRefundReadback(scope)); });
   parent.appendChild(control);
 }
 
@@ -385,10 +566,12 @@ function replaceRefundPanel(order: DetailRecord): void {
   const native = order.record_origin === 'native';
   const oldPanel = panelForHeading((heading) => heading === '申请退款' || heading === '退款确认' || heading === '退款' || heading.includes('历史只读') || heading === '历史订单，仅供查询');
   if (!oldPanel) return;
+  oldPanel.dataset.orderRefundPanel = '';
   const refunds = detailContext.refunds || [];
   const scope = refundScope(order);
-  const intent = scope ? refundIntents.get(refundIntentScope(scope)) : undefined;
-  const fingerprint = JSON.stringify({ native, transaction: order.transaction_id, provider: order.provider, refundable: order.refundable_amount_total, refunds, unavailable: detailContext.refundsUnavailable, intent: intent?.state, intentPayload: intent?.fingerprint });
+  const durable = scope ? loadDurableRefundIntents() : [];
+  const storedIntents = durable?.filter((record) => scope != null && record.provider === scope.provider && record.order_no === scope.orderNo) || [];
+  const fingerprint = JSON.stringify({ native, transaction: order.transaction_id, provider: order.provider, refundable: order.refundable_amount_total, refunds, unavailable: detailContext.refundsUnavailable, storageUnsafe: refundIntentStorageUnsafe, storedIntents: storedIntents.map((intent) => [intent.actor_binding, intent.state, intent.payload_digest, intent.receipt_id, intent.receipt_refund_no]), actorBinding: scope ? refundActorBindings.get(refundRequestScope(scope)) : undefined, actorBindingState: scope ? refundActorBindingStates.get(refundRequestScope(scope)) : undefined, orderRefreshUnavailable: detailContext.orderRefreshUnavailable });
   if (oldPanel.dataset.orderRefundFingerprint === fingerprint) return;
   oldPanel.dataset.orderRefundFingerprint = fingerprint;
   oldPanel.replaceChildren();
@@ -433,7 +616,67 @@ function appendRefundForm(parent: HTMLElement, order: DetailRecord): void {
     parent.appendChild(element('p', '当前支付来源暂不支持在本页确认退款。'));
     return;
   }
-  if (detailContext.refundsUnavailable) return;
+  const durable = loadDurableRefundIntents();
+  if (!durable) {
+    parent.appendChild(element('p', '退款确认记录无法安全读取。为避免覆盖待核对申请，不能提交新的退款申请；可仅读取当前订单退款记录。'));
+    appendRefundReadbackControl(parent, scope);
+    return;
+  }
+  const storedForOrder = durable.filter((record) => record.provider === scope.provider && record.order_no === scope.orderNo);
+  const requestScope = refundRequestScope(scope);
+  const actorBinding = refundActorBindings.get(requestScope);
+  const bindingState = refundActorBindingStates.get(requestScope);
+  if (storedForOrder.length > 0 && !actorBinding) {
+    if (!bindingState) void resolveRefundActorBinding(scope);
+    parent.appendChild(element('p', bindingState === 'loading' || refundActorBindingLoads.has(requestScope)
+      ? '正在核验当前登录账号的退款确认记录，核验完成前不能提交新的退款申请。'
+      : '退款确认身份暂不可核验，不能提交新的退款申请。'));
+    if (bindingState === 'unavailable') {
+      const retry = element('button', '重新核验当前登录账号') as HTMLButtonElement;
+      retry.type = 'button';
+      retry.className = 'btn';
+      retry.addEventListener('click', () => { void resolveRefundActorBinding(scope, true); });
+      parent.appendChild(retry);
+    }
+    appendRefundReadbackControl(parent, scope);
+    return;
+  }
+  const existing = actorBinding ? readRefundIntent(scope, actorBinding) : undefined;
+  if (detailContext.refundsUnavailable) {
+    parent.appendChild(element('p', '退款记录暂不可读取，不能确认新的退款申请。'));
+    appendRefundReadbackControl(parent, scope, existing);
+    return;
+  }
+  if (detailContext.orderRefreshUnavailable) {
+    parent.appendChild(element('p', '订单详情暂不可重新读取，当前可退金额无法确认，不能提交新的退款申请。'));
+    appendRefundReadbackControl(parent, scope, existing);
+    return;
+  }
+  if (existing) {
+    const refundableMinor = minorAmountValue(order.refundable_amount_total);
+    if (refundableMinor != null && refundableMinor > 0 && hasMatchingTerminalReceipt(existing, detailContext.refunds || [])) {
+      parent.appendChild(element('p', '本次退款已结束，已重新读取当前订单可退金额。确认后可发起新的退款申请。'));
+      const restart = element('button', '开启新的退款申请') as HTMLButtonElement;
+      restart.type = 'button';
+      restart.className = 'btn primary';
+      restart.addEventListener('click', () => {
+        if (!actorBinding || !clearRefundIntent(scope, actorBinding)) {
+          showOrderMessage('浏览器无法安全更新退款确认状态，不能开启新的退款申请。');
+          return;
+        }
+        schedulePresentation();
+      });
+      parent.appendChild(restart);
+      return;
+    }
+    parent.appendChild(element('p', existing.state === 'unknown'
+      ? '退款申请结果待核对。为避免重复申请，退款金额、原因和交易单号已锁定；仅可读取当前订单退款记录。'
+      : existing.state === 'submitting'
+        ? '退款申请正在提交。为避免重复申请，请勿再次提交或修改退款内容。'
+        : '退款申请已受理。请以当前订单退款记录中的后续状态为准。'));
+    appendRefundReadbackControl(parent, scope, existing);
+    return;
+  }
   const transactionID = text(order.transaction_id, '');
   if (!transactionID) {
     parent.appendChild(element('p', '无法确认退款：未获得已核验的微信支付交易单号。'));
@@ -448,71 +691,173 @@ function appendRefundForm(parent: HTMLElement, order: DetailRecord): void {
     parent.appendChild(element('p', '当前订单没有可退金额，不能确认退款。'));
     return;
   }
-  const existing = refundIntents.get(refundIntentScope(scope));
-  if (existing) {
-    parent.appendChild(element('p', existing.state === 'unknown'
-      ? '退款申请结果待核对。为避免重复申请，本次退款内容已锁定；仅可读取当前订单退款记录。'
-      : existing.state === 'submitting'
-        ? '退款申请正在提交。为避免重复申请，请勿再次提交或修改退款内容。'
-        : '退款申请已受理。请以当前订单退款记录中的后续状态为准。'));
+  if (hasNonTerminalRefund(detailContext.refunds || [])) {
+    parent.appendChild(element('p', '当前订单已有退款申请正在处理中或待核对，不能再提交新的退款申请。'));
     appendRefundReadbackControl(parent, scope);
     return;
   }
   const form = element('div');
+  form.className = 'order-refund-confirmation';
   form.style.cssText = 'display:grid;gap:12px;border-top:1px solid #EFF0F1;padding-top:14px';
   const amountLabel = element('label');
+  amountLabel.className = 'field';
   amountLabel.append(element('span', `退款金额（最多 ${moneyFromMinor(refundableMinor)}）`));
   const amount = document.createElement('input');
+  amount.className = 'input';
   amount.type = 'text'; amount.value = decimalFromMinor(refundableMinor); amount.inputMode = 'decimal'; amount.dataset.orderRefundAmount = '';
   amountLabel.appendChild(amount);
   const confirmationLabel = element('label');
+  confirmationLabel.className = 'field';
   confirmationLabel.append(element('span', '再次输入微信支付交易单号'));
   const confirmation = document.createElement('input');
+  confirmation.className = 'input';
   confirmation.type = 'text'; confirmation.placeholder = '请输入已核验的微信支付交易单号'; confirmation.dataset.orderRefundTransaction = '';
   confirmationLabel.appendChild(confirmation);
   const reasonLabel = element('label');
+  reasonLabel.className = 'field';
   reasonLabel.append(element('span', '退款原因'));
   const reason = document.createElement('select');
+  reason.className = 'select';
   reason.dataset.orderRefundReason = '';
   for (const label of ['客户主动申请退款', '商品或服务异常']) { const option = document.createElement('option'); option.value = label; option.textContent = label; reason.appendChild(option); }
   reasonLabel.appendChild(reason);
   const checkedLabel = element('label');
+  checkedLabel.className = 'field';
   const checked = document.createElement('input'); checked.type = 'checkbox'; checked.dataset.orderRefundChecked = '';
   checkedLabel.append(checked, document.createTextNode('已核对付款人、商品、可退金额、支付来源和微信支付交易单号'));
   const submit = element('button', '确认提交退款申请') as HTMLButtonElement;
-  submit.type = 'button';
+  submit.type = 'button'; submit.className = 'btn primary';
   submit.addEventListener('click', () => { void submitRefundConfirmation(order, scope, amount, confirmation, reason, checked, submit); });
   form.append(amountLabel, confirmationLabel, reasonLabel, checkedLabel, submit);
   parent.appendChild(form);
 }
 
+function refundRecovery(value: unknown): RefundRecovery | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  if (typeof record.actor_binding !== 'string' || !/^[a-f0-9]{64}$/.test(record.actor_binding)) return undefined;
+  if (record.found === false && Object.keys(record).length === 2) return { actorBinding: record.actor_binding, receipt: null };
+  if (record.found !== true
+    || !Number.isSafeInteger(record.receipt_id) || Number(record.receipt_id) < 1
+    || typeof record.refund_no !== 'string' || record.refund_no.trim().length === 0 || record.refund_no.length > 200
+    || typeof record.status !== 'string' || !['pending_external_gate', 'outcome_unknown', 'completed', 'final_failed'].includes(record.status)) return undefined;
+  return { actorBinding: record.actor_binding, receipt: { id: Number(record.receipt_id), refundNo: record.refund_no.trim() } };
+}
+
+function refundRecoveryProbeKey(): string {
+  return `refund-recovery-probe-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+async function readRefundRecovery(scope: RefundScope, idempotencyKey: string): Promise<RefundRecovery | undefined> {
+  const query = new URLSearchParams({ provider: scope.provider, order_no: scope.orderNo });
+  try {
+    const response = await originalFetch(`/api/admin/refunds/recovery?${query.toString()}`, {
+      credentials: 'same-origin', cache: 'no-store', headers: { 'Idempotency-Key': idempotencyKey },
+    });
+    return response.ok ? refundRecovery(await response.json()) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveRefundActorBinding(scope: RefundScope, force = false): Promise<string | undefined> {
+  const requestScope = refundRequestScope(scope);
+  if (!force && refundActorBindings.has(requestScope)) return refundActorBindings.get(requestScope);
+  if (refundActorBindingLoads.has(requestScope)) return undefined;
+  refundActorBindingLoads.add(requestScope);
+  refundActorBindingStates.set(requestScope, 'loading');
+  try {
+    const response = await readRefundRecovery(scope, refundRecoveryProbeKey());
+    if (!response) {
+      refundActorBindingStates.set(requestScope, 'unavailable');
+      return undefined;
+    }
+    refundActorBindings.set(requestScope, response.actorBinding);
+    refundActorBindingStates.delete(requestScope);
+    return response.actorBinding;
+  } finally {
+    refundActorBindingLoads.delete(requestScope);
+    schedulePresentation();
+  }
+}
+
+async function recoverRefundIntent(scope: RefundScope, intent: RefundIntent): Promise<boolean> {
+  const response = await readRefundRecovery(scope, intent.idempotencyKey);
+  if (!response) {
+    showOrderMessage('退款收据暂不可读取，结果仍待核对；不能提交新的退款申请。');
+    return false;
+  }
+  if (response.actorBinding !== intent.actorBinding) {
+    showOrderMessage('当前登录账号已变化，不能读取或提交另一账号的退款确认记录。');
+    return false;
+  }
+  if (response.receipt === null) {
+    showOrderMessage('暂未查到本次退款收据，结果仍待核对；不能提交新的退款申请。');
+    return false;
+  }
+  const recovered: RefundIntent = { ...intent, state: 'accepted', receipt: response.receipt };
+  if (!persistRefundIntent(scope, recovered)) {
+    showOrderMessage('浏览器无法安全保存退款收据状态，不能提交新的退款申请。');
+    return false;
+  }
+  refundIntents.set(refundIntentScope(scope, intent.actorBinding), recovered);
+  const readable = await refreshRefundReadback(scope);
+  if (!readable) return false;
+  schedulePresentation();
+  showOrderMessage('已读取本次退款收据和当前订单退款记录。是否可提交新的退款申请以页面提示为准。');
+  return true;
+}
+
 async function refreshRefundReadback(scope: RefundScope): Promise<boolean> {
   const query = new URLSearchParams({ provider: scope.provider, order_no: scope.orderNo });
   try {
-    const refundsResponse = await originalFetch(`/api/admin/refunds?${query.toString()}`, { credentials: 'same-origin' });
+    const refundsResponse = await originalFetch(`/api/admin/refunds?${query.toString()}`, { credentials: 'same-origin', cache: 'no-store' });
     if (!refundsResponse.ok) {
       detailContext.refundsUnavailable = true;
       schedulePresentation();
       showOrderMessage('当前订单退款记录暂不可读取，请稍后仅重新读取记录，勿重复提交退款申请。');
       return false;
     }
-    const refundsPayload = await refundsResponse.json();
-    detailContext.refunds = arrayField(refundsPayload, 'refunds', 'items');
+    const refunds = refundPage(await refundsResponse.json());
+    if (!refunds) {
+      detailContext.refundsUnavailable = true;
+      schedulePresentation();
+      showOrderMessage('当前订单退款记录格式异常，请稍后仅重新读取记录，勿重复提交退款申请。');
+      return false;
+    }
+    detailContext.refunds = refunds;
     detailContext.refundsUnavailable = false;
     const reference = detailReference();
-    if (reference) {
-      const orderResponse = await originalFetch(`/api/admin/orders/${encodeURIComponent(reference)}`, { credentials: 'same-origin' });
-      if (orderResponse.ok) {
-        const order = asRecord(await orderResponse.json());
-        if (order) detailContext.order = order;
-      }
+    const scopeForRefresh = refundScope(detailContext.order);
+    if (!reference || !scopeForRefresh) {
+      detailContext.orderRefreshUnavailable = true;
+      schedulePresentation();
+      showOrderMessage('当前订单详情暂不可重新读取，当前可退金额无法确认，不能提交新的退款申请。');
+      return false;
     }
+    const orderResponse = await originalFetch(`/api/admin/orders/${encodeURIComponent(reference)}`, { credentials: 'same-origin', cache: 'no-store' });
+    if (!orderResponse.ok) {
+      detailContext.orderRefreshUnavailable = true;
+      schedulePresentation();
+      showOrderMessage('当前订单详情暂不可重新读取，当前可退金额无法确认，不能提交新的退款申请。');
+      return false;
+    }
+    const order = refreshedOrderForScope(await orderResponse.json(), scopeForRefresh);
+    if (!order) {
+      detailContext.orderRefreshUnavailable = true;
+      schedulePresentation();
+      showOrderMessage('当前订单详情格式异常，当前可退金额无法确认，不能提交新的退款申请。');
+      return false;
+    }
+    detailContext.order = order;
+    detailContext.orderRefreshUnavailable = false;
     schedulePresentation();
     return true;
   } catch {
     detailContext.refundsUnavailable = true;
+    detailContext.orderRefreshUnavailable = true;
     schedulePresentation();
-    showOrderMessage('当前订单退款记录暂不可读取，请稍后仅重新读取记录，勿重复提交退款申请。');
+    showOrderMessage('当前订单退款记录或详情暂不可读取，请稍后仅重新读取记录，勿重复提交退款申请。');
     return false;
   }
 }
@@ -524,23 +869,21 @@ function candidateRefundRequest(scope: RefundScope, amount: HTMLInputElement, co
   };
 }
 
-function activeRefundIntentMessage(intent: RefundIntent, candidate: RefundIntentCandidate): string {
-  if (refundIntentFingerprint(candidate) !== intent.fingerprint) return '退款申请结果待核对，退款金额、原因和交易单号已锁定，不能修改后另行申请。';
+function activeRefundIntentMessage(intent: RefundIntent): string {
   if (intent.state === 'submitting') return '退款申请正在提交，请勿重复提交。';
-  if (intent.state === 'unknown') return '退款申请结果待核对，请先读取当前订单退款记录，不能重复提交。';
+  if (intent.state === 'unknown') return '退款申请结果待核对，退款金额、原因和交易单号已锁定；请先读取当前订单退款记录，不能重复提交。';
   return '退款申请已受理，请读取当前订单退款记录查看后续状态。';
 }
 
 async function submitRefundConfirmation(order: DetailRecord, scope: RefundScope, amount: HTMLInputElement, confirmation: HTMLInputElement, reason: HTMLSelectElement, checked: HTMLInputElement, submit: HTMLButtonElement): Promise<void> {
   const candidate = candidateRefundRequest(scope, amount, confirmation, reason, checked);
-  const intentScope = refundIntentScope(scope);
-  const active = refundIntents.get(intentScope);
-  if (active) {
-    showOrderMessage(activeRefundIntentMessage(active, candidate));
+  const requestScope = refundRequestScope(scope);
+  if (pendingRefundIntentScopes.has(requestScope)) {
+    showOrderMessage('退款申请正在提交，请勿重复提交。');
     return;
   }
   const refundableMinor = minorAmountValue(order.refundable_amount_total);
-  if (!candidate.refund_amount_total || !candidate.checked || !candidate.transaction_id_confirmation) {
+  if (candidate.refund_amount_total <= 0 || !candidate.checked || !candidate.transaction_id_confirmation) {
     showOrderMessage('请完整核对退款金额，并勾选确认后输入已核验的微信支付交易单号。');
     return;
   }
@@ -553,27 +896,102 @@ async function submitRefundConfirmation(order: DetailRecord, scope: RefundScope,
     showOrderMessage('输入的微信支付交易单号与当前订单不一致，不能确认退款。');
     return;
   }
-  const request: RefundIntentRequest = { ...candidate, checked: true };
-  const intent: RefundIntent = { idempotencyKey: createRefundIdempotencyKey(), request, fingerprint: refundIntentFingerprint(request), state: 'submitting' };
-  refundIntents.set(intentScope, intent);
+  // Claim the local submission lock before the first await. A delayed digest
+  // or actor-binding read must not let a second click mint another key.
+  pendingRefundIntentScopes.add(requestScope);
   submit.disabled = true;
+  const release = () => {
+    pendingRefundIntentScopes.delete(requestScope);
+    submit.disabled = false;
+  };
+  const actorBinding = await resolveRefundActorBinding(scope, true);
+  if (!actorBinding) {
+    release();
+    showOrderMessage('当前登录账号暂不可核验，不能提交新的退款申请。');
+    return;
+  }
+  const active = readRefundIntent(scope, actorBinding);
+  if (refundIntentStorageUnsafe) {
+    release();
+    showOrderMessage('退款确认记录无法安全读取，不能提交新的退款申请。');
+    return;
+  }
+  if (active) {
+    let candidateDigest: string | undefined;
+    try {
+      candidateDigest = await refundPayloadDigest({ ...candidate, checked: true });
+    } catch {
+      candidateDigest = undefined;
+    }
+    release();
+    showOrderMessage(candidateDigest && candidateDigest !== active.payloadDigest
+      ? '退款申请结果待核对，退款金额、原因和交易单号已锁定，不能修改后另行申请。'
+      : activeRefundIntentMessage(active));
+    return;
+  }
+  const request: RefundIntentRequest = { ...candidate, checked: true };
+  let payloadDigest: string | undefined;
+  try {
+    payloadDigest = await refundPayloadDigest(request);
+  } catch {
+    payloadDigest = undefined;
+  }
+  if (!payloadDigest) {
+    release();
+    showOrderMessage('浏览器无法安全保存退款确认状态，不能提交新的退款申请。');
+    return;
+  }
+  // Re-read the server-derived binding immediately before persisting the key
+  // and issuing POST. Another tab may have changed the browser login while a
+  // digest was pending; the old page must then stop before any mutation.
+  const currentActorBinding = await resolveRefundActorBinding(scope, true);
+  if (!currentActorBinding || currentActorBinding !== actorBinding) {
+    release();
+    showOrderMessage('当前登录账号已变化，不能提交另一账号的退款申请。');
+    return;
+  }
+  const intent: RefundIntent = { idempotencyKey: createRefundIdempotencyKey(), payloadDigest, state: 'submitting', actorBinding };
+  if (!persistRefundIntent(scope, intent)) {
+    release();
+    showOrderMessage('浏览器无法安全保存退款确认状态，不能提交新的退款申请。');
+    return;
+  }
+  const intentScope = refundIntentScope(scope, actorBinding);
+  refundIntents.set(intentScope, intent);
   try {
     const response = await originalFetch(`/api/admin/wechat-pay/orders/${encodeURIComponent(scope.orderNo)}/refunds`, apiRequestOptions({
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.idempotencyKey }, body: JSON.stringify(request),
     }));
-    if (!response.ok) {
-      if (response.status >= 400 && response.status < 500) {
-        refundIntents.delete(intentScope);
-        submit.disabled = false;
+    const acceptance = response.status === 202 ? legacyRefundAcceptance(await response.clone().json().catch(() => undefined)) : undefined;
+    if (!acceptance) {
+      if (await isRecognizedRefundRejection(response)) {
+        if (!clearRefundIntent(scope, actorBinding)) {
+          intent.state = 'unknown';
+          release();
+          schedulePresentation();
+          showOrderMessage('浏览器无法安全更新退款确认状态，结果仍待核对；不能提交新的退款申请。');
+          return;
+        }
+        release();
         showOrderMessage('退款确认未通过，请核对交易单号、可退金额和订单信息后重新填写。');
         return;
       }
       intent.state = 'unknown';
+      persistRefundIntent(scope, intent);
+      release();
       schedulePresentation();
       showOrderMessage('退款申请结果待核对。为避免重复申请，本次退款内容已锁定；请读取当前订单退款记录。');
       return;
     }
-    intent.state = 'accepted';
+    intent.state = 'accepted'; intent.receipt = acceptance;
+    if (!persistRefundIntent(scope, intent)) {
+      intent.state = 'unknown'; intent.receipt = undefined;
+      release();
+      schedulePresentation();
+      showOrderMessage('浏览器无法安全保存退款收据状态，结果仍待核对；不能提交新的退款申请。');
+      return;
+    }
+    release();
     schedulePresentation();
     const readBack = await refreshRefundReadback(scope);
     showOrderMessage(readBack
@@ -581,6 +999,8 @@ async function submitRefundConfirmation(order: DetailRecord, scope: RefundScope,
       : '退款申请已受理，但退款记录暂不可读取。请稍后仅重新读取当前订单退款记录。');
   } catch {
     intent.state = 'unknown';
+    persistRefundIntent(scope, intent);
+    release();
     schedulePresentation();
     showOrderMessage('退款申请结果待核对。为避免重复申请，本次退款内容已锁定；请读取当前订单退款记录。');
   }
@@ -601,6 +1021,7 @@ function applyOrderDetailStatusBadge(order: DetailRecord): void {
 function replaceExternalEffectsPanel(): void {
   const panel = panelForHeading((heading) => heading === '事件时间线' || heading === '外部处理记录');
   if (!panel) return;
+  panel.dataset.orderEffectsPanel = '';
   const effects = detailContext.effects || [];
   const fingerprint = JSON.stringify({ effects, unavailable: detailContext.effectsUnavailable });
   if (panel.dataset.orderEffectsFingerprint === fingerprint) return;
@@ -640,6 +1061,9 @@ function applyOrderDetailPresentation(): void {
   applyOrderDetailStatusBadge(order);
   const card = document.querySelector<HTMLElement>('[data-order-detail-fingerprint]') || panelForHeading((heading) => heading === '订单详情');
   if (!card) return;
+  card.dataset.orderDetailCard = '';
+  const layout = detailLayoutFor(card);
+  if (layout) layout.dataset.orderDetailLayout = '';
   const fingerprint = JSON.stringify({ order, items: detailContext.items?.map(asRecord), refunds: detailContext.refunds?.map(asRecord), unavailable: detailContext.refundsUnavailable });
   if (card.dataset.orderDetailFingerprint === fingerprint) {
     replaceExternalEffectsPanel();

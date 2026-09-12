@@ -10,11 +10,12 @@ const password = process.env.AICRM_ADMIN_LAYOUT_TEST_PASSWORD;
 const productID = process.env.AICRM_ADMIN_LAYOUT_TEST_PRODUCT_ID;
 const serviceProductID = process.env.AICRM_ADMIN_LAYOUT_TEST_SERVICE_PRODUCT_ID;
 const historicalOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_ORDER;
+const nativeOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_NATIVE_ORDER;
 const radarID = process.env.AICRM_ADMIN_LAYOUT_TEST_RADAR_ID;
 const aiPlanID = process.env.AICRM_ADMIN_LAYOUT_TEST_AI_PLAN_ID;
 const screenshotDirectory = process.env.AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !screenshotDirectory) {
-  throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product ids, native AI plan id, and screenshot directory");
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(nativeOrderReference || "") || !screenshotDirectory) {
+  throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product ids, order fixtures, native AI plan id, and screenshot directory");
 }
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -650,7 +651,53 @@ try {
 
   // Detail and frozen aliases remain on their business Host, including the
   // order history panel whose source mapping is independently seeded below.
-  await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference), "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.body?.textContent?.includes('外推回执'))", "order-detail-history", "embedded", embeddedTitle, true);
+  await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference), "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.body?.textContent?.includes('外部处理记录'))", "order-detail-history", "embedded", embeddedTitle, true);
+  await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(nativeOrderReference), "Boolean(document.querySelector('.order-refund-confirmation')) && Boolean(document.body?.textContent?.includes('订单信息')) && Boolean(document.body?.textContent?.includes('匿名退款演示商品'))", "order-detail-native", "embedded", embeddedTitle, true);
+  const nativeOrderPresentation = await evaluate(cdp, `(() => ({
+    hasCanonicalCustomer: Boolean(document.body?.textContent?.includes('CID-')),
+    hasMaskedPhone: Boolean(document.body?.textContent?.includes('130****1234')),
+    hasChinesePayment: Boolean(document.body?.textContent?.includes('微信支付')),
+    hasChineseStatus: Boolean(document.body?.textContent?.includes('已支付')),
+    hasRefundForm: Boolean(document.querySelector('.order-refund-confirmation .input[data-order-refund-amount]')) && Boolean(document.querySelector('.order-refund-confirmation .select[data-order-refund-reason]')) && Boolean(document.querySelector('.order-refund-confirmation .btn.primary')),
+    hasRawInternalCustomerKey: Boolean(document.body?.textContent?.includes('customer:')),
+  }))()`);
+  if (!nativeOrderPresentation?.hasCanonicalCustomer || !nativeOrderPresentation?.hasMaskedPhone || !nativeOrderPresentation?.hasChinesePayment || !nativeOrderPresentation?.hasChineseStatus || !nativeOrderPresentation?.hasRefundForm || nativeOrderPresentation?.hasRawInternalCustomerKey) {
+    interactionFailures.push("order-detail-native:business presentation or guarded form is invalid");
+  }
+  // The mobile screenshot is intentionally a real narrow viewport, while the
+  // rest of this layout matrix remains desktop-only. Historical orders must
+  // stay read-only at either width and never expose an implementation-era label.
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true, screenWidth: 390, screenHeight: 844 });
+  currentStep = "order-detail-history-mobile";
+  try {
+    await cdp.call("Page.navigate", { url: baseURL + "/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference) });
+    await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && Boolean(document.querySelector('.order-host-layout')) && Boolean(document.body?.textContent?.includes('历史订单，仅供查询'))", "order-detail-history-mobile did not render the historical read-only detail");
+    await waitForFonts("order-detail-history-mobile");
+    const historicalMobile = await evaluate(cdp, `(() => ({
+      readOnly: Boolean(document.body?.textContent?.includes('历史订单，仅供查询')),
+      implementationLabel: Boolean(document.body?.textContent?.includes('V1')) || Boolean(document.body?.textContent?.includes('V2')),
+      refundForm: Boolean(document.querySelector('.order-refund-confirmation')),
+      rawStatus: Boolean(document.body?.textContent?.includes('outcome_unknown')),
+      sidebarHidden: Boolean(document.querySelector('.admin-sidebar')) && getComputedStyle(document.querySelector('.admin-sidebar')).display === 'none',
+      detailPanelsStacked: (() => {
+        const layout = document.querySelector('[data-order-detail-layout]');
+        if (!layout) return false;
+        const panels = Array.from(layout.children).filter(node => getComputedStyle(node).display !== 'none');
+        const first = panels[0]?.getBoundingClientRect();
+        return panels.length >= 2 && panels.every(node => {
+          const box = node.getBoundingClientRect();
+          return Boolean(first) && Math.abs(box.left - first.left) <= 1 && box.width >= 300;
+        });
+      })(),
+      overflowsViewport: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    }))()`);
+    if (!historicalMobile?.readOnly || historicalMobile?.implementationLabel || historicalMobile?.refundForm || historicalMobile?.rawStatus || !historicalMobile?.sidebarHidden || !historicalMobile?.detailPanelsStacked || historicalMobile?.overflowsViewport) throw new Error("historical order mobile presentation is invalid");
+    await capture("order-detail-history-mobile");
+  } catch (error) {
+    await recordRouteFailure("order-detail-history-mobile", error);
+  } finally {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+  }
   const effectsMounted = await navigate("/admin/campaigns.html?view=external-effects", "Boolean(document.querySelector('#stage')) && Boolean(document.querySelector('#effects-refresh')) && Boolean(document.querySelector('#stage h2'))", "external-effects", "standard", "#stage h2", false);
   if (effectsMounted) await recordGeometry("external-effects", () => assertExternalEffectsLayout("external-effects"), true);
 

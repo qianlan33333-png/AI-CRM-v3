@@ -254,6 +254,59 @@ func TestPostgreSQLRefundListScopesExactPayment(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLRefundRecoveryReceiptScopesOriginalKeyAndActor(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := paymentstore.NewPostgreSQL()
+	now := time.Date(2026, 9, 12, 3, 0, 0, 0, time.UTC)
+	var orderID, paymentID int64
+	digest := sha256.Sum256([]byte("refund-recovery-order"))
+	if err = pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,source_row_digest,created_at,updated_at) VALUES('wechat_pay','test','refund-recovery-order','M-recovery',11,11,2000,'CNY','paid','history',false,$1,$2,$2) RETURNING id`, digest[:], now).Scan(&orderID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,created_at,updated_at) VALUES($1,'wechat_pay','mini_program','M-recovery',4,11,11,2000,'CNY','paid',1,$2,$2) RETURNING id`, orderID, now).Scan(&paymentID); err != nil {
+		t.Fatal(err)
+	}
+	key := sha256.Sum256([]byte("refund-recovery-key-0001"))
+	payload := sha256.Sum256([]byte("refund-recovery-payload"))
+	var created domain.Refund
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		created, _, inner = repository.CreateRefund(tx, domain.Refund{PaymentID: paymentID, Provider: domain.ProviderWeChatPay, RefundNo: "RF-recovery", AmountMinor: 1000, Reason: "test", Status: domain.RefundRequested, Version: 1, CreatedAt: now, UpdatedAt: now}, key, payload, "admin:17")
+		return inner
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name  string
+		key   [32]byte
+		actor string
+		found bool
+	}{{"exact", key, "admin:17", true}, {"different actor", key, "admin:18", false}, {"different key", sha256.Sum256([]byte("refund-recovery-key-0002")), "admin:17", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			var refund domain.Refund
+			var found bool
+			err := uow.Within(ctx, func(tx context.Context) error {
+				var inner error
+				refund, found, inner = repository.FindRefundByIdempotencyKey(tx, test.key, test.actor)
+				return inner
+			})
+			if err != nil || found != test.found || test.found && refund.ID != created.ID {
+				t.Fatalf("refund=%+v found=%t want=%t err=%v", refund, found, test.found, err)
+			}
+		})
+	}
+}
+
 func TestPostgreSQLPaymentSessionBeneficiaryFactsCASAndCheckoutRollback(t *testing.T) {
 	pool, cleanup := paymentIntegrationPool(t)
 	defer cleanup()

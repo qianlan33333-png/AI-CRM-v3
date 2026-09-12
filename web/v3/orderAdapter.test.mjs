@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,21 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const bundle = await build({ stdin: { contents: "import './web/v3/orderAdapter'; import {AdminController} from './web/src/admin/controller'; window.OrderControllerFixture = AdminController;", resolveDir: root, loader: 'ts' }, bundle: true, format: 'iife', write: false, platform: 'browser', logLevel: 'silent' });
 const host = bundle.outputFiles[0].text;
 const pause = () => new Promise((resolve) => setTimeout(resolve, 15));
+const refundActorBinding = 'b'.repeat(64);
+const alternateRefundActorBinding = 'c'.repeat(64);
+
+function recoveryNotFound(actorBinding = refundActorBinding) {
+  return new Response(JSON.stringify({ found: false, actor_binding: actorBinding }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+}
+
+function browserRuntime(window) {
+  window.Request = Request; window.Response = Response; window.Headers = Headers;
+  Object.defineProperty(window, 'crypto', { value: webcrypto, configurable: true });
+}
+
+function scopedRefundPage(refunds = []) {
+  return { items: refunds, refunds, total: refunds.length, limit: 50, offset: 0, has_more: false };
+}
 
 const calls = [];
 const dom = new JSDOM(`<!doctype html><body>
@@ -18,7 +34,7 @@ const dom = new JSDOM(`<!doctype html><body>
   url: 'https://test.invalid/admin/orders', runScripts: 'outside-only', pretendToBeVisual: true,
   virtualConsole: new VirtualConsole(),
   beforeParse(window) {
-    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    browserRuntime(window);
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       calls.push(url);
@@ -78,7 +94,7 @@ const detailDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
   url: 'https://test.invalid/admin/orderDetail.html?id=M-ORDER-TEST-0001', runScripts: 'outside-only', pretendToBeVisual: true,
   virtualConsole: new VirtualConsole(),
   beforeParse(window) {
-    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    browserRuntime(window);
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       detailCalls.push({ url, method: init.method || 'GET' });
@@ -87,9 +103,9 @@ const detailDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
         transaction_id: '4200000000000000000000000000', payer_name: '测试买家', payer_id: 'customer:101', payer_phone_masked: '138****0000',
         product_name: '测试商品', amount_yuan: '20.00', refundable_amount_total: 2000, created_at: '2026-09-30T16:01:02Z', status: 'paid',
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify({
-        items: [{ refund_no: 'RF-TEST-1', refund_amount_total: 2000, status: 'completed', reason: '测试退款', created_at: '2026-10-01T00:01:02+08:00' }],
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage([
+        { refund_no: 'RF-TEST-1', refund_amount_total: 2000, status: 'completed', reason: '测试退款', created_at: '2026-10-01T00:01:02+08:00' },
+      ])), { status: 200, headers: { 'Content-Type': 'application/json' } });
       if (url.pathname.endsWith('/external-push-deliveries')) return new Response(JSON.stringify({
         effects: [{ external_effect_state: 'outcome_unknown', updated_at: '2026-09-30T16:01:02Z' }],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -133,7 +149,7 @@ const historyDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
   url: 'https://test.invalid/admin/orderDetail.html?id=M-HISTORY-TEST-0001', runScripts: 'outside-only', pretendToBeVisual: true,
   virtualConsole: new VirtualConsole(),
   beforeParse(window) {
-    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    browserRuntime(window);
     window.fetch = async () => new Response(JSON.stringify({
       record_origin: 'v1_history', merchant_order_no: 'M-HISTORY-TEST-0001', provider: 'wechat',
       payer_name: '测试买家', payer_id: 'customer:102', product_name: '历史测试商品', amount_yuan: '20.00', created_at: '2026-10-01T00:01:02Z', status: 'paid',
@@ -172,18 +188,20 @@ function refundDetailHTML(orderNo) {
 
 const unknownCalls = [];
 let resolveUnknownPost;
+let unknownIntentStorage = '';
 const unknownOrderNo = 'M-REFUND-TEST-UNKNOWN';
 const unknownDom = new JSDOM(refundDetailHTML(unknownOrderNo), {
   url: `https://test.invalid/admin/orderDetail.html?id=${unknownOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
   virtualConsole: new VirtualConsole(),
   beforeParse(window) {
-    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    browserRuntime(window);
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       const method = init.method || 'GET';
       unknownCalls.push({ url, method, body: init.body, idempotencyKey: new Headers(init.headers).get('Idempotency-Key') });
       if (url.pathname === `/api/admin/orders/${unknownOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(unknownOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      if (url.pathname === '/api/admin/refunds' && method === 'GET') return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds/recovery') return recoveryNotFound();
+      if (url.pathname === '/api/admin/refunds' && method === 'GET') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
       if (url.pathname === `/api/admin/wechat-pay/orders/${unknownOrderNo}/refunds` && method === 'POST') return new Promise((resolve) => { resolveUnknownPost = resolve; });
       return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
@@ -197,9 +215,13 @@ try {
   const document = unknownDom.window.document;
   const amount = document.querySelector('[data-order-refund-amount]');
   const transaction = document.querySelector('[data-order-refund-transaction]');
+  const reason = document.querySelector('[data-order-refund-reason]');
   const checked = document.querySelector('[data-order-refund-checked]');
   const submit = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '确认提交退款申请');
   assert.ok(amount && transaction && checked && submit, 'a native order with a known refundable amount must expose a guarded refund form');
+  assert.ok(amount.classList.contains('input') && transaction.classList.contains('input'), 'refund text controls use the standard admin input class');
+  assert.ok(reason?.classList.contains('select'), 'refund reason uses the standard admin select class');
+  assert.ok(submit.classList.contains('btn') && submit.classList.contains('primary'), 'refund submit uses the standard primary admin button class');
   transaction.value = '4200000000000000000000000001';
   checked.checked = true;
   submit.dispatchEvent(new unknownDom.window.MouseEvent('click', { bubbles: true }));
@@ -210,11 +232,17 @@ try {
   submit.dispatchEvent(new unknownDom.window.MouseEvent('click', { bubbles: true }));
   await pause();
   assert.equal(unknownCalls.filter((call) => call.method === 'POST').length, 1, 'double-clicks or a changed payload may not create another refund request');
-  assert.match(document.body.textContent, /退款金额、原因和交易单号已锁定/, 'a changed payload is explicitly rejected while the original intent is unresolved');
+  assert.match(document.body.textContent, /退款申请正在提交/, 'a second click while the original payload is unresolved remains locked to the original submission');
   assert.ok(unknownCalls.find((call) => call.method === 'POST')?.idempotencyKey, 'the unresolved intent receives one stable idempotency key');
   resolveUnknownPost(new Response(JSON.stringify({ error: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
   await new Promise((resolve) => setTimeout(resolve, 40));
-  assert.match(document.body.textContent, /仅可读取当前订单退款记录/, 'a lost or 5xx response locks the intent to read-only verification');
+  unknownIntentStorage = unknownDom.window.localStorage.getItem('aicrm.order-refund-intents.v1') || '';
+  const durableUnknown = JSON.parse(unknownIntentStorage);
+  assert.deepEqual(Object.keys(durableUnknown[0]).sort(), ['actor_binding', 'idempotency_key', 'order_no', 'payload_digest', 'provider', 'state'], 'durable lock state contains only scope, key, digest, and state');
+  assert.match(durableUnknown[0].payload_digest, /^[a-f0-9]{64}$/, 'durable refund state stores a SHA-256 payload digest');
+  assert.equal(durableUnknown[0].actor_binding, refundActorBinding, 'durable refund state is partitioned by the current authenticated actor marker');
+  assert.ok(!unknownIntentStorage.includes('4200000000000000000000000001'), 'the provider transaction number is never persisted with the refund intent');
+  assert.match(document.body.textContent, /退款金额、原因和交易单号已锁定/, 'a lost or 5xx response locks the original payload and prevents any changed request');
   assert.equal(document.querySelector('[data-order-refund-amount]'), null, 'unknown intent state removes mutable refund controls');
   const readBack = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '读取当前订单退款记录');
   assert.ok(readBack, 'unknown intent state offers readback instead of a mutation retry');
@@ -226,20 +254,255 @@ try {
   unknownDom.window.close();
 }
 
+const restoredCalls = [];
+const restoredDom = new JSDOM(refundDetailHTML(unknownOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${unknownOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.localStorage.setItem('aicrm.order-refund-intents.v1', unknownIntentStorage);
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      restoredCalls.push({ url, method: init.method || 'GET' });
+      if (url.pathname === `/api/admin/orders/${unknownOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(unknownOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds/recovery') return recoveryNotFound();
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  restoredDom.window.eval(host);
+  await pause();
+  await restoredDom.window.fetch('/api/admin/refunds');
+  await pause();
+  const document = restoredDom.window.document;
+  assert.equal(document.querySelector('[data-order-refund-amount]'), null, 'a refresh restores the unknown refund lock even before a new mutation can be formed');
+  assert.ok(Array.from(document.querySelectorAll('button')).some((button) => button.textContent === '读取当前订单退款记录'), 'a restored unknown lock offers scoped readback');
+  assert.equal(restoredCalls.filter((call) => call.method === 'POST').length, 0, 'a restored unknown intent cannot create a new refund request');
+} finally {
+  restoredDom.window.close();
+}
+
+const recoveryOrderNo = 'M-REFUND-TEST-RECOVERY';
+const recoveryCalls = [];
+let recoveryRows = [{ id: 702, refund_id: 'RF-other', refund_amount_total: 1000, status: 'completed', created_at: '2026-09-30T16:01:02Z' }];
+const recoveryDom = new JSDOM(refundDetailHTML(recoveryOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${recoveryOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.localStorage.setItem('aicrm.order-refund-intents.v1', JSON.stringify([{
+      provider: 'wechat', order_no: recoveryOrderNo, idempotency_key: 'refund-recovery-key-0001', payload_digest: 'a'.repeat(64), actor_binding: refundActorBinding, state: 'unknown',
+    }]));
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      recoveryCalls.push({ url, method: init.method || 'GET', key: new Headers(init.headers).get('Idempotency-Key'), cache: init.cache });
+      if (url.pathname === `/api/admin/orders/${recoveryOrderNo}`) return new Response(JSON.stringify({ ...nativeOrderFixture(recoveryOrderNo), refundable_amount_total: 1000 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds/recovery') {
+        const key = new Headers(init.headers).get('Idempotency-Key');
+        if (key !== 'refund-recovery-key-0001') return recoveryNotFound();
+        return new Response(JSON.stringify({
+          found: true, receipt_id: 701, refund_no: 'RF-recovery-701', status: 'completed', actor_binding: refundActorBinding,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage(recoveryRows)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  recoveryDom.window.eval(host);
+  await pause();
+  await recoveryDom.window.fetch('/api/admin/refunds');
+  await pause();
+  const document = recoveryDom.window.document;
+  let readback = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '读取当前订单退款记录');
+  assert.ok(readback);
+  const refundReadbackStart = recoveryCalls.filter((call) => call.url.pathname === '/api/admin/refunds').length;
+  readback.click(); await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.equal(document.querySelector('[data-order-refund-amount]'), null, 'a completed refund for another receipt cannot release the recovered intent');
+  assert.equal(Array.from(document.querySelectorAll('button')).some((button) => button.textContent === '开启新的退款申请'), false, 'a same-order but different receipt cannot unlock a later partial refund');
+  const recoveryCall = recoveryCalls.find((call) => call.url.pathname === '/api/admin/refunds/recovery' && call.key === 'refund-recovery-key-0001');
+  assert.equal(recoveryCall.url.searchParams.get('provider'), 'wechat', 'recovery lookup remains Payment-scoped');
+  assert.equal(recoveryCall.url.searchParams.get('order_no'), recoveryOrderNo, 'recovery lookup carries the exact merchant order in the query');
+  assert.equal(recoveryCall.key, 'refund-recovery-key-0001', 'the original key is sent only in a request header');
+  assert.equal(recoveryCall.cache, 'no-store', 'recovery reads never reuse a receipt cached for another original idempotency key');
+  assert.ok(recoveryCalls.filter((call) => call.url.pathname === '/api/admin/refunds').slice(refundReadbackStart).every((call) => call.cache === 'no-store'), 'current-order refund readbacks bypass the browser HTTP cache');
+
+  recoveryRows = [{ id: 701, refund_id: 'RF-recovery-701', refund_amount_total: 1000, status: 'completed', created_at: '2026-09-30T16:01:02Z' }];
+  readback = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '读取当前订单退款记录');
+  assert.ok(readback);
+  readback.click(); await new Promise((resolve) => setTimeout(resolve, 45));
+  const restart = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '开启新的退款申请');
+  assert.ok(restart, 'only the exact recovered receipt in a terminal state may offer a new partial refund application');
+  restart.click(); await pause();
+  assert.ok(document.querySelector('[data-order-refund-amount]'), 'the explicit restart clears only the terminal recovered intent');
+  assert.match(document.body.textContent, /退款金额（最多 ¥10.00）/, 'a new refund form uses the freshly read remaining refundable amount');
+} finally {
+  recoveryDom.window.close();
+}
+
+
+const bindingRetryOrderNo = 'M-REFUND-TEST-BINDING-RETRY';
+let bindingRetryCalls = 0;
+const bindingRetryDom = new JSDOM(refundDetailHTML(bindingRetryOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${bindingRetryOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.localStorage.setItem('aicrm.order-refund-intents.v1', JSON.stringify([{
+      provider: 'wechat', order_no: bindingRetryOrderNo, idempotency_key: 'refund-binding-retry-key', payload_digest: 'd'.repeat(64), actor_binding: refundActorBinding, state: 'unknown',
+    }]));
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === `/api/admin/orders/${bindingRetryOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(bindingRetryOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds/recovery') {
+        bindingRetryCalls += 1;
+        return bindingRetryCalls === 1 ? new Response(JSON.stringify({ code: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } }) : recoveryNotFound();
+      }
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  bindingRetryDom.window.eval(host);
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  const document = bindingRetryDom.window.document;
+  const retry = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '重新核验当前登录账号');
+  assert.ok(retry, 'a failed actor-binding read stops in a visible read-only state with a manual retry');
+  retry.click(); await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.equal(bindingRetryCalls, 2, 'actor-binding failure does not loop automatically and a single manual retry can recover');
+  assert.ok(Array.from(document.querySelectorAll('button')).some((button) => button.textContent === '读取当前订单退款记录'), 'the recovered actor partition restores only the original readback control');
+  assert.equal(document.querySelector('[data-order-refund-amount]'), null, 'an unresolved durable intent remains non-mutating after an actor-binding retry');
+} finally {
+  bindingRetryDom.window.close();
+}
+
+const malformedIntentOrderNo = 'M-REFUND-TEST-INTENT-STORAGE';
+let malformedIntentPosts = 0;
+const malformedIntentDom = new JSDOM(refundDetailHTML(malformedIntentOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${malformedIntentOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.localStorage.setItem('aicrm.order-refund-intents.v1', '{malformed');
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === `/api/admin/orders/${malformedIntentOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(malformedIntentOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (init.method === 'POST') malformedIntentPosts += 1;
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  malformedIntentDom.window.eval(host);
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  const document = malformedIntentDom.window.document;
+  assert.match(document.body.textContent, /退款确认记录无法安全读取/, 'malformed durable intent storage fails closed instead of becoming an empty lock set');
+  assert.equal(document.querySelector('[data-order-refund-amount]'), null, 'malformed durable storage never enables a new refund mutation');
+  const readback = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '读取当前订单退款记录');
+  assert.ok(readback, 'malformed durable storage preserves the read-only scoped readback path');
+  readback.click(); await pause();
+  assert.equal(malformedIntentPosts, 0, 'readback after malformed intent storage cannot overwrite it with a new request');
+  assert.equal(malformedIntentDom.window.localStorage.getItem('aicrm.order-refund-intents.v1'), '{malformed', 'malformed durable storage is not overwritten by a failed-open parser');
+} finally {
+  malformedIntentDom.window.close();
+}
+
+const staleOrderOrderNo = 'M-REFUND-TEST-STALE-ORDER';
+const staleOrderDom = new JSDOM(refundDetailHTML(staleOrderOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${staleOrderOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.localStorage.setItem('aicrm.order-refund-intents.v1', JSON.stringify([{
+      provider: 'wechat', order_no: staleOrderOrderNo, idempotency_key: 'refund-stale-order-key', payload_digest: 'e'.repeat(64), actor_binding: refundActorBinding, state: 'unknown',
+    }]));
+    let orderReads = 0;
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === `/api/admin/orders/${staleOrderOrderNo}`) {
+        orderReads += 1;
+        return orderReads === 1
+          ? new Response(JSON.stringify(nativeOrderFixture(staleOrderOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } })
+          : new Response(JSON.stringify({ code: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.pathname === '/api/admin/refunds/recovery') {
+        const key = new Headers(init.headers).get('Idempotency-Key');
+        return key === 'refund-stale-order-key'
+          ? new Response(JSON.stringify({ found: true, receipt_id: 818, refund_no: 'RF-stale-order', status: 'completed', actor_binding: refundActorBinding }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+          : recoveryNotFound();
+      }
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage([{ id: 818, refund_id: 'RF-stale-order', refund_amount_total: 1000, status: 'completed', created_at: '2026-09-30T16:01:02Z' }])), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  staleOrderDom.window.eval(host);
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  const document = staleOrderDom.window.document;
+  const readback = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '读取当前订单退款记录');
+  assert.ok(readback);
+  readback.click(); await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.match(document.body.textContent, /当前可退金额无法确认/, 'a fresh refund page alone cannot reuse a stale order refundable amount');
+  assert.equal(Array.from(document.querySelectorAll('button')).some((button) => button.textContent === '开启新的退款申请'), false, 'failed fresh order readback never unlocks a later partial refund');
+  assert.equal(document.querySelector('[data-order-refund-amount]'), null, 'failed fresh order readback never recreates an editable refund form');
+} finally {
+  staleOrderDom.window.close();
+}
+
+const nonTerminalOrderNo = 'M-REFUND-TEST-NONTERMINAL';
+const nonTerminalDom = new JSDOM(refundDetailHTML(nonTerminalOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${nonTerminalOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === `/api/admin/orders/${nonTerminalOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(nonTerminalOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage([
+        { refund_amount_total: 2000, status: 'effect_accepted', created_at: '2026-09-30T16:01:02Z' },
+      ])), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  nonTerminalDom.window.eval(host);
+  await pause();
+  await nonTerminalDom.window.fetch('/api/admin/refunds');
+  await pause();
+  assert.equal(nonTerminalDom.window.document.querySelector('[data-order-refund-amount]'), null, 'a nonterminal refund found by server readback disables a new refund request');
+  assert.match(nonTerminalDom.window.document.body.textContent, /正在处理中或待核对/, 'the server-side nonterminal refund state explains why a new request is blocked');
+} finally {
+  nonTerminalDom.window.close();
+}
+
 const acceptedCalls = [];
 const acceptedOrderNo = 'M-REFUND-TEST-ACCEPTED';
 const acceptedDom = new JSDOM(refundDetailHTML(acceptedOrderNo), {
   url: `https://test.invalid/admin/orderDetail.html?id=${acceptedOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
   virtualConsole: new VirtualConsole(),
   beforeParse(window) {
-    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    browserRuntime(window);
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       const method = init.method || 'GET';
       acceptedCalls.push({ url, method, body: init.body });
       if (url.pathname === `/api/admin/orders/${acceptedOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(acceptedOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      if (url.pathname === '/api/admin/refunds' && method === 'GET') return new Response(JSON.stringify({ items: [{ refund_amount_total: 2000, status: 'effect_accepted', reason: '测试原因', created_at: '2026-09-30T16:01:02Z' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      if (url.pathname === `/api/admin/wechat-pay/orders/${acceptedOrderNo}/refunds` && method === 'POST') return new Response(JSON.stringify({ refund_id: 'RF-TEST-ACCEPTED', status: 'effect_accepted' }), { status: 202, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds/recovery') return recoveryNotFound();
+      if (url.pathname === '/api/admin/refunds' && method === 'GET') return new Response(JSON.stringify(scopedRefundPage(
+        acceptedCalls.some((call) => call.method === 'POST')
+          ? [{ refund_amount_total: 2000, status: 'effect_accepted', reason: '测试原因', created_at: '2026-09-30T16:01:02Z' }]
+          : [],
+      )), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === `/api/admin/wechat-pay/orders/${acceptedOrderNo}/refunds` && method === 'POST') return new Response(JSON.stringify({
+        id: 901, refund_id: 'RF-TEST-ACCEPTED', out_refund_no: 'RF-TEST-ACCEPTED', status: 'pending_external_gate', external_effect_id: '21', auto_retry_allowed: false,
+      }), { status: 202, headers: { 'Content-Type': 'application/json' } });
       return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
   },
@@ -255,6 +518,12 @@ try {
   const checked = document.querySelector('[data-order-refund-checked]');
   const submit = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '确认提交退款申请');
   assert.ok(amount && transaction && checked && submit);
+  amount.value = '0'; transaction.value = '4200000000000000000000000001'; checked.checked = true;
+  submit.click(); await pause();
+  assert.equal(acceptedCalls.filter((call) => call.method === 'POST').length, 0, 'zero amount is rejected before any refund request');
+  amount.value = '-1';
+  submit.click(); await pause();
+  assert.equal(acceptedCalls.filter((call) => call.method === 'POST').length, 0, 'an invalid negative amount cannot bypass the refund amount validation');
   amount.value = '20.01'; transaction.value = '4200000000000000000000000001'; checked.checked = true;
   submit.click(); await pause();
   assert.equal(acceptedCalls.filter((call) => call.method === 'POST').length, 0, 'the browser blocks an amount above refundable_amount_total before any request');
@@ -272,12 +541,192 @@ try {
   acceptedDom.window.close();
 }
 
+
+const delayedDigestOrderNo = 'M-REFUND-TEST-DELAYED-DIGEST';
+const delayedDigestCalls = [];
+let releaseDelayedDigest;
+let delayedDigestStarted = false;
+const delayedDigestDom = new JSDOM(refundDetailHTML(delayedDigestOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${delayedDigestOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    const platformDigest = webcrypto.subtle.digest.bind(webcrypto.subtle);
+    Object.defineProperty(window, 'crypto', { configurable: true, value: {
+      randomUUID: webcrypto.randomUUID.bind(webcrypto),
+      subtle: {
+        digest(...args) {
+          if (delayedDigestStarted) return platformDigest(...args);
+          delayedDigestStarted = true;
+          return new Promise((resolve) => {
+            releaseDelayedDigest = () => { void platformDigest(...args).then(resolve); };
+          });
+        },
+      },
+    } });
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      const method = init.method || 'GET';
+      delayedDigestCalls.push({ url, method });
+      if (url.pathname === `/api/admin/orders/${delayedDigestOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(delayedDigestOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds/recovery') return recoveryNotFound();
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === `/api/admin/wechat-pay/orders/${delayedDigestOrderNo}/refunds` && method === 'POST') return new Response(JSON.stringify({
+        id: 880, refund_id: 'RF-delayed-digest', out_refund_no: 'RF-delayed-digest', status: 'pending_external_gate', external_effect_id: 'fixture-effect-880', auto_retry_allowed: false,
+      }), { status: 202, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  delayedDigestDom.window.eval(host);
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  const document = delayedDigestDom.window.document;
+  const transaction = document.querySelector('[data-order-refund-transaction]');
+  const checked = document.querySelector('[data-order-refund-checked]');
+  const submit = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '确认提交退款申请');
+  assert.ok(transaction && checked && submit);
+  transaction.value = '4200000000000000000000000001'; checked.checked = true;
+  submit.click();
+  for (let attempt = 0; attempt < 20 && !releaseDelayedDigest; attempt += 1) await pause();
+  assert.equal(typeof releaseDelayedDigest, 'function', 'the test must hold the first payload digest after the submission lock is claimed');
+  submit.click(); await pause();
+  assert.equal(delayedDigestCalls.filter((call) => call.method === 'POST').length, 0, 'a second click while SHA-256 is delayed cannot issue an early second refund POST');
+  releaseDelayedDigest();
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  assert.equal(delayedDigestCalls.filter((call) => call.method === 'POST').length, 1, 'two clicks while digesting issue exactly one refund POST with one stable intent');
+} finally {
+  delayedDigestDom.window.close();
+}
+
+const changedActorOrderNo = 'M-REFUND-TEST-ACTOR-CHANGED';
+let changedActorReads = 0;
+let changedActorPosts = 0;
+const changedActorDom = new JSDOM(refundDetailHTML(changedActorOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${changedActorOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      const method = init.method || 'GET';
+      if (url.pathname === `/api/admin/orders/${changedActorOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(changedActorOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds/recovery') {
+        changedActorReads += 1;
+        return recoveryNotFound(changedActorReads === 1 ? refundActorBinding : alternateRefundActorBinding);
+      }
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (method === 'POST') changedActorPosts += 1;
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  changedActorDom.window.eval(host);
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  const document = changedActorDom.window.document;
+  const transaction = document.querySelector('[data-order-refund-transaction]');
+  const checked = document.querySelector('[data-order-refund-checked]');
+  const submit = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '确认提交退款申请');
+  assert.ok(transaction && checked && submit);
+  transaction.value = '4200000000000000000000000001'; checked.checked = true;
+  submit.click(); await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.equal(changedActorReads, 2, 'a refund submission re-reads the current authenticated actor marker immediately before POST');
+  assert.equal(changedActorPosts, 0, 'a changed current actor marker stops before persisting or issuing a refund mutation');
+  assert.equal(changedActorDom.window.localStorage.getItem('aicrm.order-refund-intents.v1'), null, 'a changed actor marker does not create a cross-actor durable refund lock');
+  assert.match(document.body.textContent, /当前登录账号已变化/, 'a changed current actor is explained without exposing an internal principal identifier');
+} finally {
+  changedActorDom.window.close();
+}
+
+for (const acceptanceFailure of [
+  { label: 'a 200 login document', status: 200, body: '<html>login</html>', contentType: 'text/html' },
+  { label: 'a malformed 202 body', status: 202, body: '{not-json', contentType: 'application/json' },
+]) {
+  const orderNo = `M-REFUND-TEST-RECEIPT-${acceptanceFailure.status}`;
+  const receiptDom = new JSDOM(refundDetailHTML(orderNo), {
+    url: `https://test.invalid/admin/orderDetail.html?id=${orderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+    virtualConsole: new VirtualConsole(),
+    beforeParse(window) {
+      browserRuntime(window);
+      window.fetch = async (input, init = {}) => {
+        const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+        const method = init.method || 'GET';
+        if (url.pathname === `/api/admin/orders/${orderNo}`) return new Response(JSON.stringify(nativeOrderFixture(orderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (url.pathname === '/api/admin/refunds/recovery') return recoveryNotFound();
+        if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (url.pathname === `/api/admin/wechat-pay/orders/${orderNo}/refunds` && method === 'POST') return new Response(acceptanceFailure.body, { status: acceptanceFailure.status, headers: { 'Content-Type': acceptanceFailure.contentType } });
+        return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      };
+    },
+  });
+  try {
+    receiptDom.window.eval(host);
+    await pause();
+    await receiptDom.window.fetch('/api/admin/refunds');
+    await pause();
+    const document = receiptDom.window.document;
+    const transaction = document.querySelector('[data-order-refund-transaction]');
+    const checked = document.querySelector('[data-order-refund-checked]');
+    const submit = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '确认提交退款申请');
+    assert.ok(transaction && checked && submit);
+    transaction.value = '4200000000000000000000000001'; checked.checked = true;
+    submit.click();
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    assert.match(document.body.textContent, /退款申请结果待核对/, `${acceptanceFailure.label} cannot be presented as an accepted refund receipt`);
+    assert.equal(document.querySelector('[data-order-refund-amount]'), null, `${acceptanceFailure.label} keeps the original intent read-only`);
+    const stored = JSON.parse(receiptDom.window.localStorage.getItem('aicrm.order-refund-intents.v1'));
+    assert.equal(stored[0].state, 'unknown', `${acceptanceFailure.label} preserves the stable idempotency intent for readback`);
+  } finally {
+    receiptDom.window.close();
+  }
+}
+
+const rejectedCalls = [];
+const rejectedOrderNo = 'M-REFUND-TEST-REJECTED';
+const rejectedDom = new JSDOM(refundDetailHTML(rejectedOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${rejectedOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      const method = init.method || 'GET';
+      rejectedCalls.push({ url, method });
+      if (url.pathname === `/api/admin/orders/${rejectedOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(rejectedOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds/recovery') return recoveryNotFound();
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === `/api/admin/wechat-pay/orders/${rejectedOrderNo}/refunds` && method === 'POST') return new Response(JSON.stringify({ code: 'invalid_request' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  rejectedDom.window.eval(host);
+  await pause();
+  await rejectedDom.window.fetch('/api/admin/refunds');
+  await pause();
+  const document = rejectedDom.window.document;
+  const transaction = document.querySelector('[data-order-refund-transaction]');
+  const checked = document.querySelector('[data-order-refund-checked]');
+  const submit = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === '确认提交退款申请');
+  assert.ok(transaction && checked && submit);
+  transaction.value = '4200000000000000000000000001'; checked.checked = true;
+  submit.click(); await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.equal(document.querySelector('[data-order-refund-amount]') != null, true, 'only a recognized service rejection may restore the editable confirmation form');
+  assert.equal(JSON.parse(rejectedDom.window.localStorage.getItem('aicrm.order-refund-intents.v1')).length, 0, 'a recognized validation rejection clears the durable intent');
+  submit.click(); await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.equal(rejectedCalls.filter((call) => call.method === 'POST').length, 2, 'a known server-side validation rejection, unlike a proxy failure, permits a corrected retry');
+} finally {
+  rejectedDom.window.close();
+}
+
 const unavailableOrderNo = 'M-REFUND-TEST-UNAVAILABLE';
 const unavailableDom = new JSDOM(refundDetailHTML(unavailableOrderNo), {
   url: `https://test.invalid/admin/orderDetail.html?id=${unavailableOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
   virtualConsole: new VirtualConsole(),
   beforeParse(window) {
-    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    browserRuntime(window);
     window.fetch = async (input) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       if (url.pathname === `/api/admin/orders/${unavailableOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(unavailableOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -293,8 +742,60 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.match(unavailableDom.window.document.body.textContent, /退款记录暂不可读取/, 'a non-200 scoped refund read must be unavailable, never rendered as an empty page');
   assert.equal(unavailableDom.window.document.querySelector('[data-order-refund-amount]'), null, 'refund mutation is disabled when the exact refund page cannot be read');
+  assert.ok(Array.from(unavailableDom.window.document.querySelectorAll('button')).some((button) => button.textContent === '读取当前订单退款记录'), 'an unavailable read still provides only the scoped readback recovery action');
 } finally {
   unavailableDom.window.close();
+}
+
+const malformedOrderNo = 'M-REFUND-TEST-MALFORMED';
+const malformedDom = new JSDOM(refundDetailHTML(malformedOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${malformedOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === `/api/admin/orders/${malformedOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(malformedOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  malformedDom.window.eval(host);
+  await pause();
+  await malformedDom.window.fetch('/api/admin/refunds');
+  await pause();
+  assert.match(malformedDom.window.document.body.textContent, /退款记录暂不可读取/, 'a malformed 200 refund page fails closed rather than becoming an empty refund list');
+  assert.equal(malformedDom.window.document.querySelector('[data-order-refund-amount]'), null, 'a malformed 200 refund page never enables a refund mutation');
+} finally {
+  malformedDom.window.close();
+}
+
+const networkOrderNo = 'M-REFUND-TEST-NETWORK';
+const networkDom = new JSDOM(refundDetailHTML(networkOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${networkOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === `/api/admin/orders/${networkOrderNo}`) return new Response(JSON.stringify(nativeOrderFixture(networkOrderNo)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') throw new Error('network down');
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  networkDom.window.eval(host);
+  await pause();
+  await assert.rejects(networkDom.window.fetch('/api/admin/refunds'), /network down/);
+  await pause();
+  assert.match(networkDom.window.document.body.textContent, /退款记录暂不可读取/, 'an initial refund read network failure marks the page unavailable');
+  assert.equal(networkDom.window.document.querySelector('[data-order-refund-amount]'), null, 'a network failure never leaves the initial refund form writable');
+  assert.ok(Array.from(networkDom.window.document.querySelectorAll('button')).some((button) => button.textContent === '读取当前订单退款记录'), 'network failure keeps the scoped readback recovery control');
+} finally {
+  networkDom.window.close();
 }
 
 console.log('order refund idempotency, exact readback, and unavailable-state journeys: PASS');

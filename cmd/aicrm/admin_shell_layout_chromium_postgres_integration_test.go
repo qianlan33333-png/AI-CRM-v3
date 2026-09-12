@@ -31,9 +31,10 @@ import (
 // Provider.
 type adminShellLayoutFixture struct {
 	*productExternalPushChromiumFixture
-	screenshots string
-	radarID     int64
-	aiPlanID    int64
+	screenshots          string
+	radarID              int64
+	aiPlanID             int64
+	nativeOrderReference string
 }
 
 // TestPostgreSQLAdminShellLayoutCompositionPreflight keeps the real release
@@ -62,6 +63,10 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 	aiRecipients := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/ai-assistant/plans/"+strconv.FormatInt(fixture.aiPlanID, 10)+"/recipients?limit=50")
 	if aiPlan.Code != http.StatusOK || !strings.Contains(aiPlan.Body.String(), `"id":`+strconv.FormatInt(fixture.aiPlanID, 10)) || aiRecipients.Code != http.StatusOK || !strings.Contains(aiRecipients.Body.String(), `"items"`) {
 		t.Fatalf("admin layout native AI read plan_status=%d plan_seeded=%t recipients_status=%d recipients=%t", aiPlan.Code, strings.Contains(aiPlan.Body.String(), `"id":`+strconv.FormatInt(fixture.aiPlanID, 10)), aiRecipients.Code, strings.Contains(aiRecipients.Body.String(), `"items"`))
+	}
+	nativeOrder := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/orders/"+fixture.nativeOrderReference)
+	if nativeOrder.Code != http.StatusOK || !strings.Contains(nativeOrder.Body.String(), `"record_origin":"native"`) || !strings.Contains(nativeOrder.Body.String(), `"refundable_amount_total":2000`) {
+		t.Fatalf("admin layout native order detail status=%d native=%t refundable=%t", nativeOrder.Code, strings.Contains(nativeOrder.Body.String(), `"record_origin":"native"`), strings.Contains(nativeOrder.Body.String(), `"refundable_amount_total":2000`))
 	}
 
 	navigation := authenticatedAdminGet(t, fixture.application.handler, session, "/admin/automation-conversion")
@@ -180,6 +185,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		"AICRM_ADMIN_LAYOUT_TEST_PRODUCT_ID="+strconv.FormatInt(fixture.productID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_SERVICE_PRODUCT_ID="+strconv.FormatInt(fixture.serviceProductID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_ORDER="+fixture.historicalOrderReference,
+		"AICRM_ADMIN_LAYOUT_TEST_NATIVE_ORDER="+fixture.nativeOrderReference,
 		"AICRM_ADMIN_LAYOUT_TEST_RADAR_ID="+strconv.FormatInt(fixture.radarID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_AI_PLAN_ID="+strconv.FormatInt(fixture.aiPlanID, 10),
 		"AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR="+fixture.screenshots,
@@ -194,7 +200,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	for _, name := range []string{
 		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
-		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "external-effects.png",
+		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
 		if statErr != nil || info.Size() < 512 {
@@ -236,6 +242,7 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	seedAdminShellLayoutHXC(t, fixture.ctx, fixture.application)
 	fixture.radarID = seedAdminShellLayoutRadar(t, fixture.ctx, fixture.application)
 	fixture.aiPlanID = seedAdminShellLayoutAIAssistantPlan(t, fixture.ctx, fixture.application)
+	fixture.nativeOrderReference = seedAdminShellLayoutNativeOrder(t, fixture.ctx, fixture.application, fixture.productID)
 	return fixture
 }
 
@@ -288,6 +295,44 @@ func seedAdminShellLayoutHXC(t *testing.T, ctx context.Context, application *com
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// seedAdminShellLayoutNativeOrder creates a fully anonymous, native Payment
+// read fixture. It deliberately creates no Payment outbox, effect, or Provider
+// request: the Chromium journey verifies only the composed renderer's Chinese
+// facts and guarded refund form against durable order/payment records.
+func seedAdminShellLayoutNativeOrder(t *testing.T, ctx context.Context, application *composedApplication, productID int64) string {
+	t.Helper()
+	const merchantOrderNo = "fixture-native-order-001"
+	const transactionID = "fixture-wechat-transaction-001"
+	now := time.Date(2026, time.September, 12, 3, 4, 5, 0, time.UTC)
+	var customerID, orderID int64
+	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.pool.Native().Exec(ctx, `
+		INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,phone_masked,phone_assurance,activation_status,source,source_version,last_synced_at,updated_at)
+		VALUES($1,'active','匿名订单买家','CID-ORDER-FIXTURE','130****1234','verified','active','order-detail-chromium-fixture',1,$2,$2)`, customerID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.pool.Native().QueryRow(ctx, `
+		INSERT INTO orders(provider,source_system,source_key,merchant_order_no,provider_transaction_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
+		VALUES('wechat_pay','order-detail-chromium-fixture','order-detail-native-001',$1,$2,$3,$3,2000,'CNY','paid','native',TRUE,1,$4,$4)
+		RETURNING id`, merchantOrderNo, transactionID, customerID, now).Scan(&orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.pool.Native().Exec(ctx, `
+		INSERT INTO order_items(order_id,line_no,product_id,product_code,product_name,unit_amount_minor,quantity,line_amount_minor)
+		VALUES($1,1,$2,'order-detail-fixture','匿名退款演示商品',2000,1,2000)`, orderID, productID); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(transactionID))
+	if _, err := application.pool.Native().Exec(ctx, `
+		INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at)
+		VALUES($1,'wechat_pay','mini_program',$2,1,$3,$3,2000,'CNY','paid',$4,1,$5,$5)`, orderID, merchantOrderNo, customerID, fmt.Sprintf("sha256:%x", digest), now); err != nil {
+		t.Fatal(err)
+	}
+	return merchantOrderNo
 }
 
 // seedAdminShellLayoutRadar provides an existing read-only radar record so the

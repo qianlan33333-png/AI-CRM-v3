@@ -2,6 +2,7 @@ package paymenthttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -25,17 +26,21 @@ import (
 )
 
 type appStub struct {
-	createCalls  int
-	create       paymentport.CreateCommand
-	handoff      paymentport.Handoff
-	refundCalls  int
-	refund       paymentport.RefundCommand
-	payment      domain.Payment
-	refundRows   []paymentport.RefundProjection
-	refundTotal  int64
-	listProvider domain.Provider
-	listMerchant string
-	listAllCalls int
+	createCalls                                  int
+	create                                       paymentport.CreateCommand
+	handoff                                      paymentport.Handoff
+	refundCalls                                  int
+	refund                                       paymentport.RefundCommand
+	payment                                      domain.Payment
+	refundRows                                   []paymentport.RefundProjection
+	refundTotal                                  int64
+	listProvider                                 domain.Provider
+	listMerchant                                 string
+	listAllCalls                                 int
+	recoveryRefund                               domain.Refund
+	recoveryFound                                bool
+	recoveryProvider                             domain.Provider
+	recoveryMerchant, recoveryActor, recoveryKey string
 }
 
 func (stub *appStub) Create(_ context.Context, command paymentport.CreateCommand) (domain.Payment, error) {
@@ -99,6 +104,10 @@ func (stub *appStub) FindPayment(context.Context, domain.Provider, string) (doma
 	}
 	return domain.Payment{ID: 9, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-9", Status: domain.StatusPaid}, nil
 }
+func (stub *appStub) FindRefundRecoveryReceipt(_ context.Context, provider domain.Provider, merchantOrderNo, actorScope, key string) (domain.Refund, bool, error) {
+	stub.recoveryProvider, stub.recoveryMerchant, stub.recoveryActor, stub.recoveryKey = provider, merchantOrderNo, actorScope, key
+	return stub.recoveryRefund, stub.recoveryFound, nil
+}
 func (stub *appStub) GetPayment(context.Context, int64) (domain.Payment, error) {
 	return stub.FindPayment(context.Background(), domain.ProviderWeChatPay, "")
 }
@@ -117,7 +126,7 @@ func (*appStub) ListOrderEffects(context.Context, domain.Provider, string) ([]pa
 type securityStub struct{}
 
 func (securityStub) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
-	return accessdomain.Principal{}, nil
+	return accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
 }
 
 type h5OAuthStub struct {
@@ -179,6 +188,15 @@ func (securityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.
 	return accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
 }
 
+type recoverySecurityStub struct{ principal accessdomain.Principal }
+
+func (stub recoverySecurityStub) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return stub.principal, nil
+}
+func (stub recoverySecurityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return stub.principal, nil
+}
+
 func TestRefundListScopesOrderDetailToExactPayment(t *testing.T) {
 	application := &appStub{refundRows: []paymentport.RefundProjection{{
 		Refund:        domain.Refund{ID: 31, PaymentID: 21, Provider: domain.ProviderWeChatPay, RefundNo: "RF-31", AmountMinor: 200, Status: domain.RefundCompleted, CreatedAt: time.Date(2026, 9, 10, 4, 10, 38, 0, time.UTC)},
@@ -208,6 +226,62 @@ func TestRefundListScopesOrderDetailToExactPayment(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/refunds?provider=all", nil))
 	if response.Code != http.StatusOK || application.listAllCalls != 1 {
 		t.Fatalf("all-provider compatibility status=%d unscopedCalls=%d", response.Code, application.listAllCalls)
+	}
+}
+
+func TestRefundRecoveryReceiptIsPaymentActorAndKeyScoped(t *testing.T) {
+	application := &appStub{recoveryFound: true, recoveryRefund: domain.Refund{ID: 31, PaymentID: 21, Provider: domain.ProviderWeChatPay, RefundNo: "RF-recovery-31", Status: domain.RefundCompleted, EffectID: "eer_41"}}
+	security := &recoverySecurityStub{principal: accessdomain.Principal{InternalID: 17, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	handler, err := NewHandler(application, nil, security, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "refund-recovery-key-0001"
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/refunds/recovery?provider=wechat&order_no=M-recovery-21", nil)
+	request.Header.Set("Idempotency-Key", key)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var found map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &found); err != nil {
+		t.Fatal(err)
+	}
+	actorBinding, bindingOK := found["actor_binding"].(string)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || application.recoveryProvider != domain.ProviderWeChatPay || application.recoveryMerchant != "M-recovery-21" || application.recoveryActor != "admin:17" || application.recoveryKey != key || found["found"] != true || found["receipt_id"] != float64(31) || !bindingOK || len(actorBinding) != 64 || strings.Contains(response.Body.String(), key) || strings.Contains(response.Body.String(), "admin:17") || found["external_effect_state"] != nil {
+		t.Fatalf("status=%d provider=%q merchant=%q actor=%q key=%q body=%s", response.Code, application.recoveryProvider, application.recoveryMerchant, application.recoveryActor, application.recoveryKey, response.Body.String())
+	}
+	for _, path := range []string{
+		"/api/admin/refunds/recovery?provider=wechat",
+		"/api/admin/refunds/recovery?order_no=M-recovery-21",
+		"/api/admin/refunds/recovery?provider=wechat&order_no=M-recovery-21&extra=1",
+	} {
+		response = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Idempotency-Key", key)
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("path=%s status=%d", path, response.Code)
+		}
+	}
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/admin/refunds/recovery?provider=wechat&order_no=M-recovery-21", nil)
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing key status=%d", response.Code)
+	}
+
+	application.recoveryFound = false // A different actor/key/Payment must be indistinguishable from no receipt.
+	security.principal.InternalID = 18
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/admin/refunds/recovery?provider=wechat&order_no=M-other-payment", nil)
+	request.Header.Set("Idempotency-Key", "other-actor-or-key-0001")
+	handler.ServeHTTP(response, request)
+	var noMatch map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &noMatch); err != nil {
+		t.Fatal(err)
+	}
+	otherBinding, otherBindingOK := noMatch["actor_binding"].(string)
+	if response.Code != http.StatusOK || noMatch["found"] != false || !otherBindingOK || len(otherBinding) != 64 || otherBinding == actorBinding || strings.Contains(response.Body.String(), "admin:18") || application.recoveryActor != "admin:18" {
+		t.Fatalf("nonmatch status=%d actor=%q body=%s", response.Code, application.recoveryActor, response.Body.String())
 	}
 }
 

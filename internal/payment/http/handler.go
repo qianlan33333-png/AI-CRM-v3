@@ -53,6 +53,13 @@ type Application interface {
 	ListOrderEffects(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error)
 }
 
+// RefundRecoveryApplication is intentionally a narrow optional read Port:
+// checkout-only adapters retain their existing Payment surface while the
+// composed admin handler can recover only a receipt scoped by its original key.
+type RefundRecoveryApplication interface {
+	FindRefundRecoveryReceipt(context.Context, domain.Provider, string, string, string) (domain.Refund, bool, error)
+}
+
 type SessionIdentityVerifier interface {
 	VerifyCode(context.Context, string) (identitydomain.VerifiedFact, error)
 }
@@ -167,6 +174,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.historyPayment(writer, request)
 	case path == "/api/admin/refunds":
 		handler.refunds(writer, request)
+	case path == "/api/admin/refunds/recovery":
+		handler.refundRecoveryReceipt(writer, request)
 	case path == "/api/public/wechat-pay/callbacks/payment" || path == "/api/public/wechat-pay/callbacks/refund":
 		handler.callback(writer, request)
 	case path == "/api/public/wechat-shop/callbacks/refund":
@@ -392,6 +401,73 @@ func parseRefundListQuery(request *http.Request) (domain.Provider, string, int64
 		return "", "", 0, 0, false, false
 	}
 	return provider, merchantOrderNo, limit, offset, true, true
+}
+
+func parseRefundRecoveryQuery(request *http.Request) (domain.Provider, string, bool) {
+	query := request.URL.Query()
+	for key, values := range query {
+		if (key != "provider" && key != "order_no") || len(values) != 1 {
+			return "", "", false
+		}
+	}
+	merchantOrderNo := query.Get("order_no")
+	if merchantOrderNo == "" || len(merchantOrderNo) > 200 {
+		return "", "", false
+	}
+	switch query.Get("provider") {
+	case "wechat", "wechat_pay":
+		return domain.ProviderWeChatPay, merchantOrderNo, true
+	case "wechat_shop":
+		return domain.ProviderWeChatShop, merchantOrderNo, true
+	default:
+		return "", "", false
+	}
+}
+
+// refundRecoveryReceipt is a Payment-owned, non-mutating recovery read. The
+// original idempotency key stays in a request header so it is neither logged
+// in ordinary URL telemetry nor copied into browser history.
+func (handler *Handler) refundRecoveryReceipt(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	principal, err := handler.security.Authenticate(request.Context(), request)
+	if err != nil || principal.Kind != accessdomain.KindAdmin || principal.InternalID < 1 {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	provider, merchantOrderNo, ok := parseRefundRecoveryQuery(request)
+	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	if !ok || key == "" {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	recovery, ok := handler.app.(RefundRecoveryApplication)
+	if !ok {
+		writeError(writer, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	actorScope := "admin:" + strconv.FormatInt(principal.InternalID, 10)
+	// actor_binding is only a local-browser partition marker. It is neither an
+	// authorization credential nor a substitute for the principal checked on
+	// every request, and it intentionally never exposes the raw admin ID.
+	actorBindingDigest := sha256.Sum256([]byte("payment.refund.recovery.actor|" + actorScope))
+	actorBinding := fmt.Sprintf("%x", actorBindingDigest)
+	refund, found, err := recovery.FindRefundRecoveryReceipt(request.Context(), provider, merchantOrderNo, actorScope, key)
+	if err != nil {
+		resultError(writer, err)
+		return
+	}
+	if !found {
+		writeJSON(writer, http.StatusOK, map[string]any{"found": false, "actor_binding": actorBinding})
+		return
+	}
+	status := compatRefundStatus(refund.Status)
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"found": true, "receipt_id": refund.ID, "refund_no": refund.RefundNo,
+		"status": status, "actor_binding": actorBinding,
+	})
 }
 
 func (handler *Handler) shopRefund(writer http.ResponseWriter, request *http.Request) {

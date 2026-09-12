@@ -3027,6 +3027,17 @@ paths:
                 checked: {type: boolean}
                 operator: {type: string, maxLength: 200}
       responses: {"202": {description: WeChat Shop refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/refunds/recovery:
+    get:
+      operationId: findRefundRecoveryReceipt
+      tags: [Transactions]
+      description: Read-only refund-recovery receipt lookup. The original Idempotency-Key is supplied only in a request header and is matched with the authenticated admin actor plus the exact provider/order Payment; it never replays a refund command or exposes its payload or key digest. actor_binding is a non-secret local-browser partition marker, never an authorization credential.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: provider, in: query, required: true, schema: {type: string, enum: [wechat, wechat_pay, wechat_shop]}}
+        - {name: order_no, in: query, required: true, description: Merchant order number paired with provider to select one Payment., schema: {type: string, minLength: 1, maxLength: 200}}
+        - {name: Idempotency-Key, in: header, required: true, description: Original refund confirmation key. Kept out of URLs and browser history., schema: {type: string, minLength: 16, maxLength: 200}}
+      responses: {"200": {description: Exact actor/key Payment receipt when found; otherwise found is false. The response contains no external-effect state because refund status is not an effect-state projection., content: {application/json: {schema: {$ref: "#/components/schemas/RefundRecoveryReceiptResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/exports/preview:
     post:
       operationId: previewLegacyOrderExport
@@ -3078,7 +3089,7 @@ paths:
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/OrderReference"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [refund_amount_total, reason, transaction_id_confirmation, checked], properties: {provider: {type: string, enum: [wechat]}, order_no: {type: string, minLength: 1, maxLength: 200}, refund_amount_total: {type: integer, minimum: 1}, reason: {type: string, minLength: 1, maxLength: 500}, transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200, description: "Exact provider-verified WeChat transaction_id; merchant and v3pay order numbers are not confirmation values."}, checked: {type: boolean}, operator: {type: string, maxLength: 200}}}}}}
-      responses: {"202": {description: WeChat Pay refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+      responses: {"202": {description: WeChat Pay refund effect accepted atomically, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyWechatRefundEffectAccepted"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/wechat-shop/refunds/{refund_id}/reconcile:
     post:
       operationId: reconcileWechatShopRefund
@@ -4893,6 +4904,32 @@ components:
         limit: {type: integer, minimum: 1, maximum: 100}
         offset: {type: integer, minimum: 0, maximum: 1000000}
         has_more: {type: boolean}
+    LegacyWechatRefundEffectAccepted:
+      type: object
+      additionalProperties: false
+      required: [id, refund_id, out_refund_no, status, external_effect_id, auto_retry_allowed]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        refund_id: {type: string, minLength: 1, maxLength: 200}
+        out_refund_no: {type: string, minLength: 1, maxLength: 200}
+        status: {type: string, enum: [pending_external_gate, outcome_unknown, completed, final_failed]}
+        external_effect_id: {type: string, minLength: 1, maxLength: 200}
+        auto_retry_allowed: {const: false}
+    RefundRecoveryReceiptResponse:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [found, actor_binding]
+          properties: {found: {const: false}, actor_binding: {type: string, pattern: '^[0-9a-f]{64}$', description: Non-secret local browser partition marker; authorization remains session principal based.}}
+        - type: object
+          additionalProperties: false
+          required: [found, receipt_id, refund_no, status, actor_binding]
+          properties:
+            found: {const: true}
+            receipt_id: {$ref: "#/components/schemas/PositiveID"}
+            refund_no: {type: string, minLength: 1, maxLength: 200}
+            status: {type: string, enum: [pending_external_gate, outcome_unknown, completed, final_failed]}
+            actor_binding: {type: string, pattern: '^[0-9a-f]{64}$', description: Non-secret local browser partition marker; authorization remains session principal based.}
     TransactionOrderPage:
       type: object
       additionalProperties: false

@@ -164,6 +164,20 @@ func (r *Repository) ReservedRefundMinor(ctx context.Context, paymentID int64) (
 	return total, mapError(err)
 }
 
+// HasNonTerminalRefund is called only after the owning Payment row is locked.
+// It gates a new WeChat Pay key while an earlier refund still has an uncertain
+// external outcome; completed and final-failed refunds remain eligible for a
+// later explicit partial refund when the remaining amount permits it.
+func (r *Repository) HasNonTerminalRefund(ctx context.Context, paymentID int64) (bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	var exists bool
+	err = t.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM payment_refunds WHERE payment_id=$1 AND status IN ('requested','effect_accepted','outcome_unknown'))`, paymentID).Scan(&exists)
+	return exists, mapError(err)
+}
+
 func (r *Repository) GetHandoff(ctx context.Context, paymentID int64) (paymentport.Handoff, error) {
 	t, err := tx(ctx)
 	if err != nil {
@@ -262,6 +276,36 @@ func (r *Repository) ReplayRefund(ctx context.Context, key, payload [32]byte, ac
 	}
 	refund, err := r.GetRefund(ctx, resultID, false)
 	return refund, err == nil, err
+}
+
+// FindRefundByIdempotencyKey is the recovery-only counterpart to ReplayRefund.
+// It deliberately compares no payload because the caller no longer holds it;
+// actor scope and the outer Payment identity remain mandatory boundaries.
+func (r *Repository) FindRefundByIdempotencyKey(ctx context.Context, key [32]byte, actor string) (domain.Refund, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.Refund{}, false, err
+	}
+	var resultID int64
+	var resultKind string
+	err = t.QueryRow(ctx, `SELECT result_id,result_kind FROM payment_operation_receipts WHERE operation='refund' AND actor_scope=$1 AND key_digest=$2`, actor, key[:]).Scan(&resultID, &resultKind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Refund{}, false, nil
+	}
+	if err != nil {
+		return domain.Refund{}, false, mapError(err)
+	}
+	if resultKind != "refund" || resultID < 1 {
+		return domain.Refund{}, false, nil
+	}
+	refund, err := r.GetRefund(ctx, resultID, false)
+	if errors.Is(err, paymentport.ErrNotFound) {
+		return domain.Refund{}, false, nil
+	}
+	if err != nil {
+		return domain.Refund{}, false, err
+	}
+	return refund, true, nil
 }
 func (r *Repository) BindRefundEffect(ctx context.Context, v domain.Refund, intent effectport.PaymentV1Intent, snapshot map[string]any) (domain.Refund, error) {
 	t, e := tx(ctx)
