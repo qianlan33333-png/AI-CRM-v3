@@ -28,6 +28,15 @@ type executionRuntimeStub struct {
 	page groupopsport.ExecutionPage
 }
 
+type planListProjectionStub struct {
+	applicationStub
+	page groupopsport.PlanPage
+}
+
+func (stub planListProjectionStub) List(context.Context, int32, int32) (groupopsport.PlanPage, error) {
+	return stub.page, nil
+}
+
 func (stub executionRuntimeStub) ListExecutions(context.Context, int64, int32, int32) (groupopsport.ExecutionPage, error) {
 	return stub.page, nil
 }
@@ -128,6 +137,33 @@ func newUnavailableHistoryHandler(t *testing.T) http.Handler {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func TestGroupOpsPlanListReturnsResponsibleOwnerProjection(t *testing.T) {
+	page := groupopsport.PlanPage{Items: []groupopsport.PlanListItem{{Plan: groupopsport.Plan{
+		ID: 41, Name: "负责人投影", Status: groupopsport.PlanDraft, Revision: 3,
+		Owner: groupopsport.PlanOwner{
+			StaffID: 7, SenderUserID: "wecom-owner", DisplayName: "一号运营",
+			NameSource: "wecom_profile", ProfileReadState: "ready",
+		},
+	}}}, Total: 1, Limit: groupopsapp.DefaultLimit, Safety: groupopsport.LocalSafety()}
+	handler, err := groupopshttp.NewHandlerWithRuntime(planListProjectionStub{page: page}, runtimeStub{}, adminSecurity(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, groupopshttp.PlansPath, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			Owner groupopsport.PlanOwner `json:"owner"`
+		} `json:"items"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 || payload.Items[0].Owner.StaffID != 7 || payload.Items[0].Owner.SenderUserID != "wecom-owner" || payload.Items[0].Owner.DisplayName != "一号运营" || payload.Items[0].Owner.NameSource != "wecom_profile" || payload.Items[0].Owner.ProfileReadState != "ready" {
+		t.Fatalf("payload=%s decoded=%+v err=%v", response.Body.String(), payload, err)
+	}
 }
 
 func TestGroupOpsHistoryUsesExactReadOnlyDonorURLs(t *testing.T) {

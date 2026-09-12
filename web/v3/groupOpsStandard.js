@@ -102,8 +102,12 @@
   }
 
   function statusText(status) {
-    const map = { active: "启用", draft: "草稿", disabled: "停用" };
+    const map = { active: "启用", draft: "草稿", disabled: "停用", archived: "已归档" };
     return map[status] || status || "-";
+  }
+
+  function planIsArchived(plan) {
+    return Boolean(plan && plan.status === "archived");
   }
 
   function typeText(type) {
@@ -280,8 +284,8 @@
     return `<a class="group-ops__button${variant === "primary" ? " group-ops__button--primary" : ""}" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
   }
 
-  function actionButton(label, action, extraClass) {
-    return `<button class="group-ops__button${extraClass ? ` ${extraClass}` : ""}" type="button" data-action="${escapeHtml(action)}">${escapeHtml(label)}</button>`;
+  function actionButton(label, action, extraClass, disabled) {
+    return `<button class="group-ops__button${extraClass ? ` ${extraClass}` : ""}" type="button" data-action="${escapeHtml(action)}"${disabled ? " disabled" : ""}>${escapeHtml(label)}</button>`;
   }
 
   function metricCard(label, value) {
@@ -393,6 +397,17 @@
 
   function onAction(event) {
     const action = event.currentTarget.dataset.action;
+    const archivedWriteActions = new Set([
+      "save-plan", "save-active-detail-panel", "refresh-owner-groups", "pick-plan-owner",
+      "bind-group", "open-group-picker", "confirm-group-picker", "remove-group",
+      "open-node-modal", "edit-node", "configure-node-content", "save-node", "delete-node", "save-webhook",
+    ]);
+    if (planIsArchived(state.plan) && archivedWriteActions.has(action)) {
+      state.showGroupPicker = false;
+      state.showNodeModal = false;
+      state.notice = "计划已归档，不能修改或重新启用";
+      return renderDetail();
+    }
     if (action === "create-plan") return createPlan();
     if (action === "show-create-plan") return showCreatePlan();
     if (action === "cancel-create-plan") return cancelCreatePlan();
@@ -805,11 +820,13 @@
             <div class="group-ops__row-actions">
               <a class="group-ops__button group-ops__button--primary" href="${escapeHtml(routes.plan(plan.id))}">编辑</a>
               ${
-                plan.status === "active"
-                  ? `<button class="group-ops__button" type="button" data-action="disable-plan" data-plan-id="${escapeHtml(plan.id)}">停用</button>`
-                  : `<button class="group-ops__button" type="button" data-action="enable-plan" data-plan-id="${escapeHtml(plan.id)}"${state.changingPlanId === Number(plan.id) ? " disabled" : ""}>${state.changingPlanId === Number(plan.id) ? "启用中" : "启用"}</button>`
+                planIsArchived(plan)
+                  ? '<span class="group-ops__chip group-ops__chip--neutral">归档终态</span>'
+                  : plan.status === "active"
+                    ? `<button class="group-ops__button" type="button" data-action="disable-plan" data-plan-id="${escapeHtml(plan.id)}">停用</button>`
+                    : `<button class="group-ops__button" type="button" data-action="enable-plan" data-plan-id="${escapeHtml(plan.id)}"${state.changingPlanId === Number(plan.id) ? " disabled" : ""}>${state.changingPlanId === Number(plan.id) ? "启用中" : "启用"}</button>`
               }
-              <button class="group-ops__button group-ops__button--danger" type="button" data-action="delete-plan" data-plan-id="${escapeHtml(plan.id)}">删除</button>
+              ${planIsArchived(plan) ? "" : `<button class="group-ops__button group-ops__button--danger" type="button" data-action="delete-plan" data-plan-id="${escapeHtml(plan.id)}">删除</button>`}
             </div>
           </td>
         </tr>`,
@@ -900,6 +917,7 @@
 
   function renderBoundGroups() {
     if (!state.planGroups.length) return '<div class="group-ops__empty">暂无绑定群</div>';
+    const archived = planIsArchived(state.plan);
     return state.planGroups
       .map(
         (group) => `
@@ -908,7 +926,7 @@
             <div class="group-ops__group-name"><strong>${escapeHtml(groupName(group))}</strong></div>
             <div class="group-ops__group-meta">${escapeHtml(group.chat_id || "")}</div>
           </div>
-          ${actionButton("移除", "remove-group", "") .replace(">", ` data-chat-id="${escapeHtml(group.chat_id)}">`)}
+          ${archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : actionButton("移除", "remove-group", "") .replace(">", ` data-chat-id="${escapeHtml(group.chat_id)}">`)}
         </div>`,
       )
       .join("");
@@ -942,7 +960,7 @@
   }
 
   function renderGroupPickerModal() {
-    if (!state.showGroupPicker) return "";
+    if (!state.showGroupPicker || planIsArchived(state.plan)) return "";
     return `
       <div class="group-ops__modal-mask" role="dialog" aria-modal="true">
         <div class="group-ops__modal group-ops__modal--groups">
@@ -969,7 +987,7 @@
 
   function renderRefreshOwnerGroupsButton() {
     const owner = currentFormValue("owner_userid") || (state.plan && state.plan.owner_userid) || "";
-    const disabled = !owner || state.refreshingOwnerGroups;
+    const disabled = !owner || state.refreshingOwnerGroups || planIsArchived(state.plan);
     return `<button class="group-ops__button" type="button" data-action="refresh-owner-groups"${disabled ? " disabled" : ""}>${
       state.refreshingOwnerGroups ? "刷新中" : "刷新名下群聊"
     }</button>`;
@@ -1036,6 +1054,7 @@
   }
 
   function renderNodes() {
+    const archived = planIsArchived(state.plan);
     const current = editingNode() || {
       day_index: 1,
       scheduled_time: "20:00",
@@ -1048,7 +1067,7 @@
     };
     const currentContentPackage = nodeToContentPackage(current);
     const currentContentSummary = contentPackageSummary(currentContentPackage);
-    const modal = state.showNodeModal
+    const modal = state.showNodeModal && !archived
       ? `
         <div class="group-ops__modal-mask" role="dialog" aria-modal="true">
           <div class="group-ops__modal group-ops__modal--action">
@@ -1091,8 +1110,7 @@
           <td><span class="group-ops__summary">${escapeHtml(textSummary(nodeToContentPackage(node).content_text || node.text_content))}</span></td>
           <td><div class="group-ops__chip-row">${materialChips(node)}</div></td>
           <td><div class="group-ops__row-actions">
-            ${actionButton("编辑", "edit-node", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}
-            ${actionButton("删除", "delete-node", "group-ops__button--danger").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}
+            ${archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : `${actionButton("编辑", "edit-node", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${actionButton("删除", "delete-node", "group-ops__button--danger").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}`}
           </div></td>
         </tr>`,
       )
@@ -1102,7 +1120,7 @@
       <section class="group-ops__panel${state.activeDetailPanel === "nodes" ? " is-active" : ""}" id="panel-nodes">
         <div class="group-ops__panel-title-row">
           <h3>标准编排</h3>
-          ${isStandard ? actionButton("添加动作", "open-node-modal", "group-ops__button--primary") : ""}
+          ${isStandard && !archived ? actionButton("添加动作", "open-node-modal", "group-ops__button--primary") : isStandard && archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : ""}
         </div>
         <div class="group-ops__table-wrap">
           <table class="group-ops__table">
@@ -1121,6 +1139,7 @@
 
   function renderWebhook() {
     const config = state.webhook || {};
+    const archived = planIsArchived(state.plan);
     if (state.plan.plan_type !== "webhook") {
       return `
         <section class="group-ops__panel${state.activeDetailPanel === "webhook" ? " is-active" : ""}" id="panel-webhook">
@@ -1139,8 +1158,8 @@
           <span class="group-ops__pill">Webhook 接收计划</span>
         </div>
         <div class="group-ops__webhook-panel">
-          ${configured ? "" : `<div class="group-ops__row-actions">${actionButton("生成 Webhook 地址", "save-webhook", "group-ops__button--primary")}</div>`}
-          ${configured ? "" : '<div class="group-ops__empty">点击生成地址，即可复制本计划的接收网址。</div>'}
+          ${configured || archived ? "" : `<div class="group-ops__row-actions">${actionButton("生成 Webhook 地址", "save-webhook", "group-ops__button--primary")}</div>`}
+          ${configured ? "" : archived ? '<div class="group-ops__empty">计划已归档，Webhook 配置保持只读。</div>' : '<div class="group-ops__empty">点击生成地址，即可复制本计划的接收网址。</div>'}
           ${configured ? `
           <div class="group-ops__notice">地址已配置；调用仍需签名配置和启用计划。请完成实际接收验证后再使用。</div>
           <div class="group-ops__webhook-line">
@@ -1181,40 +1200,42 @@
   }
 
   function renderBasicPanel() {
+    const archived = planIsArchived(state.plan);
+    const owner = state.plan.owner_name || state.plan.owner_userid || "未配置负责人";
     return `
       <section class="group-ops__panel${state.activeDetailPanel === "basic" ? " is-active" : ""}" id="panel-basic">
         <div class="group-ops__panel-title-row">
           <h3>基础配置</h3>
-          <span class="group-ops__pill">可保存</span>
+          <span class="group-ops__pill">${archived ? "已归档" : "可保存"}</span>
         </div>
         <div class="group-ops__form-grid">
           <div class="group-ops__field group-ops__field--full">
             <span>运营成员</span>
-            ${renderMemberField("owner_userid", state.plan.owner_userid, "pick-plan-owner", "更换运营成员")}
+            ${archived ? `<div class="group-ops__member-current">${escapeHtml(owner)}</div>` : renderMemberField("owner_userid", state.plan.owner_userid, "pick-plan-owner", "更换运营成员")}
           </div>
           <label class="group-ops__field">
             <span>状态</span>
-            <select name="status">
+            <select name="status"${archived ? " disabled" : ""}>
               <option value="draft"${state.plan.status === "draft" ? " selected" : ""}>草稿</option>
               <option value="active"${state.plan.status === "active" ? " selected" : ""}>启用</option>
               <option value="disabled"${state.plan.status === "disabled" ? " selected" : ""}>停用</option>
+              ${archived ? '<option value="archived" selected>已归档（终态）</option>' : ""}
             </select>
           </label>
           <label class="group-ops__field">
             <span>计划名称</span>
-            <input name="plan_name" value="${escapeHtml(state.plan.plan_name || "")}">
+            <input name="plan_name" value="${escapeHtml(state.plan.plan_name || "")}"${archived ? " disabled" : ""}>
           </label>
           <label class="group-ops__field">
             <span>计划类型</span>
-            <select name="plan_type">
+            <select name="plan_type"${archived ? " disabled" : ""}>
               <option value="standard"${state.plan.plan_type === "standard" ? " selected" : ""}>标准编排计划</option>
               <option value="webhook"${state.plan.plan_type === "webhook" ? " selected" : ""}>Webhook 接收计划</option>
             </select>
           </label>
         </div>
         <div class="group-ops__panel-actions">
-          ${renderRefreshOwnerGroupsButton()}
-          ${actionButton("保存基础配置", "save-plan", "group-ops__button--primary")}
+          ${archived ? '<div class="group-ops__notice">计划已归档，不能修改或重新启用。</div>' : `${renderRefreshOwnerGroupsButton()}${actionButton("保存基础配置", "save-plan", "group-ops__button--primary")}`}
         </div>
       </section>
     `;
@@ -1225,11 +1246,11 @@
       <section class="group-ops__panel${state.activeDetailPanel === "groups" ? " is-active" : ""}" id="panel-groups">
         <div class="group-ops__panel-title-row">
           <h3>绑定群</h3>
-          ${actionButton("选择群", "open-group-picker", "group-ops__button--primary")}
+          ${planIsArchived(state.plan) ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : actionButton("选择群", "open-group-picker", "group-ops__button--primary")}
         </div>
         <div class="group-ops__group-list">${renderBoundGroups()}</div>
         <div class="group-ops__panel-actions">
-          ${renderRefreshOwnerGroupsButton()}
+          ${planIsArchived(state.plan) ? "" : renderRefreshOwnerGroupsButton()}
         </div>
       </section>
     `;
@@ -1256,7 +1277,7 @@
             <div class="group-ops__summary-actions">
               ${pageButton("返回列表", routes.list)}
               <button class="group-ops__button group-ops__button--primary" type="button" data-action="save-active-detail-panel"${
-                saveCurrentDimensionDisabled() ? " disabled" : ""
+                saveCurrentDimensionDisabled() || planIsArchived(state.plan) ? " disabled" : ""
               }>保存当前维度</button>
             </div>
           </div>

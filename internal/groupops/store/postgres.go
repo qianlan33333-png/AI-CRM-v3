@@ -56,10 +56,23 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT p.id,p.name,p.status,p.revision,p.created_by,p.updated_by,p.created_at,p.updated_at,p.plan_type,
-		       count(e.id) FILTER (WHERE e.state IN ('accepted','provider_accepted','outcome_unknown'))
+		       COALESCE(executions.queue_count,0),
+		       COALESCE(owner.staff_id,0),COALESCE(owner.sender_userid,''),COALESCE(owner.display_name,''),
+		       COALESCE(owner.name_source,''),COALESCE(owner.profile_read_state,''),COALESCE(owner.profile_read_error_code,'')
 		FROM group_ops_plans p
-		LEFT JOIN group_ops_executions e ON e.plan_id=p.id
-		GROUP BY p.id
+		LEFT JOIN LATERAL (
+			SELECT count(*) FILTER (WHERE state IN ('accepted','provider_accepted','outcome_unknown')) AS queue_count
+			FROM group_ops_executions
+			WHERE plan_id=p.id
+		) executions ON true
+		LEFT JOIN LATERAL (
+			SELECT pm.staff_id,d.sender_userid,d.display_name,d.name_source,d.profile_read_state,d.profile_read_error_code
+			FROM group_ops_plan_members pm
+			LEFT JOIN group_ops_operation_member_directory d ON d.staff_id=pm.staff_id AND d.active=true
+			WHERE pm.plan_id=p.id
+			ORDER BY pm.staff_id
+			LIMIT 1
+		) owner ON true
 		ORDER BY p.updated_at DESC,p.id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, err
@@ -68,7 +81,10 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 	items := make([]groupopsport.PlanListItem, 0)
 	for rows.Next() {
 		var item groupopsport.PlanListItem
-		if err = rows.Scan(&item.ID, &item.Name, &item.Status, &item.Revision, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.Type, &item.QueueCount); err != nil {
+		if err = rows.Scan(
+			&item.ID, &item.Name, &item.Status, &item.Revision, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.Type, &item.QueueCount,
+			&item.Owner.StaffID, &item.Owner.SenderUserID, &item.Owner.DisplayName, &item.Owner.NameSource, &item.Owner.ProfileReadState, &item.Owner.ProfileReadErrorCode,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -130,6 +146,11 @@ func (r *Repository) get(ctx context.Context, id int64, lock bool) (groupopsport
 		return groupopsport.Detail{}, err
 	}
 	memberRows.Close()
+	owner, err := readPlanOwner(ctx, tx, detail.Members)
+	if err != nil {
+		return groupopsport.Detail{}, err
+	}
+	detail.Plan.Owner = owner
 
 	// Application validation compares opaque references using Go's bytewise
 	// string order. Database locale collation can place lower-case references
@@ -190,6 +211,26 @@ func (r *Repository) get(ctx context.Context, id int64, lock bool) (groupopsport
 	detail.WebhookDescriptor = groupopsapp.WebhookDescriptor(reference)
 	detail.Safety = groupopsport.LocalSafety()
 	return detail, nil
+}
+
+// readPlanOwner keeps plan ownership and its directory presentation in one
+// Group Ops read model. A missing active directory row is an observable
+// pending state, not a reason to drop the persisted responsible staff key.
+func readPlanOwner(ctx context.Context, tx pgx.Tx, members []groupopsport.Member) (groupopsport.PlanOwner, error) {
+	owner := groupopsport.PlanOwner{}
+	if len(members) == 0 {
+		return owner, nil
+	}
+	owner.StaffID = members[0].StaffID
+	err := tx.QueryRow(ctx, `
+		SELECT sender_userid,display_name,name_source,profile_read_state,profile_read_error_code
+		FROM group_ops_operation_member_directory
+		WHERE staff_id=$1 AND active=true`, owner.StaffID,
+	).Scan(&owner.SenderUserID, &owner.DisplayName, &owner.NameSource, &owner.ProfileReadState, &owner.ProfileReadErrorCode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return owner, nil
+	}
+	return owner, err
 }
 
 func (r *Repository) Create(ctx context.Context, plan groupopsport.Plan) (int64, error) {
