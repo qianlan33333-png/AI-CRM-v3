@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	config "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -139,6 +141,101 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		t.Fatalf("unlinked legacy discovery: %d %s", legacy.Code, legacy.Body.String())
 	}
 	if !browser {
+		anonymous := httptest.NewRecorder()
+		application.handler.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/admin/operation-batches/strategy-summaries", nil))
+		if anonymous.Code != http.StatusForbidden {
+			t.Fatalf("anonymous summary read=%d body=%s", anonymous.Code, anonymous.Body.String())
+		}
+		if _, err = application.management.AddUser(ctx, accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 1, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, accessapp.AddUserInput{
+			Username: "excel-summary-viewer", Password: "excel-summary-viewer-password", DisplayName: "Excel Summary Viewer", Roles: []accessdomain.Role{accessdomain.RoleViewer},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		viewerSession, _ := adminAccessLogin(t, application.handler, "excel-summary-viewer", "excel-summary-viewer-password")
+		if viewer := authenticatedAdminGet(t, application.handler, viewerSession, "/api/admin/operation-batches/strategy-summaries?limit=20&offset=0"); viewer.Code != http.StatusOK {
+			t.Fatalf("viewer summary read=%d body=%s", viewer.Code, viewer.Body.String())
+		}
+
+		// The operation page is deliberately bounded at 20 strategies. Create
+		// enough local-only fixtures to prove that the page after the first 100
+		// stays reachable through the composed summary read endpoint.
+		for index := 1; index <= 120; index++ {
+			key := fmt.Sprintf("excel.page.%03d", index)
+			body := fmt.Sprintf(`{"strategy_key":%q,"title":%q,"definition":{"schedule":"每周一 09:00","indicator_color":"#2EA121","primary_action":"start_review","stages":[{"key":"retro","label":"复盘","color":"#2EA121","state":"current"}]}}`, key, fmt.Sprintf("分页长期计划 %03d", index))
+			req := httptest.NewRequest(http.MethodPost, "/api/admin/operation-cycles/strategies", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-CSRF-Token", csrf)
+			req.Header.Set("Idempotency-Key", fmt.Sprintf("excel-summary-page-%03d", index))
+			req.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+			req.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+			res := httptest.NewRecorder()
+			application.handler.ServeHTTP(res, req)
+			if res.Code != http.StatusCreated {
+				t.Fatalf("summary page strategy %d: %d %s", index, res.Code, res.Body.String())
+			}
+		}
+		type summaryItem struct {
+			StrategyKey       string `json:"strategy_key"`
+			LatestBatchStatus string `json:"latest_batch_status"`
+			LatestBatch       *struct {
+				ID      int64 `json:"id"`
+				Summary struct {
+					ExpectedTasks int `json:"expected_tasks"`
+				} `json:"summary"`
+			} `json:"latest_batch"`
+		}
+		type summaryPage struct {
+			Items      []summaryItem `json:"items"`
+			Total      int           `json:"total"`
+			Limit      int           `json:"limit"`
+			Offset     int           `json:"offset"`
+			HasMore    bool          `json:"has_more"`
+			NextOffset *int          `json:"next_offset"`
+		}
+		readSummary := func(offset int) summaryPage {
+			res := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/strategy-summaries?limit=20&offset=%d", offset))
+			if res.Code != http.StatusOK {
+				t.Fatalf("summary page offset=%d: %d %s", offset, res.Code, res.Body.String())
+			}
+			var page summaryPage
+			if err = json.Unmarshal(res.Body.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			return page
+		}
+		first := readSummary(0)
+		if first.Total != 121 || first.Limit != 20 || first.Offset != 0 || len(first.Items) != 20 || !first.HasMore || first.NextOffset == nil || *first.NextOffset != 20 {
+			t.Fatalf("first summary page=%+v", first)
+		}
+		if statuses := first.Items; len(statuses) == 0 || statuses[0].LatestBatchStatus != "ready" || statuses[0].LatestBatch != nil {
+			t.Fatalf("unbatched strategy must remain a ready, known absence: %+v", statuses)
+		}
+		middle := readSummary(100)
+		if middle.Total != 121 || len(middle.Items) != 20 || !middle.HasMore || middle.NextOffset == nil || *middle.NextOffset != 120 {
+			t.Fatalf("page after first 100=%+v", middle)
+		}
+		last := readSummary(120)
+		if last.Total != 121 || len(last.Items) != 1 || last.HasMore || last.NextOffset != nil || last.Items[0].StrategyKey != "excel.fixture" || last.Items[0].LatestBatchStatus != "ready" || last.Items[0].LatestBatch == nil || last.Items[0].LatestBatch.ID != imported.Batch.ID || last.Items[0].LatestBatch.Summary.ExpectedTasks != 2 {
+			t.Fatalf("last summary page=%+v", last)
+		}
+		if invalid := authenticatedAdminGet(t, application.handler, session, "/api/admin/operation-batches/strategy-summaries?limit=101&offset=0"); invalid.Code != http.StatusBadRequest {
+			t.Fatalf("unbounded summary limit: %d %s", invalid.Code, invalid.Body.String())
+		}
+		for _, path := range []string{
+			"/api/admin/operation-batches/strategy-summaries?limit=&offset=0",
+			"/api/admin/operation-batches/strategy-summaries?limit=20&offset=",
+		} {
+			if invalid := authenticatedAdminGet(t, application.handler, session, path); invalid.Code != http.StatusBadRequest {
+				t.Fatalf("empty summary page argument path=%s status=%d body=%s", path, invalid.Code, invalid.Body.String())
+			}
+		}
+		// The route must not expose a next offset which it later refuses. Offset
+		// 10,020 used to be rejected by an artificial 10,000 cap, even though a
+		// full page at 10,000 could return it. It is now a valid, replayable read.
+		if beyondFormerOffsetCap := readSummary(10020); beyondFormerOffsetCap.Offset != 10020 || len(beyondFormerOffsetCap.Items) != 0 || beyondFormerOffsetCap.HasMore || beyondFormerOffsetCap.NextOffset != nil {
+			t.Fatalf("summary page beyond former offset cap=%+v", beyondFormerOffsetCap)
+		}
+
 		write := func(method, path, idempotencyKey string, body []byte) *httptest.ResponseRecorder {
 			req := httptest.NewRequest(method, path, bytes.NewReader(body))
 			req.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
@@ -292,6 +389,42 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		csv := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d/report.csv", imported.Batch.ID))
 		if report.Code != http.StatusOK || csv.Code != http.StatusOK || !strings.Contains(csv.Body.String(), "delivery_state") {
 			t.Fatalf("report/csv: report=%d csv=%d csv_body=%s", report.Code, csv.Code, csv.Body.String())
+		}
+
+		// Strategy facts are authoritative for the page. If their own read fails,
+		// the endpoint fails as a whole instead of representing unknown strategies.
+		if _, err = application.pool.Native().Exec(ctx, `ALTER TABLE operation_cycle_strategies RENAME TO operation_cycle_strategies_summary_failure`); err != nil {
+			t.Fatal(err)
+		}
+		strategyTableRenamed := true
+		defer func() {
+			if strategyTableRenamed {
+				_, _ = application.pool.Native().Exec(context.Background(), `ALTER TABLE operation_cycle_strategies_summary_failure RENAME TO operation_cycle_strategies`)
+			}
+		}()
+		if failedStrategyRead := authenticatedAdminGet(t, application.handler, session, "/api/admin/operation-batches/strategy-summaries?limit=20&offset=0"); failedStrategyRead.Code != http.StatusServiceUnavailable {
+			t.Fatalf("strategy summary source failure=%d body=%s", failedStrategyRead.Code, failedStrategyRead.Body.String())
+		}
+		if _, err = application.pool.Native().Exec(ctx, `ALTER TABLE operation_cycle_strategies_summary_failure RENAME TO operation_cycle_strategies`); err != nil {
+			t.Fatal(err)
+		}
+		strategyTableRenamed = false
+
+		// The aggregate belongs to AI Assistant. A real PostgreSQL failure there
+		// must leave the independently-read strategy page available and label its
+		// batch facts unavailable instead of silently reporting no batch.
+		if _, err = application.pool.Native().Exec(ctx, `ALTER TABLE ai_assistant_excel_imports RENAME TO ai_assistant_excel_imports_summary_failure`); err != nil {
+			t.Fatal(err)
+		}
+		importsTableRenamed := true
+		defer func() {
+			if importsTableRenamed {
+				_, _ = application.pool.Native().Exec(context.Background(), `ALTER TABLE ai_assistant_excel_imports_summary_failure RENAME TO ai_assistant_excel_imports`)
+			}
+		}()
+		degraded := authenticatedAdminGet(t, application.handler, session, "/api/admin/operation-batches/strategy-summaries?limit=20&offset=120")
+		if degraded.Code != http.StatusOK || !strings.Contains(degraded.Body.String(), `"strategy_key":"excel.fixture"`) || !strings.Contains(degraded.Body.String(), `"latest_batch_status":"unavailable"`) || strings.Contains(degraded.Body.String(), `"latest_batch_status":"ready"`) {
+			t.Fatalf("batch aggregate degradation=%d body=%s", degraded.Code, degraded.Body.String())
 		}
 		return
 	}

@@ -32,6 +32,44 @@ type OperationExcelBatchStore interface {
 	ListOperationExcelBatchRecipients(context.Context, ai.PlanID, int, int64, int) ([]ai.Recipient, error)
 }
 
+type OperationExcelBatchOverviewStore interface {
+	ListLatestOperationExcelBatchOverviews(context.Context, []string) ([]ai.ExcelBatchOverview, error)
+}
+
+// LatestOperationExcelBatchOverviews reads newest batch facts for one
+// already-bounded Strategy page in a single AI Assistant read transaction.
+// It is intentionally a read model and does not touch Excel content, cover,
+// approval, or outbound behavior.
+func (s *Service) LatestOperationExcelBatchOverviews(ctx context.Context, strategyKeys []string) ([]ai.ExcelBatchOverview, error) {
+	if s == nil || len(strategyKeys) > 100 {
+		return nil, ErrInvalid
+	}
+	if len(strategyKeys) == 0 {
+		return []ai.ExcelBatchOverview{}, nil
+	}
+	seen := make(map[string]struct{}, len(strategyKeys))
+	for _, key := range strategyKeys {
+		if strings.TrimSpace(key) == "" {
+			return nil, ErrInvalid
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return nil, ErrInvalid
+		}
+		seen[key] = struct{}{}
+	}
+	store, ok := s.store.(OperationExcelBatchOverviewStore)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	var result []ai.ExcelBatchOverview
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		result, readErr = store.ListLatestOperationExcelBatchOverviews(tx, strategyKeys)
+		return readErr
+	})
+	return result, classify(err)
+}
+
 // CreateOperationExcelBatch accepts only component-parsed rows. It validates
 // the long-plan association and writes the association, immutable import
 // version, review plan, audit and idempotency facts in one PostgreSQL UoW.
