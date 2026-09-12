@@ -204,7 +204,14 @@ function renderDetailPresentation(): void {
     setText(ownerValue, owner);
   }
   renderAuxiliaryNotice(cardForHeading("实时标签"), "tags", id, presentation.tags.status);
-  renderAuxiliaryNotice(cardForHeading("聊天活动摘要"), "chat", id, presentation.chat.status);
+  const chatCard = cardForHeading("聊天活动摘要");
+  renderAuxiliaryNotice(chatCard, "chat", id, presentation.chat.status);
+  // The compatibility context endpoint keeps protocol fields untouched. Once
+  // the frozen renderer has consumed that DTO, this bounded Host projection
+  // owns only the visible chat-summary card.
+  if (presentation.chat.status === "ready" && (chatCard?.lastElementChild as HTMLElement | null)?.dataset.customerAuxiliaryPresentation !== "chat") {
+    renderAuxiliaryItems("chat", presentation.chat.value);
+  }
 }
 
 function ensurePresentationObserver(): void {
@@ -233,8 +240,9 @@ function auxiliaryPath(id: number, kind: "tags" | "chat"): string {
 
 function renderAuxiliaryItems(kind: "tags" | "chat", value: unknown): void {
   const card = cardForHeading(kind === "tags" ? "实时标签" : "聊天活动摘要");
-  const content = card?.lastElementChild;
+  const content = card?.lastElementChild as HTMLElement | null;
   if (!content) return;
+  content.dataset.customerAuxiliaryPresentation = kind;
   content.replaceChildren();
   if (kind === "tags") {
     const tags = items(value);
@@ -352,8 +360,8 @@ async function customerContext(id: number, init?: RequestInit): Promise<Response
     const item = record(value);
     return {
       chat_type: item.chat_type,
-      message_type: messageTypeLabel(item.message_type),
-      sent_at: formatShanghaiDateTime(text(item.occurred_at)),
+      message_type: item.message_type,
+      sent_at: item.occurred_at,
     };
   }) : [];
   detailPresentation.set(id, {

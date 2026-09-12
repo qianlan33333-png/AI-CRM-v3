@@ -21,15 +21,6 @@ const originalFetch = window.fetch.bind(window);
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
-class RadarTransportError extends Error {}
-
-function radarTransportMessage(status: number, scope: 'catalog' | 'request'): string {
-  if (status === 401 || status === 403) return scope === 'catalog' ? '没有读取素材目录的权限。' : '当前请求没有操作权限。';
-  if (status === 404) return scope === 'catalog' ? '素材目录暂不可用，请刷新页面后重试。' : '请求的内容不存在或已不可用。';
-  if (status >= 500) return scope === 'catalog' ? '素材目录暂时无法读取，请稍后重试。' : '请求暂时无法完成，请稍后重试。';
-  return scope === 'catalog' ? '素材目录读取失败，请稍后重试。' : '请求未完成，请稍后重试。';
-}
-
 async function materialItems(path: string): Promise<unknown> {
   const request = new URL(path, location.origin);
   const type = request.searchParams.get('type') === 'attachment' ? 'attachment' : 'image';
@@ -44,7 +35,7 @@ async function materialItems(path: string): Promise<unknown> {
     source.searchParams.set('enabled_only', 'true');
     const response = await originalFetch(source, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
     const payload = record(await response.json().catch(() => ({})));
-    if (!response.ok) throw new RadarTransportError(radarTransportMessage(response.status, 'catalog'));
+    if (!response.ok) throw new Error(`素材目录读取失败（HTTP ${response.status}）`);
     values.push(...list(payload.items).map(record));
     const next = Number(payload.next_offset);
     if (payload.has_more !== true || !Number.isSafeInteger(next) || next <= offset) break;
@@ -64,7 +55,7 @@ function installMaterialTransport(): void {
     if (new URL(path, location.origin).pathname === '/api/admin/material-picker/items') return materialItems(path);
     if (prior) return prior(path);
     const response = await originalFetch(path, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new RadarTransportError(radarTransportMessage(response.status, 'request'));
+    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
     return response.json();
   };
 }

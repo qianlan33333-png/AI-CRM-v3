@@ -762,7 +762,7 @@ func encodeCSV(orders []domain.Order) []byte {
 		if len(snapshot.Items) > 0 {
 			productCode, productName = snapshot.Items[0].ProductCode, snapshot.Items[0].ProductName
 		}
-		values := []string{presentationtime.FormatShanghaiDateTime(snapshot.CreatedAt), snapshot.MerchantOrderNo, snapshot.ProviderTransactionNo, orderProviderLabel(snapshot.Provider), optionalID(snapshot.PayerCustomerID), optionalID(snapshot.BeneficiaryCustomerID), productCode, productName, strconv.FormatInt(snapshot.Amount.AmountMinor, 10), snapshot.Amount.Currency, orderStatusLabel(snapshot.Status), orderRecordOriginLabel(snapshot.RecordOrigin)}
+		values := []string{presentationtime.FormatShanghaiDateTime(snapshot.CreatedAt), snapshot.MerchantOrderNo, snapshot.ProviderTransactionNo, string(snapshot.Provider), optionalID(snapshot.PayerCustomerID), optionalID(snapshot.BeneficiaryCustomerID), productCode, productName, strconv.FormatInt(snapshot.Amount.AmountMinor, 10), snapshot.Amount.Currency, string(snapshot.Status), string(snapshot.RecordOrigin)}
 		for index, value := range values {
 			if index > 0 {
 				builder.WriteByte(',')
@@ -772,51 +772,6 @@ func encodeCSV(orders []domain.Order) []byte {
 		builder.WriteString("\r\n")
 	}
 	return []byte(builder.String())
-}
-
-func orderProviderLabel(value domain.Provider) string {
-	switch value {
-	case domain.ProviderWeChatPay:
-		return "微信支付"
-	case domain.ProviderWeChatShop:
-		return "微信小店"
-	case domain.ProviderAlipay:
-		return "支付宝"
-	default:
-		return "支付来源待确认"
-	}
-}
-
-func orderStatusLabel(value domain.Status) string {
-	switch value {
-	case domain.StatusPendingPayment:
-		return "待支付"
-	case domain.StatusPaid:
-		return "已支付"
-	case domain.StatusPartiallyRefunded:
-		return "部分退款"
-	case domain.StatusRefunded:
-		return "已退款"
-	case domain.StatusCancelled:
-		return "已取消"
-	case domain.StatusPaymentFailed:
-		return "支付失败"
-	case domain.StatusClosed:
-		return "已关闭"
-	default:
-		return "订单状态待确认"
-	}
-}
-
-func orderRecordOriginLabel(value domain.RecordOrigin) string {
-	switch value {
-	case domain.RecordOriginNative:
-		return "系统订单"
-	case domain.RecordOriginHistory:
-		return "历史导入"
-	default:
-		return "订单来源待确认"
-	}
 }
 
 func optionalID(value *int64) string {

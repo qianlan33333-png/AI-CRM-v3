@@ -456,7 +456,7 @@ func (h *Handler) exportEvents(w http.ResponseWriter, r *http.Request, id radar.
 	writer := csv.NewWriter(&buffer)
 	_ = writer.Write([]string{"receipt_id", "stage", "attribution", "customer_ref", "occurred_at"})
 	for _, event := range page.Items {
-		_ = writer.Write([]string{event.ReceiptID, radarEventStageLabel(event.Stage), radarAttributionLabel(event.Attribution), event.CustomerRef, presentationtime.FormatShanghaiDateTime(event.OccurredAt)})
+		_ = writer.Write([]string{event.ReceiptID, string(event.Stage), string(event.Attribution), event.CustomerRef, presentationtime.FormatShanghaiDateTime(event.OccurredAt)})
 	}
 	writer.Flush()
 	if writer.Error() != nil {
@@ -467,48 +467,6 @@ func (h *Handler) exportEvents(w http.ResponseWriter, r *http.Request, id radar.
 	w.Header().Set("Content-Disposition", `attachment; filename="radar-events.csv"`)
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(buffer.Bytes())
-}
-
-func radarEventStageLabel(value radarport.EventStage) string {
-	switch value {
-	case radarport.EventLanding:
-		return "访问落地页"
-	case radarport.EventOAuthStarted:
-		return "开始微信授权"
-	case radarport.EventOAuthVerified:
-		return "微信授权已验证"
-	case radarport.EventIdentityResolved:
-		return "客户身份已确认"
-	case radarport.EventContentOpened:
-		return "打开内容"
-	case radarport.EventRedirected:
-		return "跳转完成"
-	case radarport.EventImageLoaded:
-		return "图片已加载"
-	case radarport.EventPDFOpened:
-		return "PDF 已打开"
-	case radarport.EventFailed:
-		return "访问失败"
-	default:
-		return "事件阶段待确认"
-	}
-}
-
-func radarAttributionLabel(value radarport.AttributionStatus) string {
-	switch value {
-	case radarport.AttributionAnonymous:
-		return "匿名访问"
-	case radarport.AttributionResolved:
-		return "已关联客户"
-	case radarport.AttributionPending:
-		return "关联待确认"
-	case radarport.AttributionConflict:
-		return "关联冲突"
-	case radarport.AttributionFailed:
-		return "关联失败"
-	default:
-		return "关联状态待确认"
-	}
 }
 
 func (h *Handler) open(w http.ResponseWriter, r *http.Request) {

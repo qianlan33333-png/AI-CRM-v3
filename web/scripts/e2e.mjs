@@ -595,16 +595,16 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       }
       if (orderHistoryHttp) {
         const calls = [];
-        const order = { id: 12, record_origin: 'v1_history', created_at: '2026-08-28T00:00:00Z', merchant_order_no: 'V1-H-12', out_trade_no: 'V1-H-12', order_no: 'V1-H-12', platform_transaction_no: 'TX-H-12', transaction_id: 'TX-H-12', payer_name: '历史客户', mobile: '', product_code: 'course-history', product_name: '历史课程', amount_yuan: '99.00', currency: 'CNY', status: 'paid', status_label: '已支付', provider: 'wechat', provider_label: '微信支付', detail_url: '/api/admin/orders/V1-H-12', refundable_amount_total: 0, historical_refunds: [{ id: 31, order_id: 12, source_refund_id: 801, refund_number: 'R-801', provider_refund_id: '', transaction_id: 'TX-H-12', status: 'refunded', amount_minor: 1990, order_amount_minor: 9900, currency: 'CNY', reason: '历史退款', created_at: '2026-08-28T00:00:00Z', updated_at: '2026-08-28T00:00:00Z' }] };
+        const order = { id: 12, record_origin: 'v1_history', created_at: '2026-08-28T00:00:00Z', merchant_order_no: 'V1-H-12', out_trade_no: 'V1-H-12', order_no: 'V1-H-12', platform_transaction_no: 'TX-H-12', transaction_id: 'TX-H-12', payer_name: '历史客户', mobile: '', product_code: 'course-history', product_name: '历史课程', amount_yuan: '99.00', currency: 'CNY', status: 'paid', status_label: '已支付', provider: 'wechat', provider_label: '微信支付', detail_url: '/api/admin/orders/V1-H-12', refundable_amount_total: 0 };
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
         window.__orderHistoryHttpTest = { calls };
         window.fetch = async (input, init = {}) => {
           const url = new URL(String(input), window.location.origin);
-          calls.push({ path: url.pathname, method: init.method || 'GET' });
+          calls.push({ path: url.pathname, query: url.search, method: init.method || 'GET' });
           if (url.pathname === '/api/admin/orders') return json({ items: [order], total: 1, limit: 20, has_more: false });
           if (url.pathname === '/api/admin/orders/V1-H-12') return json(order);
           if (url.pathname === '/api/admin/orders/V1-H-12/items') return json({ items: [] });
-          if (url.pathname === '/api/admin/refunds') return json({ items: [], total: 0, limit: 20, has_more: false });
+          if (url.pathname === '/api/admin/refunds') return json({ items: [{ refund_id: 'R-801', refund_amount_total: 1990, status: 'history_closed', reason: '历史退款', created_at: '2026-08-28T00:00:00Z' }], refunds: [{ refund_id: 'R-801', refund_amount_total: 1990, status: 'history_closed', reason: '历史退款', created_at: '2026-08-28T00:00:00Z' }], total: 1, limit: 20, offset: 0, has_more: false });
           if (url.pathname === '/api/admin/wechat-pay/orders/V1-H-12/external-push-deliveries') return json({ items: [], total: 0 });
           return json({ code: 'unexpected_order_history_request' }, 500);
         };
@@ -1868,8 +1868,11 @@ console.log('admin/orderDetail.html（V1 历史只读退款）');
   ok('V1 历史订单只走真实 HTTP 详情读取且不回退 Mock',
     dom.window.__AICRM_TEST_MOCK__ === false &&
     dom.window.__orderHistoryHttpTest.calls.some((call) => call.path === '/api/admin/orders/V1-H-12' && call.method === 'GET'));
-  ok('V1 历史详情显示只读边界', d.querySelector('#stage')?.textContent.includes('V1历史只读，非V2支付/退款确认'));
-  ok('V1 历史详情显示退款状态金额原因', d.querySelector('#stage')?.textContent.includes('refunded · ¥19.90 CNY') && d.querySelector('#stage')?.textContent.includes('历史退款'));
+  const historyDetail = d.querySelector('#stage')?.textContent || '';
+  ok('历史详情显示查询边界且不暴露实现代际', historyDetail.includes('历史订单，仅供查询') && historyDetail.includes('不支持退款确认') && !historyDetail.includes('V1历史') && !historyDetail.includes('V2支付'));
+  ok('历史详情只显示本订单的退款状态、金额和原因',
+    dom.window.__orderHistoryHttpTest.calls.some((call) => call.path === '/api/admin/refunds' && new URLSearchParams(call.query).get('order_no') === 'V1-H-12') &&
+    historyDetail.includes('历史记录：已关闭 · ¥19.90') && historyDetail.includes('历史退款') && !historyDetail.includes('金额待确认'));
   ok('V1 历史详情不渲染退款 intent 按钮或表单', ![...d.querySelectorAll('button')].some((button) => button.textContent.includes('创建退款 intent')) && !d.querySelector('#refundAmount'));
   dom.window.close();
 }

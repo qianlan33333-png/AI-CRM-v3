@@ -184,8 +184,8 @@ try {
     fail("chat summary did not render Shanghai seconds without RFC3339");
   }
   const projected = await (await detail.window.fetch("/api/v1/customers/7/context")).json();
-  if (projected.chat.items[0]?.sent_at !== "2026-09-07 08:00:00" || projected.chat.items[0]?.message_type !== "文本") {
-    fail("frozen customer context did not receive Chinese message metadata and Shanghai summary time");
+  if (projected.chat.items[0]?.sent_at !== "2026-09-07T00:00:00Z" || projected.chat.items[0]?.message_type !== "text") {
+    fail("customer context must retain raw message metadata and its RFC3339 instant");
   }
   const refresh = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "刷新记录");
   if (!refresh) fail("frozen customer detail did not retain its refresh control");

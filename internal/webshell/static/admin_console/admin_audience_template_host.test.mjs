@@ -26,17 +26,15 @@ const templates = [
   { key: "member_usage_status", label: "会员与真实使用状态", template_version: 1, available: true, fields: [...ownerFields, { name: "service_period", label: "服务期", type: "enum", enum: ["any", "active", "expired"], default: "active" }, { name: "registration_status", label: "注册状态", type: "enum", enum: ["any", "registered", "unregistered"], default: "any" }, { name: "usage_status", label: "真实使用状态", type: "enum", enum: ["any", "used", "unused"], default: "any" }, { name: "membership_tiers", label: "会员层级", type: "string_list", default: [] }, { name: "membership_statuses", label: "会员状态", type: "string_list", default: [] }] },
 ];
 templates.push({ key: "questionnaire_submissions", label: "问卷提交", template_version: 1, available: true, fields: [{name: "questionnaires", label: "问卷", type: "reference_list", reference: "questionnaire", required: true}, ...ownerFields, {name: "require_wecom_identity", label: "要求已识别企微身份", type: "boolean", default: true}] });
-let config = { id: 4, package_id: 13, version: 1, refresh_cron_utc: "0 1 * * *", refresh_mode: "legacy_custom", definition: { schema_version: 1, template_key: "wecom_contact_registration", parameters: { owner_scope: "all", owner_staff_ids: [], contact_statuses: ["active"], registration_status: "any" } } };
+let config = { id: 4, package_id: 13, version: 1, refresh_cron_utc: "", definition: { schema_version: 1, template_key: "wecom_contact_registration", parameters: { owner_scope: "all", owner_staff_ids: [], contact_statuses: ["active"], registration_status: "any" } } };
 let packageVersion = 3;
 const writes = [];
 const previewWrites = [];
 const packageWrites = [];
-const policyWrites = [];
 let templateReads = 0;
 let broadcastRuns = [];
 let broadcastPreviewCalls = 0;
 let broadcastConfirmCalls = 0;
-let previewFailure = false;
 const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   url: "https://test.invalid/admin/automation-conversion/packages/13",
   runScripts: "outside-only",
@@ -66,8 +64,6 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
       if (url.pathname === "/api/admin/ai-audience/packages/13/automation-binding" || url.pathname === "/api/admin/ai-audience/packages/13/senders" || url.pathname === "/api/admin/ai-audience/packages/13/members") return json({ error: "not_found" }, 404);
       if (url.pathname === "/api/admin/automation-agents") return json({ items: [] });
       if (url.pathname === "/api/admin/ai-audience/packages/13/precheck") return json({ precheck: { ready: false, reasons: [] } });
-      if (url.pathname === "/api/admin/ai-audience/packages/13/refresh" && init.method === "POST") return json({ refresh_run: { id: 71, state: "queued" } }, 202);
-      if (url.pathname === "/api/admin/ai-audience/packages/13/refresh-runs/71") return json({ refresh_run: { id: 71, state: "failed", error_code: "refresh_unavailable" } });
       if (url.pathname === "/api/admin/ai-audience/packages/13" && init.method === "PATCH") {
         const body = JSON.parse(init.body);
         packageWrites.push(body);
@@ -86,11 +82,10 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         }
         parameters.owner_staff_ids = parameters.owner_scope === "specified" ? ["9"] : [];
         delete parameters.owner_userids;
-        config = { ...config, version: config.version + 1, refresh_cron_utc: body.refresh_cron_utc, refresh_mode: body.refresh_mode, definition: { ...body.definition, parameters } };
+        config = { ...config, version: config.version + 1, refresh_cron_utc: body.refresh_cron_utc, definition: { ...body.definition, parameters } };
         return json({ configuration: config });
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/preview") {
-        if (previewFailure) return json({ error: "provider_unavailable（上游服务错误）" }, 503);
         const body = JSON.parse(init.body);
         previewWrites.push(body);
         return json({ preview: { member_count: 1, member_digest: "member", watermark_digest: "watermark" } });
@@ -110,11 +105,6 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         { id: 3, customer_id: 103, sender_staff_id: 8, effect_id: "eer_203", state: "outcome_unknown", failure_code: "generation_call_unknown" },
       ] });
       if (url.pathname === "/api/admin/automation-runs" && (!init.method || init.method === "GET")) return json({ items: broadcastRuns, next_cursor: "" });
-      if (url.pathname === "/api/admin/automations" && init.method === "POST") {
-        policyWrites.push(JSON.parse(init.body));
-        return json({ policy: { id: 31 } });
-      }
-      if (url.pathname === "/api/admin/automations" && (!init.method || init.method === "GET")) return json({ items: [] });
       return json({ error: `unexpected ${url.pathname}` }, 500);
     };
   },
@@ -127,29 +117,6 @@ await wait(350);
 const document = dom.window.document;
 const select = document.querySelector("#templateSelect");
 if (templateReads < 3 || select.options.length !== 7 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("frozen renderer and V3 submission template were not restored after the delayed detail renderer");
-if (!select.options[0].textContent.includes("企微联系人与注册状态 · 第 1 版") || select.options[0].textContent.includes("v1")) throw new Error(`template version label was not localized: ${select.options[0].textContent}`);
-const ownerScopeLabels = [...document.querySelectorAll('[data-field-name="owner_scope"] option')].map((option) => option.textContent).join("/");
-const contactStatusLabels = [...document.querySelectorAll('[data-field-name="contact_statuses"] option')].map((option) => option.textContent).join("/");
-const registrationLabels = [...document.querySelectorAll('[data-field-name="registration_status"] option')].map((option) => option.textContent).join("/");
-if (ownerScopeLabels !== "指定负责人/全部负责人" || contactStatusLabels !== "有效/已删除" || registrationLabels !== "不限/已注册/未注册") throw new Error(`template enum labels leaked protocol values: ${JSON.stringify({ownerScopeLabels, contactStatusLabels, registrationLabels})}`);
-const initialOwnerScope = document.querySelector('[data-field-name="owner_scope"] select');
-initialOwnerScope.value = "specified";
-initialOwnerScope.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-if (!document.querySelector('[data-field-name="owner_userids"] label')?.textContent.includes("负责人标识")) throw new Error("owner identifier field leaked UserID wording");
-initialOwnerScope.value = "all";
-initialOwnerScope.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-if (document.querySelector("#dailySelect").value !== "off" || !document.querySelector("#summaryMode").textContent.includes("每日 09:00") || !document.querySelector("#refreshScheduleNote").textContent.includes("保留原规则") || document.querySelector("#refreshScheduleNote").textContent.includes("上海时间")) throw new Error("legacy custom schedule was not presented as its actual business time");
-if (document.querySelector("#policyTimezoneInput")) throw new Error("new quiet-hours must not expose a timezone field in the business UI");
-document.querySelector("#savePackageBtn").click();
-await wait(180);
-if (writes.length !== 1 || writes[0]?.refresh_mode !== "legacy_custom" || writes[0]?.refresh_cron_utc !== "0 1 * * *") throw new Error(`the Host did not exclusively preserve the old save path: ${JSON.stringify(writes)}`);
-const manualRefreshButton = document.querySelector("#replaceLegacyScheduleWithManualBtn");
-if (!manualRefreshButton || manualRefreshButton.hidden) throw new Error("legacy custom schedule did not offer an explicit manual-refresh replacement");
-manualRefreshButton.click();
-if (!document.querySelector("#refreshScheduleNote").textContent.includes("已选择改为手动刷新")) throw new Error("manual refresh replacement was not made explicit before saving");
-document.querySelector("#savePackageBtn").click();
-await wait(180);
-if (writes.length !== 2 || writes[1]?.refresh_mode !== "manual" || writes[1]?.refresh_cron_utc !== "") throw new Error(`the explicit manual-refresh replacement did not write manual with an empty cron: ${JSON.stringify(writes)}`);
 for (const template of templates) {
   select.value = template.key;
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -198,7 +165,7 @@ await saveTemplate("wecom_contact_registration", () => {
 }, () => {
   if (fieldInput("owner_scope").value !== "all" || !fieldInput("contact_statuses").options[0].selected) throw new Error("WeCom all-scope values did not reopen");
 });
-if (packageWrites[2]?.name !== "已更新的人群" || writes[2]?.refresh_mode !== "daily_0200" || writes[2]?.refresh_cron_utc !== "") throw new Error(`template save bypassed basic configuration or refresh mode: ${JSON.stringify({ packageWrites, writes })}`);
+if (packageWrites[0]?.name !== "已更新的人群" || writes[0]?.refresh_mode !== "daily_0200" || writes[0]?.refresh_cron_utc !== "") throw new Error(`template save bypassed basic configuration or refresh mode: ${JSON.stringify({ packageWrites, writes })}`);
 await saveTemplate("paid_order", () => {
   fieldInput("products").value = "course-v3";
   fieldInput("paid_at_from").value = "2026-09-05T08:00";
@@ -293,18 +260,7 @@ await saveTemplate("questionnaire_choice_answers", () => {
   const rows = document.querySelectorAll('[data-field-name="conditions"] .template-condition-row');
   if (fieldInput("questionnaire").value !== "客户调研" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "内容\n投放" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
 });
-if (writes.length !== 10 || previewWrites.length !== 8 || packageWrites.length !== 10) throw new Error(`form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
-document.querySelector("#policyCodeInput").value = "shanghai-quiet";
-document.querySelector("#policyNameInput").value = "上海安静时段";
-document.querySelector("#policyActionSelect").value = "record";
-document.querySelector("#policyQuietHoursInput").value = "22:00-08:00";
-document.querySelector("#createPolicyBtn").click();
-await wait(180);
-if (policyWrites.length !== 1 || policyWrites[0]?.quiet_hours?.timezone !== "Asia/Shanghai" || policyWrites[0]?.quiet_hours?.start !== "22:00" || policyWrites[0]?.quiet_hours?.end !== "08:00") throw new Error(`new quiet-hours did not use fixed Shanghai wall time: ${JSON.stringify(policyWrites)}`);
-document.querySelector("#policyQuietHoursInput").value = "29:00-08:00";
-document.querySelector("#createPolicyBtn").click();
-await wait(40);
-if (policyWrites.length !== 1) throw new Error("invalid quiet-hours input reached the automation write route");
+if (writes.length !== 8 || previewWrites.length !== 8 || packageWrites.length !== 8) throw new Error(`form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
 // The frozen detail page owns this action: a user clicks the real preview and
 // confirmation controls, then is taken to the existing AI review/recipients
 // page instead of an Automation-only recipient drawer.
@@ -324,17 +280,6 @@ const dynamicProgress = document.querySelector("#sendRecordRows");
 if (!dynamicProgress.textContent.includes("动态生成 3 项") || !dynamicProgress.textContent.includes("失败排除 1") || !dynamicProgress.textContent.includes("未知排除 1")) throw new Error("dynamic generation progress and exclusions were not rendered");
 document.querySelector("[data-generation-run-id=\"92\"]").click();
 await wait(180);
-if (!document.querySelector("#sendRecordMeta").textContent.includes("生成结果无效") || !document.querySelector("#sendRecordMeta").textContent.includes("生成调用结果待核实") || document.querySelector("#sendRecordMeta").textContent.includes("generation_response_invalid") || document.querySelector("#sendRecordMeta").textContent.includes("generation_call_unknown") || !document.querySelector("#sendRecordContentDetail").textContent.includes("AI 审阅与收件人")) throw new Error("dynamic generation readback did not show durable exclusions and review handoff");
-previewFailure = true;
-document.querySelector("#templatePreviewBtn").click();
-await wait(180);
-const previewFailureText = document.querySelector("#templateStatusLine").textContent || "";
-if (!previewFailureText.includes("人群配置服务暂不可用") || previewFailureText.includes("provider_unavailable") || previewFailureText.includes("上游服务错误")) throw new Error(`template request error leaked a technical message: ${previewFailureText}`);
-document.querySelector('[data-panel="basic"]').click();
-await wait(20);
-document.querySelector("#manualRefreshBtn").click();
-await wait(1700);
-const refreshFailureText = document.querySelector("#capabilityStatus")?.textContent || "";
-if (!refreshFailureText.includes("快照刷新失败：刷新服务暂不可用") || refreshFailureText.includes("refresh_unavailable")) throw new Error(`refresh failure leaked a raw error code: ${refreshFailureText}`);
+if (!document.querySelector("#sendRecordMeta").textContent.includes("generation_response_invalid") || !document.querySelector("#sendRecordMeta").textContent.includes("generation_call_unknown") || !document.querySelector("#sendRecordContentDetail").textContent.includes("AI 审阅与收件人")) throw new Error("dynamic generation readback did not show durable exclusions and review handoff");
 dom.window.close();
 console.log("admin-audience-template-host-browser: PASS");
