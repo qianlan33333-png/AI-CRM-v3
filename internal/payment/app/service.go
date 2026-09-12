@@ -41,6 +41,7 @@ type Store interface {
 	RecordPaymentReconciliation(context.Context, int64, effectport.Digest, string, time.Time) (bool, error)
 	GetPaymentByMerchantProvider(context.Context, domain.Provider, string, bool) (domain.Payment, error)
 	ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error)
+	ListRefundsForPayment(context.Context, domain.Provider, string, int32, int32) ([]paymentport.RefundProjection, int64, error)
 	ListEffectBindings(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error)
 	UpdatePaymentSettlement(context.Context, domain.Payment, string, string) (domain.Payment, error)
 	UpdateRefundSettlement(context.Context, domain.Refund, string, string) (domain.Refund, error)
@@ -563,6 +564,20 @@ func (s *Service) ListRefunds(ctx context.Context, limit, offset int32) ([]payme
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var inner error
 		out, total, inner = s.store.ListRefunds(tx, limit, offset)
+		return inner
+	})
+	return out, total, classify(err)
+}
+
+func (s *Service) ListRefundsForPayment(ctx context.Context, provider domain.Provider, merchantOrderNo string, limit, offset int32) ([]paymentport.RefundProjection, int64, error) {
+	if s == nil || s.uow == nil || s.store == nil || (provider != domain.ProviderWeChatPay && provider != domain.ProviderWeChatShop) || !validScope(merchantOrderNo) || limit < 1 || limit > 100 || offset < 0 || offset > 1_000_000 {
+		return nil, 0, paymentport.ErrInvalid
+	}
+	var out []paymentport.RefundProjection
+	var total int64
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		out, total, inner = s.store.ListRefundsForPayment(tx, provider, merchantOrderNo, limit, offset)
 		return inner
 	})
 	return out, total, classify(err)

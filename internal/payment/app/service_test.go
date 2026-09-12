@@ -265,6 +265,9 @@ func (s *storeStub) GetPaymentByMerchantProvider(context.Context, domain.Provide
 func (s *storeStub) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
 	return nil, 0, nil
 }
+func (s *storeStub) ListRefundsForPayment(context.Context, domain.Provider, string, int32, int32) ([]paymentport.RefundProjection, int64, error) {
+	return nil, 0, nil
+}
 func (s *storeStub) ListEffectBindings(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error) {
 	return []paymentport.EffectProjection{{EffectID: "eer_8", Kind: effectport.KindWeChatPayRefund}}, nil
 }

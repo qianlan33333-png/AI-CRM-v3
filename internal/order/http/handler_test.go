@@ -11,6 +11,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 )
@@ -35,10 +36,10 @@ type appStub struct {
 	exports int
 }
 
-type customerNamesStub map[customerdomain.CustomerID]string
+type customerDisplaysStub map[customerdomain.CustomerID]customerport.DirectoryContactDisplay
 
-func (names customerNamesStub) DisplayNames(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
-	return names, nil
+func (displays customerDisplaysStub) ContactDisplays(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.DirectoryContactDisplay, error) {
+	return displays, nil
 }
 
 type customerFilterStub struct {
@@ -59,10 +60,10 @@ func (a *appStub) GetByReference(context.Context, string) (domain.Snapshot, erro
 
 func TestListUsesCanonicalCustomerDisplayName(t *testing.T) {
 	application := &appStub{page: orderport.Page{Items: []domain.Snapshot{sampleOrder()}}}
-	handler, _ := NewHandler(application, adminSecurity(), customerNamesStub{11: "付款客户"})
+	handler, _ := NewHandler(application, adminSecurity(), customerDisplaysStub{11: {DisplayName: "付款客户", PhoneMasked: "138****5678"}})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"payer_name":"付款客户"`) || !strings.Contains(response.Body.String(), `"payer_id":"customer:11"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"payer_name":"付款客户"`) || !strings.Contains(response.Body.String(), `"payer_id":"customer:11"`) || !strings.Contains(response.Body.String(), `"payer_phone_masked":"138****5678"`) {
 		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
 	}
 }

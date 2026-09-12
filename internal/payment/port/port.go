@@ -127,6 +127,10 @@ type Handoff struct {
 type AdminQuery interface {
 	FindPayment(context.Context, domain.Provider, string) (domain.Payment, error)
 	ListRefunds(context.Context, int32, int32) ([]RefundProjection, int64, error)
+	// ListRefundsForPayment is the scoped read used by an order detail. Provider
+	// and merchant order number together identify one persisted Payment; callers
+	// must not derive a detail timeline from the unscoped refund list.
+	ListRefundsForPayment(context.Context, domain.Provider, string, int32, int32) ([]RefundProjection, int64, error)
 	ListOrderEffects(context.Context, domain.Provider, string) ([]EffectProjection, error)
 }
 type HistoricalImporter interface {

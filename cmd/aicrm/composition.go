@@ -1077,7 +1077,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore})
+	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity, orderCustomerContactDisplayAdapter{uow: uow, reader: customerStore})
 	if err != nil {
 		return fail(err)
 	}

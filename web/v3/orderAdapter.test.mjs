@@ -66,3 +66,78 @@ try {
 }
 
 console.log('order Host identity query and presentation journey: PASS');
+
+const detailCalls = [];
+const detailDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
+  <div><div><h2>订单详情</h2></div><div></div></div>
+  <div><div><h2>事件时间线</h2></div><div></div></div>
+  <div><div><h2>申请退款</h2></div><div></div></div>
+</body>`, {
+  url: 'https://test.invalid/admin/orderDetail.html?id=M-ORDER-TEST-0001', runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      detailCalls.push({ url, method: init.method || 'GET' });
+      if (url.pathname === '/api/admin/orders/M-ORDER-TEST-0001') return new Response(JSON.stringify({
+        record_origin: 'native', merchant_order_no: 'M-ORDER-TEST-0001', provider: 'wechat',
+        transaction_id: '4200000000000000000000000000', payer_name: '测试买家', payer_id: 'customer:101', payer_phone_masked: '138****0000',
+        product_name: '测试商品', amount_yuan: '20.00', created_at: '2026-09-30T16:01:02Z', status: 'paid',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify({
+        items: [{ refund_no: 'RF-TEST-1', amount_minor: 2000, status: 'completed', reason: '测试退款', created_at: '2026-10-01T00:01:02+08:00' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  detailDom.window.eval(host);
+  await pause();
+  await detailDom.window.fetch('/api/admin/refunds');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const refundFetch = detailCalls.find((call) => call.url.pathname === '/api/admin/refunds');
+  assert.equal(refundFetch.url.searchParams.get('provider'), 'wechat', 'detail refund fetch must select the exact payment provider');
+  assert.equal(refundFetch.url.searchParams.get('order_no'), 'M-ORDER-TEST-0001', 'detail refund fetch must select the exact merchant order');
+  assert.match(detailDom.window.document.body.textContent, /订单信息/, 'detail must use the business partition');
+  assert.match(detailDom.window.document.body.textContent, /支付信息/, 'payment facts belong in their own partition');
+  assert.match(detailDom.window.document.body.textContent, /买家信息/, 'buyer facts belong in their own partition');
+  assert.match(detailDom.window.document.body.textContent, /商品与金额/, 'item and amount facts belong in their own partition');
+  assert.match(detailDom.window.document.body.textContent, /CID-101/, 'customer information must expose a business-facing canonical customer number');
+  assert.ok(!detailDom.window.document.body.textContent.includes('customer:101'), 'the internal canonical key must not be shown directly');
+  assert.match(detailDom.window.document.body.textContent, /4200000000000000000000000000/, 'the true provider transaction identifier remains available for confirmation');
+  assert.match(detailDom.window.document.body.textContent, /退款完成/, 'refund status must be a Chinese refund-domain label');
+  assert.match(detailDom.window.document.body.textContent, /2026-10-01 00:01:02/, 'detail time must be fixed to Asia\/Shanghai seconds');
+  assert.equal(Array.from(detailDom.window.document.querySelectorAll('h2')).find((heading) => heading.textContent === '事件时间线')?.parentElement?.parentElement?.hidden, true, 'the donor mixed timeline must not remain visible');
+  assert.match(detailDom.window.document.body.textContent, /再次输入微信支付交易单号/, 'refund confirmation must ask for transaction_id, not merchant order number');
+} finally {
+  detailDom.window.close();
+}
+
+const historyDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
+  <div><div><h2>订单详情</h2></div><div></div></div>
+  <div><div><h2>事件时间线</h2></div><div></div></div>
+  <div><div><h2>V1 历史只读</h2></div><div></div></div>
+</body>`, {
+  url: 'https://test.invalid/admin/orderDetail.html?id=M-HISTORY-TEST-0001', runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    window.fetch = async () => new Response(JSON.stringify({
+      record_origin: 'v1_history', merchant_order_no: 'M-HISTORY-TEST-0001', provider: 'wechat',
+      payer_name: '测试买家', payer_id: 'customer:102', product_name: '历史测试商品', amount_yuan: '20.00', created_at: '2026-10-01T00:01:02Z', status: 'paid',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  },
+});
+try {
+  historyDom.window.eval(host);
+  await pause();
+  assert.match(historyDom.window.document.body.textContent, /历史订单，仅供查询/, 'historical users must not see V1\/V2 implementation wording');
+  assert.ok(!historyDom.window.document.body.textContent.includes('V1'), 'historical presentation must not expose a V1 technical generation label');
+  assert.match(historyDom.window.document.body.textContent, /历史记录：已支付/, 'historical paid data must remain a history fact, not a current provider-confirmed assertion');
+} finally {
+  historyDom.window.close();
+}
+
+console.log('order detail scope, Chinese presentation, and historical read-only journey: PASS');
