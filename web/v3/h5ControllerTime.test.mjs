@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const bundle = await build({
   entryPoints: [path.join(root, 'web/src/h5/controller.ts')], bundle: true, write: false, format: 'iife', globalName: 'H5TimeController', platform: 'browser', target: 'es2020', logLevel: 'warning',
   plugins: [{
