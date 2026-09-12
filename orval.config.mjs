@@ -7,7 +7,7 @@ export default defineConfig({
       filters: {
         mode: 'include',
         tags: ['HXCDashboard'],
-        schemas: [/^HXC/, /^PositiveID$/, /^ErrorResponse$/, /^UnavailableResponse$/],
+        schemas: [/^HXC/, /^PositiveID$/, /^ErrorResponse$/, /^UnavailableResponse$/, /^OpenPlatformOAuthError$/, /^OpenPlatformV1Error$/, /^OpenPlatformV1Failure$/],
       },
     },
     output: {
