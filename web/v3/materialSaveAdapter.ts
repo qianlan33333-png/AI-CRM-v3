@@ -780,7 +780,7 @@ class MaterialRefreshPanel {
       this.setStatus('单素材刷新已受理；完成状态可通过“刷新进度”核对。');
     } catch (error) {
       materialBusy(button, false, '立即刷新单个');
-      this.setStatus(`${materialFailureText(error, '单素材刷新失败，请检查网络后重试。')}可重新发起刷新。`, true);
+      this.setStatus(`${materialFailureText(error, '单素材刷新失败，请检查网络后重试。')}可重试，系统会按同一次提交核对。`, true);
     }
   }
 
@@ -799,7 +799,7 @@ class MaterialRefreshPanel {
       if (id !== undefined) await this.loadRound();
     } catch (error) {
       materialBusy(button, false, '立即刷新全部启用素材');
-      this.setStatus(`${materialFailureText(error, '全量刷新失败，请检查网络后重试。')}可重新发起刷新。`, true);
+      this.setStatus(`${materialFailureText(error, '全量刷新失败，请检查网络后重试。')}可重试，系统会按同一次提交核对。`, true);
     }
   }
 

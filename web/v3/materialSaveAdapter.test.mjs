@@ -449,7 +449,7 @@ for (const spec of [
   if (!full.disabled || full.textContent?.trim() !== "刷新中…") fail("manual full refresh was not locked against a double click");
   assert.equal(csrfHeaders[0], "fixture-csrf");
   releaseFull();
-  await waitFor(() => !full.disabled && dom.window.document.body.textContent?.includes("全量刷新失败，请检查网络后重试。可重新发起刷新。"), "dropped full-refresh response did not expose a retryable error");
+  await waitFor(() => !full.disabled && dom.window.document.body.textContent?.includes("全量刷新失败，请检查网络后重试。可重试，系统会按同一次提交核对。"), "dropped full-refresh response did not expose a retryable error");
   if (dom.window.document.body.textContent?.includes("同一操作 key") || dom.window.document.body.textContent?.includes("Failed to fetch")) fail("full-refresh recovery exposed an implementation detail");
   full.click();
   await waitFor(() => fullPosts === 2 && roundReads === 2, "manual full-refresh retry did not read the async round");
