@@ -3,11 +3,18 @@ package port
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
+
+// ErrEntrantActionsSkippedInactiveChannel is a completed local-policy result,
+// not a transient action failure. Channel returns it only after it has read an
+// inactive or archived channel after it has verified the State's asset,
+// configuration, and selectable assignee.
+var ErrEntrantActionsSkippedInactiveChannel = errors.New("channel entrant actions skipped for inactive channel")
 
 type WelcomeMaterialPlan struct {
 	ImageIDs, MiniProgramIDs, AttachmentIDs, GroupInviteIDs []int64

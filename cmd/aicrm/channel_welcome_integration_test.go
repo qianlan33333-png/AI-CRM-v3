@@ -232,6 +232,10 @@ type channelWelcomeFixture struct {
 }
 
 func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platformpostgres.UnitOfWork, states *channel.PostgreSQLStore, digester wecom.StateDigester, adminID int64, name, rawState string, material bool, assetVersion, entryTagID int64) channelWelcomeFixture {
+	return seedChannelWelcomeFixtureWithAssigneeRatio(t, ctx, unit, states, digester, adminID, name, rawState, material, assetVersion, entryTagID, 100)
+}
+
+func seedChannelWelcomeFixtureWithAssigneeRatio(t *testing.T, ctx context.Context, unit *platformpostgres.UnitOfWork, states *channel.PostgreSQLStore, digester wecom.StateDigester, adminID int64, name, rawState string, material bool, assetVersion, entryTagID, assigneeRatio int64) channelWelcomeFixture {
 	t.Helper()
 	var channelID int64
 	if err := unit.Within(ctx, func(tx context.Context) error {
@@ -254,7 +258,7 @@ func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platform
 		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,welcome_message,welcome_image_ids,entry_tag_id,entry_tag_name,entry_tag_group_name,assignment_mode,assignment_strategy,config_digest,created_by,created_at) VALUES($1,1,'qrcode','qrcode',$2,'welcome',$3,NULLIF($4,0),$5,$6,'single_owner','ratio',$7,$8,clock_timestamp())`, channelID, "Welcome "+name, images, entryTagID, entryTagName, entryTagGroupName, digest[:], adminID); transactionErr != nil {
 			return transactionErr
 		}
-		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_assignees(channel_id,config_version,staff_id,priority,ratio_percent,created_at) VALUES($1,1,$2,1,100,clock_timestamp())`, channelID, adminID); transactionErr != nil {
+		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_assignees(channel_id,config_version,staff_id,priority,ratio_percent,created_at) VALUES($1,1,$2,1,$3,clock_timestamp())`, channelID, adminID, assigneeRatio); transactionErr != nil {
 			return transactionErr
 		}
 		if assetVersion == 1 {
@@ -380,7 +384,7 @@ func channelWelcomeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate Channel Welcome test")
 	}
 	base := filepath.Join(filepath.Dir(source), "..", "..", "migrations")
-	for _, migration := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0006_wecom_callback_channel_acquisition.sql", "0009_customer_activation.sql", "0029_channel_center.sql", "0031_channel_history_import.sql", "0032_channel_acquisition_assets.sql", "0033_wecom_welcome_grants.sql", "0034_channel_entrant_actions.sql", "0035_channel_acquisition_links.sql", "0059_channel_v1_semantic_repair.sql", "0065_channel_legacy_asset_retirement.sql", "0066_channel_welcome_intents.sql", "0093_customer_tag_commands.sql", "0125_outbound_material_preparation.sql"} {
+	for _, migration := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0005_external_effects.sql", "0006_wecom_callback_channel_acquisition.sql", "0009_customer_activation.sql", "0029_channel_center.sql", "0031_channel_history_import.sql", "0032_channel_acquisition_assets.sql", "0033_wecom_welcome_grants.sql", "0034_channel_entrant_actions.sql", "0035_channel_acquisition_links.sql", "0059_channel_v1_semantic_repair.sql", "0065_channel_legacy_asset_retirement.sql", "0066_channel_welcome_intents.sql", "0093_customer_tag_commands.sql", "0125_outbound_material_preparation.sql", "0148_channel_archive_edit.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(base, migration))
 		if readErr != nil {
 			native.Close()

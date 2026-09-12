@@ -77,12 +77,19 @@ func (store *EntrantActionStore) AcceptCallbackWelcome(ctx context.Context, comm
 		return store.recordWelcomeIntent(ctx, tx, callbackWelcomeIntent{command: command, source: source, state: reason, resultReason: reason})
 	}
 
+	status, err := lockedChannelStatus(ctx, tx, command.Resolution.Asset.ChannelID)
+	if err != nil {
+		return err
+	}
 	config, err := readWelcomeConfig(ctx, tx, command.Resolution)
 	if errors.Is(err, ErrEntrantActionUnavailable) {
 		return store.recordWelcomeIntent(ctx, tx, callbackWelcomeIntent{command: command, source: source, state: "channel_unavailable", resultReason: "channel_unavailable"})
 	}
 	if err != nil {
 		return err
+	}
+	if inactiveChannelStatus(status) {
+		return store.recordWelcomeIntent(ctx, tx, callbackWelcomeIntent{command: command, source: source, state: "channel_unavailable", resultReason: "channel_unavailable"})
 	}
 	materialConfigured := len(config.WelcomeMaterials.ImageIDs)+len(config.WelcomeMaterials.MiniProgramIDs)+len(config.WelcomeMaterials.AttachmentIDs)+len(config.WelcomeMaterials.GroupInviteIDs) > 0
 	if config.WelcomeMessage == "" && !materialConfigured {
@@ -173,6 +180,10 @@ func (store *EntrantActionStore) AcceptEntrantActions(ctx context.Context, comma
 	if err != nil {
 		return err
 	}
+	status, err := lockedChannelStatus(ctx, tx, command.Resolution.Asset.ChannelID)
+	if err != nil {
+		return err
+	}
 	config, err := readEntrantActionConfig(ctx, tx, command.Resolution)
 	if err != nil {
 		return err
@@ -180,6 +191,9 @@ func (store *EntrantActionStore) AcceptEntrantActions(ctx context.Context, comma
 	staffID, err := chooseEntrantStaff(ctx, tx, config, command.CallbackID, command.OccurredAt)
 	if err != nil {
 		return err
+	}
+	if inactiveChannelStatus(status) {
+		return channelport.ErrEntrantActionsSkippedInactiveChannel
 	}
 	assignmentDigest := sha256.Sum256([]byte(command.CallbackID + "\x00" + strconv.FormatInt(config.ChannelID, 10) + "\x00" + strconv.FormatInt(config.ConfigVersion, 10) + "\x00" + strconv.FormatInt(int64(command.CustomerID), 10) + "\x00" + strconv.FormatInt(staffID, 10) + "\x00" + config.Strategy))
 	var assignmentID int64
@@ -269,7 +283,7 @@ func readWelcomeConfig(ctx context.Context, tx pgx.Tx, resolution channeldomain.
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT c.id,c.current_config_version,v.welcome_message,v.welcome_image_ids,v.welcome_miniprogram_ids,v.welcome_attachment_ids,v.welcome_group_invite_ids
 			FROM channels c JOIN channel_config_versions v ON v.channel_id=c.id AND v.config_version=c.current_config_version
-			WHERE c.id=$1 AND c.status='active' AND EXISTS(SELECT 1 FROM channel_legacy_acquisition_assets l WHERE l.channel_id=c.id AND l.kind=$2 AND l.verification_status='legacy_verified_active' AND l.retired_at IS NULL)`,
+			WHERE c.id=$1 AND EXISTS(SELECT 1 FROM channel_legacy_acquisition_assets l WHERE l.channel_id=c.id AND l.kind=$2 AND l.verification_status='legacy_verified_active' AND l.retired_at IS NULL)`,
 			resolution.Asset.ChannelID, providerKind,
 		).Scan(&config.ChannelID, &config.ConfigVersion, &config.WelcomeMessage, &config.WelcomeMaterials.ImageIDs, &config.WelcomeMaterials.MiniProgramIDs, &config.WelcomeMaterials.AttachmentIDs, &config.WelcomeMaterials.GroupInviteIDs)
 	}
@@ -293,7 +307,7 @@ func readEntrantActionConfig(ctx context.Context, tx pgx.Tx, resolution channeld
 		// requires a currently verified legacy asset before using current config.
 		err = tx.QueryRow(ctx, `SELECT c.id,c.current_config_version,v.welcome_message,v.entry_tag_id,v.assignment_strategy,v.welcome_image_ids,v.welcome_miniprogram_ids,v.welcome_attachment_ids,v.welcome_group_invite_ids
 			FROM channels c JOIN channel_config_versions v ON v.channel_id=c.id AND v.config_version=c.current_config_version
-			WHERE c.id=$1 AND c.status='active' AND EXISTS(SELECT 1 FROM channel_legacy_acquisition_assets l WHERE l.channel_id=c.id AND l.kind=$2 AND l.verification_status='legacy_verified_active' AND l.retired_at IS NULL)`, resolution.Asset.ChannelID, providerKind).Scan(&config.ChannelID, &config.ConfigVersion, &config.WelcomeMessage, &entryTagID, &config.Strategy, &config.WelcomeMaterials.ImageIDs, &config.WelcomeMaterials.MiniProgramIDs, &config.WelcomeMaterials.AttachmentIDs, &config.WelcomeMaterials.GroupInviteIDs)
+			WHERE c.id=$1 AND EXISTS(SELECT 1 FROM channel_legacy_acquisition_assets l WHERE l.channel_id=c.id AND l.kind=$2 AND l.verification_status='legacy_verified_active' AND l.retired_at IS NULL)`, resolution.Asset.ChannelID, providerKind).Scan(&config.ChannelID, &config.ConfigVersion, &config.WelcomeMessage, &entryTagID, &config.Strategy, &config.WelcomeMaterials.ImageIDs, &config.WelcomeMaterials.MiniProgramIDs, &config.WelcomeMaterials.AttachmentIDs, &config.WelcomeMaterials.GroupInviteIDs)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return entrantActionConfig{}, ErrEntrantActionUnavailable
 		}
@@ -321,6 +335,31 @@ func readEntrantActionConfig(ctx context.Context, tx pgx.Tx, resolution channeld
 	}
 	return config, nil
 }
+
+// lockedChannelStatus serializes status changes with acceptance. It is read
+// before either asset path, but inactive/archived is classified as no-action
+// only after that path and entrant preconditions are verified.
+func lockedChannelStatus(ctx context.Context, tx pgx.Tx, channelID int64) (string, error) {
+	var status string
+	// Hold a shared row lock through acceptance. A concurrent configuration
+	// transition must serialize before or after this callback; it cannot archive
+	// a channel after this check while the callback creates an effect.
+	err := tx.QueryRow(ctx, `SELECT status FROM channels WHERE id=$1 FOR SHARE`, channelID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrEntrantActionUnavailable
+	}
+	if err != nil {
+		return "", err
+	}
+	switch status {
+	case "active", "inactive", "archived":
+		return status, nil
+	default:
+		return "", ErrEntrantActionUnavailable
+	}
+}
+
+func inactiveChannelStatus(status string) bool { return status == "inactive" || status == "archived" }
 
 func chooseEntrantStaff(ctx context.Context, tx pgx.Tx, config entrantActionConfig, callbackID string, occurredAt time.Time) (int64, error) {
 	switch channeldomain.AssignmentStrategy(config.Strategy) {
