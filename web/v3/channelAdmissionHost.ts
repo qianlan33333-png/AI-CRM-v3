@@ -397,7 +397,7 @@ function installWelcomeTemplateHelp(root: HTMLElement): void {
   const hint = document.createElement('div');
   hint.id = 'channel-welcome-template-help';
   hint.className = 'form-text';
-  hint.textContent = '欢迎语仅支持变量 {{客户名}}。客户姓名暂缺时会显示“朋友”；发送前由服务端冻结正文，页面不模拟替换。';
+  hint.textContent = '可使用 {{客户名}} 自动带入客户姓名；姓名暂缺时显示“朋友”。';
   input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), hint.id].filter(Boolean).join(' '));
   input.insertAdjacentElement('afterend', hint);
 }

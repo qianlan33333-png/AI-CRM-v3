@@ -95,7 +95,7 @@ try {
   const document = stable.dom.window.document;
   assert.equal(document.querySelector('script[data-aicrm-channel-donor]')?.src, 'https://test.invalid/assets/standard-components/channel_admission_pages.js', 'the byte-preserved donor script must load as a same-origin external resource');
   assert.equal(document.querySelectorAll('[data-channel-bootstrap]').length, 1, 'Host hydration must replace the donor placeholder with one V3 bootstrap payload');
-  assert.equal(document.querySelector('#channel-welcome-template-help')?.textContent.includes('{{客户名}}'), true, 'welcome editor must show the exact server-supported variable');
+  assert.equal(document.querySelector('#channel-welcome-template-help')?.textContent.includes('可使用 {{客户名}} 自动带入客户姓名'), true, 'welcome editor must show the exact server-supported variable');
   assert.equal(document.querySelector('#channel-welcome-template-help')?.textContent.includes('朋友'), true, 'welcome editor must disclose the safe missing-name fallback');
   assert.equal(document.querySelectorAll('[name="status"] option[selected]').length, 1, 'Jinja status branches must render one selected option');
   assert.equal(document.querySelector('[name="status"] option[selected]')?.value, 'active');
