@@ -195,18 +195,29 @@ func (handler *Handler) customer360(response nethttp.ResponseWriter, request *ne
 		}
 	}
 
+	riskStatus := "ready"
 	riskLevel := "low"
 	reasons := []string{}
 	if identitySection.Status != "ready" {
+		riskStatus = "degraded"
 		riskLevel = "unknown"
 		reasons = append(reasons, "identity_section_unavailable")
 	}
+	if orderSection.Status != "ready" {
+		riskStatus = "degraded"
+		riskLevel = "unknown"
+		reasons = append(reasons, "order_section_unavailable")
+	}
 	if orderSummary.Failed > 0 {
-		riskLevel = "medium"
+		if riskStatus == "ready" {
+			riskLevel = "medium"
+		}
 		reasons = append(reasons, "payment_failures_present")
 	}
 	if orderSummary.Refunded > 0 {
-		riskLevel = "medium"
+		if riskStatus == "ready" {
+			riskLevel = "medium"
+		}
 		reasons = append(reasons, "refunds_present")
 	}
 	writePrivateJSON(response, nethttp.StatusOK, map[string]any{
@@ -215,7 +226,7 @@ func (handler *Handler) customer360(response nethttp.ResponseWriter, request *ne
 		"profile":               profileSection,
 		"order_summary":         orderSection,
 		"questionnaire_summary": surveySection,
-		"risk":                  section{Status: "ready", Data: map[string]any{"level": riskLevel, "reasons": reasons}},
+		"risk":                  section{Status: riskStatus, Data: map[string]any{"level": riskLevel, "reasons": reasons}},
 		"recent_touchpoints":    timelineSection,
 	})
 }

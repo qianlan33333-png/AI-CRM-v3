@@ -39,7 +39,25 @@ function syncPage() {
   return response({ items: [{ run_id: 1, status: 'succeeded', discovered: 23461, activated: 23461, already_linked: 0, conflict: 0, terminal_failed: 0, projected: 23461, created_at: '2026-09-03T01:50:54Z', started_at: '2026-09-03T01:50:54Z', completed_at: '2026-09-03T02:52:15Z' }] });
 }
 
-async function load(url, requests) {
+function customer360(sections = {}) {
+  return {
+    identity_summary: {
+      status: 'ready',
+      data: {
+        identities: [{ type: 'wecom_external_userid', summary: '企微外部联系人' }],
+        phones: [{ masked: '138****5678' }],
+      },
+    },
+    profile: { status: 'ready', data: customer() },
+    order_summary: { status: 'ready', data: { total: 0, paid: 0, refunded: 0, failed: 0, recent: [] } },
+    questionnaire_summary: { status: 'ready', data: { total: 0, recent: [] } },
+    risk: { status: 'ready', data: { level: 'low', reasons: [] } },
+    recent_touchpoints: { status: 'ready', data: [] },
+    ...sections,
+  };
+}
+
+async function load(url, requests, sections) {
   const detail = new URL(url).pathname !== '/admin/customers';
   const template = templateSource
     .replace('{{define "admin_customers"}}', '')
@@ -62,20 +80,7 @@ async function load(url, requests) {
         if (requestURL.pathname === '/api/admin/customer-sync-runs') return syncPage();
         if (requestURL.pathname === '/api/admin/customers/42/phone-reveal') return response({ phone: '+8613812345678' });
         if (requestURL.pathname === '/api/admin/customers/42/360') {
-          return response({
-            identity_summary: {
-              status: 'ready',
-              data: {
-                identities: [{ type: 'wecom_external_userid', summary: '企微外部联系人' }],
-                phones: [{ masked: '138****5678' }],
-              },
-            },
-            profile: { status: 'ready', data: customer() },
-            order_summary: { status: 'ready', data: { total: 0, paid: 0, refunded: 0, failed: 0, recent: [] } },
-            questionnaire_summary: { status: 'ready', data: { total: 0, recent: [] } },
-            risk: { status: 'ready', data: { level: 'low', reasons: [] } },
-            recent_touchpoints: { status: 'ready', data: [] },
-          });
+          return response(customer360(sections));
         }
         if (requestURL.pathname === '/api/admin/customers/42') {
           return response({
@@ -148,6 +153,7 @@ try {
   if (!document.querySelector('.admin-split-grid.admin-customer-detail-layout')) fail('donor two-column detail structure is missing');
   const revealButton = profileFields.find((field) => field.querySelector('span')?.textContent?.trim() === '手机号')?.querySelector('button');
   if (!revealButton || revealButton.textContent?.trim() !== '查询') fail('detail phone query still requires a reason');
+  if (!(document.querySelector('#customer-360-sidebar')?.textContent || '').includes('风险等级：低')) fail('ready risk level is not localized');
 
   revealButton.click();
   await sleep(30);
@@ -159,6 +165,24 @@ try {
   console.log('  ✓ customer detail queries a local phone directly while preserving CSRF');
 } finally {
   detail.window.close();
+}
+
+const degradedRiskRequests = [];
+const degradedRisk = await load('https://test.invalid/admin/customers/42', degradedRiskRequests, {
+  order_summary: { status: 'degraded', data: { total: 0, paid: 0, refunded: 0, failed: 0, recent: [] } },
+  risk: { status: 'degraded', data: { level: 'unknown', reasons: ['identity_section_unavailable', 'order_section_unavailable', 'refunds_present', 'payment_failures_present'] } },
+});
+try {
+  const { document } = degradedRisk.window;
+  const risk = document.querySelector('#customer-360-sidebar')?.textContent || '';
+  const orders = document.querySelector('#customer-360-main')?.textContent || '';
+  for (const expected of ['风险等级：未知（必要信息暂时不可用）', '身份信息暂时不可用，当前风险无法完整判定。', '订单信息暂时不可用，当前风险无法完整判定。', '已发现退款相关订单。', '已发现支付失败订单。']) {
+    if (!risk.includes(expected)) fail(`degraded risk summary omitted ${expected}`);
+  }
+  if (!orders.includes('该分区暂时不可用，其他客户信息不受影响。') || orders.includes('订单总数：')) fail('degraded order summary rendered unavailable values');
+  console.log('  ✓ customer detail keeps known risk facts visible when required sections degrade');
+} finally {
+  degradedRisk.window.close();
 }
 
 console.log('customer directory shell DOM interactions: ok');
