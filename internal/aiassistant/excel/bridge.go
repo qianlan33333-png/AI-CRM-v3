@@ -15,6 +15,7 @@ import (
 	ai "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	operationport "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/port"
 	outbound "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"image"
 	_ "image/jpeg"
@@ -45,6 +46,7 @@ type Bridge struct {
 	Authorizer accessport.AIAssistantAuthorizer
 	Scope      string
 	Covers     mediaport.ExcelCoverLibrary
+	Strategies operationport.StrategyPageReader
 }
 type row struct {
 	ID       ai.RecipientID    `json:"id"`
@@ -120,6 +122,101 @@ func batchJSON(plan ai.Plan, meta ai.ExcelBatchMeta, summary ai.ExcelBatchSummar
 		"created_at":                   meta.CreatedAt.UTC().Format(time.RFC3339Nano),
 		"summary":                      summary,
 	}
+}
+
+func batchOverviewJSON(value ai.ExcelBatchOverview) map[string]any {
+	return batchJSON(ai.Plan{ID: value.Meta.PlanID, State: value.State, Version: value.PlanVersion, SourceKind: value.SourceKind}, value.Meta, value.Summary)
+}
+
+const strategySummaryDefaultLimit = int32(20)
+
+func strategySummaryPageRequest(r *http.Request) (int32, int32, error) {
+	for key, values := range r.URL.Query() {
+		if len(values) != 1 || (key != "limit" && key != "offset") {
+			return 0, 0, app.ErrInvalid
+		}
+	}
+	limit, offset := strategySummaryDefaultLimit, int32(0)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return 0, 0, app.ErrInvalid
+		}
+		limit = int32(value)
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return 0, 0, app.ErrInvalid
+		}
+		offset = int32(value)
+	}
+	if limit < 1 || limit > operationport.StrategyPageMaximumLimit || offset < 0 || offset > operationport.StrategyPageMaximumOffset {
+		return 0, 0, app.ErrInvalid
+	}
+	return limit, offset, nil
+}
+
+func (b *Bridge) strategySummaryPage(ctx context.Context, limit, offset int32) (map[string]any, error) {
+	if b.Strategies == nil || b.App == nil {
+		return nil, app.ErrUnavailable
+	}
+	page, err := b.Strategies.ListOperationCycleStrategies(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	if page.Limit != limit || page.Offset != offset || page.Total < 0 || len(page.Items) > int(limit) {
+		return nil, app.ErrUnavailable
+	}
+	keys := make([]string, 0, len(page.Items))
+	for _, item := range page.Items {
+		if item.Key == "" {
+			return nil, app.ErrUnavailable
+		}
+		keys = append(keys, item.Key)
+	}
+	// This call deliberately opens and closes its own AI Assistant read UoW.
+	// A failed aggregate rolls that transaction back before this strategy page is
+	// rendered, so a failed bulk query cannot poison a transaction used to keep
+	// the independently-owned strategy facts visible.
+	overviews, overviewErr := b.App.LatestOperationExcelBatchOverviews(ctx, keys)
+	byKey := make(map[string]ai.ExcelBatchOverview, len(overviews))
+	if overviewErr == nil {
+		for _, overview := range overviews {
+			if overview.Meta.StrategyKey == "" {
+				return nil, app.ErrUnavailable
+			}
+			byKey[overview.Meta.StrategyKey] = overview
+		}
+	}
+	items := make([]map[string]any, 0, len(page.Items))
+	for _, strategy := range page.Items {
+		item := map[string]any{
+			"strategy_key": strategy.Key,
+			"title":        strategy.Title,
+			"status":       strategy.Status,
+			"version":      strategy.Version,
+			"snapshot":     json.RawMessage(strategy.Snapshot),
+		}
+		if overviewErr != nil {
+			item["latest_batch"] = nil
+			item["latest_batch_status"] = "unavailable"
+		} else {
+			item["latest_batch_status"] = "ready"
+			if overview, found := byKey[strategy.Key]; found {
+				item["latest_batch"] = batchOverviewJSON(overview)
+			} else {
+				item["latest_batch"] = nil
+			}
+		}
+		items = append(items, item)
+	}
+	hasMore := int64(offset)+int64(len(items)) < int64(page.Total)
+	var nextOffset any
+	if hasMore {
+		nextOffset = offset + int32(len(items))
+	}
+	return map[string]any{"items": items, "total": page.Total, "limit": limit, "offset": offset, "has_more": hasMore, "next_offset": nextOffset}, nil
 }
 
 // prepareImport delegates only syntax and workbook validation to the component.
@@ -403,6 +500,13 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var output any
 	responseStatus := http.StatusOK
 	switch {
+	case r.Method == http.MethodGet && len(parts) == 1 && parts[0] == "strategy-summaries":
+		limit, offset, pageErr := strategySummaryPageRequest(r)
+		if pageErr != nil {
+			err = pageErr
+			break
+		}
+		output, err = b.strategySummaryPage(r.Context(), limit, offset)
 	case r.Method == http.MethodGet && len(parts) == 1 && parts[0] == "legacy":
 		var plans []ai.Plan
 		plans, err = b.App.ListUnlinkedOperationExcelPlans(r.Context(), 100)

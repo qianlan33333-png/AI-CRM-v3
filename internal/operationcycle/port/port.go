@@ -9,12 +9,14 @@ import (
 )
 
 const (
-	StatusQueued      = "queued"
-	StatusClaimed     = "claimed"
-	StatusThreadBound = "thread_bound"
-	StatusTurnStarted = "turn_started"
-	StatusCompleted   = "completed"
-	StatusFailed      = "failed"
+	StatusQueued              = "queued"
+	StatusClaimed             = "claimed"
+	StatusThreadBound         = "thread_bound"
+	StatusTurnStarted         = "turn_started"
+	StatusCompleted           = "completed"
+	StatusFailed              = "failed"
+	StrategyPageMaximumLimit  = int32(100)
+	StrategyPageMaximumOffset = int32(10000)
 )
 
 type Strategy struct {
@@ -25,6 +27,22 @@ type Strategy struct {
 	Definition json.RawMessage
 	Snapshot   json.RawMessage
 	UpdatedAt  time.Time
+}
+
+// StrategyPage is a bounded, local read projection. Consumers use it to
+// present operation-cycle configuration and must not infer provider or
+// execution state from its contents.
+type StrategyPage struct {
+	Items  []Strategy
+	Total  int
+	Limit  int32
+	Offset int32
+}
+
+// StrategyPageReader is the stable read boundary for a page of operation
+// strategies. It deliberately contains neither mutations nor provider work.
+type StrategyPageReader interface {
+	ListOperationCycleStrategies(context.Context, int32, int32) (StrategyPage, error)
 }
 
 // StrategyReader is the stable read boundary used by a coordinated domain to

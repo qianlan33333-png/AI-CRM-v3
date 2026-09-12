@@ -139,6 +139,72 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		t.Fatalf("unlinked legacy discovery: %d %s", legacy.Code, legacy.Body.String())
 	}
 	if !browser {
+		// The operation page is deliberately bounded at 20 strategies. Create
+		// enough local-only fixtures to prove that the page after the first 100
+		// stays reachable through the composed summary read endpoint.
+		for index := 1; index <= 120; index++ {
+			key := fmt.Sprintf("excel.page.%03d", index)
+			body := fmt.Sprintf(`{"strategy_key":%q,"title":%q,"definition":{"schedule":"每周一 09:00","indicator_color":"#2EA121","primary_action":"start_review","stages":[{"key":"retro","label":"复盘","color":"#2EA121","state":"current"}]}}`, key, fmt.Sprintf("分页长期计划 %03d", index))
+			req := httptest.NewRequest(http.MethodPost, "/api/admin/operation-cycles/strategies", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-CSRF-Token", csrf)
+			req.Header.Set("Idempotency-Key", fmt.Sprintf("excel-summary-page-%03d", index))
+			req.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+			req.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+			res := httptest.NewRecorder()
+			application.handler.ServeHTTP(res, req)
+			if res.Code != http.StatusCreated {
+				t.Fatalf("summary page strategy %d: %d %s", index, res.Code, res.Body.String())
+			}
+		}
+		type summaryItem struct {
+			StrategyKey       string `json:"strategy_key"`
+			LatestBatchStatus string `json:"latest_batch_status"`
+			LatestBatch       *struct {
+				ID      int64 `json:"id"`
+				Summary struct {
+					ExpectedTasks int `json:"expected_tasks"`
+				} `json:"summary"`
+			} `json:"latest_batch"`
+		}
+		type summaryPage struct {
+			Items      []summaryItem `json:"items"`
+			Total      int           `json:"total"`
+			Limit      int           `json:"limit"`
+			Offset     int           `json:"offset"`
+			HasMore    bool          `json:"has_more"`
+			NextOffset *int          `json:"next_offset"`
+		}
+		readSummary := func(offset int) summaryPage {
+			res := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/strategy-summaries?limit=20&offset=%d", offset))
+			if res.Code != http.StatusOK {
+				t.Fatalf("summary page offset=%d: %d %s", offset, res.Code, res.Body.String())
+			}
+			var page summaryPage
+			if err = json.Unmarshal(res.Body.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			return page
+		}
+		first := readSummary(0)
+		if first.Total != 121 || first.Limit != 20 || first.Offset != 0 || len(first.Items) != 20 || !first.HasMore || first.NextOffset == nil || *first.NextOffset != 20 {
+			t.Fatalf("first summary page=%+v", first)
+		}
+		if statuses := first.Items; len(statuses) == 0 || statuses[0].LatestBatchStatus != "ready" || statuses[0].LatestBatch != nil {
+			t.Fatalf("unbatched strategy must remain a ready, known absence: %+v", statuses)
+		}
+		middle := readSummary(100)
+		if middle.Total != 121 || len(middle.Items) != 20 || !middle.HasMore || middle.NextOffset == nil || *middle.NextOffset != 120 {
+			t.Fatalf("page after first 100=%+v", middle)
+		}
+		last := readSummary(120)
+		if last.Total != 121 || len(last.Items) != 1 || last.HasMore || last.NextOffset != nil || last.Items[0].StrategyKey != "excel.fixture" || last.Items[0].LatestBatchStatus != "ready" || last.Items[0].LatestBatch == nil || last.Items[0].LatestBatch.ID != imported.Batch.ID || last.Items[0].LatestBatch.Summary.ExpectedTasks != 2 {
+			t.Fatalf("last summary page=%+v", last)
+		}
+		if invalid := authenticatedAdminGet(t, application.handler, session, "/api/admin/operation-batches/strategy-summaries?limit=101&offset=0"); invalid.Code != http.StatusBadRequest {
+			t.Fatalf("unbounded summary limit: %d %s", invalid.Code, invalid.Body.String())
+		}
+
 		write := func(method, path, idempotencyKey string, body []byte) *httptest.ResponseRecorder {
 			req := httptest.NewRequest(method, path, bytes.NewReader(body))
 			req.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})

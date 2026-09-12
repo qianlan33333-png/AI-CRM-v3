@@ -112,6 +112,17 @@ type ExcelBatchMeta struct {
 
 func (m ExcelBatchMeta) Linked() bool { return m.PlanID > 0 && m.StrategyKey != "" }
 
+// ExcelBatchOverview is the batch-owned part of the bounded Operation Cycle
+// list projection. A missing entry is a known absence of a batch; an
+// unavailable bulk read is represented by the caller, never guessed here.
+type ExcelBatchOverview struct {
+	Meta        ExcelBatchMeta
+	State       PlanState
+	PlanVersion int64
+	SourceKind  string
+	Summary     ExcelBatchSummary
+}
+
 type ExcelBatchVersion struct {
 	PlanID          PlanID            `json:"plan_id"`
 	ContentRevision int               `json:"content_version"`

@@ -142,6 +142,64 @@ func (r *Repository) ListOperationExcelBatches(ctx context.Context, strategyKey 
 	return items, rows.Err()
 }
 
+// ListLatestOperationExcelBatchOverviews is a single bounded query for the
+// newest batch and its current content summary per strategy key. It keeps the
+// Excel list read in AI Assistant ownership and avoids an N+1 plan/summary
+// read from the browser or composition root.
+func (r *Repository) ListLatestOperationExcelBatchOverviews(ctx context.Context, strategyKeys []string) ([]ai.ExcelBatchOverview, error) {
+	tx, err := platform.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(strategyKeys) == 0 || len(strategyKeys) > 100 {
+		return nil, ErrInvalid
+	}
+	for _, key := range strategyKeys {
+		if strings.TrimSpace(key) == "" {
+			return nil, ErrInvalid
+		}
+	}
+	rows, err := tx.Query(ctx, `
+		WITH latest AS (
+			SELECT DISTINCT ON (operation_cycle_strategy_key)
+				plan_id,batch_key,operation_cycle_strategy_key,source_origin,file_digest,content_revision,created_at
+			FROM ai_assistant_excel_imports
+			WHERE operation_cycle_strategy_key = ANY($1)
+			ORDER BY operation_cycle_strategy_key,created_at DESC,plan_id DESC
+		)
+		SELECT latest.plan_id,latest.batch_key,latest.operation_cycle_strategy_key,latest.source_origin,latest.file_digest,latest.content_revision,
+			COALESCE((SELECT cover.cover_digest FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=latest.plan_id AND cover.content_revision=latest.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),''),
+			COALESCE((SELECT cover.cover_image_id FROM ai_assistant_excel_batch_version_covers cover WHERE cover.plan_id=latest.plan_id AND cover.content_revision=latest.content_revision ORDER BY cover.created_at DESC,cover.cover_digest DESC LIMIT 1),0),
+			latest.created_at,plan.state,plan.version,plan.source_kind,
+			count(recipient.id),
+			count(recipient.id) FILTER (WHERE recipient.excel_excluded),
+			count(recipient.id) FILTER (WHERE recipient.id IS NOT NULL AND COALESCE(content.content_payload->1->'excel_card'->>'title','')=''),
+			count(recipient.id) FILTER (WHERE NOT recipient.excel_excluded AND COALESCE(content.content_payload->1->'excel_card'->>'title','')<>'')
+		FROM latest
+		JOIN ai_assistant_plans plan ON plan.id=latest.plan_id
+		LEFT JOIN ai_assistant_plan_recipients recipient ON recipient.plan_id=latest.plan_id AND recipient.excel_batch_content_revision=latest.content_revision
+		LEFT JOIN ai_assistant_content_versions content ON content.id=recipient.current_content_version_id
+		GROUP BY latest.plan_id,latest.batch_key,latest.operation_cycle_strategy_key,latest.source_origin,latest.file_digest,latest.content_revision,latest.created_at,plan.state,plan.version,plan.source_kind
+		ORDER BY latest.created_at DESC,latest.plan_id DESC`, strategyKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]ai.ExcelBatchOverview, 0, len(strategyKeys))
+	for rows.Next() {
+		var value ai.ExcelBatchOverview
+		if err = rows.Scan(
+			&value.Meta.PlanID, &value.Meta.BatchKey, &value.Meta.StrategyKey, &value.Meta.SourceOrigin, &value.Meta.FileDigest, &value.Meta.Revision, &value.Meta.CoverDigest, &value.Meta.CoverImageID, &value.Meta.CreatedAt,
+			&value.State, &value.PlanVersion, &value.SourceKind,
+			&value.Summary.TotalRows, &value.Summary.ExcludedRows, &value.Summary.EmptyTitleRows, &value.Summary.ExpectedTasks,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, value)
+	}
+	return items, rows.Err()
+}
+
 func (r *Repository) LinkExcelBatch(ctx context.Context, id ai.PlanID, strategyKey string) error {
 	tx, err := platform.RequireTransaction(ctx)
 	if err != nil {
