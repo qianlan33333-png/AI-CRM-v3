@@ -204,9 +204,9 @@ try {
         saveDisabled: Boolean(save && save.disabled),
         adminCSRF: hasCookie('aicrm_admin_csrf'),
         compatCSRF: hasCookie('aicrm_csrf'),
-        anchor: Boolean(document.querySelector(location.pathname.endsWith('/admin/spProductForm.html') ? '#sp-push' : '#product-push')),
+        anchor: Boolean(document.querySelector(location.pathname.endsWith('/admin/wechat-pay/spProductForm.html') ? '#sp-push' : '#product-push')),
         hostPanel: Boolean(document.querySelector('#product-v3-external-push-test')),
-        businessBinding: Boolean(document.querySelector(location.pathname.endsWith('/admin/spProductForm.html') ? '#spfExternalPushEnabled' : '#pfExternalPushEnabled')),
+        businessBinding: Boolean(document.querySelector(location.pathname.endsWith('/admin/wechat-pay/spProductForm.html') ? '#spfExternalPushEnabled' : '#pfExternalPushEnabled')),
         productHostAsset: Array.from(document.scripts).some((script) => String(script.src || '').includes('/product-assets/')),
         frozenAdminEntry: Array.from(document.scripts).some((script) => String(script.src || '').includes('/assets/')),
       };
@@ -215,11 +215,11 @@ try {
     return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} anchor=${page?.anchor === true} host_panel=${page?.hostPanel === true} binding=${page?.businessBinding === true} product_host_asset=${page?.productHostAsset === true} frozen_admin_entry=${page?.frozenAdminEntry === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
   };
 
-  const productPath = "/admin/productForm.html?id=" + productID;
+  const productPath = "/admin/wechat-pay/productForm.html?id=" + productID;
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=" + encodeURIComponent(productPath) });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
   await evaluate(cdp, "(() => { document.querySelector('input[name=\"username\"]').value=" + JSON.stringify(username) + "; document.querySelector('input[name=\"password\"]').value=" + JSON.stringify(password) + "; document.querySelector('form[action=\"/login\"]').requestSubmit(); return true; })()");
-  await waitFor(cdp, "location.pathname === '/admin/productForm.html'", "login did not reach frozen product form");
+  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html'", "login did not reach frozen product form");
 
   const hostReady = "Boolean(document.querySelector('[data-external-push-configuration]')) && Boolean(document.querySelector('#product-v3-external-push-custom-params'))";
   try {
@@ -243,7 +243,7 @@ try {
   await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='启用').click(); return true; })()");
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已启用')", "product lifecycle enable did not complete through the Host");
   await cdp.call("Page.navigate", { url: baseURL + productPath });
-  await waitFor(cdp, "location.pathname === '/admin/productForm.html'", "product lifecycle return did not reach frozen product form");
+  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html'", "product lifecycle return did not reach frozen product form");
   // Host mounting creates the editor before its configuration GET resolves.
   // Wait for the first revision rather than racing the closure that owns the
   // configuration snapshot used for CAS in the save handler.
@@ -261,7 +261,7 @@ try {
   await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "browser save changed typed custom JSON before reload");
 
   await cdp.call("Page.navigate", { url: baseURL + productPath });
-  await waitFor(cdp, "location.pathname === '/admin/productForm.html' && " + hostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded product Host did not preserve exact JSON text or expiry");
+  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html' && " + hostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded product Host did not preserve exact JSON text or expiry");
   await evaluate(cdp, "document.querySelector('[data-external-push-test=\"run\"]').click(); true");
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('测试已受理，等待受控投递')", "synthetic test was not accepted through Product HTTP");
   const terminalTimeline = "document.querySelector('[data-external-push-timeline]')?.textContent.includes('结果未知，需按原投递 ID 对账')";
@@ -275,9 +275,9 @@ try {
   // The frozen service-period form has separate donor bindings and a separate
   // Host endpoint. Save and reload it through the outer application handler
   // too, so the ordinary form cannot mask a service-period adapter failure.
-  const serviceProductPath = "/admin/spProductForm.html?id=" + serviceProductID;
+  const serviceProductPath = "/admin/wechat-pay/spProductForm.html?id=" + serviceProductID;
   await cdp.call("Page.navigate", { url: baseURL + serviceProductPath });
-  await waitFor(cdp, "location.pathname === '/admin/spProductForm.html'", "navigation did not reach frozen service-period product form");
+  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/spProductForm.html'", "navigation did not reach frozen service-period product form");
   const serviceHostReady = hostReady + " && Boolean(document.querySelector('#spfExternalPushEnabled'))";
   try {
     await waitFor(cdp, serviceHostReady, "service-period product Host did not render");
@@ -297,7 +297,7 @@ try {
   }
   await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "service-period browser save changed typed custom JSON before reload");
   await cdp.call("Page.navigate", { url: baseURL + serviceProductPath });
-  await waitFor(cdp, "location.pathname === '/admin/spProductForm.html' && " + serviceHostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded service-period Host did not preserve exact JSON text or expiry");
+  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/spProductForm.html' && " + serviceHostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded service-period Host did not preserve exact JSON text or expiry");
 
   const historicalOrderPath = "/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference);
   await cdp.call("Page.navigate", { url: baseURL + historicalOrderPath });

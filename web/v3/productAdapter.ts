@@ -545,8 +545,8 @@ type ExternalPushTimelineItem = {
 function productEditorRoute(): { id: number; prefix: 'pf' | 'spf' } | undefined {
   const canonical = location.pathname.match(/^\/admin\/(wechat-pay\/products|service-period-products)\/([1-9][0-9]*)\/edit$/);
   const prefix = canonical ? canonical[1] === 'wechat-pay/products' ? 'pf' : 'spf'
-    : location.pathname.endsWith('/admin/productForm.html') ? 'pf'
-    : location.pathname.endsWith('/admin/spProductForm.html') ? 'spf' : undefined;
+    : /^\/admin\/(?:wechat-pay\/)?productForm\.html$/.test(location.pathname) ? 'pf'
+    : /^\/admin\/(?:wechat-pay\/)?spProductForm\.html$/.test(location.pathname) ? 'spf' : undefined;
   const raw = canonical?.[2] || new URLSearchParams(location.search).get('id') || '';
   const id = Number(raw);
   if (!prefix || !/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(id)) return undefined;
