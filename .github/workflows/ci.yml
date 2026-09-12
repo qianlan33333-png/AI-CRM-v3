@@ -269,8 +269,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Production installation is opt-in. An unset repository variable is not
+  # equivalent to approval, so ordinary main pushes complete CI only.
   deploy:
-    if: ${{ !cancelled() && needs.check.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+    if: ${{ vars.AICRM_ENABLE_ACTIONS_DEPLOY == 'true' && !cancelled() && needs.check.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     needs: check
     runs-on: ubuntu-latest
     # Cross-region upload to the mainland deployment host can make steady
