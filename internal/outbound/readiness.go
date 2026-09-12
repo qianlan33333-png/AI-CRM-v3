@@ -7,9 +7,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Readiness verifies the Outbound-owned immutable-content columns before a
-// worker can claim an automatic message. The migration is required because a
-// missing column would otherwise surface later as a retryable runtime error.
+// Readiness verifies the Outbound-owned immutable-content and material-refresh
+// schema before a worker can claim an automatic message. The migrations are
+// required because a missing column or source-count constraint would otherwise
+// surface later as a retryable runtime error.
 func Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 	if pool == nil {
 		return errors.New("outbound readiness requires PostgreSQL")
@@ -24,7 +25,10 @@ func Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 		AND to_regclass(current_schema() || '.outbound_commerce_push_endpoints') IS NOT NULL
 		AND to_regclass(current_schema() || '.outbound_commerce_push_history_batches') IS NOT NULL
 		AND to_regclass(current_schema() || '.outbound_commerce_push_history_rows') IS NOT NULL
-		AND to_regclass(current_schema() || '.outbound_commerce_push_history_batch_rows') IS NOT NULL`).Scan(&ready)
+		AND to_regclass(current_schema() || '.outbound_commerce_push_history_batch_rows') IS NOT NULL
+		AND to_regclass(current_schema() || '.outbound_material_refresh_items') IS NOT NULL
+		AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='outbound_material_refresh_items'::regclass AND conname='outbound_material_refresh_items_source_count_check' AND pg_get_constraintdef(oid) LIKE '%source_count >= 0%')
+		AND EXISTS(SELECT 1 FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE d.adrelid='outbound_material_refresh_items'::regclass AND a.attname='source_count' AND pg_get_expr(d.adbin,d.adrelid)='0')`).Scan(&ready)
 	if err != nil {
 		return err
 	}
