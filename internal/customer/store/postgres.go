@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,78 @@ var _ customerport.AudienceReader = PostgreSQL{}
 var _ customerport.AudienceRegistrationReader = PostgreSQL{}
 var _ customerport.DirectoryDisplayNameReader = PostgreSQL{}
 var _ customerport.DirectoryContactDisplayReader = PostgreSQL{}
+var _ customerport.RadarVisitorDirectoryReader = PostgreSQL{}
+
+const maximumRadarVisitorDirectoryIDs = 500
+const maximumRadarVisitorDirectorySearch = 100001
+
+func (PostgreSQL) RadarVisitorDisplays(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.RadarVisitorDirectoryDisplay, error) {
+	result := make(map[customerdomain.CustomerID]customerport.RadarVisitorDirectoryDisplay)
+	if len(customerIDs) == 0 {
+		return result, nil
+	}
+	if len(customerIDs) > maximumRadarVisitorDirectoryIDs {
+		return nil, customerapp.ErrInvalidQuery
+	}
+	ids := make([]int64, 0, len(customerIDs))
+	seen := make(map[customerdomain.CustomerID]struct{}, len(customerIDs))
+	for _, id := range customerIDs {
+		if id < 1 {
+			return nil, customerapp.ErrInvalidQuery
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, int64(id))
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id,display_name,oneid_label FROM customer_directory_projection WHERE customer_id=ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		var display customerport.RadarVisitorDirectoryDisplay
+		if err = rows.Scan(&id, &display.DisplayName, &display.OneIDLabel); err != nil {
+			return nil, err
+		}
+		result[id] = display
+	}
+	return result, rows.Err()
+}
+
+func (PostgreSQL) SearchRadarVisitorCustomers(ctx context.Context, search string, limit int) ([]customerdomain.CustomerID, error) {
+	search = strings.TrimSpace(search)
+	if search == "" || len([]rune(search)) > 200 || limit < 1 || limit > maximumRadarVisitorDirectorySearch {
+		return nil, customerapp.ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	value := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search)
+	rows, err := tx.Query(ctx, `SELECT customer_id FROM customer_directory_projection
+		WHERE display_name ILIKE '%'||$1||'%' ESCAPE '\' OR oneid_label ILIKE '%'||$1||'%' ESCAPE '\'
+		ORDER BY customer_id LIMIT $2`, value, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]customerdomain.CustomerID, 0)
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	return result, rows.Err()
+}
 
 func (PostgreSQL) DisplayNames(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
 	result := make(map[customerdomain.CustomerID]string)

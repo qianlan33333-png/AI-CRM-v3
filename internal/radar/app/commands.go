@@ -332,7 +332,7 @@ func classify(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, radar.ErrInvalidArgument), errors.Is(err, radar.ErrInvalidStatus), errors.Is(err, radar.ErrInvalidTransition), errors.Is(err, radar.ErrVersionConflict), errors.Is(err, radarport.ErrNotFound), errors.Is(err, radarport.ErrGone), errors.Is(err, radarport.ErrConflict), errors.Is(err, radarport.ErrIdempotencyConflict):
+	case errors.Is(err, radar.ErrInvalidArgument), errors.Is(err, radar.ErrInvalidStatus), errors.Is(err, radar.ErrInvalidTransition), errors.Is(err, radar.ErrVersionConflict), errors.Is(err, radarport.ErrNotFound), errors.Is(err, radarport.ErrGone), errors.Is(err, radarport.ErrConflict), errors.Is(err, radarport.ErrIdempotencyConflict), errors.Is(err, radarport.ErrVisitorSearchTooWide):
 		return err
 	default:
 		return radarport.ErrUnavailable

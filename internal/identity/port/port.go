@@ -149,3 +149,32 @@ type ExternalIdentityValueReader interface {
 type GroupCandidateIdentityReader interface {
 	VerifiedWeComIdentityForCustomer(context.Context, customerdomain.CustomerID, string) (string, bool, error)
 }
+
+// AdminRadarVisitorExternalContactStatus states whether Identity can safely
+// display an external contact identifier to an already-authorized Radar admin.
+// It is not a Provider-call capability and is never an instruction to select
+// an arbitrary historical identity.
+type AdminRadarVisitorExternalContactStatus string
+
+const (
+	AdminRadarVisitorExternalContactAvailable   AdminRadarVisitorExternalContactStatus = "available"
+	AdminRadarVisitorExternalContactMissing     AdminRadarVisitorExternalContactStatus = "missing"
+	AdminRadarVisitorExternalContactAmbiguous   AdminRadarVisitorExternalContactStatus = "ambiguous"
+	AdminRadarVisitorExternalContactUnavailable AdminRadarVisitorExternalContactStatus = "unavailable"
+)
+
+type AdminRadarVisitorIdentity struct {
+	CanonicalCustomerID   customerdomain.CustomerID
+	ExternalContactID     string
+	ExternalContactStatus AdminRadarVisitorExternalContactStatus
+}
+
+// AdminRadarVisitorIdentityReader is a narrow, transaction-bound Identity
+// read for a CSRF- and role-authorized Radar management response. It returns
+// only the one scoped external contact value that is safe to display and
+// current canonical roots; it cannot resolve/provision/link identities and
+// never exposes OpenID, UnionID, phones, identity IDs, scope or evidence.
+type AdminRadarVisitorIdentityReader interface {
+	AdminRadarVisitorIdentities(context.Context, string, []customerdomain.CustomerID) (map[customerdomain.CustomerID]AdminRadarVisitorIdentity, error)
+	SearchAdminRadarVisitorCustomers(context.Context, string, string, []customerdomain.CustomerID, int) ([]customerdomain.CustomerID, error)
+}

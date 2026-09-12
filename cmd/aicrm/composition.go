@@ -443,6 +443,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	if err = radarQuery.BindAdminVisitorPresentation(radarVisitorPresentationAdapter{uow: uow, directory: customerStore, identities: queries, corpScope: "wecom-corp:" + cfg.WeCom.CorpID}); err != nil {
+		return fail(err)
+	}
 	radarOAuth, err := radarprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/public/radar/oauth/callback")
 	if err != nil {
 		return fail(err)

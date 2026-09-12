@@ -9,11 +9,12 @@ import (
 )
 
 var (
-	ErrNotFound            = errors.New("radar: not found")
-	ErrConflict            = errors.New("radar: conflict")
-	ErrIdempotencyConflict = errors.New("radar: idempotency conflict")
-	ErrUnavailable         = errors.New("radar: unavailable")
-	ErrGone                = errors.New("radar: disabled")
+	ErrNotFound             = errors.New("radar: not found")
+	ErrConflict             = errors.New("radar: conflict")
+	ErrIdempotencyConflict  = errors.New("radar: idempotency conflict")
+	ErrUnavailable          = errors.New("radar: unavailable")
+	ErrGone                 = errors.New("radar: disabled")
+	ErrVisitorSearchTooWide = errors.New("radar: visitor search too wide")
 )
 
 // Stable aliases keep cross-domain consumers on radar/port while preserving

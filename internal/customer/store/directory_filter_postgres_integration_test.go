@@ -71,6 +71,55 @@ func TestDirectoryFilterPredicatesKeepPageAndTotalInLockstepPostgreSQL(t *testin
 	}
 }
 
+func TestSearchRadarVisitorCustomersEscapesWildcardCharactersPostgreSQL(t *testing.T) {
+	url, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("AICRM_DATABASE_URL is not configured")
+	}
+	ctx := context.Background()
+	native, cleanup := directoryFilterPool(t, ctx, url)
+	defer cleanup()
+	if _, err = native.Exec(ctx, `
+		INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,avatar_url,oneid_label,phone_masked,phone_assurance,activation_status,last_synced_at,updated_at) VALUES
+		(1,'active','literal%percent','','CID-1','','','active',NULL,CURRENT_TIMESTAMP),
+		(2,'active','literal_under','','CID-2','','','active',NULL,CURRENT_TIMESTAMP),
+		(3,'active','literal\\slash','','CID-3','','','active',NULL,CURRENT_TIMESTAMP),
+		(4,'active','ordinary','','CID-4','','','active',NULL,CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct {
+		search string
+		want   customerdomain.CustomerID
+	}{
+		{search: "%", want: 1},
+		{search: "_", want: 2},
+		{search: `\`, want: 3},
+	} {
+		t.Run(testCase.search, func(t *testing.T) {
+			var ids []customerdomain.CustomerID
+			if err := uow.Within(ctx, func(tx context.Context) error {
+				var readErr error
+				ids, readErr = PostgreSQL{}.SearchRadarVisitorCustomers(tx, testCase.search, 10)
+				return readErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(ids) != 1 || ids[0] != testCase.want {
+				t.Fatalf("search %q ids=%v want [%d]", testCase.search, ids, testCase.want)
+			}
+		})
+	}
+}
+
 func directoryFilterPool(t *testing.T, ctx context.Context, url string) (*pgxpool.Pool, func()) {
 	t.Helper()
 	admin, err := pgxpool.New(ctx, url)

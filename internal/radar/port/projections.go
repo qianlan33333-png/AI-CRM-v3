@@ -127,6 +127,88 @@ type EventPage struct {
 	HasMore bool              `json:"has_more"`
 }
 
+const (
+	MaximumVisitorLimit       int32 = 500
+	MaximumVisitorOffset      int32 = 1_000_000
+	MaximumVisitorSearchChars       = 200
+	MaximumVisitorCandidates        = 100000
+)
+
+// VisitorSession is Radar-owned session metadata used only inside the admin
+// visitor query. It intentionally never leaves the Radar application as an
+// HTTP response.
+type VisitorSession struct {
+	SessionID   int64
+	Version     radar.LinkVersion
+	CustomerID  customerdomain.CustomerID
+	Attribution AttributionStatus
+	OpenedAt    time.Time
+}
+
+type VisitorQuery struct {
+	RadarID       radar.RadarID
+	CustomerIDs   []customerdomain.CustomerID
+	FilterApplied bool
+	Start         *time.Time
+	End           *time.Time
+	Limit         int32
+	Offset        int32
+}
+
+type VisitorSessionPage struct {
+	Items   []VisitorSession
+	Total   int64
+	Limit   int32
+	Offset  int32
+	HasMore bool
+}
+
+// VisitorStore keeps the session aggregation within Radar's table ownership.
+// It has no dependency on Customer or Identity projections.
+type VisitorStore interface {
+	Visitors(context.Context, VisitorQuery) (VisitorSessionPage, error)
+}
+
+type VisitorExternalContactStatus string
+
+const (
+	VisitorExternalContactAvailable   VisitorExternalContactStatus = "available"
+	VisitorExternalContactMissing     VisitorExternalContactStatus = "missing"
+	VisitorExternalContactAmbiguous   VisitorExternalContactStatus = "ambiguous"
+	VisitorExternalContactUnavailable VisitorExternalContactStatus = "unavailable"
+)
+
+// Visitor is the authenticated admin-only response model. Public event
+// projections remain separate and must not gain these fields.
+type Visitor struct {
+	Nickname              *string                      `json:"nickname"`
+	ExternalContactID     *string                      `json:"external_contact_id"`
+	ExternalContactStatus VisitorExternalContactStatus `json:"external_contact_status"`
+	OneID                 *string                      `json:"oneid"`
+	OpenedAt              time.Time                    `json:"opened_at"`
+	AttributionStatus     AttributionStatus            `json:"attribution_status"`
+}
+
+type VisitorPage struct {
+	Items   []Visitor `json:"items"`
+	Total   int64     `json:"total"`
+	Limit   int32     `json:"limit"`
+	Offset  int32     `json:"offset"`
+	HasMore bool      `json:"has_more"`
+}
+
+// AdminVisitorPresentationReader is composition-owned. It joins stable
+// Customer and Identity ports after Radar has read its own sessions; it never
+// provides raw Provider identities to public event flows.
+type AdminVisitorPresentationReader interface {
+	SearchRadarVisitors(context.Context, string, int) ([]customerdomain.CustomerID, error)
+	PresentRadarVisitors(context.Context, []VisitorSession) ([]Visitor, error)
+}
+
+type VisitorQueryService interface {
+	Visitors(context.Context, VisitorQuery, string) (VisitorPage, error)
+}
+
 type QueryService interface {
 	Stats(context.Context, radar.RadarID) (Stats, error)
 	Events(context.Context, EventQuery) (EventPage, error)

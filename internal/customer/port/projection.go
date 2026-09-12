@@ -46,6 +46,23 @@ type DirectoryContactDisplayReader interface {
 	ContactDisplays(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]DirectoryContactDisplay, error)
 }
 
+// RadarVisitorDirectoryDisplay is the smallest Customer-owned projection an
+// already-authorized Radar visitor read can render. It deliberately contains
+// neither contact values nor identity evidence.
+type RadarVisitorDirectoryDisplay struct {
+	DisplayName string
+	OneIDLabel  string
+}
+
+// RadarVisitorDirectoryReader exposes safe directory labels for the Radar
+// admin visitor projection. The caller already holds Customer IDs from its
+// own read model; this boundary never resolves, provisions, or links an
+// identity.
+type RadarVisitorDirectoryReader interface {
+	RadarVisitorDisplays(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]RadarVisitorDirectoryDisplay, error)
+	SearchRadarVisitorCustomers(context.Context, string, int) ([]customerdomain.CustomerID, error)
+}
+
 // ProjectionWriter is called by versioned event consumers. It does not grant
 // access to Identity or WeCom-owned tables.
 type ProjectionWriter interface {

@@ -2,7 +2,9 @@ package http
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,13 +50,19 @@ func (m *testManager) SetStatus(context.Context, radarport.SetStatusCommand) (ra
 	return radarport.LinkDetail{Link: testLink()}, nil
 }
 
-type testQuery struct{ events radarport.EventPage }
+type testQuery struct {
+	events   radarport.EventPage
+	visitors radarport.VisitorPage
+}
 
 func (testQuery) Stats(context.Context, radar.RadarID) (radarport.Stats, error) {
 	return radarport.Stats{TotalEvents: 3, TotalLandings: 1, AuthorizedUsers: 1, ViewCount: 2}, nil
 }
 func (q testQuery) Events(context.Context, radarport.EventQuery) (radarport.EventPage, error) {
 	return q.events, nil
+}
+func (q testQuery) Visitors(context.Context, radarport.VisitorQuery, string) (radarport.VisitorPage, error) {
+	return q.visitors, nil
 }
 
 type testPublic struct{ openErr error }
@@ -183,6 +191,97 @@ func TestOAuthFailureOffersOnlyValidatedManualRetry(t *testing.T) {
 		}
 		if strings.Contains(response.Body.String(), `href="/r/`) != (code == "rd_abcdefghijklmnopqrstuv") {
 			t.Fatal("unsafe or missing retry link")
+		}
+	}
+}
+
+type visitorSecurity struct {
+	auth    accessdomain.Principal
+	csrf    accessdomain.Principal
+	authErr error
+	csrfErr error
+}
+
+func (security visitorSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return security.auth, security.authErr
+}
+func (security visitorSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return security.csrf, security.csrfErr
+}
+
+func TestVisitorEndpointsRequireCSRFAuthorizationAndProtectCSVCells(t *testing.T) {
+	name, external, oneID := " \t=nickname", "\r=external", "\n@OneID"
+	page := radarport.VisitorPage{Items: []radarport.Visitor{{
+		Nickname:              &name,
+		ExternalContactID:     &external,
+		ExternalContactStatus: radarport.VisitorExternalContactAvailable,
+		OneID:                 &oneID,
+		OpenedAt:              time.Date(2026, 9, 13, 1, 2, 3, 0, time.UTC),
+		AttributionStatus:     radarport.AttributionResolved,
+	}}, Total: 1, Limit: 500}
+	admin := accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	handler, err := NewHandler(&testManager{}, testQuery{visitors: page}, testPublic{}, visitorSecurity{auth: admin, csrf: admin}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links/1/visitors?search=known", nil))
+	if list.Code != http.StatusOK || list.Header().Get("Cache-Control") != "no-store" || !strings.Contains(list.Body.String(), `"external_contact_status":"available"`) || !strings.Contains(list.Body.String(), `"oneid":"\n@OneID"`) {
+		t.Fatalf("visitor response=%d %q", list.Code, list.Body.String())
+	}
+	export := httptest.NewRecorder()
+	handler.ServeHTTP(export, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links/1/visitors/export?search=known", nil))
+	if export.Code != http.StatusOK || export.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("visitor export=%d %q", export.Code, export.Body.String())
+	}
+	reader := csv.NewReader(strings.NewReader(export.Body.String()))
+	rows, readErr := reader.ReadAll()
+	if readErr != nil || len(rows) != 2 || !strings.HasPrefix(rows[1][0], "'") || !strings.HasPrefix(rows[1][1], "'") || !strings.HasPrefix(rows[1][3], "'") {
+		t.Fatalf("CSV formula protection rows=%q err=%v", rows, readErr)
+	}
+	for _, testCase := range []struct {
+		name     string
+		security visitorSecurity
+		want     int
+	}{
+		{"anonymous", visitorSecurity{authErr: errors.New("missing session")}, http.StatusUnauthorized},
+		{"csrf", visitorSecurity{auth: admin, csrfErr: errors.New("missing csrf")}, http.StatusForbidden},
+		{"viewer", visitorSecurity{auth: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleViewer}}, csrf: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleViewer}}}, http.StatusForbidden},
+		{"staff-admin-role", visitorSecurity{auth: accessdomain.Principal{Kind: accessdomain.KindStaff, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, csrf: accessdomain.Principal{Kind: accessdomain.KindStaff, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}, http.StatusForbidden},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			denied, newErr := NewHandler(&testManager{}, testQuery{visitors: page}, testPublic{}, testCase.security, "https://crm.example")
+			if newErr != nil {
+				t.Fatal(newErr)
+			}
+			response := httptest.NewRecorder()
+			denied.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links/1/visitors", nil))
+			if response.Code != testCase.want || response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("status=%d response=%q", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestVisitorExportRejectsPartialResultAndMalformedQuery(t *testing.T) {
+	admin := accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}
+	handler, err := NewHandler(&testManager{}, testQuery{visitors: radarport.VisitorPage{HasMore: true, Limit: 500}}, testPublic{}, visitorSecurity{auth: admin, csrf: admin}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/api/admin/radar-links/1/visitors/export",
+		"/api/admin/radar-links/1/visitors?search=x&search=y",
+		"/api/admin/radar-links/1/visitors/export?offset=1",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		want := http.StatusConflict
+		if strings.Contains(path, "search=x") || strings.Contains(path, "offset=1") {
+			want = http.StatusBadRequest
+		}
+		if response.Code != want {
+			t.Fatalf("path=%s status=%d body=%q", path, response.Code, response.Body.String())
 		}
 	}
 }
