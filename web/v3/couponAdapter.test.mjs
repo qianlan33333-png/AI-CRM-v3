@@ -94,7 +94,7 @@ const editDom = new JSDOM('<body data-page="couponForm"><main id="stage">正在�
       if (url.pathname.endsWith('/product-options')) return Response.json({ total: 1, items: [{ target_ref: 'standard_product:32', name: '适用商品', price_minor: 100 }] });
       if (init.method === 'PUT') {
         edits.push({ body: JSON.parse(init.body), headers: new Headers(init.headers) });
-        if (editOutcome === 'rejected') return Response.json({ error: 'coupon_invalid', message: '规则校验失败' }, { status: 400 });
+        if (editOutcome === 'rejected') return Response.json({ error: 'coupon_invalid', code: 'coupon_invalid', message: 'untrusted machine detail' }, { status: 400 });
         if (editOutcome === 'malformed') return Response.json({});
         savedDraft = { ...savedDraft, ...JSON.parse(init.body) };
       }
@@ -115,7 +115,8 @@ try {
     editOutcome = outcome; d.querySelector('#saveCoupon').click();
     await waitFor(() => !d.querySelector('#saveCoupon').disabled && d.querySelector('#couponFormToast').textContent !== '正在保存…', 'failed save must restore the submit button');
     assert.doesNotMatch(d.querySelector('#couponFormToast').textContent, /已保存/);
-    assert.match(d.querySelector('#couponFormToast').textContent, outcome === 'malformed' ? /无法确认/ : /规则校验失败/);
+    assert.match(d.querySelector('#couponFormToast').textContent, outcome === 'malformed' ? /无法确认/ : /请检查优惠券内容后重新保存/);
+    assert.doesNotMatch(d.querySelector('#couponFormToast').textContent, /untrusted machine detail/);
   }
   editOutcome = 'success';
   d.querySelector('#couponName').value = '已修改草稿';
@@ -138,6 +139,13 @@ try {
   assert.equal(edits[3].body.use_ends_at, null, 'switching fixed-range to relative-days clears the hidden use end instead of restoring it');
   assert.equal(edits[3].body.relative_validity_days, 7);
   d.querySelector('#unowned').click(); assert.match(d.querySelector('#fb-toast').textContent, /后端能力未就绪/, 'unrelated unbound actions must remain guarded');
+  const api = editDom.window.AdminApi;
+  for (const [status, expected] of [[401, '登录状态已失效'], [403, '当前账号没有操作优惠券的权限'], [409, '优惠券内容已变化'], [503, '商品或优惠券信息暂不可用'], [500, '请求未完成']] ) {
+    editDom.window.fetch = async () => Response.json({ code: 'unrecognized', message: 'untrusted machine detail' }, { status });
+    await assert.rejects(api.requestJson('/api/admin/coupons/18', { method: 'PUT', body: {} }), new RegExp(expected));
+  }
+  editDom.window.fetch = async () => Response.json({ code: 'CREATE_OUTCOME_UNKNOWN', message: 'untrusted machine detail' }, { status: 503 });
+  await assert.rejects(api.requestJson('/api/admin/coupons/18', { method: 'PUT', body: {} }), /保存结果未知/);
 } finally { editDom.window.document.body.dataset.page = 'closed'; editDom.window.close(); }
 
 // A Product batch-read failure is an unavailable Coupon detail, not a missing

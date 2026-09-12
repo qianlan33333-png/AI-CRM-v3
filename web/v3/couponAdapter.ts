@@ -247,18 +247,35 @@ function couponID(): number {
   const path = location.pathname.match(/^\/admin\/coupons\/([1-9][0-9]*)\/edit$/)?.[1] || '';
   const id = Number(query || path); return Number.isSafeInteger(id) && id > 0 ? id : 0;
 }
-function responseMessage(payload: unknown, fallback: string): string {
+function responseMessage(payload: unknown, status: number): string {
   const source = asJson(payload);
-  if (source.code === 'unavailable') return '商品或优惠券信息暂不可用，请稍后重试。';
-  return typeof source.message === 'string' && source.message.trim() ? source.message : fallback;
+  // HTTP responses are an untrusted transport boundary.  Coupon's stable code
+  // is the only display contract; never surface an arbitrary server message.
+  switch (source.code) {
+    case 'unavailable': return '商品或优惠券信息暂不可用，请稍后重试。';
+    case 'unauthorized': return '登录状态已失效，请重新登录后重试。';
+    case 'forbidden': return '当前账号没有操作优惠券的权限。';
+    case 'csrf_required': return '页面验证已失效，请刷新页面后重试。';
+    case 'invalid_request': return '请检查优惠券内容后重新保存。';
+    case 'not_found': return '优惠券不存在或已删除，请返回列表核对。';
+    case 'conflict': return '优惠券内容已变化，请返回列表核对后重试。';
+    case 'CREATE_OUTCOME_UNKNOWN': return '优惠券保存结果未知；请保持内容不变后重试，或先返回列表核对。';
+  }
+  switch (status) {
+    case 400: return '请检查优惠券内容后重新保存。';
+    case 401: return '登录状态已失效，请重新登录后重试。';
+    case 403: return '当前账号没有操作优惠券的权限。';
+    case 409: return '优惠券内容已变化，请返回列表核对后重试。';
+    case 503: return '商品或优惠券信息暂不可用，请稍后重试。';
+    default: return '请求未完成，请稍后重试。';
+  }
 }
 async function readCoupon(id: number): Promise<Json> {
   if (!id) return {};
   const response = await nativeFetch(`/api/admin/coupons/${id}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
   if (!response.ok) {
     const payload = await response.clone().json().catch(() => null);
-    if (asJson(payload).code === 'unavailable') throw new Error('商品或优惠券信息暂不可用，请稍后重试。');
-    throw new Error(`优惠券读取失败（HTTP ${response.status}）`);
+    throw new Error(responseMessage(payload, response.status));
   }
   const payload = asJson(await response.json()); const coupon = asJson(payload.coupon || payload.item || payload);
   const refs = Array.isArray(coupon.target_refs) ? coupon.target_refs.map((value) => String(value)) : [];
@@ -316,7 +333,7 @@ function installAdminAPI(): void {
     if (knownID) return { coupon: { id: knownID } };
     const response = await window.fetch(url, { ...options, headers, body: body as BodyInit | null | undefined, credentials: 'same-origin' });
     const payload = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(responseMessage(payload, `请求失败（HTTP ${response.status}）`));
+    if (!response.ok) throw new Error(responseMessage(payload, response.status));
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('保存结果无法确认；请保持内容不变后重试或先返回列表核对。');
     if (couponMutation(absolute, method)) {
       const receipt = (payload as Json).coupon as Json | undefined;

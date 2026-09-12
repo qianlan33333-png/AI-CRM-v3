@@ -423,6 +423,28 @@
       ],
       "reason": "Record the user-authorized Chinese order and coupon presentation together with bounded WeChat Pay refund-confirmation safety. Only active V3 OpenAPI authority and its index/lock identities change; frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
       "review_reference": "root review of PR #256 c15e209"
+    },
+    {
+      "base_commit": "7b9d9eed9d2a31f0ab1d6d7b9514c1e2fe78f7f0",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "6b674f310b6e9c3191b63742360f4721d63670b67e798e26513f8587d90d8a5a",
+          "head_sha256": "709e24c1778e5af51b7e127ebba797f3ba7af9f76d269b147c32b87e07b4aee2"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "9e3cf17048551fa4b561718d9e11af6e0b390cc189bfe5d55f04d91f12407525",
+          "head_sha256": "56810f10277818b92df8a8f87a4cbb45c7ac8280953ee3601bbfabcb2ad396f5"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "b64266561eab87bdd007fe7c357d785665eda37ce251375c811710ae57394369",
+          "head_sha256": "476a46c38e28403a7a6bf3840eac11d00ec507dad66058d107acffb4e5999678"
+        }
+      ],
+      "reason": "Record the user-authorized Coupon Chinese product presentation and Shanghai claim-window contract. Only active V3 OpenAPI authority and its index/lock identities change; frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
+      "review_reference": "root review of PR #259 coupon Product display contract"
     }
   ]
 }
