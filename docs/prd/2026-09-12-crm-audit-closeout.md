@@ -50,7 +50,7 @@ Radar 统计复用既有 canonical customer 统计事实，但不在 Radar 内�
 | AUD-07 | readiness 只覆盖旧迁移/旧表，不能证明当前模块所需结构齐全 | readiness 按启用模块检查完整迁移、表和关键字段；缺失时明确失败并指出结构缺口 | P1 |
 | AUD-08 | 实际注册的端点与主 OpenAPI 至少有 37 个 method/path 缺口，另有自定义 dispatcher | 为仍受支持的路由补齐唯一主契约；退休路由单独登记，不恢复已淘汰入口；契约检查覆盖显式注册与自定义 dispatcher | P1 |
 | AUD-09 | 媒体库实际菜单没有挂载来源 Owner 的素材读取能力 | 挂载来源 Owner 的读取、筛选和状态投影；不以旧静态模板代替运行时页面 | P1 |
-| AUD-10 | Open Platform 的运行时失败类型与主 OpenAPI 不一致 | 由唯一主 OpenAPI 重新生成并验证受控错误类型 | P1 |
+| AUD-10 | HXC Dashboard Orval 客户端没有随主 OpenAPI 的依赖类型变化重新生成 | 从唯一主 OpenAPI 重新生成 HXC 客户端并验证生成物闭包 | P1 |
 | AUD-11 | 已归档渠道仍可能被误导为可用二维码 | 归档状态只提供恢复指引；不显示/生成可用二维码，恢复走正常 Catalog 状态机 | P1 |
 | AUD-12 | 欢迎正文把 `{{客户名}}` 原样发送 | 在接收 callback 的可用事实内冻结渲染正文；姓名缺失用“朋友”，读取失败可观测失败，未知变量拒绝保存；Provider 不持事务 | P1 |
 
@@ -71,6 +71,8 @@ UI 统一沿用现有标准组件和业务语义，做窄范围整改，不扩�
 | UI-07 | 全站部分页面未完成现有标准组件盘点与接入核验 | 覆盖全部 CRM 板块和入口，逐页核对按钮、表单、筛选、表格、弹窗、状态标签、加载/空态/错误、分页及反馈；能复用现有标准组件的地方统一接入，保留业务特有结构但不新增同义本地组件 |
 | UI-08 | 不同浏览器时区会让业务时刻展示与提交漂移 | 页面显示和 datetime-local 回填均采用 Shanghai 业务语义；未修改字段保留原 instant 与精度 |
 | UI-09 | 优惠券把目标商品 ID、英文状态和不清楚的领取时间范围直接暴露给管理者；手机列表不可操作 | Product Owner 批量投影真实名称，读取失败明确；时间范围、状态中文化；390px 下标题、筛选和横向表格均可见可用，且不把未知价格伪造为 0 |
+| UI-10 | 人群计划的时刻在不同浏览器时区下展示或提交漂移 | 人群计划路由独立采用 Shanghai 语义，并完成 Chromium 回归 |
+| UI-11 | 全站错误和结果反馈夹带英文、机器码或不可行动信息 | 使用每个路由的受控中文反馈；不透传任意服务端文本，并保留用户可执行的下一步 |
 
 ### 迁移和人工验收
 
@@ -96,7 +98,7 @@ UI 统一沿用现有标准组件和业务语义，做窄范围整改，不扩�
 3. 实施分页、刷新计数和 readiness（AUD-05 至 AUD-07）。
 4. 补齐 OpenAPI 与 dispatcher 契约（AUD-08）。
 5. 先修公共选择器和布局基础，再接入运营闭环、GroupOps、渠道页面（UI-01 至 UI-07）。
-6. 优先审查订单/退款边界 #256；在其父合同稳定后，独立审查上海时间 #258 与优惠券中文展示 #259，三者均不以 stack 审查替代 CI。
+6. 优先审查订单/退款边界 #256；在其父合同稳定后，独立审查上海时间 #258、优惠券中文展示 #259、人群计划时区 D 和全站中文反馈 E，均不以 stack 审查替代 CI。
 7. 逐项执行迁移人工验收和真实受控 Provider 验收。
 8. 由总控审查每个 PR 的业务判断、OneID/持久化/外部效果边界、测试证据和发布清单，再进入 GitHub 合并。
 
@@ -116,13 +118,12 @@ GitHub 只负责版本、审查和 CI。PR #241 已把 `.github/workflows/ci.yml
 
 最终发布流程：
 
-1. 从全部应用 PR 合入后的最新 `main` 准确 SHA 构建 Linux 目标架构的完整发布包，校验包内容和 SHA-256，并保存独立构建清单。清单必须逐项校验 `migrations/0148_channel_archive_edit.sql`、`migrations/0149_outbound_material_refresh_source_count.sql`、`migrations/0150_channel_welcome_message_snapshots.sql` 与包内 `release-files.sha256`；PR 的 deploy skipped 不产生可发布制品证据。安装器现有显式文件断言只覆盖 0150，0148/0149 须由发布前 preflight 和完整清单明确覆盖。
+1. 从全部应用 PR 合入后选定的最新 `main` 准确 SHA 构建 Linux 目标架构的完整发布包，校验包内容和 SHA-256，并保存独立构建清单。该 SHA 的构建输入包含此前已合并的全部内容（含 #240 如届时已合并）。清单必须逐项校验 `migrations/0148_channel_archive_edit.sql`、`migrations/0149_outbound_material_refresh_source_count.sql`、`migrations/0150_channel_welcome_message_snapshots.sql` 与包内 `release-files.sha256`；PR 的 deploy skipped 不产生可发布制品证据。安装器现有显式文件断言只覆盖 0150，0148/0149 须由发布前 preflight 和完整清单明确覆盖。
 2. 在前向迁移前记录当前 `/opt/aicrm/current` 目标和 release SHA，并按既有 runbook 在受保护路径创建新的目标数据库备份与可恢复性证据；早期备份不能替代本次备份。备份只用于恢复计划，不能作为已执行迁移或业务验收的证明。
 3. 先验证无其他发布正在安装或切换，再通过本机已有 SSH 配置上传；只读取 SSH 用户和目标，不读取、复制或输出私钥、Secret 环境变量和受保护配置正文。
 4. 调用版本匹配的安装程序，执行 forward-only migration、服务切换、回滚保护和 `/healthz`/`/readyz` 校验。迁移后必须从 `platform_schema_migrations` 独立核对 0148、0149、0150 三条记录的准确 version、name、checksum（与该最终包清单相同）；`current` 回退不构成已提交 SQL 的回退。
 5. 核对线上 SHA、正式 HTTPS、登录后关键页面和接口，再执行受控真实 Provider 验收。
-6. 发布成功、浏览器验收和 Provider/回执验收分别记录；上传完成或进程健康不能单独宣布业务完成。线上 SHA 必须与第 1 步独立构建清单比较，发布后的文档更新不是该构建的输入，避免把文档提交与发布 SHA 自引用。
-7. 发布阶段 D 保留给最终 SHA 的本地 Linux 构建、SDK 闭包证明和制品完整性；阶段 E 保留给受保护安装、线上 SHA/HTTPS/readiness、登录态页面与每项受控外部验收。两阶段均未开始。
+6. 发布成功、浏览器验收和 Provider/回执验收分别记录；上传完成或进程健康不能单独宣布业务完成。线上 SHA 必须与第 1 步独立构建清单比较。发布后新增的验收文档只能记录该 SHA 的结果，不能冒充已部署版本或替代制品证据。
 
 安装包必须包含当前 release 所需的二进制、迁移、前端产物、服务单元和部署脚本；不得把 macOS 二进制或本地临时测试产物上传到服务器。数据库迁移只前进，不用破坏性回滚掩盖失败。
 

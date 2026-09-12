@@ -26,7 +26,7 @@ OneID/持久化/效果总判断：客户、身份、归属和 HXC 项目复用 I
 | AUD-07 | readiness 覆盖启用模块所需迁移、表和字段 | #243 `4cf9b0c5f8787adb6d2dde076bc044e13df4a02d`；#252 `a726f8191695b1e04960c37d800ec3bb194d819a` | 完整 CI 通过 | 均已合并 | skipped | 不适用 | 不适用 | 当前运行时所需结构缺失会 fail closed；#252 保留 0124 并新增 0149 的缺失→503、恢复→200 PostgreSQL 检查 |
 | AUD-08 | 至少 37 个活动 method/path 补齐主 OpenAPI，覆盖 dispatcher | #247 `5a057e60cbd408db6dc790cad12b4d99220e23f0` | 完整 CI 通过 | 已合并 | skipped | 不适用（契约门） | 不适用 | 覆盖 38 个活动操作、118 个显式注册、认证 AND 与退休 imports 负例；退休路径不恢复为活动操作 |
 | AUD-09 | 素材库路由须挂载来源 Owner 的读取与筛选能力 | #253 `56f071be1b24dc841cd96a505195279038d48d82` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；线上登录态待验 | 不适用（读取与 UI） | 已进入 main；不把隔离浏览器旅程外推为线上素材读回 |
-| AUD-10 | Open Platform 失败类型须由主 OpenAPI 生成并保持受控错误语义 | #254 `4425076489463450a41c0b484d8523c7a7e4fd63` | 完整 CI 通过 | 已合并 | skipped | 不适用（契约门） | 不适用 | 已进入 main；待最终发布包中复核生成物闭包 |
+| AUD-10 | HXC Dashboard Orval 客户端没有随主 OpenAPI 的依赖类型变化重新生成 | #254 `4425076489463450a41c0b484d8523c7a7e4fd63` | 完整 CI 通过 | 已合并 | skipped | 不适用（生成契约门） | 不适用 | HXC 客户端已按当前主 OpenAPI 重新生成；待最终发布包中复核生成物闭包 |
 | AUD-11 | 已归档渠道不得继续显示或生成可用二维码，恢复必须走正常配置状态机 | #255 `a777f56778f56cb4e1c9e60d5255549bf900e646` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；线上登录态待验 | 不适用（本缺陷不写 Provider） | 已进入 main；归档历史与当前 active 事实在渠道验收中分别记录 |
 | AUD-12 | 渠道欢迎正文中的 `{{客户名}}` 必须冻结为可信客户名或“朋友”，未知变量应明确拒绝 | #257 `f3e453e288e26798808c02ad6adb17d396c05c61` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；发布后待新建关系条件下验收 | Provider 未以该新版本验收 | 0150 使已冻结正文不可漂移；不重放旧 welcome code，既有好友关系不能伪造新添加验收 |
 | UI-01 | 运营闭环控件、反馈和移动端布局统一 | #251 `c9bdedaade3442286f6c77f6962786e01c82bf9f` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；线上登录态待验 | 不适用 | 保持 Excel 标题、封面和冻结快照合同；不把 CI 通过替代线上登录态验收 |
@@ -36,8 +36,10 @@ OneID/持久化/效果总判断：客户、身份、归属和 HXC 项目复用 I
 | UI-05 | Excel 移动端 CSS 修复为两列 | #248 `46887f9d6b9f345e15de69cdc5c03907da805ae9` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；实际登录态待验 | 不适用 | 仍需验证长标题、错误提示和上传控件 |
 | UI-06 | 既有渠道客服显示可信目录姓名 | #250 `0a3c628a146d59176a7ec41d8ab5ac1044104354` | 完整 CI 通过 | 已合并 | skipped | CI browser 已通过；线上登录态待验 | 目录读取未做生产读回 | 本地有界目录补全，未命中必须明确 unavailable，不用技术 ID 冒充姓名 |
 | UI-07 | 全站标准组件盘点、复用和接入验收 | 不适用（只读覆盖矩阵和两页运行时核验） | 7 个定向断言通过；11 个 shell/E2E 通过，2 个旧 fixture 路径跳过 | 不适用 | 未执行 | 21/21 仅入口映射，不等于 21 个真实 browser 回放；两页 DOM 核验确认 canonical automation 45 条/3 页分页正常，登录态全量重放待验 | 不适用（展示层） | automation 旧静态模板为误报，不开发；image-library 搜索、含停用、重置是 canonical active 缺陷，已交由 UI agent 独立修复 |
-| UI-08 | 业务时刻按上海语义展示和回填 | #258 `97e21a024751c2aa3a8552db2df97193546db601`（stack 于 #256） | 尚未开始 | 未合并 | 未执行 | 待验 | 不适用 | 只限展示/输入边界，不能改写未修改字段的原 instant 或精度 |
+| UI-08 | 业务时刻按上海语义展示和回填 | #258 `97e21a024751c2aa3a8552db2df97193546db601`（stack 于 #256） | GitHub 待跑 | 未合并 | 未执行 | 本地全 AdminShell PostgreSQL Chromium 与 fast 检查已通过；线上登录态待验 | 不适用 | 只限展示/输入边界，不能改写未修改字段的原 instant 或精度 |
 | UI-09 | 优惠券列表显示真实商品中文名、领取时间范围与中文状态；手机可完成读取 | #259 `69de16976ed1a74521fd61ca0dc642ee27837e62`（stack 于 #256） | 尚未开始 | 未合并 | 未执行 | 本地隔离 Chromium 已见 1440 完整列与 390 列表/编辑可用；GitHub CI、线上登录态均待验 | 不适用 | 商品名由 Product Port 批量投影；未知价格不显示为 0；当前“删除草稿”为真实受控写入口，本轮未点击 |
+| UI-10 | 人群计划的时间展示与提交须保持 Shanghai 业务语义 | D `b340c8d18f9ff1c2bfa5eff538360eaad2bb97e5`（尚未开 PR） | Chromium 待验 | 未合并 | 未执行 | 待验 | 不适用 | 独立于 #258 的人群计划路由；不以文档提交代替页面验收 |
+| UI-11 | 全站面向用户的失败反馈须是受控中文 | E（UI 实现中，尚未开 PR） | 待验 | 未合并 | 未执行 | 待验 | 不适用 | 不透传机器码或任意服务端文本；逐路由保留可行动的中文提示 |
 
 ## 迁移与人工/Provider 验收
 
@@ -59,16 +61,14 @@ OneID/持久化/效果总判断：客户、身份、归属和 HXC 项目复用 I
 | ID | 门 | PR | CI | merge | deploy | browser | provider | 当前状态 |
 |---|---|---|---|---|---|---|---|---|
 | REL-01 | deploy opt-in 控制先合并，普通 main 合并不自动上传生产 | #241 `b094ffdad26a57b8e3e46ceb4512ac71a020d450` | 完整 CI 通过 | 已合并 | skipped | 不适用 | 不适用 | 默认未设置 `AICRM_ENABLE_ACTIONS_DEPLOY` 时 main 仍跑 CI、不会创建 deploy job |
-| REL-02 | 最终 SHA Linux 完整包、安装顺序、迁移、回滚和 checksum | 待创建 | 待运行 | 待最终应用合并 | 未发布 | 待线上核验 | 不适用 | 必须从最终应用 main SHA 构建独立包和清单，逐项校验 0148/0149/0150 SQL 与 `release-files.sha256`。安装器当前显式断言 0150，完整清单与发布前 preflight 还必须逐项覆盖 0148、0149；迁移后另查三条准确 version/name/checksum。前向 SQL 不由 current 链接回退，后续文档提交不得成为构建输入 |
+| REL-02 | 最终 SHA Linux 完整包、安装顺序、迁移、回滚和 checksum | 待创建 | 待运行 | 待最终应用合并 | 未发布 | 待线上核验 | 不适用 | 选定最终 main SHA 后，构建输入包含此前已合并的全部内容（含 #240 如届时已合并）。发布后新增的验收文档只能记录该 SHA 的结果，不能冒充已部署版本或替代制品证据。包与 preflight 必须逐项校验 0148/0149/0150 SQL、`release-files.sha256` 和迁移账本三条准确 version/name/checksum；安装器当前显式断言 0150，0148/0149 仍须由 preflight 与完整清单明确覆盖 |
 | REL-03 | 本机 SSH 上传、线上 SHA/HTTPS/health/readiness | 不适用 | 不适用 | 依赖 REL-02 | 未执行上传或安装 | 待线上登录验收 | 不适用 | 严格 IP SSH 连通已验证；key preflight 仅核验 4 个 key 有效性，且实际进程的 6 个允许列表开关已核验为布尔结果，均未输出 Secret 原值。未上传，未核对线上 SHA/HTTPS/health/readiness |
 | REL-04 | 受控 Provider、支付/退款和回执独立验收 | 不适用 | 不适用 | 不适用 | 依赖 REL-03 | 测试券窗口已正式 browser 确认，仍未发布 | 渠道旧版本已有一次欢迎和一次入渠标签的独立 receipt；支付、退款未执行 | 受控验收前置的 6 个布尔条件均为 true；用户已授权单笔 0.01 元、累计 0.10 元且只对本轮测试订单全额退款。当前没有系统客户白名单配置，执行前仍须从受保护会话记录核验具体对象；尚未支付、退款或验收 #257 的变量替换 |
-| REL-D | 最终 SHA 的本地 Linux 构建与包完整性 | 待最终应用合并 | 待运行 | 待最终应用合并 | 未执行 | 不适用 | 不适用 | 保留给全部应用 PR 合并后的可重跑构建；不能复用未证明同一 SDK 闭包的旧二进制 |
-| REL-E | 受保护安装、线上 SHA/HTTPS/readiness 与分项回读 | 依赖 REL-D | 不适用 | 依赖 REL-D | 未执行 | 待线上登录态验收 | 依赖各项受控验收 | 先备份并验证恢复清单，再运行编号受保护的本机 SSH 安装；支付/退款、渠道新变量、群发送分别不被 healthz/readyz 代替 |
 
 ## 当前基础核验
 
 - 本状态快照的已合并 main 为 `f3e453e288e26798808c02ad6adb17d396c05c61`；它不替代启动时的审计基线 `6f09899c74a966a87af03158540a030e5c50817d`，最终发布前必须重新读取 main。
-- #239、#241 至 #255、#257 的完整 CI 已通过且均已合并；这些检查的 deploy 都是 skipped。#256、#258、#259 仍为 open：#256 当前 GitHub 的 backend/frontend/browser/check 为 failure，#258 与 #259 尚未启动 GitHub 检查；它们均不代表 deploy、线上 browser 或最终 Provider 验收。
+- #239、#241 至 #255、#257 的完整 CI 已通过且均已合并；这些检查的 deploy 都是 skipped。#256、#258、#259 仍为 open：#256 的旧 head `7b9d9eed…` 曾失败，最新 `7b860a68584a3ee094bfae1dfb28e7513e640aaa` 的 backend/frontend/browser 正在运行；#258、#259 的 GitHub 检查待跑。它们均不代表 deploy、线上 browser 或最终 Provider 验收。
 - #241 后，`deploy` 只有在 `AICRM_ENABLE_ACTIONS_DEPLOY == 'true'` 时才会创建；本轮所有已完成 CI 的 deploy 均为 skipped，未发生 Actions 生产安装。
 - 原工作区存在用户脏修改，本台账对应的文档分支使用独立工作树，不能把原工作区状态当作本分支证据。
 - 修复前基线已有独立 PostgreSQL 16.13 的 16 个领域、86 个 package 全部通过且 0 skip；该证据只用于确认测试基线，不代表当前缺陷已经关闭。没有测试数据库时的 skip 只能记录为未验证。
