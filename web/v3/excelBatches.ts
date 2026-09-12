@@ -156,10 +156,10 @@ function style(): void {
   if (document.getElementById("operation-excel-batch-style")) return;
   const node = el("style");
   node.id = "operation-excel-batch-style";
-  node.textContent = `.operation-excel-workspace{margin:8px 0;color:#1f2329}.operation-excel-workspace *{box-sizing:border-box}.xeb-card{background:#fff;border:1px solid #dee0e3;border-radius:10px;overflow:hidden}.xeb-head{padding:14px 16px;border-bottom:1px solid #eff0f1}.xeb-head h2,.xeb-head h3{margin:0;font-size:16px}.xeb-plan{display:block;text-align:left;border:0;border-bottom:1px solid #f2f3f5;background:#fff;padding:12px 14px;width:100%;cursor:pointer}.xeb-plan:hover{background:#f5f8ff}.operation-excel-workspace small{font-size:12px;color:#8f959e}.xeb-body{padding:16px}.xeb-meta,.xeb-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.xeb-detail{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px;margin-top:16px}.xeb-detail-nav{padding:8px}.xeb-detail-nav button{display:block;width:100%;text-align:left;margin:2px 0}.xeb-detail-nav button[data-selected=true]{background:#eff4ff;color:#245bdb;border-color:#c9d8ff}.operation-excel-workspace button,.operation-excel-workspace input,.operation-excel-workspace select{font:inherit}.operation-excel-workspace button{border:1px solid #dee0e3;border-radius:6px;background:#fff;color:#344054;padding:6px 10px;cursor:pointer;font-size:12px}.operation-excel-workspace button.xeb-primary{background:#3370ff;border-color:#3370ff;color:#fff}.operation-excel-workspace button:disabled{opacity:.5}.xeb-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}.xeb-stat{padding:10px;background:#fafbfc;border:1px solid #eff0f1;border-radius:8px}.xeb-stat b{display:block;font-size:18px}.xeb-scroll{overflow:auto;margin-top:14px}.operation-excel-workspace table{border-collapse:collapse;width:100%;font-size:12px}.operation-excel-workspace th,.operation-excel-workspace td{padding:10px;border-bottom:1px solid #eff0f1;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere}.operation-excel-workspace th{font-weight:500;color:#8f959e;background:#fafafb}.xeb-cover{width:80px;height:60px;object-fit:cover;border-radius:4px}.xeb-status{min-height:22px;color:#935420}.operation-excel-workspace dialog{width:min(680px,92vw);border:1px solid #dee0e3;border-radius:10px;padding:20px}.operation-excel-workspace dialog label{display:block;margin:10px 0 4px;font-size:12px}.operation-excel-workspace textarea{width:100%;min-height:96px}@media(max-width:800px){.xeb-detail{grid-template-columns:1fr}.xeb-grid{grid-template-columns:repeat(2,minmax(0,1fr)}}`;
+  node.textContent = `.operation-excel-workspace{margin:8px 0;color:#1f2329}.operation-excel-workspace *{box-sizing:border-box}.xeb-card{background:#fff;border:1px solid #dee0e3;border-radius:10px;overflow:hidden}.xeb-head{padding:14px 16px;border-bottom:1px solid #eff0f1}.xeb-head h2,.xeb-head h3{margin:0;font-size:16px}.xeb-plan{display:block;text-align:left;border:0;border-bottom:1px solid #f2f3f5;background:#fff;padding:12px 14px;width:100%;cursor:pointer}.xeb-plan:hover{background:#f5f8ff}.operation-excel-workspace small{font-size:12px;color:#8f959e}.xeb-body{padding:16px}.xeb-meta,.xeb-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.xeb-pagination{justify-content:space-between}.xeb-detail{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px;margin-top:16px}.xeb-detail-nav{padding:8px}.xeb-detail-nav button{display:block;width:100%;text-align:left;margin:2px 0}.xeb-detail-nav button[data-selected=true]{background:#eff4ff;color:#245bdb;border-color:#c9d8ff}.operation-excel-workspace button,.operation-excel-workspace input,.operation-excel-workspace select{font:inherit}.operation-excel-workspace button{border:1px solid #dee0e3;border-radius:6px;background:#fff;color:#344054;padding:6px 10px;cursor:pointer;font-size:12px}.operation-excel-workspace button.xeb-primary{background:#3370ff;border-color:#3370ff;color:#fff}.operation-excel-workspace button:disabled{opacity:.5}.xeb-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}.xeb-stat{padding:10px;background:#fafbfc;border:1px solid #eff0f1;border-radius:8px}.xeb-stat b{display:block;font-size:18px}.xeb-scroll{overflow:auto;margin-top:14px}.operation-excel-workspace table{border-collapse:collapse;width:100%;font-size:12px}.operation-excel-workspace th,.operation-excel-workspace td{padding:10px;border-bottom:1px solid #eff0f1;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere}.operation-excel-workspace th{font-weight:500;color:#8f959e;background:#fafafb}.xeb-cover{width:80px;height:60px;object-fit:cover;border-radius:4px}.xeb-status{min-height:22px;color:#935420}.operation-excel-workspace dialog{width:min(680px,92vw);border:1px solid #dee0e3;border-radius:10px;padding:20px}.operation-excel-workspace dialog label{display:block;margin:10px 0 4px;font-size:12px}.operation-excel-workspace textarea{width:100%;min-height:96px}@media screen and (max-width:800px){.xeb-detail{grid-template-columns:1fr}.xeb-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.xeb-head,.xeb-body{padding:12px}.xeb-pagination{align-items:flex-start;flex-direction:column}}`;
   document.head.append(node);
   const pickerStyle = el("style");
-  pickerStyle.textContent = `.xeb-cover-picker{display:grid;gap:12px}.xeb-cover-picker-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;max-height:420px;overflow:auto}.xeb-cover-picker-item{display:grid;gap:6px;padding:8px;border:1px solid #dee0e3;border-radius:8px;background:#fff;text-align:left}.xeb-cover-picker-item img{width:100%;height:96px;object-fit:cover;background:#f5f6f7;border-radius:5px}.xeb-cover-picker-item small{overflow-wrap:anywhere}@media(max-width:800px){.xeb-cover-picker-list{grid-template-columns:repeat(2,minmax(0,1fr))}}`;
+  pickerStyle.textContent = `.xeb-cover-picker{display:grid;gap:12px}.xeb-cover-picker-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;max-height:420px;overflow:auto}.xeb-cover-picker-item{display:grid;gap:6px;padding:8px;border:1px solid #dee0e3;border-radius:8px;background:#fff;text-align:left}.xeb-cover-picker-item img{width:100%;height:96px;object-fit:cover;background:#f5f6f7;border-radius:5px}.xeb-cover-picker-item small{overflow-wrap:anywhere}@media screen and (max-width:800px){.xeb-cover-picker-list{grid-template-columns:repeat(2,minmax(0,1fr))}}`;
   document.head.append(pickerStyle);
 }
 function batchState(batch: Obj): string {
@@ -195,6 +195,13 @@ function card(row: Obj): HTMLElement {
 class Workspace {
   private root: HTMLElement;
   private plans: Obj[] = [];
+  private planTotal = 0;
+  private planLimit = 20;
+  private planOffset = 0;
+  private planHasMore = false;
+  private planNextOffset: number | null = null;
+  private plansLoading = false;
+  private plansError = "";
   private legacy: Obj[] = [];
   private legacyError = "";
   private batches: Obj[] = [];
@@ -210,7 +217,7 @@ class Workspace {
     parent.replaceChildren(this.root);
   }
   async mount(): Promise<void> {
-    await this.loadPlans();
+    await this.loadPlans(0, true);
   }
   private right(): HTMLElement {
     return this.root.querySelector<HTMLElement>(".xeb-detail-main")!;
@@ -254,9 +261,15 @@ class Workspace {
       this.syncBatchMutationControls();
     }
   }
-  private async loadPlans(): Promise<void> {
-    const [result, legacyResult] = await Promise.all([
-      api("/api/admin/operation-cycles/strategies?limit=100&offset=0"),
+  private async loadPlans(offset = this.planOffset, openHash = false): Promise<void> {
+    if (this.plansLoading) return;
+    this.plansLoading = true;
+    this.plansError = "";
+    this.renderShell();
+    const [summaryResult, legacyResult] = await Promise.all([
+      api(`${base}/strategy-summaries?limit=20&offset=${Math.max(0, offset)}`)
+        .then((value) => ({ value, error: "" }))
+        .catch((error) => ({ value: {} as Obj, error: (error as Error).message })),
       api(`${base}/legacy`)
         .then((value) => ({ value, error: "" }))
         .catch((error) => ({
@@ -264,39 +277,58 @@ class Workspace {
           error: (error as Error).message,
         })),
     ]);
-    const strategies = Array.isArray(result.items) ? result.items : [];
-    this.plans = await Promise.all(
-      strategies.map(async (strategy) => {
-        try {
-          const batches = await api(
-            `${base}/strategies/${encodeURIComponent(String(strategy.strategy_key))}`,
-          );
-          return {
-            ...strategy,
-            ui_latest_batch: Array.isArray(batches.items)
-              ? batches.items[0]
-              : null,
-          };
-        } catch (error) {
-          return {
-            ...strategy,
-            ui_latest_batch_error: (error as Error).message,
-          };
-        }
-      }),
-    );
+    this.plansLoading = false;
     this.legacy = Array.isArray(legacyResult.value.items)
       ? legacyResult.value.items
       : [];
     this.legacyError = legacyResult.error;
+    if (summaryResult.error) {
+      this.plans = [];
+      this.plansError = `长期计划读取失败：${summaryResult.error}`;
+      this.renderShell();
+      return;
+    }
+    const result = summaryResult.value;
+    const items = Array.isArray(result.items) ? result.items : [];
+    const total = Number(result.total);
+    const limit = Number(result.limit);
+    const returnedOffset = Number(result.offset);
+    const next = result.next_offset === null ? null : Number(result.next_offset);
+    if (!Number.isSafeInteger(total) || total < 0 || !Number.isSafeInteger(limit) || limit !== 20 || !Number.isSafeInteger(returnedOffset) || returnedOffset < 0 || returnedOffset !== Math.max(0, offset) || items.length > limit || (next !== null && (!Number.isSafeInteger(next) || next <= returnedOffset))) {
+      this.plans = [];
+      this.plansError = "长期计划分页响应无效，请刷新后重试";
+      this.renderShell();
+      return;
+    }
+    if (!items.length && returnedOffset > 0 && total > 0) {
+      const lastPageOffset = Math.floor((total - 1) / limit) * limit;
+      // A concurrent delete may leave this page empty after the server counted
+      // strategies. Never retry the same offset: fall back one page when the
+      // newly-computed last page is not before the requested offset.
+      const fallbackOffset =
+        lastPageOffset < returnedOffset
+          ? lastPageOffset
+          : Math.max(0, returnedOffset - limit);
+      await this.loadPlans(fallbackOffset, openHash);
+      return;
+    }
+    this.plans = items;
+    this.planTotal = total;
+    this.planLimit = limit;
+    this.planOffset = returnedOffset;
+    this.planHasMore = result.has_more === true;
+    this.planNextOffset = this.planHasMore ? next : null;
+    if (this.planHasMore !== (returnedOffset + items.length < total) || (this.planHasMore && this.planNextOffset !== returnedOffset + items.length)) {
+      this.plans = [];
+      this.plansError = "长期计划分页游标不一致，请刷新后重试";
+      this.renderShell();
+      return;
+    }
     this.renderShell();
-    const strategy = new URLSearchParams(location.hash.slice(1)).get(
-      "strategy",
-    );
-    if (
-      strategy &&
-      this.plans.some((item) => String(item.strategy_key) === strategy)
-    )
+    const strategy = openHash
+      ? new URLSearchParams(location.hash.slice(1)).get("strategy")
+      : "";
+    if (strategy)
       await this.openStrategy(strategy, false);
   }
   private renderShell(): void {
@@ -306,13 +338,25 @@ class Workspace {
     const head = el("div", "长期计划");
     head.className = "xeb-head";
     left.append(head);
+    if (this.plansLoading) {
+      left.append(el("p", "正在读取长期计划…"));
+      this.root.append(left);
+      return;
+    }
+    if (this.plansError) {
+      const error = el("p", this.plansError);
+      error.setAttribute("role", "alert");
+      left.append(error, action("重新读取", () => this.loadPlans(this.planOffset)));
+      this.root.append(left);
+      return;
+    }
     if (!this.plans.length) left.append(el("p", "暂无可访问的长期计划。"));
     const rows = this.plans.map((plan) => {
-      const latest = plan.ui_latest_batch || {};
+      const latest = plan.latest_batch || {};
       const progress = latest.id
         ? `批次 #${latest.id} · ${batchState(latest)} · 预计任务 ${latest.summary?.expected_tasks ?? 0}`
-        : plan.ui_latest_batch_error
-          ? `批次读取失败：${plan.ui_latest_batch_error}`
+        : plan.latest_batch_status === "unavailable"
+          ? "批次摘要暂不可用"
           : "暂无批次";
       return [
         String(plan.title || plan.strategy_key),
@@ -321,6 +365,16 @@ class Workspace {
       ];
     });
     left.append(table(["任务名称", "当前进度", "操作"], rows));
+    const pager = el("div");
+    pager.className = "xeb-actions xeb-pagination";
+    const start = this.planTotal ? this.planOffset + 1 : 0;
+    const end = Math.min(this.planOffset + this.plans.length, this.planTotal);
+    const previous = action("上一页", () => this.loadPlans(Math.max(0, this.planOffset - this.planLimit)));
+    previous.disabled = this.planOffset <= 0;
+    const next = action("下一页", () => this.loadPlans(this.planNextOffset ?? this.planOffset));
+    next.disabled = !this.planHasMore || this.planNextOffset === null;
+    pager.append(el("small", `第 ${start}–${end} 项，共 ${this.planTotal} 项`), previous, next);
+    left.append(pager);
     if (this.legacy.length) {
       const legacy = el("div");
       legacy.className = "xeb-head";

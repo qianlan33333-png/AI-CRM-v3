@@ -15,17 +15,17 @@ paths:
         "200": {description: "Existing AI review plans created from Excel", content: {application/json: {schema: {type: object, properties: {items: {type: array, items: {$ref: "#/components/schemas/AIAssistantPlan"}}}}}}}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
-  /api/admin/operation-batches/imports:
-    post:
-      operationId: importExcelOperationBatch
-      tags: [AIAssistant]
-      security: [{adminSession: [], csrfHeader: []}]
+  /api/admin/operation-batches/strategy-summaries:
+    get:
+      operationId: listOperationExcelBatchStrategySummaries
+      tags: [AIAssistant, OperationCycles]
+      description: "Returns one bounded Operation Cycle strategy page and one AI Assistant aggregate for its latest Excel batch facts. Viewer, admin, and super-admin sessions with AI Assistant read permission may call it. Only `limit` and `offset` are accepted once each; empty, repeated, unknown, or out-of-range query values return 400. An unreadable strategy source fails the whole page; an unreadable AI Assistant aggregate is represented per item as `latest_batch_status: unavailable` with `latest_batch: null`."
+      security: [{adminSession: []}]
       parameters:
-        - {$ref: "#/components/parameters/IdempotencyKey"}
-        - {name: new, in: query, schema: {type: string, enum: ["1"]}, description: "Explicitly create a new batch even for an identical file"}
-      requestBody: {required: true, content: {application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {schema: {type: string, format: binary}}}}
+        - {name: limit, in: query, description: Optional once. Defaults to 20; accepted values are 1 through 100., schema: {type: integer, format: int32, minimum: 1, maximum: 100, default: 20}}
+        - {name: offset, in: query, description: Optional once. Defaults to 0; accepted values are 0 through 2147483647., schema: {type: integer, format: int32, minimum: 0, maximum: 2147483647, default: 0}}
       responses:
-        "200": {description: "Created or replayed native AI review plan; no identity resolution or send", content: {application/json: {schema: {type: object, properties: {plan: {$ref: "#/components/schemas/AIAssistantPlan"}, replayed: {type: boolean}}}}}}
+        "200": {description: "Bounded strategy page. `latest_batch_status: ready` with `latest_batch: null` means that the strategy is known to have no batch; `unavailable` never means no batch.", content: {application/json: {schema: {$ref: "#/components/schemas/OperationExcelBatchStrategySummaryPage"}}}}
         "400": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
@@ -2719,16 +2719,11 @@ paths:
       tags: [GroupOps]
       security: [{adminSession: []}]
       parameters:
-        - {name: scope, in: query, required: true, schema: {type: string, const: group_ops}}
+        - {name: scope, in: query, required: true, description: "Composition dispatches group_ops to GroupOps, owner_migration to Customer, and channel_code to Channel. Each owner applies its own role and query validation.", schema: {type: string, enum: [group_ops, owner_migration, channel_code]}}
         - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
-      responses: {"200": {description: Local eligible staff only, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
-    post:
-      operationId: syncGroupOpsOperationMembers
-      tags: [GroupOps]
-      security: [{adminSession: [], csrfHeader: []}]
-      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
-      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberSyncRequest"}}}}
-      responses: {"200": {description: Refreshed local eligible staff only, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+        - {name: q, in: query, description: Case-insensitive owner-projection filter, schema: {type: string, maxLength: 200}}
+        - {name: include_inactive, in: query, description: Accepted only by owner_migration; defaults to false, schema: {type: boolean, default: false}}
+      responses: {"200": {description: "Scope-owned local staff projection. `scope=owner_migration` has an items-only Customer picker; group_ops and channel_code identify their fixed scope and page size.", content: {application/json: {schema: {oneOf: [{$ref: "#/components/schemas/GroupOpsOperationMemberPage"}, {$ref: "#/components/schemas/OwnerHandoffOperationMemberPage"}, {$ref: "#/components/schemas/ChannelOperationMemberPage"}]}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/automation/group-ops/broadcast:
     post:
       operationId: acceptGroupOpsBroadcast
@@ -3653,11 +3648,287 @@ paths:
         - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
       responses: {"202": {description: Temporary donor-compatible authenticated intake adapter, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /oauth/token:
+    post:
+      operationId: issueOpenPlatformClientCredentialsToken
+      tags: [OpenPlatform]
+      description: Client-credentials token exchange. The client authenticates with HTTP Basic credentials or matching form credentials; it is not an admin-session route.
+      requestBody: {required: true, content: {application/x-www-form-urlencoded: {schema: {type: object, additionalProperties: false, required: [grant_type], properties: {grant_type: {const: client_credentials}, client_id: {type: string, minLength: 1, maxLength: 200}, client_secret: {type: string, minLength: 1, maxLength: 1024}, audience: {type: string, maxLength: 200}, scope: {type: string, maxLength: 1000}}}}}}
+      responses: {"200": {description: Short-lived machine bearer token, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformIssuedToken"}}}}, "400": {$ref: "#/components/responses/OpenPlatformOAuthFailure"}, "401": {$ref: "#/components/responses/OpenPlatformOAuthFailure"}, "403": {$ref: "#/components/responses/OpenPlatformOAuthFailure"}, "429": {$ref: "#/components/responses/OpenPlatformOAuthFailure"}}
+  /mcp:
+    get:
+      operationId: getOpenPlatformMCPMetadata
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized MCP transport metadata, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMCPMetadataResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+    post:
+      operationId: invokeOpenPlatformMCP
+      tags: [OpenPlatform]
+      description: JSON-RPC 2.0 machine protocol. `tools/call` for the AI review-plan operation requires `Idempotency-Key`; other MCP calls do not. Authentication, authorization, validation, and application failures are JSON-RPC `error` results with HTTP 200.
+      security: [{machineBearer: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformJSONRPCRequest"}}}}
+      responses: {"200": {description: JSON-RPC result or protocol/application error envelope, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformJSONRPCResponse"}}}}}
+  /open/v1/capabilities:
+    get:
+      operationId: listOpenPlatformCapabilities
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized operation catalog, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCapabilitiesResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/customers:resolve:
+    post:
+      operationId: resolveOpenPlatformCustomer
+      tags: [OpenPlatform]
+      description: Resolves only from stable evidence. It never provisions or merges a Customer.
+      security: [{machineBearer: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerResolveRequest"}}}}
+      responses: {"200": {description: Safe resolution result, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerResolveResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/customers/{customer_id}:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getOpenPlatformCustomerContext
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized safe Customer context, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerContextResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/customers/{customer_id}/activities:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: listOpenPlatformCustomerActivities
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      parameters: [{name: types, in: query, explode: true, style: form, schema: {type: array, uniqueItems: true, items: {type: string, enum: [message, survey, radar, order]}}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}, {name: cursor, in: query, schema: {type: string, minLength: 1, maxLength: 4096}}]
+      responses: {"200": {description: Bounded machine-authorized Customer activities, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerActivitiesResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/ai/review-plans:
+    post:
+      operationId: createOpenPlatformAIReviewPlan
+      tags: [OpenPlatform]
+      description: Creates a review plan only; it does not dispatch an external effect.
+      security: [{machineBearer: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformAIReviewPlanRequest"}}}}
+      responses: {"201": {description: Idempotent machine-authorized review plan, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformAIReviewPlanResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/operations/{operation_id}:
+    parameters: [{name: operation_id, in: path, required: true, description: "ai_review_plan: plus a positive plan id", schema: {type: string, pattern: "^ai_review_plan:[1-9][0-9]*$", maxLength: 200}}]
+    get:
+      operationId: getOpenPlatformOperation
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized review-plan operation status, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOperationStatusResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /api/admin/open-platform/clients:
+    get:
+      operationId: listOpenPlatformClients
+      tags: [OpenPlatform]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Access-owned machine client summaries, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClientList"}}}}, "401": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClientCreateRequest"}}}}
+      responses: {"201": {description: Created client and one-time secret material, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformIssuedMachineClient"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: getOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Access-owned machine client, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClientEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+    patch:
+      operationId: patchOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClientPatchRequest"}}}}
+      responses: {"200": {description: Updated Access-owned machine client; any grant change invalidates prior bearers, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClientEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/audit:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: listOpenPlatformClientAudit
+      tags: [OpenPlatform]
+      security: [{adminSession: []}]
+      parameters: [{name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}]
+      responses: {"200": {description: Access-owned client audit facts, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineAuditList"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/activate:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: activateOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClientActivateRequest"}}}}
+      responses: {"200": {description: Machine client activated, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClientEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/rotate:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: rotateOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      responses: {"200": {description: Rotated client and one-time secret material, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformIssuedMachineClient"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/enable:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: enableOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      responses: {"200": {description: Machine client enabled, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClient"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/disable:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: disableOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      responses: {"200": {description: Machine client disabled, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformMachineClient"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/routes:
+    get:
+      operationId: listOpenPlatformRoutes
+      tags: [OpenPlatform]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Active Open Platform operation catalog, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformRouteCatalog"}}}}, "401": {$ref: "#/components/responses/Error"}}
+  /api/admin/customers/owner-handoffs/context:
+    get:
+      operationId: getOwnerHandoffContext
+      tags: [Customer]
+      description: Super-admin-only safe staff projection for the owner-handoff UI. The trusted corporation scope is server configured and never supplied by the browser.
+      security: [{adminSession: []}]
+      responses: {"200": {description: Eligible owner-handoff staff and operator label, content: {application/json: {schema: {$ref: "#/components/schemas/OwnerHandoffContextResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/customers/owner-handoffs/previews:
+    post:
+      operationId: previewCustomerOwnerHandoff
+      tags: [Customer]
+      description: Creates a bounded, expiring preview only. For `external_userids`, the server resolves existing verified identities without provisioning or merging Customers.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [mode, source_staff_id, target_staff_id, confirmation_phrase], properties: {mode: {type: string, enum: [local_only, wecom_then_crm]}, source_staff_id: {$ref: "#/components/schemas/PositiveID"}, target_staff_id: {$ref: "#/components/schemas/PositiveID"}, customer_ids: {type: array, maxItems: 20000, items: {$ref: "#/components/schemas/PositiveID"}}, external_userids: {type: array, maxItems: 20000, items: {type: string, minLength: 1, maxLength: 1024}}, welcome_message: {type: string, maxLength: 4000}, confirmation_phrase: {type: string, minLength: 1}, scope: {type: string, enum: [all]}}}}}}
+      responses: {"200": {description: Expiring preview and candidate states; no Provider write is performed, content: {application/json: {schema: {$ref: "#/components/schemas/OwnerHandoffPreview"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/customers/owner-handoffs/previews/{preview_id}:
+    parameters: [{name: preview_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: getCustomerOwnerHandoffPreview
+      tags: [Customer]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Frozen owner-handoff preview, content: {application/json: {schema: {$ref: "#/components/schemas/OwnerHandoffPreview"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/customers/owner-handoffs/confirm:
+    post:
+      operationId: confirmCustomerOwnerHandoff
+      tags: [Customer]
+      description: Confirms exactly one unexpired preview. `idempotency_key` is an application-body key because this frozen host submits it in JSON.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [preview_id, preview_hash, confirmation_phrase, idempotency_key], properties: {preview_id: {type: string, minLength: 1, maxLength: 200}, preview_hash: {type: string, minLength: 1, maxLength: 128}, confirmation_phrase: {type: string, minLength: 1}, idempotency_key: {type: string, minLength: 8, maxLength: 200}}}}}}
+      responses: {"202": {description: "Customer-owned batch accepted atomically; WeCom work, when enabled, remains an existing Outbound effect", content: {application/json: {schema: {$ref: "#/components/schemas/OwnerHandoffBatch"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/customers/owner-handoffs/batches/{batch_id}:
+    parameters: [{name: batch_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: getCustomerOwnerHandoffBatch
+      tags: [Customer]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Durable owner-handoff batch and safe outcome state, content: {application/json: {schema: {$ref: "#/components/schemas/OwnerHandoffBatch"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/customers/owner-handoffs/batches/{batch_id}/transfer-result:
+    parameters: [{name: batch_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: refreshCustomerOwnerHandoffTransferResult
+      tags: [Customer]
+      description: Reads an existing Provider transfer result and persists only safe observation facts under the submitted application-body idempotency key. It never reissues a transfer.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [idempotency_key], properties: {idempotency_key: {type: string, minLength: 8, maxLength: 200}}}}}}
+      responses: {"200": {description: Current batch with recorded Provider-read observation, content: {application/json: {schema: {$ref: "#/components/schemas/OwnerHandoffBatch"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/message-archive/customers/{customer_id}:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: listCustomerMessageArchive
+      tags: [MessageArchive]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {name: chat_type, in: query, schema: {type: string, enum: [private, group]}}, {name: message_type, in: query, schema: {type: string}}, {name: direction, in: query, schema: {type: string, enum: [customer_to_staff, staff_to_customer]}}, {name: staff_user_id, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: start_at, in: query, schema: {type: string, format: date-time}}, {name: end_at, in: query, schema: {type: string, format: date-time}}, {name: q, in: query, schema: {type: string, maxLength: 300}}, {name: watermark, in: query, schema: {type: string, format: date-time}}, {name: after_at, in: query, schema: {type: string, format: date-time}}, {name: after_id, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses: {"200": {description: "Private, audited Message Archive page", content: {application/json: {schema: {$ref: "#/components/schemas/MessageArchiveCustomerPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/message-archive/customers/{customer_id}/staff:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: listCustomerMessageArchiveStaff
+      tags: [MessageArchive]
+      security: [{adminSession: []}]
+      responses: {"200": {description: "Private, audited archive staff options", content: {application/json: {schema: {$ref: "#/components/schemas/MessageArchiveStaffList"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/message-archive/customers/{customer_id}/media/{media_id}:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: media_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getCustomerMessageArchiveMedia
+      tags: [MessageArchive]
+      security: [{adminSession: []}]
+      responses: {"200": {description: "Private, audited raster archive media bytes", content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/gif: {schema: {type: string, format: binary}}, image/webp: {schema: {type: string, format: binary}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/sidebar/v2/bootstrap:
+    post:
+      operationId: bootstrapSidebarViewer
+      tags: [Sidebar]
+      description: Uses the HttpOnly sidebar session to issue a scoped context token for an existing Customer. It never provisions or merges a Customer; an absent session is represented by the explicit `viewer_session_required` state.
+      security: [{sidebarSession: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [external_userid], properties: {external_userid: {type: string, minLength: 1, maxLength: 128}}}}}}
+      responses: {"200": {description: "Bootstrap state, and context token only when ready", content: {application/json: {schema: {$ref: "#/components/schemas/SidebarBootstrapResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/sidebar/v2/materials/{image_id}/variants/{variant_key}:
+    parameters: [{name: image_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: variant_key, in: path, required: true, schema: {type: string, enum: [thumb_160, thumb_320, mobile_1080]}}]
+    get:
+      operationId: getSidebarMaterialVariant
+      tags: [Sidebar]
+      security: [{contextToken: []}]
+      responses: {"200": {description: Enabled image variant bytes, content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/webp: {schema: {type: string, format: binary}}}}, "304": {description: ETag matched}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/group-membership/refresh:
+    post:
+      operationId: refreshWeComGroupMembership
+      tags: [WeCom]
+      description: Super-admin-only Provider read that records no new Customer identity. It returns an incomplete observation when the Provider cannot provide a complete projection.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [chat_reference], properties: {chat_reference: {type: string, minLength: 1, maxLength: 256}}}}}}
+      responses: {"200": {description: Group-membership observation, content: {application/json: {schema: {$ref: "#/components/schemas/WeComGroupMembershipRefreshResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/media-preparations:
+    get:
+      operationId: listMediaPreparations
+      tags: [Media]
+      security: [{adminSession: []}]
+      parameters: [{name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500}}, {name: cursor, in: query, schema: {type: string, maxLength: 1024}}]
+      responses: {"200": {description: Local material snapshots and current refresh-round facts, content: {application/json: {schema: {$ref: "#/components/schemas/MediaPreparationPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/media-preparations/refresh-rounds:
+    post:
+      operationId: refreshMediaPreparationRound
+      tags: [Media]
+      description: Accepts a local refresh command; a supplied idempotency key replays or rejects payload drift, while the frozen compatibility surface may omit it and receive an audited server key.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [force], properties: {force: {const: true}}}}}}
+      responses: {"202": {description: Local refresh round accepted, content: {application/json: {schema: {$ref: "#/components/schemas/MediaPreparationRoundResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/media-preparations/refresh-rounds/{refresh_round_id}:
+    parameters: [{name: refresh_round_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getMediaPreparationRefreshRound
+      tags: [Media]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local material refresh round, content: {application/json: {schema: {$ref: "#/components/schemas/MediaPreparationRoundResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/media-preparations/{source_ref}/prepare:
+    parameters: [{name: source_ref, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 512}}]
+    post:
+      operationId: prepareMediaPreparation
+      tags: [Media]
+      description: Accepts a local material preparation intent only; Media does not call a Provider while serving this request.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [force], properties: {force: {const: true}}}}}}
+      responses: {"202": {description: Local material preparation accepted, content: {application/json: {schema: {$ref: "#/components/schemas/MediaPreparationMaterialResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/common/operation-members/sync:
+    post:
+      operationId: syncGroupOpsOperationMembers
+      tags: [GroupOps]
+      description: The GroupOps-owned local staff-directory refresh. The shared base path remains a read dispatcher for GroupOps, owner-handoff, and channel-code scopes; this mutation accepts only `group_ops`.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberSyncRequest"}}}}
+      responses: {"200": {description: Refreshed local eligible staff projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/payments/history:
+    get:
+      operationId: getHistoricalPayment
+      tags: [Transactions]
+      description: Read-only native projection of inert historical Payment facts. It cannot create, refund, retry, or make any Provider call.
+      security: [{adminSession: []}]
+      parameters: [{name: provider, in: query, required: true, schema: {type: string, enum: [wechat_pay, wechat_shop]}}, {name: merchant_order_no, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+      responses: {"200": {description: Historical Payment fact with nullable Customer links, content: {application/json: {schema: {type: object, required: [id, order_id, merchant_order_no, provider, status, amount_minor, currency, record_origin, source_status, history_reason, effect_eligible, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string}, provider: {type: string, enum: [wechat_pay, wechat_shop]}, status: {type: string}, amount_minor: {type: integer, minimum: 0}, currency: {type: string}, record_origin: {const: history}, source_status: {type: string}, history_reason: {type: string}, payer_customer_id: {type: [integer, "null"], minimum: 1}, beneficiary_customer_id: {type: [integer, "null"], minimum: 1}, effect_eligible: {const: false}, updated_at: {type: string, format: date-time}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
     sidebarSession: {type: apiKey, in: cookie, name: aicrm_sidebar_session}
     csrfHeader: {type: apiKey, in: header, name: X-CSRF-Token}
+    machineBearer: {type: http, scheme: bearer, bearerFormat: opaque}
     contextToken: {type: http, scheme: bearer}
     groupOpsWebhook: {type: apiKey, in: header, name: X-AICRM-Signature}
     paymentSession: {type: apiKey, in: cookie, name: aicrm_payment_session}
@@ -3740,6 +4011,13 @@ components:
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
+    OpenPlatformOAuthFailure:
+      description: OAuth client-credential failure. `invalid_source_ip` and `https_required` are emitted before OAuth Basic authentication; all other listed OAuth failures use the same JSON shape.
+      content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOAuthError"}}}
+    OpenPlatformV1Failure:
+      description: Machine V1 failure envelope. `error.code` carries the stable protocol category; `data` is null and `X-Request-ID` repeats `request_id`.
+      headers: {X-Request-ID: {required: true, schema: {type: string, minLength: 1}}}
+      content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformV1Failure"}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
     RadarLink:
@@ -3762,6 +4040,47 @@ components:
         updated_by: {$ref: "#/components/schemas/PositiveID"}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+    RadarLinkListItem:
+      type: object
+      additionalProperties: false
+      required: [link_id, public_code, name, title, destination_url, status, version, created_by, updated_by, created_at, updated_at, auth_policy, statistics_status, total_landings, authorized_users, authorized_views, view_count, last_viewed_at]
+      allOf:
+        - if: {properties: {statistics_status: {const: ready}}}
+          then:
+            properties:
+              total_landings: {type: integer, format: int64, minimum: 0}
+              authorized_users: {type: integer, format: int64, minimum: 0}
+              authorized_views: {type: integer, format: int64, minimum: 0}
+              view_count: {type: integer, format: int64, minimum: 0}
+        - if: {properties: {statistics_status: {const: unavailable}}}
+          then:
+            properties:
+              total_landings: {type: "null"}
+              authorized_users: {type: "null"}
+              authorized_views: {type: "null"}
+              view_count: {type: "null"}
+      properties:
+        link_id: {$ref: "#/components/schemas/PositiveID"}
+        public_code: {type: string, pattern: "^rd_[A-Za-z0-9_-]{16,64}$"}
+        name: {type: string, minLength: 1, maxLength: 120}
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 2000}
+        destination_url: {type: string, format: uri, pattern: "^https://"}
+        cover_image_id: {oneOf: [{$ref: "#/components/schemas/PositiveID"}, {type: "null"}]}
+        attachment_id: {oneOf: [{$ref: "#/components/schemas/PositiveID"}, {type: "null"}]}
+        auth_policy: {type: string, enum: [anonymous, unionid_required]}
+        status: {type: string, enum: [draft, enabled, disabled]}
+        version: {type: integer, format: int64, minimum: 1}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        statistics_status: {type: string, enum: [ready, unavailable]}
+        total_landings: {oneOf: [{type: integer, format: int64, minimum: 0}, {type: "null"}]}
+        authorized_users: {oneOf: [{type: integer, format: int64, minimum: 0}, {type: "null"}]}
+        authorized_views: {oneOf: [{type: integer, format: int64, minimum: 0}, {type: "null"}]}
+        view_count: {oneOf: [{type: integer, format: int64, minimum: 0}, {type: "null"}]}
+        last_viewed_at: {oneOf: [{type: string, format: date-time}, {type: "null"}]}
     RadarLinkEnvelope:
       type: object
       additionalProperties: false
@@ -3772,7 +4091,7 @@ components:
       additionalProperties: false
       required: [items, total, limit, offset, has_more, local_projection, real_external_call_executed]
       properties:
-        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/RadarLink"}}
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/RadarLinkListItem"}}
         total: {type: integer, format: int64, minimum: 0}
         limit: {type: integer, minimum: 1, maximum: 100}
         offset: {type: integer, minimum: 0}
@@ -4014,6 +4333,67 @@ components:
         path: {type: string, maxLength: 1024}
         title: {type: string, maxLength: 512}
         cover_digest: {type: string, pattern: "^(sha256:[a-f0-9]{64})?$", description: "Empty until an operator uploads the batch cover; approval requires a valid digest"}
+    OperationExcelBatchSummary:
+      type: object
+      additionalProperties: false
+      required: [total_rows, excluded_rows, empty_title_rows, expected_tasks]
+      properties:
+        total_rows: {type: integer, minimum: 0}
+        excluded_rows: {type: integer, minimum: 0}
+        empty_title_rows: {type: integer, minimum: 0}
+        expected_tasks: {type: integer, minimum: 0}
+    OperationExcelLatestBatch:
+      type: object
+      additionalProperties: false
+      required: [id, batch_key, operation_cycle_strategy_key, state, version, file_digest, cover_digest, cover_image_id, current_content_version, source_kind, segment_source, created_at, summary]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        batch_key: {type: string, minLength: 1, maxLength: 128}
+        operation_cycle_strategy_key: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$'}
+        state: {$ref: "#/components/schemas/AIAssistantPlanState"}
+        version: {type: integer, format: int64, minimum: 1}
+        file_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        cover_digest: {type: string, pattern: "^(sha256:[a-f0-9]{64})?$"}
+        cover_image_id: {type: integer, format: int64, minimum: 0}
+        current_content_version: {type: integer, format: int32, minimum: 1}
+        source_kind: {type: string, minLength: 1, maxLength: 80}
+        segment_source: {type: string, minLength: 1, maxLength: 80}
+        created_at: {type: string, format: date-time}
+        summary: {$ref: "#/components/schemas/OperationExcelBatchSummary"}
+    OperationExcelBatchStrategySummary:
+      type: object
+      additionalProperties: false
+      required: [strategy_key, title, status, version, snapshot, latest_batch_status, latest_batch]
+      properties:
+        strategy_key: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$'}
+        title: {type: string, minLength: 1, maxLength: 200}
+        status: {type: string, enum: [draft, active, paused, archived]}
+        version: {type: integer, format: int32, minimum: 1}
+        snapshot: {type: object, additionalProperties: true}
+        latest_batch_status: {type: string, enum: [ready, unavailable]}
+        latest_batch:
+          oneOf:
+            - type: "null"
+            - {$ref: "#/components/schemas/OperationExcelLatestBatch"}
+      allOf:
+        - if: {properties: {latest_batch_status: {const: unavailable}}}
+          then: {properties: {latest_batch: {type: "null"}}}
+    OperationExcelBatchStrategySummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, total, limit, offset, has_more, next_offset]
+      properties:
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OperationExcelBatchStrategySummary"}}
+        total: {type: integer, minimum: 0}
+        limit: {type: integer, format: int32, minimum: 1, maximum: 100}
+        offset: {type: integer, format: int32, minimum: 0, maximum: 2147483647}
+        has_more: {type: boolean}
+        next_offset: {type: [integer, "null"], format: int32, minimum: 0, maximum: 2147483647, description: A replayable next accepted offset only when `has_more` is true; otherwise null.}
+      allOf:
+        - if: {properties: {has_more: {const: false}}}
+          then: {properties: {next_offset: {type: "null"}}}
+        - if: {properties: {has_more: {const: true}}}
+          then: {properties: {next_offset: {type: integer, format: int32, minimum: 1, maximum: 2147483647}}}
     AIAssistantContentBlock:
       type: object
       additionalProperties: false
@@ -5226,7 +5606,7 @@ components:
     GroupOpsPlan:
       type: object
       additionalProperties: false
-      required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at]
+      required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at, owner]
       properties:
         plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
         name: {type: string, minLength: 1, maxLength: 128}
@@ -5236,6 +5616,18 @@ components:
         updated_by: {$ref: "#/components/schemas/PositiveID"}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        owner: {$ref: "#/components/schemas/GroupOpsPlanOwner"}
+    GroupOpsPlanOwner:
+      type: object
+      description: Always present on each GroupOps Plan. It is `{}` without a Plan member; with a member but no active directory record it contains only `staff_id`.
+      additionalProperties: false
+      properties:
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        sender_userid: {type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
+        display_name: {type: string, minLength: 1, maxLength: 160}
+        name_source: {type: string, enum: [wecom_profile, local_fallback]}
+        profile_read_state: {type: string, enum: [ready, unavailable], description: "`unavailable` records a failed directory-profile read."}
+        profile_read_error_code: {type: string, maxLength: 64, pattern: "^$|^[a-z0-9_]{1,64}$"}
     GroupOpsPlanListItem:
       allOf:
         - {$ref: "#/components/schemas/GroupOpsPlan"}
@@ -5537,11 +5929,16 @@ components:
     GroupOpsOperationMember:
       type: object
       additionalProperties: false
-      required: [sender_userid, display_name]
+      required: [sender_userid, display_name, active]
       properties:
         staff_id: {$ref: "#/components/schemas/PositiveID"}
         sender_userid: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
         display_name: {type: string, minLength: 1, maxLength: 128}
+        active: {type: boolean}
+        name_source: {type: string}
+        profile_read_state: {type: string}
+        profile_read_error_code: {type: string}
+        profile_refreshed_at: {type: string, format: date-time}
     GroupOpsOperationMemberPage:
       allOf:
         - {$ref: "#/components/schemas/GroupOpsRuntimeSafety"}
@@ -5551,6 +5948,8 @@ components:
             scope: {type: string, const: group_ops}
             items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/GroupOpsOperationMember"}}
             page_size: {type: integer, minimum: 1, maximum: 100}
+            profile_read_state: {type: string}
+            profile_read_error_code: {type: string}
     GroupOpsPlanCreateRequest:
       type: object
       additionalProperties: false
@@ -5601,7 +6000,7 @@ components:
     GroupOpsOperationMemberSyncRequest:
       type: object
       additionalProperties: false
-      required: [scope]
+      required: [scope, page_size]
       properties: {scope: {type: string, const: group_ops}, page_size: {type: integer, minimum: 1, maximum: 100}}
     GroupOpsBroadcastRequest:
       type: object
@@ -6241,3 +6640,619 @@ components:
       additionalProperties: false
       required: [receipt, replayed]
       properties: {receipt: {$ref: "#/components/schemas/EntrantReceipt"}, replayed: {type: boolean}}
+
+    OpenPlatformIssuedToken:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_in, scope]
+      properties:
+        access_token: {type: string, minLength: 1}
+        token_type: {type: string, const: Bearer}
+        expires_in: {type: integer, minimum: 1}
+        scope: {type: string}
+    OpenPlatformOAuthError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: {type: string, enum: [invalid_request, unsupported_grant_type, invalid_client, invalid_scope, rate_limited, invalid_source_ip, https_required]}
+    OpenPlatformV1Error:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties: {code: {type: string, enum: [authentication, permission, validation, not_found, identity_pending, identity_conflict, rate_limited, dependency_unavailable, outcome_unknown, conflict]}}
+    OpenPlatformV1Failure:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties:
+        data: {type: "null"}
+        error: {$ref: "#/components/schemas/OpenPlatformV1Error"}
+        request_id: {type: string, minLength: 1, maxLength: 128}
+    OpenPlatformMCPMetadata:
+      type: object
+      additionalProperties: false
+      required: [transport, methods, client_id]
+      properties:
+        transport: {const: jsonrpc}
+        methods: {type: array, items: {type: string, enum: [initialize, tools/list, tools/call]}}
+        client_id: {type: string, minLength: 1}
+    OpenPlatformMCPMetadataResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties:
+        data: {$ref: "#/components/schemas/OpenPlatformMCPMetadata"}
+        error: {type: "null"}
+        request_id: {type: string, minLength: 1}
+    OpenPlatformMCPToolCallParams:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, enum: [list_capabilities, resolve_customer, get_customer_context, list_customer_activities, create_ai_review_plan, get_operation_status]}
+        arguments:
+          oneOf:
+            - {$ref: "#/components/schemas/OpenPlatformCustomerResolveRequest"}
+            - {$ref: "#/components/schemas/OpenPlatformAIReviewPlanRequest"}
+            - type: object
+              additionalProperties: false
+              required: [customer_id]
+              properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, types: {type: array, items: {type: string, enum: [message, survey, radar, order]}}, cursor: {type: string, maxLength: 4096}, limit: {type: integer, minimum: 1, maximum: 100}}
+            - type: object
+              additionalProperties: false
+              required: [operation_id]
+              properties: {operation_id: {type: string, pattern: "^ai_review_plan:[1-9][0-9]*$"}}
+    OpenPlatformJSONRPCRequest:
+      type: object
+      additionalProperties: false
+      required: [jsonrpc, id, method]
+      properties:
+        jsonrpc: {const: "2.0"}
+        id: {type: [string, integer, "null"]}
+        method: {type: string, enum: [initialize, tools/list, tools/call]}
+        params: {type: object, additionalProperties: true}
+      allOf:
+        - if: {properties: {method: {const: tools/call}}}
+          then:
+            required: [params]
+            properties: {params: {$ref: "#/components/schemas/OpenPlatformMCPToolCallParams"}}
+    OpenPlatformJSONRPCResponse:
+      type: object
+      additionalProperties: false
+      required: [jsonrpc, id]
+      properties:
+        jsonrpc: {const: "2.0"}
+        id: {type: [string, integer, "null"]}
+        result:
+          type: object
+          additionalProperties: true
+          properties:
+            content: {type: array, items: {type: object, additionalProperties: true}}
+            structuredContent: {type: object, additionalProperties: true}
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: {type: integer}
+            message: {type: string}
+            data: {type: object, additionalProperties: true}
+      oneOf:
+        - required: [result]
+        - required: [error]
+    OpenPlatformOperationDescriptor:
+      type: object
+      additionalProperties: false
+      required: [operation_id, rest_method, rest_path, mcp_tool, capability, required_scope, schema_version]
+      properties:
+        operation_id: {type: string, enum: [platform.capabilities.list, customer.resolve, customer.context.get, customer.activities.list, ai.review_plan.create, operation.get]}
+        rest_method: {type: string, enum: [GET, POST]}
+        rest_path: {type: string}
+        mcp_tool: {type: string}
+        capability: {type: string}
+        required_scope: {type: string, enum: [read, write]}
+        schema_version: {const: v1}
+        activity_types: {type: array, items: {type: string, enum: [message, survey, radar, order]}}
+        activity_item_fields: {type: array, items: {type: string, enum: [activity_id, type, occurred_at, source, payload]}}
+    OpenPlatformCapabilitiesData:
+      type: object
+      additionalProperties: false
+      required: [schema_version, operations]
+      properties:
+        schema_version: {const: v1}
+        operations: {type: array, items: {$ref: "#/components/schemas/OpenPlatformOperationDescriptor"}}
+    OpenPlatformCapabilitiesResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformCapabilitiesData"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformIdentityReference:
+      type: object
+      additionalProperties: false
+      required: [kind, scope, value]
+      properties:
+        kind: {type: string, minLength: 1}
+        scope: {type: string, minLength: 1}
+        value: {type: string, minLength: 1}
+    OpenPlatformCustomerResolveRequest:
+      type: object
+      additionalProperties: false
+      required: [references]
+      properties: {references: {type: array, minItems: 1, maxItems: 8, items: {$ref: "#/components/schemas/OpenPlatformIdentityReference"}}}
+    OpenPlatformCustomerResolveData:
+      type: object
+      additionalProperties: false
+      required: [customer_id, identity_id, status]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        identity_id: {$ref: "#/components/schemas/PositiveID"}
+        status: {type: string, enum: [found]}
+    OpenPlatformCustomerResolveResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformCustomerResolveData"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformCustomerContext:
+      type: object
+      additionalProperties: false
+      required: [customer_id, display_name, status, activation_status, profile_version, version, updated_at]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        display_name: {type: string}
+        avatar_url: {type: string}
+        phone_masked: {type: string}
+        phone_assurance: {type: string}
+        status: {type: string}
+        activation_status: {type: string}
+        gender: {type: integer}
+        contact_type: {type: integer}
+        corp_name: {type: string}
+        source: {type: string}
+        profile_source: {type: string}
+        profile_version: {type: integer, minimum: 0}
+        industry: {type: string}
+        industry_description: {type: string}
+        needs_blockers_followup: {type: string}
+        version: {type: integer, minimum: 0}
+        last_synced_at: {type: [string, "null"], format: date-time}
+        updated_at: {type: string, format: date-time}
+    OpenPlatformCustomerContextResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformCustomerContext"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformActivityItem:
+      type: object
+      additionalProperties: false
+      required: [activity_id, type, occurred_at, source, payload]
+      properties:
+        activity_id: {type: string, minLength: 1}
+        type: {type: string, enum: [message, survey, radar, order]}
+        occurred_at: {type: string, format: date-time}
+        source: {type: string}
+        payload: {type: object, additionalProperties: true}
+    OpenPlatformCustomerActivitiesData:
+      type: object
+      additionalProperties: false
+      required: [customer_id, types, items, as_of]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        types: {type: array, items: {type: string, enum: [message, survey, radar, order]}}
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OpenPlatformActivityItem"}}
+        as_of: {type: string, format: date-time}
+        next_cursor: {type: string, minLength: 1, maxLength: 4096}
+    OpenPlatformCustomerActivitiesResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformCustomerActivitiesData"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformAIReviewContent:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [text, image, mini_program, link, attachment]}
+        text: {type: string}
+        material_kind: {type: string}
+        material_id: {$ref: "#/components/schemas/PositiveID"}
+        material_digest: {type: string, minLength: 1}
+    OpenPlatformAIReviewRecipient:
+      type: object
+      additionalProperties: false
+      required: [customer_id, staff_id, content]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        content: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/OpenPlatformAIReviewContent"}}
+    OpenPlatformAIReviewPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [name, source_kind, source_digest, recipients]
+      properties:
+        name: {type: string, minLength: 1}
+        source_kind: {type: string, minLength: 1}
+        source_digest: {type: string, minLength: 1}
+        recipients: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/OpenPlatformAIReviewRecipient"}}
+    OpenPlatformAIReviewPlanData:
+      type: object
+      additionalProperties: false
+      required: [operation_id, review_state, replayed]
+      properties:
+        operation_id: {type: string, pattern: "^ai_review_plan:[1-9][0-9]*$"}
+        review_state: {type: string}
+        replayed: {type: boolean}
+    OpenPlatformAIReviewPlanResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformAIReviewPlanData"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformOperationStatusData:
+      type: object
+      additionalProperties: false
+      required: [operation_id, review_state, operation_state, outcome_unknown_count, created_at, updated_at]
+      properties:
+        operation_id: {type: string, pattern: "^ai_review_plan:[1-9][0-9]*$"}
+        review_state: {type: string}
+        operation_state: {type: string}
+        outcome_unknown_count: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    OpenPlatformOperationStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformOperationStatusData"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformOwnerScope:
+      type: object
+      additionalProperties: {type: array, minItems: 1, items: {type: string, minLength: 1}}
+    OpenPlatformMachineClient:
+      type: object
+      additionalProperties: false
+      required: [client_id, display_name, purpose, credential_hint, audiences, scopes, capabilities, allowed_cidrs, token_ttl_seconds, enabled, reissue_required, auth_version, created_at]
+      properties:
+        client_id: {type: string, minLength: 1}
+        display_name: {type: string, minLength: 1}
+        purpose: {const: external_agent}
+        credential_hint: {type: string}
+        audiences: {type: array, minItems: 1, items: {type: string}}
+        scopes: {type: array, minItems: 1, items: {type: string, enum: [read, write]}}
+        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, ai.review_plan.create, operation.read]}}
+        allowed_cidrs: {type: array, items: {type: string}}
+        corp_id: {type: string}
+        owner_scope: {$ref: "#/components/schemas/OpenPlatformOwnerScope"}
+        token_ttl_seconds: {type: integer, minimum: 1}
+        expires_at: {type: string, format: date-time}
+        enabled: {type: boolean}
+        reissue_required: {type: boolean}
+        auth_version: {type: integer, minimum: 1}
+        last_used_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+    OpenPlatformMachineClientCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [client_id, display_name, purpose, audiences, scopes, capabilities, allowed_cidrs, token_ttl_seconds]
+      properties:
+        client_id: {type: string, minLength: 1, maxLength: 200}
+        display_name: {type: string, minLength: 1}
+        purpose: {const: external_agent}
+        audiences: {type: array, minItems: 1, items: {type: string}}
+        scopes: {type: array, minItems: 1, items: {type: string, enum: [read, write]}}
+        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, ai.review_plan.create, operation.read]}}
+        allowed_cidrs: {type: array, items: {type: string}}
+        owner_scope: {$ref: "#/components/schemas/OpenPlatformOwnerScope"}
+        token_ttl_seconds: {type: integer, minimum: 1}
+        expires_at: {type: [string, "null"], format: date-time}
+    OpenPlatformMachineClientPatchRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        display_name: {type: string, minLength: 1}
+        audiences: {type: array, minItems: 1, items: {type: string}}
+        scopes: {type: array, minItems: 1, items: {type: string, enum: [read, write]}}
+        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, ai.review_plan.create, operation.read]}}
+        allowed_cidrs: {type: array, items: {type: string}}
+        token_ttl_seconds: {type: integer, minimum: 1}
+        owner_scope: {oneOf: [{$ref: "#/components/schemas/OpenPlatformOwnerScope"}, {type: "null"}]}
+        expires_at: {type: [string, "null"], format: date-time}
+    OpenPlatformIssuedMachineClient:
+      type: object
+      additionalProperties: false
+      required: [client, secret]
+      properties: {client: {$ref: "#/components/schemas/OpenPlatformMachineClient"}, secret: {type: string, minLength: 1}}
+    OpenPlatformMachineClientEnvelope:
+      type: object
+      additionalProperties: false
+      required: [client]
+      properties: {client: {$ref: "#/components/schemas/OpenPlatformMachineClient"}}
+    OpenPlatformMachineClientList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties: {items: {type: array, items: {$ref: "#/components/schemas/OpenPlatformMachineClient"}}}
+    OpenPlatformMachineAuditEntry:
+      type: object
+      additionalProperties: false
+      required: [action, outcome, details, created_at]
+      properties:
+        actor_admin_user_id: {$ref: "#/components/schemas/PositiveID"}
+        action: {type: string}
+        outcome: {type: string}
+        details: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+    OpenPlatformMachineAuditList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties: {items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OpenPlatformMachineAuditEntry"}}}
+    OpenPlatformMachineClientActivateRequest:
+      type: object
+      additionalProperties: false
+      required: [client_secret, copied_confirmed]
+      properties: {client_secret: {type: string, minLength: 1, maxLength: 1024}, copied_confirmed: {const: true}}
+    OpenPlatformRouteCatalog:
+      type: object
+      additionalProperties: false
+      required: [items, count, schema_version]
+      properties: {items: {type: array, items: {$ref: "#/components/schemas/OpenPlatformOperationDescriptor"}}, count: {type: integer, minimum: 0}, schema_version: {const: v1}}
+
+    OwnerHandoffStaff:
+      type: object
+      additionalProperties: false
+      required: [ID, UserID, DisplayName, Active]
+      properties:
+        ID: {$ref: "#/components/schemas/PositiveID"}
+        UserID: {type: string, minLength: 1}
+        DisplayName: {type: string}
+        Active: {type: boolean}
+    OwnerHandoffContextResponse:
+      type: object
+      additionalProperties: false
+      required: [staff, operator]
+      properties:
+        staff: {type: array, items: {$ref: "#/components/schemas/OwnerHandoffStaff"}}
+        operator: {type: string, minLength: 1}
+    OwnerHandoffPreviewRow:
+      type: object
+      additionalProperties: false
+      required: [Line, CustomerID, ExpectedOwnerID, ExpectedVersion, State, Reason]
+      properties:
+        Line: {type: integer, minimum: 0}
+        CustomerID: {$ref: "#/components/schemas/PositiveID"}
+        ExpectedOwnerID: {type: integer, minimum: 0}
+        ExternalUserID: {type: string}
+        CustomerDisplayName: {type: string}
+        CurrentOwnerUserID: {type: string}
+        ExpectedVersion: {type: integer, minimum: 0}
+        State: {type: string, enum: [ready, excluded, conflict, unresolved]}
+        Reason: {type: string}
+    OwnerHandoffPreview:
+      type: object
+      additionalProperties: false
+      required: [ID, Mode, SourceStaffID, TargetStaffID, CorpScope, Hash, ConfirmationPhrase, ExpiresAt, Rows]
+      properties:
+        ID: {type: string, minLength: 1}
+        Mode: {type: string, enum: [local_only, wecom_then_crm]}
+        SourceStaffID: {$ref: "#/components/schemas/PositiveID"}
+        TargetStaffID: {$ref: "#/components/schemas/PositiveID"}
+        CorpScope: {type: string, minLength: 1}
+        Hash: {type: string, minLength: 1}
+        ConfirmationPhrase: {type: string, minLength: 1}
+        ExpiresAt: {type: string, format: date-time}
+        Rows: {type: array, maxItems: 20000, items: {$ref: "#/components/schemas/OwnerHandoffPreviewRow"}}
+    OwnerHandoffLine:
+      type: object
+      additionalProperties: false
+      required: [Line, CustomerID, State, EffectID, TransferStatus]
+      properties:
+        Line: {type: integer, minimum: 0}
+        CustomerID: {$ref: "#/components/schemas/PositiveID"}
+        State: {type: string}
+        EffectID: {type: string}
+        ObservedAt: {type: [string, "null"], format: date-time}
+        TransferStatus: {type: integer}
+        TakeoverAt: {type: [string, "null"], format: date-time}
+    OwnerHandoffBatch:
+      type: object
+      additionalProperties: false
+      required: [ID, Mode, State, Lines, CreatedAt, UpdatedAt]
+      properties:
+        ID: {type: string, minLength: 1}
+        Mode: {type: string, enum: [local_only, wecom_then_crm]}
+        State: {type: string}
+        Lines: {type: array, items: {$ref: "#/components/schemas/OwnerHandoffLine"}}
+        CreatedAt: {type: string, format: date-time}
+        UpdatedAt: {type: string, format: date-time}
+    OwnerHandoffOperationMember:
+      type: object
+      additionalProperties: false
+      required: [staff_id, user_id, display_name, active]
+      properties:
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        user_id: {type: string, minLength: 1}
+        display_name: {type: string, minLength: 1}
+        active: {type: boolean}
+    OwnerHandoffOperationMemberPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties: {items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OwnerHandoffOperationMember"}}}
+    ChannelOperationMemberPage:
+      type: object
+      additionalProperties: false
+      required: [scope, page_size, items]
+      properties:
+        scope: {const: channel_code}
+        page_size: {type: integer, minimum: 1, maximum: 100}
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OwnerHandoffOperationMember"}}
+    MessageArchiveItem:
+      type: object
+      additionalProperties: false
+      required: [id, chat_type, message_type, occurred_at, content_text, render_type, direction, staff_names, media_ids]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        chat_type: {type: string, enum: [private, group]}
+        message_type: {type: string}
+        occurred_at: {type: string, format: date-time}
+        content_text: {type: string}
+        render_type: {type: string}
+        direction: {type: string, enum: [customer_to_staff, staff_to_customer]}
+        staff_names: {type: array, items: {type: string}}
+        media_ids: {type: array, items: {$ref: "#/components/schemas/PositiveID"}}
+    MessageArchiveCursor:
+      type: object
+      additionalProperties: false
+      required: [watermark]
+      properties:
+        watermark: {type: string, format: date-time}
+        after_at: {type: string, format: date-time}
+        after_id: {$ref: "#/components/schemas/PositiveID"}
+    MessageArchiveCustomerPage:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items, as_of, next]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/MessageArchiveItem"}}
+        as_of: {type: string, format: date-time}
+        next: {oneOf: [{$ref: "#/components/schemas/MessageArchiveCursor"}, {type: "null"}]}
+    MessageArchiveStaffOption:
+      type: object
+      additionalProperties: false
+      required: [id, display_name]
+      properties: {id: {$ref: "#/components/schemas/PositiveID"}, display_name: {type: string}}
+    MessageArchiveStaffList:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items]
+      properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, items: {type: array, items: {$ref: "#/components/schemas/MessageArchiveStaffOption"}}}
+    SidebarSafety:
+      type: object
+      additionalProperties: false
+      required: [local_only, provider_execution_eligible, real_external_call_executed]
+      properties: {local_only: {const: true}, provider_execution_eligible: {const: false}, real_external_call_executed: {const: false}}
+    SidebarWorkbenchProfile:
+      type: object
+      additionalProperties: false
+      required: [customer_id, name, display_name, status, activation_status, profile_version, version, updated_at]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        name: {type: string}
+        display_name: {type: string}
+        avatar_url: {type: string}
+        phone_masked: {type: string}
+        phone_assurance: {type: string}
+        status: {type: string}
+        activation_status: {type: string}
+        gender: {type: integer}
+        contact_type: {type: integer}
+        corp_name: {type: string}
+        source: {type: string}
+        profile_source: {type: string}
+        profile_version: {type: integer, minimum: 0}
+        industry: {type: string}
+        industry_description: {type: string}
+        needs_blockers_followup: {type: string}
+        version: {type: integer, minimum: 0}
+        last_synced_at: {type: [string, "null"], format: date-time}
+        updated_at: {type: string, format: date-time}
+    SidebarWorkbench:
+      type: object
+      additionalProperties: false
+      required: [profile, questionnaire_count, order_count, periodic_order_count, material_count, safety]
+      properties:
+        profile: {$ref: "#/components/schemas/SidebarWorkbenchProfile"}
+        questionnaire_count: {type: integer, minimum: 0}
+        order_count: {type: integer, minimum: 0}
+        periodic_order_count: {type: integer, minimum: 0}
+        material_count: {type: integer, minimum: 0}
+        safety: {$ref: "#/components/schemas/SidebarSafety"}
+    SidebarBootstrapResponse:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [state, safety]
+          properties: {state: {type: string, enum: [viewer_session_required, customer_not_bound]}, safety: {$ref: "#/components/schemas/SidebarSafety"}}
+        - type: object
+          additionalProperties: false
+          required: [state, context_token, customer_id, workbench, safety]
+          properties: {state: {const: ready}, context_token: {type: string, minLength: 1}, customer_id: {$ref: "#/components/schemas/PositiveID"}, workbench: {$ref: "#/components/schemas/SidebarWorkbench"}, safety: {$ref: "#/components/schemas/SidebarSafety"}}
+    WeComGroupMembershipRefreshResponse:
+      type: object
+      additionalProperties: false
+      required: [complete, provider_complete, observed_at, external_count, unresolved_count, resolved_customer_count]
+      properties:
+        complete: {type: boolean}
+        provider_complete: {type: boolean}
+        observed_at: {type: string, format: date-time}
+        external_count: {type: integer, minimum: 0}
+        unresolved_count: {type: integer, minimum: 0}
+        resolved_customer_count: {type: integer, minimum: 0}
+    MediaPreparationMaterial:
+      type: object
+      additionalProperties: false
+      required: [source_ref, source_type, content_digest, file_name, media_type, size_bytes, snapshot_version, state, credential_state, credential_usable, failure_code, effect_id, media_id, source_digest, provider_created_at, last_succeeded_at, expires_at, next_refresh_at]
+      properties:
+        source_ref: {type: string, minLength: 1}
+        source_type: {type: string}
+        content_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        file_name: {type: string}
+        media_type: {type: string}
+        size_bytes: {type: integer, minimum: 0}
+        snapshot_version: {type: integer, minimum: 0}
+        state: {type: string}
+        credential_state: {type: string}
+        credential_usable: {type: boolean}
+        failure_code: {type: string}
+        effect_id: {type: string}
+        media_id: {type: string}
+        source_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        provider_created_at: {type: [string, "null"], format: date-time}
+        last_succeeded_at: {type: [string, "null"], format: date-time}
+        expires_at: {type: [string, "null"], format: date-time}
+        next_refresh_at: {type: [string, "null"], format: date-time}
+    MediaPreparationFailure:
+      type: object
+      additionalProperties: false
+      required: [source_ref, failure_code, state, credential_state, credential_usable]
+      properties: {source_ref: {type: string, minLength: 1}, failure_code: {type: string}, state: {const: final_failed}, credential_state: {const: missing}, credential_usable: {const: false}}
+    MediaPreparationRefreshRound:
+      type: object
+      additionalProperties: false
+      required: [id, local_date, state, cursor, total, queued, succeeded, failed, unknown, started_at, completed_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        local_date: {type: string, format: date}
+        state: {type: string}
+        cursor: {type: string}
+        total: {type: integer, minimum: 0}
+        queued: {type: integer, minimum: 0}
+        succeeded: {type: integer, minimum: 0}
+        failed: {type: integer, minimum: 0}
+        unknown: {type: integer, minimum: 0}
+        started_at: {type: [string, "null"], format: date-time}
+        completed_at: {type: [string, "null"], format: date-time}
+    MediaPreparationPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, failures, today_refresh_round, next_refresh_at, next_cursor, done, local_fact_only]
+      properties:
+        ok: {const: true}
+        items: {type: array, items: {$ref: "#/components/schemas/MediaPreparationMaterial"}}
+        failures: {type: array, items: {$ref: "#/components/schemas/MediaPreparationFailure"}}
+        today_refresh_round: {oneOf: [{$ref: "#/components/schemas/MediaPreparationRefreshRound"}, {type: "null"}]}
+        next_refresh_at: {type: string, format: date-time}
+        next_cursor: {type: string}
+        done: {type: boolean}
+        local_fact_only: {const: false}
+    MediaPreparationRoundResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, refresh_round]
+      properties: {ok: {const: true}, refresh_round: {$ref: "#/components/schemas/MediaPreparationRefreshRound"}}
+    MediaPreparationMaterialResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, material]
+      properties: {ok: {const: true}, material: {$ref: "#/components/schemas/MediaPreparationMaterial"}}

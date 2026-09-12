@@ -68,6 +68,12 @@ const dom = new JSDOM(`<!doctype html><html><body class="admin-shell" data-page=
         { strategy_key: 'weekly.review', title: '每周复盘', status: 'active', version: 4, run_ordinal: 73, snapshot },
         { strategy_key: 'paused.review', title: '暂停复盘', status: 'paused', version: 2, snapshot: { ...snapshot, name: '暂停复盘', run_key: '' } },
       ] });
+      if (url.pathname === '/api/admin/operation-batches/strategy-summaries') return json({
+        items: [
+          { strategy_key: 'weekly.review', title: '每周复盘', status: 'active', version: 4, snapshot, latest_batch_status: 'ready', latest_batch: excelBatch },
+          { strategy_key: 'paused.review', title: '暂停复盘', status: 'paused', version: 2, snapshot: { ...snapshot, name: '暂停复盘', run_key: '' }, latest_batch_status: 'ready', latest_batch: null },
+        ], total: 2, limit: 20, offset: 0, has_more: false, next_offset: null,
+      });
       if (url.pathname === '/api/admin/operation-batches/legacy') return json({ items: [] });
       if (url.pathname === '/api/admin/operation-batches/strategies/weekly.review') return json({ strategy: { strategy_key: 'weekly.review' }, items: [excelBatch, historyBatch] });
       if (url.pathname === '/api/admin/operation-batches/strategies/paused.review') return json({ strategy: { strategy_key: 'paused.review' }, items: [] });
@@ -83,7 +89,7 @@ const dom = new JSDOM(`<!doctype html><html><body class="admin-shell" data-page=
 try {
   await new Promise((resolve) => setTimeout(resolve, 500));
   const workspace = dom.window.document.querySelector('.operation-excel-workspace');
-  const buttons = Array.from(workspace?.querySelectorAll('button') || []);
+  const buttons = Array.from(workspace?.querySelectorAll('button') || []).filter((button) => button.textContent?.trim() === '查看详情');
   if (!workspace || buttons.length !== 2 || buttons.some((button) => button.textContent?.trim() !== '查看详情') || !workspace.textContent?.includes('长期计划') || !workspace.textContent?.includes('批次 #918') || workspace.textContent?.includes('开始复盘')) throw new Error(`Excel long-plan list did not replace the frozen donor actions: ${dom.window.document.getElementById('stage')?.innerHTML} requests=${JSON.stringify(requests)}`);
   buttons[0].click();
   await new Promise((resolve) => setTimeout(resolve, 80));
@@ -96,7 +102,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 80));
   if (!workspace.textContent?.includes('当前批次 #917') || !workspace.textContent?.includes('历史批次话术')) throw new Error(`Excel history selection did not load the selected batch: ${workspace?.innerHTML} requests=${JSON.stringify(requests)}`);
   const writes = requests.filter((item) => item.method !== 'GET');
-  if (writes.length || requests.some((item) => item.path.includes('/actions/start_review/start')) || !requests.some((item) => item.path === '/api/admin/operation-batches/legacy') || !requests.some((item) => item.path === '/api/admin/operation-batches/strategies/weekly.review') || !requests.some((item) => item.path === '/api/admin/operation-batches/918?limit=50') || !requests.some((item) => item.path === '/api/admin/operation-batches/917?limit=50')) throw new Error(`Excel workspace read contract drifted: ${JSON.stringify(requests)}`);
+  if (writes.length || requests.some((item) => item.path.includes('/actions/start_review/start')) || !requests.some((item) => item.path === '/api/admin/operation-batches/strategy-summaries?limit=20&offset=0') || !requests.some((item) => item.path === '/api/admin/operation-batches/legacy') || !requests.some((item) => item.path === '/api/admin/operation-batches/strategies/weekly.review') || !requests.some((item) => item.path === '/api/admin/operation-batches/918?limit=50') || !requests.some((item) => item.path === '/api/admin/operation-batches/917?limit=50')) throw new Error(`Excel workspace read contract drifted: ${JSON.stringify(requests)}`);
   if (jsdomErrors.length) throw new Error(`browser errors: ${JSON.stringify(jsdomErrors)}`);
   console.log('operation-cycle Excel workspace browser Journey: PASS');
 } finally {
