@@ -137,6 +137,7 @@ async function catalogError(response: Response): Promise<Response> {
     FORBIDDEN: '当前账号没有保存渠道的权限，请联系管理员。',
     UNAUTHORIZED: '登录已失效，请重新登录后保存。',
     CHANNEL_CODE_CONFLICT: '渠道编码已被使用，请更换编码后保存。',
+    WELCOME_TEMPLATE_INVALID: '欢迎语仅支持 {{客户名}}；请删除或改正其他变量后保存。',
   };
   const message = response.status === 409
     ? '渠道配置或编码发生冲突；当前草稿已保留。请重新读取最新配置后核对再保存。'
