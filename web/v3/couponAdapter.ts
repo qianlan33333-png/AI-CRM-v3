@@ -4,6 +4,14 @@
 // PostgreSQL transaction and idempotency receipt. External Effects: not
 // involved; publishing changes the coupon lifecycle only.
 
+// @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
+import { AdminController } from '../src/admin/controller';
+// @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
+import { api } from '../src/shared/api/client';
+// @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
+import type { AdminDb } from '../src/shared/api/types';
+import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
+
 export {};
 
 type Json = Record<string, unknown>;
@@ -16,6 +24,17 @@ let mountFailed = false;
 const standardFormURL = '/assets/standard-components/coupon_form.html';
 const standardStyleURL = '/assets/standard-components/coupon_styles.html';
 const standardRuntimeURL = '/assets/standard-components/coupon_form_runtime.js';
+const couponDateFields = [
+  ['couponClaimStart', 'claim_starts_at', true],
+  ['couponClaimEnd', 'claim_ends_at', true],
+  ['couponUseStart', 'use_starts_at', false],
+  ['couponUseEnd', 'use_ends_at', false],
+] as const;
+type CouponDateField = typeof couponDateFields[number];
+type CouponDateSnapshot = { original: string | null; controlValue: string };
+const couponDateSnapshots = new Map<string, CouponDateSnapshot>();
+type CouponPresentation = { scope: string; window: string };
+const couponPresentations = new Map<number, CouponPresentation>();
 
 function csrf(): string {
   return document.cookie.split(';').map((item) => item.trim().split('='))
@@ -35,6 +54,9 @@ function bodyText(input: RequestInfo | URL, init?: RequestInit): string {
 }
 function couponMutation(url: URL, method: string): boolean {
   return method !== 'GET' && /^\/api\/admin\/coupons(?:\/[1-9][0-9]*(?:\/(?:publish|stop|copy|archive))?)?$/.test(url.pathname);
+}
+function couponWrite(url: URL, method: string): boolean {
+  return (method === 'POST' && url.pathname === '/api/admin/coupons') || (method === 'PUT' && /^\/api\/admin\/coupons\/[1-9][0-9]*$/.test(url.pathname));
 }
 function jsonResponse(status: number, payload: Json): Response {
   return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } });
@@ -61,6 +83,91 @@ async function normalizeProductOptions(response: Response): Promise<Response> {
   return new Response(JSON.stringify({ ...payload, items: payload.items.map(normalizedCouponProduct) }), { status: response.status, statusText: response.statusText, headers });
 }
 
+function objectList(value: unknown, keys: string[]): Json[] {
+  const source = asJson(value);
+  for (const key of keys) {
+    if (Array.isArray(source[key])) return source[key].filter((item): item is Json => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+  }
+  return [];
+}
+function positiveCouponID(value: unknown): number | undefined {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+function exactCouponTargetNames(coupon: Json): string {
+  const refs = Array.isArray(coupon.target_refs) ? coupon.target_refs.map(String) : [];
+  const targets = Array.isArray(coupon.target_products) ? coupon.target_products : [];
+  if (!refs.length || targets.length !== refs.length) return '适用商品暂不可用';
+  const labels: string[] = [];
+  for (let index = 0; index < refs.length; index += 1) {
+    const target = asJson(targets[index]);
+    if (String(target.target_ref || '') !== refs[index]) return '适用商品暂不可用';
+    if (target.state === 'available' && typeof target.name === 'string' && target.name.trim()) {
+      labels.push(target.name.trim());
+      continue;
+    }
+    if (target.state === 'not_found') {
+      labels.push('商品已删除或不可用');
+      continue;
+    }
+    return '适用商品暂不可用';
+  }
+  return labels.join('、');
+}
+function couponClaimWindow(coupon: Json): string {
+  const start = formatShanghaiDateTime(coupon.claim_starts_at);
+  const end = formatShanghaiDateTime(coupon.claim_ends_at);
+  return start === '未提供' || end === '未提供' ? '领取时间范围暂不可用' : `${start} 至 ${end}`;
+}
+async function rememberCouponPresentations(response: Response): Promise<Response> {
+  if (!response.ok) return response;
+  const payload = await response.clone().json().catch(() => null);
+  for (const coupon of objectList(payload, ['coupons', 'items'])) {
+    const id = positiveCouponID(coupon.id);
+    if (id) couponPresentations.set(id, { scope: exactCouponTargetNames(coupon), window: couponClaimWindow(coupon) });
+  }
+  return response;
+}
+
+function couponDateSnapshotKey(id: string): string { return `coupon-date:${id}`; }
+function couponControlValue(raw: unknown): string {
+  const displayed = formatShanghaiDateTime(raw);
+  return displayed === '未提供' ? '' : displayed.replace(' ', 'T').slice(0, 16);
+}
+function captureCouponDateSnapshots(initial: Json): void {
+  couponDateSnapshots.clear();
+  for (const [controlID, payloadField] of couponDateFields) {
+    const control = document.getElementById(controlID) as HTMLInputElement | null;
+    if (!control) continue;
+    const raw = typeof initial[payloadField] === 'string' ? initial[payloadField] : null;
+    couponDateSnapshots.set(couponDateSnapshotKey(payloadField), { original: raw, controlValue: couponControlValue(raw) || control.value });
+  }
+}
+function couponPayloadDate(field: CouponDateField): string | null | undefined {
+  const [controlID, payloadField, required] = field;
+  const control = document.getElementById(controlID) as HTMLInputElement | null;
+  if (!control) return undefined;
+  const snapshot = couponDateSnapshots.get(couponDateSnapshotKey(payloadField));
+  if (snapshot?.original && control.value === snapshot.controlValue) return snapshot.original;
+  if (!control.value) return required ? undefined : null;
+  return shanghaiDateTimeLocalToRFC3339(control.value);
+}
+function normalizeCouponWriteBody(url: URL, method: string, body: string): { body?: string; error?: Response } {
+  if (!couponWrite(url, method) || !body) return { body };
+  let payload: Json;
+  try { payload = asJson(JSON.parse(body)); } catch { return { body }; }
+  // The Coupon Host owns the four editor controls.  Preserve a valid direct
+  // API caller verbatim if this page has not mounted that editor, rather than
+  // treating the caller as an incomplete browser form.
+  if (!couponDateFields.some(([controlID]) => document.getElementById(controlID))) return { body };
+  for (const field of couponDateFields) {
+    const value = couponPayloadDate(field);
+    if (value === undefined) return { error: jsonResponse(400, { code: 'invalid_request', message: '请填写有效的上海时间后再保存；未提交任何修改。' }) };
+    payload[field[1]] = value;
+  }
+  return { body: JSON.stringify(payload) };
+}
+
 // The frozen coupon controller and the original editor both call fetch.  This
 // one scoped transport gives every lifecycle mutation an original stable key,
 // including DELETE, and refuses a changed create payload after an unknown
@@ -69,8 +176,11 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   const url = requestURL(input); const method = requestMethod(input, init);
   if (url.origin !== location.origin) return nativeFetch(input, init);
   if (method === 'GET' && url.pathname === '/api/admin/coupons/product-options') return normalizeProductOptions(await nativeFetch(input, init));
+  if (method === 'GET' && url.pathname === '/api/admin/coupons') return rememberCouponPresentations(await nativeFetch(input, init));
   if (!couponMutation(url, method)) return nativeFetch(input, init);
-  const body = bodyText(input, init); const operation = fingerprint(method, url, body);
+  const normalized = normalizeCouponWriteBody(url, method, bodyText(input, init));
+  if (normalized.error) return normalized.error;
+  const body = normalized.body || ''; const operation = fingerprint(method, url, body);
   if (method === 'POST' && url.pathname === '/api/admin/coupons' && unresolvedCreate && unresolvedCreate !== operation) {
     return jsonResponse(409, { code: 'CREATE_OUTCOME_UNKNOWN', message: '上一份优惠券的保存结果未知。请保持内容不变后重试，或先返回列表核对；尚未创建新的优惠券。' });
   }
@@ -79,7 +189,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   mutationKeys.set(operation, headers.get('Idempotency-Key') || '');
   const token = csrf(); if (token) headers.set('X-CSRF-Token', token);
   let response: Response;
-  try { response = await nativeFetch(input, { ...init, method, headers, credentials: 'same-origin' }); }
+  try { response = await nativeFetch(input, { ...init, method, body, headers, credentials: 'same-origin' }); }
   catch (error) {
     if (method === 'POST' && url.pathname === '/api/admin/coupons') unresolvedCreate = operation;
     throw error;
@@ -113,36 +223,34 @@ function couponID(): number {
   const id = Number(query || path); return Number.isSafeInteger(id) && id > 0 ? id : 0;
 }
 function responseMessage(payload: unknown, fallback: string): string {
-  const source = asJson(payload); return typeof source.message === 'string' && source.message.trim() ? source.message : fallback;
+  const source = asJson(payload);
+  if (source.code === 'unavailable') return '商品或优惠券信息暂不可用，请稍后重试。';
+  return typeof source.message === 'string' && source.message.trim() ? source.message : fallback;
 }
 async function readCoupon(id: number): Promise<Json> {
   if (!id) return {};
   const response = await nativeFetch(`/api/admin/coupons/${id}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`优惠券读取失败（HTTP ${response.status}）`);
+  if (!response.ok) {
+    const payload = await response.clone().json().catch(() => null);
+    if (asJson(payload).code === 'unavailable') throw new Error('商品或优惠券信息暂不可用，请稍后重试。');
+    throw new Error(`优惠券读取失败（HTTP ${response.status}）`);
+  }
   const payload = asJson(await response.json()); const coupon = asJson(payload.coupon || payload.item || payload);
   const refs = Array.isArray(coupon.target_refs) ? coupon.target_refs.map((value) => String(value)) : [];
   if (!refs.length || Array.isArray(coupon.products) && coupon.products.length) return coupon;
-  // Detail deliberately returns only target_refs. Resolve visible names, types
-  // and prices from the same server-owned product-options catalog; any ref not
-  // returned by that catalog remains the donor's explicit fallback, never a
-  // fabricated product row.
-  try {
-    const found = new Map<string, unknown>(); let offset = 0; let total = Number.POSITIVE_INFINITY;
-    while (offset < total && found.size < refs.length) {
-      const page = await window.fetch(`/api/admin/coupons/product-options?product_type=all&limit=100&offset=${offset}`, { credentials: 'same-origin' });
-      if (!page.ok) break;
-      const body = asJson(await page.json()); const items = Array.isArray(body.items) ? body.items : [];
-      items.forEach((item) => { const normalized = normalizedCouponProduct(item) as Json; const ref = String(normalized.target_ref || ''); if (refs.includes(ref)) found.set(ref, normalized); });
-      total = Number(body.total) || items.length; if (!items.length) break; offset += items.length;
-    }
-    coupon.products = refs.map((ref) => found.get(ref) || {
-      target_ref: ref, title: '商品目录暂不可读取',
+  const names = Array.isArray(coupon.target_products) ? coupon.target_products : [];
+  const exact = names.length === refs.length && names.every((value, index) => String(asJson(value).target_ref || '') === refs[index]);
+  coupon.products = refs.map((ref, index) => {
+    const target = exact ? asJson(names[index]) : {};
+    const available = target.state === 'available' && typeof target.name === 'string' && target.name.trim();
+    return {
+      target_ref: ref,
+      title: available ? target.name.trim() : target.state === 'not_found' ? '商品已删除或不可用' : '商品目录暂不可读取',
       product_type: ref.startsWith('service_period:') ? 'service_period' : ref.startsWith('standard_product:') ? 'standard_product' : 'unknown',
-      price_cents: 0, status: '目录暂不可用',
-    });
-  } catch {
-    coupon.products = refs.map((ref) => ({ target_ref: ref, title: '商品目录暂不可读取', product_type: 'unknown', price_cents: 0, status: '目录暂不可用' }));
-  }
+      price_cents: 0,
+      status: available ? '当前商品' : target.state === 'not_found' ? '商品已删除或不可用' : '目录暂不可用',
+    };
+  });
   return coupon;
 }
 function contentFromDonor(raw: string, initial: Json, id: number): string {
@@ -237,6 +345,66 @@ async function executeDonorScript(): Promise<void> {
   if (selected) new MutationObserver(markOwned).observe(selected, { childList: true, subtree: true });
 }
 
+function hideTechnicalTargetReferences(): void {
+  document.querySelectorAll<HTMLElement>('#selectedProductList .coupon-selected-copy small').forEach((node) => {
+    const before = node.textContent || '';
+    const after = before.replace(/\s*·\s*(?:standard_product|service_period):[1-9][0-9]*\s*·\s*/, ' · ');
+    if (after !== before) node.textContent = after;
+  });
+}
+
+function couponStatusLabel(value: unknown): string {
+  return ({
+    draft: '草稿', published: '已发布', scheduled: '未到领取时间', active: '可领取', sold_out: '已领完',
+    ended: '已结束', stopped: '已停用', archived: '已归档', deleted: '已删除',
+  } as Record<string, string>)[String(value)] || '状态待确认';
+}
+
+function installCouponListBridge(): void {
+  if (document.body.dataset.page !== 'coupons') return;
+  const originalLoadDb = api.loadDb.bind(api);
+  api.loadDb = async (context) => {
+    const db = await originalLoadDb(context);
+    if (context?.page !== 'coupons') return db;
+    return {
+      ...db,
+      rows: {
+        ...db.rows,
+        coupons: db.rows.coupons.map((coupon) => {
+          const presentation = coupon.resourceId == null ? undefined : couponPresentations.get(coupon.resourceId);
+          return presentation ? { ...coupon, scope: presentation.scope, window: presentation.window } : { ...coupon, scope: '适用商品暂不可用', window: '领取时间范围暂不可用' };
+        }),
+      },
+    } as AdminDb;
+  };
+  const originalRenderVals = AdminController.prototype.renderVals;
+  AdminController.prototype.renderVals = function couponRenderVals() {
+    const values = originalRenderVals.call(this) as Json;
+    const rows = asJson(values.rows);
+    if (this.page !== 'coupons' || api.mode !== 'http' || !Array.isArray(rows.coupons)) return values;
+    return {
+      ...values,
+      rows: {
+        ...rows,
+        coupons: rows.coupons.map((coupon) => ({ ...asJson(coupon), displayStatus: couponStatusLabel(asJson(coupon).displayStatus) })),
+      },
+    };
+  };
+  const applyPresentation = () => {
+    document.querySelectorAll('th').forEach((header) => {
+      if (header.textContent?.trim() === '领取时间（北京时间）') header.textContent = '领取时间范围';
+    });
+    const table = document.querySelector<HTMLTableElement>('#stage table');
+    if (!table) return;
+    table.dataset.couponPresentationList = 'true';
+    table.style.minWidth = '860px';
+    const card = table.parentElement;
+    if (card instanceof HTMLElement) { card.style.overflowX = 'auto'; card.style.overflowY = 'hidden'; }
+  };
+  new MutationObserver(applyPresentation).observe(document.documentElement, { childList: true, subtree: true });
+  applyPresentation();
+}
+
 async function mountCouponEditor(): Promise<void> {
   if (mounted || mountFailed || document.body.dataset.page !== 'couponForm') return;
   const stage = document.querySelector<HTMLElement>('#stage'); if (!stage || (!stage.querySelector('#coupon-target-refs') && !stage.querySelector('[data-coupon-form-mode]'))) return;
@@ -246,7 +414,9 @@ async function mountCouponEditor(): Promise<void> {
       nativeFetch(standardFormURL, { credentials: 'same-origin' }).then(async (response) => { if (!response.ok) throw new Error('标准优惠券表单加载失败，请刷新页面后重试。'); return response.text(); }),
       readCoupon(id),
     ]);
-    await installStyles(); installAdminAPI(); stage.innerHTML = contentFromDonor(raw, initial, id); await executeDonorScript();
+    await installStyles(); installAdminAPI(); stage.innerHTML = contentFromDonor(raw, initial, id); await executeDonorScript(); captureCouponDateSnapshots(initial); hideTechnicalTargetReferences();
+    const selected = document.getElementById('selectedProductList');
+    if (selected) new MutationObserver(hideTechnicalTargetReferences).observe(selected, { childList: true, subtree: true });
   } catch (error) {
     mounted = false; mountFailed = true; const message = error instanceof Error ? error.message : '标准优惠券表单加载失败'; const notice = document.createElement('div'); notice.setAttribute('role', 'alert'); notice.textContent = `${message}；未提交任何保存。`;
     const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试加载'; retry.addEventListener('click', () => { mountFailed = false; notice.remove(); void mountCouponEditor(); }); (retry as HTMLButtonElement & { __dcBound?: boolean }).__dcBound = true; notice.append(' ', retry); stage.prepend(notice);
@@ -254,3 +424,9 @@ async function mountCouponEditor(): Promise<void> {
 }
 new MutationObserver(() => { void mountCouponEditor(); }).observe(document.documentElement, { childList: true, subtree: true });
 void mountCouponEditor();
+installCouponListBridge();
+
+const couponRuntime = window as Window & { __AICRM_TEST_COUPON_ADAPTER_ONLY__?: boolean };
+if (!couponRuntime.__AICRM_TEST_COUPON_ADAPTER_ONLY__ && (document.body.dataset.page === 'coupons' || document.body.dataset.page === 'couponData')) {
+  void import('../src/admin/main');
+}

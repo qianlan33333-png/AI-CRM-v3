@@ -17,6 +17,10 @@ import (
 type couponClaimUnusedRules struct{ cp.RuleApplication }
 type couponClaimUnusedProducts struct{ pp.ProductOptionReader }
 
+func (couponClaimUnusedProducts) ReadProductTargets(context.Context, []pp.ProductTargetReference) ([]pp.ProductTargetLookup, error) {
+	return []pp.ProductTargetLookup{}, nil
+}
+
 func TestCouponClaimCompositionStartsReadTransaction(t *testing.T) {
 	ctx := context.Background()
 	dsn, cleanup := adminAccessCompositionDatabase(t, ctx)

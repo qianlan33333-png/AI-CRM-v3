@@ -74,13 +74,13 @@ try {
   await assert.rejects(() => dom.window.fetch('/api/admin/coupons', { method: 'POST', body: unknownBody }), /response lost/);
   const altered = await dom.window.fetch('/api/admin/coupons', { method: 'POST', body: '{"name":"changed-after-unknown"}' }); assert.equal(altered.status, 409, 'changed content cannot create another coupon while the first create was unknown');
   const recovered = await dom.window.fetch('/api/admin/coupons', { method: 'POST', body: unknownBody }); assert.equal(recovered.status, 201, 'same payload retries the original server receipt after a lost response');
-  const unknownCalls = calls.filter((call) => call.method === 'POST' && call.url.pathname === '/api/admin/coupons' && call.body === unknownBody); assert.equal(unknownCalls.length, 2, 'only the original logical create is retried'); assert.equal(unknownCalls[0].headers.get('Idempotency-Key'), unknownCalls[1].headers.get('Idempotency-Key'), 'unknown retry retains its original key'); assert.equal(unknownCreateAttempts, 2);
+  const unknownCalls = calls.filter((call) => call.method === 'POST' && call.url.pathname === '/api/admin/coupons' && String(call.body).includes('unknown-create')); assert.equal(unknownCalls.length, 2, 'only the original logical create is retried'); assert.equal(unknownCalls[0].headers.get('Idempotency-Key'), unknownCalls[1].headers.get('Idempotency-Key'), 'unknown retry retains its original key'); assert.equal(unknownCreateAttempts, 2);
   const malformed = await dom.window.fetch('/api/admin/coupons', { method: 'POST', body: '{"name":"empty-receipt"}' }); assert.equal(malformed.status, 503, '200 without a coupon ID remains create outcome unknown and cannot show a false saved state');
-} finally { dom.window.close(); }
+} finally { dom.window.document.body.dataset.page = 'closed'; dom.window.close(); }
 
 // Existing draft: real donor submit plus real global feedback, with a durable
 // receipt-shaped response. A failed or malformed save must never show success.
-let savedDraft = { id: 18, name: '验收草稿', status: 'draft', discount_amount_total: 1, total_issue_limit: 3, per_user_issue_limit: 1, claim_starts_at: '2026-09-08T00:00:00Z', claim_ends_at: '2026-09-15T00:00:00Z', validity_mode: 'relative_days', relative_validity_days: 7, target_refs: ['standard_product:32'], instructions: '' };
+let savedDraft = { id: 18, name: '验收草稿', status: 'draft', discount_amount_total: 1, total_issue_limit: 3, per_user_issue_limit: 1, claim_starts_at: '2026-09-08T00:00:00.123456Z', claim_ends_at: '2026-09-15T00:00:00Z', validity_mode: 'relative_days', relative_validity_days: 7, target_refs: ['standard_product:32'], instructions: '' };
 let editOutcome = 'success'; const edits = [];
 const editDom = new JSDOM('<body data-page="couponForm"><main id="stage"><textarea id="coupon-target-refs"></textarea></main><button id="unowned">发布未接入功能</button></body>', {
   url: 'https://test.invalid/admin/couponForm.html?id=18', runScripts: 'dangerously', virtualConsole: new VirtualConsole(),
@@ -106,10 +106,14 @@ try {
   editDom.window.eval(feedback); editDom.window.eval(host);
   const d = editDom.window.document;
   await waitFor(() => d.querySelector('#saveCoupon')?.__dcBound, 'existing draft runtime must own the save action');
+  assert.match(d.querySelector('#selectedProductList').textContent, /商品目录暂不可读取/, 'a missing Product display projection remains an explicit unavailable state');
+  assert.doesNotMatch(d.querySelector('#selectedProductList').textContent, /standard_product:32/, 'the editor must not display a technical target reference as a product name');
   d.querySelector('#couponName').value = '已修改草稿';
   d.querySelector('#saveCoupon').click();
   await waitFor(() => d.querySelector('#couponFormToast').textContent.includes('优惠券已保存'), 'draft PUT must receive a confirmed saved receipt');
   assert.equal(savedDraft.name, '已修改草稿'); assert.equal(savedDraft.discount_amount_total, 1); assert.deepEqual(savedDraft.target_refs, ['standard_product:32']);
+  assert.equal(edits[0].body.claim_starts_at, '2026-09-08T00:00:00.123456Z', 'an unchanged edit preserves the original timestamp precision and instant');
+  assert.equal(edits[0].body.claim_ends_at, '2026-09-15T00:00:00Z');
   assert.equal(edits.length, 1); assert.match(edits[0].headers.get('Idempotency-Key'), /^coupon-/);
   assert.equal(d.querySelector('#fb-toast').textContent, '', 'confirmed save must not have a simultaneous unavailable-backend toast');
   for (const outcome of ['rejected', 'malformed']) {
@@ -119,7 +123,30 @@ try {
     assert.match(d.querySelector('#couponFormToast').textContent, outcome === 'malformed' ? /无法确认/ : /规则校验失败/);
   }
   d.querySelector('#unowned').click(); assert.match(d.querySelector('#fb-toast').textContent, /后端能力未就绪/, 'unrelated unbound actions must remain guarded');
-} finally { editDom.window.close(); }
+} finally { editDom.window.document.body.dataset.page = 'closed'; editDom.window.close(); }
+
+// A Product batch-read failure is an unavailable Coupon detail, not a missing
+// or unnamed Product.  The editor must surface that safe Chinese state and
+// must not submit any lifecycle command while the read is incomplete.
+const unavailableCalls = [];
+const unavailableDom = new JSDOM('<!doctype html><body data-page="couponForm"><main id="stage"><textarea id="coupon-target-refs"></textarea></main></body>', {
+  url: 'https://test.invalid/admin/couponForm.html?id=18', runScripts: 'dangerously', virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      unavailableCalls.push({ url, method: String(init.method || 'GET').toUpperCase() });
+      if (url.pathname === '/assets/standard-components/coupon_form.html') return new Response(donorForm);
+      if (url.pathname === '/api/admin/coupons/18') return Response.json({ code: 'unavailable' }, { status: 503 });
+      return Response.json({ ok: true });
+    };
+  },
+});
+try {
+  unavailableDom.window.eval(host);
+  await waitFor(() => unavailableDom.window.document.querySelector('[role="alert"]')?.textContent.includes('商品或优惠券信息暂不可用'), 'Product read failure must have a controlled Chinese Coupon error');
+  assert.equal(unavailableCalls.some((call) => call.method !== 'GET'), false, 'unavailable detail must not write a coupon');
+} finally { unavailableDom.window.document.body.dataset.page = 'closed'; unavailableDom.window.close(); }
 
 // An external donor runtime failure occurs after the standard form has been
 // mounted. Keep that form intact, make the error visible, and allow the same
@@ -153,7 +180,7 @@ try {
   await waitFor(() => document.querySelector('#selectedProductList')?.textContent.includes('尚未选择商品'), 'retry must replay DOMContentLoaded after the external runtime loads');
   assert.equal(document.querySelectorAll('script[data-v3-standard-coupon-runtime]').length, 1, 'retry must replace the failed runtime element instead of accumulating scripts');
   assert.equal(failureCalls.some((call) => call.method !== 'GET'), false, 'retrying only the runtime must not write a coupon');
-} finally { failedDom.window.close(); }
+} finally { failedDom.window.document.body.dataset.page = 'closed'; failedDom.window.close(); }
 
 // A delayed same-origin script must not capture a DOM-ready listener registered
 // by another page module while the network request is pending. Only the donor
@@ -185,5 +212,6 @@ try {
   resolveDelayedRuntime();
   await waitFor(() => delayedDom.window.document.querySelector('#selectedProductList')?.textContent.includes('尚未选择商品'), 'the delayed donor runtime must receive its own replayed DOM-ready handler');
   assert.equal(delayedCalls.some((call) => call.method !== 'GET'), false, 'the delayed runtime bootstrap must not write a coupon');
-} finally { delayedDom.window.close(); }
+} finally { delayedDom.window.document.body.dataset.page = 'closed'; delayedDom.window.close(); }
+
 console.log('coupon Host actual donor form, picker and lifecycle transport journey: PASS');
