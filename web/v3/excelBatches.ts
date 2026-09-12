@@ -30,6 +30,18 @@ function displayDateTime(value: unknown): string {
   return formatted === "未提供" ? "时间暂时无法显示" : formatted;
 }
 
+function deliveryLabel(value: unknown, empty = "待提交"): string {
+  const state = typeof value === "string" ? value : "";
+  if (!state) return empty;
+  return delivery[state] || "状态待核对";
+}
+
+function deliveryReason(value: unknown): string {
+  const reason = typeof value === "string" ? value.trim() : "";
+  if (!reason) return "—";
+  return /[\u3400-\u9fff]/.test(reason) ? reason : "失败原因待核对";
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   text?: string,
@@ -250,7 +262,7 @@ function batchState(batch: Obj): string {
 function rowState(row: Obj): string {
   if (row.excluded) return "已排除";
   if (row.review_state !== "approved") return "未批准";
-  return delivery[String(row.delivery_state || row.state)] || "待提交";
+  return deliveryLabel(row.delivery_state || row.state);
 }
 function rate(value: unknown): string {
   return typeof value === "number"
@@ -811,7 +823,7 @@ class Workspace {
             String(row.text || ""),
             card(row),
             String(row.segment || "未分层"),
-            `${rowState(row)}${row.failure_reason || row.reason ? `\n${row.failure_reason || row.reason}` : ""}${row.sent_at ? `\n${row.sent_at}` : ""}`,
+            `${rowState(row)}${row.failure_reason || row.reason ? `\n${deliveryReason(row.failure_reason || row.reason)}` : ""}${row.sent_at ? `\n${displayDateTime(row.sent_at)}` : ""}`,
             controls,
           ];
         }),
@@ -1067,10 +1079,9 @@ class Workspace {
         items.map((item: Obj) => [
           String(item.unionid || item.recipient || ""),
           String(item.sender_userid || ""),
-          delivery[String(item.delivery_state || item.state)] ||
-            String(item.delivery_state || item.state || "结果待核实"),
-          String(item.sent_at || "—"),
-          String(item.failure_reason || item.reason || "—"),
+          deliveryLabel(item.delivery_state || item.state, "状态待核对"),
+          displayDateTime(item.sent_at),
+          deliveryReason(item.failure_reason || item.reason),
         ]),
       ),
     );

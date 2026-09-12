@@ -12,11 +12,14 @@ from urllib.request import Request, urlopen
 from openpyxl import Workbook
 
 from batches import (
+    DELIVERY_LABELS,
     HEADERS,
     Handler,
     Invalid,
     Service,
     Source,
+    WINDOW_LABELS,
+    _report_label,
     Conflict,
     content_key,
     parse_excel,
@@ -182,15 +185,32 @@ class Tests(unittest.TestCase):
         self.assertEqual(restarted.import_file(raw, new_batch=True, request_key="new-key-01")["batch_key"], first["batch_key"])
 
     def test_csv_formula_injection_is_escaped(self):
-        start = datetime(2026, 9, 1, tzinfo=timezone.utc)
-        rows = [{"id": 1, "unionid": "=evil", "text": "+evil", "segment": "A", "path": "@pages/a/a?x=1", "state": "delivery_proven", "sent_at": start.isoformat()}]
+        start = datetime(2026, 9, 30, 16, 0, 0, 611265, tzinfo=timezone.utc)
+        rows = [
+            {"id": 1, "unionid": "=evil", "text": "+evil", "segment": "A", "path": "@pages/a/a?x=1", "state": "delivery_proven", "sent_at": start.isoformat()},
+            {"id": 2, "unionid": "plain", "text": "copy", "segment": "", "path": "pages/a/a", "state": "outcome_unknown", "sent_at": None},
+            {"id": 3, "unionid": "invalid", "text": "copy", "segment": "B", "path": "pages/a/a", "state": "unmapped_state", "sent_at": "2026-02-31T00:00:00Z"},
+        ]
         self.service.snapshot("csv", rows, segment_source="excel", has_segments=True)
         self.source.events["=evil"] = []
         self.service.observe(1, "csv", rows, start + timedelta(hours=49))
         csv_bytes = self.service.report_csv(1).decode()
+        self.assertIn("行 ID,接收人 UnionID,话术,发送员工 UserID,小程序路径,分层,发送状态,实际发送时间,12 小时观察,24 小时观察,48 小时观察", csv_bytes)
         self.assertIn("'=evil", csv_bytes)
         self.assertIn("'+evil", csv_bytes)
         self.assertIn("'@pages/a/a?x=1", csv_bytes)
+        self.assertIn("发送成功,2026-10-01 00:00:00,未打开,未打开,未打开", csv_bytes)
+        self.assertIn("结果待核实,,,,", csv_bytes)
+        self.assertIn("状态待核对,时间暂时无法显示", csv_bytes)
+        self.assertNotIn("2026-09-30T16:00:00.611265+00:00", csv_bytes)
+        self.assertEqual(
+            _report_label("provider_accepted", DELIVERY_LABELS),
+            "任务已创建，待员工执行",
+        )
+        self.assertEqual(
+            [_report_label(value, WINDOW_LABELS) for value in ("observing", "opened", "not_opened", "unavailable")],
+            ["观察中", "已打开", "未打开", "暂不可统计"],
+        )
 
     def test_source_coverage_is_required_for_zero_open(self):
         source = Source({})
