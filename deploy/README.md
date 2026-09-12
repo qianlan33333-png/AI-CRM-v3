@@ -33,11 +33,17 @@ effects worker, verifies the installed release through `/readyz`, and restores
 the prior environment if restart or readiness fails. It never enables the read,
 WeCom, outbound, or credential prerequisites itself.
 
-## Automated release
+## Controlled release
 
-The `deploy` job runs only after the required `check` job succeeds on `main`.
-It builds static Linux binaries, uploads one archive over pinned-host SSH and
-runs `install-release.sh`. The installer requires every release-owned migration,
+The `deploy` job runs only after the required `check` job succeeds on `main` and
+the repository variable `AICRM_ENABLE_ACTIONS_DEPLOY` is exactly `true`. The
+variable is unset by default, so a normal merge completes CI without SSH upload,
+installation, runtime configuration, or production verification. After the
+approved PRs are merged, use the authorized local full-package release process.
+
+When the explicit Actions opt-in is enabled, the job builds static Linux
+binaries, uploads one archive over pinned-host SSH and runs
+`install-release.sh`. The installer requires every release-owned migration,
 including `0124_operation_excel_batch_lifecycle.sql`, applies forward-only
 migrations, atomically switches `/opt/aicrm/current`, restarts the API and
 checks `/readyz`. When `/etc/aicrm-excel/config.json` and
