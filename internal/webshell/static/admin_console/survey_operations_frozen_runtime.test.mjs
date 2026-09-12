@@ -28,6 +28,7 @@ let testPosts = 0;
 let metadataVersion = 3;
 const httpCalls = [];
 const savedCompletionBodies = [];
+const savedPushBodies = [];
 const operations = {
   completion: { navigation_target_id: "", channel_id: null },
   external_push: { enabled: true, configuration_reference: "push.v1", metadata: { custom_params: { campaign: "old" } } },
@@ -50,6 +51,7 @@ dom.window.fetch = async (url, options = {}) => {
   }
   if (target.endsWith("/external-push")) {
     const body = JSON.parse(options.body);
+    savedPushBodies.push(body);
     operations.external_push = { enabled: body.enabled, configuration_reference: body.configuration_reference, metadata: body.metadata === undefined ? operations.external_push.metadata : body.metadata };
     return reply({ configuration_version: ++metadataVersion, completion: operations.completion, external_push: operations.external_push });
   }
@@ -73,7 +75,7 @@ await wait(60);
 const document = dom.window.document;
 const stage = document.getElementById("stage");
 if (!stage || !stage.textContent.includes("提交后动作") || !stage.textContent.includes("外部推送绑定") || !stage.textContent.includes("复制公开地址")) throw new Error("compiled questionnaire operations page did not retain its existing controls: " + httpCalls.join("|"));
-const form = document.querySelector("[data-survey-push-metadata]");
+let form = document.querySelector("[data-survey-push-metadata]");
 const logCard = document.querySelector("[data-survey-host-logs]");
 if (!form || !logCard) throw new Error("Host did not attach; host error=" + document.querySelector('[data-survey-host-error]')?.dataset.surveyHostError + "; headings=" + [...document.querySelectorAll("h3")].map((node) => node.textContent).join("|"));
 
@@ -87,10 +89,24 @@ document.querySelector('[data-survey-log-scope="global"]').click();
 await wait(10);
 if (!logCard.textContent.includes("已收到处理结果") || !logCard.textContent.includes("处理结果待确认（不会自动重复发送）")) throw new Error("actual log card did not show true effect states");
 
-form.elements.type.value = "assessment";
-form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
-await wait(25);
+const pushTab = [...document.querySelectorAll("button")].find(button => button.textContent.includes('外部推送') && !button.textContent.includes('保存'));
+if (!pushTab) throw new Error('compiled external push tab missing');
+pushTab.click(); await wait(60);
+form = document.querySelector('[data-survey-push-metadata]');
+form.elements.type.value = 'assessment';
+const toggle = document.querySelector('[data-survey-push-enabled]');
+if (!toggle) throw new Error('compiled enabled switch missing');
+toggle.checked = false; toggle.dispatchEvent(new dom.window.Event('change', {bubbles:true}));
+const headerSave = [...document.querySelectorAll('button')].find(button => !form.contains(button) && button.textContent.trim() === '保存当前维度');
+if (!headerSave || !form.querySelector('button[type="submit"]').hidden) throw new Error('single top save not installed');
+headerSave.click(); headerSave.click(); await wait(40);
+if (savedPushBodies.length !== 1 || savedPushBodies[0].enabled !== false || savedPushBodies[0].metadata.type !== 'assessment' || savedPushBodies[0].metadata.custom_params.campaign !== 'old') throw new Error('top save lost toggle/params or double submitted: '+JSON.stringify(savedPushBodies));
 if (metadataVersion !== 4 || !form.querySelector('button[type="submit"]').textContent.includes("已保存")) throw new Error("metadata save did not advance the configuration version");
+
+const visibleSaveStatus = form.querySelector('[data-survey-push-save-status]');
+if (!visibleSaveStatus || visibleSaveStatus.textContent !== '已保存当前维度' || visibleSaveStatus.hidden || visibleSaveStatus.getAttribute('role') !== 'status') throw new Error('top save lacks visible success feedback');
+const pushStyle = document.getElementById('survey-push-editor-style')?.textContent || '';
+if (!pushStyle.includes('@media(max-width:600px)') || !pushStyle.includes('minmax(0,1fr) 44px minmax(0,1fr) 32px') || !pushStyle.includes('.survey-push-layout>section,.survey-push-layout>aside{min-width:0}')) throw new Error('narrow fields or preview retain overflowing minimum widths');
 
 const postTab = [...document.querySelectorAll("button")].find((button) => button.textContent.includes("提交后动作"));
 postTab.click();

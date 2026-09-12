@@ -828,8 +828,17 @@ func TestGroupOpsSharedRiverMaterialPreparationAutoResumes(t *testing.T) {
 	var persistedGroupJob int64
 	var groupState string
 	var groupAttempts int
-	if err = native.QueryRow(ctx, `SELECT job.river_job_id,effect.state,effect.attempt_count FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1`, groupEffectNumeric).Scan(&persistedGroupJob, &groupState, &groupAttempts); err != nil {
-		t.Fatal(err)
+	// The fixture records the HTTP call before the worker commits completion.
+	// Wait for that durable receipt, not merely the provider-side call counter.
+	completionDeadline := time.Now().Add(12 * time.Second)
+	for {
+		if err = native.QueryRow(ctx, `SELECT job.river_job_id,effect.state,effect.attempt_count FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1`, groupEffectNumeric).Scan(&persistedGroupJob, &groupState, &groupAttempts); err != nil {
+			t.Fatal(err)
+		}
+		if groupState == "executed" || time.Now().After(completionDeadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 	if persistedGroupJob != groupJobID || groupState != "executed" || groupAttempts != 1 {
 		t.Fatalf("group effect did not resume its original River row: job=%d/%d state=%s attempts=%d", persistedGroupJob, groupJobID, groupState, groupAttempts)

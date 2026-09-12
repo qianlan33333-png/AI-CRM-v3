@@ -72,6 +72,8 @@ run_frontend_and_stage_checks() {
   node web/v3/customerAdapter.test.mjs
   node web/v3/adminSessionHost.test.mjs
   node web/v3/h5AuthAdapter.test.mjs
+  node web/v3/fieldMappingEditor.test.mjs
+  node web/v3/productAdapter.field_mapping.test.mjs
   node web/v3/productAdapter.save_recovery.test.mjs
   node web/v3/productAdapter.sp_material.test.mjs
   node web/v3/orderAdapter.test.mjs

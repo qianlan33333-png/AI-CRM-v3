@@ -35,6 +35,7 @@ type ExternalPushConfiguration struct {
 	ExpiresAtTS  *int64         `json:"expires_at_ts"`
 	Remark       string         `json:"remark"`
 	CustomParams map[string]any `json:"custom_params"`
+	FieldMapping *FieldMapping  `json:"field_mapping,omitempty"`
 	Revision     int64          `json:"revision"`
 	ProductName  string         `json:"-"`
 	UpdatedAt    time.Time      `json:"updated_at"`
@@ -48,6 +49,8 @@ type SaveExternalPushConfigurationCommand struct {
 	ConfigurationReference string
 	// When false, old frozen hosts update only the opaque binding and retain
 	// Product-owned business parameters. The V3 host submits a complete set.
+	FieldMapping          *FieldMapping
+	FieldMappingSet       bool
 	BusinessParametersSet bool
 	PushType              string
 	Day                   *int64

@@ -364,6 +364,8 @@ func (h *Handler) ordinaryAdminTail(w http.ResponseWriter, r *http.Request, tail
 		h.localShare(w, r, id)
 	case "external-push":
 		h.externalRoute(w, r, id, productport.ExternalPushWeChatPay)
+	case "external-push/preview":
+		h.externalPreview(w, r, id, productport.ExternalPushWeChatPay)
 	case "external-push/test":
 		h.externalTest(w, r, id, productport.ExternalPushWeChatPay)
 	case "":
@@ -569,6 +571,8 @@ func (h *Handler) serviceTail(w http.ResponseWriter, r *http.Request, tail strin
 		h.serviceShare(w, r, id)
 	case suffix == "external-push":
 		h.externalRoute(w, r, id, productport.ExternalPushServicePeriod)
+	case suffix == "external-push/preview":
+		h.externalPreview(w, r, id, productport.ExternalPushServicePeriod)
 	case suffix == "external-push/test":
 		h.externalTest(w, r, id, productport.ExternalPushServicePeriod)
 	case suffix == "members":
@@ -794,9 +798,18 @@ func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64
 			writeError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
+		var mapping *productport.FieldMapping
+		if len(body.FieldMapping) > 0 {
+			var e error
+			mapping, e = productport.DecodeFieldMapping(body.FieldMapping)
+			if e != nil || !businessSet {
+				writeError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+		}
 		configuration, err := h.external.SaveExternalPushConfiguration(r.Context(), productport.SaveExternalPushConfigurationCommand{
 			ProductID: productport.ID(id), ProductKind: kind, Enabled: body.Enabled, ConfigurationReference: body.ConfigurationReference,
-			URL: body.URL, BusinessParametersSet: businessSet, PushType: business.pushType, Day: business.day, Frequency: business.frequency, ExpiresAtTS: business.expiresAtTS, Remark: business.remark, CustomParams: business.customParams,
+			FieldMapping: mapping, FieldMappingSet: len(body.FieldMapping) > 0, URL: body.URL, BusinessParametersSet: businessSet, PushType: business.pushType, Day: business.day, Frequency: business.frequency, ExpiresAtTS: business.expiresAtTS, Remark: business.remark, CustomParams: business.customParams,
 			ExpectedRevision: business.expectedRevision, Actor: principal.InternalID, IdempotencyKey: key,
 		})
 		if err != nil {
@@ -1575,6 +1588,7 @@ type externalConfigurationRequest struct {
 	ExpiresAtTS            json.RawMessage `json:"expires_at_ts"`
 	Remark                 *string         `json:"remark"`
 	CustomParams           json.RawMessage `json:"custom_params"`
+	FieldMapping           json.RawMessage `json:"field_mapping"`
 }
 
 // externalConfigurationResponse keeps the canonical JSON text alongside the
@@ -1989,4 +2003,51 @@ func writeError(w http.ResponseWriter, status int, code string) {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}
 	writeJSON(w, status, map[string]any{"ok": false, "code": compat, "message": strings.ReplaceAll(strings.ToLower(compat), "_", " ")})
+}
+
+// externalPreview compiles synthetic facts only; it performs no Provider call or acceptance.
+func (h *Handler) externalPreview(w http.ResponseWriter, r *http.Request, id int64, kind productport.ExternalPushProductKind) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if _, ok := h.write(w, r); !ok {
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	var body struct {
+		FieldMapping json.RawMessage `json:"field_mapping"`
+	}
+	if decodeJSON(r, &body) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	mapping, err := productport.DecodeFieldMapping(body.FieldMapping)
+	if err != nil || mapping == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if _, err = h.external.GetExternalPushConfiguration(r.Context(), productport.ID(id), kind); err != nil {
+		resultError(w, err)
+		return
+	}
+	payload, err := productport.CompileFieldMapping(mapping, productport.SyntheticFieldMappingVariables())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	response := map[string]any{"payload": payload, "payload_json": string(payload), "synthetic": true, "real_external_call_executed": false}
+	if previewer, ok := h.external.(interface {
+		PreviewLegacyExternalPushConfiguration(context.Context, productport.ID) (json.RawMessage, error)
+	}); ok {
+		if legacy, e := previewer.PreviewLegacyExternalPushConfiguration(r.Context(), productport.ID(id)); e == nil && json.Valid(legacy) {
+			response["legacy_payload_json"] = string(legacy)
+		} else {
+			response["legacy_preview_unavailable"] = true
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }

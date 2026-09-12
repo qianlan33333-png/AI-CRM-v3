@@ -69,6 +69,18 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	}
 
 	fixture := newProductExternalPushChromiumFixture(t)
+	outerSession, outerCSRF := adminAccessLogin(t, fixture.application.handler, "product-browser-owner", "product-browser-owner-password")
+	// Seed an existing legacy configuration through its owner HTTP contract.
+	// Fresh revision-zero editors now correctly start in field-mapping mode.
+	for _, path := range []string{
+		"/api/admin/wechat-pay/products/" + strconv.FormatInt(fixture.productID, 10) + "/external-push",
+		"/api/admin/service-period-products/" + strconv.FormatInt(fixture.serviceProductID, 10) + "/external-push",
+	} {
+		response := productExternalPushAdminMutation(t, fixture.application.handler, http.MethodPut, path, `{"enabled":true,"url":"https://commerce-browser.invalid","configuration_reference":"browser-push-target","type":"paid_notify","day":null,"frequency":null,"expires_at_ts":null,"remark":"legacy fixture","custom_params":{},"expected_revision":0}`, outerSession, outerCSRF, "browser-seed-legacy-config-"+strconv.FormatInt(int64(len(path)), 10))
+		if response.Code != http.StatusOK {
+			t.Fatalf("seed legacy push status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
 	exactParams := "{\"count\":9007199254740993,\"nested\":[{\"inner\":9007199254740993}],\"flag\":false}"
 	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
 	command.Env = append(os.Environ(),
@@ -91,13 +103,13 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		t.Fatalf("product external push Chromium journey did not report success: %q", output)
 	}
 
-	assertProductExternalPushSyntheticDurableFacts(t, fixture.ctx, fixture.application, fixture.productID, fixture.dataKey)
+	assertProductExternalPushSyntheticDurableFacts(t, fixture.ctx, fixture.application, fixture.productID, fixture.dataKey, 2)
 	var serviceRevision, serviceStoredExpiry int64
 	var serviceStored json.RawMessage
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", fixture.serviceProductID).Scan(&serviceRevision, &serviceStoredExpiry, &serviceStored); err != nil {
 		t.Fatal(err)
 	}
-	if serviceRevision != 1 || serviceStoredExpiry != 2147483647 || !externalPushStoredJSONHasExactBigInteger(serviceStored) {
+	if serviceRevision != 2 || serviceStoredExpiry != 2147483647 || !externalPushStoredJSONHasExactBigInteger(serviceStored) {
 		t.Fatalf("service-period browser configuration revision=%d params=%s", serviceRevision, serviceStored)
 	}
 }
@@ -262,7 +274,11 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 // after the real browser flow, and the HTTP-only companion test below invokes
 // the same assertion so a browser-launch failure cannot conceal a bad column,
 // encrypted payload binding, or JSON precision regression.
-func assertProductExternalPushSyntheticDurableFacts(t *testing.T, ctx context.Context, application *composedApplication, productID int64, dataKey []byte) {
+func assertProductExternalPushSyntheticDurableFacts(t *testing.T, ctx context.Context, application *composedApplication, productID int64, dataKey []byte, expectedVersions ...int64) {
+	expectedVersion := int64(1)
+	if len(expectedVersions) > 0 {
+		expectedVersion = expectedVersions[0]
+	}
 	t.Helper()
 	var revision, storedExpiry int64
 	var stored json.RawMessage
@@ -279,7 +295,7 @@ func assertProductExternalPushSyntheticDurableFacts(t *testing.T, ctx context.Co
 	if !externalPushStoredJSONHasExactBigInteger(stored) {
 		t.Fatalf("browser configuration stored JSON lost required typed facts: %s", stored)
 	}
-	if revision != 1 || storedExpiry != 2147483647 || !strings.HasPrefix(sourceReference, "synthetic:") || targetSlot != "product:"+strconv.FormatInt(productID, 10) || effectID == "" || state != "outcome_unknown" {
+	if revision != expectedVersion || storedExpiry != 2147483647 || !strings.HasPrefix(sourceReference, "synthetic:") || targetSlot != "product:"+strconv.FormatInt(productID, 10) || effectID == "" || state != "outcome_unknown" {
 		t.Fatalf("browser configuration/intent revision=%d params=%s source=%q slot=%q effect=%q state=%q", revision, stored, sourceReference, targetSlot, effectID, state)
 	}
 	cipher, err := outbound.NewCommercePayloadAESGCM(base64.RawStdEncoding.EncodeToString(dataKey))

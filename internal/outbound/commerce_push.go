@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
@@ -209,14 +210,16 @@ func (c *CommercePayloadAESGCM) DecryptCommercePayload(ciphertext []byte, versio
 // called only with an existing Order/Product transaction, so Order settlement,
 // intent, audit/outbox, EER acceptance, and River enqueue commit together.
 type CommercePushService struct {
-	pool       *pgxpool.Pool
-	uow        platformport.UnitOfWork
-	effects    effectport.TransactionalAccepter
-	products   productport.ExternalPushConfigurationReader
-	identities identityport.ExternalIdentityValueReader
-	targets    CommercePushTargetResolver
-	cipher     CommercePayloadCipher
-	now        func() time.Time
+	checkoutMobile orderport.CheckoutMobileReader
+	displayNames   customerport.DirectoryDisplayNameReader
+	pool           *pgxpool.Pool
+	uow            platformport.UnitOfWork
+	effects        effectport.TransactionalAccepter
+	products       productport.ExternalPushConfigurationReader
+	identities     identityport.ExternalIdentityValueReader
+	targets        CommercePushTargetResolver
+	cipher         CommercePayloadCipher
+	now            func() time.Time
 }
 
 func NewCommercePushService(pool *pgxpool.Pool, uow platformport.UnitOfWork, effects effectport.TransactionalAccepter, products productport.ExternalPushConfigurationReader, identities identityport.ExternalIdentityValueReader, targets CommercePushTargetResolver, cipher CommercePayloadCipher) (*CommercePushService, error) {
@@ -269,7 +272,7 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 	// This is the frozen V2 paid-order behavior: a locally enabled product
 	// configuration may expire. Synthetic admin tests remain available for
 	// inspection and do not pass through this paid-event-only gate.
-	if configuration.ExpiresAtTS != nil && *configuration.ExpiresAtTS <= s.now().UTC().Unix() {
+	if commerceLegacyPushExpired(configuration, s.now().UTC()) {
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: commerceTargetReference(configuration), targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_config_expired"})
 	}
 	target, found, err := s.targets.CommercePushTarget(ctx, configuration.ConfigurationReference)
@@ -280,7 +283,13 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 	if !found || !target.valid() {
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_target_unavailable"})
 	}
-	body, missing, err := s.paidPayload(ctx, event, item, target, commerceDeliveryID(event.ID, item.LineNo, targetSlot))
+	var body []byte
+	var missing bool
+	if configuration.FieldMapping != nil {
+		body, err = s.mappedPaidPayload(ctx, event, configuration.FieldMapping)
+	} else {
+		body, missing, err = s.paidPayload(ctx, event, item, target, commerceDeliveryID(event.ID, item.LineNo, targetSlot))
+	}
 	if err != nil {
 		return err
 	}
@@ -291,7 +300,7 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 		}
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: state})
 	}
-	_, err = s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, target: target, body: body})
+	_, err = s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, target: target, body: body, payloadMode: commerceMappingMode(configuration.FieldMapping)})
 	return err
 }
 
@@ -322,11 +331,16 @@ func (s *CommercePushService) AcceptExternalPushTestWithin(ctx context.Context, 
 	} else if found {
 		return productport.ExternalPushTest{ProductID: in.ProductID, ProductKind: in.ProductKind, EffectID: existing.effectID, State: existing.state, CreatedAt: existing.createdAt}, nil
 	}
-	body, err := commerceSyntheticPayload(in.ProductID, configuration.ProductName, target, commerceDeliveryIDFromDigest(in.ReceiptKeyDigest, targetSlot), s.now().UTC())
+	var body []byte
+	if configuration.FieldMapping != nil {
+		body, err = commerceMappedSyntheticPayload(configuration.FieldMapping)
+	} else {
+		body, err = commerceSyntheticPayload(in.ProductID, configuration.ProductName, target, commerceDeliveryIDFromDigest(in.ReceiptKeyDigest, targetSlot), s.now().UTC())
+	}
 	if err != nil {
 		return productport.ExternalPushTest{}, err
 	}
-	accepted, err := s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "synthetic_test", sourceReference: sourceReference, productID: int64(in.ProductID), productKind: in.ProductKind, targetReference: in.ConfigurationReference, targetSlot: targetSlot, revision: in.ConfigurationRevision, sourceDigest: sourceDigest, target: target, body: body})
+	accepted, err := s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "synthetic_test", sourceReference: sourceReference, productID: int64(in.ProductID), productKind: in.ProductKind, targetReference: in.ConfigurationReference, targetSlot: targetSlot, revision: in.ConfigurationRevision, sourceDigest: sourceDigest, target: target, body: body, payloadMode: commerceMappingMode(configuration.FieldMapping)})
 	if err != nil {
 		return productport.ExternalPushTest{}, err
 	}
@@ -472,6 +486,7 @@ func validCommercePlannedState(v string) bool {
 }
 
 type commerceAcceptedIntent struct {
+	payloadMode                                              string
 	sourceKind, sourceReference, targetReference, targetSlot string
 	orderEventID                                             int64
 	productID                                                int64
@@ -483,6 +498,12 @@ type commerceAcceptedIntent struct {
 }
 
 func (s *CommercePushService) acceptCommercePushWithin(ctx context.Context, in commerceAcceptedIntent) (commerceIntentRecord, error) {
+	if in.payloadMode == "" {
+		in.payloadMode = "legacy"
+	}
+	if in.payloadMode != "legacy" && in.payloadMode != "custom_fields_v1" {
+		return commerceIntentRecord{}, ErrCommercePushInvalid
+	}
 	if s == nil || in.productID < 1 || in.revision < 1 || in.sourceDigest == ([32]byte{}) || !validCommercePushKind(in.productKind) || !in.target.valid() || len(in.body) == 0 || len(in.body) > 64<<10 || !json.Valid(in.body) {
 		return commerceIntentRecord{}, ErrCommercePushInvalid
 	}
@@ -519,7 +540,7 @@ func (s *CommercePushService) acceptCommercePushWithin(ctx context.Context, in c
 	keyDigest := sha256.Sum256([]byte("commerce-push.intent.v1\x00" + in.sourceReference + "\x00" + in.targetSlot))
 	intentDigest := commerceIntentDigest(in.sourceKind, in.sourceReference, in.productID, in.targetSlot, in.revision, in.sourceDigest, targetDigest, payloadDigest, policyDigest)
 	var out commerceIntentRecord
-	err = tx.QueryRow(ctx, `INSERT INTO outbound_commerce_push_intents(source_kind,source_reference,order_paid_event_id,product_id,product_kind,target_reference,target_slot,product_configuration_revision,source_digest,target_digest,payload_digest,policy_digest,receipt_key_digest,intent_digest,envelope_fingerprint,payload_ciphertext,payload_key_version,effect_id,queue_receipt_id,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'queued',$20,$20) ON CONFLICT(source_reference,target_slot) DO NOTHING RETURNING id,effect_id,state,created_at`, in.sourceKind, in.sourceReference, eventID, in.productID, string(in.productKind), in.targetReference, in.targetSlot, in.revision, in.sourceDigest[:], targetDigest[:], payloadDigest[:], policyDigest[:], keyDigest[:], intentDigest[:], string(envelope.Fingerprint()), ciphertext, keyVersion, projection.ID, receipt.QueueReceiptID, now).Scan(&out.id, &out.effectID, &out.state, &out.createdAt)
+	err = tx.QueryRow(ctx, `INSERT INTO outbound_commerce_push_intents(source_kind,source_reference,order_paid_event_id,product_id,product_kind,target_reference,target_slot,product_configuration_revision,source_digest,target_digest,payload_digest,policy_digest,receipt_key_digest,intent_digest,envelope_fingerprint,payload_ciphertext,payload_key_version,effect_id,queue_receipt_id,state,created_at,updated_at,payload_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'queued',$20,$20,$21) ON CONFLICT(source_reference,target_slot) DO NOTHING RETURNING id,effect_id,state,created_at`, in.sourceKind, in.sourceReference, eventID, in.productID, string(in.productKind), in.targetReference, in.targetSlot, in.revision, in.sourceDigest[:], targetDigest[:], payloadDigest[:], policyDigest[:], keyDigest[:], intentDigest[:], string(envelope.Fingerprint()), ciphertext, keyVersion, projection.ID, receipt.QueueReceiptID, now, in.payloadMode).Scan(&out.id, &out.effectID, &out.state, &out.createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		stored, found, readErr := commerceIntentExists(ctx, in.sourceReference, in.targetSlot, in.sourceDigest, in.productID)
 		if readErr != nil || !found {
@@ -729,6 +750,7 @@ func disallowedCommerceIP(ip netip.Addr, allowLoopback bool) bool {
 // by the Provider adapter after EER marks an attempt. It intentionally has no
 // decoded identity or provider credential fields.
 type CommercePushExecution struct {
+	PayloadMode                                             string
 	IntentID, ProductID                                     int64
 	SourceReference, TargetSlot                             string
 	TargetReference                                         string
@@ -748,7 +770,7 @@ func (s *CommercePushService) CommercePushExecution(ctx context.Context, fingerp
 		if err != nil {
 			return err
 		}
-		return tx.QueryRow(txctx, `SELECT id,product_id,source_reference,target_slot,target_reference,payload_ciphertext,payload_key_version,source_digest,target_digest,payload_digest,policy_digest FROM outbound_commerce_push_intents WHERE envelope_fingerprint=$1 AND state IN ('queued','attempted')`, fingerprint).Scan(&out.IntentID, &out.ProductID, &out.SourceReference, &out.TargetSlot, &out.TargetReference, &out.Ciphertext, &out.KeyVersion, &source, &target, &payload, &policy)
+		return tx.QueryRow(txctx, `SELECT id,product_id,source_reference,target_slot,target_reference,payload_ciphertext,payload_key_version,source_digest,target_digest,payload_digest,policy_digest,payload_mode FROM outbound_commerce_push_intents WHERE envelope_fingerprint=$1 AND state IN ('queued','attempted')`, fingerprint).Scan(&out.IntentID, &out.ProductID, &out.SourceReference, &out.TargetSlot, &out.TargetReference, &out.Ciphertext, &out.KeyVersion, &source, &target, &payload, &policy, &out.PayloadMode)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CommercePushExecution{}, false, nil
@@ -892,7 +914,7 @@ func (p *CommercePushProvider) Execute(ctx context.Context, envelope effectport.
 	if err != nil || !json.Valid(body) || sha256.Sum256(body) != execution.PayloadDigest {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "payload-unavailable")}, nil
 	}
-	event, deliveryID, ok := commercePayloadHeaderValues(body)
+	event, deliveryID, ok := commerceExecutionHeaderValues(execution, body)
 	if !ok {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "payload-invalid")}, nil
 	}

@@ -2540,12 +2540,12 @@ console.log('admin/productForm.html（渠道存量异常隔离）');
   const exactCustomParams = '{"count":9007199254740993,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]}';
   input(dom, d.querySelector('#product-v3-external-push-custom-params'), exactCustomParams);
   click(dom, d.querySelector('a[href="#product-push"]'));
-  const dimensionSave = [...d.querySelectorAll('#product-push button')].find((button) => button.textContent.trim() === '保存当前维度');
+  const dimensionSave = [...d.querySelectorAll('button')].find(button => button.textContent.trim()==='保存当前维度' && !button.closest('#product-push')) || d.querySelector('[data-external-push-configuration-save]');
   if (dimensionSave) click(dom, dimensionSave);
   const expectedConfigBody = JSON.stringify({ url: 'https://hooks.example.test/paid', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_renew', day: 45, frequency: 2, expires_at_ts: 2147483647, remark: '保留业务备注', custom_params: exactCustomParams, expected_revision: 3 });
   const savedBusiness = await waitFor(() => {
     d = dom.window.document;
-    return test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push' && call.method === 'PUT' && call.body === expectedConfigBody) && d.querySelector('#product-v3-external-push-test')?.textContent.includes('配置版本 4') === true;
+    return test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push' && call.method === 'PUT' && call.body === expectedConfigBody) && d.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '4' && d.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存';
   });
   ok('商品外推业务参数以真实 HTTP 无损保存 JSON 类型与配置版本', savedBusiness && d.querySelector('#product-v3-external-push-custom-params')?.value === exactCustomParams);
   d = dom.window.document;

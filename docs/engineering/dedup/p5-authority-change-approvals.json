@@ -335,6 +335,28 @@
       ],
       "reason": "Restore complete product external push editor contract including Outbound-owned destination.",
       "review_reference": "PR #230 user requested legacy product completion parity"
+    },
+    {
+      "base_commit": "f77b5ab7f5cb8b29c4890e93ccd2480d22694929",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "3d5ad874f5e93c04be5fb04202ec53b12a41a8e998e8468af090d34895b32581",
+          "head_sha256": "a989789843a439d664e6d04ad75fccbef134a8865355f1d67841b3315acda79c"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "12da0cc94dbabd661e989ab5ec390ee6199c106ed737e91e5bc08281e9eb0a8f",
+          "head_sha256": "c6e867f16e611ab8ec2b3272801ea4164cfd12d8b01e1a8a908b9e7787aeb025"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "4541542f1da526465b3d553935efdce7b0c700243524cb42f8898d089f0100ad",
+          "head_sha256": "b496adea724545ca16e96e2036b4c0046d0e04d27725366eb81a8aa167e0873a"
+        }
+      ],
+      "reason": "User-authorized versioned product external push field mapping and read-only synthetic preview; frozen donor authority unchanged.",
+      "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/232"
     }
   ]
 }
