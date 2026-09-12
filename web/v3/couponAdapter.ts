@@ -285,11 +285,12 @@ async function readCoupon(id: number): Promise<Json> {
   couponTargetsWithUnverifiedPrice.clear();
   coupon.products = refs.map((ref, index) => {
     const target = exact ? asJson(names[index]) : {};
-    const available = target.state === 'available' && typeof target.name === 'string' && target.name.trim();
+    const targetName = typeof target.name === 'string' ? target.name.trim() : '';
+    const available = target.state === 'available' && targetName.length > 0;
     couponTargetsWithUnverifiedPrice.add(ref);
     return {
       target_ref: ref,
-      title: available ? target.name.trim() : target.state === 'not_found' ? '商品已删除或不可用' : '商品目录暂不可读取',
+      title: available ? targetName : target.state === 'not_found' ? '商品已删除或不可用' : '商品目录暂不可读取',
       product_type: ref.startsWith('service_period:') ? 'service_period' : ref.startsWith('standard_product:') ? 'standard_product' : 'unknown',
       status: available ? '当前商品' : target.state === 'not_found' ? '商品已删除或不可用' : '目录暂不可用',
     };
@@ -403,7 +404,7 @@ function removeCouponTimeZoneLabels(): void {
   document.querySelectorAll<HTMLLabelElement>('#stage label').forEach((label) => {
     for (const node of Array.from(label.childNodes)) {
       if (node.nodeType === Node.TEXT_NODE && node.textContent?.includes('（北京时间）')) {
-        node.textContent = node.textContent.replaceAll('（北京时间）', '');
+        node.textContent = node.textContent.split('（北京时间）').join('');
       }
     }
   });
@@ -532,5 +533,6 @@ installCouponListBridge();
 
 const couponRuntime = window as Window & { __AICRM_TEST_COUPON_ADAPTER_ONLY__?: boolean };
 if (!couponRuntime.__AICRM_TEST_COUPON_ADAPTER_ONLY__ && (document.body.dataset.page === 'coupons' || document.body.dataset.page === 'couponData')) {
+  // @ts-ignore Frozen donor's browser entry intentionally has no module marker.
   void import('../src/admin/main');
 }
