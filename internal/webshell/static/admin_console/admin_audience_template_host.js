@@ -127,7 +127,7 @@
     const form = window.TemplateParameterForm.create(root);
     const legacyDefinition = byID("packageDefinitionInput");
     if (legacyDefinition?.closest(".ai-field")) legacyDefinition.closest(".ai-field").hidden = true;
-    const state = { package: null, configuration: null, templates: [], selectedTemplate: "", ready: false, restoring: false, initialDateTimes: {} };
+    const state = { package: null, configuration: null, templates: [], selectedTemplate: "", ready: false, restoring: false, initialDateTimes: {}, refreshInitial: null, refreshChanged: false, refreshDraft: null };
     const setStatus = (message, kind = "") => { status.textContent = message; status.dataset.state = kind; };
     const templateFor = () => state.templates.find((item) => item.key === state.selectedTemplate);
 
@@ -147,18 +147,61 @@
       });
       select.value = fallback;
     }
+    function storedRefreshSchedule() {
+      const mode = String(state.configuration?.refresh_mode || "");
+      const cron = typeof state.configuration?.refresh_cron_utc === "string" ? state.configuration.refresh_cron_utc : "";
+      if (["manual", "every_3m", "daily_0200", "every_3m_plus_daily_0200", "legacy_custom"].includes(mode)) return { mode, cron };
+      return { mode: cron ? "legacy_custom" : "manual", cron };
+    }
+
+    function legacyShanghaiSchedule(cron) {
+      const match = String(cron || "").trim().match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/);
+      if (!match) return "历史自定义计划（保留原规则）";
+      const minute = Number(match[1]);
+      const hour = Number(match[2]);
+      if (minute > 59 || hour > 23) return "历史自定义计划（保留原规则）";
+      return `每日 ${String((hour + 8) % 24).padStart(2, "0")}:${String(minute).padStart(2, "0")}（历史自定义计划）`;
+    }
+
+    function refreshScheduleLabel(schedule) {
+      switch (schedule.mode) {
+        case "every_3m": return "每 3 分钟";
+        case "daily_0200": return "每日 02:00";
+        case "every_3m_plus_daily_0200": return "每 3 分钟 + 每日 02:00";
+        case "legacy_custom": return legacyShanghaiSchedule(schedule.cron);
+        default: return "手动";
+      }
+    }
+
+    function renderRefreshPresentation(schedule, changed = false) {
+      const label = refreshScheduleLabel(schedule);
+      const summary = byID("summaryMode");
+      if (summary) summary.textContent = label;
+      const note = byID("refreshScheduleNote");
+      if (note) {
+        if (changed) note.textContent = `已选择${label}；保存基础配置后生效。`;
+        else note.textContent = schedule.mode === "legacy_custom" ? `${label}。未调整刷新选项时，保存其他配置会保留原规则。` : `当前计划：${label}。`;
+      }
+      const legacyActions = byID("legacyRefreshScheduleActions");
+      if (legacyActions) legacyActions.hidden = schedule.mode !== "legacy_custom";
+    }
+
     function renderRefreshMode() {
       const incremental = byID("incrementalSelect");
       const daily = byID("dailySelect");
       if (!incremental || !daily) return;
-      switch (state.configuration?.refresh_mode) {
+      const schedule = storedRefreshSchedule();
+      switch (schedule.mode) {
         case "every_3m": incremental.value = "incremental_3m"; daily.value = "off"; break;
         case "daily_0200": incremental.value = "off"; daily.value = "daily_0200"; break;
         case "every_3m_plus_daily_0200": incremental.value = "incremental_3m"; daily.value = "daily_0200"; break;
         case "manual": incremental.value = "off"; daily.value = "off"; break;
-        // Historical arbitrary UTC cron remains visible through the existing
-        // detail adapter; this Host never rewrites its time semantics.
+        case "legacy_custom": incremental.value = "off"; daily.value = "off"; break;
       }
+      state.refreshInitial = { mode: schedule.mode, cron: schedule.cron, incremental: incremental.value, daily: daily.value };
+      state.refreshChanged = false;
+      state.refreshDraft = null;
+      renderRefreshPresentation(schedule);
     }
 
     async function rehydrateOwnerUserIDs(parameters) {
@@ -243,19 +286,30 @@
       if (!legacyDefinition) throw new Error("基础配置控件不可用。");
       legacyDefinition.value = JSON.stringify(currentDefinition());
     }
-    function selectedRefreshMode() {
-      const incremental = byID("incrementalSelect")?.value;
-      const daily = byID("dailySelect")?.value;
+    function currentRefreshDraft() {
+      return { incremental: byID("incrementalSelect")?.value || "off", daily: byID("dailySelect")?.value || "off" };
+    }
+    function selectedRefreshMode(draft = currentRefreshDraft()) {
+      const { incremental, daily } = draft;
       if (incremental === "incremental_3m" && daily === "daily_0200") return "every_3m_plus_daily_0200";
       if (incremental === "incremental_3m") return "every_3m";
       if (daily === "daily_0200") return "daily_0200";
       return "manual";
     }
+    function selectedRefreshSchedule() {
+      const incremental = byID("incrementalSelect");
+      const daily = byID("dailySelect");
+      const initial = state.refreshInitial;
+      const changed = state.refreshChanged || !initial || incremental?.value !== initial.incremental || daily?.value !== initial.daily;
+      if (!changed && initial) return { mode: initial.mode, cron: initial.cron };
+      return { mode: selectedRefreshMode(state.refreshDraft || currentRefreshDraft()), cron: "" };
+    }
     async function save() {
       const definition = currentDefinition();
       const groupValue = byID("packageGroupSelect")?.value || "";
       const changed = await request(`${api}/packages/${id}`, { method: "PATCH", mutate: true, body: { name: byID("packageNameInput")?.value.trim() || state.package.name, group_id: groupValue ? Number(groupValue) : null, expected_version: state.package.version } });
-      const saved = await request(`${api}/packages/${id}/configuration`, { method: "PUT", mutate: true, body: { expected_package_version: changed.package.version, refresh_cron_utc: "", refresh_mode: selectedRefreshMode(), definition } });
+      const refresh = selectedRefreshSchedule();
+      const saved = await request(`${api}/packages/${id}/configuration`, { method: "PUT", mutate: true, body: { expected_package_version: changed.package.version, refresh_cron_utc: refresh.cron, refresh_mode: refresh.mode, definition } });
       state.package = changed.package;
       state.configuration = saved.configuration;
       await load();
@@ -297,6 +351,20 @@
       previewBox.hidden = true;
       render().catch((error) => setStatus(error.message, "error"));
     });
+    [byID("incrementalSelect"), byID("dailySelect")].filter(Boolean).forEach((input) => input.addEventListener("change", () => { state.refreshChanged = true; state.refreshDraft = currentRefreshDraft(); }));
+    byID("replaceLegacyScheduleWithManualBtn")?.addEventListener("click", () => {
+      if (storedRefreshSchedule().mode !== "legacy_custom") return;
+      const incremental = byID("incrementalSelect");
+      const daily = byID("dailySelect");
+      if (incremental) incremental.value = "off";
+      if (daily) daily.value = "off";
+      state.refreshChanged = true;
+      state.refreshDraft = currentRefreshDraft();
+      const note = byID("refreshScheduleNote");
+      if (note) note.textContent = "已选择改为手动刷新；保存基础配置后将停止当前历史自定义计划。";
+      const legacyActions = byID("legacyRefreshScheduleActions");
+      if (legacyActions) legacyActions.hidden = true;
+    });
     const observer = new MutationObserver(() => {
       if (!state.ready || state.restoring || root.querySelector("[data-field-name]")) return;
       state.restoring = true;
@@ -305,6 +373,34 @@
       });
     });
     observer.observe(root, { childList: true });
+    // The frozen page also fills this summary after its own asynchronous
+    // configuration read. Keep the V3-owned schedule projection authoritative
+    // if that late render replaces a legacy custom rule with its raw cron.
+    const summary = byID("summaryMode");
+    if (summary) {
+      const scheduleObserver = new MutationObserver(() => {
+        const draftSchedule = state.refreshChanged && state.refreshDraft ? { mode: selectedRefreshMode(state.refreshDraft), cron: "" } : null;
+        const expectedLabel = refreshScheduleLabel(draftSchedule || storedRefreshSchedule());
+        const draftControlsChanged = state.refreshChanged && state.refreshDraft && (
+          byID("incrementalSelect")?.value !== state.refreshDraft.incremental || byID("dailySelect")?.value !== state.refreshDraft.daily
+        );
+        if (!state.ready || (summary.textContent === expectedLabel && !draftControlsChanged)) return;
+        queueMicrotask(() => {
+          if (!state.ready) return;
+          if (state.refreshChanged && state.refreshDraft) {
+            const incremental = byID("incrementalSelect");
+            const daily = byID("dailySelect");
+            if (incremental) incremental.value = state.refreshDraft.incremental;
+            if (daily) daily.value = state.refreshDraft.daily;
+            const schedule = { mode: selectedRefreshMode(state.refreshDraft), cron: "" };
+            if (summary.textContent !== refreshScheduleLabel(schedule)) renderRefreshPresentation(schedule, true);
+            return;
+          }
+          if (summary.textContent !== refreshScheduleLabel(storedRefreshSchedule())) renderRefreshMode();
+        });
+      });
+      scheduleObserver.observe(summary, { childList: true, characterData: true, subtree: true });
+    }
     try {
       await load();
     } catch (error) { setStatus(error.message || "模板表单无法加载。", "error"); }

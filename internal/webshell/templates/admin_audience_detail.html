@@ -61,6 +61,10 @@
               <option value="daily_0200">每日 2:00</option>
             </select>
           </div>
+          <p class="ai-label full" id="refreshScheduleNote" aria-live="polite"></p>
+          <div class="ai-btns full" id="legacyRefreshScheduleActions" hidden>
+            <button class="ai-btn soft" id="replaceLegacyScheduleWithManualBtn" type="button">改为手动刷新</button>
+          </div>
         </div>
         <section class="template-config-card" aria-label="模板筛选条件">
           <div class="template-config-head">
@@ -199,7 +203,6 @@
           <div class="ai-field"><label class="ai-label" for="policyTriggerSelect">触发器</label><select class="ai-select" id="policyTriggerSelect"><option value="audience.member_entered.v1">成员进入人群</option><option value="customer.tag_applied.v1" disabled>客户打标（生产者未接入）</option></select></div>
           <div class="ai-field"><label class="ai-label" for="policyActionSelect">动作</label><select class="ai-select" id="policyActionSelect"><option value="outbound_message">发送固定话术</option><option value="record">仅记录</option></select></div>
           <div class="ai-field"><label class="ai-label" for="policyLimitInput">单次上限</label><input class="ai-input" id="policyLimitInput" type="number" min="1" max="100000" value="100"></div>
-          <div class="ai-field"><label class="ai-label" for="policyTimezoneInput">时区</label><input class="ai-input" id="policyTimezoneInput" value="Asia/Shanghai"></div>
           <div class="ai-field"><label class="ai-label" for="policyQuietHoursInput">安静时段</label><input class="ai-input" id="policyQuietHoursInput" value="22:00-08:00"></div>
         </div>
         <div class="ai-panel-actions"><button class="ai-btn primary" id="createPolicyBtn" type="button">创建暂停策略</button></div>
