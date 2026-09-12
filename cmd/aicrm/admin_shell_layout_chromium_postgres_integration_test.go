@@ -59,6 +59,26 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 	if radarList.Code != http.StatusOK || !strings.Contains(radarList.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)) || radarDetail.Code != http.StatusOK || !strings.Contains(radarDetail.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)) {
 		t.Fatalf("admin layout radar read list_status=%d list_seeded=%t detail_status=%d detail_seeded=%t", radarList.Code, strings.Contains(radarList.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)), radarDetail.Code, strings.Contains(radarDetail.Body.String(), `"link_id":`+strconv.FormatInt(fixture.radarID, 10)))
 	}
+	visitorRequest := httptest.NewRequest(http.MethodGet, "/api/admin/radar-links/"+strconv.FormatInt(fixture.radarID, 10)+"/visitors?limit=100&offset=0", nil)
+	visitorRequest.Header.Set("X-CSRF-Token", csrf)
+	visitorRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	visitorRequest.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+	visitorResponse := httptest.NewRecorder()
+	fixture.application.handler.ServeHTTP(visitorResponse, visitorRequest)
+	var visitors struct {
+		Items []struct {
+			Nickname              *string   `json:"nickname"`
+			ExternalContactID     *string   `json:"external_contact_id"`
+			ExternalContactStatus string    `json:"external_contact_status"`
+			OneID                 *string   `json:"oneid"`
+			OpenedAt              time.Time `json:"opened_at"`
+			AttributionStatus     string    `json:"attribution_status"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(visitorResponse.Body.Bytes(), &visitors); err != nil || visitorResponse.Code != http.StatusOK || visitorResponse.Header().Get("Cache-Control") != "no-store" || visitors.Total != 1 || len(visitors.Items) != 1 || visitors.Items[0].Nickname == nil || *visitors.Items[0].Nickname != "雷达布局访客" || visitors.Items[0].ExternalContactID == nil || *visitors.Items[0].ExternalContactID != "external-radar-layout-001" || visitors.Items[0].ExternalContactStatus != "available" || visitors.Items[0].OneID == nil || !strings.HasPrefix(*visitors.Items[0].OneID, "CID-") || !visitors.Items[0].OpenedAt.Equal(time.Date(2026, time.September, 7, 1, 2, 3, 0, time.UTC)) || visitors.Items[0].AttributionStatus != "resolved" {
+		t.Fatalf("admin layout visitor read status=%d cache=%q total=%d items=%d decode=%v", visitorResponse.Code, visitorResponse.Header().Get("Cache-Control"), visitors.Total, len(visitors.Items), err)
+	}
 	aiPlan := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/ai-assistant/plans/"+strconv.FormatInt(fixture.aiPlanID, 10))
 	aiRecipients := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/ai-assistant/plans/"+strconv.FormatInt(fixture.aiPlanID, 10)+"/recipients?limit=50")
 	if aiPlan.Code != http.StatusOK || !strings.Contains(aiPlan.Body.String(), `"id":`+strconv.FormatInt(fixture.aiPlanID, 10)) || aiRecipients.Code != http.StatusOK || !strings.Contains(aiRecipients.Body.String(), `"items"`) {
@@ -341,7 +361,7 @@ func seedAdminShellLayoutNativeOrder(t *testing.T, ctx context.Context, applicat
 func seedAdminShellLayoutRadar(t *testing.T, ctx context.Context, application *composedApplication) int64 {
 	t.Helper()
 	now := time.Date(2026, time.September, 7, 1, 2, 3, 0, time.UTC)
-	var radarID int64
+	var radarID, customerID, identityID int64
 	err := application.pool.Native().QueryRow(ctx, `
 		INSERT INTO radar_links(
 			public_code,name,title,description,content_type,destination_url,
@@ -358,23 +378,34 @@ func seedAdminShellLayoutRadar(t *testing.T, ctx context.Context, application *c
 		VALUES($1,1,'{}'::jsonb,1,$2)`, radarID, now); err != nil {
 		t.Fatal(err)
 	}
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		VALUES($1,'wecom_external_userid','wecom-corp:admin-layout-fixture-corp','external-radar-layout-001','verified','admin_layout_fixture',1,$2)
+		RETURNING id`, customerID, now).Scan(&identityID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,source_version,last_synced_at,updated_at)
+		VALUES($1,'active','雷达布局访客',$2,'active','admin_layout_fixture',1,$3,$3)`, customerID, fmt.Sprintf("CID-%d", customerID), now); err != nil {
+		t.Fatal(err)
+	}
 	var sessionID int64
 	if err = application.pool.Native().QueryRow(ctx, `
 		INSERT INTO radar_view_sessions(
-			session_digest,radar_id,radar_version,attribution_status,expires_at,created_at
+			session_digest,radar_id,radar_version,identity_id,customer_id,attribution_status,evidence_digest,expires_at,created_at
 		) VALUES(
-			decode(repeat('1a',32),'hex'),$1,1,'anonymous',$2::timestamptz + interval '1 hour',$2
-		) RETURNING id`, radarID, now).Scan(&sessionID); err != nil {
+			decode(repeat('1a',32),'hex'),$1,1,$2,$3,'resolved',decode(repeat('4d',32),'hex'),$4::timestamptz + interval '1 hour',$4
+		) RETURNING id`, radarID, identityID, customerID, now).Scan(&sessionID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = application.pool.Native().Exec(ctx, `
 		INSERT INTO radar_events(
 			receipt_id,radar_id,radar_version,session_id,stage,attribution_status,
-			key_digest,payload_digest,occurred_at,created_at
-		) VALUES(
-			'rre_00000000000000000000000000000001',$1,1,$2,'image_loaded','anonymous',
-			decode(repeat('2b',32),'hex'),decode(repeat('3c',32),'hex'),$3,$3
-		)`, radarID, sessionID, now); err != nil {
+			identity_id,customer_id,key_digest,payload_digest,occurred_at,created_at
+		) VALUES
+			('rre_00000000000000000000000000000001',$1,1,$2,'content_opened','resolved',$3,$4,decode(repeat('2b',32),'hex'),decode(repeat('3c',32),'hex'),$5,$5),
+			('rre_00000000000000000000000000000002',$1,1,$2,'image_loaded','resolved',$3,$4,decode(repeat('5e',32),'hex'),decode(repeat('6f',32),'hex'),$5::timestamptz + interval '30 seconds',$5::timestamptz + interval '30 seconds')`, radarID, sessionID, identityID, customerID, now); err != nil {
 		t.Fatal(err)
 	}
 	return radarID

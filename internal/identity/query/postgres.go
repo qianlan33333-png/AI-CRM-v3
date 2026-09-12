@@ -28,6 +28,7 @@ var _ identityport.HXCUnionIDBatchResolver = PostgreSQL{}
 var _ identityport.ExternalIdentityValueReader = PostgreSQL{}
 var _ identityport.OutboundWeComIdentityReader = PostgreSQL{}
 var _ identityport.CanonicalLineageReader = PostgreSQL{}
+var _ identityport.AdminRadarVisitorIdentityReader = PostgreSQL{}
 
 func (PostgreSQL) VerifiedWeComIdentityForCustomer(ctx context.Context, customerID customerdomain.CustomerID, corpID string) (string, bool, error) {
 	if customerID < 1 || strings.TrimSpace(corpID) != corpID || corpID == "" {

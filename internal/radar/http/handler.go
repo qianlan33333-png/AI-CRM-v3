@@ -36,6 +36,7 @@ type RequestSecurity interface {
 type Handler struct {
 	manager  radarport.Manager
 	query    radarport.QueryService
+	visitors radarport.VisitorQueryService
 	public   radarport.PublicService
 	security RequestSecurity
 	origin   string
@@ -46,7 +47,11 @@ func NewHandler(manager radarport.Manager, query radarport.QueryService, public 
 	if manager == nil || query == nil || public == nil || security == nil || e != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "" {
 		return nil, errors.New("radar HTTP dependencies are required")
 	}
-	return &Handler{manager: manager, query: query, public: public, security: security, origin: strings.TrimSuffix(origin, "/")}, nil
+	visitors, ok := query.(radarport.VisitorQueryService)
+	if !ok || visitors == nil {
+		return nil, errors.New("radar visitor query dependencies are required")
+	}
+	return &Handler{manager: manager, query: query, visitors: visitors, public: public, security: security, origin: strings.TrimSuffix(origin, "/")}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +131,16 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if len(parts) == 3 && parts[1] == "visitors" && parts[2] == "export" {
+		if r.Method != http.MethodGet {
+			method(w, "GET")
+			return
+		}
+		if h.visitorRead(w, r) {
+			h.visitorExport(w, r, radarID)
+		}
+		return
+	}
 	if len(parts) != 2 {
 		notFound(w)
 		return
@@ -163,6 +178,14 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request) {
 		if h.read(w, r) {
 			h.events(w, r, radarID, false)
 		}
+	case "visitors":
+		if r.Method != http.MethodGet {
+			method(w, "GET")
+			return
+		}
+		if h.visitorRead(w, r) {
+			h.visitorList(w, r, radarID)
+		}
 	default:
 		notFound(w)
 	}
@@ -179,6 +202,34 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// visitorRead is intentionally stricter than Radar's ordinary read path:
+// /events is a privacy-safe projection that viewer roles may inspect, while a
+// visitor row can reveal a scoped external-contact value. This uses the same
+// CSRF-backed session authorization boundary as existing sensitive Customer
+// reads and never permits KindStaff, even if a stale role set names admin.
+func (h *Handler) visitorRead(w http.ResponseWriter, r *http.Request) bool {
+	if _, err := h.security.Authenticate(r.Context(), r); err != nil {
+		problem(w, http.StatusUnauthorized, "unauthorized")
+		return false
+	}
+	principal, err := h.security.AuthorizeCSRF(r.Context(), r)
+	if err != nil {
+		problem(w, http.StatusForbidden, "csrf_required")
+		return false
+	}
+	if principal.Kind != accessdomain.KindAdmin || principal.InternalID < 1 {
+		problem(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	for _, value := range principal.Roles {
+		if value == accessdomain.RoleAdmin || value == accessdomain.RoleSuperAdmin {
+			return true
+		}
+	}
+	problem(w, http.StatusForbidden, "forbidden")
+	return false
 }
 func (h *Handler) write(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
 	p, e := h.security.Authenticate(r.Context(), r)
@@ -469,6 +520,126 @@ func (h *Handler) exportEvents(w http.ResponseWriter, r *http.Request, id radar.
 	_, _ = w.Write(buffer.Bytes())
 }
 
+func (h *Handler) visitorList(w http.ResponseWriter, r *http.Request, id radar.RadarID) {
+	query, search, ok := visitorQuery(r, id, false)
+	if !ok {
+		problem(w, http.StatusBadRequest, "invalid_query")
+		return
+	}
+	page, err := h.visitors.Visitors(r.Context(), query, search)
+	if err != nil {
+		h.err(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) visitorExport(w http.ResponseWriter, r *http.Request, id radar.RadarID) {
+	query, search, ok := visitorQuery(r, id, true)
+	if !ok {
+		problem(w, http.StatusBadRequest, "invalid_query")
+		return
+	}
+	page, err := h.visitors.Visitors(r.Context(), query, search)
+	if err != nil {
+		h.err(w, err)
+		return
+	}
+	if page.HasMore {
+		problem(w, http.StatusConflict, "export_range_too_large")
+		return
+	}
+	var buffer bytes.Buffer
+	writer := csv.NewWriter(&buffer)
+	_ = writer.Write([]string{"昵称", "外部联系人ID", "外部联系人ID状态", "OneID", "打开时间", "身份状态"})
+	for _, visitor := range page.Items {
+		_ = writer.Write([]string{
+			csvSafe(visitorString(visitor.Nickname)),
+			csvSafe(visitorString(visitor.ExternalContactID)),
+			csvSafe(radarVisitorExternalContactLabel(visitor.ExternalContactStatus)),
+			csvSafe(visitorString(visitor.OneID)),
+			presentationtime.FormatShanghaiDateTime(visitor.OpenedAt),
+			radarAttributionLabel(visitor.AttributionStatus),
+		})
+	}
+	writer.Flush()
+	if writer.Error() != nil {
+		problem(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="radar-visitors.csv"`)
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(buffer.Bytes())
+}
+
+func visitorQuery(r *http.Request, id radar.RadarID, export bool) (radarport.VisitorQuery, string, bool) {
+	allowed := map[string]struct{}{"search": {}, "start_at": {}, "end_at": {}}
+	if !export {
+		allowed["limit"] = struct{}{}
+		allowed["offset"] = struct{}{}
+	}
+	for name, values := range r.URL.Query() {
+		if _, exists := allowed[name]; !exists || len(values) != 1 {
+			return radarport.VisitorQuery{}, "", false
+		}
+	}
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	if len([]rune(search)) > radarport.MaximumVisitorSearchChars {
+		return radarport.VisitorQuery{}, "", false
+	}
+	start, err := parseTime(r.URL.Query().Get("start_at"))
+	if err != nil {
+		return radarport.VisitorQuery{}, "", false
+	}
+	end, err := parseTime(r.URL.Query().Get("end_at"))
+	if err != nil || start != nil && end != nil && !start.Before(*end) {
+		return radarport.VisitorQuery{}, "", false
+	}
+	query := radarport.VisitorQuery{RadarID: id, Start: start, End: end, Limit: radarport.MaximumVisitorLimit}
+	if export {
+		return query, search, true
+	}
+	limit, ok := number(r, "limit", int(radarport.MaximumVisitorLimit), 1, int(radarport.MaximumVisitorLimit))
+	if !ok {
+		return radarport.VisitorQuery{}, "", false
+	}
+	offset, ok := number(r, "offset", 0, 0, int(radarport.MaximumVisitorOffset))
+	if !ok {
+		return radarport.VisitorQuery{}, "", false
+	}
+	query.Limit, query.Offset = int32(limit), int32(offset)
+	return query, search, true
+}
+
+func visitorString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func csvSafe(value string) string {
+	trimmed := strings.TrimLeft(value, " \t\r\n")
+	if strings.HasPrefix(value, "\t") || strings.HasPrefix(value, "\r") || strings.HasPrefix(value, "\n") || (trimmed != "" && strings.ContainsRune("=+-@", rune(trimmed[0]))) {
+		return "'" + value
+	}
+	return value
+}
+
+func radarVisitorExternalContactLabel(value radarport.VisitorExternalContactStatus) string {
+	switch value {
+	case radarport.VisitorExternalContactAvailable:
+		return "可确认"
+	case radarport.VisitorExternalContactMissing:
+		return "暂缺"
+	case radarport.VisitorExternalContactAmbiguous:
+		return "存在多个待确认身份"
+	default:
+		return "暂不可用"
+	}
+}
+
 func radarEventStageLabel(value radarport.EventStage) string {
 	switch value {
 	case radarport.EventLanding:
@@ -724,6 +895,8 @@ func (h *Handler) err(w http.ResponseWriter, e error) {
 		problem(w, 400, "invalid_argument")
 	case errors.Is(e, radar.ErrVersionConflict), errors.Is(e, radarport.ErrConflict), errors.Is(e, radarport.ErrIdempotencyConflict):
 		problem(w, 409, "conflict")
+	case errors.Is(e, radarport.ErrVisitorSearchTooWide):
+		problem(w, 409, "visitor_search_range_too_large")
 	default:
 		problem(w, 503, "unavailable")
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,7 @@ import (
 )
 
 var _ radarport.PublicRepository = (*Postgres)(nil)
+var _ radarport.VisitorStore = (*Postgres)(nil)
 
 func (store *Postgres) CreateOAuthState(ctx context.Context, digest [32]byte, state radarport.OAuthState, now time.Time) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)
@@ -215,4 +217,80 @@ func (store *Postgres) Events(ctx context.Context, query radarport.EventQuery) (
 		return radarport.EventPage{}, mapError(err)
 	}
 	return radarport.EventPage{Items: items, Total: total, Limit: query.Limit, Offset: query.Offset, HasMore: int64(query.Offset)+int64(len(items)) < total}, nil
+}
+
+func (store *Postgres) Visitors(ctx context.Context, query radarport.VisitorQuery) (radarport.VisitorSessionPage, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return radarport.VisitorSessionPage{}, err
+	}
+	var exists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM radar_links WHERE id=$1)`, query.RadarID).Scan(&exists); err != nil {
+		return radarport.VisitorSessionPage{}, mapError(err)
+	}
+	if !exists {
+		return radarport.VisitorSessionPage{}, radarport.ErrNotFound
+	}
+	ids := make([]int64, 0, len(query.CustomerIDs))
+	seen := make(map[customerdomain.CustomerID]struct{}, len(query.CustomerIDs))
+	for _, id := range query.CustomerIDs {
+		if id < 1 {
+			return radarport.VisitorSessionPage{}, radar.ErrInvalidArgument
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, int64(id))
+	}
+	// A caller that supplies candidates is necessarily filtering. This keeps a
+	// future direct store caller from accidentally widening a non-empty search
+	// to every visitor merely because it omitted FilterApplied.
+	filterApplied := query.FilterApplied || len(ids) > 0
+	args := []any{query.RadarID, filterApplied, ids}
+	outerConditions := []string{"TRUE"}
+	if query.Start != nil {
+		args = append(args, query.Start.UTC())
+		outerConditions = append(outerConditions, fmt.Sprintf("opened_at >= $%d", len(args)))
+	}
+	if query.End != nil {
+		args = append(args, query.End.UTC())
+		outerConditions = append(outerConditions, fmt.Sprintf("opened_at < $%d", len(args)))
+	}
+	base := `WITH visitor_sessions AS (
+		SELECT event.session_id,session.radar_version,COALESCE(session.customer_id,0) AS customer_id,
+			session.attribution_status,min(event.occurred_at) AS opened_at
+		FROM radar_events event JOIN radar_view_sessions session
+			ON session.id=event.session_id AND session.radar_version=event.radar_version
+		WHERE event.radar_id=$1
+			AND session.radar_id=$1
+			AND event.stage=ANY(ARRAY['content_opened','redirected','image_loaded','pdf_opened']::text[])
+			AND (NOT $2::boolean OR session.customer_id=ANY($3::bigint[]))
+		GROUP BY event.session_id,event.radar_version,session.radar_version,session.customer_id,session.attribution_status
+	)`
+	// The aggregation must complete before [start,end) is evaluated so a later
+	// image/PDF receipt cannot move a session's first successful opening.
+	outerWhere := strings.Join(outerConditions, " AND ")
+	var total int64
+	if err = tx.QueryRow(ctx, base+` SELECT count(*) FROM visitor_sessions WHERE `+outerWhere, args...).Scan(&total); err != nil {
+		return radarport.VisitorSessionPage{}, mapError(err)
+	}
+	args = append(args, query.Limit, query.Offset)
+	rows, err := tx.Query(ctx, base+` SELECT session_id,radar_version,customer_id,attribution_status,opened_at FROM visitor_sessions WHERE `+outerWhere+fmt.Sprintf(" ORDER BY opened_at DESC,session_id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	if err != nil {
+		return radarport.VisitorSessionPage{}, mapError(err)
+	}
+	defer rows.Close()
+	items := make([]radarport.VisitorSession, 0)
+	for rows.Next() {
+		var item radarport.VisitorSession
+		if err = rows.Scan(&item.SessionID, &item.Version, &item.CustomerID, &item.Attribution, &item.OpenedAt); err != nil {
+			return radarport.VisitorSessionPage{}, mapError(err)
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return radarport.VisitorSessionPage{}, mapError(err)
+	}
+	return radarport.VisitorSessionPage{Items: items, Total: total, Limit: query.Limit, Offset: query.Offset, HasMore: int64(query.Offset)+int64(len(items)) < total}, nil
 }

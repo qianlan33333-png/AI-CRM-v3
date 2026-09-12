@@ -299,33 +299,70 @@ try {
     })()`);
     if (!radar?.stage || radar.paddingLeft !== "20px" || radar.paddingTop !== "16px" || !radar.crumbHidden || !radar.titleHidden || !radar.emptyPageHeadHidden || !radar.actionVisible) throw new Error(label + " V3 title/action layout invalid");
   };
-  const assertRadarDetailTimeHost = async () => {
+  const assertRadarDetailVisitorsHost = async () => {
     const detail = await evaluate(cdp, `(() => {
-      const host=document.querySelector('[data-v3-radar-event-host]');
+      const host=document.querySelector('[data-v3-radar-visitor-host]');
       const inputs=host ? Array.from(host.querySelectorAll('input')).map(node => node.type) : [];
       const text=String(host?.textContent || '');
-      return {host:Boolean(host),inputs,oldRows:Boolean(document.querySelector('#dRows')),time:text.includes('2026-09-07 09:02:03'),raw:text.includes('2026-09-07T01:02:03'),exportVisible:Boolean(document.querySelector('#dExport')) && getComputedStyle(document.querySelector('#dExport')).display !== 'none'};
+      const headings=host ? Array.from(host.querySelectorAll('thead th')).map(node => String(node.textContent || '').trim()) : [];
+      return {host:Boolean(host),inputs,headings,rows:host?.querySelectorAll('tbody tr').length || 0,oldRows:Boolean(document.querySelector('#dRows')),visitor:text.includes('雷达布局访客'),external:text.includes('external-radar-layout-001'),oneid:/CID-[1-9][0-9]*/.test(text),time:text.includes('2026-09-07 09:02:03'),raw:text.includes('2026-09-07T01:02:03'),stage:text.includes('image_loaded'),exportVisible:Boolean(document.querySelector('#dExport')) && getComputedStyle(document.querySelector('#dExport')).display !== 'none'};
     })()`);
-    if (!detail?.host || detail.inputs.join(',') !== 'text,datetime-local,datetime-local' || detail.oldRows || !detail.time || detail.raw || !detail.exportVisible) throw new Error("radar detail Shanghai time Host did not replace the frozen query surface");
+    const expectedHeadings=['昵称','外部联系人 ID','OneID','打开时间'];
+    if (!detail?.host || detail.inputs.join(',') !== 'text,datetime-local,datetime-local' || detail.headings?.join(',') !== expectedHeadings.join(',') || detail.rows !== 1 || detail.oldRows || !detail.visitor || !detail.external || !detail.oneid || !detail.time || detail.raw || detail.stage || !detail.exportVisible) throw new Error("radar detail visitor Host did not replace the frozen query surface");
   };
   const assertRadarDetailNarrow = async () => {
     try {
       for (const width of [780, 390]) {
         await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 844 });
-        await waitFor(cdp, "Boolean(document.querySelector('[data-v3-radar-event-host]'))", "radar detail Host disappeared at narrow width");
+        await waitFor(cdp, "Boolean(document.querySelector('[data-v3-radar-visitor-host]'))", "radar detail Host disappeared at narrow width");
         const narrow = await evaluate(cdp, `(() => {
-          const host=document.querySelector('[data-v3-radar-event-host]');
+          const host=document.querySelector('[data-v3-radar-visitor-host]');
           const exportButton=document.querySelector('#dExport');
-          const tableScroll=host?.querySelector('table.tbl')?.parentElement;
+          const tableScroll=host?.querySelector('[data-radar-visitor-table-overflow]');
           const visible=node => { if (!node) return false; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; };
           const exportRect=exportButton?.getBoundingClientRect();
           return {overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,host:visible(host),exportVisible:visible(exportButton),exportInside:!exportRect || (exportRect.left >= -1 && exportRect.right <= innerWidth + 1),tableScrollable:Boolean(tableScroll) && getComputedStyle(tableScroll).overflowX !== 'visible'};
         })()`);
         if (!narrow?.host || !narrow.exportVisible || !narrow.exportInside || narrow.overflow || !narrow.tableScrollable) throw new Error(`radar detail ${width}px responsive geometry invalid`);
+        await evaluate(cdp, "document.querySelector('[data-v3-radar-visitor-host]')?.scrollIntoView({block:'start'}); true");
+        await capture(`radar-detail-${width}`);
       }
     } finally {
       await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
     }
+  };
+  const assertRadarDetailVisitorSearchAndExport = async () => {
+    const enteredSearch = await evaluate(cdp, `(() => {
+      const host=document.querySelector('[data-v3-radar-visitor-host]');
+      const controls=host?.querySelector('.filter-bar');
+      const search=controls?.querySelector('input');
+      const query=controls?.querySelector('button');
+      if (!(search instanceof HTMLInputElement) || !(query instanceof HTMLButtonElement)) return false;
+      search.value='没有匹配的访客';
+      search.dispatchEvent(new Event('input',{bubbles:true}));
+      query.click();
+      return true;
+    })()`);
+    if (!enteredSearch) throw new Error('radar detail visitor search controls unavailable');
+    await waitFor(cdp, "document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('暂无符合条件的访问者')", 'radar detail visitor server search did not replace results');
+    const restored = await evaluate(cdp, `(() => {
+      const host=document.querySelector('[data-v3-radar-visitor-host]');
+      const controls=host?.querySelector('.filter-bar');
+      const reset=controls?.querySelectorAll('button')[1];
+      if (!(reset instanceof HTMLButtonElement)) return false;
+      reset.click();
+      return true;
+    })()`);
+    if (!restored) throw new Error('radar detail visitor reset control unavailable');
+    await waitFor(cdp, "document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('雷达布局访客')", 'radar detail visitor reset did not restore the server result');
+    const exported = await evaluate(cdp, `(() => {
+      const button=document.querySelector('#dExport');
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+      button.click();
+      return true;
+    })()`);
+    if (!exported) throw new Error('radar detail visitor CSV export control unavailable');
+    await waitFor(cdp, "document.querySelector('[data-radar-visitor-feedback]')?.textContent?.includes('已导出 CSV')", 'radar detail visitor CSV export did not finish');
   };
   const assertOwnerHandoffLayout = async label => {
     await assertLayout("standard", label, "[data-owner-picker=\"source\"]");
@@ -613,9 +650,10 @@ try {
   const radarMounted = await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#btnNew'))", "radar", "standard", ".sec-radar .page-head", false, true);
   if (radarMounted) await recordGeometry("radar", () => assertRadarLayout("radar", "#btnNew"), true);
   const radarNumericID = Number(radarID);
-  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarNumericID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit')) && Boolean(document.querySelector('[data-v3-radar-event-host]')) && document.querySelector('[data-v3-radar-event-host]')?.textContent?.includes('2026-09-07 09:02:03')", "radar-detail", "standard", "#dEdit", false);
+  const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarNumericID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit')) && Boolean(document.querySelector('[data-v3-radar-visitor-host]')) && document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('雷达布局访客') && document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('2026-09-07 09:02:03')", "radar-detail", "standard", "#dEdit", false);
   if (radarDetailMounted) {
-    await recordGeometry("radar-detail", async () => { await assertRadarLayout("radar-detail", "#dEdit", "#dEdit"); await assertRadarDetailTimeHost(); }, true);
+    await recordGeometry("radar-detail", async () => { await assertRadarLayout("radar-detail", "#dEdit", "#dEdit"); await assertRadarDetailVisitorsHost(); }, true);
+    await recordGeometry("radar-detail-search-export", assertRadarDetailVisitorSearchAndExport, false);
     await recordGeometry("radar-detail-narrow", assertRadarDetailNarrow, false);
   }
   const radarFormMounted = await navigate("/admin/radarForm.html", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#fSave'))", "radar-form", "standard", "#fSave", false);

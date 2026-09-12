@@ -170,6 +170,7 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 		Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: origin,
 		ReleaseSHA: "product-external-push-chromium-journey", WorkerOwner: "product-external-push-chromium-journey", WorkerLimit: 1,
 		GroupOps:     platformconfig.GroupOps{WebhookSecret: "product-external-push-chromium-webhook-secret"},
+		WeCom:        platformconfig.WeCom{CorpID: "admin-layout-fixture-corp"},
 		Survey:       platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(dataKey), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(dataKey)},
 		Effects:      platformconfig.Effects{ProviderEnabled: true},
 		AIAssistant:  platformconfig.AIAssistant{UIEnabled: true},
