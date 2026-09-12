@@ -121,6 +121,22 @@ try {
   assert.ok([...document.querySelectorAll('[data-link-section]')].every((node) => !node.hidden), 'acquisition links expose every standard link-only donor control');
 } finally { stable.dom.window.close(); }
 
+// An inactive definition retains its configuration for a deliberate CAS
+// recovery, but it must not offer a QR download or generation action that
+// would make the disabled callback path appear scan-ready.
+const archived = createPage({ saved: channel({ status: 'archived', qr_download_url: '/api/admin/channels/17/qrcode/download' }) });
+try {
+  await waitFor(() => archived.dom.window.document.querySelector('[data-channel-admission-page]'), 'archived channel form must mount');
+  await waitFor(() => archived.dom.window.__channelComposerOptions, 'archived channel donor must initialize');
+  const document = archived.dom.window.document;
+  const notice = document.querySelector('[data-channel-entrant-actions-blocked="archived"]');
+  assert.match(notice?.textContent || '', /扫码不会发送欢迎语或入渠标签/, 'archived configuration needs an explicit no-send explanation');
+  assert.match(notice?.textContent || '', /选择“启用”并保存/, 'archived configuration needs the normal reactivation path');
+  assert.equal(document.querySelector('[data-download-channel-qrcode]'), null, 'an archived channel must not expose a historical QR download as scan-ready');
+  assert.equal(document.querySelector('[data-generate-form-qrcode]'), null, 'an archived channel must not offer a Provider QR generation action before reactivation');
+  assert.equal(document.querySelector('[name="channel_name"]')?.value, '原渠道', 'the retained configuration remains available for review and explicit reactivation');
+} finally { archived.dom.window.close(); }
+
 // Saved assignments persist staff IDs only. One local directory read hydrates
 // every saved staff label, while missing directory records retain an explicit
 // ID fallback rather than becoming a false name or causing per-member reads.

@@ -219,6 +219,39 @@ function assignment(channel: Json): Json[] {
   return values.map((item) => ({ ...item, display_name: item.display_name || `客服 #${item.staff_id}`, status: 'active' }));
 }
 
+function blockedEntrantActionStatus(channel: Channel | null): 'inactive' | 'archived' | '' {
+  const status = String(channel?.status || 'active');
+  return status === 'inactive' || status === 'archived' ? status : '';
+}
+
+// A retained asset is historic evidence, not a scan-ready channel. Keep the
+// actual Catalog record intact for its CAS update while withholding all QR
+// actions from the rendered donor payload until the operator explicitly
+// re-enables the channel.
+function channelForAdmissionDisplay(channel: Channel | null): Channel | null {
+  if (!channel || !blockedEntrantActionStatus(channel)) return channel;
+  return { ...channel, qr_download_url: '' };
+}
+
+function showBlockedEntrantActionNotice(root: HTMLElement, channel: Channel | null): void {
+  const status = blockedEntrantActionStatus(channel);
+  if (!status || root.querySelector('#channel-entrant-actions-blocked')) return;
+  const notice = document.createElement('div');
+  notice.id = 'channel-entrant-actions-blocked';
+  notice.dataset.channelEntrantActionsBlocked = status;
+  notice.setAttribute('role', 'status');
+  notice.className = 'save-feedback is-error';
+  notice.textContent = status === 'archived'
+    ? '当前渠道已归档：配置仍保留，但扫码不会发送欢迎语或入渠标签。核对客服与配置后，请在状态中选择“启用”并保存，再用新的添加好友场景核验。'
+    : '当前渠道已停用：配置仍保留，但扫码不会发送欢迎语或入渠标签。核对客服与配置后，请在状态中选择“启用”并保存，再用新的添加好友场景核验。';
+  root.prepend(notice);
+}
+
+function hideBlockedEntrantAssetActions(root: HTMLElement, channel: Channel | null): void {
+  if (!blockedEntrantActionStatus(channel)) return;
+  root.querySelectorAll('[data-download-channel-qrcode], [data-generate-form-qrcode]').forEach((node) => node.remove());
+}
+
 async function channelOperationMembers(): Promise<Json[]> {
   if (!channelOperationMemberDirectory) {
     channelOperationMemberDirectory = (async () => {
@@ -459,10 +492,13 @@ export async function startChannelAdmissionHost(): Promise<void> {
   try {
     const hydrated = await hydrateSavedAssigneeNames(await currentChannel());
     const channel = hydrated.channel;
+    const displayChannel = channelForAdmissionDisplay(channel);
     const mount = document.querySelector('main') || document.body;
-    mount.innerHTML = await channelFormMarkup(channel);
+    mount.innerHTML = await channelFormMarkup(displayChannel);
     const root = mount.querySelector<HTMLElement>('[data-channel-admission-page]'); if (!root) throw new Error('标准渠道表单挂载失败');
-    hydrateChannelDonor(root, channel);
+    hydrateChannelDonor(root, displayChannel);
+    hideBlockedEntrantAssetActions(root, channel);
+    showBlockedEntrantActionNotice(root, channel);
     installWelcomeTemplateHelp(root);
     if (hydrated.directoryUnavailable) showSavedAssigneeDirectoryUnavailable(root);
     if (channel) {

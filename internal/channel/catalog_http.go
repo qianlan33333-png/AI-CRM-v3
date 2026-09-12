@@ -375,7 +375,7 @@ func projectCatalogList(channel channeldomain.Channel, summary CatalogSummary) c
 		WelcomeMessage: channel.Config.WelcomeMessage, WelcomeImageIDs: channel.Config.Media.Images, WelcomeMiniProgramIDs: channel.Config.Media.MiniPrograms, WelcomeAttachmentIDs: channel.Config.Media.Attachments, WelcomeGroupInviteIDs: channel.Config.Media.GroupInvites,
 		AutoAcceptFriend: channel.Config.AutoAcceptFriend, EntryTagID: optionalCatalogID(channel.Config.EntryTagID), EntryTagName: channel.Config.EntryTagName, EntryTagGroupName: channel.Config.EntryTagGroupName,
 		AssignmentMode: channel.Config.Assignment.Mode, AssignmentStrategy: channel.Config.Assignment.Strategy, OverflowPolicy: channel.Config.Assignment.OverflowPolicy, AssignmentConfig: map[string]any{"assignees": assignment},
-		AssigneeCount: len(assignment), ChannelContactCount: int(summary.UniqueUsers), ChannelEnterCount: summary.EnterCount, LatestEnteredAt: optionalCatalogTime(summary.LatestEnteredAt), QRCodeAssetID: summary.QRCodeAssetID, QRCodeStatus: summary.QRCodeStatus, QRCodeOrigin: summary.QRCodeOrigin, QRDownloadURL: summary.QRDownloadURL,
+		AssigneeCount: len(assignment), ChannelContactCount: int(summary.UniqueUsers), ChannelEnterCount: summary.EnterCount, LatestEnteredAt: optionalCatalogTime(summary.LatestEnteredAt), QRCodeAssetID: summary.QRCodeAssetID, QRCodeStatus: summary.QRCodeStatus, QRCodeOrigin: summary.QRCodeOrigin, QRDownloadURL: catalogVisibleQRDownloadURL(channel, summary),
 		CreatedAt: channel.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: channel.UpdatedAt.Format(time.RFC3339Nano),
 	}
 }
@@ -396,9 +396,21 @@ func projectCatalogDetail(channel channeldomain.Channel, summary CatalogSummary)
 		"assignment_mode": channel.Config.Assignment.Mode, "assignment_strategy": channel.Config.Assignment.Strategy, "overflow_policy": channel.Config.Assignment.OverflowPolicy,
 		"assignment_config_json": map[string]any{"assignees": assignment}, "assignees": []any{}, "assignment_stats_24h": []any{}, "assignee_count": len(assignment),
 		"channel_contact_count": summary.UniqueUsers, "channel_enter_count": summary.EnterCount, "latest_channel_entered_at": optionalCatalogTime(summary.LatestEnteredAt),
-		"qrcode_asset_id": summary.QRCodeAssetID, "qrcode_status": summary.QRCodeStatus, "qrcode_origin": summary.QRCodeOrigin, "qr_download_url": summary.QRDownloadURL, "share_url": "", "copy_text": "",
+		"qrcode_asset_id": summary.QRCodeAssetID, "qrcode_status": summary.QRCodeStatus, "qrcode_origin": summary.QRCodeOrigin, "qr_download_url": catalogVisibleQRDownloadURL(channel, summary), "share_url": "", "copy_text": "",
 		"created_at": channel.CreatedAt.Format(time.RFC3339Nano), "updated_at": channel.UpdatedAt.Format(time.RFC3339Nano),
 	}
+}
+
+// catalogVisibleQRDownloadURL only exposes a QR download from a channel that
+// can actually accept entrants. Inactive and archived channel definitions
+// retain their asset projection for history and explicit recovery, but a
+// download link would falsely present them as scan-ready even though the
+// callback contract suppresses welcome and entry-tag effects.
+func catalogVisibleQRDownloadURL(channel channeldomain.Channel, summary CatalogSummary) string {
+	if channel.Status != channeldomain.StatusActive {
+		return ""
+	}
+	return summary.QRDownloadURL
 }
 
 func optionalCatalogID(id int64) string {
