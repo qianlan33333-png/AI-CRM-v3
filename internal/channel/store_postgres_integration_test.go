@@ -92,6 +92,79 @@ func TestPostgreSQLChannelCatalogAtomicReplayAndImmutableVersionsIntegration(t *
 	}
 }
 
+func TestPostgreSQLArchivedChannelStaffEditAndReactivateIntegration(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	actor := insertChannelAdmin(t, ctx, pool)
+	store := NewPostgreSQLCatalogStore()
+	auditService, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := NewChannelCatalogEventAppender(auditService, platformoutbox.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCatalogService(unit, store, store, events, nil, nil, catalogStaffRefs{})
+	create := validCatalogCreate()
+	create.Status = channeldomain.StatusArchived
+	create.Config.Assignment.Assignees[0].StaffID = actor
+	var replacement int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES ('replacement_operator','$argon2id$fixture','Replacement') RETURNING id`).Scan(&replacement); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(ctx, CatalogMutation{ActorID: actor, IdempotencyKey: "archived-staff-create", Create: create})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := created.Config
+	config.Assignment.Assignees = []channeldomain.Assignee{{StaffID: replacement, Priority: 1, Ratio: 100}}
+	update := CatalogMutation{ActorID: actor, IdempotencyKey: "archived-staff-edit", Update: channeldomain.UpdateChannel{ExpectedVersion: created.Version, Code: created.Code, Status: channeldomain.StatusArchived, Config: config}}
+	edited, err := service.Update(ctx, created.ID, update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited.Status != channeldomain.StatusArchived || edited.CanPublish() || edited.Version != 2 || edited.Config.Assignment.Assignees[0].StaffID != replacement {
+		t.Fatalf("unexpected archived edit: %+v", edited)
+	}
+	replay, err := service.Update(ctx, created.ID, update)
+	if err != nil || !reflect.DeepEqual(replay, edited) {
+		t.Fatalf("replay mismatch: %v", err)
+	}
+	stale := update
+	stale.IdempotencyKey = "archived-staff-stale"
+	if _, err = service.Update(ctx, created.ID, stale); !errors.Is(err, ErrCatalogConflict) {
+		t.Fatalf("stale edit: %v", err)
+	}
+	read, err := service.Get(ctx, created.ID)
+	if err != nil || !reflect.DeepEqual(read, edited) {
+		t.Fatalf("readback mismatch: %v", err)
+	}
+	update.IdempotencyKey = "archived-staff-reactivate"
+	update.Update.ExpectedVersion = edited.Version
+	update.Update.Status = channeldomain.StatusActive
+	active, err := service.Update(ctx, created.ID, update)
+	if err != nil || !active.CanPublish() || active.Version != 3 {
+		t.Fatalf("reactivation: %+v %v", active, err)
+	}
+	var versions, receipts, audits, outbox int
+	if err = pool.Native().QueryRow(ctx, `SELECT (SELECT count(*) FROM channel_config_versions),(SELECT count(*) FROM channel_operation_receipts),(SELECT count(*) FROM audit_events WHERE resource_type='channel'),(SELECT count(*) FROM outbox_events WHERE aggregate_type='channel')`).Scan(&versions, &receipts, &audits, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if versions != 3 || receipts != 3 || audits != 3 || outbox != 3 {
+		t.Fatalf("atomic records: %d %d %d %d", versions, receipts, audits, outbox)
+	}
+	var archivedAt *time.Time
+	if err = pool.Native().QueryRow(ctx, `SELECT archived_at FROM channels WHERE id=$1`, created.ID).Scan(&archivedAt); err != nil || archivedAt != nil {
+		t.Fatalf("reactivated archive marker: %v %v", archivedAt, err)
+	}
+}
+
 func TestPostgreSQLCatalogReadsMigrationBlockedAssignmentForRepairIntegration(t *testing.T) {
 	pool, cleanup := channelIntegrationPool(t)
 	defer cleanup()
@@ -899,5 +972,6 @@ func channelMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0065_channel_legacy_asset_retirement.sql"),
 		filepath.Join(root, "migrations", "0066_channel_welcome_intents.sql"),
 		filepath.Join(root, "migrations", "0093_customer_tag_commands.sql"),
+		filepath.Join(root, "migrations", "0148_channel_archive_edit.sql"),
 	}
 }
