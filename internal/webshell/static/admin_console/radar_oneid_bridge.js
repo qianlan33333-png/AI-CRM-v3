@@ -5,6 +5,8 @@
   const radarList = /^\/api\/admin\/radar-links$/;
   const listSummaries = new Map();
   let listSummaryReady = Promise.resolve();
+  let listSummaryRevision = 0;
+  const hydratedRows = new WeakMap();
 
   function listSummaryStatus(value) {
     return value && value.statistics_status === 'ready' ? 'ready' : 'unavailable';
@@ -12,7 +14,7 @@
   function rememberListSummaries(response) {
     listSummaryReady = response.clone().json().then(function (payload) {
       listSummaries.clear();
-      hydrated.forEach(function (value) { if (value.indexOf('list-') === 0) hydrated.delete(value); });
+      listSummaryRevision += 1;
       const items = payload && Array.isArray(payload.items) ? payload.items : [];
       items.forEach(function (item) {
         const id = Number(item && item.link_id);
@@ -20,6 +22,7 @@
       });
     }).catch(function () {
       listSummaries.clear();
+      listSummaryRevision += 1;
     });
     return response;
   }
@@ -102,10 +105,22 @@
     if (value.last_viewed_at === null) {
       cells[6].textContent = '—';
     } else if (typeof value.last_viewed_at === 'string' && value.last_viewed_at) {
-      cells[6].textContent = value.last_viewed_at.slice(5, 16).replace('T', ' ');
+      const formatted = formatShanghaiTime(value.last_viewed_at);
+      cells[6].textContent = formatted === null ? '不可用' : formatted;
     } else {
       cells[6].textContent = '不可用';
     }
+  }
+  function formatShanghaiTime(value) {
+    const timestamp = new Date(value);
+    if (Number.isNaN(timestamp.getTime())) return null;
+    const parts = new Intl.DateTimeFormat('zh-CN-u-ca-gregory', {
+      timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(timestamp);
+    const fields = Object.fromEntries(parts.map(function (part) { return [part.type, part.value]; }));
+    if (!fields.month || !fields.day || !fields.hour || !fields.minute) return null;
+    return fields.month + '-' + fields.day + ' ' + fields.hour + ':' + fields.minute;
   }
   async function hydrateList() {
     await listSummaryReady;
@@ -113,9 +128,9 @@
     for (const row of rows) {
       const action = row.querySelector('[data-detail]');
       const id = action && Number(action.getAttribute('data-detail'));
-      if (!id || hydrated.has('list-' + id)) continue;
-      hydrated.add('list-' + id);
+      if (!id || hydratedRows.get(row) === listSummaryRevision) continue;
       renderListSummary(row, listSummaries.get(id));
+      hydratedRows.set(row, listSummaryRevision);
     }
   }
   async function hydrateDetail() {

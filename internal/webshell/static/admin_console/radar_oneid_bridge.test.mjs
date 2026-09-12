@@ -39,8 +39,16 @@ function setup(response) {
   assert.equal(cells[3].textContent, '12', 'list uses the measured landing count');
   assert.equal(cells[4].textContent, '3', 'list uses the measured resolved-customer UV');
   assert.equal(cells[5].textContent, '4', 'list uses the measured view-stage count');
-  assert.equal(cells[6].textContent, '09-12 09:30', 'list uses the measured last view rather than updated_at');
+  assert.equal(cells[6].textContent, '09-12 17:30', 'list renders the measured last view in Asia/Shanghai rather than updated_at');
   assert.equal(calls.filter((call) => /\/stats$/.test(call.path)).length, 0, 'list does not issue one stats request per row');
+  dom.window.document.querySelector('#listRows').innerHTML = '';
+  await wait();
+  dom.window.document.querySelector('#listRows').innerHTML = row(7);
+  await wait();
+  const repaintedCells = dom.window.document.querySelectorAll('#listRows td');
+  assert.equal(repaintedCells[3].textContent, '12', 'a locally rebuilt row receives its summary again');
+  assert.equal(repaintedCells[6].textContent, '09-12 17:30', 'a locally rebuilt row keeps the Shanghai last-view time');
+  assert.equal(calls.filter((call) => /\/stats$/.test(call.path)).length, 0, 'locally rebuilding a row does not issue stats requests');
   dom.window.close();
 }
 
@@ -70,6 +78,16 @@ function setup(response) {
   assert.equal(cells[4].textContent, '0');
   assert.equal(cells[5].textContent, '0');
   assert.equal(cells[6].textContent, '—', 'a ready link with no view has no last-view timestamp');
+  dom.window.close();
+}
+
+{
+  const { dom } = setup({ items: [{ link_id: 10, statistics_status: 'ready', total_landings: 1, authorized_users: 1, view_count: 1, last_viewed_at: 'not-a-timestamp' }] });
+  await dom.window.fetch('/api/admin/radar-links');
+  await wait();
+  dom.window.document.querySelector('#listRows').innerHTML = row(10);
+  await wait();
+  assert.equal(dom.window.document.querySelectorAll('#listRows td')[6].textContent, '不可用', 'an invalid last-view timestamp is unavailable');
   dom.window.close();
 }
 
