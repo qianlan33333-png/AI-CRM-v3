@@ -139,9 +139,22 @@ const manualRefreshButton = document.querySelector("#replaceLegacyScheduleWithMa
 if (!manualRefreshButton || manualRefreshButton.hidden) throw new Error("legacy custom schedule did not offer an explicit manual-refresh replacement");
 manualRefreshButton.click();
 if (!document.querySelector("#refreshScheduleNote").textContent.includes("已选择改为手动刷新")) throw new Error("manual refresh replacement was not made explicit before saving");
+document.querySelector("#summaryMode").textContent = "计划 0 1 * * *";
+document.querySelector("#dailySelect").value = "daily_0200";
+await wait(20);
+if (document.querySelector("#dailySelect").value !== "off" || document.querySelector("#summaryMode").textContent !== "手动") throw new Error("late frozen render overwrote the manual-refresh draft");
 document.querySelector("#savePackageBtn").click();
 await wait(180);
 if (writes.length !== 2 || writes[1]?.refresh_mode !== "manual" || writes[1]?.refresh_cron_utc !== "") throw new Error(`the explicit manual-refresh replacement did not write manual with an empty cron: ${JSON.stringify(writes)}`);
+document.querySelector("#dailySelect").value = "daily_0200";
+document.querySelector("#dailySelect").dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+document.querySelector("#summaryMode").textContent = "计划 0 1 * * *";
+document.querySelector("#dailySelect").value = "off";
+await wait(20);
+if (document.querySelector("#dailySelect").value !== "daily_0200" || document.querySelector("#summaryMode").textContent !== "每日 02:00") throw new Error("late frozen render overwrote the daily-refresh draft");
+document.querySelector("#savePackageBtn").click();
+await wait(180);
+if (writes.length !== 3 || writes[2]?.refresh_mode !== "daily_0200" || writes[2]?.refresh_cron_utc !== "") throw new Error(`the daily-refresh draft was not saved as a refresh mode: ${JSON.stringify(writes)}`);
 for (const template of templates) {
   select.value = template.key;
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -190,7 +203,7 @@ await saveTemplate("wecom_contact_registration", () => {
 }, () => {
   if (fieldInput("owner_scope").value !== "all" || !fieldInput("contact_statuses").options[0].selected) throw new Error("WeCom all-scope values did not reopen");
 });
-if (packageWrites[2]?.name !== "已更新的人群" || writes[2]?.refresh_mode !== "daily_0200" || writes[2]?.refresh_cron_utc !== "") throw new Error(`template save bypassed basic configuration or refresh mode: ${JSON.stringify({ packageWrites, writes })}`);
+if (packageWrites[3]?.name !== "已更新的人群" || writes[3]?.refresh_mode !== "daily_0200" || writes[3]?.refresh_cron_utc !== "") throw new Error(`template save bypassed basic configuration or refresh mode: ${JSON.stringify({ packageWrites, writes })}`);
 await saveTemplate("paid_order", () => {
   fieldInput("products").value = "course-v3";
   fieldInput("paid_at_from").value = "2026-09-05T08:00";
@@ -285,7 +298,7 @@ await saveTemplate("questionnaire_choice_answers", () => {
   const rows = document.querySelectorAll('[data-field-name="conditions"] .template-condition-row');
   if (fieldInput("questionnaire").value !== "客户调研" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "内容\n投放" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
 });
-if (writes.length !== 10 || previewWrites.length !== 8 || packageWrites.length !== 10) throw new Error(`form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
+if (writes.length !== 11 || previewWrites.length !== 8 || packageWrites.length !== 11) throw new Error(`form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
 document.querySelector("#policyCodeInput").value = "shanghai-quiet";
 document.querySelector("#policyNameInput").value = "上海安静时段";
 document.querySelector("#policyActionSelect").value = "record";
