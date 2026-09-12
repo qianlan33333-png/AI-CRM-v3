@@ -505,7 +505,7 @@ func TestRenderTagsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	}
 }
 
-func TestRenderImageLibraryLoadsTheFilterHostBeforeTheFrozenDonor(t *testing.T) {
+func TestRenderImageLibraryUsesTheSourceOwnedHostAndKeepsMaterialSave(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
 		t.Fatal(err)
@@ -522,28 +522,28 @@ func TestRenderImageLibraryLoadsTheFilterHostBeforeTheFrozenDonor(t *testing.T) 
 		response,
 		AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"),
 		"images",
-		`<section data-page="images">frozen donor fragment</section>`,
+		"",
 		assets,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	filterAt := strings.Index(body, `src="/media-assets/image-library-filter-host.js"`)
-	donorAt := strings.Index(body, `src="/media-assets/admin.js"`)
+	hostAt := strings.Index(body, `src="/media-assets/image-library-filter-host.js"`)
 	materialAt := strings.Index(body, `src="/media-assets/material-save-host.js"`)
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `data-page="images"`) || !strings.Contains(body, `<template id="tpl"><section data-page="images">frozen donor fragment</section></template>`) || filterAt < 0 || donorAt < 0 || materialAt < 0 || !(filterAt < donorAt && donorAt < materialAt) {
-		t.Fatalf("image library shell mismatch filter=%d donor=%d material=%d body=%q", filterAt, donorAt, materialAt, body)
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `data-page="images"`) || !strings.Contains(body, `data-image-library-v3-root`) || strings.Contains(body, `<template id="tpl">`) || strings.Contains(body, `src="/media-assets/admin.js"`) || hostAt < 0 || materialAt < 0 || !(materialAt < hostAt) {
+		t.Fatalf("image library shell mismatch host=%d material=%d body=%q", hostAt, materialAt, body)
 	}
-	if err = renderer.RenderMedia(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"), "images", `<section></section>`, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err == nil {
+	if err = renderer.RenderMedia(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"), "images", "", MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err == nil {
 		t.Fatal("image library shell accepted a missing filter Host asset")
 	}
 	attachmentResponse := httptest.NewRecorder()
 	if err = renderer.RenderMedia(attachmentResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/attachment-library", nil), "附件素材库", "", "api.admin_attachment_library_workspace"), "attach", `<section data-page="attach"></section>`, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(attachmentResponse.Body.String(), "image-library-filter-host.js") {
-		t.Fatal("filter Host leaked onto a non-image media page")
+	attachmentBody := attachmentResponse.Body.String()
+	if strings.Contains(attachmentBody, "image-library-filter-host.js") || !strings.Contains(attachmentBody, `src="/media-assets/admin.js"`) || !strings.Contains(attachmentBody, `src="/media-assets/material-save-host.js"`) {
+		t.Fatal("source-owned image Host leaked or frozen attachment runtime was removed")
 	}
 }
 

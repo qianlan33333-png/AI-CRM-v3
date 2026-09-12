@@ -51,10 +51,14 @@ func (h *mediaUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, canonicalMediaPath(page), http.StatusSeeOther)
 		return
 	}
-	templateBody, err := h.template(page)
-	if err != nil {
-		http.Error(w, "media UI unavailable", http.StatusServiceUnavailable)
-		return
+	templateBody := ""
+	if page != "images" {
+		var err error
+		templateBody, err = h.template(page)
+		if err != nil {
+			http.Error(w, "media UI unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	assets, err := h.assets()
 	if err != nil {

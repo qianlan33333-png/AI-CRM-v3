@@ -42,10 +42,12 @@
   <link rel="stylesheet" href="{{.MediaAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.MediaAssets.LabsCSS}}">
   {{if eq .MediaPage "images"}}
+  <script type="module" src="{{.MediaAssets.MaterialSaveHostJS}}"></script>
   <script type="module" src="{{.MediaAssets.ImageLibraryFilterHostJS}}"></script>
-  {{end}}
+  {{else}}
   <script type="module" src="{{.MediaAssets.AdminJS}}"></script>
   <script type="module" src="{{.MediaAssets.MaterialSaveHostJS}}"></script>
+  {{end}}
   {{end}}
   {{if .Customers}}
   <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-profile-v2">
