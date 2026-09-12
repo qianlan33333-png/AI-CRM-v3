@@ -854,6 +854,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     params.value = value.customParamsText;
     renderParams();
     setMappingMode(value.fieldMapping || (value.revision === 0 && !value.configurationReference ? {version:1,fields:[]} : undefined));
+    status.dataset.configurationRevision = String(value.revision);
     status.textContent = `配置版本 ${value.revision}`;
   };
   save.addEventListener('click', () => {
@@ -892,7 +893,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     }).then((saved) => {
       configuration = parseExternalPushConfiguration(saved, page);
       state.value = configuration;
-      status.textContent = `配置版本 ${configuration.revision}`;
+      status.dataset.configurationRevision = String(configuration.revision);
       status.textContent = '配置已保存';
       showMessage('配置已保存', true);
     }).catch((error) => { status.textContent = error instanceof Error ? error.message : '配置保存失败'; }).finally(() => { save.disabled = false; });
