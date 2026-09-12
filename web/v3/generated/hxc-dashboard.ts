@@ -473,6 +473,16 @@ export interface HXCSourceConflictIgnoreResponse {
  */
 export type UnavailableResponse = ErrorResponse;
 
+/**
+ * OAuth client-credential failure. `invalid_source_ip` and `https_required` are emitted before OAuth Basic authentication; all other listed OAuth failures use the same JSON shape.
+ */
+export type OpenPlatformOAuthFailureResponse = OpenPlatformOAuthError;
+
+/**
+ * Machine V1 failure envelope. `error.code` carries the stable protocol category; `data` is null and `X-Request-ID` repeats `request_id`.
+ */
+export type OpenPlatformV1FailureResponse = OpenPlatformV1Failure;
+
 export type MutationOKResponse = {
   ok: "true";
 };
