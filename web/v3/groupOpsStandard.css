@@ -263,7 +263,9 @@
 }
 
 .group-ops__detail-shell {
-  min-width: 1180px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   display: grid;
   gap: 18px;
   margin: -4px;
@@ -369,6 +371,7 @@
   grid-template-columns: 196px minmax(0, 1fr);
   gap: 18px;
   align-items: start;
+  min-width: 0;
 }
 
 .group-ops__side-nav {
@@ -428,6 +431,7 @@
 
 .group-ops__panel-card {
   min-height: 420px;
+  min-width: 0;
 }
 
 .group-ops__panel {
@@ -556,7 +560,9 @@
 .group-ops__detail-shell .group-ops__table-wrap {
   border: 1px solid var(--group-ops-line-soft);
   border-radius: 14px;
-  overflow: auto;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .group-ops__detail-shell .group-ops__table {
@@ -900,5 +906,50 @@
   .group-ops__owner-grid,
   .group-ops__schedule-fields {
     grid-template-columns: 1fr;
+  }
+
+  .group-ops__detail-shell {
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .group-ops__summary-card,
+  .group-ops__panel {
+    padding: 16px;
+  }
+
+  .group-ops__summary-head,
+  .group-ops__panel-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .group-ops__summary-actions {
+    justify-content: flex-start;
+  }
+
+  .group-ops__summary-grid,
+  .group-ops__workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .group-ops__workspace {
+    gap: 12px;
+  }
+
+  .group-ops__side-nav {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .group-ops__side-nav button {
+    min-height: 48px;
+  }
+}
+
+@media (max-width: 480px) {
+  .group-ops__side-nav {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
