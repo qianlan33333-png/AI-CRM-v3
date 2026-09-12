@@ -17,7 +17,7 @@ const chrome = () => {
   throw new Error('Chromium binary is unavailable');
 };
 class CDP {
-  constructor(socket) { this.socket = socket; this.id = 0; this.pending = new Map(); socket.addEventListener('message', (event) => { const message = JSON.parse(String(event.data)); const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); message.error ? pending.reject(new Error('CDP request failed')) : pending.resolve(message.result || {}); }); }
+  constructor(socket) { this.socket = socket; this.id = 0; this.saveRequests = 0; this.pending = new Map(); socket.addEventListener('message', (event) => { const message = JSON.parse(String(event.data)); if(message.method==='Network.requestWillBeSent' && message.params?.request?.method==='PUT' && message.params.request.url.endsWith('/external-push')) this.saveRequests++; const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); message.error ? pending.reject(new Error('CDP request failed')) : pending.resolve(message.result || {}); }); }
   call(method, params = {}) { return new Promise((resolve, reject) => { const id = ++this.id; this.pending.set(id, { resolve, reject }); this.socket.send(JSON.stringify({ id, method, params })); }); }
 }
 const domEvidence = async (cdp) => {
@@ -61,24 +61,34 @@ try {
   const socket = new WebSocket(created.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
   const cdp = new CDP(socket);
-  await cdp.call('Page.enable'); await cdp.call('Runtime.enable');
+  await cdp.call('Page.enable'); await cdp.call('Runtime.enable'); await cdp.call('Network.enable');
   const page = '/admin/questionnaireOps.html?id=' + questionnaireID;
   await cdp.call('Page.navigate', { url: base + '/login?next=' + encodeURIComponent(page) });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"]'))", 'login did not render');
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`, 'submit login');
   await waitFor(cdp, "location.pathname === '/admin/questionnaireOps.html'", 'login did not reach questionnaire operations');
-  // The frozen controller starts with a placeholder state, then applies the
-  // operations GET response. Wait for the Host form, which is only mounted
-  // after that readback, before explicitly enabling the actual persisted
-  // external-push panel.
-  await waitFor(cdp, "Boolean(document.querySelector('[data-survey-push-metadata]')) && !document.querySelector('#opsConfigurationReference')", 'operations readback did not settle with external push disabled');
-  await evaluate(cdp, "(() => { const heading=[...document.querySelectorAll('h3')].find((item) => item.textContent.trim()==='外部推送绑定'); const header=heading?.parentElement?.parentElement; const toggle=header?.children?.[1]; if (!heading || !toggle || toggle.tagName !== 'SPAN') throw new Error('external-push toggle is unavailable'); toggle.click(); return true; })()", 'enable external push after operations readback');
+  // The Host now renders the target and metadata even while disabled. Use
+  // the visible tab, owned switch and single header save, as an operator does.
+  await waitFor(cdp, "Boolean(document.querySelector('[data-survey-push-metadata]')) && document.querySelector('[data-survey-push-enabled]')?.checked === false", 'disabled operations configuration did not render');
+  await evaluate(cdp, "(() => { [...document.querySelectorAll('button')].find(item=>item.textContent.includes('外部推送')&&!item.textContent.includes('保存')).click(); return true; })()", 'open external push tab');
   await waitFor(cdp, `(() => { const select=document.querySelector('#opsConfigurationReference'); return select?.tagName === 'SELECT' && [...select.options].some((item) => item.value===${JSON.stringify(target)}); })()`, 'target selector did not load the configured target');
-  await evaluate(cdp, `(() => { const select=document.querySelector('#opsConfigurationReference'); if (![...select.options].some((item) => item.value===${JSON.stringify(target)})) throw new Error('target absent'); select.value=${JSON.stringify(target)}; select.dispatchEvent(new Event('change',{bubbles:true})); [...document.querySelectorAll('button')].find((item) => item.textContent.trim()==='保存外部推送').click(); return true; })()`, 'select and save target');
-  await waitFor(cdp, "String(document.querySelector('#fb-toast')?.textContent || '').includes('已保存')", 'configuration save did not finish');
+  await evaluate(cdp, `(() => {
+    const form=document.querySelector('[data-survey-push-metadata]'), toggle=document.querySelector('[data-survey-push-enabled]');
+    const select=document.querySelector('#opsConfigurationReference'); select.value=${JSON.stringify(target)}; select.dispatchEvent(new Event('change',{bubbles:true}));
+    toggle.checked=true; toggle.dispatchEvent(new Event('change',{bubbles:true}));
+    form.elements.type.value='browser_saved_type'; form.dispatchEvent(new Event('input',{bubbles:true}));
+    const button=[...document.querySelectorAll('button')].find(item=>!form.contains(item)&&item.textContent.trim()==='保存当前维度');
+    if(!button || !form.querySelector('button[type="submit"]').hidden) throw new Error('single header save missing');
+    button.click(); button.click(); return true;
+  })()`, 'enable and save target with metadata');
+  await waitFor(cdp, "document.querySelector('[data-survey-push-save-status]')?.textContent === '已保存当前维度'", 'visible configuration save confirmation did not render');
+  if(cdp.saveRequests!==1) throw new Error('header save request count='+cdp.saveRequests);
   const reloadMarker = 'survey-journey-reload';
   await evaluate(cdp, `window.__surveyJourneyReloadMarker=${JSON.stringify(reloadMarker)}; location.reload(); true`, "reload saved configuration");
   await waitFor(cdp, `document.readyState === 'complete' && window.__surveyJourneyReloadMarker !== ${JSON.stringify(reloadMarker)} && document.querySelector('#opsConfigurationReference')?.tagName === 'SELECT' && document.querySelector('#opsConfigurationReference').value===${JSON.stringify(target)}`, 'saved target did not reload');
+  await waitFor(cdp, "document.querySelector('[data-survey-push-enabled]')?.checked === true && document.querySelector('[data-survey-push-metadata]')?.elements.type.value === 'browser_saved_type'", 'saved enabled state or metadata did not reload');
+  await evaluate(cdp, "[...document.querySelectorAll('button')].find(item=>item.textContent.includes('外部推送')&&!item.textContent.includes('保存')).click(); true", 'reopen external push tab');
+  await waitFor(cdp, "Boolean(document.querySelector('button[data-survey-host-test-push]')) && Boolean(document.querySelector('[data-survey-push-metadata]'))", 'Host did not remount after reopening saved push tab');
   await evaluate(cdp, "(() => { const button=[...document.querySelectorAll('button')].find((item) => item.dataset.surveyHostTestPush === 'true'); if (!button) throw new Error('controlled test button is unavailable'); button.click(); return true; })()", 'open controlled test confirmation');
   await waitFor(cdp, "Boolean(document.querySelector('[data-survey-host-test-confirmation] button[data-survey-host-test-confirm]'))", 'controlled test confirmation did not render');
   await evaluate(cdp, "document.querySelector('[data-survey-host-test-confirmation] button[data-survey-host-test-confirm]').click(); true", 'confirm controlled test');

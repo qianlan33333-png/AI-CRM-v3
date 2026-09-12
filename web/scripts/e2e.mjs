@@ -2540,7 +2540,7 @@ console.log('admin/productForm.html（渠道存量异常隔离）');
   const exactCustomParams = '{"count":9007199254740993,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]}';
   input(dom, d.querySelector('#product-v3-external-push-custom-params'), exactCustomParams);
   click(dom, d.querySelector('a[href="#product-push"]'));
-  const dimensionSave = [...d.querySelectorAll('#product-push button')].find((button) => button.textContent.trim() === '保存当前维度');
+  const dimensionSave = [...d.querySelectorAll('button')].find(button => button.textContent.trim()==='保存当前维度' && !button.closest('#product-push')) || d.querySelector('[data-external-push-configuration-save]');
   if (dimensionSave) click(dom, dimensionSave);
   const expectedConfigBody = JSON.stringify({ url: 'https://hooks.example.test/paid', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_renew', day: 45, frequency: 2, expires_at_ts: 2147483647, remark: '保留业务备注', custom_params: exactCustomParams, expected_revision: 3 });
   const savedBusiness = await waitFor(() => {

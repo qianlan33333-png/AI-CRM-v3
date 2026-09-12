@@ -155,7 +155,14 @@ for (const periodic of [false, true])
       );
       throw e;
     });
-    const save = d.querySelector("[data-external-push-configuration-save]");
+    const hostSave = d.querySelector("[data-external-push-configuration-save]");
+    const anchor = periodic ? '#sp-push' : '#product-push';
+    d.querySelector(`a[href="${anchor}"]`).click();
+    const globalSave = [...d.querySelectorAll('button')].find(button=>button.textContent.trim()==='保存当前维度'&&!button.closest(anchor));
+    assert.ok(globalSave,'real product editor provides a global save');
+    assert.equal(hostSave.hidden,true,'only global save is visible');
+    assert.equal([...d.querySelectorAll(`${anchor} button`)].some(button=>button.textContent.trim()==='保存当前维度'&&!button.hidden),false);
+    const save = globalSave;
     if (legacy) {
       save.click();
       await wait(() =>

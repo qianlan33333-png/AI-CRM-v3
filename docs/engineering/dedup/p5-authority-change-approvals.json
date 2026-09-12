@@ -337,7 +337,7 @@
       "review_reference": "PR #230 user requested legacy product completion parity"
     },
     {
-      "base_commit": "67ab55eb9875e45edf82bfb0dbb83c750e39c4e4",
+      "base_commit": "f77b5ab7f5cb8b29c4890e93ccd2480d22694929",
       "changes": [
         {
           "path": "api/openapi.yaml",
@@ -356,7 +356,7 @@
         }
       ],
       "reason": "User-authorized versioned product external push field mapping and read-only synthetic preview; frozen donor authority unchanged.",
-      "review_reference": "External push field mapping implementation request"
+      "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/232"
     }
   ]
 }

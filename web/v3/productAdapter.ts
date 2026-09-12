@@ -776,6 +776,8 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
   editor.append(title, note, grid, paramsLabel, actions);
   panel.prepend(editor);
   for(const legacySave of ownerDocument.querySelectorAll<HTMLButtonElement>(`${page.anchor} button`)) if(legacySave.textContent?.trim()==='保存当前维度') legacySave.hidden = true;
+  const globalSave = [...ownerDocument.querySelectorAll<HTMLButtonElement>('button')].find(candidate => candidate.textContent?.trim()==='保存当前维度' && !candidate.closest(page.anchor));
+  save.hidden = !!globalSave;
 
   const mappingMount = ownerDocument.createElement('div');
   mappingMount.hidden = true; mappingMount.style.display = 'none';
@@ -1015,7 +1017,8 @@ document.addEventListener('click', (event) => {
   const page = externalPushPage();
   if (!page) return;
   const anchor = document.querySelector<HTMLElement>(page.anchor);
-  if (!anchor || anchor.hidden || anchor.style.display === 'none') return;
+  if (!anchor) return;
+  for(let ancestor:HTMLElement|null=anchor;ancestor;ancestor=ancestor.parentElement) { if(ancestor.hidden || getComputedStyle(ancestor).display==='none') return; }
   const save = anchor.querySelector<HTMLButtonElement>('[data-external-push-configuration-save]');
   if (!save) return;
   event.preventDefault(); event.stopImmediatePropagation();
