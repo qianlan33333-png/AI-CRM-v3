@@ -8,7 +8,7 @@ export type ShanghaiCalendarDateRange = { startInclusive: string; endExclusive: 
 const zonedInstant = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})$/;
 const calendarDate = /^(\d{4})-(\d{2})-(\d{2})$/;
 const naiveDateTime = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/;
-const datetimeLocal = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+const datetimeLocal = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/;
 const zonedDateTimeParts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})$/;
 
 function isCalendarDate(year: number, month: number, day: number): boolean {
@@ -60,9 +60,10 @@ export function formatShanghaiDateTime(raw: unknown, source?: NaiveDateTimeSourc
 export function shanghaiDateTimeLocalToRFC3339(value: string): string | undefined {
   const match = value.trim().match(datetimeLocal);
   if (!match) return undefined;
-  const [year, month, day, hour, minute, second] = match.slice(1).map((part) => Number(part || '0'));
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map((part) => Number(part || '0'));
   if (!validDateTimeParts(year, month, day, hour, minute, second)) return undefined;
-  const instant = new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6] || '00'}+08:00`);
+  const fraction = match[7] ? `.${match[7]}` : '';
+  const instant = new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6] || '00'}${fraction}+08:00`);
   return Number.isNaN(instant.getTime()) ? undefined : instant.toISOString();
 }
 
