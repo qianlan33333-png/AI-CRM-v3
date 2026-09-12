@@ -440,13 +440,17 @@
     return line;
   }
 
-  function sectionCard(title, section, render) {
+  function sectionCard(title, section, render, renderDegraded) {
     const card = document.createElement("section");
     card.className = "admin-card";
     const heading = document.createElement("h2");
     heading.textContent = title;
     card.append(heading);
     if (!section || section.status !== "ready") {
+      if (renderDegraded) {
+        renderDegraded(card, (section && section.data) || {});
+        return card;
+      }
       const state = document.createElement("div");
       state.className = "admin-state admin-state--inline admin-state--error";
       state.textContent = "该分区暂时不可用，其他客户信息不受影响。";
@@ -455,6 +459,28 @@
     }
     render(card, section.data || {});
     return card;
+  }
+
+  function riskReason(reason) {
+    const labels = {
+      identity_section_unavailable: "身份信息暂时不可用，当前风险无法完整判定。",
+      order_section_unavailable: "订单信息暂时不可用，当前风险无法完整判定。",
+      payment_failures_present: "已发现支付失败订单。",
+      refunds_present: "已发现退款相关订单。",
+    };
+    return labels[reason] || "存在尚未确认的风险信息。";
+  }
+
+  function riskCard(section) {
+    const renderRisk = function (target, value, degraded) {
+      line(target, "风险等级：" + (degraded ? "未知（必要信息暂时不可用）" : (value.level || "unknown")));
+      (Array.isArray(value.reasons) ? value.reasons : []).forEach(function (reason) { line(target, riskReason(reason)); });
+    };
+    return sectionCard("风险摘要", section, function (target, value) {
+      renderRisk(target, value, false);
+    }, function (target, value) {
+      renderRisk(target, value, true);
+    });
   }
 
   function line(target, value) {
@@ -492,7 +518,7 @@
 		sectionCard("问卷统计", data.questionnaire_summary, function (target, value) { line(target, "问卷记录：" + (value.total || 0)); (value.recent || []).forEach(function (survey) { line(target, (survey.title || "问卷") + " · " + date(survey.submitted_at)); }); })
 	  );
 	  el.sidebar360.replaceChildren(
-		sectionCard("风险摘要", data.risk, function (target, value) { line(target, "风险等级：" + (value.level || "unknown")); (value.reasons || []).forEach(function (reason) { line(target, reason); }); }),
+		riskCard(data.risk),
 		sectionCard("最近触点", data.recent_touchpoints, function (target, value) { (Array.isArray(value) ? value : []).forEach(function (event) { line(target, (event.title || event.event_type || "客户事件") + " · " + date(event.occurred_at)); }); })
 	  );
 	  el.sections360.hidden = false;
