@@ -343,7 +343,8 @@ async function currentChannel(): Promise<Channel | null> {
 // The frozen donor uses user_id as its persisted staff key. Keep the shared
 // picker payload untouched for display, and adapt only its channel callback.
 function installChannelPickerIdentityAdapter(): void {
-  type PickerOptions = Json & { onConfirm?: (members: Json[]) => void };
+  type PickerSelection = { mode?: unknown; max?: unknown };
+  type PickerOptions = Json & { onConfirm?: (members: Json[]) => void; selection?: PickerSelection; context?: string };
   const picker = (window as Window & { OperationMemberPicker?: { open: (options: PickerOptions) => unknown } }).OperationMemberPicker;
   if (!picker) return;
   const open = picker.open.bind(picker);
@@ -359,7 +360,9 @@ function installChannelPickerIdentityAdapter(): void {
       if (!Array.isArray(payload.items)) throw new Error('客服目录响应不完整，请重试');
       disabledUserIds = payload.items.flatMap((member: Json) => disabled.includes(String(member.staff_id)) && member.user_id ? [String(member.user_id)] : []);
     }
-    return open({ ...options, disabledUserIds, onConfirm: (members) => {
+    const requestedMax = Number(options.selection?.max ?? options.max);
+    const max = Number.isSafeInteger(requestedMax) && requestedMax >= 1 ? requestedMax : 1;
+    return open({ ...options, context: 'channel_assignees', selection: { mode: 'multiple', max }, multiple: true, max, disabledUserIds, onConfirm: (members) => {
       const mapped = members.map((member) => {
         const staffID = Number(member.staff_id);
         if (!Number.isSafeInteger(staffID) || staffID < 1) throw new Error('客服本地标识缺失，请刷新客服后重试');
