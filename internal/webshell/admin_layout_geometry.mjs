@@ -389,6 +389,11 @@ try {
   // 52px toolbar but no semantic title class. Keep this narrow shape instead
   // of accepting arbitrary body text as a workspace heading.
   const frozenListToolbarTitle = '#stage > div[style*="display: contents"] > div[style*="height:52px"] div[style*="font-size:16px"][style*="font-weight:600"][style*="line-height:22px"]';
+  // Image Library has a V3-owned workspace rather than the frozen media
+  // toolbar. Its mount marker and direct header title prove that the current
+  // Host, not a removed donor template, rendered the page before geometry is
+  // measured.
+  const imageLibraryHostTitle = '[data-image-library-title] h1';
   const navigateStandard = async (pathname, ready, label, screenshot = false, fromMenu = false) => {
     currentStep = label;
     try {
@@ -610,7 +615,7 @@ try {
   await assertProductDimensions('sp');
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
-  await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "image-library", "embedded", frozenListToolbarTitle, true, true);
+  await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-title] h1'))", "image-library", "embedded", imageLibraryHostTitle, true, true);
   await navigate("/admin/miniprogram-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "miniprogram-library", "embedded", frozenListToolbarTitle, true, true);
   await navigate("/admin/attachment-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "attachment-library", "embedded", embeddedTitle, true, true);
 

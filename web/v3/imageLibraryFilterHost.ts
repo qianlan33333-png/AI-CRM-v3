@@ -160,9 +160,12 @@ class ImageLibraryHost {
     this.paginationNode = document.createElement("section");
     this.dialogLayer = document.createElement("section");
     this.dialogLayer.dataset.imageLibraryDialogLayer = "true";
-    this.workspace.append(this.headerNode, this.toolbarNode, this.stateNode, this.cardsNode, this.paginationNode);
+    this.workspace.append(this.toolbarNode, this.stateNode, this.cardsNode, this.paginationNode);
     this.scroll.append(this.workspace);
-    this.stage.replaceChildren(this.scroll, this.dialogLayer);
+    // Keep the workspace title bar at the embedded stage edge. The scroll
+    // region owns the refresh panel and all data-bearing content below it,
+    // while this stable header preserves the shared shell geometry contract.
+    this.stage.replaceChildren(this.headerNode, this.scroll, this.dialogLayer);
   }
 
   start(): void {
@@ -251,6 +254,7 @@ class ImageLibraryHost {
 
   private header(): HTMLElement {
     const header = document.createElement("header");
+    header.dataset.imageLibraryTitle = "true";
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:52px;padding:0 20px;background:#fff;border:1px solid #DEE0E3;border-radius:8px";
     const titles = document.createElement("div");
     titles.style.minWidth = "0";
