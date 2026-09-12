@@ -2,7 +2,7 @@
 
 日期：2026-09-12（Asia/Shanghai）  
 状态：用户已确认，进入分项实施与独立验收  
-审计基线（启动时 main）：`6f09899c74a966a87af03158540a030e5c50817d`；本轮已合并状态快照：`5cf761ea362e989a6258392f42fcfd2699ac3a42`
+审计基线（启动时 main）：`6f09899c74a966a87af03158540a030e5c50817d`；本轮已合并状态快照：`986f83e967ed3d092b98bff2060107b4e415c64b`
 
 ## 1. 目标与业务判断
 
@@ -99,7 +99,7 @@ UI 统一沿用现有标准组件和业务语义，做窄范围整改，不扩�
 3. 实施分页、刷新计数和 readiness（AUD-05 至 AUD-07）。
 4. 补齐 OpenAPI 与 dispatcher 契约（AUD-08）。
 5. 先修公共选择器和布局基础，再接入运营闭环、GroupOps、渠道页面（UI-01 至 UI-07）。
-6. 优先审查订单/退款边界 #256；在其父合同稳定后，独立审查上海时间 #258、优惠券中文展示 #259、人群计划时区 #260、Excel 时间扫描遗漏 #261 和全站中文反馈 E，均不以 stack 审查替代 CI。
+6. 优先审查订单/退款边界 #256；在其父合同稳定后，独立审查上海时间 #258、优惠券中文展示 #259、人群计划时区 #260、Excel 时间扫描遗漏 #261 和全站中文反馈 #262，均不以 stack 审查替代 CI。
 7. 逐项执行迁移人工验收和真实受控 Provider 验收。
 8. 由总控审查每个 PR 的业务判断、OneID/持久化/外部效果边界、测试证据和发布清单，再进入 GitHub 合并。
 
@@ -119,10 +119,10 @@ GitHub 只负责版本、审查和 CI。PR #241 已把 `.github/workflows/ci.yml
 
 最终发布流程：
 
-1. 从全部应用 PR 合入后选定的最新 `main` 准确 SHA 构建 Linux 目标架构的完整发布包，校验包内容和 SHA-256，并保存独立构建清单。该 SHA 的构建输入包含此前已合并的全部内容（含 #240 如届时已合并）。清单必须逐项校验 `migrations/0148_channel_archive_edit.sql`、`migrations/0149_outbound_material_refresh_source_count.sql`、`migrations/0150_channel_welcome_message_snapshots.sql` 与包内 `release-files.sha256`；PR 的 deploy skipped 不产生可发布制品证据。安装器现有显式文件断言只覆盖 0150，0148/0149 须由发布前 preflight 和完整清单明确覆盖。
+1. 从全部应用与本 PRD/台账合入后选定的最新 `main` 准确 SHA 构建 Linux 目标架构的完整发布包，校验包内容和 SHA-256，并保存独立构建清单。清单必须逐项校验 `migrations/0148_channel_archive_edit.sql`、`migrations/0149_outbound_material_refresh_source_count.sql`、`migrations/0150_channel_welcome_message_snapshots.sql`、Excel `components/excel-batches/batches.py`、`components/excel-batches/requirements.txt`、`components/excel-batches/aicrm-excel-batches.service` 与包内 `release-files.sha256`；制品不得携带 `.so`，只包含独立 archive SDK runner。PR 的 deploy skipped 不产生可发布制品证据。安装器现有显式文件断言只覆盖 0150，0148/0149 须由发布前 preflight 和完整清单明确覆盖。
 2. 在前向迁移前记录当前 `/opt/aicrm/current` 目标和 release SHA，并按既有 runbook 在受保护路径创建新的目标数据库备份与可恢复性证据；早期备份不能替代本次备份。备份只用于恢复计划，不能作为已执行迁移或业务验收的证明。
 3. 先验证无其他发布正在安装或切换，再通过本机已有 SSH 配置上传；只读取 SSH 用户和目标，不读取、复制或输出私钥、Secret 环境变量和受保护配置正文。
-4. 调用版本匹配的安装程序，执行 forward-only migration、服务切换、回滚保护和 `/healthz`/`/readyz` 校验。迁移后必须从 `platform_schema_migrations` 独立核对 0148、0149、0150 三条记录的准确 version、name、checksum（与该最终包清单相同）；`current` 回退不构成已提交 SQL 的回退。
+4. 安装前以服务用户对目标机配置的外置 archive SDK 运行无凭据 ABI health，并核对其固定 SHA-256；该检查只允许 `dlopen → NewSdk → DestroySdk`，不得读取密钥或发起 Provider 调用。随后调用版本匹配的安装程序，执行 forward-only migration、服务切换、回滚保护和 `/healthz`/`/readyz` 校验。迁移后必须从 `platform_schema_migrations` 独立核对 0148、0149、0150 三条记录的准确 version、name、checksum（与该最终包清单相同）；`current` 回退不构成已提交 SQL 的回退。
 5. 核对线上 SHA、正式 HTTPS、登录后关键页面和接口，再执行受控真实 Provider 验收。
 6. 发布成功、浏览器验收和 Provider/回执验收分别记录；上传完成或进程健康不能单独宣布业务完成。线上 SHA 必须与第 1 步独立构建清单比较。发布后新增的验收文档只能记录该 SHA 的结果，不能冒充已部署版本或替代制品证据。
 

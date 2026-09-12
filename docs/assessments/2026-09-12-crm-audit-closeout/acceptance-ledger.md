@@ -2,7 +2,7 @@
 
 日期：2026-09-12（Asia/Shanghai）  
 审计基线（启动时 main）：`6f09899c74a966a87af03158540a030e5c50817d`
-本轮已合并状态快照：`5cf761ea362e989a6258392f42fcfd2699ac3a42`
+本轮已合并状态快照：`986f83e967ed3d092b98bff2060107b4e415c64b`
 对应 PRD：[CRM 迁移收尾、审计缺陷与 UI 一致性整改](../../prd/2026-09-12-crm-audit-closeout.md)
 
 ## 使用规则
@@ -38,9 +38,9 @@ OneID/持久化/效果总判断：客户、身份、归属和 HXC 项目复用 I
 | UI-07 | 全站标准组件盘点、复用和接入验收 | 不适用（只读覆盖矩阵和两页运行时核验） | 7 个定向断言通过；11 个 shell/E2E 通过，2 个旧 fixture 路径跳过 | 不适用 | 未执行 | 21/21 仅入口映射，不等于 21 个真实 browser 回放；两页 DOM 核验确认 canonical automation 45 条/3 页分页正常，登录态全量重放待验 | 不适用（展示层） | automation 旧静态模板为误报，不开发；image-library 搜索、含停用、重置是 canonical active 缺陷，已交由 UI agent 独立修复 |
 | UI-08 | 业务时刻按上海语义展示和回填 | #258 `d0b74d416ca2a75ee2acf403731271a046c3f663` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；线上登录态待验 | 不适用 | 只限展示/输入边界，不能改写未修改字段的原 instant 或精度 |
 | UI-09 | 优惠券列表显示真实商品中文名、领取时间范围与中文状态；手机可完成读取 | #259 `5cf761ea362e989a6258392f42fcfd2699ac3a42` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；本地隔离 Chromium 已见 1440 完整列与 390 列表/编辑可用；线上登录态待验 | 不适用 | 商品名由 Product Port 批量投影；未知价格不显示为 0；当前“删除草稿”为真实受控写入口，本轮未点击 |
-| UI-10 | 人群计划的时间展示与提交须保持 Shanghai 业务语义 | #260 `a2b1347d03ec49dcbeadf2e15b34a476d684be90` | CI 运行中 | 未合并 | 未执行 | CI browser 与线上登录态待验 | 不适用 | 独立于 #258 的人群计划路由；不以文档提交代替页面验收 |
-| UI-11 | 运营闭环 Excel 报表的时间扫描遗漏闭环：上海时间与交付失败原因须安全呈现 | #261 `c5df1f720e72fcbc8969ad6338f9e8551d4fbbc4` | CI 运行中 | 未合并 | 未执行 | CI browser 与线上登录态待验 | 不适用 | 仅展示层：无时区/无效时间不得猜测；已知失败码映射为受控中文，混合文本或未知 Provider 码不透传 |
-| UI-12 | 全站面向用户的失败反馈须是受控中文 | E（待开 PR） | 待启动 | 未合并 | 未执行 | 待验 | 不适用 | 不透传机器码或任意服务端文本；逐路由保留可行动的中文提示 |
+| UI-10 | 人群计划的时间展示与提交须保持 Shanghai 业务语义 | #260 `d3d70da7e21aa59214c576d2713f76fcd586e93f` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；线上登录态待验 | 不适用 | 独立于 #258 的人群计划路由；不以文档提交代替页面验收 |
+| UI-11 | 运营闭环 Excel 报表的时间扫描遗漏闭环：上海时间与交付失败原因须安全呈现 | #261 `9ab5bdfbaffeac473d678012b59cff4392d4d535` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；线上登录态待验 | 不适用 | 仅展示层：无时区/无效时间不得猜测；已知失败码映射为受控中文，混合文本或未知 Provider 码不透传 |
+| UI-12 | 全站面向用户的失败反馈须是受控中文 | #262 `986f83e967ed3d092b98bff2060107b4e415c64b` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；线上登录态待验 | 不适用 | 不透传机器码或任意服务端文本；逐路由保留可行动的中文提示 |
 
 ## 迁移与人工/Provider 验收
 
@@ -62,18 +62,19 @@ OneID/持久化/效果总判断：客户、身份、归属和 HXC 项目复用 I
 | ID | 门 | PR | CI | merge | deploy | browser | provider | 当前状态 |
 |---|---|---|---|---|---|---|---|---|
 | REL-01 | deploy opt-in 控制先合并，普通 main 合并不自动上传生产 | #241 `b094ffdad26a57b8e3e46ceb4512ac71a020d450` | 完整 CI 通过 | 已合并 | skipped | 不适用 | 不适用 | 默认未设置 `AICRM_ENABLE_ACTIONS_DEPLOY` 时 main 仍跑 CI、不会创建 deploy job |
-| REL-02 | 最终 SHA Linux 完整包、安装顺序、迁移、回滚和 checksum | 待创建 | 待运行 | 待最终应用合并 | 未发布 | 待线上核验 | 不适用 | 选定最终 main SHA 后，构建输入包含此前已合并的全部内容（含 #240 如届时已合并）。发布后新增的验收文档只能记录该 SHA 的结果，不能冒充已部署版本或替代制品证据。包与 preflight 必须逐项校验 0148/0149/0150 SQL、`release-files.sha256` 和迁移账本三条准确 version/name/checksum；安装器当前显式断言 0150，0148/0149 仍须由 preflight 与完整清单明确覆盖 |
-| REL-03 | 本机 SSH 上传、线上 SHA/HTTPS/health/readiness | 不适用 | 不适用 | 依赖 REL-02 | 未执行上传或安装 | 待线上登录验收 | 不适用 | 严格 IP SSH 连通已验证；key preflight 仅核验 4 个 key 有效性，且实际进程的 6 个允许列表开关已核验为布尔结果，均未输出 Secret 原值。未上传，未核对线上 SHA/HTTPS/health/readiness |
+| REL-02 | 最终 SHA Linux 完整包、安装顺序、迁移、回滚和 checksum | 待创建 | 待运行 | 待最终文档合并 | 未发布 | 待线上核验 | 不适用 | 选定最终 main SHA 后，构建输入包含此前已合并的全部内容（含 #240）。发布后新增的验收文档只能记录该 SHA 的结果，不能冒充已部署版本或替代制品证据。包与 preflight 必须逐项校验 0148/0149/0150 SQL、`release-files.sha256` 和迁移账本三条准确 version/name/checksum；还须在包清单中逐项核对 Excel `components/excel-batches/batches.py`、`components/excel-batches/requirements.txt`、`components/excel-batches/aicrm-excel-batches.service`，并确认制品不携带 `.so`，只携带独立 archive SDK runner |
+| REL-03 | 本机 SSH 上传、线上 SHA/HTTPS/health/readiness | 不适用 | 不适用 | 依赖 REL-02 | 未执行上传或安装 | 待线上登录验收 | 不适用 | 严格 IP SSH 连通已验证；key preflight 仅核验 4 个 key 有效性，且实际进程的 6 个允许列表开关已核验为布尔结果，均未输出 Secret 原值。目标机外置 archive SDK 库固定摘要和无凭据 ABI health 已只读通过，仍须随最终安装前清单复核。未上传，未核对线上 SHA/HTTPS/health/readiness |
 | REL-04 | 受控 Provider、支付/退款和回执独立验收 | 不适用 | 不适用 | 不适用 | 依赖 REL-03 | 测试券窗口已正式 browser 确认，仍未发布 | 渠道旧版本已有一次欢迎和一次入渠标签的独立 receipt；支付、退款未执行 | 受控验收前置的 6 个布尔条件均为 true；用户已授权单笔 0.01 元、累计 0.10 元且只对本轮测试订单全额退款。当前没有系统客户白名单配置，执行前仍须从受保护会话记录核验具体对象；尚未支付、退款或验收 #257 的变量替换 |
 
 ## 当前基础核验
 
-- 本状态快照的已合并 main 为 `5cf761ea362e989a6258392f42fcfd2699ac3a42`；它不替代启动时的审计基线 `6f09899c74a966a87af03158540a030e5c50817d`，最终发布前必须重新读取 main。
-- #239、#241 至 #259 的完整 CI 已通过且均已合并；这些检查的 deploy 都是 skipped。#260（人群计划 Shanghai 语义）与 #261（Excel 时间扫描遗漏闭环）均仍在 CI，E 尚未开 PR。这些状态均不代表 deploy、线上 browser 或最终 Provider 验收。
+- 本状态快照的已合并 main 为 `986f83e967ed3d092b98bff2060107b4e415c64b`；它不替代启动时的审计基线 `6f09899c74a966a87af03158540a030e5c50817d`，最终发布前必须重新读取 main。
+- 应用 PR #239、#241 至 #262 的完整 CI 均已通过且均已合并；这些检查的 deploy 都是 skipped。这些状态均不代表 deploy、线上 browser 或最终 Provider 验收。
 - #241 后，`deploy` 只有在 `AICRM_ENABLE_ACTIONS_DEPLOY == 'true'` 时才会创建；本轮所有已完成 CI 的 deploy 均为 skipped，未发生 Actions 生产安装。
 - 原工作区存在用户脏修改，本台账对应的文档分支使用独立工作树，不能把原工作区状态当作本分支证据。
 - 修复前基线已有独立 PostgreSQL 16.13 的 16 个领域、86 个 package 全部通过且 0 skip；该证据只用于确认测试基线，不代表当前缺陷已经关闭。没有测试数据库时的 skip 只能记录为未验证。
 - 最初的只读审计阶段没有生产数据库写、Provider 调用、支付、退款、消息发送或配置变更。之后用户授权的单次渠道验收产生了欢迎和入渠标签两份分离的 executed/provider receipt，且用户实际收到欢迎；这是旧版本原样发送 `{{客户名}}` 的根因证据，不能写成 #257 已上线或变量验收通过。
 - 发布前核验只检查了 4 个 key 的有效性和实际进程 6 个允许列表开关的布尔结果，未输出 Secret 原值。测试券窗口的正式浏览器核验只确认配置可见性与日期有效，券仍未发布；“删除草稿”是仅限未发行 draft 的真实写入口，本轮未点击，不能将其作为只读验收的一部分。
 - 2026-09-13 的生产匿名外部效果聚合预检：`river_job` 没有未终结任务，`webhook_inbox` 没有可领取的 received/processing/retryable 项，External Effects 也没有 queued、attempted 或 retryable_failed 项；发布重启不会因现存待办自行发起新的 Provider 调用。现存非终态只剩两条历史 `outcome_unknown`：一条 Payment-owned prepay（即 MIG-06 已单列的 Payment #924 / effect #21 风险）和一条 Outbound-owned 素材效果；两者都没有当前 River job，均不得因发布、健康检查或新版本自动 retry/reconcile。该聚合不代替这两条未知结果的既有人工对账，也不代表未来新 webhook 或正常业务写入。
-- 发布后线上 SHA、HTTPS、登录态页面与 Provider/回执证据，必须用最终应用 main SHA 的独立本地产物和构建清单核对，不能以其后文档提交形成自引用证据。
+- 2026-09-13 的安装前只读预检：最终构建时须在 `release-files.sha256` 中逐项核对 Excel `components/excel-batches/batches.py`、`components/excel-batches/requirements.txt` 和 `components/excel-batches/aicrm-excel-batches.service`。当前目标机的外置 archive SDK 配置项唯一、库可读、runner 可执行；库 SHA-256 为 `79ced4de6b18d5e96a21cd06f325794dc8957f8925120538d56d4ce827d3dfd0`，与固定官方摘要匹配。当前 release 文件清单与文件系统均不含 `.so`；以服务用户运行的无凭据 health 仅完成 `dlopen → NewSdk → DestroySdk`，返回库可加载且句柄创建成功。此证据不读取密钥、不调用 Provider，也不代表消息存档业务读取、解密或回执验收。
+- 发布后线上 SHA、HTTPS、登录态页面与 Provider/回执证据，必须用最终选定发布 SHA（包含本次 PRD/台账）的独立本地产物和构建清单核对，不能以其后文档提交形成自引用证据。
