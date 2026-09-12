@@ -25,13 +25,23 @@ type ListQuery struct {
 }
 
 type LinkSummary struct {
-	Link            radar.Link `json:"link"`
-	TotalLandings   int64      `json:"total_landings"`
-	AuthorizedUsers int64      `json:"authorized_users"`
-	AuthorizedViews int64      `json:"authorized_views"`
-	ViewCount       int64      `json:"view_count"`
-	LastViewedAt    *time.Time `json:"last_viewed_at,omitempty"`
+	Link             radar.Link           `json:"link"`
+	StatisticsStatus LinkStatisticsStatus `json:"statistics_status"`
+	TotalLandings    int64                `json:"total_landings"`
+	AuthorizedUsers  int64                `json:"authorized_users"`
+	AuthorizedViews  int64                `json:"authorized_views"`
+	ViewCount        int64                `json:"view_count"`
+	LastViewedAt     *time.Time           `json:"last_viewed_at,omitempty"`
 }
+
+// LinkStatisticsStatus distinguishes a measured zero from a statistics read
+// that did not complete. Link metadata remains safe to show in either case.
+type LinkStatisticsStatus string
+
+const (
+	LinkStatisticsReady       LinkStatisticsStatus = "ready"
+	LinkStatisticsUnavailable LinkStatisticsStatus = "unavailable"
+)
 
 type LinkPage struct {
 	Items   []LinkSummary `json:"items"`

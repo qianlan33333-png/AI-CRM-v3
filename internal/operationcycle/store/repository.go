@@ -155,6 +155,10 @@ func (repository *Repository) ListStrategies(ctx context.Context, limit, offset 
 	if err != nil {
 		return nil, storeError(err)
 	}
+	var total int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM operation_cycle_strategies`).Scan(&total); err != nil {
+		return nil, storeError(err)
+	}
 	rows, err := tx.Query(ctx, `SELECT strategy.strategy_key,strategy.title,strategy.status,strategy.version,
 		strategy.definition,strategy.snapshot,strategy.updated_at,ordinal.ordinal
 		FROM operation_cycle_strategies AS strategy
@@ -187,7 +191,7 @@ func (repository *Repository) ListStrategies(ctx context.Context, limit, offset 
 	if err = rows.Err(); err != nil {
 		return nil, storeError(err)
 	}
-	return map[string]any{"items": items, "limit": limit, "offset": offset}, nil
+	return map[string]any{"items": items, "total": total, "limit": limit, "offset": offset}, nil
 }
 
 func (repository *Repository) GetStrategy(ctx context.Context, key string) (map[string]any, error) {

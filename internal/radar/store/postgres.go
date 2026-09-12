@@ -116,12 +116,92 @@ func (store *Postgres) List(ctx context.Context, query radarport.ListQuery) (rad
 		if scanErr != nil {
 			return radarport.LinkPage{}, scanErr
 		}
-		items = append(items, radarport.LinkSummary{Link: link})
+		items = append(items, radarport.LinkSummary{Link: link, StatisticsStatus: radarport.LinkStatisticsReady})
 	}
 	if err = rows.Err(); err != nil {
 		return radarport.LinkPage{}, mapError(err)
 	}
+	rows.Close()
+	store.populateLinkSummaries(ctx, tx, items)
 	return radarport.LinkPage{Items: items, Total: total, Limit: query.Limit, Offset: query.Offset, HasMore: int64(query.Offset)+int64(len(items)) < total}, nil
+}
+
+// populateLinkSummaries reads statistics for one page in one aggregate query.
+// A statistics failure must not replace a known link page with invented zeroes:
+// callers receive the link records with an explicit unavailable status instead.
+func (store *Postgres) populateLinkSummaries(ctx context.Context, tx pgx.Tx, items []radarport.LinkSummary) {
+	if len(items) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(items))
+	positions := make(map[radar.RadarID]int, len(items))
+	for index := range items {
+		ids = append(ids, int64(items[index].Link.ID))
+		positions[items[index].Link.ID] = index
+	}
+	statisticsTx, err := tx.Begin(ctx)
+	if err != nil {
+		markLinkStatisticsUnavailable(items)
+		return
+	}
+	rows, err := statisticsTx.Query(ctx, `SELECT radar_id,
+		count(*) FILTER(WHERE stage='landing'),
+		count(DISTINCT customer_id) FILTER(WHERE attribution_status='resolved'),
+		count(*) FILTER(WHERE stage IN ('content_opened','redirected','image_loaded','pdf_opened') AND attribution_status='resolved'),
+		count(*) FILTER(WHERE stage IN ('content_opened','redirected','image_loaded','pdf_opened')),
+		max(occurred_at) FILTER(WHERE stage IN ('content_opened','redirected','image_loaded','pdf_opened'))
+		FROM radar_events
+		WHERE radar_id = ANY($1)
+		GROUP BY radar_id`, ids)
+	if err != nil {
+		_ = statisticsTx.Rollback(ctx)
+		markLinkStatisticsUnavailable(items)
+		return
+	}
+	for rows.Next() {
+		var id radar.RadarID
+		var totalLandings, authorizedUsers, authorizedViews, viewCount int64
+		var lastViewedAt *time.Time
+		if err = rows.Scan(&id, &totalLandings, &authorizedUsers, &authorizedViews, &viewCount, &lastViewedAt); err != nil {
+			rows.Close()
+			_ = statisticsTx.Rollback(ctx)
+			markLinkStatisticsUnavailable(items)
+			return
+		}
+		index, ok := positions[id]
+		if !ok {
+			rows.Close()
+			_ = statisticsTx.Rollback(ctx)
+			markLinkStatisticsUnavailable(items)
+			return
+		}
+		items[index].TotalLandings = totalLandings
+		items[index].AuthorizedUsers = authorizedUsers
+		items[index].AuthorizedViews = authorizedViews
+		items[index].ViewCount = viewCount
+		items[index].LastViewedAt = lastViewedAt
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		_ = statisticsTx.Rollback(ctx)
+		markLinkStatisticsUnavailable(items)
+		return
+	}
+	if err = statisticsTx.Commit(ctx); err != nil {
+		_ = statisticsTx.Rollback(ctx)
+		markLinkStatisticsUnavailable(items)
+	}
+}
+
+func markLinkStatisticsUnavailable(items []radarport.LinkSummary) {
+	for index := range items {
+		items[index].StatisticsStatus = radarport.LinkStatisticsUnavailable
+		items[index].TotalLandings = 0
+		items[index].AuthorizedUsers = 0
+		items[index].AuthorizedViews = 0
+		items[index].ViewCount = 0
+		items[index].LastViewedAt = nil
+	}
 }
 
 func (store *Postgres) Create(ctx context.Context, record radarport.CreateRecord, actor int64, now time.Time) (radar.Link, error) {
