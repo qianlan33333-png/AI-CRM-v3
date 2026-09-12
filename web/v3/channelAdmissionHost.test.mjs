@@ -193,4 +193,34 @@ try {
   assert.equal(delayedDonor.calls.some((call) => call.method === 'POST' || call.method === 'PATCH'), false, 'delayed donor bootstrap must not save a channel');
 } finally { delayedDonor.dom.window.close(); }
 
+const saves = createPage({ mutations: [
+  { headers: { ETag: '"8"' }, payload: { ok: true } },
+  { headers: { ETag: '"9"' }, payload: { ok: true } },
+  { status: 503, payload: { code: 'DEPENDENCY_UNAVAILABLE' } },
+  { headers: { ETag: '"10"' }, payload: { ok: true } },
+] });
+try {
+  await waitFor(() => saves.dom.window.__channelComposerOptions, 'edit interactions ready');
+  const { document } = saves.dom.window;
+  const code = document.querySelector('[name="channel_code"]');
+  assert.equal(code.readOnly, true, 'persisted channel code cannot be edited');
+  assert.match(document.getElementById('channel-code-fixed-hint').textContent, /创建后固定/);
+  const send = (channelCode = 'origin-code') => saves.dom.window.fetch('/api/admin/channels/17', {
+    method: 'PATCH', body: JSON.stringify({ channel_code: channelCode, channel_name: '多客服测试', assignees: [] }),
+  });
+  const immutable = await send('123334');
+  assert.equal(immutable.status, 409);
+  assert.equal((await immutable.json()).code, 'CHANNEL_CODE_IMMUTABLE');
+  assert.equal(saves.calls.filter(call => call.method === 'PATCH').length, 0, 'changed code must not reach server');
+  assert.equal((await send()).status, 200);
+  assert.equal((await send()).status, 200);
+  assert.equal((await send()).status, 503);
+  assert.equal((await send()).status, 200);
+  const patches = saves.calls.filter(call => call.method === 'PATCH');
+  assert.deepEqual(patches.map(call => call.headers.get('If-Match')), ['"7"', '"8"', '"9"', '"9"']);
+  assert.equal(patches[0].body, patches[1].body, 'same configuration may be saved again');
+  assert.notEqual(patches[0].headers.get('Idempotency-Key'), patches[1].headers.get('Idempotency-Key'), 'new version needs a new command receipt');
+  assert.equal(patches[2].headers.get('Idempotency-Key'), patches[3].headers.get('Idempotency-Key'), 'uncertain retry retains original command key');
+} finally { saves.dom.window.close(); }
+
 console.log('standard channel Host draft, carrier, CAS, create journeys: PASS');
