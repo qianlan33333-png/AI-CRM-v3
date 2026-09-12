@@ -211,7 +211,10 @@ func (b *Bridge) strategySummaryPage(ctx context.Context, limit, offset int32) (
 		}
 		items = append(items, item)
 	}
-	hasMore := int64(offset)+int64(len(items)) < int64(page.Total)
+	// READ COMMITTED permits a strategy deletion between the count and page
+	// statements. Do not manufacture a next offset that equals the current one
+	// for an empty stale page; the host can then move the user back safely.
+	hasMore := len(items) > 0 && int64(offset)+int64(len(items)) < int64(page.Total)
 	var nextOffset any
 	if hasMore {
 		nextOffset = offset + int32(len(items))

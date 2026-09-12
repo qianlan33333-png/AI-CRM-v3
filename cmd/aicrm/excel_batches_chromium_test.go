@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	config "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -139,6 +141,21 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		t.Fatalf("unlinked legacy discovery: %d %s", legacy.Code, legacy.Body.String())
 	}
 	if !browser {
+		anonymous := httptest.NewRecorder()
+		application.handler.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/admin/operation-batches/strategy-summaries", nil))
+		if anonymous.Code != http.StatusForbidden {
+			t.Fatalf("anonymous summary read=%d body=%s", anonymous.Code, anonymous.Body.String())
+		}
+		if _, err = application.management.AddUser(ctx, accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 1, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, accessapp.AddUserInput{
+			Username: "excel-summary-viewer", Password: "excel-summary-viewer-password", DisplayName: "Excel Summary Viewer", Roles: []accessdomain.Role{accessdomain.RoleViewer},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		viewerSession, _ := adminAccessLogin(t, application.handler, "excel-summary-viewer", "excel-summary-viewer-password")
+		if viewer := authenticatedAdminGet(t, application.handler, viewerSession, "/api/admin/operation-batches/strategy-summaries?limit=20&offset=0"); viewer.Code != http.StatusOK {
+			t.Fatalf("viewer summary read=%d body=%s", viewer.Code, viewer.Body.String())
+		}
+
 		// The operation page is deliberately bounded at 20 strategies. Create
 		// enough local-only fixtures to prove that the page after the first 100
 		// stays reachable through the composed summary read endpoint.
@@ -358,6 +375,42 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		csv := authenticatedAdminGet(t, application.handler, session, fmt.Sprintf("/api/admin/operation-batches/%d/report.csv", imported.Batch.ID))
 		if report.Code != http.StatusOK || csv.Code != http.StatusOK || !strings.Contains(csv.Body.String(), "delivery_state") {
 			t.Fatalf("report/csv: report=%d csv=%d csv_body=%s", report.Code, csv.Code, csv.Body.String())
+		}
+
+		// Strategy facts are authoritative for the page. If their own read fails,
+		// the endpoint fails as a whole instead of representing unknown strategies.
+		if _, err = application.pool.Native().Exec(ctx, `ALTER TABLE operation_cycle_strategies RENAME TO operation_cycle_strategies_summary_failure`); err != nil {
+			t.Fatal(err)
+		}
+		strategyTableRenamed := true
+		defer func() {
+			if strategyTableRenamed {
+				_, _ = application.pool.Native().Exec(context.Background(), `ALTER TABLE operation_cycle_strategies_summary_failure RENAME TO operation_cycle_strategies`)
+			}
+		}()
+		if failedStrategyRead := authenticatedAdminGet(t, application.handler, session, "/api/admin/operation-batches/strategy-summaries?limit=20&offset=0"); failedStrategyRead.Code != http.StatusServiceUnavailable {
+			t.Fatalf("strategy summary source failure=%d body=%s", failedStrategyRead.Code, failedStrategyRead.Body.String())
+		}
+		if _, err = application.pool.Native().Exec(ctx, `ALTER TABLE operation_cycle_strategies_summary_failure RENAME TO operation_cycle_strategies`); err != nil {
+			t.Fatal(err)
+		}
+		strategyTableRenamed = false
+
+		// The aggregate belongs to AI Assistant. A real PostgreSQL failure there
+		// must leave the independently-read strategy page available and label its
+		// batch facts unavailable instead of silently reporting no batch.
+		if _, err = application.pool.Native().Exec(ctx, `ALTER TABLE ai_assistant_excel_imports RENAME TO ai_assistant_excel_imports_summary_failure`); err != nil {
+			t.Fatal(err)
+		}
+		importsTableRenamed := true
+		defer func() {
+			if importsTableRenamed {
+				_, _ = application.pool.Native().Exec(context.Background(), `ALTER TABLE ai_assistant_excel_imports_summary_failure RENAME TO ai_assistant_excel_imports`)
+			}
+		}()
+		degraded := authenticatedAdminGet(t, application.handler, session, "/api/admin/operation-batches/strategy-summaries?limit=20&offset=120")
+		if degraded.Code != http.StatusOK || !strings.Contains(degraded.Body.String(), `"strategy_key":"excel.fixture"`) || !strings.Contains(degraded.Body.String(), `"latest_batch_status":"unavailable"`) || strings.Contains(degraded.Body.String(), `"latest_batch_status":"ready"`) {
+			t.Fatalf("batch aggregate degradation=%d body=%s", degraded.Code, degraded.Body.String())
 		}
 		return
 	}

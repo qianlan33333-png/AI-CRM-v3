@@ -301,7 +301,15 @@ class Workspace {
       return;
     }
     if (!items.length && returnedOffset > 0 && total > 0) {
-      await this.loadPlans(Math.floor((total - 1) / limit) * limit, openHash);
+      const lastPageOffset = Math.floor((total - 1) / limit) * limit;
+      // A concurrent delete may leave this page empty after the server counted
+      // strategies. Never retry the same offset: fall back one page when the
+      // newly-computed last page is not before the requested offset.
+      const fallbackOffset =
+        lastPageOffset < returnedOffset
+          ? lastPageOffset
+          : Math.max(0, returnedOffset - limit);
+      await this.loadPlans(fallbackOffset, openHash);
       return;
     }
     this.plans = items;

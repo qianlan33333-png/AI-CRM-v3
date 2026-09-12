@@ -98,6 +98,56 @@ try {
   pagingDom.window.close();
 }
 
+const stalePageDom = new JSDOM("<!doctype html><main id=stage></main>", {
+  url: "https://fixture.test/admin/operation-cycles",
+  runScripts: "outside-only",
+});
+const stalePageWindow = stalePageDom.window;
+setBrowserSupport(stalePageWindow);
+const stalePageOffsets = [];
+stalePageWindow.fetch = async (input) => {
+  const url = new URL(String(input), stalePageWindow.location.href);
+  if (url.pathname === "/api/admin/operation-batches/strategy-summaries") {
+    const offset = Number(url.searchParams.get("offset"));
+    stalePageOffsets.push(offset);
+    if (offset === 120) return response({ items: [], total: 121, limit: 20, offset, has_more: false, next_offset: null });
+    const totalAfterDelete = stalePageOffsets.filter((value) => value === 120).length ? 120 : 121;
+    const count = Math.max(0, Math.min(20, totalAfterDelete - offset));
+    const end = offset + count;
+    return response({
+      items: Array.from({ length: count }, (_, index) => ({ strategy_key: `stale-${offset + index}`, title: `计划 ${offset + index}`, status: "active", version: 1, latest_batch_status: "ready", latest_batch: null })),
+      total: totalAfterDelete,
+      limit: 20,
+      offset,
+      has_more: end < totalAfterDelete,
+      next_offset: end < totalAfterDelete ? end : null,
+    });
+  }
+  if (url.pathname === "/api/admin/operation-batches/legacy") return response({ items: [] });
+  throw new Error(`unexpected stale-page request ${url.pathname}`);
+};
+try {
+  stalePageWindow.eval(bundle.outputFiles[0].text + ";window.ExcelPaginationTest=ExcelPaginationTest;");
+  await stalePageWindow.ExcelPaginationTest.mountOperationExcelWorkspace(stalePageWindow.document.querySelector("#stage"));
+  await waitFor(() => stalePageWindow.document.body.textContent.includes("第 1–20 项，共 121 项"), "stale-page fixture did not render its first page");
+  for (let step = 0; step < 6; step += 1) {
+    const next = Array.from(stalePageWindow.document.querySelectorAll("button")).find((item) => item.textContent === "下一页");
+    assert(next && !next.disabled, `stale page ${step} must have a next control`);
+    next.click();
+    await waitFor(() => stalePageOffsets.length >= step + 2, `stale page ${step + 1} did not load`);
+    if (step < 5) await waitFor(() => {
+      const after = Array.from(stalePageWindow.document.querySelectorAll("button")).find((item) => item.textContent === "下一页");
+      return Boolean(after && !after.disabled);
+    }, `stale page ${step + 1} did not finish rendering`);
+  }
+  await waitFor(() => stalePageOffsets.length === 8, "empty stale final page did not return to the previous page exactly once");
+  assert.deepEqual(stalePageOffsets, [0, 20, 40, 60, 80, 100, 120, 100], "empty stale page must not retry its current offset");
+  assert(stalePageWindow.document.body.textContent.includes("第 101–120 项，共 120 项"), "stale page fallback did not render the preceding page");
+  console.log("excel-batches-pagination-stale-page-dom: PASS");
+} finally {
+  stalePageDom.window.close();
+}
+
 const unavailableDom = new JSDOM("<!doctype html><main id=stage></main>", {
   url: "https://fixture.test/admin/operation-cycles",
   runScripts: "outside-only",
