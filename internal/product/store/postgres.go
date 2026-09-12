@@ -28,6 +28,7 @@ var (
 )
 
 var _ productport.ProductOptionReader = (*Repository)(nil)
+var _ productapp.ProductTargetBatchStore = (*Repository)(nil)
 var _ productport.DefinitionImporter = (*Repository)(nil)
 
 // Repository is deliberately transaction-bound.  Every method that touches
@@ -245,6 +246,74 @@ func (r *Repository) ListProductOptions(ctx context.Context, query productport.P
 		return productport.ProductOptionPage{}, mapDatabaseError(err)
 	}
 	return productport.ProductOptionPage{Items: items, Total: total, Limit: query.Limit, Offset: query.Offset}, nil
+}
+
+// ReadProductTargets resolves a whole valid Coupon list page in one
+// Product-owned SQL round trip. The status predicates retain the persisted
+// target type: a row that was deleted or changed to the other Product type is
+// deliberately reported as absent for the historical reference.
+func (r *Repository) ReadProductTargets(ctx context.Context, references []productport.ProductTargetReference) ([]productport.ProductTargetLookup, error) {
+	if r == nil || len(references) > productport.ProductTargetBatchMaximum {
+		return nil, ErrInvalid
+	}
+	if len(references) == 0 {
+		return []productport.ProductTargetLookup{}, nil
+	}
+	standardIDs := make([]int64, 0, len(references))
+	servicePeriodIDs := make([]int64, 0, len(references))
+	expected := make(map[productport.ProductTargetReference]struct{}, len(references))
+	for _, reference := range references {
+		if reference.ID < 1 || (reference.ProductType != productport.ProductOptionStandard && reference.ProductType != productport.ProductOptionServicePeriod) {
+			return nil, ErrInvalid
+		}
+		if _, duplicate := expected[reference]; duplicate {
+			return nil, ErrInvalid
+		}
+		expected[reference] = struct{}{}
+		if reference.ProductType == productport.ProductOptionStandard {
+			standardIDs = append(standardIDs, int64(reference.ID))
+		} else {
+			servicePeriodIDs = append(servicePeriodIDs, int64(reference.ID))
+		}
+	}
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT id,name,'standard'::text AS product_type FROM products
+WHERE id=ANY($1::bigint[]) AND `+ordinaryStatusSQL()+`
+UNION ALL
+SELECT id,name,'service_period'::text AS product_type FROM products
+WHERE id=ANY($2::bigint[]) AND `+servicePeriodStatusSQL(), standardIDs, servicePeriodIDs)
+	if err != nil {
+		return nil, mapDatabaseError(err)
+	}
+	defer rows.Close()
+	found := make(map[productport.ProductTargetReference]string, len(references))
+	for rows.Next() {
+		var id int64
+		var name, kind string
+		if err := rows.Scan(&id, &name, &kind); err != nil {
+			return nil, mapDatabaseError(err)
+		}
+		reference := productport.ProductTargetReference{ProductType: productport.ProductOptionType(kind), ID: productport.ID(id)}
+		if _, ok := expected[reference]; !ok || strings.TrimSpace(name) == "" {
+			return nil, productport.ErrProductReadUnavailable
+		}
+		if _, duplicate := found[reference]; duplicate {
+			return nil, productport.ErrProductReadUnavailable
+		}
+		found[reference] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapDatabaseError(err)
+	}
+	result := make([]productport.ProductTargetLookup, 0, len(references))
+	for _, reference := range references {
+		name, ok := found[reference]
+		result = append(result, productport.ProductTargetLookup{Reference: reference, Name: name, Found: ok})
+	}
+	return result, nil
 }
 
 func escapeProductOptionSearch(value string) string {
