@@ -4,6 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,11 +17,39 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/radar"
+	radarapp "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/app"
+	radarhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/http"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
 )
+
+type listStatisticsSecurity struct{}
+
+func (listStatisticsSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
+}
+func (listStatisticsSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return accessdomain.Principal{InternalID: 7}, nil
+}
+
+type listStatisticsPublic struct{}
+
+func (listStatisticsPublic) Open(context.Context, radar.PublicCode, string) (radarport.PublicAccess, error) {
+	return radarport.PublicAccess{}, radarport.ErrUnavailable
+}
+func (listStatisticsPublic) CompleteOAuth(context.Context, string, string) (string, string, error) {
+	return "", "", radarport.ErrUnavailable
+}
+func (listStatisticsPublic) Content(context.Context, radar.PublicCode, string) (radarport.Content, error) {
+	return radarport.Content{}, radarport.ErrUnavailable
+}
+func (listStatisticsPublic) Record(context.Context, radar.PublicCode, string, radarport.EventStage, string) (radarport.EventProjection, bool, error) {
+	return radarport.EventProjection{}, false, radarport.ErrUnavailable
+}
 
 func TestPostgreSQLAudienceFirstClicksKeepsFirstResolvedAttribution(t *testing.T) {
 	native, cleanup := radarIntegrationPool(t)
@@ -188,6 +220,164 @@ func radarIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		defer cleanupCancel()
 		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE")
 		admin.Close(cleanupCtx)
+	}
+}
+
+func TestPostgreSQLListBatchesPageStatisticsAndKeepsNoViewLastNull(t *testing.T) {
+	native, cleanup := radarIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 12, 9, 0, 0, 0, time.UTC)
+
+	var customerID, identityID int64
+	if err := native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		VALUES($1,'wecom_external_userid','wecom-corp:list-stats','radar-list-stats','verified','test-fixture',1,$2)
+		RETURNING id`, customerID, now).Scan(&identityID); err != nil {
+		t.Fatal(err)
+	}
+	insertLink := func(code, title string, updatedAt time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err := native.QueryRow(ctx, `INSERT INTO radar_links(public_code,name,title,content_type,destination_url,auth_policy,status,created_by,updated_by,created_at,updated_at)
+			VALUES($1,$2,$2,'link','https://example.com/radar','unionid_required','enabled',1,1,$3,$3) RETURNING id`, code, title, updatedAt).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := native.Exec(ctx, `INSERT INTO radar_link_versions(radar_id,version,snapshot,actor_id,created_at) VALUES($1,1,'{}',1,$2)`, id, updatedAt); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	measuredID := insertLink("rd_1111111111111111", "Measured", now)
+	emptyID := insertLink("rd_2222222222222222", "No events", now.Add(-time.Minute))
+
+	next := byte(1)
+	digest := func() []byte {
+		value := make([]byte, 32)
+		value[0] = next
+		next++
+		return value
+	}
+	newSession := func(attribution string) int64 {
+		t.Helper()
+		var id int64
+		sessionDigest := digest()
+		if attribution == "resolved" {
+			evidence := digest()
+			if err := native.QueryRow(ctx, `INSERT INTO radar_view_sessions(session_digest,radar_id,radar_version,identity_id,customer_id,attribution_status,evidence_digest,expires_at,created_at)
+				VALUES($1,$2,1,$3,$4,'resolved',$5,$6,$7) RETURNING id`, sessionDigest, measuredID, identityID, customerID, evidence, now.Add(time.Hour), now).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			return id
+		}
+		if err := native.QueryRow(ctx, `INSERT INTO radar_view_sessions(session_digest,radar_id,radar_version,attribution_status,expires_at,created_at)
+			VALUES($1,$2,1,$3,$4,$5) RETURNING id`, sessionDigest, measuredID, attribution, now.Add(time.Hour), now).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	receipt := 0
+	insertEvent := func(sessionID int64, attribution, stage string, occurredAt time.Time) {
+		t.Helper()
+		receipt++
+		keyDigest, payloadDigest := digest(), digest()
+		var identity, customer any
+		if attribution == "resolved" {
+			identity, customer = identityID, customerID
+		}
+		if _, err := native.Exec(ctx, `INSERT INTO radar_events(receipt_id,radar_id,radar_version,session_id,stage,attribution_status,identity_id,customer_id,key_digest,payload_digest,occurred_at,created_at)
+			VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, fmt.Sprintf("radar-list-stats-%d", receipt), measuredID, sessionID, stage, attribution, identity, customer, keyDigest, payloadDigest, occurredAt, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	anonymousLanding := newSession("anonymous")
+	resolvedFirst := newSession("resolved")
+	resolvedSecond := newSession("resolved")
+	viewAnonymous := newSession("anonymous")
+	insertEvent(anonymousLanding, "anonymous", "landing", now.Add(-5*time.Hour))
+	insertEvent(resolvedFirst, "resolved", "landing", now.Add(-4*time.Hour))
+	insertEvent(resolvedSecond, "resolved", "landing", now.Add(-3*time.Hour))
+	insertEvent(resolvedFirst, "resolved", "content_opened", now.Add(-2*time.Hour))
+	insertEvent(resolvedSecond, "resolved", "redirected", now.Add(-time.Hour))
+	insertEvent(viewAnonymous, "anonymous", "pdf_opened", now.Add(time.Hour))
+	insertEvent(viewAnonymous, "anonymous", "oauth_verified", now.Add(2*time.Hour))
+
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page radarport.LinkPage
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		page, readErr = NewPostgres().List(tx, radarport.ListQuery{Limit: 20})
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("page=%+v", page)
+	}
+	items := make(map[int64]radarport.LinkSummary, len(page.Items))
+	for _, item := range page.Items {
+		items[int64(item.Link.ID)] = item
+	}
+	measured, ok := items[measuredID]
+	if !ok || measured.StatisticsStatus != radarport.LinkStatisticsReady || measured.TotalLandings != 3 || measured.AuthorizedUsers != 1 || measured.AuthorizedViews != 2 || measured.ViewCount != 3 || measured.LastViewedAt == nil || !measured.LastViewedAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("measured=%+v", measured)
+	}
+	empty, ok := items[emptyID]
+	if !ok || empty.StatisticsStatus != radarport.LinkStatisticsReady || empty.TotalLandings != 0 || empty.AuthorizedUsers != 0 || empty.AuthorizedViews != 0 || empty.ViewCount != 0 || empty.LastViewedAt != nil {
+		t.Fatalf("empty=%+v", empty)
+	}
+
+	// A real aggregate failure must roll back only its savepoint. The HTTP
+	// request still commits the enclosing read transaction and exposes null,
+	// unavailable statistics instead of synthetic zeroes or a stale timestamp.
+	if _, err = native.Exec(ctx, `DROP TABLE radar_events`); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := radarapp.NewService(uow, NewPostgres(), NewPostgres())
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := radarapp.NewQueryService(uow, NewPostgres())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := radarhttp.NewHandler(manager, query, listStatisticsPublic{}, listStatisticsSecurity{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("statistics degradation status=%d body=%s", response.Code, response.Body.String())
+	}
+	var degraded struct {
+		Items []struct {
+			StatisticsStatus string  `json:"statistics_status"`
+			TotalLandings    *int64  `json:"total_landings"`
+			AuthorizedUsers  *int64  `json:"authorized_users"`
+			ViewCount        *int64  `json:"view_count"`
+			LastViewedAt     *string `json:"last_viewed_at"`
+		} `json:"items"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &degraded); err != nil {
+		t.Fatal(err)
+	}
+	if len(degraded.Items) != 2 {
+		t.Fatalf("degraded=%+v", degraded)
+	}
+	for _, item := range degraded.Items {
+		if item.StatisticsStatus != "unavailable" || item.TotalLandings != nil || item.AuthorizedUsers != nil || item.ViewCount != nil || item.LastViewedAt != nil {
+			t.Fatalf("statistics failure leaked synthetic values: %+v", item)
+		}
 	}
 }
 

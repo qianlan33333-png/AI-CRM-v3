@@ -33,8 +33,8 @@ var (
 
 const (
 	DefaultLimit       = int32(50)
-	MaximumLimit       = int32(100)
-	MaximumOffset      = int32(10000)
+	MaximumLimit       = operationport.StrategyPageMaximumLimit
+	MaximumOffset      = operationport.StrategyPageMaximumOffset
 	RunnerOfflineAfter = 45 * time.Second
 	ActionLease        = 60 * time.Second
 )

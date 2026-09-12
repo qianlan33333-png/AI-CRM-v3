@@ -26,6 +26,7 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	operationport "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -59,11 +60,82 @@ func (integrationMaterials) RegisterMaterialReference(context.Context, aiassista
 
 type integrationIdentities struct{}
 
+type integrationExcelStrategies struct{}
+
+func (integrationExcelStrategies) OperationCycleStrategy(_ context.Context, key string) (operationport.Strategy, error) {
+	return operationport.Strategy{Key: key, Title: key, Status: "active", Version: 1, Definition: json.RawMessage(`{}`), Snapshot: json.RawMessage(`{}`)}, nil
+}
+
 func (integrationIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
 	return identityport.ResolveResult{Status: identityport.ResolveNotFound}, nil
 }
 func (integrationIdentities) VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error) {
 	return "", false, nil
+}
+
+// This PG16 read-model test proves one bounded repository query selects only
+// the newest batch per requested strategy and aggregates each batch's current
+// content facts. It neither resolves identities nor creates any outbound work.
+func TestPostgreSQLLatestOperationExcelBatchOverviews(t *testing.T) {
+	native, cleanup := integrationPool(t)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, integrationIdentities{}, integrationIdentities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.BindExcelBatchStrategyReader(integrationExcelStrategies{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	baseTime := time.Date(2026, time.September, 12, 9, 0, 0, 0, time.UTC)
+	createBatch := func(key, strategy, suffix string, createdAt time.Time) aiassistantport.Plan {
+		t.Helper()
+		rows := []aiassistantport.ExcelBatchRow{
+			{UnionID: "summary-" + suffix + "-one", SenderUserID: "staff-" + suffix, Text: "第一条", Card: aiassistantport.ExcelCard{AppID: "summary-app", Path: "pages/summary", Title: "Excel 标题"}, Segment: "A"},
+			{UnionID: "summary-" + suffix + "-two", SenderUserID: "staff-" + suffix, Text: "第二条", Card: aiassistantport.ExcelCard{AppID: "summary-app", Path: "pages/summary", Title: ""}, Segment: "B"},
+		}
+		created, createErr := service.CreateOperationExcelBatch(ctx, aiassistantport.ExcelBatchCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: 7}, IdempotencyKey: "summary-plan-" + key, BatchKey: key, StrategyKey: strategy, Name: "摘要批次 " + suffix, Scope: "wechat-open-platform:summary", FileDigest: effectport.Hash("summary", key), Rows: rows, OccurredAt: createdAt})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return created.Plan
+	}
+	oldWeekly := createBatch("summary-weekly-old", "weekly.review", "old", baseTime)
+	newWeekly := createBatch("summary-weekly-new", "weekly.review", "new", baseTime.Add(time.Minute))
+	daily := createBatch("summary-daily", "daily.review", "daily", baseTime.Add(2*time.Minute))
+
+	overviews, err := service.LatestOperationExcelBatchOverviews(ctx, []string{"weekly.review", "daily.review", "no-batch.review"})
+	if err != nil || len(overviews) != 2 {
+		t.Fatalf("overviews=%+v err=%v", overviews, err)
+	}
+	byStrategy := make(map[string]aiassistantport.ExcelBatchOverview, len(overviews))
+	for _, overview := range overviews {
+		byStrategy[overview.Meta.StrategyKey] = overview
+	}
+	weekly, weeklyOK := byStrategy["weekly.review"]
+	dailyOverview, dailyOK := byStrategy["daily.review"]
+	if !weeklyOK || weekly.Meta.PlanID != newWeekly.ID || weekly.Meta.PlanID == oldWeekly.ID || weekly.Summary != (aiassistantport.ExcelBatchSummary{TotalRows: 2, ExcludedRows: 0, EmptyTitleRows: 1, ExpectedTasks: 1}) || weekly.State != newWeekly.State || weekly.PlanVersion != newWeekly.Version || weekly.SourceKind != "excel_batch" {
+		t.Fatalf("weekly overview=%+v new=%+v old=%+v", weekly, newWeekly, oldWeekly)
+	}
+	if !dailyOK || dailyOverview.Meta.PlanID != daily.ID || dailyOverview.Summary != weekly.Summary {
+		t.Fatalf("daily overview=%+v daily=%+v", dailyOverview, daily)
+	}
+	if _, err = service.LatestOperationExcelBatchOverviews(ctx, []string{"weekly.review", "weekly.review"}); !errors.Is(err, aiassistantapp.ErrInvalid) {
+		t.Fatalf("duplicate keys err=%v", err)
+	}
 }
 
 func TestPostgreSQLPlanReceiptAuditOutboxAtomicJourney(t *testing.T) {
