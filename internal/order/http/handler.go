@@ -37,7 +37,7 @@ type Application interface {
 type Handler struct {
 	app             Application
 	security        RequestSecurity
-	customers       customerport.DirectoryDisplayNameReader
+	customers       customerport.DirectoryContactDisplayReader
 	customerFilters orderport.CustomerFilterResolver
 }
 
@@ -53,11 +53,11 @@ func (h *Handler) SetCustomerFilterResolver(resolver orderport.CustomerFilterRes
 	return nil
 }
 
-func NewHandler(app Application, security RequestSecurity, customers ...customerport.DirectoryDisplayNameReader) (*Handler, error) {
+func NewHandler(app Application, security RequestSecurity, customers ...customerport.DirectoryContactDisplayReader) (*Handler, error) {
 	if app == nil || security == nil {
 		return nil, errors.New("order HTTP dependencies are required")
 	}
-	var directory customerport.DirectoryDisplayNameReader
+	var directory customerport.DirectoryContactDisplayReader
 	if len(customers) > 0 {
 		directory = customers[0]
 	}
@@ -114,7 +114,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	items := make([]orderResponse, 0, len(page.Items))
-	names := h.payerNames(r.Context(), page.Items)
+	names := h.payerDisplays(r.Context(), page.Items)
 	for _, item := range page.Items {
 		items = append(items, responseFrom(item, names))
 	}
@@ -184,7 +184,7 @@ func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string)
 		return
 	}
 	if len(parts) == 1 {
-		response := responseFrom(order, h.payerNames(r.Context(), []domain.Snapshot{order}))
+		response := responseFrom(order, h.payerDisplays(r.Context(), []domain.Snapshot{order}))
 		response.RefundableAmountTotal = order.Amount.AmountMinor - order.RefundedMinor
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -393,6 +393,7 @@ type orderResponse struct {
 	TransactionID         string        `json:"transaction_id"`
 	PayerName             string        `json:"payer_name"`
 	PayerID               string        `json:"payer_id"`
+	PayerPhoneMasked      string        `json:"payer_phone_masked"`
 	ProductCode           string        `json:"product_code"`
 	ProductName           string        `json:"product_name"`
 	AmountYuan            string        `json:"amount_yuan"`
@@ -405,7 +406,7 @@ type orderResponse struct {
 	RefundableAmountTotal int64         `json:"refundable_amount_total"`
 }
 
-func responseFrom(order domain.Snapshot, names map[customerdomain.CustomerID]string) orderResponse {
+func responseFrom(order domain.Snapshot, customers map[customerdomain.CustomerID]customerport.DirectoryContactDisplay) orderResponse {
 	provider, label := string(order.Provider), string(order.Provider)
 	if order.Provider == domain.ProviderWeChatPay {
 		provider, label = "wechat", "微信支付"
@@ -424,17 +425,21 @@ func responseFrom(order domain.Snapshot, names map[customerdomain.CustomerID]str
 	}
 	payer := ""
 	payerName := "未归属"
+	payerPhoneMasked := ""
 	if order.PayerCustomerID != nil {
 		payer = "customer:" + strconv.FormatInt(*order.PayerCustomerID, 10)
 		payerName = "客户 #" + strconv.FormatInt(*order.PayerCustomerID, 10)
-		if name := names[customerdomain.CustomerID(*order.PayerCustomerID)]; name != "" {
-			payerName = name
+		if display, exists := customers[customerdomain.CustomerID(*order.PayerCustomerID)]; exists {
+			if display.DisplayName != "" {
+				payerName = display.DisplayName
+			}
+			payerPhoneMasked = display.PhoneMasked
 		}
 	}
-	return orderResponse{ID: order.ID, RecordOrigin: origin, CreatedAt: order.CreatedAt, MerchantOrderNo: order.MerchantOrderNo, OutTradeNo: order.MerchantOrderNo, OrderNo: order.SourceKey, PlatformTransactionNo: order.ProviderTransactionNo, TransactionID: order.ProviderTransactionNo, PayerName: payerName, PayerID: payer, ProductCode: productCode, ProductName: productName, AmountYuan: fmt.Sprintf("%d.%02d", order.Amount.AmountMinor/100, order.Amount.AmountMinor%100), Currency: order.Amount.Currency, Status: order.Status, StatusLabel: string(order.Status), Provider: provider, ProviderLabel: label, DetailURL: "/admin/orderDetail.html?id=" + url.QueryEscape(order.MerchantOrderNo)}
+	return orderResponse{ID: order.ID, RecordOrigin: origin, CreatedAt: order.CreatedAt, MerchantOrderNo: order.MerchantOrderNo, OutTradeNo: order.MerchantOrderNo, OrderNo: order.SourceKey, PlatformTransactionNo: order.ProviderTransactionNo, TransactionID: order.ProviderTransactionNo, PayerName: payerName, PayerID: payer, PayerPhoneMasked: payerPhoneMasked, ProductCode: productCode, ProductName: productName, AmountYuan: fmt.Sprintf("%d.%02d", order.Amount.AmountMinor/100, order.Amount.AmountMinor%100), Currency: order.Amount.Currency, Status: order.Status, StatusLabel: string(order.Status), Provider: provider, ProviderLabel: label, DetailURL: "/admin/orderDetail.html?id=" + url.QueryEscape(order.MerchantOrderNo)}
 }
 
-func (h *Handler) payerNames(ctx context.Context, orders []domain.Snapshot) map[customerdomain.CustomerID]string {
+func (h *Handler) payerDisplays(ctx context.Context, orders []domain.Snapshot) map[customerdomain.CustomerID]customerport.DirectoryContactDisplay {
 	if h.customers == nil {
 		return nil
 	}
@@ -451,11 +456,11 @@ func (h *Handler) payerNames(ctx context.Context, orders []domain.Snapshot) map[
 		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
-	names, err := h.customers.DisplayNames(ctx, ids)
+	contacts, err := h.customers.ContactDisplays(ctx, ids)
 	if err != nil {
 		return nil
 	}
-	return names
+	return contacts
 }
 
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {

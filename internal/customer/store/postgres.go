@@ -25,6 +25,7 @@ var _ customerport.CallbackProjectionWriter = PostgreSQL{}
 var _ customerport.AudienceReader = PostgreSQL{}
 var _ customerport.AudienceRegistrationReader = PostgreSQL{}
 var _ customerport.DirectoryDisplayNameReader = PostgreSQL{}
+var _ customerport.DirectoryContactDisplayReader = PostgreSQL{}
 
 func (PostgreSQL) DisplayNames(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
 	result := make(map[customerdomain.CustomerID]string)
@@ -64,6 +65,46 @@ func (PostgreSQL) DisplayNames(ctx context.Context, customerIDs []customerdomain
 		if name != "" {
 			result[id] = name
 		}
+	}
+	return result, rows.Err()
+}
+
+func (PostgreSQL) ContactDisplays(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.DirectoryContactDisplay, error) {
+	result := make(map[customerdomain.CustomerID]customerport.DirectoryContactDisplay)
+	if len(customerIDs) == 0 {
+		return result, nil
+	}
+	if len(customerIDs) > 200 {
+		return nil, customerapp.ErrInvalidQuery
+	}
+	ids := make([]int64, 0, len(customerIDs))
+	seen := make(map[customerdomain.CustomerID]struct{}, len(customerIDs))
+	for _, id := range customerIDs {
+		if id < 1 {
+			return nil, customerapp.ErrInvalidQuery
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, int64(id))
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id,display_name,phone_masked FROM customer_directory_projection WHERE customer_id=ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		var display customerport.DirectoryContactDisplay
+		if err = rows.Scan(&id, &display.DisplayName, &display.PhoneMasked); err != nil {
+			return nil, err
+		}
+		result[id] = display
 	}
 	return result, rows.Err()
 }

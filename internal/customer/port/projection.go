@@ -34,6 +34,18 @@ type DirectoryDisplayNameReader interface {
 	DisplayNames(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error)
 }
 
+// DirectoryContactDisplay is the minimum already-masked Customer projection
+// that another domain may render after it already holds a canonical customer
+// ID. It cannot resolve an identity or expose an unmasked phone number.
+type DirectoryContactDisplay struct {
+	DisplayName string
+	PhoneMasked string
+}
+
+type DirectoryContactDisplayReader interface {
+	ContactDisplays(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]DirectoryContactDisplay, error)
+}
+
 // ProjectionWriter is called by versioned event consumers. It does not grant
 // access to Identity or WeCom-owned tables.
 type ProjectionWriter interface {

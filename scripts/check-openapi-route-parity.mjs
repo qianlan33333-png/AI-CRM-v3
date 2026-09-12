@@ -45,6 +45,7 @@ const routeContracts = [
   ['post', '/api/admin/media-preparations/{source_ref}/prepare', 'adminSession+csrfHeader', 'optional-header', 'internal/media/http/handler.go', 'strings.HasSuffix(tail, "/prepare") && r.Method == http.MethodPost'],
   ['post', '/api/admin/common/operation-members/sync', 'adminSession+csrfHeader', 'required-header', 'internal/groupops/http/handler.go', 'r.URL.Path == OperationMembersPath+"/sync"'],
   ['get', '/api/admin/payments/history', 'adminSession', null, 'internal/payment/http/handler.go', 'case path == "/api/admin/payments/history":'],
+  ['get', '/api/admin/refunds/recovery', 'adminSession', 'required-header', 'internal/payment/http/handler.go', 'case path == "/api/admin/refunds/recovery":'],
   ['get', '/api/admin/operation-batches/strategy-summaries', 'adminSession', null, 'internal/aiassistant/excel/bridge.go', 'case r.Method == http.MethodGet && len(parts) == 1 && parts[0] == "strategy-summaries":'],
 ];
 
@@ -70,6 +71,7 @@ const customDispatcherEvidence = [
   ['internal/groupops/http/handler.go', 'r.URL.Path == OperationMembersPath+"/sync"', 'GroupOps operation-member sync'],
   ['internal/media/http/handler.go', 'tail == "refresh-rounds" && r.Method == http.MethodPost', 'Media preparation refresh round'],
   ['internal/payment/http/handler.go', 'case path == "/api/admin/payments/history":', 'Payment history read projection'],
+  ['internal/payment/http/handler.go', 'case path == "/api/admin/refunds/recovery":', 'Payment refund receipt recovery read'],
   ['cmd/aicrm/composition.go', 'adminAPIs.Handle("/api/admin/operation-batches", excelBridge)', 'Excel batch prefix dispatch'],
   ['internal/openplatform/http/handler.go', 'mux.Handle(retired.Method+" "+retired.Path, http.NotFoundHandler())', 'retired Open Platform inventory routes are explicit 404 handlers and are intentionally excluded from OpenAPI'],
 ];
