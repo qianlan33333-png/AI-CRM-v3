@@ -476,6 +476,8 @@ func (handler *CatalogHTTPHandler) securityError(response http.ResponseWriter, e
 }
 func (handler *CatalogHTTPHandler) applicationError(response http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, channeldomain.ErrInvalidWelcomeTemplate):
+		writeCatalogMessageError(response, http.StatusBadRequest, "WELCOME_TEMPLATE_INVALID", "欢迎语目前仅支持 {{客户名}}；请删除或改正其他变量后保存。")
 	case errors.Is(err, ErrCatalogNotFound):
 		writeCatalogError(response, http.StatusNotFound, "NOT_FOUND")
 	case errors.Is(err, ErrCatalogConflict):
@@ -488,6 +490,9 @@ func (handler *CatalogHTTPHandler) applicationError(response http.ResponseWriter
 }
 func writeCatalogError(response http.ResponseWriter, status int, code string) {
 	writeChannelJSON(response, status, map[string]any{"ok": false, "code": code})
+}
+func writeCatalogMessageError(response http.ResponseWriter, status int, code, message string) {
+	writeChannelJSON(response, status, map[string]any{"ok": false, "code": code, "message": message})
 }
 
 func singleCatalogIdempotencyKey(request *http.Request) (string, error) {

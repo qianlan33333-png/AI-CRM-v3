@@ -105,6 +105,11 @@ func TestCatalogHTTPTamperedCursorAndApplicationErrors(t *testing.T) {
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "VERSION_CONFLICT") {
 		t.Fatalf("conflict status=%d body=%s", response.Code, response.Body.String())
 	}
+	app.err = errors.Join(ErrInvalidCatalogCommand, channeldomain.ErrInvalidWelcomeTemplate)
+	response = catalogHTTPRequest(handler, http.MethodPatch, "/api/admin/channels/3", catalogHTTPBody(), map[string][]string{"Content-Type": {"application/json"}, "Idempotency-Key": {"update-key-template"}, "If-Match": {"\"4\""}, "X-CSRF-Token": {"valid"}})
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "WELCOME_TEMPLATE_INVALID") || !strings.Contains(response.Body.String(), "{{客户名}}") {
+		t.Fatalf("template status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func catalogHTTPBody() string {

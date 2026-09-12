@@ -95,6 +95,8 @@ try {
   const document = stable.dom.window.document;
   assert.equal(document.querySelector('script[data-aicrm-channel-donor]')?.src, 'https://test.invalid/assets/standard-components/channel_admission_pages.js', 'the byte-preserved donor script must load as a same-origin external resource');
   assert.equal(document.querySelectorAll('[data-channel-bootstrap]').length, 1, 'Host hydration must replace the donor placeholder with one V3 bootstrap payload');
+  assert.equal(document.querySelector('#channel-welcome-template-help')?.textContent.includes('可使用 {{客户名}} 自动带入客户姓名'), true, 'welcome editor must show the exact server-supported variable');
+  assert.equal(document.querySelector('#channel-welcome-template-help')?.textContent.includes('朋友'), true, 'welcome editor must disclose the safe missing-name fallback');
   assert.equal(document.querySelectorAll('[name="status"] option[selected]').length, 1, 'Jinja status branches must render one selected option');
   assert.equal(document.querySelector('[name="status"] option[selected]')?.value, 'active');
   assert.equal(document.querySelectorAll('[name="channel_type"]:checked').length, 1, 'Jinja carrier branches must render one checked type');
@@ -204,6 +206,22 @@ try {
   assert.equal(conflict.calls.filter((call) => call.method === 'PATCH').length, 1, '409 must not overwrite or retry automatically');
   assert.equal(conflict.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/channels/17').length, 1, '409 must use the ETag read with the page and never preflight-read a newer version');
 } finally { conflict.dom.window.close(); }
+
+// Template errors retain the exact draft and give a safe, code-specific
+// correction. The Host does not trust or reflect an arbitrary server message.
+const invalidWelcomeTemplate = createPage({ mutations: [{ status: 400, payload: { code: 'WELCOME_TEMPLATE_INVALID', message: 'untrusted server detail' } }] });
+try {
+  await waitFor(() => invalidWelcomeTemplate.dom.window.document.querySelector('[data-save-channel]'), 'template validation save button must mount');
+  const { document } = invalidWelcomeTemplate.dom.window;
+  const welcome = document.querySelector('[data-welcome-message]');
+  welcome.value = '欢迎{{未知变量}}';
+  document.querySelector('[data-save-channel]').click();
+  await waitFor(() => document.querySelector('[data-channel-save-feedback]')?.textContent.includes('欢迎语仅支持 {{客户名}}'), 'invalid welcome template must explain the accepted marker');
+  assert.equal(welcome.value, '欢迎{{未知变量}}', 'invalid template response must retain the original draft');
+  assert.equal(document.querySelector('[data-channel-save-feedback]')?.textContent.includes('untrusted server detail'), false, 'Host must not reflect arbitrary server detail');
+  assert.equal(invalidWelcomeTemplate.dom.window.location.pathname, '/admin/channels/17/edit', 'invalid template must not navigate as a successful save');
+  assert.equal(invalidWelcomeTemplate.calls.filter((call) => call.method === 'PATCH').length, 1, 'invalid template must issue one command without automatic retry');
+} finally { invalidWelcomeTemplate.dom.window.close(); }
 
 // The frozen QR donor has no controls for these Catalog fields. A visible
 // change must therefore retain their current values, and each accepted save

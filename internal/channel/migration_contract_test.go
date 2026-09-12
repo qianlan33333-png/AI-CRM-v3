@@ -107,3 +107,27 @@ func TestChannelWelcomeIntentMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestChannelWelcomeMessageSnapshotMigrationContract(t *testing.T) {
+	contents, err := os.ReadFile("../../migrations/0150_channel_welcome_message_snapshots.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, required := range []string{
+		"Owner: internal/channel", "Forward-only", "channel_welcome_message_snapshots",
+		"template_digest", "rendered_message_digest", "ciphertext", "envelope_fingerprint",
+		"channel_welcome_message_snapshot_guard", "effect_envelope_fingerprint",
+		"customer_name_unavailable", "welcome_template_invalid", "welcome_message_too_long", "frozen_message_unavailable",
+		"num_nonnulls(effect_target_digest,effect_payload_digest,effect_policy_digest,effect_envelope_fingerprint) IN (0,4)",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("welcome snapshot migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{" external_userid ", " welcome_code ", " display_name text", " phone text"} {
+		if strings.Contains(strings.ToLower(source), forbidden) {
+			t.Fatalf("welcome snapshot migration persists forbidden field %q", forbidden)
+		}
+	}
+}

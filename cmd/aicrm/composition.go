@@ -1318,6 +1318,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(cipherErr)
 		}
 		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
+		welcomeMessageCipher, cipherErr := wecom.NewChannelWelcomeMessageCipher(cfg.WeCom.CallbackAESKey)
+		if cipherErr != nil {
+			return fail(cipherErr)
+		}
+		if err = channelEntrantActions.SetWelcomeMessageDependencies(customerStore, welcomeMessageCipher); err != nil {
+			return fail(err)
+		}
 	}
 	legacyAudienceSource.RegistrationFacts = customerStore
 	legacyAudienceSource.Contacts = relationships
@@ -1330,7 +1337,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	if (cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled) && cfg.WeCom.CallbackEnabled {
 		entrantProvider := outbound.NewChannelEntrantProvider(
-			channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, uow, welcomeGrantStore,
+			channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, uow, welcomeGrantStore,
 			channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries},
 			channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient,
 		)

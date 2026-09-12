@@ -137,6 +137,7 @@ async function catalogError(response: Response): Promise<Response> {
     FORBIDDEN: '当前账号没有保存渠道的权限，请联系管理员。',
     UNAUTHORIZED: '登录已失效，请重新登录后保存。',
     CHANNEL_CODE_CONFLICT: '渠道编码已被使用，请更换编码后保存。',
+    WELCOME_TEMPLATE_INVALID: '欢迎语仅支持 {{客户名}}；请删除或改正其他变量后保存。',
   };
   const message = response.status === 409
     ? '渠道配置或编码发生冲突；当前草稿已保留。请重新读取最新配置后核对再保存。'
@@ -421,6 +422,19 @@ function hydrateChannelDonor(root: HTMLElement, channel: Channel | null): void {
   const auto = root.querySelector<HTMLInputElement>('[name="auto_accept_friend"]'); if (auto) auto.checked = Boolean(source.auto_accept_friend);
   root.querySelectorAll<HTMLElement>('[data-historical-scene-values]').forEach((node) => { node.hidden = !Array.isArray(source.historical_scene_values) || source.historical_scene_values.length === 0; });
 }
+
+// This is explanatory UI only. The server remains the sole template parser and
+// rejects every marker except the exact supported token at save time.
+function installWelcomeTemplateHelp(root: HTMLElement): void {
+  const input = root.querySelector<HTMLTextAreaElement>('[data-welcome-message]');
+  if (!input || root.querySelector('#channel-welcome-template-help')) return;
+  const hint = document.createElement('div');
+  hint.id = 'channel-welcome-template-help';
+  hint.className = 'form-text';
+  hint.textContent = '可使用 {{客户名}} 自动带入客户姓名；姓名暂缺时显示“朋友”。';
+  input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), hint.id].filter(Boolean).join(' '));
+  input.insertAdjacentElement('afterend', hint);
+}
 async function executeChannelDonorScript(): Promise<void> {
   // Load the byte-preserved donor IIFE as a same-origin resource. This keeps
   // production CSP intact: no inline script and no unsafe-eval are required.
@@ -485,6 +499,7 @@ export async function startChannelAdmissionHost(): Promise<void> {
     hydrateChannelDonor(root, displayChannel);
     hideBlockedEntrantAssetActions(root, channel);
     showBlockedEntrantActionNotice(root, channel);
+    installWelcomeTemplateHelp(root);
     if (hydrated.directoryUnavailable) showSavedAssigneeDirectoryUnavailable(root);
     if (channel) {
       const codeInput = root.querySelector<HTMLInputElement>('[name="channel_code"]');

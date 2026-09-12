@@ -37,7 +37,7 @@ func TestCurrentReleaseReadinessRequiresAppliedMigrationsPostgreSQL(t *testing.T
 		insertReadinessMigration(t, ctx, pool, version)
 	}
 	handler := currentReleaseReadinessHandler(t, pool, config)
-	for _, missing := range []string{"0124", "0149"} {
+	for _, missing := range []string{"0124", "0149", "0150"} {
 		if !containsMigration(required, missing) {
 			t.Fatalf("runtime-required migration list omitted %s", missing)
 		}

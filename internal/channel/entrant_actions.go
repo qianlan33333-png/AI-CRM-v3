@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,9 +22,11 @@ import (
 var ErrEntrantActionUnavailable = errors.New("channel entrant action unavailable")
 
 type EntrantActionStore struct {
-	effects     effectport.TransactionalAccepter
-	materials   channelport.WelcomeMaterialSnapshotResolver
-	tagCommands customerport.TagCommandSubmitter
+	effects       effectport.TransactionalAccepter
+	materials     channelport.WelcomeMaterialSnapshotResolver
+	tagCommands   customerport.TagCommandSubmitter
+	displayNames  customerport.DirectoryDisplayNameReader
+	messageCipher channelport.WelcomeMessageCipher
 }
 
 func NewEntrantActionStore(effects effectport.TransactionalAccepter, materials channelport.WelcomeMaterialSnapshotResolver) *EntrantActionStore {
@@ -36,6 +39,18 @@ func (store *EntrantActionStore) SetTagCommandSubmitter(submitter customerport.T
 		return ErrEntrantActionUnavailable
 	}
 	store.tagCommands = submitter
+	return nil
+}
+
+// SetWelcomeMessageDependencies is installed by composition after Customer and
+// callback crypto exist. The reader is transaction-bound and only exposes the
+// canonical Customer's presentation-safe display name; it never resolves or
+// provisions an identity.
+func (store *EntrantActionStore) SetWelcomeMessageDependencies(names customerport.DirectoryDisplayNameReader, cipher channelport.WelcomeMessageCipher) error {
+	if store == nil || names == nil || cipher == nil {
+		return ErrEntrantActionUnavailable
+	}
+	store.displayNames, store.messageCipher = names, cipher
 	return nil
 }
 
@@ -110,13 +125,14 @@ func (store *EntrantActionStore) AcceptCallbackWelcome(ctx context.Context, comm
 
 	payload := effectport.Hash("channel.welcome.intent.payload.v2", strconv.FormatInt(config.ChannelID, 10), strconv.FormatInt(config.ConfigVersion, 10), config.WelcomeMessage, materialDigest)
 	target := effectport.Hash("channel.welcome.intent.target.v2", command.WelcomeGrantRef)
+	policy := effectport.Hash("channel.welcome.intent.policy.v2")
+	envelope := effectport.Envelope{
+		Owner: effectport.OwnerOutbound, Kind: effectport.KindChannelWelcome,
+		SourceRefDigest: source, TargetRefDigest: target, PayloadDigest: payload, PolicyVersionHash: policy,
+	}
 	projection, receipt, err := store.effects.AcceptAndQueueWithin(ctx, effectport.AcceptCommand{
 		ReceiptKey: effectport.Hash("channel.welcome.intent.accept.v2", command.CallbackID),
-		Envelope: effectport.Envelope{
-			Owner: effectport.OwnerOutbound, Kind: effectport.KindChannelWelcome,
-			SourceRefDigest: source, TargetRefDigest: target, PayloadDigest: payload,
-			PolicyVersionHash: effectport.Hash("channel.welcome.intent.policy.v2"),
-		},
+		Envelope:   envelope,
 	})
 	if err != nil {
 		return err
@@ -124,15 +140,17 @@ func (store *EntrantActionStore) AcceptCallbackWelcome(ctx context.Context, comm
 	return store.recordWelcomeIntent(ctx, tx, callbackWelcomeIntent{
 		command: command, source: source, channelID: config.ChannelID, configVersion: config.ConfigVersion,
 		materialSnapshot: snapshot, effectRef: projection.ID, acceptReceiptRef: receipt.ID, queueReceiptRef: receipt.QueueReceiptID, state: string(projection.State),
+		effectTargetDigest: target, effectPayloadDigest: payload, effectPolicyDigest: policy, effectEnvelopeFingerprint: envelope.Fingerprint(),
 	})
 }
 
 type callbackWelcomeIntent struct {
-	command                                                           channelport.CallbackWelcomeCommand
-	source                                                            effectport.Digest
-	channelID, configVersion                                          int64
-	materialSnapshot                                                  json.RawMessage
-	effectRef, acceptReceiptRef, queueReceiptRef, state, resultReason string
+	command                                                                                channelport.CallbackWelcomeCommand
+	source                                                                                 effectport.Digest
+	channelID, configVersion                                                               int64
+	materialSnapshot                                                                       json.RawMessage
+	effectRef, acceptReceiptRef, queueReceiptRef, state, resultReason                      string
+	effectTargetDigest, effectPayloadDigest, effectPolicyDigest, effectEnvelopeFingerprint effectport.Digest
 }
 
 func (store *EntrantActionStore) recordWelcomeIntent(ctx context.Context, tx pgx.Tx, intent callbackWelcomeIntent) error {
@@ -141,10 +159,10 @@ func (store *EntrantActionStore) recordWelcomeIntent(ctx context.Context, tx pgx
 	if intent.resultReason != "" {
 		resultDigest = string(effectport.Hash("channel.welcome.not-sent.v1", intent.resultReason, string(intent.source)))
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO channel_welcome_intents(callback_id,channel_id,config_version,welcome_grant_ref,welcome_material_snapshot,source_ref_digest,intent_digest,effect_ref,accept_receipt_ref,queue_receipt_ref,first_received_at,send_deadline_at,state,result_digest,result_reason)
-		VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+	_, err := tx.Exec(ctx, `INSERT INTO channel_welcome_intents(callback_id,channel_id,config_version,welcome_grant_ref,welcome_material_snapshot,source_ref_digest,intent_digest,effect_ref,accept_receipt_ref,queue_receipt_ref,first_received_at,send_deadline_at,state,result_digest,result_reason,effect_target_digest,effect_payload_digest,effect_policy_digest,effect_envelope_fingerprint)
+		VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT(callback_id) DO NOTHING`,
-		intent.command.CallbackID, nullableInt64(intent.channelID), nullableInt64(intent.configVersion), intent.command.WelcomeGrantRef, nullableJSON(intent.materialSnapshot), intent.source, digest[:], nullableString(intent.effectRef), nullableString(intent.acceptReceiptRef), nullableString(intent.queueReceiptRef), intent.command.FirstReceivedAt.UTC(), intent.command.SendDeadlineAt.UTC(), intent.state, nullableString(resultDigest), nullableString(intent.resultReason))
+		intent.command.CallbackID, nullableInt64(intent.channelID), nullableInt64(intent.configVersion), intent.command.WelcomeGrantRef, nullableJSON(intent.materialSnapshot), intent.source, digest[:], nullableString(intent.effectRef), nullableString(intent.acceptReceiptRef), nullableString(intent.queueReceiptRef), intent.command.FirstReceivedAt.UTC(), intent.command.SendDeadlineAt.UTC(), intent.state, nullableString(resultDigest), nullableString(intent.resultReason), nullableDigest(intent.effectTargetDigest), nullableDigest(intent.effectPayloadDigest), nullableDigest(intent.effectPolicyDigest), nullableDigest(intent.effectEnvelopeFingerprint))
 	if err != nil {
 		return err
 	}
@@ -444,6 +462,126 @@ func (*EntrantActionStore) ReadPublishedEntrantAction(ctx context.Context, sourc
 	return result, err
 }
 
+// FreezePublishedWelcomeMessage is the only point where a Channel welcome
+// template becomes Provider text. It runs in a short local transaction: the
+// callback has already accepted the EER, Customer lifecycle may already have
+// attached a canonical id, and the Provider call happens only after this
+// function has committed.
+func (store *EntrantActionStore) FreezePublishedWelcomeMessage(ctx context.Context, request channelport.WelcomeMessageFreezeRequest) (string, error) {
+	if store == nil || store.messageCipher == nil || request.EffectRef == "" || request.Envelope.Kind != effectport.KindChannelWelcome || !request.Envelope.Valid() || request.Envelope.Fingerprint() == "" {
+		return "", channelport.ErrWelcomeMessageUnavailable
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return "", err
+	}
+	type welcomeIntent struct {
+		id          int64
+		customerID  customerdomain.CustomerID
+		template    string
+		source      effectport.Digest
+		effectRef   string
+		target      effectport.Digest
+		payload     effectport.Digest
+		policy      effectport.Digest
+		fingerprint effectport.Digest
+	}
+	var intent welcomeIntent
+	err = tx.QueryRow(ctx, `SELECT i.id,COALESCE(i.customer_id,0),v.welcome_message,i.source_ref_digest,i.effect_ref,
+		i.effect_target_digest,i.effect_payload_digest,i.effect_policy_digest,i.effect_envelope_fingerprint
+		FROM channel_welcome_intents i
+		JOIN channel_config_versions v ON v.channel_id=i.channel_id AND v.config_version=i.config_version
+		WHERE i.effect_ref=$1 AND i.source_ref_digest=$2
+		FOR UPDATE OF i`, request.EffectRef, request.Envelope.SourceRefDigest).Scan(
+		&intent.id, &intent.customerID, &intent.template, &intent.source, &intent.effectRef,
+		&intent.target, &intent.payload, &intent.policy, &intent.fingerprint,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", channelport.ErrWelcomeMessageUnavailable
+	}
+	if err != nil {
+		return "", err
+	}
+	if intent.id < 1 || intent.effectRef != request.EffectRef || intent.source != request.Envelope.SourceRefDigest ||
+		intent.target != request.Envelope.TargetRefDigest || intent.payload != request.Envelope.PayloadDigest ||
+		intent.policy != request.Envelope.PolicyVersionHash || intent.fingerprint != request.Envelope.Fingerprint() {
+		// Intents accepted before this schema carried no immutable envelope
+		// fingerprint. They must fail closed rather than bind fresh rendered
+		// text to an unverifiable external effect.
+		return "", channelport.ErrWelcomeMessageUnavailable
+	}
+	if err = channeldomain.ValidateWelcomeMessageTemplate(intent.template); err != nil {
+		return "", channelport.ErrWelcomeMessageTemplateInvalid
+	}
+
+	templateDigest := sha256.Sum256([]byte(intent.template))
+	var storedTemplateDigest, renderedDigest, ciphertext []byte
+	var version int16
+	var snapshotFingerprint effectport.Digest
+	err = tx.QueryRow(ctx, `SELECT template_digest,rendered_message_digest,ciphertext,cipher_version,envelope_fingerprint
+		FROM channel_welcome_message_snapshots WHERE welcome_intent_id=$1`, intent.id).Scan(
+		&storedTemplateDigest, &renderedDigest, &ciphertext, &version, &snapshotFingerprint,
+	)
+	if err == nil {
+		if len(storedTemplateDigest) != sha256.Size || string(storedTemplateDigest) != string(templateDigest[:]) ||
+			len(renderedDigest) != sha256.Size || snapshotFingerprint != request.Envelope.Fingerprint() {
+			return "", channelport.ErrWelcomeMessageUnavailable
+		}
+		plain, decryptErr := store.messageCipher.DecryptChannelWelcomeMessage(ciphertext, version, channelWelcomeMessageAAD(intent.id, intent.effectRef, request.Envelope))
+		if decryptErr != nil || sha256.Sum256(plain) != sha256Array(renderedDigest) {
+			return "", channelport.ErrWelcomeMessageUnavailable
+		}
+		if err = channeldomain.ValidateRenderedWelcomeMessage(string(plain)); err != nil {
+			return "", channelport.ErrWelcomeMessageTooLong
+		}
+		return string(plain), nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+
+	displayName := ""
+	if intent.customerID > 0 && strings.Contains(intent.template, channeldomain.WelcomeCustomerNameVariable) {
+		if store.displayNames == nil {
+			return "", channelport.ErrWelcomeMessageCustomerNameUnavailable
+		}
+		names, readErr := store.displayNames.DisplayNames(ctx, []customerdomain.CustomerID{intent.customerID})
+		if readErr != nil {
+			return "", errors.Join(channelport.ErrWelcomeMessageCustomerNameUnavailable, readErr)
+		}
+		displayName = names[intent.customerID]
+	}
+	rendered, renderErr := channeldomain.RenderWelcomeMessage(intent.template, displayName)
+	if renderErr != nil {
+		return "", channelport.ErrWelcomeMessageTemplateInvalid
+	}
+	if renderErr = channeldomain.ValidateRenderedWelcomeMessage(rendered); renderErr != nil {
+		return "", channelport.ErrWelcomeMessageTooLong
+	}
+	renderedHash := sha256.Sum256([]byte(rendered))
+	ciphertext, version, err = store.messageCipher.EncryptChannelWelcomeMessage([]byte(rendered), channelWelcomeMessageAAD(intent.id, intent.effectRef, request.Envelope))
+	if err != nil || version != 1 || len(ciphertext) < 28 {
+		return "", channelport.ErrWelcomeMessageUnavailable
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO channel_welcome_message_snapshots(welcome_intent_id,template_digest,rendered_message_digest,ciphertext,cipher_version,envelope_fingerprint,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,clock_timestamp())`, intent.id, templateDigest[:], renderedHash[:], ciphertext, version, request.Envelope.Fingerprint())
+	if err != nil {
+		return "", err
+	}
+	return rendered, nil
+}
+
+func channelWelcomeMessageAAD(intentID int64, effectRef string, envelope effectport.Envelope) []byte {
+	return []byte(effectport.Hash("channel.welcome.message.snapshot.aad.v1", strconv.FormatInt(intentID, 10), effectRef,
+		string(envelope.SourceRefDigest), string(envelope.TargetRefDigest), string(envelope.PayloadDigest), string(envelope.PolicyVersionHash)))
+}
+
+func sha256Array(value []byte) [sha256.Size]byte {
+	var out [sha256.Size]byte
+	copy(out[:], value)
+	return out
+}
+
 func (*EntrantActionStore) CompleteEntrantAction(ctx context.Context, completion channelport.EntrantActionCompletion) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
@@ -476,6 +614,12 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+func nullableDigest(value effectport.Digest) any {
+	if value == "" {
+		return nil
+	}
+	return string(value)
 }
 func nullableInt64(value int64) any {
 	if value == 0 {
