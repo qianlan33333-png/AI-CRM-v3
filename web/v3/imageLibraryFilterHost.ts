@@ -419,15 +419,15 @@ class ImageLibraryHost {
   private openDialog(dialog: Exclude<Dialog, undefined>): void {
     this.dialog = dialog;
     this.dialogLayer.replaceChildren(this.modal(dialog));
-    if (dialog.kind === "edit" && this.deleteIntent?.itemID === dialog.item.resourceId) {
-      // Reopening the same resource continues the original delete intent and
-      // its idempotency key. A result from a different resource must never
-      // mutate this dialog.
-      this.deleteIntent.dialogID = dialog.id;
-      this.setDeleteBusy(true, dialog.id);
-      this.setDialogError("删除结果暂不可确认。请核对删除结果，勿重复删除。", dialog.id);
-      this.setDialogAction("重新核对删除结果", "delete-verify", dialog.id);
-    }
+    const intent = this.deleteIntent;
+    if (dialog.kind !== "edit" || !intent || intent.itemID !== dialog.item.resourceId) return;
+    // Reopening the same resource continues the original delete intent and
+    // its idempotency key. A result from a different resource must never
+    // mutate this dialog.
+    intent.dialogID = dialog.id;
+    this.setDeleteBusy(true, dialog.id);
+    this.setDialogError("删除结果暂不可确认。请核对删除结果，勿重复删除。", dialog.id);
+    this.setDialogAction("重新核对删除结果", "delete-verify", dialog.id);
   }
 
   private closeDialog(expectedDialogID?: number): void {
@@ -608,6 +608,14 @@ class ImageLibraryHost {
   private async remove(item: ImageItem, dialogID: number): Promise<void> {
     if (this.deleteIntent?.inFlight) return;
     if (!this.dialogMatches(dialogID)) return;
+    if (this.deleteIntent && this.deleteIntent.itemID !== item.resourceId) {
+      // A dismissed outcome-unknown deletion keeps its original key until the
+      // exact resource is reconciled. Starting another deletion would replace
+      // that key in this in-memory host and make the earlier outcome unsafe to
+      // retry, so require that confirmation first.
+      this.setDialogError("另一张图片素材的删除结果暂不可确认。请先重新打开该素材核对，再删除其他图片。", dialogID);
+      return;
+    }
     if (!window.confirm(`确认删除「${item.name}」？删除后不可恢复。`)) return;
     if (!item.resourceId) {
       this.setDialogError("图片素材标识无效，请重新读取列表后再删除。", dialogID);
@@ -765,6 +773,11 @@ class ImageLibraryHost {
     this.setDialogError(value, expectedDialogID);
     const submit = this.dialogLayer.querySelector<HTMLButtonElement>("[data-image-library-dialog-submit]");
     if (submit) {
+      // The exact-resource 404 already confirmed deletion and cleared its
+      // intent. A leftover delete-verify action would otherwise call a
+      // verifier with no intent forever instead of performing the list-only
+      // readback promised by this recovery state.
+      delete submit.dataset.imageLibraryDialogAction;
       submit.textContent = "重新读取列表";
       submit.disabled = false;
     }

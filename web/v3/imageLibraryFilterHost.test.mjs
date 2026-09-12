@@ -32,6 +32,7 @@ const secondPage = item(31, "第二页素材");
 const fresh = item(12, "新的搜索结果");
 const stale = item(13, "旧的搜索结果");
 const inactive = item(14, "已停用素材", false);
+const confirmedDelete = item(41, "已删除但列表回读失败素材");
 const calls = [];
 let materialRefreshReads = 0;
 let releaseStale;
@@ -46,6 +47,9 @@ let finalPageOnly = false;
 let finalPageDeleted = false;
 let finalDeleteAttempt = 0;
 let delayNextMutationReadback = false;
+let confirmedDeleteScenario = false;
+let confirmedDeleteCommitted = false;
+let failConfirmedDeleteReadback = false;
 
 const virtualConsole = new VirtualConsole();
 virtualConsole.forwardTo(console);
@@ -85,6 +89,19 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="s
             releaseMutationReadback = () => resolve(json({ items: [item(11, defaultName)], total: 41, limit: 20, offset, has_more: true }));
           });
         }
+        if (confirmedDeleteScenario) {
+          if (failConfirmedDeleteReadback) {
+            failConfirmedDeleteReadback = false;
+            return json({ code: "readback_unavailable" }, 503);
+          }
+          return json({
+            items: confirmedDeleteCommitted ? [] : [confirmedDelete],
+            total: confirmedDeleteCommitted ? 0 : 1,
+            limit: 20,
+            offset,
+            has_more: false,
+          });
+        }
         if (finalPageOnly) {
           if (offset === 20) return json({ items: finalPageDeleted ? [] : [secondPage], total: finalPageDeleted ? 20 : 21, limit: 20, offset, has_more: false });
           return json({ items: [fresh], total: finalPageDeleted ? 20 : 21, limit: 20, offset, has_more: !finalPageDeleted });
@@ -102,6 +119,9 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="s
       }
       if (url.pathname === "/api/admin/image-library/31" && method === "GET") {
         return finalPageDeleted ? json({ code: "not_found" }, 404) : json({ ok: true, item: secondPage });
+      }
+      if (url.pathname === "/api/admin/image-library/41" && method === "GET") {
+        return confirmedDeleteCommitted ? json({ code: "not_found" }, 404) : json({ ok: true, item: confirmedDelete });
       }
       if (url.pathname === "/api/admin/image-library/11" && method === "PUT") {
         const body = JSON.parse(String(init.body));
@@ -122,6 +142,11 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="s
         if (finalDeleteAttempt === 2) throw new window.TypeError("delete response lost before commit");
         finalPageDeleted = true;
         return json({ ok: true });
+      }
+      if (url.pathname === "/api/admin/image-library/41" && method === "DELETE") {
+        confirmedDeleteCommitted = true;
+        failConfirmedDeleteReadback = true;
+        throw new window.TypeError("delete response lost after commit");
       }
       return json({ code: "unexpected", path: url.pathname, method }, 500);
     };
@@ -410,6 +435,33 @@ const finalDeleteCalls = () => calls.filter((call) => call.path === "/api/admin/
 const finalDeleteKey = finalDeleteCalls()[0]?.headers["idempotency-key"];
 assert.ok(finalDeleteKey?.startsWith("image-delete-"), "DELETE 5xx did not retain the controlled delete key");
 assert.equal(finalRemove.disabled, true, "DELETE 5xx re-enabled a new destructive action instead of retaining the intent");
+
+// A dismissed outcome-unknown deletion keeps its original idempotency intent.
+// Deleting a different image must be blocked until the original exact-resource
+// read is reconciled, rather than replacing the earlier key in memory.
+dom.window.document.querySelector('button[aria-label="关闭弹窗"]')?.click();
+const finalPrevious = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "上一页");
+assert.ok(finalPrevious, "final-page previous control missing before a second delete attempt");
+finalPrevious.click();
+await waitFor(() => dom.window.document.body.textContent.includes("新的搜索结果"), "could not return to a different image while the original deletion was unknown");
+const differentEdit = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
+assert.ok(differentEdit, "different image edit action missing while original deletion was unknown");
+differentEdit.click();
+await waitFor(() => Boolean(dom.window.document.querySelector("#fImgName")), "different image dialog did not open");
+const differentRemove = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "删除");
+assert.ok(differentRemove, "different image delete action missing while original deletion was unknown");
+differentRemove.click();
+await waitFor(() => dom.window.document.body.textContent.includes("另一张图片素材的删除结果暂不可确认"), "a second delete was not blocked while the original outcome remained unknown");
+assert.equal(calls.filter((call) => call.path === "/api/admin/image-library/12" && call.method === "DELETE").length, 0, "a second delete replaced the original outcome-unknown intent");
+dom.window.document.querySelector('button[aria-label="关闭弹窗"]')?.click();
+const finalNextAgain = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "下一页");
+assert.ok(finalNextAgain, "final-page next control missing when returning to the original deletion");
+finalNextAgain.click();
+await waitFor(() => dom.window.document.body.textContent.includes("第二页素材"), "could not return to the original deletion item");
+const finalEditAgain = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
+assert.ok(finalEditAgain, "original deletion edit action missing after opening another dialog");
+finalEditAgain.click();
+await waitFor(() => [...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "重新核对删除结果"), "original delete intent did not retain its exact-resource verification action");
 const listCallsBeforeFiveXXVerification = calls.filter((call) => call.path === "/api/admin/image-library" && call.method === "GET").length;
 dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
 await waitFor(() => [...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "按原操作重试删除"), "single-image read did not expose same-key retry after DELETE 5xx");
@@ -430,6 +482,35 @@ await waitFor(() => !dom.window.document.querySelector("#fImgName") && dom.windo
 assert.equal(finalPageDeleted, true, "final-page delete did not commit on same-key retry");
 assert.equal(finalDeleteCalls().length, 3, "confirmed final-page deletion did not issue its final same-key retry");
 assert.equal(finalDeleteCalls()[2].headers["idempotency-key"], finalDeleteKey, "final same-key delete retry changed the original intent key");
+
+// The exact-resource 404 is sufficient to confirm deletion even if the
+// subsequent paginated list read fails. Its recovery button must switch from
+// delete verification to a plain list readback; otherwise it would retain an
+// action that no longer has a delete intent to inspect.
+confirmedDeleteScenario = true;
+current = controls();
+current.reset.click();
+await waitFor(() => dom.window.document.body.textContent.includes("已删除但列表回读失败素材"), "confirmed-delete recovery fixture did not load");
+const confirmedEdit = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
+assert.ok(confirmedEdit, "confirmed-delete recovery edit action missing");
+confirmedEdit.click();
+await waitFor(() => Boolean(dom.window.document.querySelector("#fImgName")), "confirmed-delete recovery dialog did not open");
+const confirmedRemove = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "删除");
+assert.ok(confirmedRemove, "confirmed-delete recovery delete action missing");
+confirmedRemove.click();
+await waitFor(() => dom.window.document.body.textContent.includes("删除结果暂不可确认"), "post-commit lost delete response did not require exact-resource verification");
+const confirmedDeleteCalls = () => calls.filter((call) => call.path === "/api/admin/image-library/41" && call.method === "DELETE");
+const confirmedDetailCalls = () => calls.filter((call) => call.path === "/api/admin/image-library/41" && call.method === "GET");
+assert.equal(confirmedDeleteCalls().length, 1, "post-commit lost delete response retried before verification");
+dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
+await waitFor(() => dom.window.document.body.textContent.includes("图片已删除，但列表回读未完成"), "detail 404 followed by list failure did not preserve a list-only recovery state");
+assert.equal(confirmedDetailCalls().length, 1, "confirmed deletion did not use one exact-resource GET");
+const confirmedReadback = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "重新读取列表");
+assert.ok(confirmedReadback, "confirmed deletion/list failure did not offer a list readback");
+confirmedReadback.click();
+await waitFor(() => !dom.window.document.querySelector("#fImgName") && Boolean(dom.window.document.querySelector("[data-image-library-empty]")), "list-only readback did not finish confirmed deletion recovery");
+assert.equal(confirmedDeleteCalls().length, 1, "confirmed deletion/list recovery retried DELETE");
+assert.equal(confirmedDetailCalls().length, 1, "confirmed deletion/list recovery retried stale delete verification");
 
 for (const call of calls.filter((call) => call.path === "/api/admin/image-library" && call.method === "GET")) {
   assert.ok(call.query.includes("limit=20") && call.query.includes("offset=") && call.query.includes("enabled_only="), `image read escaped bounded pagination/filter contract: ${JSON.stringify(call)}`);
