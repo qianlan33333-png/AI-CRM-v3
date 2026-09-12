@@ -15,6 +15,7 @@ const mutationKeys = new Map<string, string>();
 const detailEtags = new Map<string, string>();
 const detailCodes = new Map<string, string>();
 const detailPreservedFields = new Map<string, PreservedFormFields>();
+let channelOperationMemberDirectory: Promise<Json[]> | null = null;
 
 function escapeHTML(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
@@ -216,6 +217,55 @@ function assignment(channel: Json): Json[] {
   return values.map((item) => ({ ...item, display_name: item.display_name || `客服 #${item.staff_id}`, status: 'active' }));
 }
 
+async function channelOperationMembers(): Promise<Json[]> {
+  if (!channelOperationMemberDirectory) {
+    channelOperationMemberDirectory = (async () => {
+      const response = await nativeFetch('/api/admin/common/operation-members?scope=channel_code&page_size=100', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error('客服目录读取失败，请重试');
+      const payload = await response.json() as Json;
+      if (!Array.isArray(payload.items)) throw new Error('客服目录响应不完整，请重试');
+      return payload.items.filter((member): member is Json => Boolean(member) && typeof member === 'object' && !Array.isArray(member));
+    })();
+  }
+  try {
+    return await channelOperationMemberDirectory;
+  } catch (error) {
+    channelOperationMemberDirectory = null;
+    throw error;
+  }
+}
+
+async function hydrateSavedAssigneeNames(channel: Channel | null): Promise<Channel | null> {
+  if (!channel) return null;
+  const config = channel.assignment_config_json;
+  if (!config || typeof config !== 'object' || Array.isArray(config) || !Array.isArray((config as Json).assignees)) return channel;
+  const assignees = (config as Json).assignees as unknown[];
+  if (!assignees.some((item) => Number((item as Json | null)?.staff_id) > 0)) return channel;
+  try {
+    const resolved = new Map<string, string>();
+    for (const member of await channelOperationMembers()) {
+      const staffID = Number(member.staff_id); const displayName = text(member.display_name).trim();
+      if (Number.isSafeInteger(staffID) && staffID > 0 && displayName) resolved.set(String(staffID), displayName);
+    }
+    if (!resolved.size) return channel;
+    return {
+      ...channel,
+      assignment_config_json: {
+        ...(config as Json),
+        assignees: assignees.map((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+          const member = item as Json; const displayName = resolved.get(String(Number(member.staff_id)));
+          return displayName ? { ...member, display_name: displayName } : member;
+        }),
+      },
+    };
+  } catch {
+    // The saved IDs remain visible as their existing fallback labels. A local
+    // directory read failure must not discard or mutate a channel definition.
+    return channel;
+  }
+}
+
 function channelBootstrap(channel: Channel | null): Json {
   const safe = channel || {};
   const id = Number(safe.id);
@@ -354,11 +404,8 @@ function installChannelPickerIdentityAdapter(): void {
     const disabled = Array.isArray(options.disabledUserIds) ? options.disabledUserIds.map(String) : [];
     let disabledUserIds: string[] = [];
     if (disabled.length) {
-      const response = await nativeFetch('/api/admin/common/operation-members?scope=channel_code&page_size=100', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new Error('客服目录读取失败，请重试');
-      const payload = await response.json() as Json;
-      if (!Array.isArray(payload.items)) throw new Error('客服目录响应不完整，请重试');
-      disabledUserIds = payload.items.flatMap((member: Json) => disabled.includes(String(member.staff_id)) && member.user_id ? [String(member.user_id)] : []);
+      const members = await channelOperationMembers();
+      disabledUserIds = members.flatMap((member) => disabled.includes(String(member.staff_id)) && member.user_id ? [String(member.user_id)] : []);
     }
     const requestedMax = Number(options.selection?.max ?? options.max);
     const max = Number.isSafeInteger(requestedMax) && requestedMax >= 1 ? requestedMax : 1;
@@ -376,7 +423,7 @@ function installChannelPickerIdentityAdapter(): void {
 export async function startChannelAdmissionHost(): Promise<void> {
   installCatalogTransport();
   try {
-    const channel = await currentChannel();
+    const channel = await hydrateSavedAssigneeNames(await currentChannel());
     const mount = document.querySelector('main') || document.body;
     mount.innerHTML = await channelFormMarkup(channel);
     const root = mount.querySelector<HTMLElement>('[data-channel-admission-page]'); if (!root) throw new Error('标准渠道表单挂载失败');

@@ -36,7 +36,7 @@ function channel(overrides = {}) {
   };
 }
 
-function createPage({ saved = channel(), mutations = [], creates = [], resourceID = '17', donorScriptStatus = 200, delayDonorScript = false } = {}) {
+function createPage({ saved = channel(), mutations = [], creates = [], resourceID = '17', donorScriptStatus = 200, delayDonorScript = false, operationMembers = { status: 200, payload: { items: [{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }] } } } = {}) {
   const calls = [];
   let releaseDonorScript;
   const resourceAttribute = resourceID ? ` data-channel-resource-id="${resourceID}"` : '';
@@ -67,7 +67,7 @@ function createPage({ saved = channel(), mutations = [], creates = [], resourceI
           const unknown = Object.keys(JSON.parse(init.body || '{}')).filter((name) => !allowed.has(name));
           if (unknown.length) return response({code:'MALFORMED_REQUEST'}, 400);
         }
-        if (method === 'GET' && url.pathname === '/api/admin/common/operation-members') return response({ items: [{staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服'}] });
+        if (method === 'GET' && url.pathname === '/api/admin/common/operation-members') return response(operationMembers.payload, operationMembers.status);
         if (method === 'GET' && url.pathname === '/assets/standard-components/channel_code_form.html') return new Response(donorForm, { status: 200 });
         if (method === 'GET' && url.pathname === '/api/admin/channels/17') return response({ ok: true, channel: saved }, 200, { ETag: '"7"' });
         if (method === 'PATCH' && url.pathname === '/api/admin/channels/17') {
@@ -101,6 +101,9 @@ try {
   assert.equal(document.querySelector('[data-qrcode-section]').hidden, false, 'the QR branch must be visible for a QR channel');
   assert.ok([...document.querySelectorAll('[data-link-section]')].every((node) => node.hidden), 'all link-only donor branches must be hidden for a QR channel');
   assert.equal(document.querySelector('[data-summary-channel-status]')?.textContent, '启用', 'the donor script must hydrate the rendered status summary');
+  assert.equal(document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), true, 'saved channel assignees must use the trusted local directory display name');
+  assert.equal(document.querySelector('[data-assignee-list]')?.textContent.includes('客服 #12'), false, 'saved channel assignees must not retain synthetic service labels after directory hydration');
+  assert.equal(stable.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/common/operation-members').length, 1, 'saved channel names must use one local directory read');
   assert.equal(document.querySelectorAll('[data-generate-form-qrcode]').length, 1, 'an edit form must render one generate action');
   assert.equal(document.querySelectorAll('[data-download-channel-qrcode]').length, 0, 'an absent download URL must not leave a duplicate donor action');
   assert.equal(document.documentElement.innerHTML.includes('{%'), false, 'no Jinja control syntax may reach the Host DOM');
@@ -115,6 +118,26 @@ try {
   document.querySelector('[data-channel-type-card="wecom_customer_acquisition"]').click();
   assert.ok([...document.querySelectorAll('[data-link-section]')].every((node) => !node.hidden), 'acquisition links expose every standard link-only donor control');
 } finally { stable.dom.window.close(); }
+
+// Saved assignments persist staff IDs only. One local directory read hydrates
+// every saved staff label, while missing directory records retain an explicit
+// ID fallback rather than becoming a false name or causing per-member reads.
+const hydratedSavedMembers = createPage({ saved: channel({ assignment_config_json: { assignees: [
+  { staff_id: 12, priority: 1, ratio_percent: 50, max_scans_24h: 100 },
+  { staff_id: 99, priority: 2, ratio_percent: 50, max_scans_24h: 100 },
+] } }) });
+try {
+  await waitFor(() => hydratedSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), 'saved assignment display names must hydrate before donor initialization');
+  const list = hydratedSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent || '';
+  assert.equal(list.includes('客服 #99'), true, 'a directory record absent from the trusted local projection must retain its staff-ID fallback');
+  assert.equal(hydratedSavedMembers.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/common/operation-members').length, 1, 'multiple saved assignees must not issue N+1 directory reads');
+} finally { hydratedSavedMembers.dom.window.close(); }
+
+const unavailableSavedMembers = createPage({ operationMembers: { status: 503, payload: { ok: false, error: 'staff_directory_unavailable' } } });
+try {
+  await waitFor(() => unavailableSavedMembers.dom.window.document.querySelector('[data-assignee-list]')?.textContent.includes('客服 #12'), 'a directory failure must preserve the saved staff-ID fallback and form');
+  assert.equal(unavailableSavedMembers.calls.filter((call) => call.method === 'PATCH' || call.method === 'POST').length, 0, 'directory fallback must not mutate saved channel configuration');
+} finally { unavailableSavedMembers.dom.window.close(); }
 
 // The standard channel entry point disables adding once all five places are
 // occupied. That keeps a remaining capacity of zero from invoking the legacy
