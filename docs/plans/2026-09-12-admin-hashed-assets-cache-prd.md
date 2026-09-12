@@ -37,9 +37,10 @@ External Effects: not involved。没有 Provider 调用、意图、收据或重�
    - 规范化后无路径穿越；
    - 对应 manifest `files` 中的构建输出；
    - 文件名符合构建器输出的内容哈希命名（入口、chunk 或 file），而不是仅因位于 `/assets/`；
+   - manifest 中的 SHA-256 与实际文件一致；
    - 成功读取并确认 MIME 为允许的静态类型。
 3. 对上述成功 `200`（及等价 `HEAD`）响应返回：
-   `Cache-Control: public, max-age=31536000, immutable`，并保留或补齐稳定 `ETag`。压缩响应须协商 `gzip`/`zstd` 并发送正确的 `Vary: Accept-Encoding`，不得让不同编码的实体复用同一变体。
+   `Cache-Control: private, max-age=31536000, immutable`，并保留或补齐稳定 `ETag`。初版不引入 gzip/zstd；若部署已有压缩 middleware，必须沿用其既有变体协商并保留正确的 `Vary: Accept-Encoding`，否则不发送该 `Vary`。
 4. 保留管理员会话门控。未认证/过期会话的重定向或拒绝响应不得取得长期缓存头；权限 middleware 的现有安全头和状态码保持不变。
 5. 非哈希标准组件、旧兼容脚本、未在 manifest 的文件和 manifest 本身不进入本 PR 的长期缓存集合，继续现有无缓存策略。它们日后须先接入内容哈希构建或版本化发布契约，才可申请缓存优化。
 6. 由 Composition Root 将 `/assets/` 交给该静态 handler；`externaleffects.UIHandler` 仍仅负责其页面路由，不再成为全后台 bundle 的通用文件服务器。不得改变任一业务模块的 API、数据库或外部效果路径。
@@ -48,14 +49,14 @@ External Effects: not involved。没有 Provider 调用、意图、收据或重�
 
 - 失效由内容哈希 URL 保证，而非 TTL 或人工 purge；新发布改变内容即产生新 URL。
 - runtime assets 是公开可复用的代码/CSS/图片文件，不得含用户资料、API 响应、令牌、环境变量或按会话生成的内容。实现会以 manifest 白名单避免把任意磁盘文件误当静态资源。
-- `public` 只适用于已验证的成功静态 bundle。响应在认证 middleware 之前或失败时不可带该头，避免缓存登录重定向、错误页或权限差异内容。
+- `private` 只允许浏览器的本地缓存复用已验证的成功静态 bundle；管理员会话门控继续在每个网络请求前生效。认证失败响应不可带长期缓存头，避免缓存登录重定向、错误页或权限差异内容。
 - HTML 继续 `private, no-store`，所以每次进入后台都会取得当前发布的 hash 引用；API 与业务读模型不增加浏览器、Caddy 或服务端缓存。
 - 该 PR 不引 Redis、CDN、新进程、队列或数据库迁移。
 
 ## 验收与证据
 
-1. 单元/HTTP 合同：manifest 中的 hash asset 成功返回 `200`、正确 MIME、immutable Cache-Control、ETag 和 `Vary: Accept-Encoding`；gzip/zstd（若启用）实体与 Vary 一致。
-2. 负向合同：未认证、403、404、路径穿越、非 hash、manifest 外文件、HTML、API 和 `asset-manifest.json` 均不返回 immutable/public 缓存头。
+1. 单元/HTTP 合同：manifest 中的 hash asset 成功返回 `200`、正确 MIME、private immutable Cache-Control 和稳定 ETag；若现有 middleware 压缩响应，验证其 `Vary: Accept-Encoding` 与实体变体一致。
+2. 负向合同：未认证、403、404、路径穿越、非 hash、manifest 外文件、manifest SHA 不符或进程启动后文件被替换的请求均不返回 immutable/ETag 缓存头；HTML、API 和 `asset-manifest.json` 保持现有语义，未在 manifest 的旧资源仍可由兼容 handler 返回 `no-store`。
 3. 发布合同：构建生成的 HTML 只引用 manifest 中的 hash asset；改变输入后的新构建产生不同 URL；现有 `performance:check` 继续通过。
 4. 浏览器冷/热对比：同一已登录会话以空缓存打开一个代表后台页记录 JS/CSS 请求数、传输字节、load 时间；不清缓存再次打开同页，确认所有可缓存 hash assets 的 `fromDiskCache`/`fromMemoryCache`，并记录减少的网络传输字节与页面可用时间。两轮均记录 API 的请求数和耗时，证明没有借缓存掩盖业务读取。
 5. 正式只读回查：发布后检查一条 hash asset 的响应头、后台 HTML、一个 API 响应和未认证资源请求，分别符合上面的缓存边界。
