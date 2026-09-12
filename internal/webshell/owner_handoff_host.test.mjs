@@ -108,6 +108,7 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
     import_invalid_rows: page?.querySelector('[data-import-stat="invalid_rows"]')?.textContent || "",
     preview_states: [...(page?.querySelectorAll("[data-preview-rows] .owner-migration-status") || [])].map((node) => node.textContent || ""),
     preview_reasons: [...(page?.querySelectorAll("[data-preview-rows] td:last-child") || [])].map((node) => node.textContent || ""),
+    batch_id: page?.dataset.ownerHandoffBatchId || "",
     execution_log: page?.querySelector("[data-execution-log]")?.textContent || "",
     notice: page?.querySelector("[data-workbench-notice]")?.textContent || "",
   };
@@ -159,7 +160,7 @@ const visibleStates = await mountFixture({
   ],
   operator: "管理员 #42",
 }, 200, true, false, true);
-if (JSON.stringify(visibleStates.preview_states) !== JSON.stringify(["可迁移", "结果待核实"]) || !visibleStates.preview_reasons.includes("迁移原因待确认。") || !visibleStates.execution_log.includes("迁移方式：先企微转接后本地迁移") || !visibleStates.execution_log.includes("批次状态：已受理") || !visibleStates.execution_log.includes("结果待核实") || visibleStates.execution_log.includes("wecom_then_crm") || visibleStates.execution_log.includes("outcome_unknown")) throw new Error(`owner handoff Host must present states in Chinese ${JSON.stringify(visibleStates)}`);
+if (JSON.stringify(visibleStates.preview_states) !== JSON.stringify(["可迁移", "结果待核实"]) || !visibleStates.preview_reasons.includes("迁移原因待确认。") || visibleStates.batch_id !== "batch-1" || !visibleStates.execution_log.includes("迁移方式：先企微转接后本地迁移") || !visibleStates.execution_log.includes("批次状态：已受理") || !visibleStates.execution_log.includes("结果待核实") || visibleStates.execution_log.includes("wecom_then_crm") || visibleStates.execution_log.includes("outcome_unknown")) throw new Error(`owner handoff Host must present states in Chinese while retaining the response-bound batch reference ${JSON.stringify(visibleStates)}`);
 
 const previewFailure = await mountFixture({
   staff: [

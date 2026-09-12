@@ -288,6 +288,9 @@ function renderPreview(root: HTMLElement, preview: Preview, scope: string, impor
 }
 
 function renderBatch(root: HTMLElement, batch: Batch): void {
+  // Keep the opaque batch reference for the Host's readback actions outside
+  // the operator-facing log, whose states are localized below.
+  root.dataset.ownerHandoffBatchId = batch.ID;
   query<HTMLElement>(root, "[data-execution-log]").textContent = [
     `迁移批次：${batch.ID}`,
     `迁移方式：${ownerMigrationModeLabel(batch.Mode)}`,
@@ -327,6 +330,7 @@ async function boot(): Promise<void> {
     const setNotice = (value: string, kind = "") => { notice.textContent = value; notice.className = `owner-migration-hint ${kind}`; };
     const reset = () => {
       preview = undefined; batch = undefined; displayedRows = [];
+      delete root.dataset.ownerHandoffBatchId;
       query<HTMLElement>(root, "[data-preview-empty]").hidden = false;
       query<HTMLElement>(root, "[data-preview-content]").hidden = true;
       query<HTMLInputElement>(root, "[data-confirm-phrase-input]").value = "";

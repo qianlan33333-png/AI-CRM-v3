@@ -12602,6 +12602,7 @@ var OwnerHandoffHost = (() => {
     return rows;
   }
   function renderBatch(root, batch) {
+    root.dataset.ownerHandoffBatchId = batch.ID;
     query(root, "[data-execution-log]").textContent = [
       `\u8FC1\u79FB\u6279\u6B21\uFF1A${batch.ID}`,
       `\u8FC1\u79FB\u65B9\u5F0F\uFF1A${ownerMigrationModeLabel(batch.Mode)}`,
@@ -12647,6 +12648,7 @@ var OwnerHandoffHost = (() => {
         preview = void 0;
         batch = void 0;
         displayedRows = [];
+        delete root.dataset.ownerHandoffBatchId;
         query(root, "[data-preview-empty]").hidden = false;
         query(root, "[data-preview-content]").hidden = true;
         query(root, "[data-confirm-phrase-input]").value = "";
