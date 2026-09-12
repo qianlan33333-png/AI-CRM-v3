@@ -93,6 +93,8 @@ const document = dom.window.document;
 const hostRoot = document.querySelector('[data-v3-radar-event-host]');
 assert.ok(hostRoot?.textContent?.includes('2026-09-05 08:01:02'));
 assert.equal(hostRoot?.textContent?.includes('T00:01:02'), false, 'user-visible event time must not expose RFC3339');
+assert.ok(hostRoot?.textContent?.includes('图片已加载'), 'user-visible event stage must use Chinese copy');
+assert.equal(hostRoot?.textContent?.includes('image_loaded'), false, 'user-visible event stage must not expose its protocol enum');
 assert.ok(hostRoot?.textContent?.includes('本页搜索'), 'keyword filtering is explicitly scoped to the loaded page');
 assert.ok(hostRoot?.textContent?.includes('导出仅按已查询的时间范围，不包含本页搜索。'), 'CSV scope is explicit to prevent a local keyword search from implying a server filter');
 const [keyword, start, end] = hostRoot.querySelectorAll('input');

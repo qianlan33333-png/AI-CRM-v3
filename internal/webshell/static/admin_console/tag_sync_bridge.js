@@ -16,6 +16,11 @@
   let catalogNeedsRefresh = false;
   let recoverySignature = "";
   const retryKeys = new Map();
+  const tagSyncStateLabel = (value) => ({
+    idle: "未开始", queued: "排队中", attempted: "正在执行", executed: "已完成",
+    outcome_unknown: "结果待核对", retryable_failed: "可重试失败", final_failed: "执行失败",
+    cancelled: "已取消", reconciled: "已完成核对",
+  })[String(value || "")] || "状态待确认";
 
   const syncButton = () => {
     if (typeof document === "undefined" || !document?.querySelectorAll)
@@ -314,7 +319,7 @@
         completedTracked &&
         ["final_failed", "cancelled", "reconciled"].includes(sync.state)
       ) {
-        notice(`标签同步未完成（${sync.state}），已允许重新发起`, true);
+        notice(`标签同步未完成（${tagSyncStateLabel(sync.state)}），已允许重新发起`, true);
       }
     } catch (_error) {
       if (active) schedule(1500);

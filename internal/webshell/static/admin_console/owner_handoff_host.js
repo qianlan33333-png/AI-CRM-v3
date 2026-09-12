@@ -1,4 +1,4 @@
-(() => {
+var OwnerHandoffHost = (() => {
   var __create = Object.create;
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -12325,6 +12325,7 @@
   var requestFailure = (message, status) => {
     const error = new Error(message);
     error.httpStatus = status;
+    error.userMessage = true;
     return error;
   };
   var pickerLoad;
@@ -12339,8 +12340,36 @@
     }
     const response = await fetch(path, { credentials: "same-origin", ...init, headers });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw requestFailure(text(body.error) || `\u8BF7\u6C42\u5931\u8D25\uFF08${response.status}\uFF09`, response.status);
+    if (!response.ok) throw requestFailure(ownerHandoffRequestMessage(response.status, text(body.error)), response.status);
     return body;
+  }
+  var localOwnerHandoffMessages = /* @__PURE__ */ new Set([
+    "\u8BF7\u5148\u9009\u62E9\u4E0D\u540C\u7684\u539F\u8D1F\u8D23\u4EBA\u548C\u76EE\u6807\u8D1F\u8D23\u4EBA",
+    "\u8BF7\u9009\u62E9\u5305\u542B\u65E7\u6A21\u677F\u4E94\u5217\u7684 XLSX\u3001XLS \u6216 CSV \u6587\u4EF6",
+    "\u6BCF\u4E00\u884C\u5FC5\u987B\u5305\u542B\u65E7\u6A21\u677F\u7684\u4E94\u5217",
+    "\u8BF7\u5148\u4E0A\u4F20\u65E7\u6A21\u677F\u540D\u5355",
+    "\u8BF7\u5148\u751F\u6210\u9884\u89C8",
+    "\u786E\u8BA4\u77ED\u8BED\u4E0D\u5339\u914D"
+  ]);
+  function ownerHandoffRequestMessage(status, detail) {
+    const mapped = {
+      owner_handoff_provider_unavailable: "\u8FC1\u79FB\u670D\u52A1\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002",
+      owner_handoff_conflict: "\u8FC1\u79FB\u72B6\u6001\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u9884\u89C8\u540E\u91CD\u8BD5\u3002",
+      invalid_request: "\u8FC1\u79FB\u8BF7\u6C42\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5\u586B\u5199\u5185\u5BB9\u540E\u91CD\u8BD5\u3002"
+    }[detail];
+    if (mapped) return mapped;
+    if (status === 401) return "\u767B\u5F55\u72B6\u6001\u5DF2\u5931\u6548\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u540E\u7EE7\u7EED\u3002";
+    if (status === 403) return "\u6CA1\u6709\u8D1F\u8D23\u4EBA\u8FC1\u79FB\u64CD\u4F5C\u6743\u9650\u3002";
+    if (status === 404) return "\u8FC1\u79FB\u8BB0\u5F55\u4E0D\u5B58\u5728\u6216\u5DF2\u4E0D\u53EF\u8BFB\u53D6\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u9884\u89C8\u3002";
+    if (status === 409) return "\u8FC1\u79FB\u72B6\u6001\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u9884\u89C8\u540E\u91CD\u8BD5\u3002";
+    if (status === 400 || status === 405 || status === 422) return "\u8FC1\u79FB\u8BF7\u6C42\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5\u586B\u5199\u5185\u5BB9\u540E\u91CD\u8BD5\u3002";
+    if (status >= 500) return "\u8FC1\u79FB\u670D\u52A1\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002";
+    return "\u8FC1\u79FB\u8BF7\u6C42\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002";
+  }
+  function ownerHandoffErrorMessage(error, fallback) {
+    if (error instanceof Error && error.userMessage) return error.message;
+    const detail = error instanceof Error ? text(error.message) : "";
+    return localOwnerHandoffMessages.has(detail) ? detail : fallback;
   }
   function scrubFrozenServerPlaceholders(page) {
     const marker = /\{\{|\{%/;
@@ -12356,7 +12385,7 @@
   }
   async function mountFrozenDonor(stage) {
     const response = await fetch(donorURL, { credentials: "same-origin" });
-    if (!response.ok) throw requestFailure(`\u51BB\u7ED3\u9875\u9762\u8D44\u6E90\u4E0D\u53EF\u7528\uFF08${response.status}\uFF09`, response.status);
+    if (!response.ok) throw requestFailure("\u8D1F\u8D23\u4EBA\u8FC1\u79FB\u9875\u9762\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5\u3002", response.status);
     const source = new DOMParser().parseFromString(await response.text(), "text/html");
     const page = source.querySelector("[data-owner-migration-page]");
     const style = source.querySelector("style");
@@ -12432,7 +12461,50 @@
     return query(root, 'input[name="scope_type"]:checked').value;
   }
   function transferStatusLabel(status) {
-    return { 0: "\u672C\u5730\u8FC1\u79FB", 1: "\u4F01\u5FAE\u8F6C\u63A5\u5DF2\u5B8C\u6210", 2: "\u4F01\u5FAE\u8F6C\u63A5\u5904\u7406\u4E2D", 3: "\u5BA2\u6237\u62D2\u7EDD\u63A5\u66FF", 4: "\u76EE\u6807\u6210\u5458\u5BA2\u6237\u4E0A\u9650", 5: "\u672A\u627E\u5230\u4F01\u5FAE\u8F6C\u63A5\u8BB0\u5F55" }[status] || `\u4F01\u5FAE\u72B6\u6001 ${status}`;
+    return { 0: "\u672C\u5730\u8FC1\u79FB", 1: "\u4F01\u5FAE\u8F6C\u63A5\u5DF2\u5B8C\u6210", 2: "\u4F01\u5FAE\u8F6C\u63A5\u5904\u7406\u4E2D", 3: "\u5BA2\u6237\u62D2\u7EDD\u63A5\u66FF", 4: "\u76EE\u6807\u6210\u5458\u5BA2\u6237\u4E0A\u9650", 5: "\u672A\u627E\u5230\u4F01\u5FAE\u8F6C\u63A5\u8BB0\u5F55" }[status] || "\u4F01\u5FAE\u8F6C\u63A5\u72B6\u6001\u5F85\u786E\u8BA4";
+  }
+  function ownerMigrationStateLabel(state) {
+    return {
+      ready: "\u53EF\u8FC1\u79FB",
+      skipped_by_file: "\u5DF2\u6309\u6587\u4EF6\u8DF3\u8FC7",
+      not_under_source_owner: "\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4",
+      not_found: "\u672A\u627E\u5230\u5BA2\u6237",
+      conflict: "\u8FC1\u79FB\u51B2\u7A81",
+      unresolved: "\u5F85\u6838\u5B9E",
+      missing_external_userid: "\u7F3A\u5C11\u5BA2\u6237\u6807\u8BC6",
+      invalid_move_flag: "\u8FC1\u79FB\u6807\u8BB0\u65E0\u6548",
+      duplicate: "\u6587\u4EF6\u91CD\u590D",
+      accepted: "\u5DF2\u53D7\u7406",
+      queued: "\u6392\u961F\u4E2D",
+      attempted: "\u6B63\u5728\u6267\u884C",
+      executed: "\u5DF2\u6267\u884C",
+      provider_accepted: "\u4F01\u5FAE\u5DF2\u53D7\u7406",
+      final_failed: "\u6267\u884C\u5931\u8D25",
+      outcome_unknown: "\u7ED3\u679C\u5F85\u6838\u5B9E",
+      retryable_failed: "\u53EF\u91CD\u8BD5\u5931\u8D25",
+      cancelled: "\u5DF2\u53D6\u6D88",
+      reconciled: "\u5DF2\u6838\u5BF9",
+      cas_conflict: "\u72B6\u6001\u51B2\u7A81",
+      observed: "\u5DF2\u8BFB\u53D6\u7ED3\u679C"
+    }[state] || "\u8FC1\u79FB\u72B6\u6001\u5F85\u786E\u8BA4";
+  }
+  function ownerMigrationReason(reason) {
+    return {
+      "external_userid is required": "\u7F3A\u5C11\u5BA2\u6237\u6807\u8BC6\u3002",
+      "duplicate external_userid; first row is kept": "\u6587\u4EF6\u4E2D\u5B58\u5728\u91CD\u590D\u5BA2\u6237\u6807\u8BC6\uFF0C\u5DF2\u4FDD\u7559\u9996\u6B21\u51FA\u73B0\u7684\u8BB0\u5F55\u3002",
+      "Excel marked skip": "\u5DF2\u6309\u6587\u4EF6\u6807\u8BB0\u8DF3\u8FC7\u3002",
+      "no executable rows": "\u6CA1\u6709\u53EF\u6267\u884C\u8FC1\u79FB\u884C\u3002",
+      "\u662F\u5426\u8FC1\u79FB\u5B57\u6BB5\u975E\u6CD5": "\u8FC1\u79FB\u6807\u8BB0\u65E0\u6548\u3002",
+      "\u672A\u5F97\u5230\u8BE5\u884C\u7684\u5B89\u5168\u9884\u89C8\u7ED3\u679C": "\u672A\u5F97\u5230\u8BE5\u884C\u7684\u5B89\u5168\u9884\u89C8\u7ED3\u679C\u3002",
+      "\u5DF2\u6309\u6587\u4EF6\u6807\u8BB0\u8DF3\u8FC7\u3002": "\u5DF2\u6309\u6587\u4EF6\u6807\u8BB0\u8DF3\u8FC7\u3002",
+      "\u6CA1\u6709\u53EF\u6267\u884C\u8FC1\u79FB\u884C": "\u6CA1\u6709\u53EF\u6267\u884C\u8FC1\u79FB\u884C\u3002",
+      "\u5F53\u524D\u8D1F\u8D23\u4EBA\u6807\u8BC6\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4\uFF0C\u9884\u89C8\u9636\u6BB5\u5C06\u4E0D\u53EF\u6267\u884C": "\u5F53\u524D\u8D1F\u8D23\u4EBA\u6807\u8BC6\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4\uFF0C\u9884\u89C8\u9636\u6BB5\u5C06\u4E0D\u53EF\u6267\u884C\u3002",
+      "\u5F53\u524D\u8D1F\u8D23\u4EBA\u6807\u8BC6\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4": "\u5F53\u524D\u8D1F\u8D23\u4EBA\u6807\u8BC6\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4\u3002",
+      "\u5F53\u524D\u8D1F\u8D23\u4EBAuserid\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4": "\u5F53\u524D\u8D1F\u8D23\u4EBA\u6807\u8BC6\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4\u3002"
+    }[reason] || "\u8FC1\u79FB\u539F\u56E0\u5F85\u786E\u8BA4\u3002";
+  }
+  function ownerMigrationModeLabel(mode) {
+    return { local_only: "\u4EC5\u672C\u5730\u8FC1\u79FB", wecom_then_crm: "\u5148\u4F01\u5FAE\u8F6C\u63A5\u540E\u672C\u5730\u8FC1\u79FB" }[mode] || "\u8FC1\u79FB\u65B9\u5F0F\u5F85\u786E\u8BA4";
   }
   function downloadBlob(filename, blob) {
     const url = URL.createObjectURL(blob);
@@ -12475,7 +12547,7 @@
         parseReason = "duplicate external_userid; first row is kept";
       } else {
         seen.add(external);
-        if (current && current !== sourceUserID) parseReason = "\u5F53\u524D\u8D1F\u8D23\u4EBAuserid\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4\uFF0C\u9884\u89C8\u9636\u6BB5\u5C06\u4E0D\u53EF\u6267\u884C";
+        if (current && current !== sourceUserID) parseReason = "\u5F53\u524D\u8D1F\u8D23\u4EBA\u6807\u8BC6\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4\uFF0C\u9884\u89C8\u9636\u6BB5\u5C06\u4E0D\u53EF\u6267\u884C";
       }
       return { Line: index + 2, ExternalUserID: external, MoveFlag: moveFlag, CurrentOwnerUserID: current, CustomerDisplayName: text(row[3]), Remark: text(row[4]), ParseStatus: parseStatus, ParseReason: parseReason };
     });
@@ -12500,8 +12572,8 @@
     const serverRows = new Map(preview.Rows.map((row) => [row.ExternalUserID, row]));
     return imported.map((item) => {
       if (item.ParseStatus !== "parsed") return { ...item, State: item.ParseStatus, Reason: item.ParseReason };
-      if (item.MoveFlag === "\u5426") return { ...item, State: "skipped_by_file", Reason: "Excel marked skip" };
-      if (item.CurrentOwnerUserID && item.CurrentOwnerUserID !== sourceUserID) return { ...item, State: "not_under_source_owner", Reason: "\u5F53\u524D\u8D1F\u8D23\u4EBAuserid\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4" };
+      if (item.MoveFlag === "\u5426") return { ...item, State: "skipped_by_file", Reason: "\u5DF2\u6309\u6587\u4EF6\u6807\u8BB0\u8DF3\u8FC7\u3002" };
+      if (item.CurrentOwnerUserID && item.CurrentOwnerUserID !== sourceUserID) return { ...item, State: "not_under_source_owner", Reason: "\u5F53\u524D\u8D1F\u8D23\u4EBA\u6807\u8BC6\u4E0E\u9009\u62E9\u7684\u539F\u8D1F\u8D23\u4EBA\u4E0D\u4E00\u81F4" };
       const server = serverRows.get(item.ExternalUserID);
       if (!server) return { ...item, State: "not_found", Reason: "\u672A\u5F97\u5230\u8BE5\u884C\u7684\u5B89\u5168\u9884\u89C8\u7ED3\u679C" };
       return displayFromServer(server, item);
@@ -12517,7 +12589,7 @@
       const node = root.querySelector(`[data-preview-stat="${name}"]`);
       if (node) node.textContent = String(value);
     });
-    query(root, "[data-preview-rows]").innerHTML = rows.map((row) => `<tr><td>${row.Line}</td><td><code>${esc(row.ExternalUserID)}</code></td><td>${esc(row.CustomerDisplayName)}</td><td>${esc(row.MoveFlag)}</td><td>${esc(row.CurrentOwnerUserID)}</td><td><span class="owner-migration-status owner-migration-status--${row.State === "ready" ? "ready" : row.State === "skipped_by_file" ? "skip" : "block"}">${esc(row.State)}</span></td><td>${esc(row.Reason)}</td></tr>`).join("") || '<tr><td colspan="7" class="owner-migration-empty">\u5F53\u524D\u8303\u56F4\u6CA1\u6709\u5019\u9009\u5BA2\u6237\u3002</td></tr>';
+    query(root, "[data-preview-rows]").innerHTML = rows.map((row) => `<tr><td>${row.Line}</td><td><code>${esc(row.ExternalUserID)}</code></td><td>${esc(row.CustomerDisplayName)}</td><td>${esc(row.MoveFlag)}</td><td>${esc(row.CurrentOwnerUserID)}</td><td><span class="owner-migration-status owner-migration-status--${row.State === "ready" ? "ready" : row.State === "skipped_by_file" ? "skip" : "block"}">${esc(ownerMigrationStateLabel(row.State))}</span></td><td>${esc(ownerMigrationReason(row.Reason))}</td></tr>`).join("") || '<tr><td colspan="7" class="owner-migration-empty">\u5F53\u524D\u8303\u56F4\u6CA1\u6709\u5019\u9009\u5BA2\u6237\u3002</td></tr>';
     query(root, "[data-download-errors]").disabled = blocked === 0;
     query(root, "[data-execute]").disabled = ready === 0;
   }
@@ -12531,10 +12603,10 @@
   }
   function renderBatch(root, batch) {
     query(root, "[data-execution-log]").textContent = [
-      `batch_id=${batch.ID}`,
-      `mode=${batch.Mode}`,
-      `batch_state=${batch.State}`,
-      ...(batch.Lines || []).map((line) => `line_no=${line.Line} customer_id=${line.CustomerID} state=${line.State} transfer_status=${line.TransferStatus} (${transferStatusLabel(line.TransferStatus)})`)
+      `\u8FC1\u79FB\u6279\u6B21\uFF1A${batch.ID}`,
+      `\u8FC1\u79FB\u65B9\u5F0F\uFF1A${ownerMigrationModeLabel(batch.Mode)}`,
+      `\u6279\u6B21\u72B6\u6001\uFF1A${ownerMigrationStateLabel(batch.State)}`,
+      ...(batch.Lines || []).map((line) => `\u7B2C ${line.Line} \u884C\uFF0C\u5BA2\u6237 #${line.CustomerID}\uFF1A${ownerMigrationStateLabel(line.State)}\uFF1B\u4F01\u5FAE\u8F6C\u63A5\uFF1A${transferStatusLabel(line.TransferStatus)}`)
     ].join("\n");
   }
   async function boot() {
@@ -12627,7 +12699,7 @@
           reset();
           setNotice("\u65E7\u6A21\u677F\u540D\u5355\u5DF2\u89E3\u6790\uFF1B\u9884\u89C8\u4F1A\u4FDD\u7559\u6BCF\u4E00\u884C\u7684\u6807\u8BB0\u3001\u91CD\u590D\u548C\u8D1F\u8D23\u4EBA\u6821\u9A8C\u7ED3\u679C\u3002", "ok");
         } catch (error) {
-          setNotice(error instanceof Error ? error.message : "\u6587\u4EF6\u89E3\u6790\u5931\u8D25", "error");
+          setNotice(ownerHandoffErrorMessage(error, "\u6587\u4EF6\u89E3\u6790\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u540E\u91CD\u8BD5\u3002"), "error");
         }
       });
       root.querySelectorAll('input[name="scope_type"]').forEach((input) => input.addEventListener("change", reset));
@@ -12651,7 +12723,7 @@
           const scope = selectedScope(root);
           if (scope === "excel_include" && !importedRows.length) throw new Error("\u8BF7\u5148\u4E0A\u4F20\u65E7\u6A21\u677F\u540D\u5355");
           if (scope === "excel_include" && !fileExternalIDs.length) {
-            displayedRows = importedRows.map((row) => row.ParseStatus === "parsed" && row.MoveFlag === "\u5426" ? { ...row, State: "skipped_by_file", Reason: "Excel marked skip" } : { ...row, State: row.ParseStatus, Reason: row.ParseReason || "\u6CA1\u6709\u53EF\u6267\u884C\u8FC1\u79FB\u884C" });
+            displayedRows = importedRows.map((row) => row.ParseStatus === "parsed" && row.MoveFlag === "\u5426" ? { ...row, State: "skipped_by_file", Reason: "\u5DF2\u6309\u6587\u4EF6\u6807\u8BB0\u8DF3\u8FC7\u3002" } : { ...row, State: row.ParseStatus, Reason: row.ParseReason || "\u6CA1\u6709\u53EF\u6267\u884C\u8FC1\u79FB\u884C" });
             query(root, "[data-preview-empty]").hidden = true;
             query(root, "[data-preview-content]").hidden = false;
             renderRows(root, displayedRows, scope, source, target);
@@ -12662,7 +12734,7 @@
           displayedRows = renderPreview(root, preview, scope, importedRows, sourceUserID);
           setNotice("\u9884\u89C8\u5DF2\u751F\u6210\uFF0C\u8BF7\u9010\u5B57\u8F93\u5165\u786E\u8BA4\u77ED\u8BED\u3002", "ok");
         } catch (error) {
-          setNotice(error instanceof Error ? error.message : "\u9884\u89C8\u5931\u8D25", "error");
+          setNotice(ownerHandoffErrorMessage(error, "\u9884\u89C8\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u586B\u5199\u5185\u5BB9\u540E\u91CD\u8BD5\u3002"), "error");
         }
       });
       query(root, "[data-execute]").addEventListener("click", async () => {
@@ -12676,14 +12748,14 @@
           readTransfer.disabled = false;
           setNotice("\u8FC1\u79FB\u5DF2\u53D7\u7406\uFF1B\u7ED3\u679C\u5BFC\u51FA\u548C\u4F01\u5FAE\u7ED3\u679C\u8BFB\u53D6\u4F1A\u663E\u793A\u6BCF\u4E00\u884C\u5B9E\u9645\u72B6\u6001\u3002", "ok");
         } catch (error) {
-          setNotice(error instanceof Error ? error.message : "\u6267\u884C\u5931\u8D25", "error");
+          setNotice(ownerHandoffErrorMessage(error, "\u6267\u884C\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u9884\u89C8\u540E\u91CD\u8BD5\u3002"), "error");
         }
       });
       query(root, "[data-reset-workbench]").addEventListener("click", reset);
       query(root, "[data-download-errors]").addEventListener("click", () => {
         const blocked = displayedRows.filter((row) => row.State !== "ready" && row.State !== "skipped_by_file");
         if (!blocked.length) return;
-        downloadWorkbook("owner_migration_blocked_rows.xlsx", ["\u884C\u53F7", "external_userid", "\u5BA2\u6237\u5907\u6CE8\u540D", "Excel \u6807\u8BB0", "\u5F53\u524D\u8D1F\u8D23\u4EBAuserid", "\u5907\u6CE8", "\u72B6\u6001", "\u539F\u56E0"], blocked.map((row) => [String(row.Line), row.ExternalUserID, row.CustomerDisplayName, row.MoveFlag, row.CurrentOwnerUserID, row.Remark, row.State, row.Reason]));
+        downloadWorkbook("owner_migration_blocked_rows.xlsx", ["\u884C\u53F7", "external_userid", "\u5BA2\u6237\u5907\u6CE8\u540D", "Excel \u6807\u8BB0", "\u5F53\u524D\u8D1F\u8D23\u4EBAuserid", "\u5907\u6CE8", "\u72B6\u6001", "\u539F\u56E0"], blocked.map((row) => [String(row.Line), row.ExternalUserID, row.CustomerDisplayName, row.MoveFlag, row.CurrentOwnerUserID, row.Remark, ownerMigrationStateLabel(row.State), ownerMigrationReason(row.Reason)]));
       });
       query(root, "[data-download-result]").addEventListener("click", async () => {
         if (!batch) {
@@ -12696,11 +12768,11 @@
           const rowsByCustomer = new Map(displayedRows.filter((row) => row.CustomerID).map((row) => [row.CustomerID, row]));
           downloadWorkbook("owner_migration_result.xlsx", ["\u884C\u53F7", "external_userid", "\u5BA2\u6237\u5907\u6CE8\u540D", "\u5F53\u524D\u8D1F\u8D23\u4EBAuserid", "\u5907\u6CE8", "\u8FC1\u79FB\u72B6\u6001", "\u4F01\u5FAE\u8F6C\u63A5\u72B6\u6001"], (batch.Lines || []).map((line) => {
             const row = rowsByCustomer.get(line.CustomerID);
-            return [String(row?.Line || line.Line), row?.ExternalUserID || "", row?.CustomerDisplayName || "", row?.CurrentOwnerUserID || "", row?.Remark || "", line.State, transferStatusLabel(line.TransferStatus)];
+            return [String(row?.Line || line.Line), row?.ExternalUserID || "", row?.CustomerDisplayName || "", row?.CurrentOwnerUserID || "", row?.Remark || "", ownerMigrationStateLabel(line.State), transferStatusLabel(line.TransferStatus)];
           }));
           setNotice("\u5DF2\u5BFC\u51FA\u5F53\u524D\u6279\u6B21\u7ED3\u679C\u660E\u7EC6\u3002", "ok");
         } catch (error) {
-          setNotice(error instanceof Error ? error.message : "\u7ED3\u679C\u5BFC\u51FA\u5931\u8D25", "error");
+          setNotice(ownerHandoffErrorMessage(error, "\u7ED3\u679C\u6682\u4E0D\u53EF\u8BFB\u53D6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002"), "error");
         }
       });
       query(root, "[data-download-result]").textContent = "\u4E0B\u8F7D\u7ED3\u679C\u660E\u7EC6";
@@ -12722,7 +12794,7 @@
         } catch (error) {
           const status = error && typeof error === "object" && "httpStatus" in error && typeof error.httpStatus === "number" ? error.httpStatus : 0;
           stage.dataset.ownerHandoffTransferResultStatus = status > 0 ? `http_${status}` : "error";
-          setNotice(error instanceof Error ? error.message : "\u8BFB\u53D6\u5931\u8D25", "error");
+          setNotice(ownerHandoffErrorMessage(error, "\u4F01\u5FAE\u8F6C\u63A5\u7ED3\u679C\u6682\u4E0D\u53EF\u8BFB\u53D6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002"), "error");
         }
       });
       query(root, 'input[name="scope_type"][value="all"]').checked = true;

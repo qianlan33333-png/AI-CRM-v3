@@ -170,7 +170,7 @@ func TestPublicPublishUsesExplicitQuestionnaireVersionCAS(t *testing.T) {
 
 func TestQuestionnaireExportFormatsBusinessTimestampsInShanghai(t *testing.T) {
 	survey := &routeSurvey{submissions: []surveyport.Submission{{
-		ID: 8, QuestionnaireID: 7, SubmittedAt: time.Date(2026, time.September, 5, 0, 1, 2, 611265000, time.UTC),
+		ID: 8, QuestionnaireID: 7, SubmittedAt: time.Date(2026, time.September, 5, 0, 1, 2, 611265000, time.UTC), Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved},
 	}}}
 	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
 	if err != nil {
@@ -178,7 +178,7 @@ func TestQuestionnaireExportFormatsBusinessTimestampsInShanghai(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(nethttp.MethodGet, "/api/admin/questionnaires/7/export", nil))
-	if response.Code != nethttp.StatusOK || survey.exportCalls != 1 || !strings.Contains(response.Body.String(), "2026-09-05 08:01:02") || strings.Contains(response.Body.String(), "2026-09-05T00:01:02") {
+	if response.Code != nethttp.StatusOK || survey.exportCalls != 1 || !strings.Contains(response.Body.String(), "2026-09-05 08:01:02") || strings.Contains(response.Body.String(), "2026-09-05T00:01:02") || !strings.Contains(response.Body.String(), "已关联客户") || strings.Contains(response.Body.String(), ",resolved,") {
 		t.Fatalf("business CSV did not use Shanghai display time: status=%d calls=%d body=%q", response.Code, survey.exportCalls, response.Body.String())
 	}
 }

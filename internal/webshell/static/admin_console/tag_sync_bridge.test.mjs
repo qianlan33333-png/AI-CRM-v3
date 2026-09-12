@@ -19,6 +19,8 @@ const code = readFileSync(
   new URL("./tag_sync_bridge.js", import.meta.url),
   "utf8",
 );
+assert.match(code, /标签同步未完成（\$\{tagSyncStateLabel\(sync\.state\)\}）/);
+assert.match(code, /final_failed: "执行失败"/);
 const dom = new JSDOM(
   `<main id="stage"><button data-tag-group-card aria-pressed="true"><span>Group</span></button><table><tr><td>Known</td><td><button>复制 tag_id</button></td></tr><tr><td>Pending</td><td><button>复制 tag_id</button></td></tr></table><div><span>tag_id</span><span><code>22</code><button>复制</button></span></div></main>`,
   { url: "https://test.invalid/admin/wecom-tags", runScripts: "outside-only" },

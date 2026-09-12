@@ -49,7 +49,7 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="apidocs"><main id="
       if (method === 'GET' && url.pathname === '/api/admin/open-platform/routes') return json({ items: operations });
       if (method === 'GET' && url.pathname === `/api/admin/open-platform/clients/${selected.client_id}`) return json({ client: selected });
       if (method === 'GET' && created && url.pathname === `/api/admin/open-platform/clients/${created.client_id}`) return json({ client: created });
-      if (method === 'GET' && /\/audit$/.test(url.pathname)) return json({ items: [] });
+      if (method === 'GET' && /\/audit$/.test(url.pathname)) return json({ items: [{ action: 'machine_client_grants_updated', outcome: 'revoked_prior_bearers', details: {}, created_at: '2026-09-06T10:11:12Z' }, { action: 'unmapped_action', outcome: 'unmapped_outcome', details: {}, created_at: '2026-09-06T10:11:13Z' }] });
       if (method === 'PATCH' && url.pathname === `/api/admin/open-platform/clients/${selected.client_id}`) {
         selected = { ...selected, ...body, auth_version: selected.auth_version + 1 };
         return json({ client: selected });
@@ -82,6 +82,9 @@ try {
   const document = dom.window.document;
   const root = document.querySelector('[data-open-platform-host="v1"]');
   if (!root || !document.body.textContent.includes('V1 能力目录') || [...document.querySelectorAll('.open-platform-catalog tbody')].at(-1)?.querySelectorAll('tr').length !== capabilities.length) throw new Error('V1 Host did not render the controlled six-operation catalog');
+  for (let attempt = 0; attempt < 10 && !document.body.textContent.includes('更新授权范围'); attempt += 1) await sleep(20);
+  const auditText = [...document.querySelectorAll('.open-platform-catalog')].find((node) => node.querySelector('h2')?.textContent === '最近审计')?.textContent || '';
+  if (!auditText.includes('更新授权范围') || !auditText.includes('已撤销旧访问凭据') || !auditText.includes('审计操作待确认') || !auditText.includes('审计结果待确认') || auditText.includes('machine_client_grants_updated') || auditText.includes('revoked_prior_bearers')) throw new Error(`audit action and outcome were not presented in Chinese: ${auditText}`);
 
   const expiry = document.querySelector('[data-open-platform-edit="expires_at"]');
   if (!expiry || !/^2026-09-06T18:11:12(?:\.000)?$/.test(expiry.value)) throw new Error(`UTC expiry was not rendered as Shanghai datetime with seconds: ${expiry?.value}`);

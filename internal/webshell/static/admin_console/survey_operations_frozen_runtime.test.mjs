@@ -55,7 +55,7 @@ dom.window.fetch = async (url, options = {}) => {
     operations.external_push = { enabled: body.enabled, configuration_reference: body.configuration_reference, metadata: body.metadata === undefined ? operations.external_push.metadata : body.metadata };
     return reply({ configuration_version: ++metadataVersion, completion: operations.completion, external_push: operations.external_push });
   }
-  if (target.includes("external-push-logs")) return reply({ items: [{ source_pk: "questionnaire-test-executed", status: "executed", attempt_count: 1, provider_result_received: true, occurred_at: "2026-09-05T00:00:00Z" }, { source_pk: "questionnaire-test-unknown", status: "outcome_unknown", attempt_count: 1, occurred_at: "2026-09-05T00:00:01Z" }] });
+  if (target.includes("external-push-logs")) return reply({ items: [{ source_pk: "questionnaire-test-executed", status: "executed", attempt_count: 1, provider_result_received: true, occurred_at: "2026-09-05T00:00:00Z" }, { source_pk: "questionnaire-test-unknown", status: "outcome_unknown", attempt_count: 1, occurred_at: "2026-09-05T00:00:01Z" }, { source_pk: "questionnaire-test-unmapped", status: "provider_pending", attempt_count: 1, occurred_at: "2026-09-05T00:00:02Z" }] });
   return reply({ items: [{ source_pk: "questionnaire-test-queued", status: "queued", occurred_at: "2026-09-05T00:00:00Z" }], configuration_version: metadataVersion, ...operations });
 };
 
@@ -87,7 +87,7 @@ await confirmControlledTest();
 if (testPosts !== 2 || !originalTest.textContent.includes("受控外推测试已创建") || !logCard.textContent.includes("等待处理")) throw new Error("original test button did not run through the confirmed Host controlled-test receipt path");
 document.querySelector('[data-survey-log-scope="global"]').click();
 await wait(10);
-if (!logCard.textContent.includes("已收到处理结果") || !logCard.textContent.includes("处理结果待确认（不会自动重复发送）")) throw new Error("actual log card did not show true effect states");
+if (!logCard.textContent.includes("已收到处理结果") || !logCard.textContent.includes("处理结果待确认（不会自动重复发送）") || !logCard.textContent.includes("历史记录：状态待确认") || logCard.textContent.includes("provider_pending")) throw new Error("actual log card did not show true effect states in Chinese");
 
 const pushTab = [...document.querySelectorAll("button")].find(button => button.textContent.includes('外部推送') && !button.textContent.includes('保存'));
 if (!pushTab) throw new Error('compiled external push tab missing');

@@ -12,7 +12,7 @@ const host = output.outputFiles[0].text;
 const wait = () => new Promise(resolve => setTimeout(resolve, 40));
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body, text: async () => body });
 
-async function mountFixture(contextBody, contextStatus = 200, exercisePicker = false, exerciseLegacyImport = false) {
+async function mountFixture(contextBody, contextStatus = 200, exercisePicker = false, exerciseLegacyImport = false, exercisePreview = false, previewStatus = 200) {
   const requests = [];
   const pickerOpens = [];
   const dom = new JSDOM('<!doctype html><html><body><main data-owner-handoff-host></main></body></html>', {
@@ -30,6 +30,19 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
         requests.push({ path: url.pathname, method });
         if (url.pathname === "/static/admin_console/owner_migration_dd8d60d.html" && method === "GET") return response(donor);
         if (url.pathname === "/api/admin/customers/owner-handoffs/context" && method === "GET") return response(contextBody, contextStatus);
+        if (url.pathname === "/api/admin/customers/owner-handoffs/previews" && method === "POST") {
+          if (previewStatus !== 200) return response({ error: "provider_unavailable（服务暂不可用）" }, previewStatus);
+          return response({
+            ID: "preview-1", Hash: "preview-hash", ConfirmationPhrase: "确认迁移", Mode: "wecom_then_crm",
+            Rows: [
+              { Line: 1, CustomerID: 21, ExternalUserID: "owner-ready", CustomerDisplayName: "已知客户", CurrentOwnerUserID: "inactive-source", State: "ready", Reason: "" },
+              { Line: 2, CustomerID: 22, ExternalUserID: "owner-unknown", CustomerDisplayName: "待核实客户", CurrentOwnerUserID: "inactive-source", State: "outcome_unknown", Reason: "provider_unavailable" },
+            ],
+          });
+        }
+        if (url.pathname === "/api/admin/customers/owner-handoffs/confirm" && method === "POST") {
+          return response({ ID: "batch-1", State: "accepted", Mode: "wecom_then_crm", Lines: [{ Line: 2, CustomerID: 22, State: "outcome_unknown", TransferStatus: 2 }] });
+        }
         return response({ error: "unexpected fixture route" }, 500);
       };
     },
@@ -62,6 +75,14 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
     page.querySelector("[data-upload-file]")?.click();
     await wait(); await wait(); await wait();
   }
+  if (exercisePreview && page) {
+    page.querySelector("[data-preview]")?.click();
+    await wait(); await wait();
+    const phrase = page.querySelector("[data-confirm-phrase-input]");
+    phrase.value = "确认迁移";
+    page.querySelector("[data-execute]")?.click();
+    await wait(); await wait();
+  }
   const diagnostic = {
     init: stage?.dataset.ownerHandoffInit || "missing",
     http_status: stage?.dataset.ownerHandoffInitStatus || "",
@@ -85,6 +106,10 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
     import_marked_skip: page?.querySelector('[data-import-stat="marked_skip"]')?.textContent || "",
     import_duplicate_rows: page?.querySelector('[data-import-stat="duplicate_rows"]')?.textContent || "",
     import_invalid_rows: page?.querySelector('[data-import-stat="invalid_rows"]')?.textContent || "",
+    preview_states: [...(page?.querySelectorAll("[data-preview-rows] .owner-migration-status") || [])].map((node) => node.textContent || ""),
+    preview_reasons: [...(page?.querySelectorAll("[data-preview-rows] td:last-child") || [])].map((node) => node.textContent || ""),
+    execution_log: page?.querySelector("[data-execution-log]")?.textContent || "",
+    notice: page?.querySelector("[data-workbench-notice]")?.textContent || "",
   };
   dom.window.close();
   return diagnostic;
@@ -117,5 +142,32 @@ const legacyImport = await mountFixture({
   operator: "管理员 #42",
 }, 200, true, true);
 if (legacyImport.init !== "ready" || legacyImport.source_id !== "11" || legacyImport.target_id !== "12" || !legacyImport.import_visible || legacyImport.import_filename !== "legacy-owner-list.xls" || legacyImport.import_total_rows !== "6" || legacyImport.import_unique_external_userids !== "4" || legacyImport.import_marked_move !== "2" || legacyImport.import_marked_skip !== "1" || legacyImport.import_duplicate_rows !== "1" || legacyImport.import_invalid_rows !== "2") throw new Error(`owner handoff Host legacy file-import fixture mismatch ${JSON.stringify(legacyImport)}`);
+
+const legacyPreview = await mountFixture({
+  staff: [
+    { ID: 11, UserID: "inactive-source", DisplayName: "Inactive source", Active: false },
+    { ID: 12, UserID: "active-target", DisplayName: "Active target", Active: true },
+  ],
+  operator: "管理员 #42",
+}, 200, true, true, true);
+if (!legacyPreview.preview_reasons.includes("当前负责人标识与选择的原负责人不一致。") || legacyPreview.preview_reasons.some((reason) => reason.includes("userid") || reason.includes("external_userid"))) throw new Error(`owner handoff Host must map local row reasons without technical identifiers ${JSON.stringify(legacyPreview)}`);
+
+const visibleStates = await mountFixture({
+  staff: [
+    { ID: 11, UserID: "inactive-source", DisplayName: "Inactive source", Active: false },
+    { ID: 12, UserID: "active-target", DisplayName: "Active target", Active: true },
+  ],
+  operator: "管理员 #42",
+}, 200, true, false, true);
+if (JSON.stringify(visibleStates.preview_states) !== JSON.stringify(["可迁移", "结果待核实"]) || !visibleStates.preview_reasons.includes("迁移原因待确认。") || !visibleStates.execution_log.includes("迁移方式：先企微转接后本地迁移") || !visibleStates.execution_log.includes("批次状态：已受理") || !visibleStates.execution_log.includes("结果待核实") || visibleStates.execution_log.includes("wecom_then_crm") || visibleStates.execution_log.includes("outcome_unknown")) throw new Error(`owner handoff Host must present states in Chinese ${JSON.stringify(visibleStates)}`);
+
+const previewFailure = await mountFixture({
+  staff: [
+    { ID: 11, UserID: "inactive-source", DisplayName: "Inactive source", Active: false },
+    { ID: 12, UserID: "active-target", DisplayName: "Active target", Active: true },
+  ],
+  operator: "管理员 #42",
+}, 200, true, false, true, 503);
+if (previewFailure.notice !== "迁移服务暂不可用，请稍后重试。" || previewFailure.notice.includes("provider_unavailable")) throw new Error(`owner handoff Host must not expose provider status codes ${JSON.stringify(previewFailure)}`);
 
 console.log("owner_handoff_host: PASS");

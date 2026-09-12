@@ -7,14 +7,14 @@
   async function adminRequest(path, options) {
     const headers = new Headers((options && options.headers) || {}); headers.set('X-CSRF-Token', csrfToken()); headers.set('Idempotency-Key', requestKey());
     const response = await platformFetch(path, Object.assign({ credentials: 'same-origin' }, options, { headers: headers }));
-    if (!response.ok) { const error = new Error('HTTP ' + response.status); error.status = response.status; throw error; }
+    if (!response.ok) { const error = new Error(response.status === 401 ? '登录状态已失效，请重新登录后继续。' : response.status === 403 ? '没有此操作权限。' : response.status === 409 ? '问卷配置已变化，请重新读取后重试。' : response.status >= 500 ? '问卷服务暂不可用，请稍后重试。' : '问卷请求失败，请稍后重试。'); error.status = response.status; throw error; }
     return response.json();
   }
   function appendCell(row, value) { const cell = document.createElement('td'); cell.textContent = text(value || '—'); cell.style.cssText = 'padding:8px;border-bottom:1px solid #f2f3f5;vertical-align:top'; row.appendChild(cell); }
   function statusLabel(item) {
     if (item.status === 'queued') return '等待处理'; if (item.status === 'executed') return item.provider_result_received === true ? '已收到处理结果' : '已完成处理';
     if (item.status === 'outcome_unknown') return '处理结果待确认（不会自动重复发送）'; if (item.status === 'disabled') return '当时未启用外推配置';
-    if (item.status === 'legacy_success') return '历史记录：已完成'; if (item.status === 'legacy_failed' || item.status === 'final_failed') return '未完成'; if (item.status === 'attempted') return '正在等待结果'; return '历史记录：' + text(item.status || '状态未知');
+    if (item.status === 'legacy_success') return '历史记录：已完成'; if (item.status === 'legacy_failed' || item.status === 'final_failed') return '未完成'; if (item.status === 'attempted') return '正在等待结果'; return '历史记录：状态待确认';
   }
   function attemptLabel(item) { const attempt = Number.isInteger(item.provider_attempt_number) ? item.provider_attempt_number : item.attempt_count; return Number.isInteger(attempt) ? '尝试 ' + attempt + ' 次' : '尝试次数未记录'; }
   function findExternalPushCard() {

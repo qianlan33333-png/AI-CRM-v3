@@ -152,6 +152,19 @@ function radarDisplayTime(value: string): string {
   return formatted === '未提供' ? '时间暂时无法显示' : formatted;
 }
 
+function radarStageLabel(value: string): string {
+  return ({
+    landing: '访问落地页',
+    oauth_started: '开始授权',
+    oauth_verified: '授权已验证',
+    identity_resolved: '已关联客户',
+    content_opened: '已打开内容',
+    redirected: '已完成跳转',
+    image_loaded: '图片已加载',
+    pdf_opened: '已打开 PDF',
+  } as Record<string, string>)[value] || '事件阶段待确认';
+}
+
 function radarErrorMessage(error: unknown, operation: 'read' | 'export'): string {
   const status = radarRecord(error)?.status;
   const code = typeof status === 'number' && Number.isSafeInteger(status) ? status : 0;
@@ -374,7 +387,7 @@ class RadarDetailTimeHost {
   private visibleItems(): RadarEvent[] {
     const keyword = this.keyword.value.trim().toLowerCase();
     if (!keyword) return this.page?.items || [];
-    return (this.page?.items || []).filter((item) => item.receiptID.toLowerCase().includes(keyword) || item.stage.toLowerCase().includes(keyword));
+    return (this.page?.items || []).filter((item) => item.receiptID.toLowerCase().includes(keyword) || item.stage.toLowerCase().includes(keyword) || radarStageLabel(item.stage).toLowerCase().includes(keyword));
   }
 
   private render(): void {
@@ -386,7 +399,7 @@ class RadarDetailTimeHost {
     if (visible.length) {
       visible.forEach((item) => {
         const row = document.createElement('tr');
-        for (const [value, className] of [[item.receiptID, 'mono'], [item.stage, 'mono'], [radarDisplayTime(item.createdAt), '']] as const) {
+        for (const [value, className] of [[item.receiptID, 'mono'], [radarStageLabel(item.stage), ''], [radarDisplayTime(item.createdAt), '']] as const) {
           const cell = document.createElement('td');
           if (className) cell.className = className;
           cell.textContent = value;

@@ -300,8 +300,37 @@ function materialCsrf(): string {
 }
 
 function materialError(status: number, body: Record<string, unknown>): Error {
-  const message = materialString(body.message) || materialString(body.error) || materialString(body.code);
-  return new Error(message || (status === 403 ? '没有此操作权限' : `刷新请求失败（HTTP ${status}）`));
+  const code = materialString(body.code) || materialString(body.error);
+  const message = ({
+    invalid_request: '刷新请求无效，请检查后重试。',
+    idempotency_conflict: '本次刷新与已提交操作不一致，请刷新页面后重试。',
+    not_found: '对应素材或刷新记录已不存在，请刷新页面。',
+    unavailable: '素材刷新服务暂不可用，请稍后重试。',
+  } as Record<string, string>)[code];
+  if (message) return new Error(message);
+  if (status === 401) return new Error('登录会话已失效，请重新登录。');
+  if (status === 403) return new Error('没有此操作权限。');
+  if (status === 409) return new Error('刷新状态已变化，请刷新页面后重试。');
+  if (status === 429) return new Error('请求过于频繁，请稍后重试。');
+  if (status >= 500) return new Error('素材刷新服务暂不可用，请稍后重试。');
+  return new Error('素材刷新请求未完成，请稍后重试。');
+}
+
+function materialFailureText(error: unknown, fallback: string): string {
+  // materialError is the only source of reviewed user-facing HTTP messages.
+  // Browser/network Error messages remain technical and must not reach the page.
+  const known = error instanceof Error ? error.message : '';
+  return new Set([
+    '刷新请求无效，请检查后重试。',
+    '本次刷新与已提交操作不一致，请刷新页面后重试。',
+    '对应素材或刷新记录已不存在，请刷新页面。',
+    '素材刷新服务暂不可用，请稍后重试。',
+    '登录会话已失效，请重新登录。',
+    '没有此操作权限。',
+    '刷新状态已变化，请刷新页面后重试。',
+    '请求过于频繁，请稍后重试。',
+    '素材刷新请求未完成，请稍后重试。',
+  ]).has(known) ? known : fallback;
 }
 
 async function materialResponse(response: Response): Promise<Record<string, unknown>> {
@@ -408,7 +437,7 @@ function materialFailureReason(item: MaterialProjection): string {
     case 'failed':
     case 'final_failed':
     case 'completed_with_failures':
-      return materialString(item.failure_code) || '刷新失败';
+      return materialFailureHint({ failure_code: materialString(item.failure_code) });
     default:
       return '—';
   }
@@ -435,8 +464,16 @@ function materialProgress(item: MaterialProjection, round: RefreshRoundProjectio
   return `总计 ${total === undefined ? '—' : total} · 成功 ${successLabel} · 失败 ${failed === undefined ? '—' : failed} · 待核实 ${unknown === undefined ? '—' : unknown}`;
 }
 
+function materialSourceDisplayName(sourceRef: unknown, sourceType: unknown): string {
+  const ref = materialString(sourceRef);
+  const type = materialString(sourceType) || ref.split(':', 1)[0];
+  const id = materialStableID({ source_ref: ref } as MaterialProjection);
+  const label = materialTypeLabel(type);
+  return id ? `${label}素材 #${id}` : `${label}素材`;
+}
+
 function materialSourceName(item: MaterialProjection): string {
-  return materialString(item.file_name) || '未命名素材';
+  return materialString(item.file_name) || materialSourceDisplayName(item.source_ref, item.source_type);
 }
 
 function materialNextRun(value: unknown): string {
@@ -451,6 +488,17 @@ function materialFailureHint(failure: MaterialSourceFailureProjection): string {
       return '原文件缺失，请补传';
     case 'invalid_metadata':
       return '素材元数据无效，请重新上传';
+    case 'provider_rejected':
+      return '服务未接受该素材，请重新上传后重试';
+    case 'upload_outcome_unknown':
+    case 'response_unknown':
+      return '刷新结果待核实，请稍后读取进度';
+    case 'read_unavailable':
+      return '素材刷新服务暂不可用，请稍后重试';
+    case 'cancelled':
+      return '刷新已取消，请重新发起';
+    case 'not_supported':
+      return '该素材暂不支持刷新，请重新上传';
     default:
       return '素材无法读取，请重新上传';
   }
@@ -530,7 +578,7 @@ class MaterialRefreshPanel {
     } catch (error) {
       if (generation !== this.generation) return;
       this.loading = false;
-      this.renderError(error instanceof Error ? error.message : '刷新状态暂不可读取');
+      this.renderError(materialFailureText(error, '刷新状态暂不可读取，请检查网络后重试。'));
     }
   }
 
@@ -635,9 +683,19 @@ class MaterialRefreshPanel {
       list.style.cssText = 'margin:6px 0 0;padding-left:18px;display:grid;gap:4px';
       this.failures.forEach((failure) => {
         const entry = document.createElement('li');
-        const sourceRef = materialString(failure.source_ref) || '未知素材';
-        const code = materialString(failure.failure_code) || 'source_unavailable';
-        entry.textContent = `${sourceRef}：${materialFailureHint(failure)}（${code}）`;
+        const sourceRef = materialString(failure.source_ref);
+        const source = materialSourceDisplayName(sourceRef, sourceRef.split(':', 1)[0]);
+        entry.append(document.createTextNode(`${source}：${materialFailureHint(failure)}`));
+        const details = document.createElement('details');
+        details.style.cssText = 'margin-top:4px';
+        const summary = document.createElement('summary');
+        summary.textContent = '技术详情';
+        summary.style.cursor = 'pointer';
+        const technical = document.createElement('small');
+        technical.style.cssText = 'display:block;margin-top:4px;color:#646A73;white-space:pre-wrap;overflow-wrap:anywhere';
+        technical.textContent = `素材引用：${sourceRef || '未提供'}\n失败代码：${materialString(failure.failure_code) || '未提供'}`;
+        details.append(summary, technical);
+        entry.append(details);
         list.append(entry);
       });
       missing.append(list);
@@ -735,7 +793,7 @@ class MaterialRefreshPanel {
       this.setStatus('单素材刷新已受理；完成状态可通过“刷新进度”核对。');
     } catch (error) {
       materialBusy(button, false, '立即刷新单个');
-      this.setStatus(error instanceof Error ? `${error.message}；可重试，仍使用同一操作 key。` : '单素材刷新失败；可重试。', true);
+      this.setStatus(`${materialFailureText(error, '单素材刷新失败，请检查网络后重试。')}可重试，系统会按同一次提交核对。`, true);
     }
   }
 
@@ -754,7 +812,7 @@ class MaterialRefreshPanel {
       if (id !== undefined) await this.loadRound();
     } catch (error) {
       materialBusy(button, false, '立即刷新全部启用素材');
-      this.setStatus(error instanceof Error ? `${error.message}；可重试，仍使用同一操作 key。` : '全量刷新失败；可重试。', true);
+      this.setStatus(`${materialFailureText(error, '全量刷新失败，请检查网络后重试。')}可重试，系统会按同一次提交核对。`, true);
     }
   }
 
@@ -770,7 +828,7 @@ class MaterialRefreshPanel {
       this.setStatus('已读取最新刷新进度。');
     } catch (error) {
       if (button) materialBusy(button, false, '刷新进度');
-      this.setStatus(error instanceof Error ? error.message : '刷新进度暂不可读取', true);
+      this.setStatus(materialFailureText(error, '刷新进度暂不可读取，请检查网络后重试。'), true);
     }
   }
 }

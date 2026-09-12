@@ -510,7 +510,7 @@ func TestExportCSVIsReceiptBackedReplayAndEscapesFormulas(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, err := service.ExportCSV(context.Background(), orderport.ListQuery{}, 7, "order-export-key-0001")
-	if err != nil || first.ReceiptID < 1 || !strings.Contains(string(first.Content), `"'=HYPERLINK(""bad"")"`) || !regexp.MustCompile(`"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"`).Match(first.Content) || strings.Contains(string(first.Content), "T") {
+	if err != nil || first.ReceiptID < 1 || !strings.Contains(string(first.Content), `"'=HYPERLINK(""bad"")"`) || !regexp.MustCompile(`"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"`).Match(first.Content) || strings.Contains(string(first.Content), "T") || !strings.Contains(string(first.Content), "微信支付") || !strings.Contains(string(first.Content), "待支付") || !strings.Contains(string(first.Content), "系统订单") {
 		t.Fatalf("result=%+v content=%s err=%v", first, first.Content, err)
 	}
 	replay, err := service.ExportCSV(context.Background(), orderport.ListQuery{}, 7, "order-export-key-0001")

@@ -35,6 +35,7 @@ let templateReads = 0;
 let broadcastRuns = [];
 let broadcastPreviewCalls = 0;
 let broadcastConfirmCalls = 0;
+let previewFailure = false;
 const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   url: "https://test.invalid/admin/automation-conversion/packages/13",
   runScripts: "outside-only",
@@ -86,6 +87,7 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         return json({ configuration: config });
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/preview") {
+        if (previewFailure) return json({ error: "provider_unavailable（上游服务错误）" }, 503);
         const body = JSON.parse(init.body);
         previewWrites.push(body);
         return json({ preview: { member_count: 1, member_digest: "member", watermark_digest: "watermark" } });
@@ -280,6 +282,11 @@ const dynamicProgress = document.querySelector("#sendRecordRows");
 if (!dynamicProgress.textContent.includes("动态生成 3 项") || !dynamicProgress.textContent.includes("失败排除 1") || !dynamicProgress.textContent.includes("未知排除 1")) throw new Error("dynamic generation progress and exclusions were not rendered");
 document.querySelector("[data-generation-run-id=\"92\"]").click();
 await wait(180);
-if (!document.querySelector("#sendRecordMeta").textContent.includes("generation_response_invalid") || !document.querySelector("#sendRecordMeta").textContent.includes("generation_call_unknown") || !document.querySelector("#sendRecordContentDetail").textContent.includes("AI 审阅与收件人")) throw new Error("dynamic generation readback did not show durable exclusions and review handoff");
+if (!document.querySelector("#sendRecordMeta").textContent.includes("生成结果无效") || !document.querySelector("#sendRecordMeta").textContent.includes("生成调用结果待核实") || document.querySelector("#sendRecordMeta").textContent.includes("generation_response_invalid") || document.querySelector("#sendRecordMeta").textContent.includes("generation_call_unknown") || !document.querySelector("#sendRecordContentDetail").textContent.includes("AI 审阅与收件人")) throw new Error("dynamic generation readback did not show durable exclusions and review handoff");
+previewFailure = true;
+document.querySelector("#templatePreviewBtn").click();
+await wait(180);
+const previewFailureText = document.querySelector("#templateStatusLine").textContent || "";
+if (!previewFailureText.includes("人群配置服务暂不可用") || previewFailureText.includes("provider_unavailable") || previewFailureText.includes("上游服务错误")) throw new Error(`template request error leaked a technical message: ${previewFailureText}`);
 dom.window.close();
 console.log("admin-audience-template-host-browser: PASS");
