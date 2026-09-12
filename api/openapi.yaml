@@ -2719,16 +2719,9 @@ paths:
       tags: [GroupOps]
       security: [{adminSession: []}]
       parameters:
-        - {name: scope, in: query, required: true, schema: {type: string, const: group_ops}}
+        - {name: scope, in: query, required: true, description: "Composition dispatches group_ops to GroupOps, owner_migration to Customer, and channel_code to Channel. Each owner applies its own role and query validation.", schema: {type: string, enum: [group_ops, owner_migration, channel_code]}}
         - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
-      responses: {"200": {description: Local eligible staff only, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
-    post:
-      operationId: syncGroupOpsOperationMembers
-      tags: [GroupOps]
-      security: [{adminSession: [], csrfHeader: []}]
-      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
-      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberSyncRequest"}}}}
-      responses: {"200": {description: Refreshed local eligible staff only, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+      responses: {"200": {description: "Scope-owned local staff projection; the GroupOps response is a GroupOpsOperationMemberPage, while owner-migration and channel-code return their owner-safe picker projections"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/automation/group-ops/broadcast:
     post:
       operationId: acceptGroupOpsBroadcast
@@ -3653,11 +3646,287 @@ paths:
         - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
       responses: {"202": {description: Temporary donor-compatible authenticated intake adapter, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /oauth/token:
+    post:
+      operationId: issueOpenPlatformClientCredentialsToken
+      tags: [OpenPlatform]
+      description: Client-credentials token exchange. The client authenticates with HTTP Basic credentials or the matching form credentials; it is not an admin-session route.
+      requestBody: {required: true, content: {application/x-www-form-urlencoded: {schema: {type: object, additionalProperties: false, required: [grant_type], properties: {grant_type: {const: client_credentials}, client_id: {type: string, minLength: 1, maxLength: 200}, client_secret: {type: string, minLength: 1, maxLength: 1024}, audience: {type: string, maxLength: 200}, scope: {type: string, maxLength: 1000}}}}}}
+      responses: {"200": {description: Short-lived machine bearer token}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "429": {$ref: "#/components/responses/Error"}}
+  /mcp:
+    get:
+      operationId: getOpenPlatformMCPMetadata
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized MCP transport metadata}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: invokeOpenPlatformMCP
+      tags: [OpenPlatform]
+      description: JSON-RPC 2.0 machine protocol. `tools/call` for the AI review-plan operation requires `Idempotency-Key`; other MCP calls do not.
+      security: [{machineBearer: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [jsonrpc, id, method], properties: {jsonrpc: {const: "2.0"}, id: {}, method: {type: string}, params: {type: object}}}}}}
+      responses: {"200": {description: JSON-RPC result or protocol error envelope}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /open/v1/capabilities:
+    get:
+      operationId: listOpenPlatformCapabilities
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized operation catalog}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /open/v1/customers:resolve:
+    post:
+      operationId: resolveOpenPlatformCustomer
+      tags: [OpenPlatform]
+      description: Resolves only from stable evidence. It never provisions or merges a Customer.
+      security: [{machineBearer: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"200": {description: Safe resolution result}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /open/v1/customers/{customer_id}:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getOpenPlatformCustomerContext
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized safe Customer context}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /open/v1/customers/{customer_id}/activities:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: listOpenPlatformCustomerActivities
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      parameters: [{name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100}}, {name: cursor, in: query, schema: {type: string, maxLength: 1024}}]
+      responses: {"200": {description: Bounded machine-authorized Customer activities}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /open/v1/ai/review-plans:
+    post:
+      operationId: createOpenPlatformAIReviewPlan
+      tags: [OpenPlatform]
+      description: Creates a review plan only; it does not dispatch an external effect.
+      security: [{machineBearer: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"201": {description: Idempotent machine-authorized review plan}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /open/v1/operations/{operation_id}:
+    parameters: [{name: operation_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: getOpenPlatformOperation
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized operation status}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients:
+    get:
+      operationId: listOpenPlatformClients
+      tags: [OpenPlatform]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Access-owned machine client summaries}, "401": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [purpose], properties: {purpose: {const: external_agent}}}}}}
+      responses: {"201": {description: Created client and one-time secret material}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: getOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Access-owned machine client}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+    patch:
+      operationId: patchOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"200": {description: Updated Access-owned machine client}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/audit:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: listOpenPlatformClientAudit
+      tags: [OpenPlatform]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}]
+      responses: {"200": {description: Access-owned client audit facts}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/activate:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: activateOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [client_secret, copied_confirmed], properties: {client_secret: {type: string, minLength: 1, maxLength: 1024}, copied_confirmed: {const: true}}}}}}
+      responses: {"200": {description: Machine client activated}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/rotate:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: rotateOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      responses: {"200": {description: Rotated client and one-time secret material}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/enable:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: enableOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      responses: {"200": {description: Machine client enabled}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/clients/{client_id}/disable:
+    parameters: [{name: client_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: disableOpenPlatformClient
+      tags: [OpenPlatform]
+      security: [{adminSession: [], csrfHeader: []}]
+      responses: {"200": {description: Machine client disabled}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/open-platform/routes:
+    get:
+      operationId: listOpenPlatformRoutes
+      tags: [OpenPlatform]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Active Open Platform operation catalog}, "401": {$ref: "#/components/responses/Error"}}
+  /api/admin/customers/owner-handoffs/context:
+    get:
+      operationId: getOwnerHandoffContext
+      tags: [Customer]
+      description: Super-admin-only safe staff projection for the owner-handoff UI. The trusted corporation scope is server configured and never supplied by the browser.
+      security: [{adminSession: []}]
+      responses: {"200": {description: Eligible owner-handoff staff and operator label}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/customers/owner-handoffs/previews:
+    post:
+      operationId: previewCustomerOwnerHandoff
+      tags: [Customer]
+      description: Creates a bounded, expiring preview only. For `external_userids`, the server resolves existing verified identities without provisioning or merging Customers.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [mode, source_staff_id, target_staff_id, confirmation_phrase], properties: {mode: {type: string, enum: [local_only, wecom_then_crm]}, source_staff_id: {$ref: "#/components/schemas/PositiveID"}, target_staff_id: {$ref: "#/components/schemas/PositiveID"}, customer_ids: {type: array, maxItems: 20000, items: {$ref: "#/components/schemas/PositiveID"}}, external_userids: {type: array, maxItems: 20000, items: {type: string, minLength: 1, maxLength: 1024}}, welcome_message: {type: string, maxLength: 4000}, confirmation_phrase: {type: string, minLength: 1}, scope: {type: string, enum: [all]}}}}}}
+      responses: {"200": {description: Expiring preview and candidate states; no Provider write is performed}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/customers/owner-handoffs/previews/{preview_id}:
+    parameters: [{name: preview_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: getCustomerOwnerHandoffPreview
+      tags: [Customer]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Frozen owner-handoff preview}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/customers/owner-handoffs/confirm:
+    post:
+      operationId: confirmCustomerOwnerHandoff
+      tags: [Customer]
+      description: Confirms exactly one unexpired preview. `idempotency_key` is an application-body key because this frozen host submits it in JSON.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [preview_id, preview_hash, confirmation_phrase, idempotency_key], properties: {preview_id: {type: string, minLength: 1, maxLength: 200}, preview_hash: {type: string, minLength: 1, maxLength: 128}, confirmation_phrase: {type: string, minLength: 1}, idempotency_key: {type: string, minLength: 8, maxLength: 200}}}}}}
+      responses: {"202": {description: "Customer-owned batch accepted atomically; WeCom work, when enabled, remains an existing Outbound effect"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/customers/owner-handoffs/batches/{batch_id}:
+    parameters: [{name: batch_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    get:
+      operationId: getCustomerOwnerHandoffBatch
+      tags: [Customer]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Durable owner-handoff batch and safe outcome state}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/customers/owner-handoffs/batches/{batch_id}/transfer-result:
+    parameters: [{name: batch_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+    post:
+      operationId: refreshCustomerOwnerHandoffTransferResult
+      tags: [Customer]
+      description: Reads an existing Provider transfer result and persists only safe observation facts under the submitted application-body idempotency key. It never reissues a transfer.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [idempotency_key], properties: {idempotency_key: {type: string, minLength: 8, maxLength: 200}}}}}}
+      responses: {"200": {description: Current batch with recorded Provider-read observation}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/message-archive/customers/{customer_id}:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: listCustomerMessageArchive
+      tags: [MessageArchive]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {name: chat_type, in: query, schema: {type: string, enum: [private, group]}}, {name: message_type, in: query, schema: {type: string}}, {name: direction, in: query, schema: {type: string, enum: [customer_to_staff, staff_to_customer]}}, {name: staff_user_id, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: start_at, in: query, schema: {type: string, format: date-time}}, {name: end_at, in: query, schema: {type: string, format: date-time}}, {name: q, in: query, schema: {type: string, maxLength: 200}}, {name: watermark, in: query, schema: {type: string, format: date-time}}, {name: after_at, in: query, schema: {type: string, format: date-time}}, {name: after_id, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses: {"200": {description: "Private, audited Message Archive page"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/message-archive/customers/{customer_id}/staff:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: listCustomerMessageArchiveStaff
+      tags: [MessageArchive]
+      security: [{adminSession: []}]
+      responses: {"200": {description: "Private, audited archive staff options"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/message-archive/customers/{customer_id}/media/{media_id}:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: media_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getCustomerMessageArchiveMedia
+      tags: [MessageArchive]
+      security: [{adminSession: []}]
+      responses: {"200": {description: "Private, audited raster archive media bytes", content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/gif: {schema: {type: string, format: binary}}, image/webp: {schema: {type: string, format: binary}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/sidebar/v2/bootstrap:
+    post:
+      operationId: bootstrapSidebarViewer
+      tags: [Sidebar]
+      description: Uses the HttpOnly sidebar session to issue a scoped context token for an existing Customer. It never provisions or merges a Customer; an absent session is represented by the explicit `viewer_session_required` state.
+      security: [{sidebarSession: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [external_userid], properties: {external_userid: {type: string, minLength: 1, maxLength: 128}}}}}}
+      responses: {"200": {description: "Bootstrap state, and context token only when ready"}, "400": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/sidebar/v2/materials/{image_id}/variants/{variant_key}:
+    parameters: [{name: image_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: variant_key, in: path, required: true, schema: {type: string, enum: [thumb_160, thumb_320, mobile_1080]}}]
+    get:
+      operationId: getSidebarMaterialVariant
+      tags: [Sidebar]
+      security: [{contextToken: []}]
+      responses: {"200": {description: Enabled image variant bytes, content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/webp: {schema: {type: string, format: binary}}}}, "304": {description: ETag matched}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/group-membership/refresh:
+    post:
+      operationId: refreshWeComGroupMembership
+      tags: [WeCom]
+      description: Super-admin-only Provider read that records no new Customer identity. It returns an incomplete observation when the Provider cannot provide a complete projection.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [chat_reference], properties: {chat_reference: {type: string, minLength: 1, maxLength: 256}}}}}}
+      responses: {"200": {description: Group-membership observation}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/media-preparations:
+    get:
+      operationId: listMediaPreparations
+      tags: [Media]
+      security: [{adminSession: []}]
+      parameters: [{name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500}}, {name: cursor, in: query, schema: {type: string, maxLength: 1024}}]
+      responses: {"200": {description: Local material snapshots and current refresh-round facts}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/media-preparations/refresh-rounds:
+    post:
+      operationId: refreshMediaPreparationRound
+      tags: [Media]
+      description: Accepts a local refresh command; a supplied idempotency key replays or rejects payload drift, while the frozen compatibility surface may omit it and receive an audited server key.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [force], properties: {force: {const: true}}}}}}
+      responses: {"202": {description: Local refresh round accepted}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/media-preparations/refresh-rounds/{refresh_round_id}:
+    parameters: [{name: refresh_round_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getMediaPreparationRefreshRound
+      tags: [Media]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local material refresh round}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/media-preparations/{source_ref}/prepare:
+    parameters: [{name: source_ref, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 512}}]
+    post:
+      operationId: prepareMediaPreparation
+      tags: [Media]
+      description: Accepts a local material preparation intent only; Media does not call a Provider while serving this request.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [force], properties: {force: {const: true}}}}}}
+      responses: {"202": {description: Local material preparation accepted}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/common/operation-members/sync:
+    post:
+      operationId: syncGroupOpsOperationMembers
+      tags: [GroupOps]
+      description: The GroupOps-owned local staff-directory refresh. The shared base path remains a read dispatcher for GroupOps, owner-handoff, and channel-code scopes; this mutation accepts only `group_ops`.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberSyncRequest"}}}}
+      responses: {"200": {description: Refreshed local eligible staff projection}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/payments/history:
+    get:
+      operationId: getHistoricalPayment
+      tags: [Transactions]
+      description: Read-only native projection of inert historical Payment facts. It cannot create, refund, retry, or make any Provider call.
+      security: [{adminSession: []}]
+      parameters: [{name: provider, in: query, required: true, schema: {type: string, enum: [wechat_pay, wechat_shop]}}, {name: merchant_order_no, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 200}}]
+      responses: {"200": {description: Historical Payment fact with nullable Customer links, content: {application/json: {schema: {type: object, required: [id, order_id, merchant_order_no, provider, status, amount_minor, currency, record_origin, source_status, history_reason, effect_eligible, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string}, provider: {type: string, enum: [wechat_pay, wechat_shop]}, status: {type: string}, amount_minor: {type: integer, minimum: 0}, currency: {type: string}, record_origin: {const: history}, source_status: {type: string}, history_reason: {type: string}, payer_customer_id: {type: [integer, "null"], minimum: 1}, beneficiary_customer_id: {type: [integer, "null"], minimum: 1}, effect_eligible: {const: false}, updated_at: {type: string, format: date-time}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
     sidebarSession: {type: apiKey, in: cookie, name: aicrm_sidebar_session}
     csrfHeader: {type: apiKey, in: header, name: X-CSRF-Token}
+    machineBearer: {type: http, scheme: bearer, bearerFormat: opaque}
     contextToken: {type: http, scheme: bearer}
     groupOpsWebhook: {type: apiKey, in: header, name: X-AICRM-Signature}
     paymentSession: {type: apiKey, in: cookie, name: aicrm_payment_session}
@@ -3762,6 +4031,47 @@ components:
         updated_by: {$ref: "#/components/schemas/PositiveID"}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+    RadarLinkListItem:
+      type: object
+      additionalProperties: false
+      required: [link_id, public_code, name, title, destination_url, status, version, created_by, updated_by, created_at, updated_at, auth_policy, statistics_status, total_landings, authorized_users, authorized_views, view_count, last_viewed_at]
+      allOf:
+        - if: {properties: {statistics_status: {const: ready}}}
+          then:
+            properties:
+              total_landings: {type: integer, format: int64, minimum: 0}
+              authorized_users: {type: integer, format: int64, minimum: 0}
+              authorized_views: {type: integer, format: int64, minimum: 0}
+              view_count: {type: integer, format: int64, minimum: 0}
+        - if: {properties: {statistics_status: {const: unavailable}}}
+          then:
+            properties:
+              total_landings: {type: "null"}
+              authorized_users: {type: "null"}
+              authorized_views: {type: "null"}
+              view_count: {type: "null"}
+      properties:
+        link_id: {$ref: "#/components/schemas/PositiveID"}
+        public_code: {type: string, pattern: "^rd_[A-Za-z0-9_-]{16,64}$"}
+        name: {type: string, minLength: 1, maxLength: 120}
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 2000}
+        destination_url: {type: string, format: uri, pattern: "^https://"}
+        cover_image_id: {oneOf: [{$ref: "#/components/schemas/PositiveID"}, {type: "null"}]}
+        attachment_id: {oneOf: [{$ref: "#/components/schemas/PositiveID"}, {type: "null"}]}
+        auth_policy: {type: string, enum: [anonymous, unionid_required]}
+        status: {type: string, enum: [draft, enabled, disabled]}
+        version: {type: integer, format: int64, minimum: 1}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        statistics_status: {type: string, enum: [ready, unavailable]}
+        total_landings: {oneOf: [{type: integer, format: int64, minimum: 0}, {type: "null"}]}
+        authorized_users: {oneOf: [{type: integer, format: int64, minimum: 0}, {type: "null"}]}
+        authorized_views: {oneOf: [{type: integer, format: int64, minimum: 0}, {type: "null"}]}
+        view_count: {oneOf: [{type: integer, format: int64, minimum: 0}, {type: "null"}]}
+        last_viewed_at: {oneOf: [{type: string, format: date-time}, {type: "null"}]}
     RadarLinkEnvelope:
       type: object
       additionalProperties: false
@@ -3772,7 +4082,7 @@ components:
       additionalProperties: false
       required: [items, total, limit, offset, has_more, local_projection, real_external_call_executed]
       properties:
-        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/RadarLink"}}
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/RadarLinkListItem"}}
         total: {type: integer, format: int64, minimum: 0}
         limit: {type: integer, minimum: 1, maximum: 100}
         offset: {type: integer, minimum: 0}
@@ -5226,7 +5536,7 @@ components:
     GroupOpsPlan:
       type: object
       additionalProperties: false
-      required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at]
+      required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at, owner]
       properties:
         plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
         name: {type: string, minLength: 1, maxLength: 128}
@@ -5236,6 +5546,18 @@ components:
         updated_by: {$ref: "#/components/schemas/PositiveID"}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        owner: {$ref: "#/components/schemas/GroupOpsPlanOwner"}
+    GroupOpsPlanOwner:
+      type: object
+      description: Always present on each GroupOps Plan. It is `{}` without a Plan member; with a member but no active directory record it contains only `staff_id`.
+      additionalProperties: false
+      properties:
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        sender_userid: {type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
+        display_name: {type: string, minLength: 1, maxLength: 160}
+        name_source: {type: string, enum: [wecom_profile, local_fallback]}
+        profile_read_state: {type: string, enum: [ready, unavailable], description: "`unavailable` records a failed directory-profile read."}
+        profile_read_error_code: {type: string, maxLength: 64, pattern: "^$|^[a-z0-9_]{1,64}$"}
     GroupOpsPlanListItem:
       allOf:
         - {$ref: "#/components/schemas/GroupOpsPlan"}
