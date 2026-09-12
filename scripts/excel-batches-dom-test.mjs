@@ -104,13 +104,14 @@ const json = (body, status = 200) => ({
 win.fetch = async (raw, init = {}) => {
   const url = String(raw);
   calls.push({ url, init });
-  if (url === "/api/admin/operation-cycles/strategies?limit=100&offset=0")
+  if (url === "/api/admin/operation-batches/strategy-summaries?limit=20&offset=0")
     return json({
       items: [
         {
           strategy_key: "weekly.review",
           title: "每周复盘",
           status: "active",
+          latest_batch_status: "ready",
           latest_batch: {
             id: 918,
             state: "pending_review",
@@ -118,6 +119,11 @@ win.fetch = async (raw, init = {}) => {
           },
         },
       ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+      has_more: false,
+      next_offset: null,
     });
   if (url === "/api/admin/operation-batches/legacy")
     return json({
