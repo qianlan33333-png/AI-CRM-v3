@@ -324,10 +324,12 @@ class RadarDetailVisitorsHost {
     overflow.style.overflowX = 'auto';
     const table = document.createElement('table');
     table.className = 'tbl';
+    table.style.minWidth = '680px';
     const head = document.createElement('thead');
     const header = document.createElement('tr');
     ['昵称', '外部联系人 ID', 'OneID', '打开时间'].forEach((value) => {
       const cell = document.createElement('th');
+      cell.style.whiteSpace = 'nowrap';
       cell.textContent = value;
       header.append(cell);
     });
@@ -458,6 +460,7 @@ class RadarDetailVisitorsHost {
         for (const [value, className] of [[visitorName(item), ''], [visitorExternalContact(item), 'mono'], [visitorOneID(item), 'mono'], [radarDisplayTime(item.openedAt), '']] as const) {
           const cell = document.createElement('td');
           if (className) cell.className = className;
+          cell.style.whiteSpace = 'nowrap';
           cell.textContent = value;
           row.append(cell);
         }

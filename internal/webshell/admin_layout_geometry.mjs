@@ -324,10 +324,45 @@ try {
           return {overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,host:visible(host),exportVisible:visible(exportButton),exportInside:!exportRect || (exportRect.left >= -1 && exportRect.right <= innerWidth + 1),tableScrollable:Boolean(tableScroll) && getComputedStyle(tableScroll).overflowX !== 'visible'};
         })()`);
         if (!narrow?.host || !narrow.exportVisible || !narrow.exportInside || narrow.overflow || !narrow.tableScrollable) throw new Error(`radar detail ${width}px responsive geometry invalid`);
+        await evaluate(cdp, "document.querySelector('[data-v3-radar-visitor-host]')?.scrollIntoView({block:'start'}); true");
+        await capture(`radar-detail-${width}`);
       }
     } finally {
       await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
     }
+  };
+  const assertRadarDetailVisitorSearchAndExport = async () => {
+    const enteredSearch = await evaluate(cdp, `(() => {
+      const host=document.querySelector('[data-v3-radar-visitor-host]');
+      const controls=host?.querySelector('.filter-bar');
+      const search=controls?.querySelector('input');
+      const query=controls?.querySelector('button');
+      if (!(search instanceof HTMLInputElement) || !(query instanceof HTMLButtonElement)) return false;
+      search.value='没有匹配的访客';
+      search.dispatchEvent(new Event('input',{bubbles:true}));
+      query.click();
+      return true;
+    })()`);
+    if (!enteredSearch) throw new Error('radar detail visitor search controls unavailable');
+    await waitFor(cdp, "document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('暂无符合条件的访问者')", 'radar detail visitor server search did not replace results');
+    const restored = await evaluate(cdp, `(() => {
+      const host=document.querySelector('[data-v3-radar-visitor-host]');
+      const controls=host?.querySelector('.filter-bar');
+      const reset=controls?.querySelectorAll('button')[1];
+      if (!(reset instanceof HTMLButtonElement)) return false;
+      reset.click();
+      return true;
+    })()`);
+    if (!restored) throw new Error('radar detail visitor reset control unavailable');
+    await waitFor(cdp, "document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('雷达布局访客')", 'radar detail visitor reset did not restore the server result');
+    const exported = await evaluate(cdp, `(() => {
+      const button=document.querySelector('#dExport');
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+      button.click();
+      return true;
+    })()`);
+    if (!exported) throw new Error('radar detail visitor CSV export control unavailable');
+    await waitFor(cdp, "document.querySelector('[data-radar-visitor-feedback]')?.textContent?.includes('已导出 CSV')", 'radar detail visitor CSV export did not finish');
   };
   const assertOwnerHandoffLayout = async label => {
     await assertLayout("standard", label, "[data-owner-picker=\"source\"]");
@@ -618,6 +653,7 @@ try {
   const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarNumericID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit')) && Boolean(document.querySelector('[data-v3-radar-visitor-host]')) && document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('雷达布局访客') && document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('2026-09-07 09:02:03')", "radar-detail", "standard", "#dEdit", false);
   if (radarDetailMounted) {
     await recordGeometry("radar-detail", async () => { await assertRadarLayout("radar-detail", "#dEdit", "#dEdit"); await assertRadarDetailVisitorsHost(); }, true);
+    await recordGeometry("radar-detail-search-export", assertRadarDetailVisitorSearchAndExport, false);
     await recordGeometry("radar-detail-narrow", assertRadarDetailNarrow, false);
   }
   const radarFormMounted = await navigate("/admin/radarForm.html", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#fSave'))", "radar-form", "standard", "#fSave", false);
