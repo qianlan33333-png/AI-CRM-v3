@@ -33,13 +33,19 @@ const fresh = item(12, "新的搜索结果");
 const stale = item(13, "旧的搜索结果");
 const inactive = item(14, "已停用素材", false);
 const calls = [];
+let materialRefreshReads = 0;
 let releaseStale;
 let releaseDialogRead;
+let releaseMutationReadback;
 let defaultName = first.name;
 let failSecondPage = false;
 let failNextReadback = false;
 let loseFirstDeleteResponse = false;
 let imageDeleted = false;
+let finalPageOnly = false;
+let finalPageDeleted = false;
+let finalDeleteAttempt = 0;
+let delayNextMutationReadback = false;
 
 const virtualConsole = new VirtualConsole();
 virtualConsole.forwardTo(console);
@@ -58,8 +64,10 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="s
       const url = new URL(raw, window.location.origin);
       const method = String(init.method || (typeof input === "string" || input instanceof URL ? "GET" : input.method)).toUpperCase();
       calls.push({ path: url.pathname, query: url.searchParams.toString(), method, body: init.body, headers: Object.fromEntries(new Headers(init.headers).entries()) });
-      if (url.pathname === "/api/admin/media-preparations")
+      if (url.pathname === "/api/admin/media-preparations") {
+        materialRefreshReads += 1;
         return json({ items: [], failures: [], done: true, next_cursor: "" });
+      }
       if (url.pathname === "/api/admin/image-library" && method === "GET") {
         const query = url.searchParams.get("q") || "";
         const offset = Number(url.searchParams.get("offset") || "0");
@@ -67,8 +75,20 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="s
         if (query === "旧") return new Promise((resolve) => { releaseStale = () => resolve(json({ items: [stale], total: 1, limit: 20, offset, has_more: false })); });
         if (query === "弹窗延迟") return new Promise((resolve) => { releaseDialogRead = () => resolve(json({ items: [fresh], total: 1, limit: 20, offset, has_more: false })); });
         if (query === "失败") return json({ code: "unavailable" }, 503);
+        if (query === "服务错误") return json({ code: "DEPENDENCY_UNAVAILABLE", message: "postgres connection refused" }, 503);
+        if (query === "网络错误") throw new window.TypeError("Failed to fetch image-library internal endpoint");
         if (query === "空") return json({ items: [], total: 0, limit: 20, offset, has_more: false });
         if (query === "新") return json({ items: enabledOnly === "false" ? [fresh, inactive] : [fresh], total: enabledOnly === "false" ? 2 : 1, limit: 20, offset, has_more: false });
+        if (delayNextMutationReadback) {
+          delayNextMutationReadback = false;
+          return new Promise((resolve) => {
+            releaseMutationReadback = () => resolve(json({ items: [item(11, defaultName)], total: 41, limit: 20, offset, has_more: true }));
+          });
+        }
+        if (finalPageOnly) {
+          if (offset === 20) return json({ items: finalPageDeleted ? [] : [secondPage], total: finalPageDeleted ? 20 : 21, limit: 20, offset, has_more: false });
+          return json({ items: [fresh], total: finalPageDeleted ? 20 : 21, limit: 20, offset, has_more: !finalPageDeleted });
+        }
         if (failNextReadback) {
           failNextReadback = false;
           return json({ code: "readback_unavailable" }, 503);
@@ -76,6 +96,12 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="s
         if (offset === 20 && failSecondPage) return json({ code: "page_unavailable" }, 503);
         if (offset === 20) return json({ items: [secondPage], total: 41, limit: 20, offset, has_more: true });
         return json({ items: imageDeleted ? [] : enabledOnly === "false" ? [item(11, defaultName), inactive] : [item(11, defaultName)], total: imageDeleted ? 0 : 41, limit: 20, offset, has_more: !imageDeleted });
+      }
+      if (url.pathname === "/api/admin/image-library/11" && method === "GET") {
+        return imageDeleted ? json({ code: "not_found" }, 404) : json({ ok: true, item: item(11, defaultName) });
+      }
+      if (url.pathname === "/api/admin/image-library/31" && method === "GET") {
+        return finalPageDeleted ? json({ code: "not_found" }, 404) : json({ ok: true, item: secondPage });
       }
       if (url.pathname === "/api/admin/image-library/11" && method === "PUT") {
         const body = JSON.parse(String(init.body));
@@ -88,6 +114,13 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="s
           throw new window.TypeError("delete response lost");
         }
         imageDeleted = true;
+        return json({ ok: true });
+      }
+      if (url.pathname === "/api/admin/image-library/31" && method === "DELETE") {
+        finalDeleteAttempt += 1;
+        if (finalDeleteAttempt === 1) return json({ code: "unavailable" }, 503);
+        if (finalDeleteAttempt === 2) throw new window.TypeError("delete response lost before commit");
+        finalPageDeleted = true;
         return json({ ok: true });
       }
       return json({ code: "unexpected", path: url.pathname, method }, 500);
@@ -220,6 +253,21 @@ current.input.value = "";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材"), "successful retry did not restore the latest list");
 
+current = controls();
+current.input.value = "服务错误";
+current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+await waitFor(() => dom.window.document.body.textContent.includes("读取图片素材服务暂不可用，请稍后重试。"), "ApiError read failure did not use the controlled Chinese service message");
+const visibleImageWorkspace = dom.window.document.getElementById("stage")?.textContent || "";
+assert.ok(!visibleImageWorkspace.includes("DEPENDENCY_UNAVAILABLE"), "ApiError business code leaked into the image page");
+assert.ok(!visibleImageWorkspace.includes("postgres connection refused"), "ApiError implementation detail leaked into the image page");
+current.input.value = "网络错误";
+current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+await waitFor(() => dom.window.document.body.textContent.includes("读取图片素材网络暂不可用，请检查网络后重试。"), "network read failure did not use the controlled Chinese retry message");
+assert.ok(!(dom.window.document.getElementById("stage")?.textContent || "").includes("Failed to fetch image-library internal endpoint"), "browser TypeError leaked into the image page");
+current.input.value = "";
+current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材"), "controlled-error recovery did not restore the active list");
+
 failSecondPage = true;
 const failingNext = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "下一页");
 assert.ok(failingNext, "next page action missing before failed-page retry");
@@ -256,9 +304,65 @@ assert.ok(calls.some((call) => call.path === "/api/admin/image-library/11" && ca
 const writeAt = calls.findIndex((call) => call.path === "/api/admin/image-library/11" && call.method === "PUT");
 assert.ok(calls.slice(writeAt + 1).some((call) => call.path === "/api/admin/image-library" && call.method === "GET"), "successful edit did not perform its required list readback");
 assert.equal(calls.filter((call) => call.path === "/api/admin/image-library/11" && call.method === "PUT").length, 1, "readback failure retried the write instead of preserving its idempotent result");
+const materialReadsBeforeConfirmedEdit = materialRefreshReads;
 dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
 await waitFor(() => !dom.window.document.querySelector("#fImgName") && dom.window.document.body.textContent.includes("已更新素材"), "readback retry did not confirm the saved edit");
 assert.equal(calls.filter((call) => call.path === "/api/admin/image-library/11" && call.method === "PUT").length, 1, "readback retry repeated the saved mutation");
+await waitFor(() => materialRefreshReads > materialReadsBeforeConfirmedEdit, "confirmed image write did not refresh the existing MaterialSaveHost panel");
+
+// Closing an accepted edit and opening another dialog before its list readback
+// returns must not let the old result close the newer dialog.
+const raceEdit = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
+assert.ok(raceEdit, "edit action missing before different-dialog readback race");
+raceEdit.click();
+await waitFor(() => Boolean(dom.window.document.querySelector("#fImgName")), "race edit dialog did not open");
+const raceName = dom.window.document.querySelector("#fImgName");
+assert.ok(raceName instanceof dom.window.HTMLInputElement, "race edit input missing");
+// This is the exact accepted payload from the preceding readback-failure
+// check, so MaterialSaveHost may correctly reuse that pending stable key.
+raceName.value = "已更新素材";
+releaseMutationReadback = undefined;
+delayNextMutationReadback = true;
+const raceSave = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "保存");
+assert.ok(raceSave, "race save action missing");
+raceSave.click();
+await waitFor(() => typeof releaseMutationReadback === "function", "accepted edit did not begin its list readback");
+dom.window.document.querySelector('button[aria-label="关闭弹窗"]')?.click();
+const raceUpload = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "上传图片");
+assert.ok(raceUpload, "upload action missing during readback race");
+raceUpload.click();
+await waitFor(() => Boolean(dom.window.document.querySelector("#fImgUpFile")), "later upload dialog did not open during readback race");
+const laterDialogFile = dom.window.document.querySelector("#fImgUpFile");
+releaseMutationReadback();
+await sleep(30);
+assert.equal(dom.window.document.querySelector("#fImgUpFile"), laterDialogFile, "old write readback closed or replaced a later dialog");
+dom.window.document.querySelector('button[aria-label="关闭弹窗"]')?.click();
+
+// If an accepted write's list read is superseded, it is still an unconfirmed
+// readback and must not restore the normal save action.
+const abortedEdit = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
+assert.ok(abortedEdit, "edit action missing before aborted-readback check");
+abortedEdit.click();
+await waitFor(() => Boolean(dom.window.document.querySelector("#fImgName")), "aborted-readback edit dialog did not open");
+const abortedName = dom.window.document.querySelector("#fImgName");
+assert.ok(abortedName instanceof dom.window.HTMLInputElement, "aborted-readback edit input missing");
+abortedName.value = "中止回读素材";
+releaseMutationReadback = undefined;
+delayNextMutationReadback = true;
+const abortedSave = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "保存");
+assert.ok(abortedSave, "aborted-readback save action missing");
+abortedSave.click();
+await waitFor(() => typeof releaseMutationReadback === "function", "aborted-readback edit did not begin its list readback");
+current = controls();
+current.input.value = "新";
+current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+releaseMutationReadback();
+await waitFor(() => dom.window.document.body.textContent.includes("素材已保存，但列表回读失败"), "aborted readback restored a normal write action");
+assert.equal([...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "重新读取列表")?.disabled, false, "aborted readback did not leave a read-only retry");
+dom.window.document.querySelector('button[aria-label="关闭弹窗"]')?.click();
+current = controls();
+current.reset.click();
+await waitFor(() => dom.window.document.body.textContent.includes("中止回读素材"), "reset after aborted readback did not restore the active list");
 
 const deleteEdit = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
 assert.ok(deleteEdit, "edit action missing before delete recovery check");
@@ -281,6 +385,51 @@ dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.c
 await waitFor(() => !dom.window.document.querySelector("#fImgName") && Boolean(dom.window.document.querySelector("[data-image-library-empty]")), "same-key delete retry did not read back the removed image");
 assert.equal(deleteCalls().length, 2, "same-intent retry did not issue exactly one follow-up delete");
 assert.equal(deleteCalls()[1].headers["idempotency-key"], deleteKey, "delete retry changed the original idempotency key");
+
+// A list page cannot establish deletion: the last-page item may disappear
+// merely because the UI reads the preceding page. First make the server return
+// a 5xx, then lose a second DELETE response before it commits. Both paths must
+// keep one intent/key and the single-resource GET must still see the item.
+finalPageOnly = true;
+current = controls();
+current.reset.click();
+await waitFor(() => dom.window.document.body.textContent.includes("新的搜索结果"), "last-page deletion fixture did not load its first page");
+const finalNext = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "下一页");
+assert.ok(finalNext, "last-page deletion fixture is missing its next-page control");
+finalNext.click();
+await waitFor(() => dom.window.document.body.textContent.includes("第二页素材"), "last-page deletion fixture did not load its single-item final page");
+const finalEdit = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "编辑");
+assert.ok(finalEdit, "last-page deletion fixture is missing its edit action");
+finalEdit.click();
+await waitFor(() => Boolean(dom.window.document.querySelector("#fImgName")), "last-page deletion edit dialog did not open");
+const finalRemove = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "删除");
+assert.ok(finalRemove, "last-page deletion fixture is missing its delete action");
+finalRemove.click();
+await waitFor(() => dom.window.document.body.textContent.includes("删除结果暂不可确认"), "DELETE 5xx did not preserve an outcome-unknown delete intent");
+const finalDeleteCalls = () => calls.filter((call) => call.path === "/api/admin/image-library/31" && call.method === "DELETE");
+const finalDeleteKey = finalDeleteCalls()[0]?.headers["idempotency-key"];
+assert.ok(finalDeleteKey?.startsWith("image-delete-"), "DELETE 5xx did not retain the controlled delete key");
+assert.equal(finalRemove.disabled, true, "DELETE 5xx re-enabled a new destructive action instead of retaining the intent");
+const listCallsBeforeFiveXXVerification = calls.filter((call) => call.path === "/api/admin/image-library" && call.method === "GET").length;
+dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
+await waitFor(() => [...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "按原操作重试删除"), "single-image read did not expose same-key retry after DELETE 5xx");
+assert.equal(calls.filter((call) => call.path === "/api/admin/image-library" && call.method === "GET").length, listCallsBeforeFiveXXVerification, "DELETE 5xx verification treated a paginated list as deletion evidence");
+assert.equal(calls.filter((call) => call.path === "/api/admin/image-library/31" && call.method === "GET").length, 1, "DELETE 5xx did not verify the exact resource");
+dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
+await waitFor(() => dom.window.document.body.textContent.includes("删除结果暂不可确认"), "lost final-page DELETE response did not retain the original delete intent");
+assert.equal(finalDeleteCalls().length, 2, "lost final-page DELETE response did not issue exactly one retry");
+assert.equal(finalDeleteCalls()[1].headers["idempotency-key"], finalDeleteKey, "DELETE retry after 5xx changed the stable key");
+const listCallsBeforeLostVerification = calls.filter((call) => call.path === "/api/admin/image-library" && call.method === "GET").length;
+dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
+await waitFor(() => [...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "按原操作重试删除"), "uncommitted final-page DELETE was falsely confirmed as removed");
+assert.equal(finalPageDeleted, false, "lost final-page DELETE test unexpectedly committed the deletion");
+assert.equal(calls.filter((call) => call.path === "/api/admin/image-library" && call.method === "GET").length, listCallsBeforeLostVerification, "last-page list omission was used as deletion evidence");
+assert.equal(calls.filter((call) => call.path === "/api/admin/image-library/31" && call.method === "GET").length, 2, "lost final-page DELETE did not use exact GET verification");
+dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
+await waitFor(() => !dom.window.document.querySelector("#fImgName") && dom.window.document.body.textContent.includes("新的搜索结果"), "confirmed final-page deletion did not refresh the preceding display page");
+assert.equal(finalPageDeleted, true, "final-page delete did not commit on same-key retry");
+assert.equal(finalDeleteCalls().length, 3, "confirmed final-page deletion did not issue its final same-key retry");
+assert.equal(finalDeleteCalls()[2].headers["idempotency-key"], finalDeleteKey, "final same-key delete retry changed the original intent key");
 
 for (const call of calls.filter((call) => call.path === "/api/admin/image-library" && call.method === "GET")) {
   assert.ok(call.query.includes("limit=20") && call.query.includes("offset=") && call.query.includes("enabled_only="), `image read escaped bounded pagination/filter contract: ${JSON.stringify(call)}`);

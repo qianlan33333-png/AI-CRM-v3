@@ -2,12 +2,13 @@
 // contract directly and leaves all mutations on the existing typed DTO and
 // MaterialSaveHost path; no donor controller or generated template is mounted.
 import { imagePageDto, saveImageItemDto } from "../src/api/admin";
-import { deleteLegacyImage, getLegacyImageList } from "../src/api/generated/p4-media-compat/p4-media-compat";
+import { deleteLegacyImage, getLegacyImage, getLegacyImageList } from "../src/api/generated/p4-media-compat/p4-media-compat";
 import { ApiError, apiRequestOptions, unwrapGenerated } from "../src/api/transport";
 import type { ImageItem } from "../src/shared/api/types";
 
 const PAGE_SIZE = 20;
 const SEARCH_DELAY_MS = 250;
+const MEDIA_CONTENT_CHANGED_EVENT = "aicrm:media-content-changed";
 
 type ImageListResponse = {
   items?: unknown[];
@@ -18,21 +19,60 @@ type ImageListResponse = {
 };
 
 type Dialog =
-  | { kind: "upload"; error: string; readbackPending?: boolean }
-  | { kind: "edit"; item: ImageItem; error: string; readbackPending?: boolean }
+  | { id: number; kind: "upload"; error: string; readbackPending?: boolean }
+  | { id: number; kind: "edit"; item: ImageItem; error: string; readbackPending?: boolean }
   | undefined;
 
 type LoadResult = "success" | "failed" | "aborted";
 
 type DeleteIntent = {
+  dialogID: number;
   itemID: string;
   key: string;
   readbackOffset: number;
   inFlight: boolean;
 };
 
-function errorText(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "图片素材读取失败";
+type DeleteVerification = "gone" | "present" | "unknown";
+
+type ErrorContext = "read" | "save" | "delete";
+
+function errorCode(error: ApiError): string {
+  if (error.details === null || typeof error.details !== "object") return "";
+  const value = (error.details as { code?: unknown }).code;
+  return typeof value === "string" ? value.trim().toUpperCase() : "";
+}
+
+function errorText(error: unknown, context: ErrorContext): string {
+  const action = context === "read" ? "读取图片素材" : context === "save" ? "保存图片素材" : "删除图片素材";
+  if (error instanceof ApiError) {
+    const code = errorCode(error);
+    if (error.status === 401 || code === "UNAUTHORIZED") return "登录状态已失效，请重新登录后继续操作。";
+    if (error.status === 403 || code === "FORBIDDEN") return "当前账号无权操作图片素材。";
+    if (error.status === 404 || code === "NOT_FOUND") {
+      return context === "read"
+        ? "图片素材不存在或已被删除，请刷新列表。"
+        : context === "save"
+          ? "图片素材不存在或已被删除，请刷新列表后再保存。"
+          : "图片素材不存在或已被删除，请刷新列表确认。";
+    }
+    if (error.status === 409 || code === "CONFLICT") {
+      return context === "delete"
+        ? "图片素材状态已变化或仍被使用，请刷新列表后再删除。"
+        : `${action}时发现内容已变化，请刷新列表后重试。`;
+    }
+    if (error.status === 400 || error.status === 405 || error.status === 422 || code === "MALFORMED_REQUEST" || code === "VALIDATION_FAILED") {
+      return context === "read" ? "读取条件无效，请刷新页面后重试。" : `${action}的内容不符合要求，请检查后重试。`;
+    }
+    if (error.status === 429) return `${action}过于频繁，请稍后重试。`;
+    if (error.status >= 500 || code === "DEPENDENCY_UNAVAILABLE" || code === "UNAVAILABLE") return `${action}服务暂不可用，请稍后重试。`;
+    if (error.kind === "network" || error.status === 0) return `${action}网络暂不可用，请检查网络后重试。`;
+  }
+  // A few local validation messages are deliberate, user-actionable copy.
+  // All other Error messages (including browser and server implementation
+  // detail) stay out of the UI.
+  if (error instanceof Error && error.message === "请选择真实图片文件后再上传") return error.message;
+  return `${action}网络暂不可用，请检查网络后重试。`;
 }
 
 function button(label: string, kind: "primary" | "secondary" | "danger" = "secondary"): HTMLButtonElement {
@@ -98,6 +138,7 @@ class ImageLibraryHost {
   private readAbort?: AbortController;
   private searchTimer?: number;
   private deleteIntent?: DeleteIntent;
+  private nextDialogID = 0;
 
   constructor(stage: HTMLElement) {
     this.stage = stage;
@@ -188,7 +229,7 @@ class ImageLibraryHost {
       return "success";
     } catch (error) {
       if (generation !== this.readGeneration || (error instanceof DOMException && error.name === "AbortError")) return "aborted";
-      this.error = errorText(error);
+      this.error = errorText(error, "read");
       this.failedOffset = offset;
       return "failed";
     } finally {
@@ -221,7 +262,7 @@ class ImageLibraryHost {
     title.style.cssText = "margin:3px 0 0;font-size:16px;font-weight:600;line-height:22px;color:#1F2329";
     titles.append(crumb, title);
     const upload = button("上传图片", "primary");
-    upload.addEventListener("click", () => this.openDialog({ kind: "upload", error: "" }));
+    upload.addEventListener("click", () => this.openDialog(this.newUploadDialog()));
     header.append(titles, upload);
     return header;
   }
@@ -313,13 +354,13 @@ class ImageLibraryHost {
     preview.src = item.thumbnailUrl || "";
     preview.alt = item.name;
     preview.style.cssText = "display:block;width:100%;height:128px;object-fit:cover;background:#EFF4FF;border-bottom:1px solid #EFF0F1;cursor:pointer";
-    preview.addEventListener("click", () => this.openDialog({ kind: "edit", item, error: "" }));
+    preview.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
     const body = document.createElement("div");
     body.style.cssText = "padding:10px 12px";
     const name = document.createElement("strong");
     name.textContent = item.name;
     name.style.cssText = "display:block;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;color:#1F2329";
-    name.addEventListener("click", () => this.openDialog({ kind: "edit", item, error: "" }));
+    name.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
     const detail = document.createElement("div");
     detail.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px";
     const size = document.createElement("span");
@@ -340,7 +381,7 @@ class ImageLibraryHost {
     time.style.cssText = "font-size:11px;color:#A6AAB0";
     const edit = button("编辑");
     edit.style.cssText = "height:24px;padding:0 8px;border:0;border-radius:4px;background:transparent;color:#245BDB;font-size:12px;cursor:pointer";
-    edit.addEventListener("click", () => this.openDialog({ kind: "edit", item, error: "" }));
+    edit.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
     actions.append(time, edit);
     body.append(name, detail, actions);
     card.append(preview, body);
@@ -363,17 +404,34 @@ class ImageLibraryHost {
     this.paginationNode.append(nav);
   }
 
+  private newUploadDialog(): Exclude<Dialog, undefined> {
+    return { id: ++this.nextDialogID, kind: "upload", error: "" };
+  }
+
+  private newEditDialog(item: ImageItem): Exclude<Dialog, undefined> {
+    return { id: ++this.nextDialogID, kind: "edit", item, error: "" };
+  }
+
+  private dialogMatches(dialogID: number): boolean {
+    return this.dialog?.id === dialogID;
+  }
+
   private openDialog(dialog: Exclude<Dialog, undefined>): void {
     this.dialog = dialog;
     this.dialogLayer.replaceChildren(this.modal(dialog));
     if (dialog.kind === "edit" && this.deleteIntent?.itemID === dialog.item.resourceId) {
-      this.setDeleteBusy(true);
-      this.setDialogError("删除结果暂不可确认。请重新读取列表核对，勿重复删除。");
-      this.setDialogAction("重新读取列表", "delete-verify");
+      // Reopening the same resource continues the original delete intent and
+      // its idempotency key. A result from a different resource must never
+      // mutate this dialog.
+      this.deleteIntent.dialogID = dialog.id;
+      this.setDeleteBusy(true, dialog.id);
+      this.setDialogError("删除结果暂不可确认。请核对删除结果，勿重复删除。", dialog.id);
+      this.setDialogAction("重新核对删除结果", "delete-verify", dialog.id);
     }
   }
 
-  private closeDialog(): void {
+  private closeDialog(expectedDialogID?: number): void {
+    if (expectedDialogID !== undefined && !this.dialogMatches(expectedDialogID)) return;
     this.dialog = undefined;
     this.dialogLayer.replaceChildren();
   }
@@ -398,7 +456,7 @@ class ImageLibraryHost {
     const close = button("×");
     close.setAttribute("aria-label", "关闭弹窗");
     close.style.cssText = "width:28px;height:28px;padding:0;border:0;border-radius:6px;background:#F2F3F5;color:#646A73;font-size:14px";
-    close.addEventListener("click", () => this.closeDialog());
+    close.addEventListener("click", () => this.closeDialog(dialog.id));
     heading.append(title, close);
     const fields = document.createElement("div");
     fields.dataset.imageLibraryDialogFields = "true";
@@ -457,13 +515,13 @@ class ImageLibraryHost {
     if (dialog.kind === "edit") {
       const remove = button("删除", "danger");
       remove.dataset.imageLibraryDelete = "true";
-      remove.addEventListener("click", () => void this.remove(dialog.item));
+      remove.addEventListener("click", () => void this.remove(dialog.item, dialog.id));
       left.append(remove);
     }
     const right = document.createElement("div");
     right.style.cssText = "display:flex;gap:8px";
     const cancel = button("取消");
-    cancel.addEventListener("click", () => this.closeDialog());
+    cancel.addEventListener("click", () => this.closeDialog(dialog.id));
     const submit = button(dialog.kind === "upload" ? "上传" : "保存", "primary");
     submit.dataset.imageLibraryDialogSubmit = "true";
     // MaterialSaveHost deliberately marks this button busy in capture phase.
@@ -472,17 +530,17 @@ class ImageLibraryHost {
     submit.addEventListener("click", () => {
       const action = submit.dataset.imageLibraryDialogAction;
       if (action === "delete-verify") {
-        void this.verifyDelete();
+        void this.verifyDelete(dialog.id);
         return;
       }
       if (action === "delete-retry") {
-        void this.retryDelete();
+        void this.retryDelete(dialog.id);
         return;
       }
       const current = this.dialog;
-      if (!current) return;
+      if (!current || current.id !== dialog.id) return;
       if (current.readbackPending) {
-        void this.retryReadback();
+        void this.retryReadback(current.id);
       } else if (current.kind === "upload") {
         void this.submitUpload(panel);
       } else {
@@ -501,8 +559,10 @@ class ImageLibraryHost {
   }
 
   private async submitUpload(form: HTMLFormElement): Promise<void> {
+    const dialogID = this.dialog?.kind === "upload" ? this.dialog.id : undefined;
+    if (dialogID === undefined) return;
     const file = form.querySelector<HTMLInputElement>("#fImgUpFile")?.files?.[0];
-    if (!file) return this.setDialogError("请选择真实图片文件后再上传");
+    if (!file) return this.setDialogError("请选择真实图片文件后再上传", dialogID);
     const name = this.formValue(form, "fImgUpName") || file.name;
     try {
       await saveImageItemDto(null, {
@@ -517,15 +577,19 @@ class ImageLibraryHost {
         enabled: true,
         uploadedAt: "刚刚",
       });
-      await this.readbackAfterMutation();
+      await this.readbackAfterMutation(dialogID);
     } catch (error) {
-      this.setDialogError(errorText(error));
+      this.setDialogError(errorText(error, "save"), dialogID);
     }
   }
 
   private async submitEdit(form: HTMLFormElement, item: ImageItem): Promise<void> {
+    const dialogID = this.dialog?.kind === "edit" && this.dialog.item.resourceId === item.resourceId
+      ? this.dialog.id
+      : undefined;
+    if (dialogID === undefined) return;
     const name = this.formValue(form, "fImgName");
-    if (!name) return this.setDialogError("请输入素材名称");
+    if (!name) return this.setDialogError("请输入素材名称", dialogID);
     try {
       await saveImageItemDto(item.name, {
         ...item,
@@ -535,17 +599,18 @@ class ImageLibraryHost {
         tags: this.formValue(form, "fImgTags"),
         enabled: Boolean(form.querySelector<HTMLInputElement>("#fImgEnabled")?.checked),
       });
-      await this.readbackAfterMutation();
+      await this.readbackAfterMutation(dialogID);
     } catch (error) {
-      this.setDialogError(errorText(error));
+      this.setDialogError(errorText(error, "save"), dialogID);
     }
   }
 
-  private async remove(item: ImageItem): Promise<void> {
+  private async remove(item: ImageItem, dialogID: number): Promise<void> {
     if (this.deleteIntent?.inFlight) return;
+    if (!this.dialogMatches(dialogID)) return;
     if (!window.confirm(`确认删除「${item.name}」？删除后不可恢复。`)) return;
     if (!item.resourceId) {
-      this.setDialogError("图片素材标识无效，请重新读取列表后再删除。");
+      this.setDialogError("图片素材标识无效，请重新读取列表后再删除。", dialogID);
       return;
     }
     const readbackOffset = this.items.length === 1 && this.offset > 0 ? Math.max(0, this.offset - PAGE_SIZE) : this.offset;
@@ -555,69 +620,93 @@ class ImageLibraryHost {
       key: imageDeleteMutationKey(),
       readbackOffset,
       inFlight: false,
+      dialogID,
     };
+    intent.dialogID = dialogID;
     this.deleteIntent = intent;
     await this.dispatchDelete(intent);
   }
 
-  private async retryDelete(): Promise<void> {
+  private async retryDelete(dialogID: number): Promise<void> {
     const intent = this.deleteIntent;
     const dialog = this.dialog;
-    if (!intent || intent.inFlight || !dialog || dialog.kind !== "edit" || dialog.item.resourceId !== intent.itemID) return;
+    if (!intent || intent.inFlight || intent.dialogID !== dialogID || !dialog || dialog.id !== dialogID || dialog.kind !== "edit" || dialog.item.resourceId !== intent.itemID) return;
     await this.dispatchDelete(intent);
   }
 
   private async dispatchDelete(intent: DeleteIntent): Promise<void> {
     intent.inFlight = true;
-    this.setDeleteBusy(true);
+    this.setDeleteBusy(true, intent.dialogID);
     try {
       // This explicit key reaches the Media receipt. A retry keeps the exact
       // same delete intent instead of falling through the legacy per-request
       // server compatibility key.
       await unwrapGenerated(await deleteLegacyImage(intent.itemID, undefined, apiRequestOptions({ headers: { "Idempotency-Key": intent.key } })));
       intent.inFlight = false;
-      await this.verifyDelete();
+      await this.verifyDelete(intent.dialogID);
     } catch (error) {
       intent.inFlight = false;
-      if (error instanceof ApiError && error.status > 0) {
+      if (this.deleteIntent !== intent) return;
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
         this.deleteIntent = undefined;
-        this.setDeleteBusy(false);
-        this.setDialogError(errorText(error));
+        this.setDeleteBusy(false, intent.dialogID);
+        this.setDialogError(errorText(error, "delete"), intent.dialogID);
         return;
       }
-      // A transport loss can happen after the transaction commits. Do not
-      // enable a fresh delete; retain this key and make the next action a
-      // readback check, followed by a same-key retry only if still present.
-      this.setDialogError("删除结果暂不可确认。请重新读取列表核对，勿重复删除。");
-      this.setDialogAction("重新读取列表", "delete-verify");
+      // A transport loss or 5xx can happen after the transaction commits. Do
+      // not enable a fresh delete; retain this key and use the single-resource
+      // read before allowing a same-key retry.
+      this.setDialogError("删除结果暂不可确认。请核对删除结果，勿重复删除。", intent.dialogID);
+      this.setDialogAction("重新核对删除结果", "delete-verify", intent.dialogID);
     }
   }
 
-  private async verifyDelete(): Promise<void> {
+  private async deleteExistence(intent: DeleteIntent): Promise<DeleteVerification> {
+    try {
+      const response = await getLegacyImage(intent.itemID, undefined, apiRequestOptions());
+      if (response.status === 404) return "gone";
+      if (response.status === 200) return "present";
+    } catch {
+      // A failed verifier is outcome_unknown: the original delete intent must
+      // remain available with its stable key.
+    }
+    return "unknown";
+  }
+
+  private async verifyDelete(expectedDialogID: number): Promise<void> {
     const intent = this.deleteIntent;
-    if (!intent) return;
-    const result = await this.load(intent.readbackOffset);
-    if (result === "aborted") return;
-    if (result === "failed") {
-      this.setDialogError("删除结果暂不可确认；列表回读失败。请重新读取列表核对，勿重复删除。");
-      this.setDialogAction("重新读取列表", "delete-verify");
+    if (!intent || intent.dialogID !== expectedDialogID) return;
+    const outcome = await this.deleteExistence(intent);
+    if (this.deleteIntent !== intent) return;
+    if (outcome === "unknown") {
+      this.setDialogError("删除结果暂不可确认。请核对删除结果，勿重复删除。", intent.dialogID);
+      this.setDialogAction("重新核对删除结果", "delete-verify", intent.dialogID);
       return;
     }
-    if (!this.items.some((item) => item.resourceId === intent.itemID)) {
+    if (outcome === "gone") {
       this.deleteIntent = undefined;
-      this.closeDialog();
+      // The detail 404 is the deletion fact. The paginated list only updates
+      // what the user sees and is never used as deletion evidence.
+      const result = await this.load(intent.readbackOffset);
+      if (result === "success") {
+        this.closeDialog(intent.dialogID);
+        this.notifyMaterialRefresh();
+      }
+      else this.markDeletedButUnread(intent.dialogID);
       return;
     }
-    this.setDialogError("删除尚未在列表中确认。可按原操作重试删除。");
-    this.setDialogAction("按原操作重试删除", "delete-retry");
+    this.setDialogError("删除尚未确认。可按原操作重试删除。", intent.dialogID);
+    this.setDialogAction("按原操作重试删除", "delete-retry", intent.dialogID);
   }
 
-  private setDeleteBusy(busy: boolean): void {
+  private setDeleteBusy(busy: boolean, expectedDialogID: number): void {
+    if (!this.dialogMatches(expectedDialogID)) return;
     const remove = this.dialogLayer.querySelector<HTMLButtonElement>("[data-image-library-delete]");
     if (remove) remove.disabled = busy || Boolean(this.deleteIntent);
   }
 
-  private setDialogAction(label: string, action: "delete-verify" | "delete-retry"): void {
+  private setDialogAction(label: string, action: "delete-verify" | "delete-retry", expectedDialogID: number): void {
+    if (!this.dialogMatches(expectedDialogID)) return;
     const submit = this.dialogLayer.querySelector<HTMLButtonElement>("[data-image-library-dialog-submit]");
     if (!submit) return;
     submit.textContent = label;
@@ -625,32 +714,42 @@ class ImageLibraryHost {
     submit.disabled = false;
   }
 
-  private async readbackAfterMutation(offset = this.offset): Promise<void> {
+  private async readbackAfterMutation(dialogID: number, offset = this.offset): Promise<void> {
     const result = await this.load(offset);
     if (result === "success") {
-      this.closeDialog();
-    } else if (result === "failed") {
-      this.markSavedButUnread();
+      this.closeDialog(dialogID);
+      this.notifyMaterialRefresh();
+    } else {
+      // An aborted read cannot safely restore a normal write entry either.
+      // Keep the accepted mutation in readback-pending state until a user
+      // confirms the current list with a read-only retry.
+      this.markSavedButUnread(dialogID);
     }
   }
 
-  private async retryReadback(): Promise<void> {
-    if (this.deleteIntent) {
-      await this.verifyDelete();
+  private async retryReadback(dialogID: number): Promise<void> {
+    if (!this.dialogMatches(dialogID)) return;
+    if (this.deleteIntent?.dialogID === dialogID) {
+      await this.verifyDelete(dialogID);
       return;
     }
     const result = await this.load(this.offset);
-    if (result === "success") this.closeDialog();
-    else if (result === "failed") this.markSavedButUnread();
+    if (result === "success") {
+      this.closeDialog(dialogID);
+      this.notifyMaterialRefresh();
+    }
+    else this.markSavedButUnread(dialogID);
   }
 
-  private markSavedButUnread(): void {
-    if (!this.dialog) return;
+  private notifyMaterialRefresh(): void {
+    window.dispatchEvent(new Event(MEDIA_CONTENT_CHANGED_EVENT));
+  }
+
+  private markSavedButUnread(expectedDialogID: number): void {
+    if (!this.dialogMatches(expectedDialogID) || !this.dialog) return;
     const value = "素材已保存，但列表回读失败；编辑内容已保留。请重新读取确认，勿重复提交。";
-    this.dialog = this.dialog.kind === "upload"
-      ? { ...this.dialog, error: value, readbackPending: true }
-      : { ...this.dialog, error: value, readbackPending: true };
-    this.setDialogError(value);
+    this.dialog = { ...this.dialog, error: value, readbackPending: true };
+    this.setDialogError(value, expectedDialogID);
     const panel = this.dialogLayer.querySelector<HTMLFormElement>("form[data-image-library-dialog]");
     const submit = panel?.querySelector<HTMLButtonElement>("[data-image-library-dialog-submit]");
     if (submit) {
@@ -659,11 +758,21 @@ class ImageLibraryHost {
     }
   }
 
-  private setDialogError(value: string): void {
-    if (!this.dialog) return;
-    this.dialog = this.dialog.kind === "upload"
-      ? { ...this.dialog, error: value }
-      : { ...this.dialog, error: value };
+  private markDeletedButUnread(expectedDialogID: number): void {
+    if (!this.dialogMatches(expectedDialogID) || !this.dialog) return;
+    const value = "图片已删除，但列表回读未完成。请重新读取确认。";
+    this.dialog = { ...this.dialog, error: value, readbackPending: true };
+    this.setDialogError(value, expectedDialogID);
+    const submit = this.dialogLayer.querySelector<HTMLButtonElement>("[data-image-library-dialog-submit]");
+    if (submit) {
+      submit.textContent = "重新读取列表";
+      submit.disabled = false;
+    }
+  }
+
+  private setDialogError(value: string, expectedDialogID?: number): void {
+    if (!this.dialog || (expectedDialogID !== undefined && !this.dialogMatches(expectedDialogID))) return;
+    this.dialog = { ...this.dialog, error: value };
     const panel = this.dialogLayer.querySelector<HTMLFormElement>("form[data-image-library-dialog]");
     if (panel) {
       let feedback = panel.querySelector<HTMLElement>("[data-image-library-mutation-feedback]");

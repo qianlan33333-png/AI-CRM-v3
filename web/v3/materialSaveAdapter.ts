@@ -265,6 +265,7 @@ type RefreshRoundProjection = Record<string, unknown> & {
 
 const materialRefreshBase = '/api/admin/media-preparations';
 const materialRefreshPages = new Set(['images', 'mpLib', 'attach']);
+const mediaContentChangedEvent = 'aicrm:media-content-changed';
 
 function materialObject(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -298,12 +299,23 @@ function materialCsrf(): string {
   return '';
 }
 
-function materialError(status: number, body: Record<string, unknown>): Error {
-  if (status === 403) return new Error('没有此操作权限');
+class MaterialUIError extends Error {}
+
+function materialError(status: number, body: Record<string, unknown>): MaterialUIError {
   // Refresh responses can contain provider error codes. Keep the operational
   // state readable instead of surfacing an internal enum in the workspace.
   void body;
-  return new Error(`刷新请求失败（HTTP ${status}）`);
+  if (status === 401) return new MaterialUIError('登录状态已失效，请重新登录后继续操作。');
+  if (status === 403) return new MaterialUIError('没有此操作权限。');
+  if (status === 404) return new MaterialUIError('刷新对象不存在，请重新读取刷新状态。');
+  if (status === 409) return new MaterialUIError('刷新状态已变化，请重新读取后重试。');
+  if (status === 400 || status === 405 || status === 422) return new MaterialUIError('刷新请求无效，请检查后重试。');
+  if (status >= 500) return new MaterialUIError('刷新服务暂不可用，请稍后重试。');
+  return new MaterialUIError('刷新请求失败，请稍后重试。');
+}
+
+function materialFailureText(error: unknown, fallback: string): string {
+  return error instanceof MaterialUIError ? error.message : fallback;
 }
 
 async function materialResponse(response: Response): Promise<Record<string, unknown>> {
@@ -539,7 +551,7 @@ class MaterialRefreshPanel {
     } catch (error) {
       if (generation !== this.generation) return;
       this.loading = false;
-      this.renderError(error instanceof Error ? error.message : '刷新状态暂不可读取');
+      this.renderError(materialFailureText(error, '刷新状态暂不可读取，请检查网络后重试。'));
     }
   }
 
@@ -743,7 +755,7 @@ class MaterialRefreshPanel {
       this.setStatus('单素材刷新已受理；完成状态可通过“刷新进度”核对。');
     } catch (error) {
       materialBusy(button, false, '立即刷新单个');
-      this.setStatus(error instanceof Error ? `${error.message}；可重试，仍使用同一操作 key。` : '单素材刷新失败；可重试。', true);
+      this.setStatus(`${materialFailureText(error, '单素材刷新失败，请检查网络后重试。')}可重新发起刷新。`, true);
     }
   }
 
@@ -762,7 +774,7 @@ class MaterialRefreshPanel {
       if (id !== undefined) await this.loadRound();
     } catch (error) {
       materialBusy(button, false, '立即刷新全部启用素材');
-      this.setStatus(error instanceof Error ? `${error.message}；可重试，仍使用同一操作 key。` : '全量刷新失败；可重试。', true);
+      this.setStatus(`${materialFailureText(error, '全量刷新失败，请检查网络后重试。')}可重新发起刷新。`, true);
     }
   }
 
@@ -778,7 +790,7 @@ class MaterialRefreshPanel {
       this.setStatus('已读取最新刷新进度。');
     } catch (error) {
       if (button) materialBusy(button, false, '刷新进度');
-      this.setStatus(error instanceof Error ? error.message : '刷新进度暂不可读取', true);
+      this.setStatus(materialFailureText(error, '刷新进度暂不可读取，请检查网络后重试。'), true);
     }
   }
 }
@@ -790,6 +802,10 @@ function installMaterialRefreshPanel(): void {
   const region = materialScrollRegion(stage);
   if (!region) return;
   const panel = new MaterialRefreshPanel(region);
+  // Source-owned image mutations announce only after their required list
+  // readback succeeds. Reuse this panel's existing bounded read rather than
+  // duplicate refresh-state rendering in the image Host.
+  window.addEventListener(mediaContentChangedEvent, () => { void panel.load(); });
   void panel.load();
 }
 
