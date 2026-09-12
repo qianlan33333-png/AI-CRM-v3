@@ -12318,7 +12318,7 @@
 
   // internal/webshell/static_src/admin_console/owner_handoff_host.ts
   var donorURL = "/static/admin_console/owner_migration_dd8d60d.html";
-  var pickerURL = "/static/admin_console/operation_member_picker_dd8d60d.js";
+  var pickerURL = "/static/admin_console/operation_member_picker_dd8d60d.js?v=1b12b405d7377948";
   var key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).join("-")}`;
   var text = (value) => String(value ?? "").trim();
   var esc = (value) => text(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] || char);
@@ -12713,11 +12713,15 @@
       query(root, "[data-download-result]").parentElement?.append(readTransfer);
       readTransfer.addEventListener("click", async () => {
         if (!batch) return;
+        stage.dataset.ownerHandoffTransferResultStatus = "pending";
         try {
           batch = await api(`/api/admin/customers/owner-handoffs/batches/${encodeURIComponent(batch.ID)}/transfer-result`, { method: "POST", body: JSON.stringify({ idempotency_key: key() }) });
+          stage.dataset.ownerHandoffTransferResultStatus = "ok";
           renderBatch(root, batch);
           setNotice("\u5DF2\u8BFB\u53D6\u4F01\u5FAE\u8F6C\u63A5\u7ED3\u679C\u3002", "ok");
         } catch (error) {
+          const status = error && typeof error === "object" && "httpStatus" in error && typeof error.httpStatus === "number" ? error.httpStatus : 0;
+          stage.dataset.ownerHandoffTransferResultStatus = status > 0 ? `http_${status}` : "error";
           setNotice(error instanceof Error ? error.message : "\u8BFB\u53D6\u5931\u8D25", "error");
         }
       });
