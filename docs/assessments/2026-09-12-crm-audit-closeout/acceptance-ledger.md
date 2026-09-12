@@ -2,7 +2,7 @@
 
 日期：2026-09-12（Asia/Shanghai）  
 审计基线（启动时 main）：`6f09899c74a966a87af03158540a030e5c50817d`
-本轮已合并状态快照：`f3e453e288e26798808c02ad6adb17d396c05c61`
+本轮已合并状态快照：`d0b74d416ca2a75ee2acf403731271a046c3f663`
 对应 PRD：[CRM 迁移收尾、审计缺陷与 UI 一致性整改](../../prd/2026-09-12-crm-audit-closeout.md)
 
 ## 使用规则
@@ -36,8 +36,8 @@ OneID/持久化/效果总判断：客户、身份、归属和 HXC 项目复用 I
 | UI-05 | Excel 移动端 CSS 修复为两列 | #248 `46887f9d6b9f345e15de69cdc5c03907da805ae9` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；实际登录态待验 | 不适用 | 仍需验证长标题、错误提示和上传控件 |
 | UI-06 | 既有渠道客服显示可信目录姓名 | #250 `0a3c628a146d59176a7ec41d8ab5ac1044104354` | 完整 CI 通过 | 已合并 | skipped | CI browser 已通过；线上登录态待验 | 目录读取未做生产读回 | 本地有界目录补全，未命中必须明确 unavailable，不用技术 ID 冒充姓名 |
 | UI-07 | 全站标准组件盘点、复用和接入验收 | 不适用（只读覆盖矩阵和两页运行时核验） | 7 个定向断言通过；11 个 shell/E2E 通过，2 个旧 fixture 路径跳过 | 不适用 | 未执行 | 21/21 仅入口映射，不等于 21 个真实 browser 回放；两页 DOM 核验确认 canonical automation 45 条/3 页分页正常，登录态全量重放待验 | 不适用（展示层） | automation 旧静态模板为误报，不开发；image-library 搜索、含停用、重置是 canonical active 缺陷，已交由 UI agent 独立修复 |
-| UI-08 | 业务时刻按上海语义展示和回填 | #258 `97e21a024751c2aa3a8552db2df97193546db601`（stack 于 #256） | GitHub 待跑 | 未合并 | 未执行 | 本地全 AdminShell PostgreSQL Chromium 与 fast 检查已通过；线上登录态待验 | 不适用 | 只限展示/输入边界，不能改写未修改字段的原 instant 或精度 |
-| UI-09 | 优惠券列表显示真实商品中文名、领取时间范围与中文状态；手机可完成读取 | #259 `69de16976ed1a74521fd61ca0dc642ee27837e62`（stack 于 #256） | 尚未开始 | 未合并 | 未执行 | 本地隔离 Chromium 已见 1440 完整列与 390 列表/编辑可用；GitHub CI、线上登录态均待验 | 不适用 | 商品名由 Product Port 批量投影；未知价格不显示为 0；当前“删除草稿”为真实受控写入口，本轮未点击 |
+| UI-08 | 业务时刻按上海语义展示和回填 | #258 `d0b74d416ca2a75ee2acf403731271a046c3f663` | 完整 CI 通过 | 已合并 | skipped | CI browser 通过；线上登录态待验 | 不适用 | 只限展示/输入边界，不能改写未修改字段的原 instant 或精度 |
+| UI-09 | 优惠券列表显示真实商品中文名、领取时间范围与中文状态；手机可完成读取 | #259 `c3107b1f3e37ab9018f033ba29a970d74216cfb8`（base `d0b74d…`） | 进行中：plan、preflight、archive-sdk 已通过；backend/frontend/browser 运行中 | 未合并 | 未执行 | 本地隔离 Chromium 已见 1440 完整列与 390 列表/编辑可用；完整本地 frontend gate 已通过；线上登录态待验 | 不适用 | 商品名由 Product Port 批量投影；未知价格不显示为 0；当前“删除草稿”为真实受控写入口，本轮未点击 |
 | UI-10 | 人群计划的时间展示与提交须保持 Shanghai 业务语义 | D `b340c8d18f9ff1c2bfa5eff538360eaad2bb97e5`（尚未开 PR） | Chromium 待验 | 未合并 | 未执行 | 待验 | 不适用 | 独立于 #258 的人群计划路由；不以文档提交代替页面验收 |
 | UI-11 | 全站面向用户的失败反馈须是受控中文 | E（UI 实现中，尚未开 PR） | 待验 | 未合并 | 未执行 | 待验 | 不适用 | 不透传机器码或任意服务端文本；逐路由保留可行动的中文提示 |
 
@@ -67,8 +67,8 @@ OneID/持久化/效果总判断：客户、身份、归属和 HXC 项目复用 I
 
 ## 当前基础核验
 
-- 本状态快照的已合并 main 为 `f3e453e288e26798808c02ad6adb17d396c05c61`；它不替代启动时的审计基线 `6f09899c74a966a87af03158540a030e5c50817d`，最终发布前必须重新读取 main。
-- #239、#241 至 #255、#257 的完整 CI 已通过且均已合并；这些检查的 deploy 都是 skipped。#256、#258、#259 仍为 open：#256 的旧 head `7b9d9eed…` 曾失败，最新 `7b860a68584a3ee094bfae1dfb28e7513e640aaa` 的 backend/frontend/browser 正在运行；#258、#259 的 GitHub 检查待跑。它们均不代表 deploy、线上 browser 或最终 Provider 验收。
+- 本状态快照的已合并 main 为 `d0b74d416ca2a75ee2acf403731271a046c3f663`；它不替代启动时的审计基线 `6f09899c74a966a87af03158540a030e5c50817d`，最终发布前必须重新读取 main。
+- #239、#241 至 #258 的完整 CI 已通过且均已合并；这些检查的 deploy 都是 skipped。#259 当前 head `c3107b1f3e37ab9018f033ba29a970d74216cfb8`，GitHub plan、preflight、archive-sdk 已通过；backend/frontend/browser 运行中，尚未合并。这些检查均不代表 deploy、线上 browser 或最终 Provider 验收。
 - #241 后，`deploy` 只有在 `AICRM_ENABLE_ACTIONS_DEPLOY == 'true'` 时才会创建；本轮所有已完成 CI 的 deploy 均为 skipped，未发生 Actions 生产安装。
 - 原工作区存在用户脏修改，本台账对应的文档分支使用独立工作树，不能把原工作区状态当作本分支证据。
 - 修复前基线已有独立 PostgreSQL 16.13 的 16 个领域、86 个 package 全部通过且 0 skip；该证据只用于确认测试基线，不代表当前缺陷已经关闭。没有测试数据库时的 skip 只能记录为未验证。
