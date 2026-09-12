@@ -80,9 +80,9 @@ try {
 
 // Existing draft: real donor submit plus real global feedback, with a durable
 // receipt-shaped response. A failed or malformed save must never show success.
-let savedDraft = { id: 18, name: '验收草稿', status: 'draft', discount_amount_total: 1, total_issue_limit: 3, per_user_issue_limit: 1, claim_starts_at: '2026-09-08T00:00:00.123456Z', claim_ends_at: '2026-09-15T00:00:00Z', validity_mode: 'relative_days', relative_validity_days: 7, target_refs: ['standard_product:32'], instructions: '' };
+let savedDraft = { id: 18, name: '验收草稿', status: 'draft', discount_amount_total: 1, total_issue_limit: 3, per_user_issue_limit: 1, claim_starts_at: '2026-09-08T00:00:00.123456Z', claim_ends_at: '2026-09-15T00:00:00Z', validity_mode: 'fixed_range', use_starts_at: '2026-09-08T02:00:00.123456Z', use_ends_at: '2026-09-15T02:00:00Z', relative_validity_days: null, target_refs: ['standard_product:32'], target_products: [{ target_ref: 'standard_product:32', name: '已选中文商品', state: 'available' }], instructions: '' };
 let editOutcome = 'success'; const edits = [];
-const editDom = new JSDOM('<body data-page="couponForm"><main id="stage"><textarea id="coupon-target-refs"></textarea></main><button id="unowned">发布未接入功能</button></body>', {
+const editDom = new JSDOM('<body data-page="couponForm"><main id="stage">正在加载页面…</main><template id="tpl"><div data-coupon-form-mode="edit"></div></template><button id="unowned">发布未接入功能</button></body>', {
   url: 'https://test.invalid/admin/couponForm.html?id=18', runScripts: 'dangerously', virtualConsole: new VirtualConsole(),
   resources: { interceptors: [requestInterceptor(async (request) => request.url.endsWith('/coupon_form_runtime.js') ? new Response(donorRuntime, { headers: { 'Content-Type': 'application/javascript' } }) : undefined)] },
   beforeParse(window) {
@@ -106,22 +106,37 @@ try {
   editDom.window.eval(feedback); editDom.window.eval(host);
   const d = editDom.window.document;
   await waitFor(() => d.querySelector('#saveCoupon')?.__dcBound, 'existing draft runtime must own the save action');
-  assert.match(d.querySelector('#selectedProductList').textContent, /商品目录暂不可读取/, 'a missing Product display projection remains an explicit unavailable state');
+  assert.match(d.querySelector('#selectedProductList').textContent, /已选中文商品/, 'the Product-owned detail projection supplies the selected product name');
+  assert.match(d.querySelector('#selectedProductList').textContent, /价格待核验/, 'a narrow name-only detail projection must not invent a current price');
+  assert.doesNotMatch(d.querySelector('#selectedProductList').textContent, /¥0\.00/, 'a missing current price must not appear as zero');
   assert.doesNotMatch(d.querySelector('#selectedProductList').textContent, /standard_product:32/, 'the editor must not display a technical target reference as a product name');
+  assert.doesNotMatch(d.querySelector('#stage').textContent, /北京时间/, 'the Coupon Host removes time-zone labels while retaining fixed time input semantics');
+  for (const outcome of ['rejected', 'malformed']) {
+    editOutcome = outcome; d.querySelector('#saveCoupon').click();
+    await waitFor(() => !d.querySelector('#saveCoupon').disabled && d.querySelector('#couponFormToast').textContent !== '正在保存…', 'failed save must restore the submit button');
+    assert.doesNotMatch(d.querySelector('#couponFormToast').textContent, /已保存/);
+    assert.match(d.querySelector('#couponFormToast').textContent, outcome === 'malformed' ? /无法确认/ : /规则校验失败/);
+  }
+  editOutcome = 'success';
   d.querySelector('#couponName').value = '已修改草稿';
   d.querySelector('#saveCoupon').click();
   await waitFor(() => d.querySelector('#couponFormToast').textContent.includes('优惠券已保存'), 'draft PUT must receive a confirmed saved receipt');
   assert.equal(savedDraft.name, '已修改草稿'); assert.equal(savedDraft.discount_amount_total, 1); assert.deepEqual(savedDraft.target_refs, ['standard_product:32']);
-  assert.equal(edits[0].body.claim_starts_at, '2026-09-08T00:00:00.123456Z', 'an unchanged edit preserves the original timestamp precision and instant');
-  assert.equal(edits[0].body.claim_ends_at, '2026-09-15T00:00:00Z');
-  assert.equal(edits.length, 1); assert.match(edits[0].headers.get('Idempotency-Key'), /^coupon-/);
+  assert.equal(edits[2].body.claim_starts_at, '2026-09-08T00:00:00.123456Z', 'an unchanged edit preserves the original timestamp precision and instant');
+  assert.equal(edits[2].body.claim_ends_at, '2026-09-15T00:00:00Z');
+  assert.equal(edits[2].body.use_starts_at, '2026-09-08T02:00:00.123456Z', 'an unchanged fixed-range edit preserves its original use-window precision and instant');
+  assert.equal(edits[2].body.use_ends_at, '2026-09-15T02:00:00Z');
+  assert.equal(edits.length, 3); assert.match(edits[2].headers.get('Idempotency-Key'), /^coupon-/);
   assert.equal(d.querySelector('#fb-toast').textContent, '', 'confirmed save must not have a simultaneous unavailable-backend toast');
-  for (const outcome of ['rejected', 'malformed']) {
-    editOutcome = outcome; d.querySelector('#saveCoupon').click();
-    await waitFor(() => !d.querySelector('#saveCoupon').disabled, 'failed save must restore the submit button');
-    assert.doesNotMatch(d.querySelector('#couponFormToast').textContent, /已保存/);
-    assert.match(d.querySelector('#couponFormToast').textContent, outcome === 'malformed' ? /无法确认/ : /规则校验失败/);
-  }
+  const relative = d.querySelector('input[name="couponValidityMode"][value="relative_days"]');
+  relative.checked = true; relative.dispatchEvent(new editDom.window.Event('change', { bubbles: true }));
+  d.querySelector('#couponRelativeDays').value = '7';
+  d.querySelector('#saveCoupon').click();
+  await waitFor(() => edits.length === 4, 'switching to relative validity must submit one normalized update');
+  assert.equal(edits[3].body.validity_mode, 'relative_days');
+  assert.equal(edits[3].body.use_starts_at, null, 'switching fixed-range to relative-days clears the hidden use start instead of restoring it');
+  assert.equal(edits[3].body.use_ends_at, null, 'switching fixed-range to relative-days clears the hidden use end instead of restoring it');
+  assert.equal(edits[3].body.relative_validity_days, 7);
   d.querySelector('#unowned').click(); assert.match(d.querySelector('#fb-toast').textContent, /后端能力未就绪/, 'unrelated unbound actions must remain guarded');
 } finally { editDom.window.document.body.dataset.page = 'closed'; editDom.window.close(); }
 

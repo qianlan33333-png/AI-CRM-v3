@@ -35,6 +35,10 @@ type CouponDateSnapshot = { original: string | null; controlValue: string };
 const couponDateSnapshots = new Map<string, CouponDateSnapshot>();
 type CouponPresentation = { scope: string; window: string };
 const couponPresentations = new Map<number, CouponPresentation>();
+// Detail projection deliberately has no current price. Remember those refs
+// only while mounting this editor so the frozen form can describe that limit
+// without inventing a zero-price fact.
+const couponTargetsWithUnverifiedPrice = new Set<string>();
 
 function csrf(): string {
   return document.cookie.split(';').map((item) => item.trim().split('='))
@@ -160,10 +164,31 @@ function normalizeCouponWriteBody(url: URL, method: string, body: string): { bod
   // API caller verbatim if this page has not mounted that editor, rather than
   // treating the caller as an incomplete browser form.
   if (!couponDateFields.some(([controlID]) => document.getElementById(controlID))) return { body };
-  for (const field of couponDateFields) {
+  // The donor's complete form always carries the mode. Do not reinterpret an
+  // unrelated direct API probe merely because this editor happens to be open.
+  if (!Object.prototype.hasOwnProperty.call(payload, 'validity_mode')) return { body };
+  const validityMode = payload.validity_mode;
+  if (validityMode !== 'fixed_range' && validityMode !== 'relative_days') {
+    return { error: jsonResponse(400, { code: 'invalid_request', message: '请选择有效期模式后再保存；未提交任何修改。' }) };
+  }
+  for (const field of couponDateFields.slice(0, 2)) {
     const value = couponPayloadDate(field);
-    if (value === undefined) return { error: jsonResponse(400, { code: 'invalid_request', message: '请填写有效的上海时间后再保存；未提交任何修改。' }) };
+    if (value === undefined) return { error: jsonResponse(400, { code: 'invalid_request', message: '请填写有效的时间后再保存；未提交任何修改。' }) };
     payload[field[1]] = value;
+  }
+  if (validityMode === 'relative_days') {
+    // The donor keeps hidden fixed-range control values in the DOM. They are
+    // intentionally not part of a relative-days rule and must not be written
+    // back when an editor changes modes.
+    payload.use_starts_at = null;
+    payload.use_ends_at = null;
+  } else {
+    for (const field of couponDateFields.slice(2)) {
+      const value = couponPayloadDate(field);
+      if (value === undefined) return { error: jsonResponse(400, { code: 'invalid_request', message: '请填写有效的时间后再保存；未提交任何修改。' }) };
+      payload[field[1]] = value;
+    }
+    payload.relative_validity_days = null;
   }
   return { body: JSON.stringify(payload) };
 }
@@ -240,14 +265,15 @@ async function readCoupon(id: number): Promise<Json> {
   if (!refs.length || Array.isArray(coupon.products) && coupon.products.length) return coupon;
   const names = Array.isArray(coupon.target_products) ? coupon.target_products : [];
   const exact = names.length === refs.length && names.every((value, index) => String(asJson(value).target_ref || '') === refs[index]);
+  couponTargetsWithUnverifiedPrice.clear();
   coupon.products = refs.map((ref, index) => {
     const target = exact ? asJson(names[index]) : {};
     const available = target.state === 'available' && typeof target.name === 'string' && target.name.trim();
+    couponTargetsWithUnverifiedPrice.add(ref);
     return {
       target_ref: ref,
       title: available ? target.name.trim() : target.state === 'not_found' ? '商品已删除或不可用' : '商品目录暂不可读取',
       product_type: ref.startsWith('service_period:') ? 'service_period' : ref.startsWith('standard_product:') ? 'standard_product' : 'unknown',
-      price_cents: 0,
       status: available ? '当前商品' : target.state === 'not_found' ? '商品已删除或不可用' : '目录暂不可用',
     };
   });
@@ -348,8 +374,21 @@ async function executeDonorScript(): Promise<void> {
 function hideTechnicalTargetReferences(): void {
   document.querySelectorAll<HTMLElement>('#selectedProductList .coupon-selected-copy small').forEach((node) => {
     const before = node.textContent || '';
-    const after = before.replace(/\s*·\s*(?:standard_product|service_period):[1-9][0-9]*\s*·\s*/, ' · ');
+    const targetRef = before.match(/(?:standard_product|service_period):[1-9][0-9]*/)?.[0] || '';
+    const after = couponTargetsWithUnverifiedPrice.has(targetRef)
+      ? before.replace(/\s*·\s*(?:standard_product|service_period):[1-9][0-9]*\s*·\s*¥[^\s]+\s*$/, ' · 价格待核验')
+      : before.replace(/\s*·\s*(?:standard_product|service_period):[1-9][0-9]*\s*·\s*/, ' · ');
     if (after !== before) node.textContent = after;
+  });
+}
+
+function removeCouponTimeZoneLabels(): void {
+  document.querySelectorAll<HTMLLabelElement>('#stage label').forEach((label) => {
+    for (const node of Array.from(label.childNodes)) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent?.includes('（北京时间）')) {
+        node.textContent = node.textContent.replaceAll('（北京时间）', '');
+      }
+    }
   });
 }
 
@@ -407,14 +446,20 @@ function installCouponListBridge(): void {
 
 async function mountCouponEditor(): Promise<void> {
   if (mounted || mountFailed || document.body.dataset.page !== 'couponForm') return;
-  const stage = document.querySelector<HTMLElement>('#stage'); if (!stage || (!stage.querySelector('#coupon-target-refs') && !stage.querySelector('[data-coupon-form-mode]'))) return;
+  const stage = document.querySelector<HTMLElement>('#stage');
+  // The production Webshell keeps the immutable donor markup in #tpl and
+  // leaves #stage as its neutral loading shell. Earlier fixture markup put a
+  // form sentinel directly in #stage, which concealed that real-route shape.
+  const donorTemplate = document.querySelector<HTMLTemplateElement>('#tpl');
+  const hasFormAnchor = Boolean(stage?.querySelector('#coupon-target-refs, [data-coupon-form-mode]') || donorTemplate?.content.querySelector('#coupon-target-refs, [data-coupon-form-mode]'));
+  if (!stage || !hasFormAnchor) return;
   mounted = true;
   try {
     const id = couponID(); const [raw, initial] = await Promise.all([
       nativeFetch(standardFormURL, { credentials: 'same-origin' }).then(async (response) => { if (!response.ok) throw new Error('标准优惠券表单加载失败，请刷新页面后重试。'); return response.text(); }),
       readCoupon(id),
     ]);
-    await installStyles(); installAdminAPI(); stage.innerHTML = contentFromDonor(raw, initial, id); await executeDonorScript(); captureCouponDateSnapshots(initial); hideTechnicalTargetReferences();
+    await installStyles(); installAdminAPI(); stage.innerHTML = contentFromDonor(raw, initial, id); removeCouponTimeZoneLabels(); await executeDonorScript(); captureCouponDateSnapshots(initial); hideTechnicalTargetReferences();
     const selected = document.getElementById('selectedProductList');
     if (selected) new MutationObserver(hideTechnicalTargetReferences).observe(selected, { childList: true, subtree: true });
   } catch (error) {
