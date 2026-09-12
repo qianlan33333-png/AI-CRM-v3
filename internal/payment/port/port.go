@@ -78,12 +78,11 @@ type RefundExposureReader interface {
 }
 
 type RefundProjection struct {
-	Refund         domain.Refund
-	OrderID        int64
-	MerchantOrder  string
-	TransactionRef string
-	OrderAmount    int64
-	Currency       string
+	Refund        domain.Refund
+	OrderID       int64
+	MerchantOrder string
+	OrderAmount   int64
+	Currency      string
 }
 
 type EffectProjection struct {

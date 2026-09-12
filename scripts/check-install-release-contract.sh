@@ -92,6 +92,7 @@ for migration_contract in \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
   '0066_channel_welcome_intents.sql:Channel welcome intents' \
+  '0150_channel_welcome_message_snapshots.sql:Channel welcome message snapshots' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

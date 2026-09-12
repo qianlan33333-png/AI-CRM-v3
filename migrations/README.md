@@ -20,3 +20,5 @@ v3 从新的 Schema 基线开始，不复制 production 或 V2 的完整 migrati
 - `0099_survey_historical_external_projection.sql`：Survey 保留旧 `questionnaire_submissions.unionid` 的受保护历史读取投影及来源摘要；仅供授权外部问卷读取，绝不作为 OneID 匹配、建客或合并依据。
 
 - `0100_ai_assistant_machine_actor.sql`：AI Assistant 为认证 machine:<client_id> 保留可审计创建者与审计引用；数值管理员投影只为兼容保留，机器主体绝不映射为管理员。
+
+- `0150_channel_welcome_message_snapshots.sql`：Channel 拥有的欢迎语渲染密文快照与已接受 EER envelope 绑定；不增加队列或 Provider 写路径。

@@ -133,6 +133,93 @@ async function waitFor(cdp, expression, message) {
       ),
   );
 }
+async function setViewport(cdp, width, height = 900) {
+  await cdp.call("Emulation.setDeviceMetricsOverride", {
+    width,
+    height,
+    deviceScaleFactor: 1,
+    mobile: false,
+    screenWidth: width,
+    screenHeight: height,
+  });
+  await delay(80);
+}
+async function assertExcelListViewport(cdp, width) {
+  await setViewport(cdp, width);
+  const layout = await evaluate(
+    cdp,
+    `(() => {
+      const viewport = document.documentElement.clientWidth;
+      const root = document.querySelector(".operation-excel-workspace");
+      const rootRect = root?.getBoundingClientRect();
+      const visible = node => { const style = getComputedStyle(node), rect = node.getBoundingClientRect(); return style.display !== "none" && style.visibility !== "hidden" && rect.width > 1 && rect.height > 1; };
+      const escaping = Array.from(document.querySelectorAll(".operation-excel-workspace .admin-toolbar, .operation-excel-workspace .admin-field, .operation-excel-workspace .admin-table"))
+        .filter(visible)
+        .map(node => node.getBoundingClientRect())
+        .some(rect => rect.left < -1 || rect.right > viewport + 1);
+      const button = Array.from(document.querySelectorAll(".operation-excel-workspace .admin-button")).find(node => String(node.textContent).trim() === "查看详情");
+      const style = button ? getComputedStyle(button) : null;
+      return { viewport, documentWidth: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0), root: rootRect ? { left: rootRect.left, right: rootRect.right } : null, escaping, button: style ? { background: style.backgroundColor, fontSize: style.fontSize, borderRadius: style.borderRadius, height: style.height } : null };
+    })()`,
+  );
+  const standardButton = layout?.button?.background === "rgba(0, 0, 0, 0)" && layout?.button?.fontSize === "14px" && layout?.button?.borderRadius === "6px" && layout?.button?.height === "36px";
+  if (!layout || layout.viewport > width || layout.documentWidth > layout.viewport + 1 || !layout.root || layout.root.left < -1 || layout.root.right > layout.viewport + 1 || layout.escaping || !standardButton)
+    throw new Error(`Excel list viewport=${width} is not responsive or does not load standard controls: ${JSON.stringify(layout)}`);
+}
+async function assertExcelViewport(cdp, width, label) {
+  await setViewport(cdp, width);
+  const layout = await evaluate(
+    cdp,
+    `(() => {
+      const viewport = document.documentElement.clientWidth;
+      const visible = node => {
+        const style = getComputedStyle(node), rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 1 && rect.height > 1;
+      };
+      const root = document.querySelector(".operation-excel-workspace");
+      const rootRect = root?.getBoundingClientRect();
+      const escapingControls = Array.from(document.querySelectorAll(".operation-excel-workspace .admin-toolbar, .operation-excel-workspace .admin-field"))
+        .filter(node => visible(node) && !node.closest(".xeb-scroll"))
+        .map(node => ({ node, rect: node.getBoundingClientRect() }))
+        .filter(({ rect }) => rect.left < -1 || rect.right > viewport + 1)
+        .map(({ node, rect }) => ({ className: node.className, text: String(node.textContent || "").trim().slice(0, 80), left: rect.left, right: rect.right }));
+      const scrolls = Array.from(document.querySelectorAll(".operation-excel-workspace .xeb-scroll"))
+        .filter(visible)
+        .map(node => ({ clientWidth: node.clientWidth, scrollWidth: node.scrollWidth }));
+      const stats = document.querySelector(".operation-excel-workspace .xeb-grid");
+      const standardPrimary = Array.from(document.querySelectorAll(".operation-excel-workspace .admin-button--primary"))[0];
+      const history = document.querySelector('select[aria-label="历史批次"]');
+      const coverInput = document.querySelector('input[aria-label="统一封面图片"]');
+      const alert = document.querySelector(".operation-excel-workspace .admin-alert");
+      const style = node => node ? (() => { const computed = getComputedStyle(node); return { background: computed.backgroundColor, color: computed.color, fontSize: computed.fontSize, borderRadius: computed.borderRadius, minHeight: computed.minHeight, height: computed.height }; })() : null;
+      return {
+        viewport,
+        documentWidth: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0),
+        root: rootRect ? { left: rootRect.left, right: rootRect.right } : null,
+        escapingControls,
+        scrolls,
+        statColumns: stats ? getComputedStyle(stats).gridTemplateColumns.trim().split(/\\s+/).filter(Boolean).length : 0,
+        primary: style(standardPrimary),
+        history: style(history),
+        coverInput: style(coverInput),
+        alert: style(alert),
+      };
+    })()`,
+  );
+  const hasLocalTableScroll = layout?.scrolls?.some(
+    (item) => item.clientWidth > 0 && item.scrollWidth > item.clientWidth,
+  );
+  const standardControls = layout?.primary?.background === "rgb(51, 112, 255)" &&
+    layout?.primary?.color === "rgb(255, 255, 255)" && layout?.primary?.fontSize === "14px" &&
+    layout?.primary?.borderRadius === "6px" && layout?.primary?.height === "36px" &&
+    layout?.history?.fontSize === "14px" && layout?.history?.height === "36px" &&
+    layout?.history?.borderRadius === "6px" && layout?.alert?.minHeight === "42px" &&
+    layout?.coverInput?.fontSize === "13px" && layout?.coverInput?.height === "34px" &&
+    layout?.coverInput?.borderRadius === "6px" && layout?.alert?.fontSize === "13px" &&
+    layout?.alert?.borderRadius === "8px";
+  if (!layout || layout.viewport > width || layout.documentWidth > layout.viewport + 1 || !layout.root || layout.root.left < -1 || layout.root.right > layout.viewport + 1 || layout.escapingControls.length || layout.statColumns !== 2 || !hasLocalTableScroll || !standardControls)
+    throw new Error(`Excel ${label} viewport=${width} is not responsive or does not load standard controls: ${JSON.stringify(layout)}`);
+}
 async function browserExit(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   await Promise.race([
@@ -206,6 +293,7 @@ try {
   await cdp.call("Page.enable");
   await cdp.call("Runtime.enable");
   await cdp.call("Network.enable");
+  await setViewport(cdp, 1280);
 
   const errors = [];
   cdp.on("Runtime.exceptionThrown", () => errors.push("page_exception"));
@@ -226,6 +314,9 @@ try {
     `Boolean(document.querySelector('.operation-excel-workspace button')&&[...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情'))`,
     "operation plan list missing",
   );
+  await assertExcelListViewport(cdp, 780);
+  await assertExcelListViewport(cdp, 390);
+  await setViewport(cdp, 1280);
   await evaluate(
     cdp,
     `[...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情').click();true`,
@@ -235,6 +326,9 @@ try {
     `Boolean(document.querySelector('.xeb-detail-main')&&[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次'))`,
     "operation detail did not open",
   );
+  await assertExcelViewport(cdp, 780, "detail");
+  await assertExcelViewport(cdp, 390, "detail");
+  await setViewport(cdp, 1280);
   await evaluate(
     cdp,
     `[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次').click();true`,

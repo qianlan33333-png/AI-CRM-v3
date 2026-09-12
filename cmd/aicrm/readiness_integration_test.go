@@ -32,20 +32,26 @@ func TestCurrentReleaseReadinessRequiresAppliedMigrationsPostgreSQL(t *testing.T
 	if _, err := pool.Exec(ctx, `CREATE TABLE order_service_entitlements (alliance text)`); err != nil {
 		t.Fatal(err)
 	}
-	missing := "0124"
-	for _, version := range requiredCurrentReleaseMigrations(config) {
-		if version != missing {
-			insertReadinessMigration(t, ctx, pool, version)
-		}
+	required := requiredCurrentReleaseMigrations(config)
+	for _, version := range required {
+		insertReadinessMigration(t, ctx, pool, version)
 	}
 	handler := currentReleaseReadinessHandler(t, pool, config)
-	assertReadinessStatus(t, handler, http.StatusServiceUnavailable)
-	if err := checkCurrentReleaseSchema(ctx, pool, config); err == nil || !strings.Contains(err.Error(), missing) {
-		t.Fatalf("missing %s readiness error=%v", missing, err)
-	}
+	for _, missing := range []string{"0124", "0149", "0150"} {
+		if !containsMigration(required, missing) {
+			t.Fatalf("runtime-required migration list omitted %s", missing)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM platform_schema_migrations WHERE version=$1`, missing); err != nil {
+			t.Fatal(err)
+		}
+		assertReadinessStatus(t, handler, http.StatusServiceUnavailable)
+		if err := checkCurrentReleaseSchema(ctx, pool, config); err == nil || !strings.Contains(err.Error(), missing) {
+			t.Fatalf("missing %s readiness error=%v", missing, err)
+		}
 
-	insertReadinessMigration(t, ctx, pool, missing)
-	assertReadinessStatus(t, handler, http.StatusOK)
+		insertReadinessMigration(t, ctx, pool, missing)
+		assertReadinessStatus(t, handler, http.StatusOK)
+	}
 	if _, err := pool.Exec(ctx, `ALTER TABLE order_service_entitlements DROP COLUMN alliance`); err != nil {
 		t.Fatal(err)
 	}

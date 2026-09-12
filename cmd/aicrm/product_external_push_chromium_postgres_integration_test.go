@@ -508,7 +508,7 @@ func seedProductExternalPushChromiumJourney(ctx context.Context, application *co
 	// Seed a mapped historical Order with its source kind/scope/key triple, not
 	// a numerically coincident V3 order ID, so this page exercises the actual
 	// Order -> Outbound Port bridge through the outer composition route.
-	const orderReference = "browser-history-order-1"
+	const orderReference = "WXP260911235959F6E5D4C3B2A1"
 	const sourceKey = "browser-history-source-order-1"
 	now := time.Now().UTC().Add(-time.Minute)
 	orderDigest := sha256.Sum256([]byte("browser-history-order-1"))

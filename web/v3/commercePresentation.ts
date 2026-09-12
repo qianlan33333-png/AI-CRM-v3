@@ -14,8 +14,8 @@ const statusLabels: Record<CommerceStatusKind, Record<string, string>> = {
   refund: {
     requested: '退款申请已提交', effect_accepted: '退款申请已受理', processing: '退款处理中',
     outcome_unknown: '退款结果待核对', completed: '退款完成', retryable_failed: '退款失败，待核对',
-    final_failed: '退款失败', history_requested: '历史退款申请', history_processing: '历史退款处理中',
-    history_failed: '历史退款失败', history_closed: '历史退款已关闭',
+    final_failed: '退款失败', history_requested: '历史记录：已申请', history_processing: '历史记录：处理中',
+    history_failed: '历史记录：失败', history_closed: '历史记录：已关闭',
   },
   effect: {
     accepted: '已受理', queued: '等待处理', attempted: '已尝试执行', executed: '已执行',
@@ -33,10 +33,10 @@ function hasChineseText(value: string): boolean {
 // fallback.
 export function commerceStatusLabel(kind: CommerceStatusKind, raw: unknown): string {
   const value = typeof raw === 'string' ? raw.trim() : '';
-  if (!value) return kind === 'refund' ? '退款状态待确认' : kind === 'effect' ? '处理状态待确认' : '订单状态待确认';
+  if (!value) return kind === 'refund' ? '退款状态待核对' : kind === 'effect' ? '处理状态待核对' : '订单状态待核对';
   return statusLabels[kind][value] || (hasChineseText(value)
     ? value
-    : kind === 'refund' ? '退款状态待确认' : kind === 'effect' ? '处理状态待确认' : '订单状态待确认');
+    : kind === 'refund' ? '退款状态待核对' : kind === 'effect' ? '处理状态待核对' : '订单状态待核对');
 }
 
 export function commerceProviderLabel(raw: unknown): string {

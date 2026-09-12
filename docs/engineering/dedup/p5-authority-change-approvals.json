@@ -401,6 +401,28 @@
       ],
       "reason": "Record the user-authorized CRM audit closeout active V3 route parity together with the bounded Operation Cycle strategy-summary contract and observable retirement of the unscoped Excel import writer. Frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
       "review_reference": "docs/prd/2026-09-12-crm-audit-closeout.md AUD-08; https://github.com/qianlan33333-png/AI-CRM-v3/pull/247; https://github.com/qianlan33333-png/AI-CRM-v3/pull/248"
+    },
+    {
+      "base_commit": "f3e453e288e26798808c02ad6adb17d396c05c61",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "aee412088dd2a7ed23a91c49397f3f8731a3d2ad739dc78f90a4a9259d207b40",
+          "head_sha256": "6b674f310b6e9c3191b63742360f4721d63670b67e798e26513f8587d90d8a5a"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "bdba25811ad4a8f25ff172f910f3e4b202f8c3f58c7f44e14fdc1e399f286e08",
+          "head_sha256": "9e3cf17048551fa4b561718d9e11af6e0b390cc189bfe5d55f04d91f12407525"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "8e663852d2664cab97cdd3b07f86261f106830ed32906896a829aa6c4f521259",
+          "head_sha256": "b64266561eab87bdd007fe7c357d785665eda37ce251375c811710ae57394369"
+        }
+      ],
+      "reason": "Record the user-authorized Chinese order and coupon presentation together with bounded WeChat Pay refund-confirmation safety. Only active V3 OpenAPI authority and its index/lock identities change; frozen donor payloads remain unchanged. This declaration is subject to PR review and is not independent evidence of human approval.",
+      "review_reference": "root review of PR #256 c15e209"
     }
   ]
 }

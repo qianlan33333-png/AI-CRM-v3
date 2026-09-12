@@ -44,6 +44,16 @@ function channelMutation(url: URL, method: string): { channelID: string } | null
 
 const terminalAssetStates = new Set(['executed', 'reconciled', 'outcome_unknown', 'final_failed']);
 
+function blockedEntrantActionStatus(value: unknown): 'inactive' | 'archived' | '' {
+  return value === 'inactive' || value === 'archived' ? value : '';
+}
+
+function blockedEntrantActionText(status: 'inactive' | 'archived'): string {
+  return status === 'archived'
+    ? '已归档：扫码不会发送欢迎语或入渠标签；请编辑后选择“启用”并保存。'
+    : '已停用：扫码不会发送欢迎语或入渠标签；请编辑后选择“启用”并保存。';
+}
+
 function channelAssetPath(url: URL): { channelID: string; effectID: string } | null {
   const match = url.pathname.match(/^\/api\/admin\/channels\/([1-9][0-9]*)\/acquisition-assets(?:\/([^/]+))?$/);
   return match ? { channelID: match[1], effectID: match[2] || '' } : null;
@@ -90,6 +100,7 @@ function donorCompatibleCatalog(value: unknown): unknown {
       // compatibility payload is list-page-only; detail/edit reads continue
       // to receive the four canonical, separately owned material arrays.
       row.welcome_image_library_ids = materialIDs;
+      if (blockedEntrantActionStatus(row.status)) row.qr_download_url = '';
       return row;
     });
   };
@@ -194,6 +205,33 @@ function labelFrozenAssetAction(): void {
 function repairFrozenChannelUI(): void {
   replaceFrozenQRHint();
   labelFrozenAssetAction();
+  repairBlockedChannelReadiness();
+}
+
+function repairBlockedChannelReadiness(): void {
+  if (document.body?.dataset.page !== 'channels') return;
+  for (const row of document.querySelectorAll<HTMLTableRowElement>('tbody tr')) {
+    const cells = row.querySelectorAll(':scope > td');
+    if (cells.length !== 6) continue;
+    const status = cells[2]?.textContent?.trim() === '归档' ? 'archived'
+      : cells[2]?.textContent?.trim() === '停用' ? 'inactive' : '';
+    if (!status) continue;
+    row.dataset.channelEntrantActionsBlocked = status;
+    const actions = cells[5];
+    for (const link of Array.from(actions.querySelectorAll('a'))) {
+      if (link.textContent?.trim() === '下载二维码') link.remove();
+    }
+    for (const placeholder of Array.from(actions.querySelectorAll<HTMLElement>('[aria-disabled="true"]'))) {
+      if (placeholder.textContent?.trim() === '后端未返回二维码地址') placeholder.remove();
+    }
+    if (actions.querySelector('[data-channel-entrant-actions-blocked]')) continue;
+    const notice = document.createElement('span');
+    notice.dataset.channelEntrantActionsBlocked = status;
+    notice.setAttribute('role', 'status');
+    notice.style.cssText = 'font-size:12px;color:#8a5700;white-space:normal;text-align:left;max-width:230px;line-height:18px;';
+    notice.textContent = blockedEntrantActionText(status);
+    actions.prepend(notice);
+  }
 }
 
 function showScopedStaffPickerError(): void {

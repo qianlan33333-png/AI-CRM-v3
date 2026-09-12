@@ -61,6 +61,36 @@ func TestCatalogHTTPRoleCSRFStrictJSONAndCAS(t *testing.T) {
 	}
 }
 
+func TestCatalogProjectionWithholdsQRDownloadForNonActiveChannels(t *testing.T) {
+	now := time.Date(2026, 9, 12, 13, 0, 0, 0, time.UTC)
+	summary := CatalogSummary{QRCodeAssetID: 71, QRCodeStatus: "legacy_verified_active", QRCodeOrigin: "legacy", QRDownloadURL: "/api/admin/channels/3/qrcode/download"}
+	for _, test := range []struct {
+		name   string
+		status channeldomain.Status
+		want   string
+	}{
+		{name: "active remains downloadable", status: channeldomain.StatusActive, want: summary.QRDownloadURL},
+		{name: "inactive retains history but is not scan ready", status: channeldomain.StatusInactive},
+		{name: "archived retains history but is not scan ready", status: channeldomain.StatusArchived},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			channel := catalogHTTPChannel(now)
+			channel.Status = test.status
+			list := projectCatalogList(channel, summary)
+			if list.QRDownloadURL != test.want {
+				t.Fatalf("list qr_download_url=%q want %q", list.QRDownloadURL, test.want)
+			}
+			detail := projectCatalogDetail(channel, summary)
+			if got, _ := detail["qr_download_url"].(string); got != test.want {
+				t.Fatalf("detail qr_download_url=%q want %q", got, test.want)
+			}
+			if got, _ := detail["qrcode_status"].(string); got != summary.QRCodeStatus {
+				t.Fatalf("asset history should remain visible, qrcode_status=%q", got)
+			}
+		})
+	}
+}
+
 func TestCatalogHTTPTamperedCursorAndApplicationErrors(t *testing.T) {
 	now := time.Now().UTC()
 	app := &catalogHTTPApplication{channel: catalogHTTPChannel(now)}
@@ -74,6 +104,11 @@ func TestCatalogHTTPTamperedCursorAndApplicationErrors(t *testing.T) {
 	response = catalogHTTPRequest(handler, http.MethodPatch, "/api/admin/channels/3", catalogHTTPBody(), map[string][]string{"Content-Type": {"application/json"}, "Idempotency-Key": {"update-key-conflict"}, "If-Match": {"4"}, "X-CSRF-Token": {"valid"}})
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "VERSION_CONFLICT") {
 		t.Fatalf("conflict status=%d body=%s", response.Code, response.Body.String())
+	}
+	app.err = errors.Join(ErrInvalidCatalogCommand, channeldomain.ErrInvalidWelcomeTemplate)
+	response = catalogHTTPRequest(handler, http.MethodPatch, "/api/admin/channels/3", catalogHTTPBody(), map[string][]string{"Content-Type": {"application/json"}, "Idempotency-Key": {"update-key-template"}, "If-Match": {"\"4\""}, "X-CSRF-Token": {"valid"}})
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "WELCOME_TEMPLATE_INVALID") || !strings.Contains(response.Body.String(), "{{客户名}}") {
+		t.Fatalf("template status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

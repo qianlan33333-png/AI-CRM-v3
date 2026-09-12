@@ -18,6 +18,7 @@ import (
 
 type ChannelEntrantProvider struct {
 	reader        channelport.PublishedEntrantActionReader
+	messages      channelport.WelcomeMessageFreezer
 	uow           platformport.UnitOfWork
 	grants        wecomport.WelcomeGrantRedeemer
 	relationships wecomport.CurrentExternalContactReader
@@ -26,8 +27,8 @@ type ChannelEntrantProvider struct {
 	Now           func() time.Time
 }
 
-func NewChannelEntrantProvider(reader channelport.PublishedEntrantActionReader, uow platformport.UnitOfWork, grants wecomport.WelcomeGrantRedeemer, relationships wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.EntrantActionWriter) *ChannelEntrantProvider {
-	return &ChannelEntrantProvider{reader: reader, uow: uow, grants: grants, relationships: relationships, tags: tags, writer: writer}
+func NewChannelEntrantProvider(reader channelport.PublishedEntrantActionReader, messages channelport.WelcomeMessageFreezer, uow platformport.UnitOfWork, grants wecomport.WelcomeGrantRedeemer, relationships wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.EntrantActionWriter) *ChannelEntrantProvider {
+	return &ChannelEntrantProvider{reader: reader, messages: messages, uow: uow, grants: grants, relationships: relationships, tags: tags, writer: writer}
 }
 
 func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
@@ -42,7 +43,7 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 		return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash("channel.entrant.read-unavailable", string(envelope.Fingerprint()))}, nil
 	}
 	if envelope.Kind == effectport.KindChannelWelcome {
-		if action.Kind != "welcome" || provider.grants == nil {
+		if action.Kind != "welcome" || provider.grants == nil || provider.messages == nil {
 			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.not-configured"), "welcome_not_configured", false), nil
 		}
 		// Pre-0066 entrant records did not carry a first receipt deadline. Their
@@ -57,6 +58,23 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 		attachments, materialErr := welcomeAttachments(action.WelcomeMaterialSnapshot)
 		if materialErr != nil {
 			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.material-invalid", action.EffectRef), "material_invalid", false), nil
+		}
+		var message string
+		// The Channel adapter owns one short UOW containing its row lock, Customer
+		// presentation read and snapshot insert. Do not wrap it again here: nested
+		// UOWs could split those facts or accidentally hold one through Provider IO.
+		message, err = provider.messages.FreezePublishedWelcomeMessage(ctx, channelport.WelcomeMessageFreezeRequest{EffectRef: action.EffectRef, Envelope: envelope})
+		if err != nil {
+			switch {
+			case errors.Is(err, channelport.ErrWelcomeMessageCustomerNameUnavailable):
+				return welcomeAdapterResult(effectport.StateRetryable, effectport.Hash("channel.welcome.customer-name-unavailable", action.EffectRef, strconv.Itoa(int(attempt.Number))), "customer_name_unavailable", false), nil
+			case errors.Is(err, channelport.ErrWelcomeMessageTemplateInvalid):
+				return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.template-invalid", action.EffectRef), "welcome_template_invalid", false), nil
+			case errors.Is(err, channelport.ErrWelcomeMessageTooLong):
+				return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.message-too-long", action.EffectRef), "welcome_message_too_long", false), nil
+			default:
+				return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.message-unavailable", action.EffectRef), "frozen_message_unavailable", false), nil
+			}
 		}
 		var welcomeCode string
 		err = provider.uow.Within(ctx, func(tx context.Context) error {
@@ -84,7 +102,7 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 			welcomeCode = ""
 			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.expired-not-attempted", action.EffectRef), "deadline_expired", false), nil
 		}
-		err = provider.writer.SendWelcomeMessage(callContext, welcomeCode, action.WelcomeMessage, attachments)
+		err = provider.writer.SendWelcomeMessage(callContext, welcomeCode, message, attachments)
 		cancel()
 		welcomeCode = ""
 	} else {
@@ -201,7 +219,7 @@ func channelWelcomeCompletionReason(result effectport.AdapterResult) string {
 
 func validChannelWelcomeResultReason(reason string) bool {
 	switch reason {
-	case "welcome_not_configured", "deadline_missing", "deadline_expired", "grant_expired", "material_invalid", "provider_unavailable", "outcome_unknown", "sent", "final_failed":
+	case "welcome_not_configured", "deadline_missing", "deadline_expired", "grant_expired", "material_invalid", "provider_unavailable", "outcome_unknown", "sent", "final_failed", "customer_name_unavailable", "welcome_template_invalid", "welcome_message_too_long", "frozen_message_unavailable":
 		return true
 	default:
 		return false

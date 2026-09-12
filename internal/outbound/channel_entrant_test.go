@@ -45,8 +45,9 @@ func TestChannelWelcomeDeadlineAndGrantExpiryNeverCallProvider(t *testing.T) {
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			grants := &welcomeGrantRedeemerStub{code: "grant-code", err: item.grantErr}
+			messages := &welcomeMessageFreezerStub{message: "hello"}
 			writer := &welcomeWriterStub{}
-			provider := NewChannelEntrantProvider(channelWelcomeReaderStub{action: welcomeTestAction(item.deadline)}, directChannelWelcomeUOW{}, grants, nil, nil, writer)
+			provider := NewChannelEntrantProvider(channelWelcomeReaderStub{action: welcomeTestAction(item.deadline)}, messages, directChannelWelcomeUOW{}, grants, nil, nil, writer)
 			provider.Now = func() time.Time { return now }
 			result, err := provider.Execute(context.Background(), welcomeTestEnvelope(), effectport.Attempt{Number: 1})
 			if err != nil || result.Completion != effectport.StateFinalFailed || result.CallAttempted || writer.calls != 0 || !result.Artifact.Valid() || channelWelcomeCompletionReason(result) != item.reason {
@@ -60,8 +61,9 @@ func TestChannelWelcomeRechecksDeadlineAndBoundsProviderContext(t *testing.T) {
 	now := time.Now().UTC()
 	deadline := now.Add(500 * time.Millisecond)
 	grants := &welcomeGrantRedeemerStub{code: "grant-code"}
+	messages := &welcomeMessageFreezerStub{message: "hello"}
 	writer := &welcomeWriterStub{}
-	provider := NewChannelEntrantProvider(channelWelcomeReaderStub{action: welcomeTestAction(deadline)}, directChannelWelcomeUOW{}, grants, nil, nil, writer)
+	provider := NewChannelEntrantProvider(channelWelcomeReaderStub{action: welcomeTestAction(deadline)}, messages, directChannelWelcomeUOW{}, grants, nil, nil, writer)
 	calls := 0
 	provider.Now = func() time.Time {
 		calls++
@@ -85,8 +87,9 @@ func TestChannelWelcomeRechecksDeadlineAndBoundsProviderContext(t *testing.T) {
 func TestChannelWelcomeProviderUnknownKeepsSingleEffect(t *testing.T) {
 	now := time.Now().UTC()
 	grants := &welcomeGrantRedeemerStub{code: "grant-code"}
+	messages := &welcomeMessageFreezerStub{message: "hello"}
 	writer := &welcomeWriterStub{err: wecomport.WrapProviderWriteError(errors.New("timeout"), true)}
-	provider := NewChannelEntrantProvider(channelWelcomeReaderStub{action: welcomeTestAction(now.Add(time.Second))}, directChannelWelcomeUOW{}, grants, nil, nil, writer)
+	provider := NewChannelEntrantProvider(channelWelcomeReaderStub{action: welcomeTestAction(now.Add(time.Second))}, messages, directChannelWelcomeUOW{}, grants, nil, nil, writer)
 	provider.Now = func() time.Time { return now }
 	envelope := welcomeTestEnvelope()
 	result, err := provider.Execute(context.Background(), envelope, effectport.Attempt{Number: 1})
@@ -95,6 +98,34 @@ func TestChannelWelcomeProviderUnknownKeepsSingleEffect(t *testing.T) {
 	}
 	if envelope.SourceRefDigest != welcomeTestEnvelope().SourceRefDigest || envelope.TargetRefDigest != welcomeTestEnvelope().TargetRefDigest {
 		t.Fatal("unknown provider result changed the stable welcome effect identity")
+	}
+}
+
+func TestChannelWelcomeFreezeRejectionsNeverRedeemOrCallProvider(t *testing.T) {
+	now := time.Now().UTC()
+	for _, item := range []struct {
+		name        string
+		freezeError error
+		reason      string
+		completion  effectport.State
+	}{
+		{name: "customer directory read unavailable retries", freezeError: channelport.ErrWelcomeMessageCustomerNameUnavailable, reason: "customer_name_unavailable", completion: effectport.StateRetryable},
+		{name: "invalid legacy marker is final", freezeError: channelport.ErrWelcomeMessageTemplateInvalid, reason: "welcome_template_invalid", completion: effectport.StateFinalFailed},
+		{name: "expanded message over provider rune limit is final", freezeError: channelport.ErrWelcomeMessageTooLong, reason: "welcome_message_too_long", completion: effectport.StateFinalFailed},
+		{name: "unverifiable frozen snapshot is final", freezeError: channelport.ErrWelcomeMessageUnavailable, reason: "frozen_message_unavailable", completion: effectport.StateFinalFailed},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			grants := &welcomeGrantRedeemerStub{code: "grant-code"}
+			messages := &welcomeMessageFreezerStub{err: item.freezeError}
+			writer := &welcomeWriterStub{}
+			provider := NewChannelEntrantProvider(channelWelcomeReaderStub{action: welcomeTestAction(now.Add(time.Second))}, messages, directChannelWelcomeUOW{}, grants, nil, nil, writer)
+			provider.Now = func() time.Time { return now }
+			result, err := provider.Execute(context.Background(), welcomeTestEnvelope(), effectport.Attempt{Number: 1})
+			reason := channelWelcomeCompletionReason(result)
+			if err != nil || result.Completion != item.completion || reason != item.reason || result.CallAttempted || grants.calls != 0 || writer.calls != 0 || messages.calls != 1 {
+				t.Fatalf("result=%+v err=%v completion=%q/%q reason=%q/%q grants=%d writer=%d freezer=%d", result, err, result.Completion, item.completion, reason, item.reason, grants.calls, writer.calls, messages.calls)
+			}
+		})
 	}
 }
 
@@ -120,6 +151,17 @@ type welcomeGrantRedeemerStub struct {
 	calls int
 }
 
+type welcomeMessageFreezerStub struct {
+	message string
+	err     error
+	calls   int
+}
+
+func (stub *welcomeMessageFreezerStub) FreezePublishedWelcomeMessage(_ context.Context, _ channelport.WelcomeMessageFreezeRequest) (string, error) {
+	stub.calls++
+	return stub.message, stub.err
+}
+
 func (stub *welcomeGrantRedeemerStub) Redeem(context.Context, string, string) (string, error) {
 	stub.calls++
 	return stub.code, stub.err
@@ -129,10 +171,12 @@ type welcomeWriterStub struct {
 	calls    int
 	err      error
 	deadline time.Time
+	message  string
 }
 
-func (stub *welcomeWriterStub) SendWelcomeMessage(ctx context.Context, _ string, _ string, _ []wecomport.WelcomeAttachment) error {
+func (stub *welcomeWriterStub) SendWelcomeMessage(ctx context.Context, _ string, message string, _ []wecomport.WelcomeAttachment) error {
 	stub.calls++
+	stub.message = message
 	if deadline, ok := ctx.Deadline(); ok {
 		stub.deadline = deadline
 	}

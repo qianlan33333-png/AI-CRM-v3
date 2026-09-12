@@ -31,8 +31,10 @@ type Store interface {
 	GetPayment(context.Context, int64, bool) (domain.Payment, error)
 	GetHandoff(context.Context, int64) (paymentport.Handoff, error)
 	ReservedRefundMinor(context.Context, int64) (int64, error)
+	HasNonTerminalRefund(context.Context, int64) (bool, error)
 	CreateRefund(context.Context, domain.Refund, [32]byte, [32]byte, string) (domain.Refund, bool, error)
 	ReplayRefund(context.Context, [32]byte, [32]byte, string) (domain.Refund, bool, error)
+	FindRefundByIdempotencyKey(context.Context, [32]byte, string) (domain.Refund, bool, error)
 	BindRefundEffect(context.Context, domain.Refund, effectport.PaymentV1Intent, map[string]any) (domain.Refund, error)
 	GetRefund(context.Context, int64, bool) (domain.Refund, error)
 	GetRefundByProviderReference(context.Context, domain.Provider, string, bool) (domain.Refund, error)
@@ -374,6 +376,20 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 			result = replay
 			return nil
 		}
+		// The Payment row is locked above. For a live WeChat Pay Payment, do
+		// not allow another idempotency key to create a second in-flight refund
+		// while the first still awaits an external outcome. Original-key replay
+		// remains ahead of this check; a terminal refund permits an explicit
+		// later partial-refund request. WeChat Shop retains its SKU contract.
+		if payment.Provider == domain.ProviderWeChatPay {
+			pending, pendingErr := s.store.HasNonTerminalRefund(tx, payment.ID)
+			if pendingErr != nil {
+				return pendingErr
+			}
+			if pending {
+				return paymentport.ErrConflict
+			}
+		}
 		reserved, err := s.store.ReservedRefundMinor(tx, payment.ID)
 		if err != nil {
 			return err
@@ -581,6 +597,38 @@ func (s *Service) ListRefundsForPayment(ctx context.Context, provider domain.Pro
 		return inner
 	})
 	return out, total, classify(err)
+}
+
+// FindRefundRecoveryReceipt resolves only an existing refund receipt for the
+// same Payment, operator scope, and original idempotency key. It never
+// replays a command or exposes the command payload/digests to an HTTP caller.
+func (s *Service) FindRefundRecoveryReceipt(ctx context.Context, provider domain.Provider, merchantOrderNo, actorScope, idempotencyKey string) (domain.Refund, bool, error) {
+	if s == nil || s.uow == nil || s.store == nil || (provider != domain.ProviderWeChatPay && provider != domain.ProviderWeChatShop) || !validScope(merchantOrderNo) || !validScope(actorScope) || !validKey(idempotencyKey) {
+		return domain.Refund{}, false, paymentport.ErrInvalid
+	}
+	keyDigest := sha256.Sum256([]byte(idempotencyKey))
+	var out domain.Refund
+	var found bool
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		payment, err := s.store.GetPaymentByMerchantProvider(tx, provider, merchantOrderNo, false)
+		if err != nil {
+			return err
+		}
+		out, found, err = s.store.FindRefundByIdempotencyKey(tx, keyDigest, actorScope)
+		if err != nil || !found {
+			return err
+		}
+		// A key belonging to another Payment must look absent to this scoped
+		// recovery read; it must never release a different order's lock.
+		if out.PaymentID != payment.ID || out.Provider != provider {
+			out, found = domain.Refund{}, false
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.Refund{}, false, classify(err)
+	}
+	return out, found, nil
 }
 
 func (s *Service) ListOrderEffects(ctx context.Context, provider domain.Provider, merchantOrderNo string) ([]paymentport.EffectProjection, error) {

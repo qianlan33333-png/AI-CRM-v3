@@ -415,7 +415,8 @@ for (const spec of [
   if (!dom.window.document.querySelector("[data-material-refresh-status]")?.textContent?.includes("正在读取")) fail("material preparation loading state is not visible");
   releasePreparation();
   await waitFor(() => !![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "重试读取刷新状态"), "material preparation read error did not expose a retry action");
-  if (!dom.window.document.querySelector("[data-material-refresh-status]")?.textContent?.includes("read_unavailable")) fail("material preparation read error was hidden");
+  const preparationError = dom.window.document.querySelector("[data-material-refresh-status]")?.textContent || "";
+  if (!preparationError.includes("刷新服务暂不可用，请稍后重试。") || preparationError.includes("HTTP 503") || preparationError.includes("read_unavailable")) fail("material preparation read error leaked a transport status or source code");
   [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "重试读取刷新状态").click();
   await waitFor(() => dom.window.document.querySelector("#material-refresh-panel")?.textContent?.includes("cover.png"), "material preparation contract did not render after manual retry");
   const panelText = dom.window.document.querySelector("#material-refresh-panel")?.textContent || "";
@@ -429,7 +430,7 @@ for (const spec of [
     !panelText.includes("当日刷新进度暂不可用") ||
     !panelText.includes("下次运行")
   ) fail("material credential availability was inferred from the refresh state or expiry incorrectly");
-  if (!panelText.includes("需要补传的原文件") || !panelText.includes("attachment:19：原文件缺失，请补传（source_bytes_missing）")) fail("missing source was not kept as a locateable re-upload item");
+  if (!panelText.includes("需要补传的原文件") || !panelText.includes("attachment:19：原文件缺失，请补传") || panelText.includes("source_bytes_missing")) fail("missing source was not kept as a locateable Chinese re-upload item");
   const uploadedRow = [...dom.window.document.querySelectorAll("#material-refresh-panel tr")].find((row) => row.textContent?.includes("expired-by-clock.png"));
   if (!uploadedRow || uploadedRow.querySelectorAll("td")[6]?.textContent?.trim() !== "—") fail("a successful uploaded receipt was rendered as a failure reason");
   if (![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "立即刷新全部启用素材")?.classList.contains("admin-button--primary")) fail("manual refresh did not use the existing primary-button styling");
@@ -445,7 +446,8 @@ for (const spec of [
   if (!full.disabled || full.textContent?.trim() !== "刷新中…") fail("manual full refresh was not locked against a double click");
   assert.equal(csrfHeaders[0], "fixture-csrf");
   releaseFull();
-  await waitFor(() => !full.disabled && dom.window.document.body.textContent?.includes("同一操作 key"), "dropped full-refresh response did not expose a retryable error");
+  await waitFor(() => !full.disabled && dom.window.document.body.textContent?.includes("全量刷新失败，请检查网络后重试。可重新发起刷新。"), "dropped full-refresh response did not expose a retryable error");
+  if (dom.window.document.body.textContent?.includes("同一操作 key") || dom.window.document.body.textContent?.includes("response lost after commit")) fail("full-refresh recovery exposed an implementation detail");
   full.click();
   await waitFor(() => fullPosts === 2 && roundReads === 2, "manual full-refresh retry did not read the async round");
   if (!fullKeys[0] || fullKeys[0] !== fullKeys[1]) fail("dropped full-refresh response retried with a new idempotency key");
