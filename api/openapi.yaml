@@ -2996,7 +2996,12 @@ paths:
       operationId: listLegacyRefunds
       tags: [Transactions]
       security: [{adminSession: []}]
-      responses: {"200": {description: Refund page, content: {application/json: {schema: {type: object, additionalProperties: true}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+      parameters:
+        - {name: provider, in: query, required: false, description: "When filtering an order detail, must be paired with order_no. all or omitted lists all local payment refunds.", schema: {type: string, enum: [all, wechat, wechat_shop]}}
+        - {name: order_no, in: query, required: false, description: "Merchant order number; valid only with provider because the provider/order pair identifies one Payment.", schema: {type: string, minLength: 1, maxLength: 200}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/Offset"}
+      responses: {"200": {description: Refund page. A scoped query returns refunds belonging only to the exact provider and merchant-order Payment., content: {application/json: {schema: {$ref: "#/components/schemas/LegacyOrderRefundPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
     post:
       operationId: createWechatShopRefundIntent
       tags: [Transactions]
@@ -3018,7 +3023,7 @@ paths:
                 refund_amount_total: {type: integer, minimum: 1}
                 reason_code: {type: string, enum: ["10000000", "10000001", "10000002", "10000006", "10000007", "10000008", "10000014", "10000015", "10000017", "10000021"]}
                 reason: {type: string, minLength: 1, maxLength: 500}
-                transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200}
+                transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200, description: "Exact provider-verified WeChat transaction_id. Merchant order numbers are never accepted as a fallback; unavailable verification blocks refund confirmation."}
                 checked: {type: boolean}
                 operator: {type: string, maxLength: 200}
       responses: {"202": {description: WeChat Shop refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
@@ -3072,7 +3077,7 @@ paths:
       tags: [Transactions]
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/OrderReference"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [refund_amount_total, reason, transaction_id_confirmation, checked], properties: {provider: {type: string, enum: [wechat]}, order_no: {type: string, minLength: 1, maxLength: 200}, refund_amount_total: {type: integer, minimum: 1}, reason: {type: string, minLength: 1, maxLength: 500}, transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200}, checked: {type: boolean}, operator: {type: string, maxLength: 200}}}}}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [refund_amount_total, reason, transaction_id_confirmation, checked], properties: {provider: {type: string, enum: [wechat]}, order_no: {type: string, minLength: 1, maxLength: 200}, refund_amount_total: {type: integer, minimum: 1}, reason: {type: string, minLength: 1, maxLength: 500}, transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200, description: "Exact provider-verified WeChat transaction_id; merchant and v3pay order numbers are not confirmation values."}, checked: {type: boolean}, operator: {type: string, maxLength: 200}}}}}}
       responses: {"202": {description: WeChat Pay refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/wechat-shop/refunds/{refund_id}/reconcile:
     post:
@@ -3269,8 +3274,8 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [amount_minor, refund_no, reason]
-              properties: {amount_minor: {type: integer, minimum: 1}, refund_no: {type: string, minLength: 1, maxLength: 200}, reason: {type: string, minLength: 1, maxLength: 500}}
+              required: [amount_minor, refund_no, reason, transaction_id_confirmation]
+              properties: {amount_minor: {type: integer, minimum: 1}, refund_no: {type: string, minLength: 1, maxLength: 200}, reason: {type: string, minLength: 1, maxLength: 500}, transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200, description: "Exact provider-verified WeChat transaction_id. Missing verification blocks confirmation; merchant order values are not accepted."}}
       responses: {"202": {description: Refund effect accepted atomically, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentRefundEffectAccepted"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/public/wechat-pay/callbacks/payment:
     post:
@@ -4833,15 +4838,19 @@ components:
     TransactionOrder:
       type: object
       additionalProperties: true
-      required: [id, record_origin, created_at, merchant_order_no, order_no, payer_name, payer_id, product_code, product_name, amount_yuan, currency, status, status_label, provider, provider_label, detail_url]
+      required: [id, record_origin, created_at, merchant_order_no, out_trade_no, order_no, platform_transaction_no, transaction_id, payer_name, payer_id, payer_phone_masked, product_code, product_name, amount_yuan, currency, status, status_label, provider, provider_label, detail_url, refundable_amount_total]
       properties:
         id: {$ref: "#/components/schemas/PositiveID"}
         record_origin: {type: string, enum: [native, v1_history]}
         created_at: {type: string, format: date-time}
         merchant_order_no: {type: string, maxLength: 200}
-        order_no: {type: string, maxLength: 200}
+        out_trade_no: {type: string, maxLength: 200, description: "Compatibility alias of merchant_order_no."}
+        order_no: {type: string, maxLength: 200, description: "Source order reference; administrative presentation should use merchant_order_no."}
+        platform_transaction_no: {type: string, maxLength: 200}
+        transaction_id: {type: string, maxLength: 200, description: "Provider transaction_id when retained by the Order fact; it is required for WeChat refund confirmation."}
         payer_name: {type: string, maxLength: 200}
         payer_id: {type: string, pattern: "^(customer:[1-9][0-9]*|)$"}
+        payer_phone_masked: {type: string, maxLength: 64, description: "Customer-owned masked phone display when a trusted directory projection exists."}
         product_code: {type: string, maxLength: 200}
         product_name: {type: string, maxLength: 500}
         amount_yuan: {type: string, pattern: "^[0-9]+[.][0-9]{2}$"}
@@ -4851,6 +4860,39 @@ components:
         provider: {type: string, enum: [wechat, wechat_shop, alipay]}
         provider_label: {type: string}
         detail_url: {type: string, maxLength: 2048}
+        refundable_amount_total: {type: integer, format: int64, minimum: 0}
+    LegacyOrderRefund:
+      type: object
+      additionalProperties: false
+      required: [id, order_id, provider, order_no, transaction_id, refund_id, out_refund_no, refund_amount_total, order_amount_minor, currency, reason, status, external_effect_id, external_effect_state, auto_retry_allowed, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        order_id: {$ref: "#/components/schemas/PositiveID"}
+        provider: {type: string, enum: [wechat, wechat_shop]}
+        order_no: {type: string, minLength: 1, maxLength: 200}
+        transaction_id: {type: string, maxLength: 200}
+        refund_id: {type: string, minLength: 1, maxLength: 200}
+        out_refund_no: {type: string, minLength: 1, maxLength: 200}
+        refund_amount_total: {type: integer, format: int64, minimum: 1}
+        order_amount_minor: {type: integer, format: int64, minimum: 1}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        reason: {type: string, maxLength: 500}
+        status: {type: string}
+        external_effect_id: {type: integer, format: int64, minimum: 0}
+        external_effect_state: {type: string}
+        auto_retry_allowed: {type: boolean, const: false}
+        created_at: {type: string, format: date-time}
+    LegacyOrderRefundPage:
+      type: object
+      additionalProperties: false
+      required: [items, refunds, total, limit, offset, has_more]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/LegacyOrderRefund"}}
+        refunds: {type: array, items: {$ref: "#/components/schemas/LegacyOrderRefund"}}
+        total: {type: integer, format: int64, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        offset: {type: integer, minimum: 0, maximum: 1000000}
+        has_more: {type: boolean}
     TransactionOrderPage:
       type: object
       additionalProperties: false

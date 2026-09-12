@@ -11,6 +11,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
@@ -24,9 +25,17 @@ import (
 )
 
 type appStub struct {
-	createCalls int
-	create      paymentport.CreateCommand
-	handoff     paymentport.Handoff
+	createCalls  int
+	create       paymentport.CreateCommand
+	handoff      paymentport.Handoff
+	refundCalls  int
+	refund       paymentport.RefundCommand
+	payment      domain.Payment
+	refundRows   []paymentport.RefundProjection
+	refundTotal  int64
+	listProvider domain.Provider
+	listMerchant string
+	listAllCalls int
 }
 
 func (stub *appStub) Create(_ context.Context, command paymentport.CreateCommand) (domain.Payment, error) {
@@ -64,8 +73,10 @@ type paidPurchaseLeadQRStub struct{ value channelport.PublicLeadQRCode }
 func (stub paidPurchaseLeadQRStub) ReadPublicLeadQRCode(context.Context, int64) (channelport.PublicLeadQRCode, error) {
 	return stub.value, nil
 }
-func (*appStub) RequestRefund(context.Context, paymentport.RefundCommand) (domain.Refund, error) {
-	return domain.Refund{}, nil
+func (stub *appStub) RequestRefund(_ context.Context, command paymentport.RefundCommand) (domain.Refund, error) {
+	stub.refundCalls++
+	stub.refund = command
+	return domain.Refund{ID: 8, Provider: domain.ProviderWeChatPay, RefundNo: "RF-8", Status: domain.RefundRequested}, nil
 }
 func (*appStub) ApplyVerifiedCallback(context.Context, paymentprovider.CallbackResult) error {
 	return nil
@@ -82,11 +93,22 @@ func (*appStub) ReconcileWeChatPayPayment(context.Context, int64) (domain.Paymen
 func (*appStub) ReconcileWeChatPayRefund(context.Context, int64) (domain.Refund, error) {
 	return domain.Refund{}, nil
 }
-func (*appStub) FindPayment(context.Context, domain.Provider, string) (domain.Payment, error) {
+func (stub *appStub) FindPayment(context.Context, domain.Provider, string) (domain.Payment, error) {
+	if stub.payment.ID != 0 {
+		return stub.payment, nil
+	}
 	return domain.Payment{ID: 9, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-9", Status: domain.StatusPaid}, nil
 }
-func (*appStub) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
-	return nil, 0, nil
+func (stub *appStub) GetPayment(context.Context, int64) (domain.Payment, error) {
+	return stub.FindPayment(context.Background(), domain.ProviderWeChatPay, "")
+}
+func (stub *appStub) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
+	stub.listAllCalls++
+	return stub.refundRows, stub.refundTotal, nil
+}
+func (stub *appStub) ListRefundsForPayment(_ context.Context, provider domain.Provider, merchant string, _ int32, _ int32) ([]paymentport.RefundProjection, int64, error) {
+	stub.listProvider, stub.listMerchant = provider, merchant
+	return stub.refundRows, stub.refundTotal, nil
 }
 func (*appStub) ListOrderEffects(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error) {
 	return nil, nil
@@ -155,6 +177,135 @@ func TestTrustedSessionEndpointVerifiesCodeAndSetsOpaqueCookie(t *testing.T) {
 }
 func (securityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
 	return accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
+}
+
+func TestRefundListScopesOrderDetailToExactPayment(t *testing.T) {
+	application := &appStub{refundRows: []paymentport.RefundProjection{{
+		Refund:        domain.Refund{ID: 31, PaymentID: 21, Provider: domain.ProviderWeChatPay, RefundNo: "RF-31", AmountMinor: 200, Status: domain.RefundCompleted, CreatedAt: time.Date(2026, 9, 10, 4, 10, 38, 0, time.UTC)},
+		OrderID:       12,
+		MerchantOrder: "WXP2609100410381093CE4C5B0C",
+		OrderAmount:   200000,
+		Currency:      "CNY",
+	}}, refundTotal: 1}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/refunds?provider=wechat&order_no=WXP2609100410381093CE4C5B0C", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || application.listProvider != domain.ProviderWeChatPay || application.listMerchant != "WXP2609100410381093CE4C5B0C" || !strings.Contains(response.Body.String(), "RF-31") || strings.Contains(response.Body.String(), "RF-other") {
+		t.Fatalf("status=%d provider=%q merchant=%q body=%s", response.Code, application.listProvider, application.listMerchant, response.Body.String())
+	}
+	for _, path := range []string{"/api/admin/refunds?provider=wechat", "/api/admin/refunds?order_no=WXP2609100410381093CE4C5B0C", "/api/admin/refunds?provider=v3pay&order_no=WXP2609100410381093CE4C5B0C"} {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("path=%s status=%d", path, response.Code)
+		}
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/refunds?provider=all", nil))
+	if response.Code != http.StatusOK || application.listAllCalls != 1 {
+		t.Fatalf("all-provider compatibility status=%d unscopedCalls=%d", response.Code, application.listAllCalls)
+	}
+}
+
+func TestCompatRefundRequiresVerifiedWeChatTransactionID(t *testing.T) {
+	transactionID := "4500000365202609101828595865"
+	application := &appStub{payment: domain.Payment{ID: 9, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "v3pay_order", Status: domain.StatusPaid, ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", transactionID))}}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/admin/wechat-pay/orders/v3pay_order/refunds"
+	post := func(confirmation string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"provider":"wechat","order_no":"v3pay_order","refund_amount_total":200,"reason":"客户申请","transaction_id_confirmation":"`+confirmation+`","checked":true}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "refund-confirmation-test-key")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := post("v3pay_order"); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+		t.Fatalf("merchant fallback status=%d calls=%d body=%s", response.Code, application.refundCalls, response.Body.String())
+	}
+	if response := post(""); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+		t.Fatalf("missing transaction status=%d calls=%d", response.Code, application.refundCalls)
+	}
+	if response := post(transactionID); response.Code != http.StatusAccepted || application.refundCalls != 1 || application.refund.PaymentID != 9 {
+		t.Fatalf("verified transaction status=%d calls=%d command=%+v body=%s", response.Code, application.refundCalls, application.refund, response.Body.String())
+	}
+}
+
+func TestEveryRefundConfirmationEndpointRequiresVerifiedWeChatTransactionID(t *testing.T) {
+	transactionID := "4500000365202609101828595865"
+	payment := domain.Payment{ID: 9, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "v3pay_order", Status: domain.StatusPaid, ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", transactionID))}
+
+	t.Run("generic payment endpoint", func(t *testing.T) {
+		application := &appStub{payment: payment}
+		handler, err := NewHandler(application, nil, securityStub{}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		post := func(confirmation string) *httptest.ResponseRecorder {
+			request := httptest.NewRequest(http.MethodPost, "/api/admin/payments/9/refunds", strings.NewReader(`{"amount_minor":200,"refund_no":"RF-generic","reason":"客户申请","transaction_id_confirmation":"`+confirmation+`"}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", "refund-generic-test-key")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		}
+		if response := post("v3pay_order"); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("merchant fallback status=%d calls=%d body=%s", response.Code, application.refundCalls, response.Body.String())
+		}
+		if response := post(""); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("missing transaction status=%d calls=%d", response.Code, application.refundCalls)
+		}
+		if response := post(transactionID); response.Code != http.StatusAccepted || application.refundCalls != 1 || application.refund.PaymentID != payment.ID {
+			t.Fatalf("verified transaction status=%d calls=%d command=%+v body=%s", response.Code, application.refundCalls, application.refund, response.Body.String())
+		}
+	})
+
+	t.Run("wechat shop endpoint", func(t *testing.T) {
+		shopPayment := payment
+		shopPayment.Provider = domain.ProviderWeChatShop
+		application := &appStub{payment: shopPayment}
+		handler, err := NewHandler(application, nil, securityStub{}, true, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		post := func(confirmation string) *httptest.ResponseRecorder {
+			request := httptest.NewRequest(http.MethodPost, "/api/admin/refunds", strings.NewReader(`{"provider":"wechat_shop","order_no":"v3pay_order","product_id":"product-1","sku_id":"sku-1","refund_count":1,"refund_amount_total":200,"reason_code":"10000000","reason":"客户申请","transaction_id_confirmation":"`+confirmation+`","checked":true}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", "refund-shop-test-key")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		}
+		if response := post("v3pay_order"); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("merchant fallback status=%d calls=%d body=%s", response.Code, application.refundCalls, response.Body.String())
+		}
+		if response := post(""); response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("missing transaction status=%d calls=%d", response.Code, application.refundCalls)
+		}
+		if response := post(transactionID); response.Code != http.StatusAccepted || application.refundCalls != 1 || application.refund.PaymentID != shopPayment.ID {
+			t.Fatalf("verified transaction status=%d calls=%d command=%+v body=%s", response.Code, application.refundCalls, application.refund, response.Body.String())
+		}
+	})
+
+	t.Run("non-WeChat payment has no compatible confirmation", func(t *testing.T) {
+		application := &appStub{payment: domain.Payment{ID: 9, Provider: domain.Provider("alipay"), ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", transactionID))}}
+		handler, _ := NewHandler(application, nil, securityStub{}, true)
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/payments/9/refunds", strings.NewReader(`{"amount_minor":200,"refund_no":"RF-generic","reason":"客户申请","transaction_id_confirmation":"`+transactionID+`"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "refund-generic-test-key")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || application.refundCalls != 0 {
+			t.Fatalf("wrong provider status=%d calls=%d body=%s", response.Code, application.refundCalls, response.Body.String())
+		}
+	})
 }
 
 func TestCheckoutAcceptsOnlyOpaqueCookieIdentity(t *testing.T) {

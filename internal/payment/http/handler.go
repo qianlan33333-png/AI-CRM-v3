@@ -3,6 +3,7 @@ package paymenthttp
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
@@ -39,6 +41,7 @@ type Application interface {
 	CheckoutSessionBinding(context.Context, string) (string, error)
 	GetCheckout(context.Context, string, string) (paymentport.Handoff, error)
 	RequestRefund(context.Context, paymentport.RefundCommand) (domain.Refund, error)
+	GetPayment(context.Context, int64) (domain.Payment, error)
 	ApplyVerifiedCallback(context.Context, paymentprovider.CallbackResult) error
 	ApplyVerifiedShopCallback(context.Context, paymentport.ShopRefundCallback) error
 	ReconcileShopRefund(context.Context, int64) (domain.Refund, error)
@@ -46,6 +49,7 @@ type Application interface {
 	ReconcileWeChatPayRefund(context.Context, int64) (domain.Refund, error)
 	FindPayment(context.Context, domain.Provider, string) (domain.Payment, error)
 	ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error)
+	ListRefundsForPayment(context.Context, domain.Provider, string, int32, int32) ([]paymentport.RefundProjection, int64, error)
 	ListOrderEffects(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error)
 }
 
@@ -305,21 +309,21 @@ func (handler *Handler) refunds(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	limit, offset := int64(50), int64(0)
-	var err error
-	if raw := request.URL.Query().Get("limit"); raw != "" {
-		limit, err = strconv.ParseInt(raw, 10, 32)
-	}
-	if err == nil {
-		if raw := request.URL.Query().Get("offset"); raw != "" {
-			offset, err = strconv.ParseInt(raw, 10, 32)
-		}
-	}
-	if err != nil || limit < 1 || limit > 100 || offset < 0 || offset > 1_000_000 {
+	provider, merchantOrderNo, limit, offset, filtered, ok := parseRefundListQuery(request)
+	if !ok {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	rows, total, err := handler.app.ListRefunds(request.Context(), int32(limit), int32(offset))
+	var (
+		rows  []paymentport.RefundProjection
+		total int64
+		err   error
+	)
+	if filtered {
+		rows, total, err = handler.app.ListRefundsForPayment(request.Context(), provider, merchantOrderNo, int32(limit), int32(offset))
+	} else {
+		rows, total, err = handler.app.ListRefunds(request.Context(), int32(limit), int32(offset))
+	}
 	if err != nil {
 		resultError(writer, err)
 		return
@@ -345,6 +349,49 @@ func (handler *Handler) refunds(writer http.ResponseWriter, request *http.Reques
 		})
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"items": items, "refunds": items, "total": total, "limit": limit, "offset": offset, "has_more": offset+int64(len(items)) < total})
+}
+
+// parseRefundListQuery leaves the unscoped administrative page available, but
+// makes a detail filter an all-or-nothing Payment identity. An order number on
+// its own is not globally unique across providers and must never select a
+// refund timeline by coincidence.
+func parseRefundListQuery(request *http.Request) (domain.Provider, string, int64, int64, bool, bool) {
+	query := request.URL.Query()
+	for key, values := range query {
+		if (key != "provider" && key != "order_no" && key != "limit" && key != "offset") || len(values) != 1 {
+			return "", "", 0, 0, false, false
+		}
+	}
+	limit, offset := int64(50), int64(0)
+	var err error
+	if raw := query.Get("limit"); raw != "" {
+		limit, err = strconv.ParseInt(raw, 10, 32)
+	}
+	if err == nil {
+		if raw := query.Get("offset"); raw != "" {
+			offset, err = strconv.ParseInt(raw, 10, 32)
+		}
+	}
+	if err != nil || limit < 1 || limit > 100 || offset < 0 || offset > 1_000_000 {
+		return "", "", 0, 0, false, false
+	}
+	rawProvider, merchantOrderNo := query.Get("provider"), query.Get("order_no")
+	if merchantOrderNo == "" && (rawProvider == "" || rawProvider == "all") {
+		return "", "", limit, offset, false, true
+	}
+	if merchantOrderNo == "" || len(merchantOrderNo) > 200 {
+		return "", "", 0, 0, false, false
+	}
+	var provider domain.Provider
+	switch rawProvider {
+	case "wechat", "wechat_pay":
+		provider = domain.ProviderWeChatPay
+	case "wechat_shop":
+		provider = domain.ProviderWeChatShop
+	default:
+		return "", "", 0, 0, false, false
+	}
+	return provider, merchantOrderNo, limit, offset, true, true
 }
 
 func (handler *Handler) shopRefund(writer http.ResponseWriter, request *http.Request) {
@@ -374,13 +421,17 @@ func (handler *Handler) shopRefund(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	if body.Provider != "wechat_shop" || body.OrderNo == "" || body.TransactionIDConfirmation != body.OrderNo || !body.Checked || key == "" {
+	if body.Provider != "wechat_shop" || body.OrderNo == "" || !body.Checked || key == "" || !validTransactionConfirmation(body.TransactionIDConfirmation) {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	payment, err := handler.app.FindPayment(request.Context(), domain.ProviderWeChatShop, body.OrderNo)
 	if err != nil {
 		resultError(writer, err)
+		return
+	}
+	if !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	digest := sha256.Sum256([]byte(strconv.FormatInt(principal.InternalID, 10) + "\x00" + key))
@@ -422,7 +473,7 @@ func (handler *Handler) compatRefund(writer http.ResponseWriter, request *http.R
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
-	if orderRef == "" || (body.OrderNo != "" && body.OrderNo != orderRef) || body.TransactionIDConfirmation != orderRef || !body.Checked {
+	if orderRef == "" || (body.OrderNo != "" && body.OrderNo != orderRef) || !body.Checked || !validTransactionConfirmation(body.TransactionIDConfirmation) {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -431,7 +482,15 @@ func (handler *Handler) compatRefund(writer http.ResponseWriter, request *http.R
 		resultError(writer, err)
 		return
 	}
+	if !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
 	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	if key == "" {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
 	digest := sha256.Sum256([]byte(key))
 	refund, err := handler.app.RequestRefund(request.Context(), paymentport.RefundCommand{PaymentID: payment.ID, AmountMinor: body.AmountMinor, RefundNo: "RF-" + fmt.Sprintf("%x", digest[:12]), Reason: body.Reason, ActorScope: "admin:" + strconv.FormatInt(principal.InternalID, 10), IdempotencyKey: key})
 	if err != nil {
@@ -678,11 +737,25 @@ func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	var body struct {
-		AmountMinor int64  `json:"amount_minor"`
-		RefundNo    string `json:"refund_no"`
-		Reason      string `json:"reason"`
+		AmountMinor               int64  `json:"amount_minor"`
+		RefundNo                  string `json:"refund_no"`
+		Reason                    string `json:"reason"`
+		TransactionIDConfirmation string `json:"transaction_id_confirmation"`
 	}
 	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	if !validTransactionConfirmation(body.TransactionIDConfirmation) {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	payment, err := handler.app.GetPayment(request.Context(), paymentID)
+	if err != nil {
+		resultError(writer, err)
+		return
+	}
+	if !matchesVerifiedWeChatTransaction(payment, body.TransactionIDConfirmation) {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	refund, err := handler.app.RequestRefund(request.Context(), paymentport.RefundCommand{PaymentID: paymentID, AmountMinor: body.AmountMinor, RefundNo: body.RefundNo, Reason: body.Reason, ActorScope: "admin:" + strconv.FormatInt(principal.InternalID, 10), IdempotencyKey: request.Header.Get("Idempotency-Key")})
@@ -691,6 +764,24 @@ func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	writeJSON(writer, http.StatusAccepted, map[string]any{"refund_id": refund.ID, "out_refund_no": refund.RefundNo, "status": refund.Status, "effect_id": refund.EffectID})
+}
+
+func validTransactionConfirmation(value string) bool {
+	return value != "" && len(value) <= 200 && value == strings.TrimSpace(value)
+}
+
+// matchesVerifiedWeChatTransaction compares the operator-entered provider
+// transaction_id to the digest stored from a verified payment callback or
+// reconciliation. It never treats the merchant order number as a substitute.
+func matchesVerifiedWeChatTransaction(payment domain.Payment, confirmation string) bool {
+	if !validTransactionConfirmation(confirmation) || payment.ProviderTransactionDigest == "" {
+		return false
+	}
+	if payment.Provider != domain.ProviderWeChatPay && payment.Provider != domain.ProviderWeChatShop {
+		return false
+	}
+	expected := effectport.Hash("wechatpay.transaction", confirmation)
+	return len(payment.ProviderTransactionDigest) == len(expected) && subtle.ConstantTimeCompare([]byte(payment.ProviderTransactionDigest), []byte(expected)) == 1
 }
 
 func (handler *Handler) callback(writer http.ResponseWriter, request *http.Request) {
