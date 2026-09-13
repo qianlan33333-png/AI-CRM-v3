@@ -10,12 +10,18 @@ import (
 	"os"
 	"time"
 
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	wecomadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/adapter"
 )
 
 func main() {
+	runtime, err := platformconfig.Load()
+	if err != nil {
+		fmt.Println(`{"complete":false,"failure_stage":"config","scope_user_count":0,"scope_department_count":0,"directory_department_count":0,"directory_component_count":0,"department_employee_count":0,"direct_employee_count":0,"employee_count":0}`)
+		os.Exit(1)
+	}
 	client, err := wecomadapter.New(wecomadapter.Config{
-		Enabled: true, CorpID: os.Getenv("AICRM_WECOM_CORP_ID"), AgentID: os.Getenv("AICRM_WECOM_AGENT_ID"), Secret: os.Getenv("AICRM_WECOM_SECRET"),
+		Enabled: true, CorpID: runtime.WeCom.CorpID, AgentID: runtime.WeCom.AgentID, Secret: runtime.WeCom.Secret,
 		AdminCallbackURI: "https://localhost/access-directory-preflight", SidebarCallbackURI: "https://localhost/access-directory-preflight",
 	})
 	if err != nil {
