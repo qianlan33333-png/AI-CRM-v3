@@ -59,6 +59,7 @@ try {
   cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
   await login(cdp, "super");
   await waitFor(cdp, "document.querySelector('#admin-access-provision')?.hidden === false && document.querySelector('#admin-access-super')?.hidden === false && document.querySelector('#admin-access-super-title')?.textContent.includes('超级管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('SuperFixtureID')", "super controls or bound enterprise identity did not render");
+  if (!await evaluate(cdp, "(() => { const row=[...document.querySelectorAll('#admin-access-users-body tr')].find((item) => item.textContent.includes('SuperFixtureID')); const value=row?.querySelector('td[data-label=\"最近登录\"]')?.textContent.trim() || ''; return /^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(value); })()")) throw new Error("last login was not rendered as a Shanghai business time");
   await screenshot(cdp, 1440, "access-governance-1440.png");
   await screenshot(cdp, 780, "access-governance-780.png");
   await evaluate(cdp, "document.querySelector('#admin-access-provision').click(); true");
@@ -107,7 +108,32 @@ try {
   await login(cdp, "super");
   await evaluate(cdp, "document.querySelector('#admin-access-transfer').click(); true");
   await waitFor(cdp, "document.querySelector('#admin-access-transfer-dialog')?.hidden === false && document.querySelector('#admin-access-transfer-target')?.options.length > 0", "super transfer confirmation did not render");
+  if (!await evaluate(cdp, "document.querySelector('#admin-access-transfer-target')?.selectedOptions[0]?.textContent.includes('AdminFixtureID')")) throw new Error("super transfer did not offer the active administrator as its exact target");
   await screenshot(cdp, 780, "access-governance-transfer-confirm.png");
+  await evaluate(cdp, "document.querySelector('#admin-access-transfer-submit').click(); true");
+  await waitFor(cdp, "document.querySelector('#admin-access-alert')?.textContent.includes('超级管理员已转移') && document.querySelector('#admin-access-super')?.hidden === true && document.querySelector('#admin-access-users-body')?.children.length === 0 && document.querySelector('#admin-access-list-status')?.textContent.includes('重新登录')", "super transfer was not submitted through the real page or did not clear the fenced old session view");
+  await screenshot(cdp, 780, "access-governance-transfer-complete.png");
+
+  // The former owner must read back as a normal administrator after a new
+  // login. Its DOM may offer only viewer provisioning and viewer login state;
+  // it must never recover super-only controls from the prior page session.
+  await login(cdp, "super");
+  await waitFor(cdp, "document.querySelector('#admin-access-super-title')?.textContent.includes('管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('AdminFixtureID') && document.querySelector('#admin-access-transfer')?.hidden === true && document.querySelector('#admin-access-provision')?.hidden === false", "former super did not read back as administrator after a fresh login");
+  await evaluate(cdp, "document.querySelector('#admin-access-provision').click(); true");
+  await waitFor(cdp, "document.querySelector('#admin-access-provision-dialog')?.hidden === false && document.querySelector('#admin-access-employee-results')?.textContent.length > 0", "administrator provisioning dialog did not render");
+  if (!await evaluate(cdp, "document.querySelector('[data-role-option=\"admin\"]')?.hidden === true && document.querySelector('[data-role-option=\"viewer\"]')?.hidden === false")) throw new Error("administrator received an admin-provision role option");
+  await evaluate(cdp, "document.querySelector('#admin-access-provision-close').click(); true");
+  const formerOwnerManage = await evaluate(cdp, "(() => { const row=[...document.querySelectorAll('#admin-access-users-body tr')].find((item) => item.textContent.includes('ViewerFixtureID')); const button=row?.querySelector('button[data-access-action=\"manage\"]'); if (!button) return false; button.click(); return true; })()");
+  if (!formerOwnerManage) throw new Error("administrator did not retain viewer-only management after the transfer");
+  await waitFor(cdp, "document.querySelector('#admin-access-drawer')?.hidden === false && document.querySelector('#admin-access-role-panel')?.hidden === true && document.querySelector('#admin-access-advanced-panel')?.hidden === true && document.querySelector('#admin-access-drawer-actions button[data-access-action=\"toggle-login\"]') !== null", "administrator drawer exposed role or super-only controls after the transfer");
+
+  // The transfer target receives super controls only after it starts a new
+  // session. Check the unique top card and the privileged drawer separately.
+  await login(cdp, "admin");
+  await waitFor(cdp, "document.querySelector('#admin-access-super-title')?.textContent.includes('管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('AdminFixtureID') && document.querySelector('#admin-access-transfer')?.hidden === false && document.querySelector('#admin-access-provision')?.hidden === false", "transfer target did not read back as the unique super administrator after a fresh login");
+  const newOwnerManage = await evaluate(cdp, "(() => { const row=[...document.querySelectorAll('#admin-access-users-body tr')].find((item) => item.textContent.includes('SuperFixtureID')); const button=row?.querySelector('button[data-access-action=\"manage\"]'); if (!button) return false; button.click(); return true; })()");
+  if (!newOwnerManage) throw new Error("new super administrator could not manage the former owner");
+  await waitFor(cdp, "document.querySelector('#admin-access-drawer')?.hidden === false && document.querySelector('#admin-access-role-panel')?.hidden === false && document.querySelector('#admin-access-advanced-panel')?.hidden === false && document.querySelector('#admin-access-binding-form')?.hidden === false && document.querySelector('#admin-access-password-form')?.hidden === false", "new super administrator did not receive the expected privileged DOM controls");
   await login(cdp, "viewer");
   await sleep(100);
   const viewerState = await evaluate(cdp, "(() => ({noPermissionHidden:document.querySelector('#admin-access-no-permission')?.hidden, listErrorHidden:document.querySelector('#admin-access-list-error')?.hidden, listError:document.querySelector('#admin-access-list-error-message')?.textContent || '', provisionHidden:document.querySelector('#admin-access-provision')?.hidden, rows:document.querySelector('#admin-access-users-body')?.textContent || '', actions:[...document.querySelectorAll('#admin-access-users-body button[data-access-action]')].map((button) => ({action:button.dataset.accessAction,id:button.dataset.userId}))}))()");

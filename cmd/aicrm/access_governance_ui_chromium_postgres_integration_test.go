@@ -121,7 +121,7 @@ func TestPostgreSQLAccessGovernanceUIChromiumJourney(t *testing.T) {
 	if !strings.Contains(string(output), "access_governance_ui_chromium: PASS") {
 		t.Fatalf("Access UI Chromium journey did not report success: %q", output)
 	}
-	for _, name := range []string{"access-governance-1440.png", "access-governance-780.png", "access-governance-390.png", "access-governance-provision-confirm.png", "access-governance-admin-drawer.png", "access-governance-transfer-confirm.png"} {
+	for _, name := range []string{"access-governance-1440.png", "access-governance-780.png", "access-governance-390.png", "access-governance-provision-confirm.png", "access-governance-admin-drawer.png", "access-governance-transfer-confirm.png", "access-governance-transfer-complete.png"} {
 		info, statErr := os.Stat(filepath.Join(screenshots, name))
 		if statErr != nil || info.Size() < 512 {
 			t.Fatalf("Access UI screenshot=%s exists=%t", name, statErr == nil)
@@ -135,8 +135,15 @@ func accessGovernanceDirectoryFixture() http.Handler {
 		switch request.URL.Path {
 		case "/cgi-bin/gettoken":
 			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "access_token": "fixture", "expires_in": 7200})
+		case "/cgi-bin/agent/get":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errcode":         0,
+				"allow_userinfos": map[string]any{"user": []string{}},
+				"allow_partys":    map[string]any{"partyid": []int{1}},
+				"allow_tags":      nil,
+			})
 		case "/cgi-bin/department/simplelist":
-			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "department": []map[string]int{{"id": 1, "parentid": 0}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "department_id": []map[string]int{{"id": 1, "parentid": 0}}})
 		case "/cgi-bin/user/simplelist":
 			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "userlist": []map[string]string{{"userid": "SuperFixtureID", "name": "超级管理员甲"}, {"userid": "AdminFixtureID", "name": "管理员甲"}, {"userid": "ViewerFixtureID", "name": "只读乙"}, {"userid": "CandidateCaseID", "name": "同名候选"}, {"userid": "SecondCandidateID", "name": "第二候选"}}})
 		case "/cgi-bin/user/get":

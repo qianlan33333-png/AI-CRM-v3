@@ -94,6 +94,7 @@
   function clearSensitiveView() {
     users = []; actor = {}; capabilities = {}; selectedUserID = ""; closeDrawer();
     elements.usersBody.replaceChildren(); elements.tableWrap.hidden = true; elements.superCard.hidden = true; elements.provision.hidden = true; elements.transfer.hidden = true; elements.noPermission.hidden = true;
+    elements.empty.hidden = true; elements.filterEmpty.hidden = true; elements.searchStatus.textContent = ""; elements.listStatus.textContent = "请重新登录后继续查看员工权限。";
   }
   function filteredUsers() {
     const query = String(elements.search.value || "").trim();
