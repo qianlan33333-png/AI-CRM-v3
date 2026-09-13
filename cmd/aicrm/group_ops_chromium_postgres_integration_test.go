@@ -137,7 +137,7 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	if _, err = application.pool.Native().Exec(ctx, `UPDATE admin_users SET wecom_userid='chromium-owner' WHERE id=$1`, actorID); err != nil {
 		t.Fatal(err)
 	}
-	if err = application.pool.Native().QueryRow(ctx, "INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES($1,$2,$3,$4,true) RETURNING id", "groupops-browser-replacement", "$argon2id$browser-replacement", "Chromium Replacement", "chromium-replacement").Scan(&replacementStaffID); err != nil {
+	if err = application.pool.Native().QueryRow(ctx, "WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES($1,$2,$3,$4,true) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account", "groupops-browser-replacement", "$argon2id$browser-replacement", "Chromium Replacement", "chromium-replacement").Scan(&replacementStaffID); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()

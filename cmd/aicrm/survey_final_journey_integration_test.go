@@ -138,13 +138,34 @@ func TestSurveyAssessmentBusinessKeyConstraintReadinessPostgreSQL(t *testing.T) 
 
 type surveyJourneyAssessmentKeyRows struct{ versionID, questionID int64 }
 
+func surveyJourneyGovernedActor(t *testing.T, ctx context.Context, pool *pgxpool.Pool, username, displayName string) int64 {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	var actorID int64
+	if err = tx.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active) VALUES($1,'$argon2id$test',$2,true) RETURNING id`, username, displayName).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES($1,'super_admin')`, actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO access_super_admin_control(singleton,admin_user_id,version,updated_at) VALUES(TRUE,$1,1,clock_timestamp())`, actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return actorID
+}
+
 func newSurveyJourneyAssessmentKeyFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) surveyJourneyAssessmentKeyRows {
 	t.Helper()
 	now := time.Now().UTC()
 	var actorID, questionnaireID, versionID, questionID int64
-	if err := pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-key-ready','$argon2id$test','Survey Key Ready') RETURNING id`).Scan(&actorID); err != nil {
-		t.Fatal(err)
-	}
+	actorID = surveyJourneyGovernedActor(t, ctx, pool, "survey-key-ready", "Survey Key Ready")
 	if err := pool.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('assessment-key-ready','Assessment key ready','','assessment','all_in_one','assessment-key-ready','draft',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
 		t.Fatal(err)
 	}
@@ -262,9 +283,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	defer native.Close()
 
 	var actorID int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-oauth-journey','$argon2id$test','Survey OAuth Journey') RETURNING id`).Scan(&actorID); err != nil {
-		t.Fatal(err)
-	}
+	actorID = surveyJourneyGovernedActor(t, ctx, native, "survey-oauth-journey", "Survey OAuth Journey")
 	wrapper, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -594,9 +613,7 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 	defer native.Close()
 
 	var actorID int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-frozen-admin-runtime','$argon2id$test','Survey Frozen Runtime') RETURNING id`).Scan(&actorID); err != nil {
-		t.Fatal(err)
-	}
+	actorID = surveyJourneyGovernedActor(t, ctx, native, "survey-frozen-admin-runtime", "Survey Frozen Runtime")
 	wrapper, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
 		t.Fatal(err)
