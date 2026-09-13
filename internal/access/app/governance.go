@@ -56,10 +56,16 @@ type GovernanceUser struct {
 	UserSummary
 	// AdminUserID is explicit for the governance command routes. ID remains
 	// present through UserSummary for the frozen-list compatibility readers.
-	AdminUserID  int64             `json:"admin_user_id"`
-	Role         domain.Role       `json:"role"`
-	LoginEnabled bool              `json:"login_enabled"`
-	Actions      GovernanceActions `json:"actions"`
+	AdminUserID int64 `json:"admin_user_id"`
+	// These fields are explicit in the canonical governance DTO. The embedded
+	// UserSummary remains for frozen list readers, whose `active` spelling is
+	// part of their existing response contract.
+	IsActive        bool              `json:"is_active"`
+	LastLoginAt     *time.Time        `json:"last_login_at"`
+	AccessGrantedAt *time.Time        `json:"access_granted_at"`
+	Role            domain.Role       `json:"role"`
+	LoginEnabled    bool              `json:"login_enabled"`
+	Actions         GovernanceActions `json:"actions"`
 }
 
 type GovernanceListing struct {
@@ -165,7 +171,7 @@ func (service *Management) ListGovernance(ctx context.Context, actor domain.Prin
 			if err != nil {
 				return domain.ErrConflict
 			}
-			result.Users = append(result.Users, GovernanceUser{UserSummary: summarizeUser(user), AdminUserID: user.ID, Role: userRole, LoginEnabled: user.LoginEnabled, Actions: actionsFor(role, current.ID, user, userRole)})
+			result.Users = append(result.Users, GovernanceUser{UserSummary: summarizeUser(user), AdminUserID: user.ID, IsActive: user.Active, LastLoginAt: user.LastLoginAt, AccessGrantedAt: user.AccessGrantedAt, Role: userRole, LoginEnabled: user.LoginEnabled, Actions: actionsFor(role, current.ID, user, userRole)})
 		}
 		return nil
 	})

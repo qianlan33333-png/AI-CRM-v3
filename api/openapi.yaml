@@ -449,7 +449,7 @@ paths:
   /api/admin/access/users:
     get:
       operationId: listAdminUsers
-      description: Returns only granted local Access accounts. Each row keeps the legacy `id` and `roles` fields and adds the single governed `admin_user_id`, `role`, `login_enabled`, `access_granted_at`, and server-calculated actions.
+      description: Returns only granted local Access accounts. Each row keeps the legacy `id`, `active` and `roles` fields and adds canonical `is_active`, `last_login_at`, the single governed `admin_user_id`, `role`, `login_enabled`, `access_granted_at`, and server-calculated actions.
       security: [{adminSession: []}]
       responses:
         "200": {description: Governed Access account list, content: {application/json: {schema: {$ref: "#/components/schemas/AccessGovernanceUsersResponse"}}}}
@@ -6498,7 +6498,7 @@ components:
     AccessGovernanceUser:
       type: object
       additionalProperties: false
-      required: [id, admin_user_id, username, display_name, wecom_userid, active, login_enabled, access_granted_at, role, roles, actions, created_at, updated_at]
+      required: [id, admin_user_id, username, display_name, wecom_userid, active, is_active, login_enabled, access_granted_at, role, roles, actions, last_login_at, created_at, updated_at]
       properties:
         id: {$ref: "#/components/schemas/PositiveID"}
         admin_user_id: {$ref: "#/components/schemas/PositiveID"}
@@ -6506,6 +6506,7 @@ components:
         display_name: {type: string, minLength: 1, maxLength: 120}
         wecom_userid: {type: string, maxLength: 128}
         active: {type: boolean}
+        is_active: {type: boolean, description: Canonical governance employee-active field. `active` remains for frozen list readers.}
         login_enabled: {type: boolean}
         access_granted_at: {type: string, format: date-time}
         role: {$ref: "#/components/schemas/AccessGovernanceRole"}

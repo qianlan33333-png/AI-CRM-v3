@@ -1,0 +1,34 @@
+// Command check-enterprise-directory verifies only the application-visible
+// WeCom directory envelope before an Access governance release. It never
+// opens the local database or performs a Provider write.
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
+
+	wecomadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/adapter"
+)
+
+func main() {
+	client, err := wecomadapter.New(wecomadapter.Config{
+		Enabled: true, CorpID: os.Getenv("AICRM_WECOM_CORP_ID"), AgentID: os.Getenv("AICRM_WECOM_AGENT_ID"), Secret: os.Getenv("AICRM_WECOM_SECRET"),
+		AdminCallbackURI: "https://localhost/access-directory-preflight", SidebarCallbackURI: "https://localhost/access-directory-preflight",
+	})
+	if err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		// Keep the concrete employee values in adapter memory only. The command
+		// reports a count, never IDs, scope envelopes, tokens, or error details.
+		items, listErr := client.ListEnterpriseEmployees(ctx)
+		err = listErr
+		if err == nil {
+			fmt.Printf("{\"complete\":true,\"employee_count\":%d}\n", len(items))
+			return
+		}
+	}
+	fmt.Println(`{"complete":false,"employee_count":0}`)
+	os.Exit(1)
+}

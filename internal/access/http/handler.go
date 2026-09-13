@@ -111,6 +111,7 @@ func (handler *Handler) Routes() nethttp.Handler {
 }
 
 func (handler *Handler) adminAccess(response nethttp.ResponseWriter, request *nethttp.Request) {
+	response.Header().Set("Cache-Control", "no-store")
 	switch request.Method {
 	case nethttp.MethodGet:
 		var session string
@@ -232,6 +233,7 @@ func (handler *Handler) writeAdminAccessError(response nethttp.ResponseWriter, r
 }
 
 func (handler *Handler) listUsers(response nethttp.ResponseWriter, request *nethttp.Request) {
+	response.Header().Set("Cache-Control", "no-store")
 	var session string
 	if cookie, err := request.Cookie(SessionCookieName); err == nil {
 		session = cookie.Value
@@ -312,6 +314,7 @@ func (handler *Handler) logout(response nethttp.ResponseWriter, request *nethttp
 }
 
 func (handler *Handler) listEnterpriseEmployees(response nethttp.ResponseWriter, request *nethttp.Request) {
+	response.Header().Set("Cache-Control", "no-store")
 	actor, ok := handler.authenticatedActor(response, request)
 	if !ok {
 		return
@@ -522,6 +525,7 @@ func positivePayloadID(value any) (int64, error) {
 }
 
 func (handler *Handler) authorizedPayload(response nethttp.ResponseWriter, request *nethttp.Request) (domain.Principal, map[string]any, bool) {
+	response.Header().Set("Cache-Control", "no-store")
 	payload, err := parsePayload(response, request)
 	if err != nil {
 		handler.writeError(response, request, err)
@@ -548,6 +552,9 @@ func (handler *Handler) writeMutationResult(response nethttp.ResponseWriter, req
 }
 
 func (handler *Handler) writeError(response nethttp.ResponseWriter, request *nethttp.Request, err error) {
+	if strings.HasPrefix(request.URL.Path, "/api/admin/access/") || request.URL.Path == "/api/admin/admin-access" {
+		response.Header().Set("Cache-Control", "no-store")
+	}
 	status, code := nethttp.StatusInternalServerError, "internal_error"
 	switch {
 	case errors.Is(err, domain.ErrInvalidCredentials):

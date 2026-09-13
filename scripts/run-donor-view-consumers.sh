@@ -104,6 +104,12 @@ build_release_binaries() {
   go build -trimpath -ldflags "-s -w" -o release/bin/aicrm-operation-cycle-result ./cmd/operation-cycle-result
   scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
+
+  # This audited, one-time command is intentionally shipped with the release
+  # that introduces 0151/0152. It is invoked only by the controlled host
+  # release wrapper before the platform migrator runs.
+  go build -trimpath -ldflags "-s -w" -o release/bin/migrate-access-role-convergence ./cmd/migrate-access-role-convergence
+  go build -trimpath -ldflags "-s -w" -o release/bin/check-enterprise-directory ./cmd/check-enterprise-directory
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-phone-identities ./cmd/migrate-phone-identities
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-identity-phone-vault ./cmd/migrate-identity-phone-vault
