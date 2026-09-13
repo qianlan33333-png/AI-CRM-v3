@@ -24,7 +24,10 @@ assert_not_contains() { ! grep -Fq -- "$2" "$1" || fail "did not expect $2 in $1
 write_fixture() {
   local case_dir="$1"
   mkdir -p "$case_dir/home" "$case_dir/bin" "$case_dir/release/bin" "$case_dir/release/deploy"
-  printf 'AICRM_DATABASE_URL=postgres://release-gate-secret@localhost/aicrm\n' >"$case_dir/runtime.env"
+  cat >"$case_dir/runtime.env" <<'EOF'
+AICRM_DATABASE_URL=postgres://release-gate-secret@localhost/aicrm
+AICRM_WECOM_SECRET="quoted secret with spaces (and) $dollar"
+EOF
   : >"$case_dir/release/release-files.sha256"
   mkdir -p "$case_dir/release/migrations"
   : >"$case_dir/release/migrations/0151_access_role_governance.sql"
@@ -62,10 +65,10 @@ EOF
 # The production host uses root:root; macOS test hosts need no ownership change.
 exit 0
 EOF
-  cat >"$case_dir/bin/runuser" <<'EOF'
+  cat >"$case_dir/bin/systemd-run" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'runuser:%s\n' "$*" >>"$AICRM_TEST_LOG"
+printf 'systemd-run:%s\n' "$*" >>"$AICRM_TEST_LOG"
 case "$*" in
   *check-enterprise-directory*) exit 0 ;;
   *--mode=dry-run*) exit 0 ;;
@@ -169,7 +172,10 @@ run_case normal apply normal 0 restored
 assert_contains "$workspace/normal/log" 'installer'
 assert_contains "$workspace/normal/log" '--mode=apply'
 assert_contains "$workspace/normal/log" '--mode=replay-check'
+assert_contains "$workspace/normal/log" "--property=EnvironmentFile=$workspace/normal/runtime.env"
+assert_contains "$workspace/normal/log" '--setenv=AICRM_ACCESS_CONVERGENCE_APPROVED=1'
 assert_not_contains "$workspace/normal/log" 'postgres://release-gate-secret'
+assert_not_contains "$workspace/normal/log" 'quoted secret with spaces'
 run_case dry_run dry-run normal 0 untouched
 assert_contains "$workspace/dry_run/log" '--mode=dry-run'
 run_case pre_apply_stop_failure apply stop_fail 44 restored

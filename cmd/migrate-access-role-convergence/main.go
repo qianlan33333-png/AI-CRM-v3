@@ -55,8 +55,8 @@ func run() error {
 	if *timeout <= 0 || (*mode != "dry-run" && *mode != "apply" && *mode != "replay-check") {
 		return errors.New("invalid convergence mode or timeout")
 	}
-	if *mode == "apply" && os.Getenv("AICRM_ACCESS_CONVERGENCE_APPROVED") != "1" {
-		return errors.New("apply requires AICRM_ACCESS_CONVERGENCE_APPROVED=1")
+	if err := requireApplyApproval(*mode); err != nil {
+		return err
 	}
 	databaseURL, err := platformconfig.DatabaseURL()
 	if err != nil {
@@ -101,6 +101,13 @@ func run() error {
 	}
 	encoded, _ := json.Marshal(result)
 	fmt.Println(string(encoded))
+	return nil
+}
+
+func requireApplyApproval(mode string) error {
+	if mode == "apply" && os.Getenv("AICRM_ACCESS_CONVERGENCE_APPROVED") != "1" {
+		return errors.New("apply requires AICRM_ACCESS_CONVERGENCE_APPROVED=1")
+	}
 	return nil
 }
 

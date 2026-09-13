@@ -84,6 +84,88 @@ func TestConvergenceConcurrentAndAuditFailureRollbackPostgreSQL(t *testing.T) {
 	})
 }
 
+func TestConvergenceDryRunAndPreconditionsPostgreSQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	t.Run("dry-run validates without writes", func(t *testing.T) {
+		pool, cleanup := convergencePool(t)
+		defer cleanup()
+		seedConvergence(t, ctx, pool)
+		var rolesBefore, sessionsBefore, auditsBefore int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_user_roles").Scan(&rolesBefore); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_sessions WHERE revoked_at IS NOT NULL").Scan(&sessionsBefore); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_access_audit").Scan(&auditsBefore); err != nil {
+			t.Fatal(err)
+		}
+		accounts, err := validateReadOnly(ctx, pool)
+		if err != nil || changedCount(accounts) != 2 {
+			t.Fatalf("dry-run accounts=%+v err=%v", accounts, err)
+		}
+		var rolesAfter, sessionsAfter, auditsAfter int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_user_roles").Scan(&rolesAfter); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_sessions WHERE revoked_at IS NOT NULL").Scan(&sessionsAfter); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_access_audit").Scan(&auditsAfter); err != nil {
+			t.Fatal(err)
+		}
+		if rolesBefore != rolesAfter || sessionsBefore != sessionsAfter || auditsBefore != auditsAfter {
+			t.Fatalf("dry-run wrote roles %d/%d sessions %d/%d audits %d/%d", rolesBefore, rolesAfter, sessionsBefore, sessionsAfter, auditsBefore, auditsAfter)
+		}
+	})
+	t.Run("rejects an unexpected legacy super set without writes", func(t *testing.T) {
+		pool, cleanup := convergencePool(t)
+		defer cleanup()
+		seedConvergence(t, ctx, pool)
+		if _, err := pool.Exec(ctx, `UPDATE admin_user_roles SET role_code='admin' WHERE admin_user_id=(SELECT id FROM admin_users WHERE username='admin') AND role_code='super_admin'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := apply(ctx, pool); err == nil {
+			t.Fatal("apply accepted an unexpected legacy super set")
+		}
+		assertRole(t, ctx, pool, "admin", "admin")
+		var audits int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_access_audit").Scan(&audits); err != nil || audits != 0 {
+			t.Fatalf("audits=%d err=%v", audits, err)
+		}
+	})
+	t.Run("rejects qianlan binding with noncanonical case", func(t *testing.T) {
+		pool, cleanup := convergencePool(t)
+		defer cleanup()
+		seedConvergence(t, ctx, pool)
+		if _, err := pool.Exec(ctx, `UPDATE admin_users SET wecom_userid='qianlan' WHERE username='qianlan'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := validateReadOnly(ctx, pool); err == nil {
+			t.Fatal("dry-run accepted a noncanonical qianlan binding")
+		}
+		var audits int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_access_audit").Scan(&audits); err != nil || audits != 0 {
+			t.Fatalf("audits=%d err=%v", audits, err)
+		}
+	})
+}
+
+func TestConvergenceApplyRequiresExplicitApproval(t *testing.T) {
+	t.Setenv("AICRM_ACCESS_CONVERGENCE_APPROVED", "")
+	if err := requireApplyApproval("apply"); err == nil {
+		t.Fatal("apply accepted a missing approval")
+	}
+	if err := requireApplyApproval("dry-run"); err != nil {
+		t.Fatalf("dry-run approval check: %v", err)
+	}
+	t.Setenv("AICRM_ACCESS_CONVERGENCE_APPROVED", "1")
+	if err := requireApplyApproval("apply"); err != nil {
+		t.Fatalf("approved apply rejected: %v", err)
+	}
+}
+
 func convergencePool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -199,6 +281,15 @@ func readOnlyTx(t *testing.T, ctx context.Context, pool *pgxpool.Pool) pgx.Tx {
 	}
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 	return tx
+}
+
+func validateReadOnly(ctx context.Context, pool *pgxpool.Pool) ([]account, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	return loadAndValidate(ctx, tx)
 }
 func fmtHex(value []byte) string {
 	const digits = "0123456789abcdef"
