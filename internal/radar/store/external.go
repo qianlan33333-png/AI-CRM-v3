@@ -42,7 +42,7 @@ func (store *Postgres) ExternalLinkMappings(ctx context.Context, query radarport
 		conditions = append(conditions, "id < $"+strconv.Itoa(len(args)))
 	}
 	args = append(args, query.Limit+1)
-	rows, err := tx.Query(ctx, `SELECT id,public_code,title FROM radar_links WHERE `+strings.Join(conditions, " AND ")+` ORDER BY id DESC LIMIT $`+strconv.Itoa(len(args)), args...)
+	rows, err := tx.Query(ctx, `SELECT id,public_code,title,status FROM radar_links WHERE `+strings.Join(conditions, " AND ")+` ORDER BY id DESC LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		return radarport.ExternalLinkMappingPage{}, mapError(err)
 	}
@@ -50,7 +50,7 @@ func (store *Postgres) ExternalLinkMappings(ctx context.Context, query radarport
 	items := make([]radarport.ExternalLinkMapping, 0, query.Limit)
 	for rows.Next() {
 		var item radarport.ExternalLinkMapping
-		if err = rows.Scan(&item.RadarID, &item.RadarCode, &item.Title); err != nil {
+		if err = rows.Scan(&item.RadarID, &item.RadarCode, &item.Title, &item.Status); err != nil {
 			return radarport.ExternalLinkMappingPage{}, mapError(err)
 		}
 		items = append(items, item)

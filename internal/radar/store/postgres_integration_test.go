@@ -414,7 +414,7 @@ func TestPostgreSQLExternalLinkMappingsRetainDisabledAndUseDescendingKeyset(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if first.Total != 3 || !first.HasMore || len(first.Items) != 2 || first.Items[0].RadarID != 3 || first.Items[0].RadarCode != "rd_3333333333333333" || first.Items[1].RadarID != 2 || first.Items[1].Title != "Disabled mapping" {
+	if first.Total != 3 || !first.HasMore || len(first.Items) != 2 || first.Items[0].RadarID != 3 || first.Items[0].RadarCode != "rd_3333333333333333" || first.Items[0].Status != radar.StatusDraft || first.Items[1].RadarID != 2 || first.Items[1].Title != "Disabled mapping" || first.Items[1].Status != radar.StatusDisabled {
 		t.Fatalf("first=%+v", first)
 	}
 	var second radarport.ExternalLinkMappingPage
@@ -436,7 +436,7 @@ func TestPostgreSQLExternalLinkMappingsRetainDisabledAndUseDescendingKeyset(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].Title != "Disabled mapping" {
+	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].Title != "Disabled mapping" || filtered.Items[0].Status != radar.StatusDisabled {
 		t.Fatalf("filtered=%+v", filtered)
 	}
 }

@@ -20,6 +20,7 @@ type ExternalLinkMapping struct {
 	RadarID   radar.RadarID
 	RadarCode string
 	Title     string
+	Status    radar.Status
 }
 
 type ExternalLinkMappingPage struct {
