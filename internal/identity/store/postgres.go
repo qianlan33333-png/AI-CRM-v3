@@ -171,12 +171,15 @@ func (store *PostgresStore) Resolve(ctx context.Context, reference identitydomai
 	if err != nil {
 		return identityapp.StoredIdentity{}, false, err
 	}
+	// Keep the normal matcher independent of the phone-vault migration. Several
+	// import and historical-read paths deliberately create a narrow pre-vault
+	// identity schema, and non-phone facts must not make those paths depend on
+	// phone-only columns.
+	match := `i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3`
+	args := []any{string(reference.Kind), reference.Scope, reference.NormalizedValue}
 	var phoneDigest []byte
 	phoneE164 := ""
-	if reference.Kind == identitydomain.KindPhone {
-		if store.phoneVault == nil {
-			return identityapp.StoredIdentity{}, false, errStore
-		}
+	if reference.Kind == identitydomain.KindPhone && store.phoneVault != nil {
 		cn11 := ""
 		switch reference.Scope {
 		case "phone:cn11":
@@ -195,6 +198,14 @@ func (store *PostgresStore) Resolve(ctx context.Context, reference identitydomai
 			phoneDigest = digest[:]
 			phoneE164 = "+86" + cn11
 		}
+		// A vault-aware lookup covers protected CN11 facts and the historical
+		// plaintext E.164 representation. The explicit kind and non-empty
+		// guards prevent an international phone from matching encrypted rows
+		// whose legacy normalized value is intentionally empty.
+		match = `(i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3) OR
+			(i.kind='phone' AND ((i.scope_key='phone:cn11' AND $4::bytea IS NOT NULL AND i.normalized_value_digest=$4) OR
+			(i.scope_key='phone:e164' AND $5 <> '' AND i.normalized_value=$5)))`
+		args = append(args, phoneDigest, phoneE164)
 	}
 	var id, customerID int64
 	var kind, scope, value, assurance, source string
@@ -203,12 +214,12 @@ func (store *PostgresStore) Resolve(ctx context.Context, reference identitydomai
 		WITH RECURSIVE lineage(id, status, merged_into_customer_id) AS (
 			SELECT c.id, c.status, c.merged_into_customer_id FROM customers c
 			JOIN customer_identities i ON i.customer_id=c.id
-		WHERE i.status='active' AND ((i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3) OR ($1='phone' AND ((i.kind='phone' AND i.scope_key='phone:cn11' AND $4::bytea IS NOT NULL AND i.normalized_value_digest=$4) OR (i.kind='phone' AND i.scope_key='phone:e164' AND $5 <> '' AND i.normalized_value=$5))))
+		WHERE i.status='active' AND (`+match+`)
 			UNION ALL SELECT c.id, c.status, c.merged_into_customer_id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id
 		) SELECT DISTINCT ON (l.id) i.id, l.id, i.kind, i.scope_key, i.normalized_value, i.assurance, i.source, i.normalizer_version
 		FROM customer_identities i JOIN lineage l ON true
-		WHERE i.status='active' AND ((i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3) OR ($1='phone' AND ((i.kind='phone' AND i.scope_key='phone:cn11' AND $4::bytea IS NOT NULL AND i.normalized_value_digest=$4) OR (i.kind='phone' AND i.scope_key='phone:e164' AND $5 <> '' AND i.normalized_value=$5)))) AND l.status <> 'merged'
-		ORDER BY l.id,i.id LIMIT 2`, string(reference.Kind), reference.Scope, reference.NormalizedValue, phoneDigest, phoneE164)
+		WHERE i.status='active' AND (`+match+`) AND l.status <> 'merged'
+		ORDER BY l.id,i.id LIMIT 2`, args...)
 	if err != nil {
 		return identityapp.StoredIdentity{}, false, persistenceFailure(err)
 	}
