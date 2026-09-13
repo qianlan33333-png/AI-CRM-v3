@@ -449,45 +449,109 @@ paths:
   /api/admin/access/users:
     get:
       operationId: listAdminUsers
+      description: Returns only granted local Access accounts. Each row keeps the legacy `id` and `roles` fields and adds the single governed `admin_user_id`, `role`, `login_enabled`, `access_granted_at`, and server-calculated actions.
       security: [{adminSession: []}]
       responses:
-        "200": {description: Employee list, content: {application/json: {schema: {type: object, required: [ok, users], properties: {ok: {const: true}, users: {type: array, items: {$ref: "#/components/schemas/AdminUser"}}}}}}}
-        "403": {$ref: "#/components/responses/Error"}
-    post:
-      operationId: createAdminUser
-      security: [{adminSession: [], csrfHeader: []}]
-      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CreateAdminUser"}}}}
-      responses:
-        "201": {description: Employee created, content: {application/json: {schema: {$ref: "#/components/schemas/AdminUser"}}}}
+        "200": {description: Governed Access account list, content: {application/json: {schema: {$ref: "#/components/schemas/AccessGovernanceUsersResponse"}}}}
+        "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
+    post:
+      operationId: provisionAccessEnterpriseEmployee
+      description: Grants first-time Access to one Provider-verified enterprise employee. `role` is a single value and never accepts `super_admin`.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessEnterpriseEmployeeProvisionRequest"}}}}
+      responses:
+        "200": {$ref: "#/components/responses/MutationOK"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/access/enterprise-employees:
+    get:
+      operationId: listAccessEnterpriseEmployees
+      description: Pages the read-only, app-visible enterprise directory. `authorized_account` is true exactly when the employee has an Access grant; ungranted employees omit `role` and `login_enabled`.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: cursor, in: query, schema: {type: string, maxLength: 4096}}
+        - {name: query, in: query, schema: {type: string, maxLength: 120}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 50}}
+      responses:
+        "200": {description: Read-only enterprise employee page, content: {application/json: {schema: {$ref: "#/components/schemas/AccessEnterpriseEmployeePage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/admin/access/users/{id}/disable:
     post:
-      operationId: disableAdminUser
+      operationId: disableAccessUserCompatibility
+      description: Frozen compatibility route. It delegates to the governed single-account login-access command and cannot bypass its row-level authorization.
       security: [{adminSession: [], csrfHeader: []}]
-      parameters: [{$ref: "#/components/parameters/ID"}]
-      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/access/users/{id}/login-access:
+    put:
+      operationId: setAccessUserLoginEnabled
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessLoginEnabledRequest"}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/access/users/{id}/role:
+    put:
+      operationId: setAccessUserRole
+      description: Changes one governed role. The normal route accepts only `admin` or `viewer`; `super_admin` changes only through the transfer route.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessSingleRoleRequest"}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/admin/access/users/{id}/wecom-userid:
     post:
-      operationId: bindAdminUserWeComID
+      operationId: bindAccessUserWeComIDCompatibility
+      description: Frozen compatibility route with the same Provider verification, row authorization, CSRF and idempotency checks as the governed PUT route.
       security: [{adminSession: [], csrfHeader: []}]
-      parameters: [{$ref: "#/components/parameters/ID"}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [wecom_userid], properties: {wecom_userid: {type: string, maxLength: 128}}}}}}
-      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessEnterpriseEmployeeBindingRequest"}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    put:
+      operationId: bindAccessUserWeComID
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessEnterpriseEmployeeBindingRequest"}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/access/users/{id}/roles:
     post:
-      operationId: changeAdminUserRoles
+      operationId: setAccessUserRoleCompatibility
+      description: Frozen compatibility route. Its `roles` array remains for clients but must contain exactly one `admin` or `viewer` role.
       security: [{adminSession: [], csrfHeader: []}]
-      parameters: [{$ref: "#/components/parameters/ID"}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [roles], properties: {roles: {$ref: "#/components/schemas/Roles"}}}}}}
-      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessLegacySingleRoleRequest"}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/admin/access/users/{id}/password:
     post:
-      operationId: resetAdminUserPassword
+      operationId: resetAccessUserPasswordCompatibility
+      description: Frozen compatibility route with the same governed row authorization, CSRF and idempotency checks as the PUT route.
       security: [{adminSession: [], csrfHeader: []}]
-      parameters: [{$ref: "#/components/parameters/ID"}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [password], properties: {password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}}}}}}
-      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessPasswordResetRequest"}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+    put:
+      operationId: resetAccessUserPassword
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessPasswordResetRequest"}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/access/super-admin-transfer:
+    post:
+      operationId: transferAccessSuperAdmin
+      description: Transfers the unique super-admin role to an active governed admin. No ordinary role route can assign `super_admin`.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AccessGovernanceIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AccessSuperAdminTransferRequest"}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/admin/admin-access:
     get:
       operationId: listAdminAccessMembers
@@ -4064,6 +4128,7 @@ components:
     Nonce: {name: nonce, in: query, required: true, schema: {type: string}}
     RequiredIdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 200}}
     AdminAccessIdempotencyKey: {name: Idempotency-Key, in: header, required: true, description: Stable local admin-access request key. Repeating the same desired flags does not create another session-version change., schema: {type: string, minLength: 1, maxLength: 200}}
+    AccessGovernanceIdempotencyKey: {name: Idempotency-Key, in: header, required: true, description: Stable Access-governance command key. Repeating the same governed command replays its receipt; using the key for a different command is rejected., schema: {type: string, minLength: 1, maxLength: 200}}
     GroupOpsPlanID: {name: plan_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     GroupOpsStaffID: {name: staff_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     GroupOpsAssetReference: {name: asset_reference, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
@@ -6405,6 +6470,115 @@ components:
       required: [ok, next, csrf_token]
       properties: {ok: {const: true}, next: {type: string}, csrf_token: {type: string, writeOnly: true}}
     Roles: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [super_admin, admin, viewer]}}
+    AccessGovernanceRole: {type: string, enum: [super_admin, admin, viewer]}
+    AccessAssignableRole: {type: string, enum: [admin, viewer]}
+    AccessGovernanceActions:
+      type: object
+      additionalProperties: false
+      required: [set_login_enabled, change_role, bind_wecom_userid, reset_password, transfer_super_admin]
+      properties:
+        set_login_enabled: {type: boolean}
+        change_role: {type: boolean}
+        bind_wecom_userid: {type: boolean}
+        reset_password: {type: boolean}
+        transfer_super_admin: {type: boolean}
+    AccessGovernanceCapabilities:
+      type: object
+      additionalProperties: false
+      required: [provision_admin, provision_viewer, transfer_super_admin]
+      properties:
+        provision_admin: {type: boolean}
+        provision_viewer: {type: boolean}
+        transfer_super_admin: {type: boolean}
+    AccessGovernanceActor:
+      type: object
+      additionalProperties: false
+      required: [admin_user_id, role]
+      properties: {admin_user_id: {$ref: "#/components/schemas/PositiveID"}, role: {$ref: "#/components/schemas/AccessGovernanceRole"}}
+    AccessGovernanceUser:
+      type: object
+      additionalProperties: false
+      required: [id, admin_user_id, username, display_name, wecom_userid, active, login_enabled, access_granted_at, role, roles, actions, created_at, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        admin_user_id: {$ref: "#/components/schemas/PositiveID"}
+        username: {type: string, minLength: 1, maxLength: 120}
+        display_name: {type: string, minLength: 1, maxLength: 120}
+        wecom_userid: {type: string, maxLength: 128}
+        active: {type: boolean}
+        login_enabled: {type: boolean}
+        access_granted_at: {type: string, format: date-time}
+        role: {$ref: "#/components/schemas/AccessGovernanceRole"}
+        roles: {$ref: "#/components/schemas/Roles"}
+        actions: {$ref: "#/components/schemas/AccessGovernanceActions"}
+        last_login_at: {type: [string, "null"], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AccessGovernanceUsersResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, actor, capabilities, users]
+      properties:
+        ok: {const: true}
+        actor: {$ref: "#/components/schemas/AccessGovernanceActor"}
+        capabilities: {$ref: "#/components/schemas/AccessGovernanceCapabilities"}
+        users: {type: array, items: {$ref: "#/components/schemas/AccessGovernanceUser"}}
+    AccessEnterpriseEmployeeItem:
+      type: object
+      additionalProperties: false
+      required: [wecom_userid, display_name, authorized_account]
+      properties:
+        wecom_userid: {type: string, minLength: 1, maxLength: 128}
+        display_name: {type: string, minLength: 1, maxLength: 200}
+        authorized_account: {type: boolean, description: True exactly when the employee has an Access grant.}
+        role: {$ref: "#/components/schemas/AccessGovernanceRole"}
+        login_enabled: {type: boolean}
+    AccessEnterpriseEmployeePage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor, has_more]
+      properties:
+        ok: {const: true}
+        items: {type: array, items: {$ref: "#/components/schemas/AccessEnterpriseEmployeeItem"}}
+        next_cursor: {type: string}
+        has_more: {type: boolean}
+    AccessEnterpriseEmployeeProvisionRequest:
+      type: object
+      additionalProperties: false
+      required: [wecom_userid, role]
+      properties:
+        wecom_userid: {type: string, minLength: 1, maxLength: 128}
+        role: {$ref: "#/components/schemas/AccessAssignableRole"}
+    AccessEnterpriseEmployeeBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [wecom_userid]
+      properties: {wecom_userid: {type: string, maxLength: 128}}
+    AccessLoginEnabledRequest:
+      type: object
+      additionalProperties: false
+      required: [login_enabled]
+      properties: {login_enabled: {type: boolean}}
+    AccessSingleRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties: {role: {$ref: "#/components/schemas/AccessAssignableRole"}}
+    AccessLegacySingleRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [roles]
+      properties: {roles: {type: array, minItems: 1, maxItems: 1, uniqueItems: true, items: {$ref: "#/components/schemas/AccessAssignableRole"}}}
+    AccessPasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties: {password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}}
+    AccessSuperAdminTransferRequest:
+      type: object
+      additionalProperties: false
+      required: [target_admin_user_id]
+      properties: {target_admin_user_id: {$ref: "#/components/schemas/PositiveID"}}
     AdminAccessMember:
       type: object
       additionalProperties: false
