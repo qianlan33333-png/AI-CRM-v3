@@ -24,6 +24,9 @@ const (
 	OperationCustomerActivities OperationID = "customer.activities.list"
 	OperationAIReviewPlanCreate OperationID = "ai.review_plan.create"
 	OperationGet                OperationID = "operation.get"
+	OperationOrderList          OperationID = "order.list"
+	OperationOrderGet           OperationID = "order.get"
+	OperationIdentityGet        OperationID = "identity.get"
 )
 
 type Capability string
@@ -35,6 +38,8 @@ const (
 	CapabilityCustomerActivityRead     Capability = "customer.activity.read"
 	CapabilityAIReviewPlanCreate       Capability = "ai.review_plan.create"
 	CapabilityOperationRead            Capability = "operation.read"
+	CapabilityOrderRead                Capability = "order.read"
+	CapabilityIdentityRead             Capability = "identity.read"
 )
 
 // Descriptor is the single catalog entry used by REST, MCP, administration,
@@ -62,6 +67,9 @@ func OperationCatalog() []Descriptor {
 		{OperationID: OperationCustomerActivities, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/activities", MCPTool: "list_customer_activities", Capability: CapabilityCustomerActivityRead, RequiredScope: "read", SchemaVersion: SchemaVersion, ActivityTypes: []string{"message", "survey", "radar", "order"}, ActivityItemFields: []string{"activity_id", "type", "occurred_at", "source", "payload"}},
 		{OperationID: OperationAIReviewPlanCreate, RESTMethod: "POST", RESTPath: "/open/v1/ai/review-plans", MCPTool: "create_ai_review_plan", Capability: CapabilityAIReviewPlanCreate, RequiredScope: "write", SchemaVersion: SchemaVersion},
 		{OperationID: OperationGet, RESTMethod: "GET", RESTPath: "/open/v1/operations/{operation_id}", MCPTool: "get_operation_status", Capability: CapabilityOperationRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationOrderList, RESTMethod: "GET", RESTPath: "/open/v1/orders", MCPTool: "list_orders", Capability: CapabilityOrderRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationOrderGet, RESTMethod: "GET", RESTPath: "/open/v1/orders/{order_id}", MCPTool: "get_order", Capability: CapabilityOrderRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationIdentityGet, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/identities", MCPTool: "get_customer_identities", Capability: CapabilityIdentityRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 	}
 }
 

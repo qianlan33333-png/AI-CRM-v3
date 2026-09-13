@@ -1004,6 +1004,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = openPlatformExecutor.BindV1Orders(orderRepository, paymentRepository, uow, cursorSigningKey); err != nil {
 		return fail(err)
 	}
+	if err = openPlatformExecutor.BindV1ExternalCursorKey(cursorSigningKey); err != nil {
+		return fail(err)
+	}
 	if err = openPlatformExecutor.BindV1OperationAudit(accessRepository, uow); err != nil {
 		return fail(err)
 	}

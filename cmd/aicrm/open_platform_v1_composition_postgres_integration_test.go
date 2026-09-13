@@ -20,6 +20,8 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	identitysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/secure"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
@@ -53,6 +55,7 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 		WorkerLimit:  1,
 		GroupOps:     platformconfig.GroupOps{WebhookSecret: "open-platform-v1-composition-webhook-secret"},
 		WeCom:        platformconfig.WeCom{CorpID: "open-read"},
+		HXCDashboard: platformconfig.HXCDashboard{UnionIDScope: "wechat-open-platform:secondary"},
 		OpenPlatform: platformconfig.OpenPlatform{JWTSigningKey: signingKey},
 		Survey: platformconfig.Survey{
 			DataKey:              base64.RawStdEncoding.EncodeToString(dataKey),
@@ -75,7 +78,11 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
+	phoneVault, err := identitysecure.NewPhoneVault(base64.RawStdEncoding.EncodeToString(dataKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore(phoneVault)}
 	fact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:open-read", Value: "union-composed-v1", Source: "open-platform-v1-composition-fixture"})
 	if err != nil {
 		t.Fatal(err)
@@ -92,6 +99,17 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 		provision.CustomerID, provision.IdentityID = resolved.CustomerID, resolved.IdentityID
 		return nil
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, attachErr := oneID.AttachDeclaredPhoneToCustomer(tx, identityport.DeclaredPhoneCommand{CustomerID: provision.CustomerID, Phone: "13800138000", Source: "hxc", SourceEventID: "open-platform-v1-composition-declared-phone", IdempotencyKey: "open-platform-v1-composition-declared-phone"})
+		return attachErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// These are provider-originated facts in the integration fixture. The HTTP
+	// journey subsequently reads them only through Identity's composed Port.
+	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,'phone','phone:e164','+8613800138001','verified','provider-fixture',1,CURRENT_TIMESTAMP),($1,'unionid','wechat-open-platform:secondary','union-composed-secondary','verified','provider-fixture',1,CURRENT_TIMESTAMP)`, provision.CustomerID); err != nil {
 		t.Fatal(err)
 	}
 	if err = openPlatformV1ReadSeed(ctx, application.pool.Native(), provision.CustomerID, provision.IdentityID, adminUser.ID); err != nil {
@@ -115,7 +133,7 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	client, err := machine.CreateV1(ctx, admin, accessapp.CreateMachineClientInput{
 		ClientID: "v1.composition-machine", DisplayName: "V1 Composition Machine", Purpose: "external_agent",
 		Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"},
-		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.activity.read", "ai.review_plan.create", "operation.read"},
+		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.activity.read", "order.read", "identity.read", "ai.review_plan.create", "operation.read"},
 		OwnerScope:   accessdomain.OwnerScope{"customer_id": {fmt.Sprint(provision.CustomerID)}},
 	})
 	if err != nil {
@@ -139,6 +157,9 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 			t.Fatalf("catalog omitted %s: %s", operation, capabilitiesResponse.Body.String())
 		}
 	}
+	if !strings.Contains(capabilitiesResponse.Body.String(), `"operation_id":"order.list"`) || !strings.Contains(capabilitiesResponse.Body.String(), `"operation_id":"order.get"`) {
+		t.Fatalf("catalog omitted composed order operations: %s", capabilitiesResponse.Body.String())
+	}
 
 	tools := openPlatformV1CompositionRequest(http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":"catalog","method":"tools/list","params":{}}`, allToken)
 	tools.Header.Set("Content-Type", "application/json")
@@ -154,6 +175,26 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	application.handler.ServeHTTP(resolveResponse, resolve)
 	if resolveResponse.Code != http.StatusOK || !strings.Contains(resolveResponse.Body.String(), `"customer_id":`+fmt.Sprint(provision.CustomerID)) || !strings.Contains(resolveResponse.Body.String(), `"status":"found"`) {
 		t.Fatalf("resolve status=%d body=%s", resolveResponse.Code, resolveResponse.Body.String())
+	}
+	identities := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID)+"/identities?unionid_scope=wechat-open-platform:open-read&unionid_scope=wechat-open-platform:secondary", "", readToken)
+	identitiesResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(identitiesResponse, identities)
+	for _, expected := range []string{`"canonical_customer_id":"` + fmt.Sprint(provision.CustomerID) + `"`, `"scope":"phone:cn11"`, `"value":"13800138000"`, `"assurance":"declared"`, `"scope":"phone:e164"`, `"value":"+8613800138001"`, `"assurance":"verified"`, `"scope":"wechat-open-platform:open-read"`, `"scope":"wechat-open-platform:secondary"`} {
+		if identitiesResponse.Code != http.StatusOK || !strings.Contains(identitiesResponse.Body.String(), expected) {
+			t.Fatalf("identity expected=%s status=%d body=%s", expected, identitiesResponse.Code, identitiesResponse.Body.String())
+		}
+	}
+	wrongIdentityScope := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID)+"/identities?unionid_scope=wechat-open-platform:not-granted", "", readToken)
+	wrongIdentityScopeResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(wrongIdentityScopeResponse, wrongIdentityScope)
+	if wrongIdentityScopeResponse.Code != http.StatusForbidden {
+		t.Fatalf("wrong identity scope status=%d body=%s", wrongIdentityScopeResponse.Code, wrongIdentityScopeResponse.Body.String())
+	}
+	unauthorizedIdentity := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(int64(provision.CustomerID)+1)+"/identities", "", readToken)
+	unauthorizedIdentityResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(unauthorizedIdentityResponse, unauthorizedIdentity)
+	if unauthorizedIdentityResponse.Code != http.StatusForbidden {
+		t.Fatalf("out-of-scope identity status=%d body=%s", unauthorizedIdentityResponse.Code, unauthorizedIdentityResponse.Body.String())
 	}
 
 	contextRequest := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID), "", readToken)
@@ -191,6 +232,82 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 		if !strings.Contains(allActivities, kind) {
 			t.Fatalf("activities missing %s REST=%s MCP=%s", kind, activitiesResponse.Body.String(), mcpActivitiesResponse.Body.String())
 		}
+	}
+
+	// Create a real owner-owned page boundary. The HTTP API must ask the
+	// Order Port for a look-ahead row, then advance with its signed cursor;
+	// this catches a merely-composed route that never reads PostgreSQL.
+	for index := 2; index <= 101; index++ {
+		key := fmt.Sprintf("open-v1-composition-order-%04d", index)
+		if _, err = orders.Create(ctx, orderport.CreateCommand{Actor: adminUser.ID, IdempotencyKey: key, Input: orderdomain.NewOrderInput{
+			Provider: orderdomain.ProviderWeChatPay, SourceSystem: "open-v1-composition", SourceKey: key, MerchantOrderNo: strings.ToUpper(key),
+			PayerCustomerID: &payer, BeneficiaryCustomerID: &beneficiary, Amount: orderdomain.Money{AmountMinor: 8800, Currency: "CNY"},
+			Items: []orderdomain.ItemSnapshot{{LineNo: 1, ProductCode: "open-v1-composition", ProductName: "Open V1 Composition", UnitAmountMinor: 8800, Quantity: 1, LineAmountMinor: 8800}}, RecordOrigin: orderdomain.RecordOriginNative,
+		}}); err != nil {
+			t.Fatalf("create order %d: %v", index, err)
+		}
+	}
+	type orderItem struct {
+		OrderID    string `json:"order_id"`
+		CustomerID string `json:"customer_id"`
+		AmountYuan string `json:"amount_yuan"`
+	}
+	type orderPage struct {
+		Data struct {
+			Items      []orderItem `json:"items"`
+			NextCursor string      `json:"next_cursor"`
+		} `json:"data"`
+	}
+	list := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?customer_id="+fmt.Sprint(provision.CustomerID)+"&limit=100", "", readToken)
+	listResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(listResponse, list)
+	var firstOrders orderPage
+	if err = json.Unmarshal(listResponse.Body.Bytes(), &firstOrders); err != nil || listResponse.Code != http.StatusOK || len(firstOrders.Data.Items) != 100 || firstOrders.Data.NextCursor == "" {
+		t.Fatalf("orders first page status=%d err=%v body=%s", listResponse.Code, err, listResponse.Body.String())
+	}
+	for _, item := range firstOrders.Data.Items {
+		if item.OrderID == "" || item.CustomerID != fmt.Sprint(provision.CustomerID) || item.AmountYuan != "88.00" {
+			t.Fatalf("orders first page item=%+v", item)
+		}
+	}
+	second := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?customer_id="+fmt.Sprint(provision.CustomerID)+"&limit=100&cursor="+firstOrders.Data.NextCursor, "", readToken)
+	secondResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(secondResponse, second)
+	var secondOrders orderPage
+	if err = json.Unmarshal(secondResponse.Body.Bytes(), &secondOrders); err != nil || secondResponse.Code != http.StatusOK || len(secondOrders.Data.Items) != 1 || secondOrders.Data.NextCursor != "" {
+		t.Fatalf("orders second page status=%d err=%v body=%s", secondResponse.Code, err, secondResponse.Body.String())
+	}
+	detail := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders/"+firstOrders.Data.Items[0].OrderID, "", readToken)
+	detailResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(detailResponse, detail)
+	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"amount_yuan":"88.00"`) {
+		t.Fatalf("order detail status=%d body=%s", detailResponse.Code, detailResponse.Body.String())
+	}
+	missing := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders/999999999", "", readToken)
+	missingResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(missingResponse, missing)
+	if missingResponse.Code != http.StatusNotFound {
+		t.Fatalf("missing order status=%d body=%s", missingResponse.Code, missingResponse.Body.String())
+	}
+	deniedCustomer := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?customer_id="+fmt.Sprint(int64(provision.CustomerID)+1), "", readToken)
+	deniedCustomerResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(deniedCustomerResponse, deniedCustomer)
+	if deniedCustomerResponse.Code != http.StatusForbidden {
+		t.Fatalf("out-of-scope order list status=%d body=%s", deniedCustomerResponse.Code, deniedCustomerResponse.Body.String())
+	}
+	noOrderClient, err := machine.CreateV1(ctx, admin, accessapp.CreateMachineClientInput{ClientID: "v1.composition-no-orders", DisplayName: "No order scope", Purpose: "external_agent", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"customer.read"}, OwnerScope: accessdomain.OwnerScope{"customer_id": {fmt.Sprint(provision.CustomerID)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = machine.Activate(ctx, admin, noOrderClient.Client.ClientID, noOrderClient.Secret, true); err != nil {
+		t.Fatal(err)
+	}
+	noOrderToken := openPlatformV1CompositionOAuthToken(t, application.handler, noOrderClient.Client.ClientID, noOrderClient.Secret, "read")
+	denied := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders", "", noOrderToken)
+	deniedResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(deniedResponse, denied)
+	if deniedResponse.Code != http.StatusForbidden {
+		t.Fatalf("missing order capability status=%d body=%s", deniedResponse.Code, deniedResponse.Body.String())
 	}
 
 	planBody, err := json.Marshal(map[string]any{

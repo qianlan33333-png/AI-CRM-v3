@@ -140,6 +140,8 @@ func TestV1RoutesMountOnlyOperationCatalogPaths(t *testing.T) {
 		{http.MethodGet, "/open/v1/customers/42/activities", ""},
 		{http.MethodPost, "/open/v1/ai/review-plans", `{}`},
 		{http.MethodGet, "/open/v1/operations/op-42", ""},
+		{http.MethodGet, "/open/v1/orders", ""},
+		{http.MethodGet, "/open/v1/orders/42", ""},
 	} {
 		request := machineRequest(item.method, "https://crm.example.com"+item.path, item.body)
 		response := httptest.NewRecorder()

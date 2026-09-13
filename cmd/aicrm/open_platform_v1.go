@@ -51,6 +51,9 @@ func (executor *openPlatformExecutor) Available(_ context.Context, principal acc
 		openplatformport.OperationCustomerActivities: executor.activities != nil,
 		openplatformport.OperationAIReviewPlanCreate: executor.aiMachineIntake != nil && executor.aiMachineReader != nil && executor.aiUOW != nil,
 		openplatformport.OperationGet:                executor.aiMachineReader != nil,
+		openplatformport.OperationOrderList:          executor.v1Orders != nil && executor.v1Refunds != nil,
+		openplatformport.OperationOrderGet:           executor.v1Orders != nil && executor.v1Refunds != nil,
+		openplatformport.OperationIdentityGet:        executor.surveyAliases != nil,
 	}
 	return openplatformport.AvailableDescriptors(principal, available), nil
 }
@@ -100,6 +103,12 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 		return result, nil
 	case openplatformport.OperationGet:
 		result, err = executor.v1OperationStatus(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationOrderList:
+		result, err = executor.v1OrdersList(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationOrderGet:
+		result, err = executor.v1OrderGet(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationIdentityGet:
+		result, err = executor.v1IdentityGet(ctx, invocation.Principal, invocation.Input)
 	default:
 		err = openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
 	}

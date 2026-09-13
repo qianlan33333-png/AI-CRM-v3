@@ -153,28 +153,41 @@ func (executor *openPlatformExecutor) v1IdentityGet(ctx context.Context, princip
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorValidation, "customer_id is required")
 	}
 	if err := executor.ensureCustomerScope(ctx, principal, customerdomain.CustomerID(in.CustomerID), nil); err != nil {
-		return openplatformport.Result{}, v1CustomerScopeError(err)
+		// Identity export is an explicitly capability-gated, machine-only
+		// endpoint. Report an insufficient customer grant as 403 so callers do
+		// not mistake it for an absent identity record.
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorPermission, "identity customer scope is not granted")
 	}
 	reader, ok := executor.identity.(interface {
-		MachineIdentityFactsForMachine(context.Context, customerdomain.CustomerID, accessdomain.MachinePrincipal) ([]identityport.MachineIdentityFact, error)
+		MachineIdentityExportForMachine(context.Context, customerdomain.CustomerID, accessdomain.MachinePrincipal) (identityport.MachineIdentityExport, error)
 	})
 	if !ok {
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "identity projection unavailable")
 	}
-	facts, err := reader.MachineIdentityFactsForMachine(ctx, customerdomain.CustomerID(in.CustomerID), principal)
-	if err != nil {
-		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "identity projection unavailable")
-	}
 	requested := map[string]bool{}
+	allowedScopes := map[string]bool{}
+	for _, scope := range executor.scopes.UnionScopes {
+		allowedScopes[scope] = true
+	}
 	for _, scope := range in.UnionIDScopes {
-		if strings.TrimSpace(scope) != scope || scope == "" {
-			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorValidation, "unionid scope invalid")
+		if strings.TrimSpace(scope) != scope || scope == "" || !allowedScopes[scope] {
+			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorPermission, "unionid scope is not granted")
 		}
 		requested[scope] = true
 	}
-	result := map[string]any{"customer_id": strconv.FormatInt(in.CustomerID, 10), "identities": []any{}}
-	for _, fact := range facts {
-		if fact.Kind == identitydomain.KindUnionID && len(requested) > 0 && !requested[fact.Scope] {
+	export, err := reader.MachineIdentityExportForMachine(ctx, customerdomain.CustomerID(in.CustomerID), principal)
+	if err != nil {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "identity projection unavailable")
+	}
+	if export.Status == identityport.MachineIdentityExportConflict {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorConflict, "customer identity is conflicted")
+	}
+	if export.Status == identityport.MachineIdentityExportMissing {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorNotFound, "customer identity is missing")
+	}
+	result := map[string]any{"customer_id": strconv.FormatInt(in.CustomerID, 10), "canonical_customer_id": strconv.FormatInt(int64(export.CanonicalCustomerID), 10), "status": export.Status, "identities": []any{}}
+	for _, fact := range export.Facts {
+		if fact.Kind == identitydomain.KindUnionID && !requested[fact.Scope] {
 			continue
 		}
 		if fact.Kind != identitydomain.KindPhone && fact.Kind != identitydomain.KindUnionID {

@@ -24,6 +24,43 @@ type Repository struct{}
 func NewPostgreSQL() *Repository             { return &Repository{} }
 func tx(ctx context.Context) (pgx.Tx, error) { return platformpostgres.RequireTransaction(ctx) }
 
+// ExternalOrderRefundSummaries is the only Payment projection consumed by the
+// public Order API. It deliberately exposes amounts and terminal state only,
+// never provider references, callback payloads, or effect identifiers.
+func (r *Repository) ExternalOrderRefundSummaries(ctx context.Context, orderIDs []int64) (map[int64]paymentport.ExternalOrderRefundSummary, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[int64]paymentport.ExternalOrderRefundSummary, len(orderIDs))
+	if len(orderIDs) == 0 {
+		return result, nil
+	}
+	rows, err := t.Query(ctx, `SELECT p.order_id,COUNT(r.id)>0,
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='completed'),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='requested'),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='effect_accepted'),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='outcome_unknown'),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='final_failed'),0)
+FROM payments p LEFT JOIN payment_refunds r ON r.payment_id=p.id WHERE p.order_id=ANY($1) GROUP BY p.order_id`, orderIDs)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var s paymentport.ExternalOrderRefundSummary
+		s.Available = true
+		if err = rows.Scan(&id, &s.HasRefund, &s.CompletedMinor, &s.RequestedMinor, &s.ProcessingMinor, &s.OutcomeUnknownMinor, &s.FinalFailedMinor); err != nil {
+			return nil, mapError(err)
+		}
+		result[id] = s
+	}
+	return result, mapError(rows.Err())
+}
+
+var _ paymentport.ExternalOrderRefundReader = (*Repository)(nil)
+
 func (r *Repository) CreatePayment(ctx context.Context, p domain.Payment, key, payload [32]byte, actor string) (domain.Payment, bool, error) {
 	t, e := tx(ctx)
 	if e != nil {
