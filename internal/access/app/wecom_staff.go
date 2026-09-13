@@ -34,9 +34,11 @@ func NewWeComStaffProjector(repository accessport.Repository, passwords Password
 	if repository == nil || passwords == nil || audit == nil {
 		return nil, ErrWeComStaffProjectionUnavailable
 	}
-	// The random credential is intentionally discarded after hashing. Newly
-	// projected staff can use provider-verified WeCom OAuth, but cannot know a
-	// local password unless a super administrator explicitly resets it later.
+	// The random credential is intentionally discarded after hashing. A newly
+	// projected staff record is not a login grant: neither local credentials nor
+	// provider-verified WeCom OAuth can authenticate it until governance grants
+	// backend access. A later super-admin password reset changes only its local
+	// credential and still uses the same explicit governance boundary.
 	randomPassword, _, err := credential.IssueOpaque("staff_")
 	if err != nil {
 		return nil, err
