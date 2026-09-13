@@ -15,7 +15,7 @@ import (
 // provider payload/media references. The selected canonical lineage predicate
 // is inside this query before its keyset/limit is applied.
 func (PostgreSQL) V1ChatRecords(ctx context.Context, query archiveport.V1ChatRecordQuery) (archiveport.V1ChatRecordPage, error) {
-	if len(query.CustomerIDs) == 0 || (query.ChatType != "" && query.ChatType != "private" && query.ChatType != "group") || query.StaffUserID < 0 ||
+	if len(query.CustomerIDs) == 0 || (query.ChatType != "private" && query.ChatType != "group") || query.StaffUserID < 0 || (query.ChatType == "private" && query.StaffUserID < 1) ||
 		(query.SourceSystem != "" && query.SourceSystem != "message_archive") || strings.TrimSpace(query.SourceRecordID) != query.SourceRecordID || len(query.SourceRecordID) > 128 ||
 		strings.TrimSpace(query.MessageID) != query.MessageID || len(query.MessageID) > 512 ||
 		query.Limit < 1 || query.Limit > 20 || query.EndAt.IsZero() || query.EndAt.Location().String() != "UTC" ||

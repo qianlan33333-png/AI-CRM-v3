@@ -21,16 +21,17 @@ import (
 const v1ChatRecordsOperation = "chat.records.list"
 
 type v1ChatRecordsInput struct {
-	CustomerID     int64  `json:"customer_id"`
-	ChatType       string `json:"chat_type"`
-	StaffUserID    int64  `json:"staff_user_id"`
-	OccurredFrom   *int64 `json:"occurred_from"`
-	OccurredTo     *int64 `json:"occurred_to"`
-	SourceSystem   string `json:"source_system"`
-	SourceRecordID string `json:"source_record_id"`
-	MessageID      string `json:"message_id"`
-	Limit          int32  `json:"limit"`
-	Cursor         string `json:"cursor"`
+	CustomerID       int64  `json:"customer_id"`
+	ChatType         string `json:"chat_type"`
+	StaffUserID      int64  `json:"staff_user_id"`
+	StaffWeComUserID string `json:"staff_wecom_userid"`
+	OccurredFrom     *int64 `json:"occurred_from"`
+	OccurredTo       *int64 `json:"occurred_to"`
+	SourceSystem     string `json:"source_system"`
+	SourceRecordID   string `json:"source_record_id"`
+	MessageID        string `json:"message_id"`
+	Limit            int32  `json:"limit"`
+	Cursor           string `json:"cursor"`
 }
 
 // v1ChatRecordsCursor binds the caller's effective scope and filters to an
@@ -44,6 +45,7 @@ type v1ChatRecordsCursor struct {
 	OccurredTo       time.Time `json:"occurred_to"`
 	BeforeOccurredAt time.Time `json:"before_occurred_at"`
 	BeforeMessageID  int64     `json:"before_message_id"`
+	StaffUserID      int64     `json:"staff_user_id"`
 }
 
 func (executor *openPlatformExecutor) v1ChatRecords(ctx context.Context, principal accessdomain.MachinePrincipal, raw json.RawMessage) (openplatformport.Result, error) {
@@ -67,10 +69,27 @@ func (executor *openPlatformExecutor) v1ChatRecords(ctx context.Context, princip
 		return openplatformport.Result{}, v1CustomerScopeError(err)
 	}
 	query.CustomerID = customerID
+	if in.StaffWeComUserID != "" {
+		resolver, resolverOK := executor.archive.(archiveport.V1ChatStaffResolver)
+		if !resolverOK || resolver == nil {
+			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "chat records are unavailable")
+		}
+		resolvedStaffID, resolveErr := resolver.V1ChatStaffID(ctx, in.StaffWeComUserID)
+		if errors.Is(resolveErr, archiveport.ErrStaffNotFound) {
+			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorValidation, "invalid chat records request")
+		}
+		if resolveErr != nil || resolvedStaffID < 1 {
+			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "chat records are unavailable")
+		}
+		if query.StaffUserID != 0 && query.StaffUserID != resolvedStaffID {
+			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorValidation, "invalid chat records request")
+		}
+		query.StaffUserID = resolvedStaffID
+	}
 	grant, filters := v1ActivityGrantDigest(principal), v1ChatRecordsFilterDigest(in)
 	if in.Cursor != "" {
 		cursor, decodeErr := decodeV1ChatRecordsCursor(executor.v1ExternalCursorKey, in.Cursor)
-		if decodeErr != nil || cursor.V != v1ExternalRecordsCursorV || cursor.Operation != v1ChatRecordsOperation || cursor.Grant != grant || cursor.Filters != filters || cursor.OccurredTo.IsZero() || cursor.BeforeOccurredAt.IsZero() || cursor.BeforeMessageID < 1 {
+		if decodeErr != nil || cursor.V != v1ExternalRecordsCursorV || cursor.Operation != v1ChatRecordsOperation || cursor.Grant != grant || cursor.Filters != filters || cursor.OccurredTo.IsZero() || cursor.BeforeOccurredAt.IsZero() || cursor.BeforeMessageID < 1 || cursor.StaffUserID != query.StaffUserID {
 			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorValidation, "invalid chat records cursor")
 		}
 		if !query.EndAt.IsZero() && !query.EndAt.Equal(cursor.OccurredTo) {
@@ -141,6 +160,7 @@ func (executor *openPlatformExecutor) v1ChatRecords(ctx context.Context, princip
 			OccurredTo:       query.EndAt.UTC(),
 			BeforeOccurredAt: last.OccurredAt.UTC(),
 			BeforeMessageID:  parseV1ArchiveSourceID(last.SourceRecordID),
+			StaffUserID:      query.StaffUserID,
 		})
 		if encodeErr != nil || parseV1ArchiveSourceID(last.SourceRecordID) < 1 {
 			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "chat records cursor is unavailable")
@@ -151,7 +171,12 @@ func (executor *openPlatformExecutor) v1ChatRecords(ctx context.Context, princip
 }
 
 func v1ChatRecordsQuery(in v1ChatRecordsInput) (archiveport.V1ChatRecordQuery, error) {
-	if in.CustomerID < 1 || (in.ChatType != "" && in.ChatType != "private" && in.ChatType != "group") || in.StaffUserID < 0 ||
+	chatType := in.ChatType
+	if chatType == "" {
+		chatType = "private"
+	}
+	if in.CustomerID < 1 || (chatType != "private" && chatType != "group") || in.StaffUserID < 0 ||
+		strings.TrimSpace(in.StaffWeComUserID) != in.StaffWeComUserID || len(in.StaffWeComUserID) > 128 || (chatType == "private" && in.StaffUserID == 0 && in.StaffWeComUserID == "") ||
 		(in.SourceSystem == "") != (in.SourceRecordID == "") || (in.SourceSystem != "" && in.SourceSystem != "message_archive") ||
 		strings.TrimSpace(in.SourceRecordID) != in.SourceRecordID || len(in.SourceRecordID) > 128 || strings.TrimSpace(in.MessageID) != in.MessageID || len(in.MessageID) > 512 || in.Limit < 0 || (in.Limit != 0 && in.Limit != 20) || len(in.Cursor) > 4096 {
 		return archiveport.V1ChatRecordQuery{}, errors.New("invalid chat records request")
@@ -165,7 +190,7 @@ func v1ChatRecordsQuery(in v1ChatRecordsInput) (archiveport.V1ChatRecordQuery, e
 		return archiveport.V1ChatRecordQuery{}, errors.New("invalid chat records time range")
 	}
 	return archiveport.V1ChatRecordQuery{
-		ChatType:       in.ChatType,
+		ChatType:       chatType,
 		StaffUserID:    in.StaffUserID,
 		StartAt:        start,
 		EndAt:          end,

@@ -602,8 +602,11 @@ func (service Service) recordBlockedIssue(ctx context.Context, issue IngestIssue
 // remain inside MessageArchive. A missing dependency is returned as an error,
 // never converted to an empty page.
 func (service Service) V1ChatRecords(ctx context.Context, query archiveport.V1ChatRecordQuery) (archiveport.V1ChatRecordPage, error) {
+	if query.ChatType == "" {
+		query.ChatType = "private"
+	}
 	if !service.ReadEnabled || service.Lineage == nil || service.Store == nil || service.StaffDirectory == nil || service.UOW == nil || query.CustomerID < 1 ||
-		(query.ChatType != "" && query.ChatType != "private" && query.ChatType != "group") || query.StaffUserID < 0 ||
+		(query.ChatType != "private" && query.ChatType != "group") || query.StaffUserID < 0 || (query.ChatType == "private" && query.StaffUserID < 1) ||
 		(query.SourceSystem != "" && query.SourceSystem != "message_archive") || strings.TrimSpace(query.SourceRecordID) != query.SourceRecordID || len(query.SourceRecordID) > 128 ||
 		strings.TrimSpace(query.MessageID) != query.MessageID || len(query.MessageID) > 512 ||
 		query.Limit < 1 || query.Limit > 20 || query.EndAt.IsZero() || query.EndAt.Location() != time.UTC ||
@@ -635,6 +638,38 @@ func (service Service) V1ChatRecords(ctx context.Context, query archiveport.V1Ch
 		return nil
 	})
 	return page, err
+}
+
+// V1ChatStaffID is the narrow local bridge from a WeCom user ID already
+// selected from customer detail to MessageArchive's internal staff foreign
+// key. It reads only Access's existing directory projection in a UOW; it does
+// not create an employee, update OneID, or contact WeCom.
+func (service Service) V1ChatStaffID(ctx context.Context, rawWeComUserID string) (int64, error) {
+	if !service.ReadEnabled || service.Staff == nil || service.UOW == nil {
+		return 0, archiveport.ErrNotReady
+	}
+	wecomUserID, err := accessdomain.NormalizeWeComUserID(rawWeComUserID)
+	if err != nil {
+		return 0, archiveport.ErrStaffNotFound
+	}
+	var staff accessdomain.User
+	err = service.UOW.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		staff, readErr = service.Staff.UserByWeComUserID(tx, wecomUserID, false)
+		if errors.Is(readErr, accessdomain.ErrNotFound) {
+			return archiveport.ErrStaffNotFound
+		}
+		return readErr
+	})
+	if err != nil {
+		return 0, err
+	}
+	// A malformed Access adapter must not turn an arbitrary user into a Chat
+	// selector merely because it returned a positive ID.
+	if staff.ID < 1 || staff.WeComUserID != wecomUserID {
+		return 0, archiveport.ErrNotReady
+	}
+	return staff.ID, nil
 }
 
 func (service Service) populateV1ChatStaff(ctx context.Context, page *archiveport.V1ChatRecordPage) error {

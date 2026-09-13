@@ -26,7 +26,7 @@ func TestPostgreSQLV1ChatRecordsScopeBeforeKeysetAndFreezeEnd(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 13, 11, 0, 0, 0, time.UTC)
 
-	var customerID, otherCustomerID, staffID int64
+	var customerID, otherCustomerID, staffID, otherStaffID int64
 	if err := native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatal(err)
 	}
@@ -36,12 +36,15 @@ func TestPostgreSQLV1ChatRecordsScopeBeforeKeysetAndFreezeEnd(t *testing.T) {
 	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('archive-v1-staff','$argon2id$test','Archive V1 staff') RETURNING id`).Scan(&staffID); err != nil {
 		t.Fatal(err)
 	}
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('archive-v1-other-staff','$argon2id$test','Archive V1 other staff') RETURNING id`).Scan(&otherStaffID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := native.Exec(ctx, `INSERT INTO message_archive_sync_state(corp_scope) VALUES('wecom-corp:archive-v1-test')`); err != nil {
 		t.Fatal(err)
 	}
 
 	sequence := int64(1)
-	insertMessage := func(customer int64, chatType, messageType string, occurredAt time.Time, withReadyMedia bool) int64 {
+	insertMessage := func(customer, staff int64, chatType, messageType string, occurredAt time.Time, withReadyMedia bool) int64 {
 		t.Helper()
 		var messageID int64
 		if err := native.QueryRow(ctx, `
@@ -61,7 +64,7 @@ func TestPostgreSQLV1ChatRecordsScopeBeforeKeysetAndFreezeEnd(t *testing.T) {
 		}
 		if _, err := native.Exec(ctx, `
 			INSERT INTO message_archive_participants(message_id,participant_role,actor_type,provider_value,provider_value_digest,staff_user_id,resolution_status)
-			VALUES($1,'sender','staff','',$2,$3,'not_applicable')`, messageID, staffDigest, staffID); err != nil {
+			VALUES($1,'sender','staff','',$2,$3,'not_applicable')`, messageID, staffDigest, staff); err != nil {
 			t.Fatal(err)
 		}
 		if withReadyMedia {
@@ -77,12 +80,14 @@ func TestPostgreSQLV1ChatRecordsScopeBeforeKeysetAndFreezeEnd(t *testing.T) {
 		return messageID
 	}
 
-	groupID := insertMessage(customerID, "group", "image", now.Add(-2*time.Minute), true)
+	groupID := insertMessage(customerID, staffID, "group", "image", now.Add(-2*time.Minute), true)
 	if _, err := native.Exec(ctx, `INSERT INTO message_archive_legacy_projections(message_id,historical_group_name,source_projection_digest) VALUES($1,'Archive group',decode(repeat('00',32),'hex'))`, groupID); err != nil {
 		t.Fatal(err)
 	}
-	privateID := insertMessage(customerID, "private", "text", now.Add(-time.Minute), false)
-	_ = insertMessage(otherCustomerID, "private", "text", now.Add(-30*time.Second), false)
+	privateID := insertMessage(customerID, staffID, "private", "text", now.Add(-time.Minute), false)
+	privateOlderID := insertMessage(customerID, staffID, "private", "text", now.Add(-3*time.Minute), false)
+	_ = insertMessage(customerID, otherStaffID, "private", "text", now.Add(-30*time.Second), false)
+	_ = insertMessage(otherCustomerID, staffID, "private", "text", now.Add(-30*time.Second), false)
 
 	wrapped, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
@@ -101,24 +106,28 @@ func TestPostgreSQLV1ChatRecordsScopeBeforeKeysetAndFreezeEnd(t *testing.T) {
 		})
 		return page, err
 	}
-	first, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, EndAt: now, Limit: 1})
+	first, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, ChatType: "private", StaffUserID: staffID, EndAt: now, Limit: 1})
 	if err != nil || len(first.Items) != 1 || first.Items[0].SourceRecordID != formatArchiveID(privateID) || first.Items[0].ChatType != "private" || first.Items[0].MediaAvailability != "not_applicable" || len(first.Items[0].StaffIDs) != 1 || first.Items[0].StaffIDs[0] != staffID || !first.HasMore {
 		t.Fatalf("first=%+v err=%v", first, err)
 	}
 
 	// A newer record committed after the first page must not enter the frozen
 	// [start,end) snapshot when the signed cursor requests the next page.
-	_ = insertMessage(customerID, "private", "text", now.Add(time.Minute), false)
-	second, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, EndAt: now, BeforeOccurredAt: first.Items[0].OccurredAt, BeforeMessageID: privateID, Limit: 1})
-	if err != nil || len(second.Items) != 1 || second.Items[0].SourceRecordID != formatArchiveID(groupID) || second.Items[0].ChatType != "group" || second.Items[0].GroupName != "Archive group" || second.Items[0].MediaArchiveStatus != "available" || second.Items[0].MediaAvailability != "api_unavailable" || second.HasMore {
+	_ = insertMessage(customerID, staffID, "private", "text", now.Add(time.Minute), false)
+	second, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, ChatType: "private", StaffUserID: staffID, EndAt: now, BeforeOccurredAt: first.Items[0].OccurredAt, BeforeMessageID: privateID, Limit: 1})
+	if err != nil || len(second.Items) != 1 || second.Items[0].SourceRecordID != formatArchiveID(privateOlderID) || second.Items[0].ChatType != "private" || second.HasMore {
 		t.Fatalf("second=%+v err=%v", second, err)
 	}
 
-	exact, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, EndAt: now, SourceSystem: "message_archive", SourceRecordID: formatArchiveID(groupID), Limit: 20})
+	group, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, ChatType: "group", EndAt: now, Limit: 20})
+	if err != nil || len(group.Items) != 1 || group.Items[0].SourceRecordID != formatArchiveID(groupID) || group.Items[0].GroupName != "Archive group" || group.Items[0].MediaArchiveStatus != "available" || group.Items[0].MediaAvailability != "api_unavailable" {
+		t.Fatalf("group=%+v err=%v", group, err)
+	}
+	exact, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, ChatType: "group", EndAt: now, SourceSystem: "message_archive", SourceRecordID: formatArchiveID(groupID), Limit: 20})
 	if err != nil || len(exact.Items) != 1 || exact.Items[0].SourceRecordID != formatArchiveID(groupID) {
 		t.Fatalf("exact=%+v err=%v", exact, err)
 	}
-	byMessageID, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, EndAt: now, MessageID: exact.Items[0].MessageID, Limit: 20})
+	byMessageID, err := read(archiveport.V1ChatRecordQuery{CustomerIDs: []customerdomain.CustomerID{customerdomain.CustomerID(customerID)}, ChatType: "group", EndAt: now, MessageID: exact.Items[0].MessageID, Limit: 20})
 	if err != nil || len(byMessageID.Items) != 1 || byMessageID.Items[0].SourceRecordID != formatArchiveID(groupID) {
 		t.Fatalf("message id=%+v err=%v", byMessageID, err)
 	}

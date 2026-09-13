@@ -59,3 +59,10 @@ type V1ChatRecordPage struct {
 type V1ChatRecordReader interface {
 	V1ChatRecords(context.Context, V1ChatRecordQuery) (V1ChatRecordPage, error)
 }
+
+// V1ChatStaffResolver resolves an exact, already-projected WeCom employee
+// user ID to Archive's durable Access staff ID. It deliberately offers no
+// browsing or Provider lookup capability.
+type V1ChatStaffResolver interface {
+	V1ChatStaffID(context.Context, string) (int64, error)
+}

@@ -64,11 +64,21 @@ func (lineageStub) CanonicalLineage(context.Context, customerdomain.CustomerID) 
 	return []customerdomain.CustomerID{1}, nil
 }
 
-type staffStub struct{ calls int }
+type staffStub struct {
+	calls int
+	user  accessdomain.User
+	err   error
+}
 
-func (s *staffStub) UserByWeComUserID(context.Context, string, bool) (accessdomain.User, error) {
+func (s *staffStub) UserByWeComUserID(_ context.Context, wecomUserID string, _ bool) (accessdomain.User, error) {
 	s.calls++
-	return accessdomain.User{ID: 1}, nil
+	if s.err != nil {
+		return accessdomain.User{}, s.err
+	}
+	if s.user.ID == 0 {
+		return accessdomain.User{ID: 1, WeComUserID: wecomUserID}, nil
+	}
+	return s.user, nil
 }
 
 type storeStub struct {
@@ -234,13 +244,35 @@ func TestV1ChatRecordsUsesCanonicalLineageAndFailsClosedForMissingStaffProjectio
 	service := serviceFor(&readerStub{}, &store.storeStub)
 	service.Store = store
 	service.Lineage = lineageStub{}
-	page, err := service.V1ChatRecords(context.Background(), archiveport.V1ChatRecordQuery{CustomerID: 1, EndAt: time.Unix(100, 0).UTC(), Limit: 20})
+	if _, err := service.V1ChatRecords(context.Background(), archiveport.V1ChatRecordQuery{CustomerID: 1, EndAt: time.Unix(100, 0).UTC(), Limit: 20}); !errors.Is(err, archiveport.ErrNotReady) {
+		t.Fatalf("default private without staff error=%v", err)
+	}
+	page, err := service.V1ChatRecords(context.Background(), archiveport.V1ChatRecordQuery{CustomerID: 1, ChatType: "private", StaffUserID: 1, EndAt: time.Unix(100, 0).UTC(), Limit: 20})
 	if err != nil || len(page.Items) != 1 || len(page.Items[0].Staff) != 1 || page.Items[0].Staff[0].DisplayName != "员工" || len(store.v1Query.CustomerIDs) != 1 || store.v1Query.CustomerIDs[0] != 1 {
 		t.Fatalf("page=%+v query=%+v err=%v", page, store.v1Query, err)
 	}
 	service.StaffDirectory = missingStaffDirectory{}
-	if _, err = service.V1ChatRecords(context.Background(), archiveport.V1ChatRecordQuery{CustomerID: 1, EndAt: time.Unix(100, 0).UTC(), Limit: 20}); !errors.Is(err, archiveport.ErrNotReady) {
+	if _, err = service.V1ChatRecords(context.Background(), archiveport.V1ChatRecordQuery{CustomerID: 1, ChatType: "private", StaffUserID: 1, EndAt: time.Unix(100, 0).UTC(), Limit: 20}); !errors.Is(err, archiveport.ErrNotReady) {
 		t.Fatalf("missing staff projection error=%v", err)
+	}
+}
+
+func TestV1ChatStaffIDUsesOnlyLocalAccessProjection(t *testing.T) {
+	staff := &staffStub{user: accessdomain.User{ID: 9, WeComUserID: "staff-9"}}
+	reader := &readerStub{}
+	service := serviceFor(reader, &storeStub{})
+	service.Staff = staff
+	id, err := service.V1ChatStaffID(context.Background(), "staff-9")
+	if err != nil || id != 9 || staff.calls != 1 || reader.calls != 0 {
+		t.Fatalf("id=%d err=%v staff_calls=%d provider_calls=%d", id, err, staff.calls, reader.calls)
+	}
+	staff.err = accessdomain.ErrNotFound
+	if _, err = service.V1ChatStaffID(context.Background(), "absent-staff"); !errors.Is(err, archiveport.ErrStaffNotFound) {
+		t.Fatalf("absent staff error=%v", err)
+	}
+	service.Staff = nil
+	if _, err = service.V1ChatStaffID(context.Background(), "staff-9"); !errors.Is(err, archiveport.ErrNotReady) {
+		t.Fatalf("missing local directory error=%v", err)
 	}
 }
 
