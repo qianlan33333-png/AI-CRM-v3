@@ -879,6 +879,13 @@ func AdminLayoutScreenshotDirectory() string {
 	return os.Getenv("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR")
 }
 
+// AccessGovernanceScreenshotDirectory returns the optional evidence directory
+// for the Access governance Chromium journey. The test validates filesystem
+// constraints before it writes the rendered screenshots.
+func AccessGovernanceScreenshotDirectory() string {
+	return os.Getenv("AICRM_ACCESS_UI_SCREENSHOT_DIR")
+}
+
 // NamedDatabaseURL is restricted to the two database roles used by the
 // controlled Automation Operations migration. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment
