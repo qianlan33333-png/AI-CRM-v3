@@ -130,6 +130,21 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	unionOnlyFact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:open-read", Value: "union-composed-v1-only", Source: "open-platform-v1-composition-fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unionOnlyCustomerID customerdomain.CustomerID
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		resolved, provisionErr := oneID.ProvisionCustomerFromVerifiedIdentity(tx, unionOnlyFact)
+		if provisionErr != nil {
+			return provisionErr
+		}
+		unionOnlyCustomerID = resolved.CustomerID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	ordersRepository, err := orderstore.NewPostgreSQL(application.pool.Native(), uow)
 	if err != nil {
 		t.Fatal(err)
@@ -303,6 +318,27 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("readonly client path=%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+	// The export status reports Identity's complete customer state. The facts
+	// array is a separate caller-requested projection: without a UnionID scope,
+	// a UnionID-only customer remains found but cannot leak that UnionID.
+	unionOnlyNoScope := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(unionOnlyCustomerID)+"/identities", "", readonlyToken)
+	unionOnlyNoScopeResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(unionOnlyNoScopeResponse, unionOnlyNoScope)
+	var unionOnlyNoScopeBody struct {
+		Data struct {
+			Status     string `json:"status"`
+			Identities []any  `json:"identities"`
+		} `json:"data"`
+	}
+	if err = json.Unmarshal(unionOnlyNoScopeResponse.Body.Bytes(), &unionOnlyNoScopeBody); err != nil || unionOnlyNoScopeResponse.Code != http.StatusOK || unionOnlyNoScopeBody.Data.Status != "found" || len(unionOnlyNoScopeBody.Data.Identities) != 0 || strings.Contains(unionOnlyNoScopeResponse.Body.String(), "union-composed-v1-only") {
+		t.Fatalf("union-only identity without requested scope status=%d err=%v body=%s", unionOnlyNoScopeResponse.Code, err, unionOnlyNoScopeResponse.Body.String())
+	}
+	unionOnlyRequested := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(unionOnlyCustomerID)+"/identities?unionid_scope=wechat-open-platform:open-read", "", readonlyToken)
+	unionOnlyRequestedResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(unionOnlyRequestedResponse, unionOnlyRequested)
+	if unionOnlyRequestedResponse.Code != http.StatusOK || !strings.Contains(unionOnlyRequestedResponse.Body.String(), `"value":"union-composed-v1-only"`) {
+		t.Fatalf("union-only identity with requested scope status=%d body=%s", unionOnlyRequestedResponse.Code, unionOnlyRequestedResponse.Body.String())
 	}
 	readonlyRadarLinks := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/radar/links?limit=100", "", readonlyToken)
 	readonlyRadarLinksResponse := httptest.NewRecorder()
