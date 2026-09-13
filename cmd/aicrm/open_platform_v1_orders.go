@@ -354,6 +354,7 @@ func (executor *openPlatformExecutor) v1OrderResult(ctx context.Context, items [
 			m["refund_outcome_unknown_minor"] = s.OutcomeUnknownMinor
 			m["refund_final_failed_minor"] = s.FinalFailedMinor
 			m["refund_status"] = "known"
+			m["refund_amount_status"] = "known"
 		}
 		out = append(out, m)
 	}

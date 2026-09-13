@@ -59,7 +59,7 @@ if (!documentationRoot || documentationRequests.length || documentationDOM.windo
   throw new Error(`documentation default leaked management requests or lost its eleven-operation contract: ${JSON.stringify(documentationRequests)}`);
 }
 const openAPIDownload = documentationDOM.window.document.querySelector('a[download="aicrm-openapi.yaml"]');
-if (openAPIDownload?.getAttribute('href') !== '/api/admin/config/openapi.yaml' || !documentationDOM.window.document.body.textContent.includes('refund_amount_status')) {
+if (openAPIDownload?.getAttribute('href') !== '/api/admin/config/openapi.yaml' || !documentationDOM.window.document.body.textContent.includes('refund_amount_status 为必填字段') || !documentationDOM.window.document.body.textContent.includes('摘要存在时返回 known') || !documentationDOM.window.document.body.textContent.includes('没有摘要时返回 unavailable')) {
   throw new Error('documentation omitted its authenticated OpenAPI download or refund contract note');
 }
 if (!documentationScrollTargets.includes('operations')) throw new Error(`initial API-docs hash was not restored: ${JSON.stringify(documentationScrollTargets)} hash=${documentationDOM.window.location.hash} target=${typeof documentationDOM.window.document.getElementById('operations')?.scrollIntoView}`);

@@ -7308,7 +7308,7 @@ components:
         refund_outcome_unknown_minor: {type: integer}
         refund_final_failed_minor: {type: integer}
         refund_status: {type: string, enum: [known, unavailable]}
-        refund_amount_status: {type: string, enum: [unavailable]}
+        refund_amount_status: {type: string, enum: [known, unavailable]}
         refund_records: {type: array, items: {$ref: "#/components/schemas/OpenPlatformRefundRecord"}}
         timeline: {type: array, items: {$ref: "#/components/schemas/OpenPlatformOrderTimelineEvent"}}
     OpenPlatformOrderPage:

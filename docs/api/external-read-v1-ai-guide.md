@@ -429,7 +429,8 @@ Owner struct 的默认 Go 字段名当作外部合同。
   成付款时间。无此证据时 `paid_at=null`、`paid_at_status=unavailable`。
 - `amount_minor` 是整数分，`amount_yuan` 是两位小数字符串，不能使用 float
   计算金额；`currency` 当前来自订单金额事实。
-- `is_refunded` 只由已完成退款金额决定。`has_refund_request`、
+- Payment 的本地退款摘要存在时，`refund_status=known` 和
+  `refund_amount_status=known`。`is_refunded` 只由已完成退款金额决定。`has_refund_request`、
   `refund_requested_minor`、`refund_processing_minor`、
   `refund_outcome_unknown_minor` 和 `refund_final_failed_minor` 分开表达；退款
   申请、处理中或 outcome unknown 不能单独标成已退款。没有退款摘要时返回

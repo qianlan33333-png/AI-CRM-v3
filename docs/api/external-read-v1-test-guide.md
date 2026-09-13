@@ -129,9 +129,9 @@ curl --fail-with-body --silent --show-error \
 第一页重新开始。
 
 订单金额检查 `amount_minor` 整数分与 `amount_yuan` 字符串；`is_refunded` 只代表已完成
-退款金额。已知缺陷：OpenAPI 将 `refund_amount_status` 标为必填且只允许
-`unavailable`，但运行时已知退款分支未始终赋值。因此严格 OpenAPI schema 验收当前
-不能通过；本次只记录该缺陷，不修改后台合同，也不将容错读取当成修复。
+退款金额。Payment 的本地退款摘要存在时，`refund_status` 和
+`refund_amount_status` 均为 `known`；没有摘要时两者均为 `unavailable`。申请、处理中或
+outcome unknown 的金额仍分别在对应分项字段中表达，不能仅据此把订单标成已退款。
 
 ## PostgreSQL 集成测试
 
