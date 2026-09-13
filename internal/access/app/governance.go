@@ -8,9 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
@@ -23,14 +23,13 @@ const (
 	enterpriseSearchMaxMembers  = 10000
 	enterpriseSearchMaxPages    = 200
 	enterpriseSearchDeadline    = 12 * time.Second
-	enterpriseSearchParallelism = 4
 )
 
 var ErrEnterpriseDirectoryUnavailable = errors.New("enterprise employee directory unavailable")
 
 type EnterpriseEmployees interface {
 	EnterpriseDirectoryReady() bool
-	ListEnterpriseEmployeeIDs(context.Context, string, int) (wecomport.EnterpriseEmployeeIDPage, error)
+	ListEnterpriseEmployees(context.Context) ([]wecomport.EnterpriseEmployee, error)
 	ReadEnterpriseEmployee(context.Context, string) (wecomport.EnterpriseEmployee, error)
 }
 
@@ -55,6 +54,9 @@ type GovernanceActor struct {
 
 type GovernanceUser struct {
 	UserSummary
+	// AdminUserID is explicit for the governance command routes. ID remains
+	// present through UserSummary for the frozen-list compatibility readers.
+	AdminUserID  int64             `json:"admin_user_id"`
 	Role         domain.Role       `json:"role"`
 	LoginEnabled bool              `json:"login_enabled"`
 	Actions      GovernanceActions `json:"actions"`
@@ -160,7 +162,7 @@ func (service *Management) ListGovernance(ctx context.Context, actor domain.Prin
 			if err != nil {
 				return domain.ErrConflict
 			}
-			result.Users = append(result.Users, GovernanceUser{UserSummary: summarizeUser(user), Role: userRole, LoginEnabled: user.Active, Actions: actionsFor(role, current.ID, user, userRole)})
+			result.Users = append(result.Users, GovernanceUser{UserSummary: summarizeUser(user), AdminUserID: user.ID, Role: userRole, LoginEnabled: user.Active, Actions: actionsFor(role, current.ID, user, userRole)})
 		}
 		return nil
 	})
@@ -174,46 +176,19 @@ func (service *Management) ListEnterpriseEmployees(ctx context.Context, actor do
 	if err := service.authorizeGovernanceRead(ctx, actor); err != nil {
 		return EnterpriseEmployeeListing{}, err
 	}
-	directory := service.enterpriseDirectory
-	if directory == nil || !directory.EnterpriseDirectoryReady() {
+	if service.enterpriseDirectory == nil || !service.enterpriseDirectory.EnterpriseDirectoryReady() {
 		return EnterpriseEmployeeListing{}, ErrEnterpriseDirectoryUnavailable
 	}
 	query = strings.TrimSpace(query)
 	if len([]rune(query)) > 120 || strings.ContainsAny(query, "\x00\r\n") {
 		return EnterpriseEmployeeListing{}, domain.ErrInvalidInput
 	}
-	if query == "" {
-		state, err := service.decodeEnterpriseCursor(cursor, actor, query, enterpriseCursorBrowse)
-		if err != nil {
-			return EnterpriseEmployeeListing{}, domain.ErrInvalidInput
-		}
-		page, err := directory.ListEnterpriseEmployeeIDs(ctx, state.ProviderCursor, limit)
-		if err != nil {
-			return EnterpriseEmployeeListing{}, ErrEnterpriseDirectoryUnavailable
-		}
-		employees, err := service.readEnterpriseEmployees(ctx, page.UserIDs)
-		if err != nil {
-			return EnterpriseEmployeeListing{}, err
-		}
-		items, err := service.enterpriseItems(ctx, employees)
-		if err != nil {
-			return EnterpriseEmployeeListing{}, err
-		}
-		next := ""
-		if page.NextCursor != "" {
-			next = service.encodeEnterpriseCursor(enterpriseDirectoryCursor{Mode: enterpriseCursorBrowse, ProviderCursor: page.NextCursor}, actor, query)
-		}
-		return EnterpriseEmployeeListing{Items: items, NextCursor: next, HasMore: next != ""}, nil
-	}
-	if candidate, err := domain.NormalizeWeComUserID(query); err == nil && candidate == query {
-		employee, readErr := directory.ReadEnterpriseEmployee(ctx, candidate)
+	if candidate, err := domain.NormalizeWeComUserID(query); query != "" && err == nil && candidate == query {
+		employee, readErr := service.enterpriseDirectory.ReadEnterpriseEmployee(ctx, candidate)
 		switch {
 		case readErr == nil:
-			if cursor != "" {
+			if cursor != "" || employee.UserID != candidate || strings.TrimSpace(employee.DisplayName) == "" {
 				return EnterpriseEmployeeListing{}, domain.ErrInvalidInput
-			}
-			if employee.UserID != candidate || strings.TrimSpace(employee.DisplayName) == "" {
-				return EnterpriseEmployeeListing{}, ErrEnterpriseDirectoryUnavailable
 			}
 			items, itemErr := service.enterpriseItems(ctx, []wecomport.EnterpriseEmployee{employee})
 			if itemErr != nil {
@@ -228,135 +203,69 @@ func (service *Management) ListEnterpriseEmployees(ctx context.Context, actor do
 		// complete server-side name search. Provider failures never become an
 		// empty name result.
 	}
-	return service.searchEnterpriseEmployees(ctx, actor, query, cursor, limit)
-}
-
-func (service *Management) searchEnterpriseEmployees(ctx context.Context, actor domain.Principal, query, cursor string, limit int) (EnterpriseEmployeeListing, error) {
-	// A name lookup cannot be limited to the already-rendered page. Walk the
-	// application-visible directory server-side. If its bounded deadline cannot
-	// establish a complete answer, fail closed rather than claiming no match.
-	searchCtx, cancel := context.WithTimeout(ctx, enterpriseSearchDeadline)
-	defer cancel()
-	state, err := service.decodeEnterpriseCursor(cursor, actor, query, enterpriseCursorSearch)
+	mode := enterpriseCursorBrowse
+	if query != "" {
+		mode = enterpriseCursorSearch
+	}
+	state, err := service.decodeEnterpriseCursor(cursor, actor, query, mode)
 	if err != nil {
 		return EnterpriseEmployeeListing{}, domain.ErrInvalidInput
 	}
-	wanted := strings.ToLower(query)
-	providerCursor := ""
-	matches := make([]wecomport.EnterpriseEmployee, 0, limit+1)
-	pages, scanned := 0, 0
-	for {
-		if pages >= enterpriseSearchMaxPages || scanned >= enterpriseSearchMaxMembers || searchCtx.Err() != nil {
-			return EnterpriseEmployeeListing{}, ErrEnterpriseDirectoryUnavailable
-		}
-		page, pageErr := service.enterpriseDirectory.ListEnterpriseEmployeeIDs(searchCtx, providerCursor, enterpriseDirectoryPageSize)
-		if pageErr != nil {
-			return EnterpriseEmployeeListing{}, ErrEnterpriseDirectoryUnavailable
-		}
-		pages++
-		if len(page.UserIDs) > enterpriseDirectoryPageSize || scanned+len(page.UserIDs) > enterpriseSearchMaxMembers {
-			return EnterpriseEmployeeListing{}, ErrEnterpriseDirectoryUnavailable
-		}
-		employees, readErr := service.readEnterpriseEmployees(searchCtx, page.UserIDs)
-		if readErr != nil {
-			return EnterpriseEmployeeListing{}, readErr
-		}
-		scanned += len(employees)
+	employees, err := service.completeEnterpriseDirectory(ctx)
+	if err != nil {
+		return EnterpriseEmployeeListing{}, err
+	}
+	if query != "" {
+		wanted := strings.ToLower(query)
+		matches := make([]wecomport.EnterpriseEmployee, 0, len(employees))
 		for _, employee := range employees {
 			if strings.Contains(strings.ToLower(employee.DisplayName), wanted) {
 				matches = append(matches, employee)
 			}
 		}
-		if page.NextCursor == "" {
-			break
-		}
-		providerCursor = page.NextCursor
+		employees = matches
 	}
-	if state.Offset > len(matches) {
+	if state.Offset > len(employees) {
 		return EnterpriseEmployeeListing{}, domain.ErrInvalidInput
 	}
 	end := state.Offset + limit
-	if end > len(matches) {
-		end = len(matches)
+	if end > len(employees) {
+		end = len(employees)
 	}
-	items, err := service.enterpriseItems(ctx, matches[state.Offset:end])
+	items, err := service.enterpriseItems(ctx, employees[state.Offset:end])
 	if err != nil {
 		return EnterpriseEmployeeListing{}, err
 	}
 	next := ""
-	if end < len(matches) {
-		next = service.encodeEnterpriseCursor(enterpriseDirectoryCursor{Mode: enterpriseCursorSearch, Offset: end}, actor, query)
+	if end < len(employees) {
+		next = service.encodeEnterpriseCursor(enterpriseDirectoryCursor{Mode: mode, Offset: end}, actor, query)
 	}
 	return EnterpriseEmployeeListing{Items: items, NextCursor: next, HasMore: next != ""}, nil
 }
 
-// readEnterpriseEmployees never runs more than four independent Provider
-// reads. The caller's deadline covers the entire page/search, and any missing
-// or malformed profile makes the result unavailable instead of partial.
-func (service *Management) readEnterpriseEmployees(ctx context.Context, ids []string) ([]wecomport.EnterpriseEmployee, error) {
-	if len(ids) == 0 {
-		return []wecomport.EnterpriseEmployee{}, nil
-	}
-	if len(ids) > enterpriseDirectoryPageSize {
-		return nil, ErrEnterpriseDirectoryUnavailable
-	}
-	seen := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		if _, err := domain.NormalizeWeComUserID(id); err != nil || strings.TrimSpace(id) != id {
-			return nil, ErrEnterpriseDirectoryUnavailable
-		}
-		if _, duplicate := seen[id]; duplicate {
-			return nil, ErrEnterpriseDirectoryUnavailable
-		}
-		seen[id] = struct{}{}
-	}
-	readCtx, cancel := context.WithCancel(ctx)
+func (service *Management) completeEnterpriseDirectory(ctx context.Context) ([]wecomport.EnterpriseEmployee, error) {
+	readCtx, cancel := context.WithTimeout(ctx, enterpriseSearchDeadline)
 	defer cancel()
-	result := make([]wecomport.EnterpriseEmployee, len(ids))
-	jobs := make(chan int)
-	workers := enterpriseSearchParallelism
-	if workers > len(ids) {
-		workers = len(ids)
-	}
-	var group sync.WaitGroup
-	var once sync.Once
-	var firstErr error
-	fail := func(err error) {
-		once.Do(func() {
-			firstErr = err
-			cancel()
-		})
-	}
-	for worker := 0; worker < workers; worker++ {
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			for index := range jobs {
-				employee, err := service.enterpriseDirectory.ReadEnterpriseEmployee(readCtx, ids[index])
-				if err != nil || employee.UserID != ids[index] || strings.TrimSpace(employee.DisplayName) == "" {
-					fail(ErrEnterpriseDirectoryUnavailable)
-					return
-				}
-				result[index] = employee
-			}
-		}()
-	}
-	for index := range ids {
-		select {
-		case <-readCtx.Done():
-			break
-		case jobs <- index:
-		}
-		if readCtx.Err() != nil {
-			break
-		}
-	}
-	close(jobs)
-	group.Wait()
-	if firstErr != nil || readCtx.Err() != nil && ctx.Err() != nil {
+	employees, err := service.enterpriseDirectory.ListEnterpriseEmployees(readCtx)
+	if err != nil || len(employees) > enterpriseSearchMaxMembers || readCtx.Err() != nil {
 		return nil, ErrEnterpriseDirectoryUnavailable
 	}
-	return result, nil
+	seen := make(map[string]struct{}, len(employees))
+	for _, employee := range employees {
+		if _, normalizeErr := domain.NormalizeWeComUserID(employee.UserID); normalizeErr != nil || strings.TrimSpace(employee.UserID) != employee.UserID || strings.TrimSpace(employee.DisplayName) == "" {
+			return nil, ErrEnterpriseDirectoryUnavailable
+		}
+		if _, duplicate := seen[employee.UserID]; duplicate {
+			return nil, ErrEnterpriseDirectoryUnavailable
+		}
+		seen[employee.UserID] = struct{}{}
+	}
+	// The Provider projection is complete but does not promise an order. The
+	// signed cursor is offset-based, so stabilize the snapshot here as well as
+	// in the WeCom adapter; alternate conforming Port implementations cannot
+	// make a subsequent page drift merely by returning another order.
+	sort.Slice(employees, func(i, j int) bool { return employees[i].UserID < employees[j].UserID })
+	return employees, nil
 }
 
 func (service *Management) enterpriseItems(ctx context.Context, employees []wecomport.EnterpriseEmployee) ([]EnterpriseEmployeeItem, error) {
@@ -726,13 +635,12 @@ const (
 )
 
 type enterpriseDirectoryCursor struct {
-	Mode           string `json:"m"`
-	ProviderCursor string `json:"p,omitempty"`
-	Offset         int    `json:"o,omitempty"`
-	QueryDigest    string `json:"q"`
-	Corp           string `json:"c"`
-	Actor          int64  `json:"a"`
-	Version        int64  `json:"v"`
+	Mode        string `json:"m"`
+	Offset      int    `json:"o,omitempty"`
+	QueryDigest string `json:"q"`
+	Corp        string `json:"c"`
+	Actor       int64  `json:"a"`
+	Version     int64  `json:"v"`
 }
 
 func (service *Management) encodeEnterpriseCursor(value enterpriseDirectoryCursor, actor domain.Principal, query string) string {
@@ -759,10 +667,7 @@ func (service *Management) decodeEnterpriseCursor(cursor string, actor domain.Pr
 		return enterpriseDirectoryCursor{}, domain.ErrInvalidInput
 	}
 	var value enterpriseDirectoryCursor
-	if json.Unmarshal(payload, &value) != nil || value.Mode != expectedMode || value.Offset < 0 || value.QueryDigest != service.enterpriseQueryDigest(query) || value.Corp != service.enterpriseCorpScope || value.Actor != actor.InternalID || value.Version != actor.SessionVersion || strings.TrimSpace(value.ProviderCursor) != value.ProviderCursor {
-		return enterpriseDirectoryCursor{}, domain.ErrInvalidInput
-	}
-	if expectedMode == enterpriseCursorBrowse && value.Offset != 0 || expectedMode == enterpriseCursorSearch && value.ProviderCursor != "" {
+	if json.Unmarshal(payload, &value) != nil || value.Mode != expectedMode || value.Offset < 0 || value.QueryDigest != service.enterpriseQueryDigest(query) || value.Corp != service.enterpriseCorpScope || value.Actor != actor.InternalID || value.Version != actor.SessionVersion {
 		return enterpriseDirectoryCursor{}, domain.ErrInvalidInput
 	}
 	return value, nil

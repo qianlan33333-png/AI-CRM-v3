@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -619,6 +620,14 @@ type response struct {
 	DepartmentUsers []struct {
 		UserID string `json:"userid"`
 	} `json:"dept_user"`
+	Departments []struct {
+		ID       int64 `json:"id"`
+		ParentID int64 `json:"parentid"`
+	} `json:"department_id"`
+	Users []struct {
+		UserID string `json:"userid"`
+		Name   string `json:"name"`
+	} `json:"userlist"`
 	ErrCode     json.RawMessage `json:"errcode"`
 	AccessToken string          `json:"access_token"`
 	UserID      string          `json:"UserId"`
@@ -2097,47 +2106,224 @@ func (client *Client) EnterpriseDirectoryReady() bool {
 	return client != nil && client.Ready() && !invalid(client.config.Secret)
 }
 
-// ListEnterpriseEmployeeIDs reads one bounded page from WeCom's corporate
-// directory. It is provider-read only and returns only employee IDs; display
-// names require the separate ReadEnterpriseEmployee call.
-func (client *Client) ListEnterpriseEmployeeIDs(ctx context.Context, cursor string, limit int) (wecomport.EnterpriseEmployeeIDPage, error) {
-	if !client.EnterpriseDirectoryReady() || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 50 {
-		return wecomport.EnterpriseEmployeeIDPage{}, wecomport.ErrDirectoryDisabled
+// ListEnterpriseEmployees reads the application-visible corporate directory
+// through the read-only department/simplelist + user/simplelist APIs. The
+// newer user/list_id endpoint is not universally granted to the existing
+// application credential, so this adapter deliberately uses the standard
+// member-reading APIs and returns a failure rather than a partial directory.
+func (client *Client) ListEnterpriseEmployees(ctx context.Context) ([]wecomport.EnterpriseEmployee, error) {
+	if !client.EnterpriseDirectoryReady() {
+		return nil, wecomport.ErrDirectoryDisabled
 	}
-	readCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	readCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	token, err := client.accessToken(readCtx)
 	if err != nil {
-		return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(err)
+		return nil, classifyDirectoryReadError(err)
 	}
-	body, err := json.Marshal(map[string]any{"cursor": cursor, "limit": limit})
-	if err != nil {
-		return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(ErrResponse)
-	}
-	payload, err := client.requestJSON(readCtx, http.MethodPost, "/cgi-bin/user/list_id", url.Values{"access_token": {token}}, body)
-	if directoryTokenExpired(err) {
+	for attempt := 0; attempt < 2; attempt++ {
+		employees, readErr := client.listEnterpriseEmployees(readCtx, token)
+		if !directoryTokenExpired(readErr) {
+			if readErr != nil {
+				return nil, classifyDirectoryReadError(readErr)
+			}
+			return employees, nil
+		}
+		if attempt == 1 {
+			return nil, classifyDirectoryRefreshError(readErr)
+		}
 		token, err = client.refreshAccessToken(readCtx)
-		if err == nil {
-			payload, err = client.requestJSON(readCtx, http.MethodPost, "/cgi-bin/user/list_id", url.Values{"access_token": {token}}, body)
+		if err != nil {
+			return nil, classifyDirectoryRefreshError(err)
 		}
 	}
+	return nil, classifyDirectoryReadError(ErrUnavailable)
+}
+
+func (client *Client) listEnterpriseEmployees(ctx context.Context, token string) ([]wecomport.EnterpriseEmployee, error) {
+	departments, err := client.enterpriseDepartments(ctx, token)
 	if err != nil {
-		return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(err)
+		return nil, err
 	}
-	seen := make(map[string]struct{}, len(payload.DepartmentUsers))
-	page := wecomport.EnterpriseEmployeeIDPage{UserIDs: make([]string, 0, len(payload.DepartmentUsers)), NextCursor: strings.TrimSpace(payload.NextCursor)}
-	for _, item := range payload.DepartmentUsers {
-		userID := strings.TrimSpace(item.UserID)
-		if userID == "" || invalid(userID) || userID != item.UserID {
-			return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(ErrResponse)
+	scopes, err := enterpriseDirectoryScopes(departments)
+	if err != nil {
+		return nil, err
+	}
+	// Every visible connected component gets exactly one recursive read. A
+	// component rooted at department 0 and a component whose visible parent is
+	// absent are both legal Provider projections; using all component roots
+	// prevents an orphan branch from disappearing when a normal root is also
+	// present. Any cycle is rejected by enterpriseDirectoryScopes.
+	return client.enterpriseMembers(ctx, token, scopes)
+}
+
+func (client *Client) enterpriseDepartments(ctx context.Context, token string) ([]enterpriseDepartment, error) {
+	payload, err := client.request(ctx, "/cgi-bin/department/simplelist", url.Values{"access_token": {token}})
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Departments) == 0 || len(payload.Departments) > 500 {
+		return nil, ErrResponse
+	}
+	departments := make([]enterpriseDepartment, len(payload.Departments))
+	seen := make(map[int64]struct{}, len(payload.Departments))
+	for index, value := range payload.Departments {
+		if value.ID < 1 || value.ParentID < 0 {
+			return nil, ErrResponse
+		}
+		if _, duplicate := seen[value.ID]; duplicate {
+			return nil, ErrResponse
+		}
+		seen[value.ID] = struct{}{}
+		departments[index] = enterpriseDepartment{id: value.ID, parentID: value.ParentID}
+	}
+	return departments, nil
+}
+
+type enterpriseDepartment struct {
+	id       int64
+	parentID int64
+}
+
+func enterpriseDirectoryScopes(departments []enterpriseDepartment) ([]int64, error) {
+	byID := make(map[int64]enterpriseDepartment, len(departments))
+	for _, department := range departments {
+		byID[department.id] = department
+	}
+	// Resolve every returned department to exactly one visible component root.
+	// The root is either a normal parent_id=0 department or the highest visible
+	// department beneath a parent that the application is not allowed to see.
+	// A loop cannot be safely represented by user/simplelist and therefore
+	// fails the complete-directory contract instead of silently losing members.
+	roots := make(map[int64]struct{}, len(departments))
+	for _, start := range departments {
+		current := start
+		seen := make(map[int64]struct{}, len(departments))
+		for {
+			if _, cycle := seen[current.id]; cycle {
+				return nil, ErrResponse
+			}
+			seen[current.id] = struct{}{}
+			if current.parentID == 0 {
+				roots[current.id] = struct{}{}
+				break
+			}
+			parent, parentVisible := byID[current.parentID]
+			if !parentVisible {
+				roots[current.id] = struct{}{}
+				break
+			}
+			current = parent
+		}
+	}
+	if len(roots) == 0 || len(roots) > 500 {
+		return nil, ErrResponse
+	}
+	result := make([]int64, 0, len(roots))
+	for id := range roots {
+		result = append(result, id)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result, nil
+}
+
+func (client *Client) enterpriseMembers(ctx context.Context, token string, departmentIDs []int64) ([]wecomport.EnterpriseEmployee, error) {
+	if len(departmentIDs) == 0 || len(departmentIDs) > 500 {
+		return nil, classifyDirectoryReadError(ErrResponse)
+	}
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	pages := make([][]wecomport.EnterpriseEmployee, len(departmentIDs))
+	jobs := make(chan int)
+	workers := 4
+	if workers > len(departmentIDs) {
+		workers = len(departmentIDs)
+	}
+	var group sync.WaitGroup
+	var once sync.Once
+	var firstErr error
+	fail := func(err error) {
+		once.Do(func() {
+			firstErr = err
+			cancel()
+		})
+	}
+	for worker := 0; worker < workers; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				page, err := client.enterpriseDepartmentMembers(readCtx, token, departmentIDs[index])
+				if err != nil {
+					fail(err)
+					return
+				}
+				pages[index] = page
+			}
+		}()
+	}
+	for index := range departmentIDs {
+		select {
+		case <-readCtx.Done():
+		case jobs <- index:
+		}
+		if readCtx.Err() != nil {
+			break
+		}
+	}
+	close(jobs)
+	group.Wait()
+	if firstErr != nil || ctx.Err() != nil {
+		if firstErr != nil {
+			return nil, classifyDirectoryReadError(firstErr)
+		}
+		return nil, classifyDirectoryReadError(ErrUnavailable)
+	}
+	seen := make(map[string]struct{})
+	result := make([]wecomport.EnterpriseEmployee, 0)
+	for _, page := range pages {
+		for _, employee := range page {
+			if _, duplicate := seen[employee.UserID]; duplicate {
+				continue
+			}
+			seen[employee.UserID] = struct{}{}
+			result = append(result, employee)
+		}
+	}
+	if len(result) > 10000 {
+		return nil, classifyDirectoryReadError(ErrResponse)
+	}
+	// Provider ordering is not a pagination contract. Sorting the complete
+	// snapshot by exact employee userid makes the locally signed cursor stable
+	// across otherwise identical reads.
+	sort.Slice(result, func(i, j int) bool { return result[i].UserID < result[j].UserID })
+	return result, nil
+}
+
+func (client *Client) enterpriseDepartmentMembers(ctx context.Context, token string, departmentID int64) ([]wecomport.EnterpriseEmployee, error) {
+	values := url.Values{"access_token": {token}, "department_id": {strconv.FormatInt(departmentID, 10)}}
+	values.Set("fetch_child", "1")
+	payload, err := client.request(ctx, "/cgi-bin/user/simplelist", values)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Users) > 10000 {
+		return nil, ErrResponse
+	}
+	result := make([]wecomport.EnterpriseEmployee, 0, len(payload.Users))
+	seen := make(map[string]struct{}, len(payload.Users))
+	for _, value := range payload.Users {
+		userID, name := strings.TrimSpace(value.UserID), strings.TrimSpace(value.Name)
+		if userID == "" || userID != value.UserID || invalid(userID) || !validDisplayName(name) {
+			return nil, ErrResponse
 		}
 		if _, duplicate := seen[userID]; duplicate {
-			return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(ErrResponse)
+			return nil, ErrResponse
 		}
 		seen[userID] = struct{}{}
-		page.UserIDs = append(page.UserIDs, userID)
+		result = append(result, wecomport.EnterpriseEmployee{UserID: userID, DisplayName: name})
 	}
-	return page, nil
+	return result, nil
 }
 
 // ReadEnterpriseEmployee verifies one exact employee against the same

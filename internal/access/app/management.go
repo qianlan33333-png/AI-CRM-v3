@@ -200,20 +200,53 @@ func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Prin
 			}
 			return nil
 		}
-		byID := make(map[int64]domain.User, len(changes))
-		for _, change := range changes {
-			user, err := service.repository.UserByID(txContext, change.AdminUserID, true)
-			if err != nil {
-				return err
+		// Read first so a frozen full-panel payload does not lock unchanged or
+		// out-of-scope rows. Then lock only actual mutable targets in ascending
+		// ID order. This is compatible with transfer's actor-then-target order
+		// and avoids an admin stale panel waiting on the super row while a
+		// transfer waits on that administrator.
+		listed, err := service.repository.ListUsers(txContext)
+		if err != nil {
+			return err
+		}
+		currentByID := make(map[int64]domain.User, len(listed))
+		for _, user := range listed {
+			currentByID[user.ID] = user
+		}
+		mutable := make([]LoginAccessChange, 0, len(canonicalChanges))
+		for _, change := range canonicalChanges {
+			user, exists := currentByID[change.AdminUserID]
+			if !exists {
+				return domain.ErrNotFound
+			}
+			role, roleErr := domain.SingleRole(user.Roles)
+			if roleErr != nil {
+				return domain.ErrConflict
+			}
+			if user.Active == change.LoginEnabled {
+				continue
+			}
+			if !canManageTarget(actorRole, role) {
+				return domain.ErrPermissionDenied
+			}
+			mutable = append(mutable, change)
+		}
+		byID := make(map[int64]domain.User, len(mutable))
+		for _, change := range mutable {
+			user, readErr := service.repository.UserByID(txContext, change.AdminUserID, true)
+			if readErr != nil {
+				return readErr
 			}
 			byID[change.AdminUserID] = user
 		}
-		for _, change := range changes {
+		for _, change := range mutable {
 			user := byID[change.AdminUserID]
 			role, roleErr := domain.SingleRole(user.Roles)
 			if roleErr != nil {
 				return domain.ErrConflict
 			}
+			// Recheck after the row lock: concurrent role/access changes cannot
+			// turn a formerly permitted snapshot into an unauthorized mutation.
 			if user.Active == change.LoginEnabled {
 				continue
 			}

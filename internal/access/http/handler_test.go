@@ -236,7 +236,7 @@ func TestListUsersNeedsSessionButNotCSRFAndReturnsPublicFields(t *testing.T) {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, `"username":"employee"`) || strings.Contains(body, "password_hash") || strings.Contains(body, "digest") {
+	if !strings.Contains(body, `"username":"employee"`) || !strings.Contains(body, `"admin_user_id":2`) || strings.Contains(body, "password_hash") || strings.Contains(body, "digest") {
 		t.Fatalf("public list body=%q", body)
 	}
 }
@@ -299,7 +299,7 @@ func TestSafeNextPath(t *testing.T) {
 }
 
 func (testManagement) ListGovernance(_ context.Context, actor domain.Principal) (app.GovernanceListing, error) {
-	return app.GovernanceListing{Actor: app.GovernanceActor{AdminUserID: actor.InternalID, Role: domain.RoleSuperAdmin}, Users: []app.GovernanceUser{{UserSummary: app.UserSummary{ID: 2, Username: "employee", DisplayName: "Employee", Active: true, Roles: []domain.Role{domain.RoleViewer}}, Role: domain.RoleViewer, LoginEnabled: true}}}, nil
+	return app.GovernanceListing{Actor: app.GovernanceActor{AdminUserID: actor.InternalID, Role: domain.RoleSuperAdmin}, Users: []app.GovernanceUser{{UserSummary: app.UserSummary{ID: 2, Username: "employee", DisplayName: "Employee", Active: true, Roles: []domain.Role{domain.RoleViewer}}, AdminUserID: 2, Role: domain.RoleViewer, LoginEnabled: true}}}, nil
 }
 func (testManagement) ListEnterpriseEmployees(context.Context, domain.Principal, string, string, int) (app.EnterpriseEmployeeListing, error) {
 	return app.EnterpriseEmployeeListing{}, nil

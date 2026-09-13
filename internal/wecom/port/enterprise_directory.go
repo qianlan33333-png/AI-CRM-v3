@@ -19,20 +19,15 @@ type EnterpriseEmployee struct {
 	DisplayName string
 }
 
-// EnterpriseEmployeeIDPage is a bounded page from the application's visible
-// corporate directory. The cursor is supplied by WeCom and must be treated as
-// opaque by callers.
-type EnterpriseEmployeeIDPage struct {
-	UserIDs    []string
-	NextCursor string
-}
-
 // EnterpriseEmployeeDirectory is a read-only boundary for the application's
 // visible corporate employee scope. It deliberately does not reuse the
 // external-contact follow-user directory: that list is only a customer-owner
 // subset and cannot establish who may be granted CRM access.
 type EnterpriseEmployeeDirectory interface {
 	EnterpriseDirectoryReady() bool
-	ListEnterpriseEmployeeIDs(context.Context, string, int) (EnterpriseEmployeeIDPage, error)
+	// ListEnterpriseEmployees returns the complete application-visible
+	// enterprise directory. Implementations must bound their Provider work and
+	// fail instead of returning a partial list.
+	ListEnterpriseEmployees(context.Context) ([]EnterpriseEmployee, error)
 	ReadEnterpriseEmployee(context.Context, string) (EnterpriseEmployee, error)
 }
