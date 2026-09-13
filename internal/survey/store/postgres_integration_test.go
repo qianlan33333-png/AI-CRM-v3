@@ -339,6 +339,11 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 	if err != nil || mixed.Total != 3 || len(mixed.Items) != 2 || int64(mixed.Items[0].SubmissionID) != nativeSubmissionID || mixed.Items[0].SourceSystem != "aicrm_v3" || mixed.Items[0].SourceRecordID != fmt.Sprint(nativeSubmissionID) || mixed.Items[0].Legacy || mixed.Items[0].HistoricalUnionID != "" || mixed.Items[0].QuestionnaireSourceID != 41 || !mixed.Items[0].SubmittedAt.Equal(nativeAt) || string(mixed.Items[0].FinalTags) != `["native-tag"]` || mixed.Items[0].Answers[0].TextValue != "native protected answer" {
 		t.Fatalf("mixed first page=%+v err=%v", mixed, err)
 	}
+	mixedNext, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 2, Offset: 2})
+	if err != nil || mixedNext.Total != 3 || len(mixedNext.Items) != 1 || !mixedNext.Items[0].Legacy || !mixedNext.Items[0].SubmittedAt.Equal(now.Add(-2*time.Hour)) {
+		t.Fatalf("mixed second page=%+v err=%v", mixedNext, err)
+	}
+
 	// V1 uses an exclusive end watermark plus a descending keyset rather than
 	// an offset. A record committed after the first page with a submitted_at
 	// past that watermark cannot shift the next page or create a duplicate.
@@ -361,10 +366,6 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 		}
 	}
 
-	mixedNext, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 2, Offset: 2})
-	if err != nil || mixedNext.Total != 3 || len(mixedNext.Items) != 1 || !mixedNext.Items[0].Legacy || !mixedNext.Items[0].SubmittedAt.Equal(now.Add(-2*time.Hour)) {
-		t.Fatalf("mixed second page=%+v err=%v", mixedNext, err)
-	}
 	foreign, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: otherCustomerID, Limit: 100})
 	if err != nil || foreign.Total != 0 || len(foreign.Items) != 0 {
 		t.Fatalf("foreign customer native page=%+v err=%v", foreign, err)
