@@ -231,10 +231,25 @@ func (handler *CallbackAdminHandler) writePrincipal(request *http.Request) (acce
 	if err = principal.Validate(); err != nil {
 		return accessdomain.Principal{}, accessdomain.ErrAuthentication
 	}
-	if !principal.IsSuperAdmin() {
+	if !callbackAdminMayWrite(principal) {
 		return accessdomain.Principal{}, accessdomain.ErrPermissionDenied
 	}
 	return principal, nil
+}
+
+func callbackAdminMayWrite(principal accessdomain.Principal) bool {
+	if principal.Kind != accessdomain.KindAdmin {
+		return false
+	}
+	if principal.IsSuperAdmin() {
+		return true
+	}
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleAdmin {
+			return true
+		}
+	}
+	return false
 }
 
 func (handler *CallbackAdminHandler) writeError(response http.ResponseWriter, err error) {

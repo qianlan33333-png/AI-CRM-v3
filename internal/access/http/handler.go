@@ -41,12 +41,15 @@ type Authentication interface {
 
 type Management interface {
 	ListUsers(context.Context, domain.Principal) ([]app.UserSummary, error)
+	ListGovernance(context.Context, domain.Principal) (app.GovernanceListing, error)
+	ListEnterpriseEmployees(context.Context, domain.Principal, string, string, int) (app.EnterpriseEmployeeListing, error)
 	SetLoginAccess(context.Context, domain.Principal, string, []app.LoginAccessChange) ([]app.UserSummary, error)
-	AddUser(context.Context, domain.Principal, app.AddUserInput) (domain.User, error)
-	DisableUser(context.Context, domain.Principal, int64) error
-	BindWeComUserID(context.Context, domain.Principal, int64, string) error
-	ChangeRoles(context.Context, domain.Principal, int64, []domain.Role) error
-	ResetPassword(context.Context, domain.Principal, int64, string) error
+	ProvisionEnterpriseEmployee(context.Context, domain.Principal, app.ProvisionEnterpriseEmployeeInput) (domain.User, error)
+	SetGovernanceLoginEnabled(context.Context, domain.Principal, app.SetLoginEnabledInput) error
+	SetGovernanceRole(context.Context, domain.Principal, app.SetRoleInput) error
+	BindGovernanceWeComUserID(context.Context, domain.Principal, app.BindEnterpriseEmployeeInput) error
+	ResetGovernancePassword(context.Context, domain.Principal, app.ResetPasswordInput) error
+	TransferGovernanceSuperAdmin(context.Context, domain.Principal, app.TransferSuperAdminInput) error
 }
 
 type Config struct {
@@ -88,6 +91,12 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("POST /login", handler.login)
 	mux.HandleFunc("POST /logout", handler.logout)
 	mux.HandleFunc("GET /api/admin/access/users", handler.listUsers)
+	mux.HandleFunc("GET /api/admin/access/enterprise-employees", handler.listEnterpriseEmployees)
+	mux.HandleFunc("POST /api/admin/access/super-admin-transfer", handler.transferSuperAdmin)
+	mux.HandleFunc("PUT /api/admin/access/users/{id}/login-access", handler.setLoginEnabled)
+	mux.HandleFunc("PUT /api/admin/access/users/{id}/role", handler.setRole)
+	mux.HandleFunc("PUT /api/admin/access/users/{id}/wecom-userid", handler.bindWeCom)
+	mux.HandleFunc("PUT /api/admin/access/users/{id}/password", handler.resetPassword)
 	// The frozen PR09 AdminOps bundle calls this compatibility path. It stays
 	// access-owned so auth, CSRF, transactions, session fencing, and audits are
 	// identical to the canonical access API.
@@ -118,6 +127,7 @@ func (handler *Handler) adminAccess(response nethttp.ResponseWriter, request *ne
 			handler.writeAdminAccessError(response, request, err)
 			return
 		}
+		response.Header().Set("Cache-Control", "no-store")
 		writeJSON(response, nethttp.StatusOK, adminAccessRead(users))
 	case nethttp.MethodPut:
 		actor, payload, ok := handler.authorizedPayload(response, request)
@@ -231,12 +241,13 @@ func (handler *Handler) listUsers(response nethttp.ResponseWriter, request *neth
 		handler.writeError(response, request, err)
 		return
 	}
-	users, err := handler.management.ListUsers(request.Context(), actor)
+	listing, err := handler.management.ListGovernance(request.Context(), actor)
 	if err != nil {
 		handler.writeError(response, request, err)
 		return
 	}
-	writeJSON(response, nethttp.StatusOK, map[string]any{"ok": true, "users": users})
+	response.Header().Set("Cache-Control", "no-store")
+	writeJSON(response, nethttp.StatusOK, map[string]any{"ok": true, "actor": listing.Actor, "capabilities": listing.Capabilities, "users": listing.Users})
 }
 
 func (handler *Handler) loginPage(response nethttp.ResponseWriter, request *nethttp.Request) {
@@ -300,35 +311,80 @@ func (handler *Handler) logout(response nethttp.ResponseWriter, request *nethttp
 	nethttp.Redirect(response, request, "/login", nethttp.StatusSeeOther)
 }
 
+func (handler *Handler) listEnterpriseEmployees(response nethttp.ResponseWriter, request *nethttp.Request) {
+	actor, ok := handler.authenticatedActor(response, request)
+	if !ok {
+		return
+	}
+	limit := enterpriseLimit(request.URL.Query().Get("limit"))
+	if limit == 0 {
+		handler.writeError(response, request, domain.ErrInvalidInput)
+		return
+	}
+	listing, err := handler.management.ListEnterpriseEmployees(request.Context(), actor, request.URL.Query().Get("cursor"), request.URL.Query().Get("query"), limit)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	writeJSON(response, nethttp.StatusOK, map[string]any{"ok": true, "items": listing.Items, "next_cursor": listing.NextCursor, "has_more": listing.HasMore})
+}
+
 func (handler *Handler) addUser(response nethttp.ResponseWriter, request *nethttp.Request) {
 	actor, payload, ok := handler.authorizedPayload(response, request)
 	if !ok {
 		return
 	}
-	roles, err := parseRoles(payload["roles"])
-	if err != nil {
-		handler.writeError(response, request, err)
-		return
+	key, err := adminAccessIdempotencyKey(request)
+	if err == nil {
+		role, parseErr := parseGovernanceRole(payload["role"])
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			_, err = handler.management.ProvisionEnterpriseEmployee(request.Context(), actor, app.ProvisionEnterpriseEmployeeInput{WeComUserID: text(payload["wecom_userid"]), Role: role, IdempotencyKey: key})
+		}
 	}
-	user, err := handler.management.AddUser(request.Context(), actor, app.AddUserInput{
-		Username: text(payload["username"]), Password: text(payload["password"]),
-		DisplayName: text(payload["display_name"]), Roles: roles,
-	})
-	if err != nil {
-		handler.writeError(response, request, err)
-		return
-	}
-	writeJSON(response, nethttp.StatusCreated, publicUser(user))
+	handler.writeMutationResult(response, request, err)
 }
 
+// disableUser retains the old frozen POST path but applies the same CSRF,
+// idempotency and row-level governance policy as PUT login-access.
 func (handler *Handler) disableUser(response nethttp.ResponseWriter, request *nethttp.Request) {
+	handler.setLoginEnabledWithValue(response, request, false)
+}
+
+func (handler *Handler) setLoginEnabled(response nethttp.ResponseWriter, request *nethttp.Request) {
+	actor, payload, ok := handler.authorizedPayload(response, request)
+	if !ok {
+		return
+	}
+	key, err := adminAccessIdempotencyKey(request)
+	target, targetErr := targetID(request)
+	enabled, valid := payload["login_enabled"].(bool)
+	if err == nil && targetErr != nil {
+		err = targetErr
+	}
+	if err == nil && !valid {
+		err = domain.ErrInvalidInput
+	}
+	if err == nil {
+		err = handler.management.SetGovernanceLoginEnabled(request.Context(), actor, app.SetLoginEnabledInput{TargetID: target, LoginEnabled: enabled, IdempotencyKey: key})
+	}
+	handler.writeMutationResult(response, request, err)
+}
+
+func (handler *Handler) setLoginEnabledWithValue(response nethttp.ResponseWriter, request *nethttp.Request, enabled bool) {
 	actor, _, ok := handler.authorizedPayload(response, request)
 	if !ok {
 		return
 	}
-	target, err := targetID(request)
+	key, err := adminAccessIdempotencyKey(request)
+	target, targetErr := targetID(request)
+	if err == nil && targetErr != nil {
+		err = targetErr
+	}
 	if err == nil {
-		err = handler.management.DisableUser(request.Context(), actor, target)
+		err = handler.management.SetGovernanceLoginEnabled(request.Context(), actor, app.SetLoginEnabledInput{TargetID: target, LoginEnabled: enabled, IdempotencyKey: key})
 	}
 	handler.writeMutationResult(response, request, err)
 }
@@ -338,9 +394,13 @@ func (handler *Handler) bindWeCom(response nethttp.ResponseWriter, request *neth
 	if !ok {
 		return
 	}
-	target, err := targetID(request)
+	key, err := adminAccessIdempotencyKey(request)
+	target, targetErr := targetID(request)
+	if err == nil && targetErr != nil {
+		err = targetErr
+	}
 	if err == nil {
-		err = handler.management.BindWeComUserID(request.Context(), actor, target, text(payload["wecom_userid"]))
+		err = handler.management.BindGovernanceWeComUserID(request.Context(), actor, app.BindEnterpriseEmployeeInput{TargetID: target, WeComUserID: text(payload["wecom_userid"]), IdempotencyKey: key})
 	}
 	handler.writeMutationResult(response, request, err)
 }
@@ -350,13 +410,41 @@ func (handler *Handler) changeRoles(response nethttp.ResponseWriter, request *ne
 	if !ok {
 		return
 	}
-	target, err := targetID(request)
-	var roles []domain.Role
-	if err == nil {
-		roles, err = parseRoles(payload["roles"])
+	key, err := adminAccessIdempotencyKey(request)
+	target, targetErr := targetID(request)
+	roles, roleErr := parseRoles(payload["roles"])
+	role, singleErr := domain.SingleRole(roles)
+	if err == nil && targetErr != nil {
+		err = targetErr
+	}
+	if err == nil && roleErr != nil {
+		err = roleErr
+	}
+	if err == nil && singleErr != nil {
+		err = singleErr
 	}
 	if err == nil {
-		err = handler.management.ChangeRoles(request.Context(), actor, target, roles)
+		err = handler.management.SetGovernanceRole(request.Context(), actor, app.SetRoleInput{TargetID: target, Role: role, IdempotencyKey: key})
+	}
+	handler.writeMutationResult(response, request, err)
+}
+
+func (handler *Handler) setRole(response nethttp.ResponseWriter, request *nethttp.Request) {
+	actor, payload, ok := handler.authorizedPayload(response, request)
+	if !ok {
+		return
+	}
+	key, err := adminAccessIdempotencyKey(request)
+	target, targetErr := targetID(request)
+	role, roleErr := parseGovernanceRole(payload["role"])
+	if err == nil && targetErr != nil {
+		err = targetErr
+	}
+	if err == nil && roleErr != nil {
+		err = roleErr
+	}
+	if err == nil {
+		err = handler.management.SetGovernanceRole(request.Context(), actor, app.SetRoleInput{TargetID: target, Role: role, IdempotencyKey: key})
 	}
 	handler.writeMutationResult(response, request, err)
 }
@@ -366,11 +454,71 @@ func (handler *Handler) resetPassword(response nethttp.ResponseWriter, request *
 	if !ok {
 		return
 	}
-	target, err := targetID(request)
+	key, err := adminAccessIdempotencyKey(request)
+	target, targetErr := targetID(request)
+	if err == nil && targetErr != nil {
+		err = targetErr
+	}
 	if err == nil {
-		err = handler.management.ResetPassword(request.Context(), actor, target, text(payload["password"]))
+		err = handler.management.ResetGovernancePassword(request.Context(), actor, app.ResetPasswordInput{TargetID: target, Password: text(payload["password"]), IdempotencyKey: key})
 	}
 	handler.writeMutationResult(response, request, err)
+}
+
+func (handler *Handler) transferSuperAdmin(response nethttp.ResponseWriter, request *nethttp.Request) {
+	actor, payload, ok := handler.authorizedPayload(response, request)
+	if !ok {
+		return
+	}
+	key, err := adminAccessIdempotencyKey(request)
+	target, targetErr := positivePayloadID(payload["target_admin_user_id"])
+	if err == nil && targetErr != nil {
+		err = targetErr
+	}
+	if err == nil {
+		err = handler.management.TransferGovernanceSuperAdmin(request.Context(), actor, app.TransferSuperAdminInput{TargetID: target, IdempotencyKey: key})
+	}
+	handler.writeMutationResult(response, request, err)
+}
+
+func (handler *Handler) authenticatedActor(response nethttp.ResponseWriter, request *nethttp.Request) (domain.Principal, bool) {
+	var session string
+	if cookie, err := request.Cookie(SessionCookieName); err == nil {
+		session = cookie.Value
+	}
+	actor, err := handler.auth.Authenticate(request.Context(), session)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return domain.Principal{}, false
+	}
+	return actor, true
+}
+
+func enterpriseLimit(raw string) int {
+	if raw == "" {
+		return 50
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 50 {
+		return 0
+	}
+	return value
+}
+
+func parseGovernanceRole(value any) (domain.Role, error) {
+	role := domain.Role(text(value))
+	if role != domain.RoleAdmin && role != domain.RoleViewer {
+		return "", domain.ErrInvalidInput
+	}
+	return role, nil
+}
+
+func positivePayloadID(value any) (int64, error) {
+	number, valid := value.(float64)
+	if !valid || number < 1 || number != float64(int64(number)) {
+		return 0, domain.ErrInvalidInput
+	}
+	return int64(number), nil
 }
 
 func (handler *Handler) authorizedPayload(response nethttp.ResponseWriter, request *nethttp.Request) (domain.Principal, map[string]any, bool) {

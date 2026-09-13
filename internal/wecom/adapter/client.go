@@ -616,6 +616,9 @@ func (client *Client) sign(signedURL, ticket string) (wecom.JSSDKSignature, erro
 }
 
 type response struct {
+	DepartmentUsers []struct {
+		UserID string `json:"userid"`
+	} `json:"dept_user"`
 	ErrCode     json.RawMessage `json:"errcode"`
 	AccessToken string          `json:"access_token"`
 	UserID      string          `json:"UserId"`
@@ -2086,3 +2089,106 @@ func (client *Client) ReadGroupMembership(ctx context.Context, chatID string) (r
 	}
 	return result, nil
 }
+
+// EnterpriseDirectoryReady reports whether the normal application credential
+// can perform read-only corporate-directory calls. It is intentionally
+// separate from DirectoryReady, which uses the customer-contact secret.
+func (client *Client) EnterpriseDirectoryReady() bool {
+	return client != nil && client.Ready() && !invalid(client.config.Secret)
+}
+
+// ListEnterpriseEmployeeIDs reads one bounded page from WeCom's corporate
+// directory. It is provider-read only and returns only employee IDs; display
+// names require the separate ReadEnterpriseEmployee call.
+func (client *Client) ListEnterpriseEmployeeIDs(ctx context.Context, cursor string, limit int) (wecomport.EnterpriseEmployeeIDPage, error) {
+	if !client.EnterpriseDirectoryReady() || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 50 {
+		return wecomport.EnterpriseEmployeeIDPage{}, wecomport.ErrDirectoryDisabled
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	token, err := client.accessToken(readCtx)
+	if err != nil {
+		return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(err)
+	}
+	body, err := json.Marshal(map[string]any{"cursor": cursor, "limit": limit})
+	if err != nil {
+		return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(ErrResponse)
+	}
+	payload, err := client.requestJSON(readCtx, http.MethodPost, "/cgi-bin/user/list_id", url.Values{"access_token": {token}}, body)
+	if directoryTokenExpired(err) {
+		token, err = client.refreshAccessToken(readCtx)
+		if err == nil {
+			payload, err = client.requestJSON(readCtx, http.MethodPost, "/cgi-bin/user/list_id", url.Values{"access_token": {token}}, body)
+		}
+	}
+	if err != nil {
+		return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(err)
+	}
+	seen := make(map[string]struct{}, len(payload.DepartmentUsers))
+	page := wecomport.EnterpriseEmployeeIDPage{UserIDs: make([]string, 0, len(payload.DepartmentUsers)), NextCursor: strings.TrimSpace(payload.NextCursor)}
+	for _, item := range payload.DepartmentUsers {
+		userID := strings.TrimSpace(item.UserID)
+		if userID == "" || invalid(userID) || userID != item.UserID {
+			return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(ErrResponse)
+		}
+		if _, duplicate := seen[userID]; duplicate {
+			return wecomport.EnterpriseEmployeeIDPage{}, classifyDirectoryReadError(ErrResponse)
+		}
+		seen[userID] = struct{}{}
+		page.UserIDs = append(page.UserIDs, userID)
+	}
+	return page, nil
+}
+
+// ReadEnterpriseEmployee verifies one exact employee against the same
+// application-visible corporate directory. It never mutates WeCom or local
+// Access state.
+func (client *Client) ReadEnterpriseEmployee(ctx context.Context, userID string) (wecomport.EnterpriseEmployee, error) {
+	if !client.EnterpriseDirectoryReady() || invalid(userID) || strings.TrimSpace(userID) != userID {
+		return wecomport.EnterpriseEmployee{}, wecomport.ErrDirectoryDisabled
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	token, err := client.accessToken(readCtx)
+	if err != nil {
+		return wecomport.EnterpriseEmployee{}, classifyDirectoryReadError(err)
+	}
+	payload, err := client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {userID}})
+	if directoryTokenExpired(err) {
+		token, err = client.refreshAccessToken(readCtx)
+		if err == nil {
+			payload, err = client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {userID}})
+		}
+	}
+	if enterpriseEmployeeNotFound(err) {
+		return wecomport.EnterpriseEmployee{}, wecomport.ErrEnterpriseEmployeeNotFound
+	}
+	if err != nil {
+		return wecomport.EnterpriseEmployee{}, classifyDirectoryReadError(err)
+	}
+	returnedID, name := strings.TrimSpace(payload.UserIDLower), strings.TrimSpace(payload.Name)
+	if returnedID != userID || !validDisplayName(name) {
+		return wecomport.EnterpriseEmployee{}, classifyDirectoryReadError(ErrResponse)
+	}
+	return wecomport.EnterpriseEmployee{UserID: returnedID, DisplayName: name}, nil
+}
+
+func enterpriseEmployeeNotFound(cause error) bool {
+	var providerFailure *providerResponseError
+	if !errors.As(cause, &providerFailure) {
+		return false
+	}
+	// Both codes are documented/returned by user/get for an unknown member.
+	// They are safe to distinguish from credential, permission and transient
+	// failures, which remain unavailable.
+	return providerFailure.errCode == 40003 || providerFailure.errCode == 60111
+}
+
+func (client *Client) refreshAccessToken(ctx context.Context) (string, error) {
+	client.mu.Lock()
+	delete(client.tokens, "access_token")
+	client.mu.Unlock()
+	return client.accessToken(ctx)
+}
+
+var _ wecomport.EnterpriseEmployeeDirectory = (*Client)(nil)

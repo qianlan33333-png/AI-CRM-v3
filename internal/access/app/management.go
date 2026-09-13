@@ -16,10 +16,14 @@ import (
 )
 
 type Management struct {
-	repository accessport.Repository
-	uow        platformport.UnitOfWork
-	passwords  Passwords
-	now        func() time.Time
+	repository          accessport.Repository
+	uow                 platformport.UnitOfWork
+	passwords           Passwords
+	now                 func() time.Time
+	enterpriseDirectory EnterpriseEmployees
+	enterpriseCursorKey []byte
+	enterpriseCorpScope string
+	governanceKey       []byte
 }
 
 type BootstrapInput struct {
@@ -91,6 +95,9 @@ func (service *Management) Bootstrap(ctx context.Context, input BootstrapInput) 
 		if createErr != nil || !created {
 			return createErr
 		}
+		if err := service.repository.InitializeSuperAdminControl(txContext, user.ID, service.now().UTC()); err != nil {
+			return err
+		}
 		return service.audit(txContext, user.ID, user.ID, "bootstrap", map[string]any{"roles": user.Roles})
 	})
 	return user, created, err
@@ -127,11 +134,11 @@ func (service *Management) AddUser(ctx context.Context, actor domain.Principal, 
 }
 
 func (service *Management) ListUsers(ctx context.Context, actor domain.Principal) ([]UserSummary, error) {
-	if err := requireSuperAdmin(actor); err != nil {
-		return nil, err
-	}
 	var result []UserSummary
 	err := service.uow.Within(ctx, func(txContext context.Context) error {
+		if _, _, err := service.currentGovernanceActor(txContext, actor); err != nil {
+			return err
+		}
 		users, err := service.repository.ListUsers(txContext)
 		if err != nil {
 			return err
@@ -150,9 +157,6 @@ func (service *Management) ListUsers(ctx context.Context, actor domain.Principal
 // rotates its session version; true re-enables a previously disabled account.
 // The acting super-admin may not turn off their own access.
 func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Principal, idempotencyKey string, changes []LoginAccessChange) ([]UserSummary, error) {
-	if err := requireSuperAdmin(actor); err != nil {
-		return nil, err
-	}
 	if !validLoginAccessIdempotencyKey(idempotencyKey) || len(changes) == 0 || len(changes) > 200 {
 		return nil, domain.ErrInvalidInput
 	}
@@ -177,6 +181,10 @@ func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Prin
 
 	var result []UserSummary
 	err := service.uow.Within(ctx, func(txContext context.Context) error {
+		_, actorRole, err := service.currentGovernanceActor(txContext, actor)
+		if err != nil {
+			return err
+		}
 		reserved, err := service.repository.ReserveLoginAccessRequest(txContext, actor.InternalID, idempotencyKey, payloadDigest, service.now().UTC())
 		if err != nil {
 			return err
@@ -202,8 +210,15 @@ func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Prin
 		}
 		for _, change := range changes {
 			user := byID[change.AdminUserID]
+			role, roleErr := domain.SingleRole(user.Roles)
+			if roleErr != nil {
+				return domain.ErrConflict
+			}
 			if user.Active == change.LoginEnabled {
 				continue
+			}
+			if !canManageTarget(actorRole, role) {
+				return domain.ErrPermissionDenied
 			}
 			if err := service.repository.SetActive(txContext, user.ID, change.LoginEnabled, service.now().UTC()); err != nil {
 				return err

@@ -45,6 +45,63 @@ func (store *PostgreSQL) UserByWeComUserID(ctx context.Context, wecomUserID stri
 	return store.user(ctx, `WHERE u.wecom_userid = $1`, wecomUserID, lock)
 }
 
+func (*PostgreSQL) UsersByWeComUserIDs(ctx context.Context, values []string) ([]domain.User, error) {
+	if len(values) == 0 {
+		return []domain.User{}, nil
+	}
+	if len(values) > 50 {
+		return nil, domain.ErrInvalidInput
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			return nil, domain.ErrInvalidInput
+		}
+		if _, exists := seen[value]; exists {
+			return nil, domain.ErrInvalidInput
+		}
+		seen[value] = struct{}{}
+	}
+	database, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := database.Query(ctx, `
+		SELECT u.id, u.username, u.password_hash, u.display_name,
+			COALESCE(u.wecom_userid, ''), u.is_active, u.session_version,
+			u.last_login_at, u.created_at, u.updated_at, r.role_code
+		FROM admin_users u
+		JOIN admin_user_roles r ON r.admin_user_id=u.id
+		WHERE u.wecom_userid = ANY($1::text[])
+		ORDER BY u.id, r.role_code`, values)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := make([]domain.User, 0, len(values))
+	byID := make(map[int64]int, len(values))
+	for rows.Next() {
+		var user domain.User
+		var role domain.Role
+		if err = rows.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.DisplayName,
+			&user.WeComUserID, &user.Active, &user.SessionVersion, &user.LastLoginAt,
+			&user.CreatedAt, &user.UpdatedAt, &role); err != nil {
+			return nil, err
+		}
+		if index, exists := byID[user.ID]; exists {
+			users[index].Roles = append(users[index].Roles, role)
+			continue
+		}
+		user.Roles = []domain.Role{role}
+		byID[user.ID] = len(users)
+		users = append(users, user)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 func (*PostgreSQL) ListUsers(ctx context.Context) ([]domain.User, error) {
 	database, err := tx(ctx)
 	if err != nil {
@@ -487,4 +544,82 @@ func mapDatabaseError(err error) error {
 		return fmt.Errorf("%w: %s", domain.ErrConflict, databaseError.ConstraintName)
 	}
 	return err
+}
+
+func (*PostgreSQL) SuperAdminControl(ctx context.Context, lock bool) (domain.SuperAdminControl, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return domain.SuperAdminControl{}, err
+	}
+	query := `SELECT admin_user_id, version, updated_at FROM access_super_admin_control WHERE singleton = TRUE`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var control domain.SuperAdminControl
+	if err = database.QueryRow(ctx, query).Scan(&control.AdminUserID, &control.Version, &control.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.SuperAdminControl{}, domain.ErrNotFound
+		}
+		return domain.SuperAdminControl{}, err
+	}
+	return control, nil
+}
+
+func (*PostgreSQL) InitializeSuperAdminControl(ctx context.Context, adminUserID int64, now time.Time) error {
+	database, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	command, err := database.Exec(ctx, `INSERT INTO access_super_admin_control (singleton, admin_user_id, version, updated_at)
+		VALUES (TRUE, $1, 1, $2) ON CONFLICT (singleton) DO NOTHING`, adminUserID, now)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return domain.ErrConflict
+	}
+	return nil
+}
+
+func (*PostgreSQL) SetSuperAdminControl(ctx context.Context, adminUserID int64, now time.Time) error {
+	database, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	command, err := database.Exec(ctx, `UPDATE access_super_admin_control
+		SET admin_user_id = $1, version = version + 1, updated_at = $2 WHERE singleton = TRUE`, adminUserID, now)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (*PostgreSQL) ReserveGovernanceMutation(ctx context.Context, actorID int64, key, action string, targetID int64, digest [32]byte, now time.Time) (bool, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	command, err := database.Exec(ctx, `INSERT INTO admin_access_governance_receipts
+		(actor_admin_user_id, idempotency_key, action, target_admin_user_id, payload_digest, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (actor_admin_user_id, idempotency_key) DO NOTHING`, actorID, key, action, targetID, digest[:], now)
+	if err != nil {
+		return false, err
+	}
+	if command.RowsAffected() == 1 {
+		return true, nil
+	}
+	var storedAction string
+	var storedTarget int64
+	var storedDigest []byte
+	if err = database.QueryRow(ctx, `SELECT action, target_admin_user_id, payload_digest
+		FROM admin_access_governance_receipts WHERE actor_admin_user_id=$1 AND idempotency_key=$2`, actorID, key).Scan(&storedAction, &storedTarget, &storedDigest); err != nil {
+		return false, err
+	}
+	if storedAction != action || storedTarget != targetID || len(storedDigest) != len(digest) || string(storedDigest) != string(digest[:]) {
+		return false, domain.ErrConflict
+	}
+	return false, nil
 }

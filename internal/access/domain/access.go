@@ -120,10 +120,13 @@ type Principal struct {
 	Kind       Kind
 	InternalID int64
 	Roles      []Role
+	// SessionVersion is issued only after an authenticated Access session.
+	// Management rechecks it under lock before governed mutations.
+	SessionVersion int64
 }
 
 func (principal Principal) IsSuperAdmin() bool {
-	if principal.Kind != KindAdmin && principal.Kind != KindStaff {
+	if principal.Kind != KindAdmin {
 		return false
 	}
 	for _, role := range principal.Roles {
@@ -155,4 +158,21 @@ func NormalizeWeComUserID(value string) (string, error) {
 		return "", ErrInvalidInput
 	}
 	return value, nil
+}
+
+// SingleRole validates the mutually exclusive Access role model used by
+// governance mutations. Existing historical role rows are rejected by the
+// migration rather than silently choosing one during a normal request.
+func SingleRole(values []Role) (Role, error) {
+	roles, err := NormalizeRoles(values)
+	if err != nil || len(roles) != 1 {
+		return "", ErrInvalidInput
+	}
+	return roles[0], nil
+}
+
+type SuperAdminControl struct {
+	AdminUserID int64
+	Version     int64
+	UpdatedAt   time.Time
 }

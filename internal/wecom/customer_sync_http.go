@@ -41,7 +41,7 @@ func (handler CustomerSyncHTTPHandler) create(response nethttp.ResponseWriter, r
 		writeSyncError(response, err)
 		return
 	}
-	if !principal.IsSuperAdmin() {
+	if !customerSyncMayWrite(principal) {
 		writeSyncError(response, accessdomain.ErrPermissionDenied)
 		return
 	}
@@ -66,6 +66,21 @@ func (handler CustomerSyncHTTPHandler) create(response nethttp.ResponseWriter, r
 		status = nethttp.StatusOK
 	}
 	writeSyncJSON(response, status, map[string]any{"run": run, "replayed": replay})
+}
+
+func customerSyncMayWrite(principal accessdomain.Principal) bool {
+	if principal.Kind != accessdomain.KindAdmin {
+		return false
+	}
+	if principal.IsSuperAdmin() {
+		return true
+	}
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleAdmin {
+			return true
+		}
+	}
+	return false
 }
 
 func (handler CustomerSyncHTTPHandler) list(response nethttp.ResponseWriter, request *nethttp.Request) {

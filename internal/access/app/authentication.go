@@ -286,7 +286,7 @@ func (service *Authentication) Authenticate(ctx context.Context, sessionToken st
 		if err = service.repository.TouchSession(txContext, session.ID, now); err != nil {
 			return err
 		}
-		principal = domain.Principal{Kind: domain.KindAdmin, InternalID: session.User.ID, Roles: session.User.Roles}
+		principal = domain.Principal{Kind: domain.KindAdmin, InternalID: session.User.ID, Roles: session.User.Roles, SessionVersion: session.SessionVersion}
 		return nil
 	})
 	return principal, err
@@ -306,7 +306,7 @@ func (service *Authentication) AuthorizeCSRF(ctx context.Context, sessionToken, 
 		if !credential.Matches(csrfCookie, session.CSRFTokenDigest) || !credential.Matches(csrfRequest, session.CSRFTokenDigest) {
 			return domain.ErrCSRFRequired
 		}
-		principal = domain.Principal{Kind: domain.KindAdmin, InternalID: session.User.ID, Roles: session.User.Roles}
+		principal = domain.Principal{Kind: domain.KindAdmin, InternalID: session.User.ID, Roles: session.User.Roles, SessionVersion: session.SessionVersion}
 		return nil
 	})
 	return principal, err

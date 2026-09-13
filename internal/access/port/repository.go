@@ -14,6 +14,9 @@ type Repository interface {
 	UserByID(context.Context, int64, bool) (domain.User, error)
 	UserByUsername(context.Context, string, bool) (domain.User, error)
 	UserByWeComUserID(context.Context, string, bool) (domain.User, error)
+	// UsersByWeComUserIDs is a bounded Access-owned batch projection for an
+	// already provider-verified directory page. It never discovers employees.
+	UsersByWeComUserIDs(context.Context, []string) ([]domain.User, error)
 	ListUsers(context.Context) ([]domain.User, error)
 	CreateUser(context.Context, domain.User) (domain.User, error)
 	BootstrapUser(context.Context, domain.User) (domain.User, bool, error)
@@ -37,4 +40,11 @@ type Repository interface {
 	SaveLoginRateLimit(context.Context, domain.LoginRateLimit) error
 	AppendLoginAudit(context.Context, domain.LoginAudit) error
 	AppendAccessAudit(context.Context, domain.AccessAudit) error
+
+	// Governance state is Access-owned. Every method below is invoked inside
+	// the same UOW as role, session-version and audit changes.
+	SuperAdminControl(context.Context, bool) (domain.SuperAdminControl, error)
+	InitializeSuperAdminControl(context.Context, int64, time.Time) error
+	SetSuperAdminControl(context.Context, int64, time.Time) error
+	ReserveGovernanceMutation(context.Context, int64, string, string, int64, [32]byte, time.Time) (bool, error)
 }

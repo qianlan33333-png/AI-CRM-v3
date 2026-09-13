@@ -70,6 +70,19 @@ func (repo *memoryRepository) UserByWeComUserID(_ context.Context, wecomUserID s
 	}
 	return domain.User{}, domain.ErrNotFound
 }
+func (repo *memoryRepository) UsersByWeComUserIDs(_ context.Context, values []string) ([]domain.User, error) {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	result := make([]domain.User, 0, len(values))
+	for _, user := range repo.users {
+		if _, ok := seen[user.WeComUserID]; ok {
+			result = append(result, user)
+		}
+	}
+	return result, nil
+}
 func (repo *memoryRepository) ListUsers(context.Context) ([]domain.User, error) {
 	result := make([]domain.User, 0, len(repo.users))
 	for _, user := range repo.users {
@@ -125,7 +138,7 @@ func TestSetLoginAccessIsAtomicAtTheAccessBoundaryAndFencesDisabledSessions(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor := domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	actor := domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}, SessionVersion: 1}
 	users, err := service.SetLoginAccess(context.Background(), actor, "access-1", []LoginAccessChange{{AdminUserID: 2, LoginEnabled: false}})
 	if err != nil || len(users) != 2 || repository.users[2].Active || repository.users[2].SessionVersion != 8 {
 		t.Fatalf("users=%+v stored=%+v err=%v", users, repository.users[2], err)
@@ -303,7 +316,7 @@ func TestAdminCannotEscalatePrivileges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor := domain.Principal{Kind: domain.KindAdmin, InternalID: 2, Roles: []domain.Role{domain.RoleAdmin}}
+	actor := domain.Principal{Kind: domain.KindAdmin, InternalID: 2, Roles: []domain.Role{domain.RoleAdmin}, SessionVersion: 1}
 	_, err = service.AddUser(context.Background(), actor, AddUserInput{
 		Username: "new-user", Password: "a-valid-password", DisplayName: "New", Roles: []domain.Role{domain.RoleSuperAdmin},
 	})
@@ -398,19 +411,21 @@ func TestLoginWithWeComUserIDUnknownDisabledSuccessAndSessionVersion(t *testing.
 	}
 }
 
-func TestListUsersRequiresSuperAdminAndReturnsOnlyPublicShape(t *testing.T) {
+func TestListUsersAllowsActiveAdminAndReturnsOnlyPublicShape(t *testing.T) {
 	repository := newMemoryRepository()
 	repository.users[1] = domain.User{ID: 1, Username: "operator", PasswordHash: "never-return-this",
 		DisplayName: "Operator", Active: true, SessionVersion: 2, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	repository.users[2] = domain.User{ID: 2, Username: "admin-user", PasswordHash: "never-return-this",
+		DisplayName: "Admin", Active: true, SessionVersion: 1, Roles: []domain.Role{domain.RoleAdmin}}
 	service, err := NewManagement(repository, testUOW{}, testPasswords{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.ListUsers(context.Background(), domain.Principal{Kind: domain.KindAdmin, InternalID: 2, Roles: []domain.Role{domain.RoleAdmin}}); !errors.Is(err, domain.ErrPermissionDenied) {
-		t.Fatalf("admin list error = %v", err)
+	if users, listErr := service.ListUsers(context.Background(), domain.Principal{Kind: domain.KindAdmin, InternalID: 2, Roles: []domain.Role{domain.RoleAdmin}, SessionVersion: 1}); listErr != nil || len(users) != 2 {
+		t.Fatalf("admin list users=%#v err=%v", users, listErr)
 	}
-	users, err := service.ListUsers(context.Background(), domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}})
-	if err != nil || len(users) != 1 {
+	users, err := service.ListUsers(context.Background(), domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}, SessionVersion: 2})
+	if err != nil || len(users) != 2 {
 		t.Fatalf("users=%#v err=%v", users, err)
 	}
 	payload, _ := json.Marshal(users)
@@ -430,4 +445,20 @@ func TestAddUserMapsPasswordPolicyFailureToInvalidInput(t *testing.T) {
 	if !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("password policy error = %v", err)
 	}
+}
+
+func (repo *memoryRepository) SuperAdminControl(_ context.Context, _ bool) (domain.SuperAdminControl, error) {
+	for _, user := range repo.users {
+		if user.Active && len(user.Roles) == 1 && user.Roles[0] == domain.RoleSuperAdmin {
+			return domain.SuperAdminControl{AdminUserID: user.ID, Version: 1, UpdatedAt: testNow}, nil
+		}
+	}
+	return domain.SuperAdminControl{}, domain.ErrNotFound
+}
+func (*memoryRepository) InitializeSuperAdminControl(context.Context, int64, time.Time) error {
+	return nil
+}
+func (*memoryRepository) SetSuperAdminControl(context.Context, int64, time.Time) error { return nil }
+func (repo *memoryRepository) ReserveGovernanceMutation(_ context.Context, actorID int64, key, action string, targetID int64, digest [32]byte, _ time.Time) (bool, error) {
+	return repo.ReserveLoginAccessRequest(context.Background(), actorID, "governance:"+action+":"+key+":"+fmt.Sprint(targetID), digest, testNow)
 }

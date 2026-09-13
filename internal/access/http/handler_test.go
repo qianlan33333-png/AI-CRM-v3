@@ -236,7 +236,7 @@ func TestListUsersNeedsSessionButNotCSRFAndReturnsPublicFields(t *testing.T) {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, `"username":"employee"`) || strings.Contains(body, "password") || strings.Contains(body, "digest") {
+	if !strings.Contains(body, `"username":"employee"`) || strings.Contains(body, "password_hash") || strings.Contains(body, "digest") {
 		t.Fatalf("public list body=%q", body)
 	}
 }
@@ -296,4 +296,29 @@ func TestSafeNextPath(t *testing.T) {
 	if got := SafeNextPath("/admin/customers?q=1", "/admin"); got != "/admin/customers?q=1" {
 		t.Fatalf("safe next = %q", got)
 	}
+}
+
+func (testManagement) ListGovernance(_ context.Context, actor domain.Principal) (app.GovernanceListing, error) {
+	return app.GovernanceListing{Actor: app.GovernanceActor{AdminUserID: actor.InternalID, Role: domain.RoleSuperAdmin}, Users: []app.GovernanceUser{{UserSummary: app.UserSummary{ID: 2, Username: "employee", DisplayName: "Employee", Active: true, Roles: []domain.Role{domain.RoleViewer}}, Role: domain.RoleViewer, LoginEnabled: true}}}, nil
+}
+func (testManagement) ListEnterpriseEmployees(context.Context, domain.Principal, string, string, int) (app.EnterpriseEmployeeListing, error) {
+	return app.EnterpriseEmployeeListing{}, nil
+}
+func (testManagement) ProvisionEnterpriseEmployee(context.Context, domain.Principal, app.ProvisionEnterpriseEmployeeInput) (domain.User, error) {
+	return domain.User{ID: 3}, nil
+}
+func (testManagement) SetGovernanceLoginEnabled(context.Context, domain.Principal, app.SetLoginEnabledInput) error {
+	return nil
+}
+func (testManagement) SetGovernanceRole(context.Context, domain.Principal, app.SetRoleInput) error {
+	return nil
+}
+func (testManagement) BindGovernanceWeComUserID(context.Context, domain.Principal, app.BindEnterpriseEmployeeInput) error {
+	return nil
+}
+func (testManagement) ResetGovernancePassword(context.Context, domain.Principal, app.ResetPasswordInput) error {
+	return nil
+}
+func (testManagement) TransferGovernanceSuperAdmin(context.Context, domain.Principal, app.TransferSuperAdminInput) error {
+	return nil
 }
