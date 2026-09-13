@@ -13,8 +13,11 @@ func TestRuntimeCatalogRetainsTwelveLegacyCategoriesAndReferencePresence(t *test
 	if len(catalog) != 12 || catalog[0].Key != "wecom_base" || catalog[11].Key != "wechat_oauth" {
 		t.Fatalf("catalog categories=%#v", catalog)
 	}
-	var secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES, generationKey, generationEndpoint bool
+	var secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES, generationKey, generationEndpoint, accessManaged bool
 	for _, category := range catalog {
+		if category.Key == "admin_access" {
+			accessManaged = category.ManagedURL == "/admin/config/login-access"
+		}
 		for _, field := range category.Fields {
 			switch field.Key {
 			case "WECOM_SECRET":
@@ -38,7 +41,7 @@ func TestRuntimeCatalogRetainsTwelveLegacyCategoriesAndReferencePresence(t *test
 			}
 		}
 	}
-	if !secretConfigured || !apiBase || !workerLimit || !scopeBound || !shopAppSecret || !shopToken || shopAES || !generationKey || !generationEndpoint {
-		t.Fatalf("catalog presence/field mapping secret=%t apiBase=%t worker=%t scope=%t shop app/token/aes=%t/%t/%t generation=%t/%t", secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES, generationKey, generationEndpoint)
+	if !secretConfigured || !apiBase || !workerLimit || !scopeBound || !shopAppSecret || !shopToken || shopAES || !generationKey || !generationEndpoint || !accessManaged {
+		t.Fatalf("catalog presence/field mapping secret=%t apiBase=%t worker=%t scope=%t shop app/token/aes=%t/%t/%t generation=%t/%t access_managed=%t", secretConfigured, apiBase, workerLimit, scopeBound, shopAppSecret, shopToken, shopAES, generationKey, generationEndpoint, accessManaged)
 	}
 }

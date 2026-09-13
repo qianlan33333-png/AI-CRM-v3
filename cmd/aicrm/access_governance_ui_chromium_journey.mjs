@@ -37,9 +37,23 @@ async function login(cdp, user) {
   const response = await fetch(`${baseURL}/login`, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: initialCookies.map((item) => item.split(";", 1)[0]).join("; ") }, body: form });
   if (response.status !== 303) throw new Error(`${user} login status=${response.status}`);
   for (const raw of cookiesFrom(response)) { const [pair] = raw.split(";", 1); const separator = pair.indexOf("="); if (separator < 1) continue; await cdp.call("Network.setCookie", { url: baseURL, name: pair.slice(0, separator), value: pair.slice(separator + 1), secure: true }); }
-  await cdp.call("Page.navigate", { url: `${baseURL}/admin/config/login-access?journey_as=${encodeURIComponent(user)}` });
-  await waitFor(cdp, `location.pathname === '/admin/config/login-access' && location.search.includes('journey_as=${user}') && Boolean(document.querySelector('[data-admin-access-root]'))`, `${user} did not reach Access UI`);
+}
+async function waitForAccessUI(cdp, user) {
+  await waitFor(cdp, `location.pathname === '/admin/config/login-access' && Boolean(document.querySelector('[data-admin-access-root]'))`, `${user} did not reach Access UI`);
   await waitFor(cdp, "!document.querySelector('#admin-access-loading') || document.querySelector('#admin-access-loading').hidden", `${user} Access UI did not finish loading`);
+}
+async function openAccessFromConfig(cdp, user) {
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin/config` });
+  await waitFor(cdp, "location.pathname === '/admin/config' && Boolean(document.querySelector('[data-runtime-release-host]')) && Boolean(document.querySelector('[data-category-row=\"admin_access\"] a.cc-btn'))", `${user} Config center did not render the backend access link`);
+  const target = await evaluate(cdp, "document.querySelector('[data-category-row=\"admin_access\"] a.cc-btn')?.getAttribute('href')");
+  if (target !== "/admin/config/login-access") throw new Error(`${user} Config center access link=${target}`);
+  await evaluate(cdp, "document.querySelector('[data-category-row=\"admin_access\"] a.cc-btn').click(); true");
+  await waitForAccessUI(cdp, user);
+}
+async function openLegacyAccess(cdp, user) {
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin/admin-access?journey_as=${encodeURIComponent(user)}` });
+  await waitFor(cdp, `location.pathname === '/admin/config/login-access' && location.search.includes('journey_as=${user}')`, `${user} legacy access URL did not canonicalize`);
+  await waitForAccessUI(cdp, user);
 }
 async function screenshot(cdp, width, filename) {
   await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -58,6 +72,8 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("CDP page connection failed")), { once: true }); });
   cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
   await login(cdp, "super");
+  await openAccessFromConfig(cdp, "super");
+  await openLegacyAccess(cdp, "super");
   await waitFor(cdp, "document.querySelector('#admin-access-provision')?.hidden === false && document.querySelector('#admin-access-super')?.hidden === false && document.querySelector('#admin-access-super-title')?.textContent.includes('超级管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('SuperFixtureID')", "super controls or bound enterprise identity did not render");
   if (!await evaluate(cdp, "(() => { const row=[...document.querySelectorAll('#admin-access-users-body tr')].find((item) => item.textContent.includes('SuperFixtureID')); const value=row?.querySelector('td[data-label=\"最近登录\"]')?.textContent.trim() || ''; return /^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(value); })()")) throw new Error("last login was not rendered as a Shanghai business time");
   await screenshot(cdp, 1440, "access-governance-1440.png");
@@ -93,6 +109,7 @@ try {
   await evaluate(cdp, "document.querySelector('#admin-access-provision-submit').click(); true");
   await waitFor(cdp, "document.querySelector('#admin-access-alert')?.textContent.includes('员工已开通') && document.querySelector('#admin-access-users-body')?.textContent.includes('SecondCandidateID') && document.querySelector('#admin-access-provision-submit')?.disabled === false", "second continuous provisioning did not restore its submit control");
   await login(cdp, "admin");
+  await openAccessFromConfig(cdp, "admin");
   await waitFor(cdp, "document.querySelector('#admin-access-provision')?.hidden === false", "admin viewer-provision action was not rendered from server capability");
   const opened = await evaluate(cdp, "(() => { const button=document.querySelector('#admin-access-users-body button[data-access-action=\"manage\"]'); if (!button) return false; button.click(); return true; })()");
   if (!opened) { const state = await evaluate(cdp, "({rows:document.querySelector('#admin-access-users-body')?.textContent || '',notice:document.querySelector('#admin-access-no-permission')?.hidden})"); throw new Error(`admin did not receive a server-authorized management row ${JSON.stringify(state)}`); }
@@ -106,6 +123,7 @@ try {
   await evaluate(cdp, "document.querySelector('#admin-access-drawer-actions button[data-access-action=\"toggle-login\"]').click(); true");
   await waitFor(cdp, "document.querySelector('#admin-access-alert')?.textContent.includes('已启用') && document.querySelector('#admin-access-drawer-actions button[data-access-action=\"toggle-login\"]')?.disabled === false", "second login-state action did not restore its control");
   await login(cdp, "super");
+  await openAccessFromConfig(cdp, "super");
   await evaluate(cdp, "document.querySelector('#admin-access-transfer').click(); true");
   await waitFor(cdp, "document.querySelector('#admin-access-transfer-dialog')?.hidden === false && document.querySelector('#admin-access-transfer-target')?.options.length > 0", "super transfer confirmation did not render");
   if (!await evaluate(cdp, "document.querySelector('#admin-access-transfer-target')?.selectedOptions[0]?.textContent.includes('AdminFixtureID')")) throw new Error("super transfer did not offer the active administrator as its exact target");
@@ -118,6 +136,7 @@ try {
   // login. Its DOM may offer only viewer provisioning and viewer login state;
   // it must never recover super-only controls from the prior page session.
   await login(cdp, "super");
+  await openAccessFromConfig(cdp, "super");
   await waitFor(cdp, "document.querySelector('#admin-access-super-title')?.textContent.includes('管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('AdminFixtureID') && document.querySelector('#admin-access-transfer')?.hidden === true && document.querySelector('#admin-access-provision')?.hidden === false", "former super did not read back as administrator after a fresh login");
   await evaluate(cdp, "document.querySelector('#admin-access-provision').click(); true");
   await waitFor(cdp, "document.querySelector('#admin-access-provision-dialog')?.hidden === false && document.querySelector('#admin-access-employee-results')?.textContent.length > 0", "administrator provisioning dialog did not render");
@@ -130,11 +149,13 @@ try {
   // The transfer target receives super controls only after it starts a new
   // session. Check the unique top card and the privileged drawer separately.
   await login(cdp, "admin");
+  await openAccessFromConfig(cdp, "admin");
   await waitFor(cdp, "document.querySelector('#admin-access-super-title')?.textContent.includes('管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('AdminFixtureID') && document.querySelector('#admin-access-transfer')?.hidden === false && document.querySelector('#admin-access-provision')?.hidden === false", "transfer target did not read back as the unique super administrator after a fresh login");
   const newOwnerManage = await evaluate(cdp, "(() => { const row=[...document.querySelectorAll('#admin-access-users-body tr')].find((item) => item.textContent.includes('SuperFixtureID')); const button=row?.querySelector('button[data-access-action=\"manage\"]'); if (!button) return false; button.click(); return true; })()");
   if (!newOwnerManage) throw new Error("new super administrator could not manage the former owner");
   await waitFor(cdp, "document.querySelector('#admin-access-drawer')?.hidden === false && document.querySelector('#admin-access-role-panel')?.hidden === false && document.querySelector('#admin-access-advanced-panel')?.hidden === false && document.querySelector('#admin-access-binding-form')?.hidden === false && document.querySelector('#admin-access-password-form')?.hidden === false", "new super administrator did not receive the expected privileged DOM controls");
   await login(cdp, "viewer");
+  await openAccessFromConfig(cdp, "viewer");
   await sleep(100);
   const viewerState = await evaluate(cdp, "(() => ({noPermissionHidden:document.querySelector('#admin-access-no-permission')?.hidden, listErrorHidden:document.querySelector('#admin-access-list-error')?.hidden, listError:document.querySelector('#admin-access-list-error-message')?.textContent || '', provisionHidden:document.querySelector('#admin-access-provision')?.hidden, rows:document.querySelector('#admin-access-users-body')?.textContent || '', actions:[...document.querySelectorAll('#admin-access-users-body button[data-access-action]')].map((button) => ({action:button.dataset.accessAction,id:button.dataset.userId}))}))()");
   await waitFor(cdp, "document.querySelector('#admin-access-list-error')?.hidden === false && document.querySelector('#admin-access-list-error-message')?.textContent.includes('权限')", `viewer permission-denied state was not rendered ${JSON.stringify(viewerState)}`);

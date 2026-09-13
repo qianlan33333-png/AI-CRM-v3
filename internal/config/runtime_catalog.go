@@ -66,7 +66,7 @@ func RuntimeCatalog(statuses ...map[string]bool) []RuntimeCategory {
 			secret("WECOM_CALLBACK_AES_KEY", "回调 EncodingAESKey", "回调", "environment://AICRM_WECOM_CALLBACK_AES_KEY"),
 			secret("WECOM_ARCHIVE_SECRET", "会话存档 Secret", "会话存档", "environment://AICRM_WECOM_MESSAGE_ARCHIVE_SECRET"),
 		}},
-		{Key: "admin_access", Label: "后台访问", Group: "后台安全", ManagedURL: "/admin/admin-access", Fields: []RuntimeField{}},
+		{Key: "admin_access", Label: "后台访问", Group: "后台安全", ManagedURL: "/admin/config/login-access", Fields: []RuntimeField{}},
 		{Key: "sidebar_identity", Label: "侧边栏与身份", Group: "后台安全", Fields: []RuntimeField{
 			field(configport.SidebarContextTokenTTLSeconds, "侧边栏 Context Token 有效期（秒）", "基础信息", "number", "restart"),
 			secret("AICRM_SIDEBAR_JSSDK_SECRET", "企微 JSSDK 密钥", "企微 JSSDK", "environment://AICRM_WECOM_SECRET"),
