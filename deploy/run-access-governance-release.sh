@@ -6,12 +6,14 @@ set -euo pipefail
 mode="${1:-dry-run}"
 archive="${2:-}"
 release_sha="${3:-}"
+access_home="${AICRM_ACCESS_HOME:-/opt/aicrm}"
+runtime_env="${AICRM_ACCESS_RUNTIME_ENV:-/etc/aicrm/aicrm.env}"
 [[ $# -le 3 ]] || { echo "this one-time Access release does not accept a CI run number" >&2; exit 2; }
 [[ "$mode" == dry-run || "$mode" == apply || "$mode" == replay-check ]] || { echo "usage: $0 [dry-run|apply|replay-check] /tmp/aicrm-<sha>.tar.gz <sha>" >&2; exit 2; }
 [[ "$release_sha" =~ ^[0-9a-f]{40}$ && "$archive" == "/tmp/aicrm-${release_sha}.tar.gz" && -f "$archive" ]] || { echo "invalid release archive or sha" >&2; exit 2; }
-[[ $EUID -eq 0 && -r /etc/aicrm/aicrm.env ]] || { echo "root and the protected aicrm runtime environment are required" >&2; exit 3; }
+[[ $EUID -eq 0 && -r "$runtime_env" ]] || { echo "root and the protected aicrm runtime environment are required" >&2; exit 3; }
 
-stage="$(mktemp -d "/opt/aicrm/.access-governance-${release_sha}.XXXXXX")"
+stage="$(mktemp -d "${access_home}/.access-governance-${release_sha}.XXXXXX")"
 cleanup_stage() { rm -rf -- "$stage"; }
 trap cleanup_stage EXIT
 tar -xzf "$archive" -C "$stage"
@@ -32,8 +34,8 @@ test -f "$stage/migrations/0152_access_login_grants.sql"
 # This file is provisioned as root: source it only to pass the database URL to
 # the aicrm-owned command, never print it or export it to a log.
 set -a
-# shellcheck source=/etc/aicrm/aicrm.env
-source /etc/aicrm/aicrm.env
+# shellcheck disable=SC1090
+source "$runtime_env"
 set +a
 [[ -n "${AICRM_DATABASE_URL:-}" ]] || { echo "database URL is not configured" >&2; exit 3; }
 
@@ -49,7 +51,7 @@ if [[ "$mode" == replay-check ]]; then
   exit 0
 fi
 
-release_lock=/opt/aicrm/install-release.lock
+release_lock="$access_home/install-release.lock"
 exec 9>"$release_lock"
 flock -n 9 || { echo "another release holds the host lock" >&2; exit 15; }
 [[ "$(readlink -f "/proc/$$/fd/9")" == "$(readlink -f "$release_lock")" ]] || { echo "release lock fd is not the expected inode" >&2; exit 15; }
