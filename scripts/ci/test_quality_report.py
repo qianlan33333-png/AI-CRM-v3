@@ -1,5 +1,9 @@
 import unittest
 from unittest.mock import patch
+import argparse
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -24,6 +28,17 @@ def pages(*runs):
 
 
 class QualityReportTests(unittest.TestCase):
+    def _attempt_api(self, path):
+        if "/runs/4/attempts/1/jobs" in path:
+            return {"total_count": 1, "jobs": [{"name": "check", "status": "completed", "conclusion": "success"}]}
+        if "/runs/4/attempts/1" in path:
+            return {**run(4, OLD, "2026-01-01T00:00:01Z"), "status": "completed", "conclusion": "success"}
+        raise AssertionError(path)
+
+    @staticmethod
+    def _pull():
+        return {"created_at": "2026-01-01T00:00:00Z", "head": {"sha": FRESH}}
+
     def test_receipt_preserves_multiple_observations(self):
         data = quality_report.receipt("backend", ["checkout=success", "setup=success"], "failure", "cancelled")
         self.assertEqual(data["observations"], ["assertion_or_verification_failure", "cancelled"])
@@ -116,6 +131,60 @@ class QualityReportTests(unittest.TestCase):
                 quality_report, "attempt_record", return_value={"verification": "success"}) as record:
             quality_report.final_pr_attempt(REPO, PR, pull)
         record.assert_called_once_with(REPO, 9, 3, pr=PR, head=FRESH)
+
+    def test_history_keeps_confirmed_old_first_when_new_head_has_no_run(self):
+        old = run(4, OLD, "2026-01-01T00:00:01Z")
+        def api(path):
+            return self._pull() if path.endswith(f"pulls/{PR}") else self._attempt_api(path)
+        def listed(path):
+            return pages() if "head_sha=" in path else pages(old)
+        with patch.object(quality_report, "gh_api", side_effect=api), patch.object(quality_report, "gh_pages", side_effect=listed):
+            first, current_first, final, head, history = quality_report.history_records(REPO, PR)
+        self.assertEqual(first["head_sha"], OLD)
+        self.assertEqual(current_first["verification"], "unknown")
+        self.assertEqual(final["verification"], "unknown")
+        self.assertEqual(head, FRESH)
+        self.assertEqual(history, "partial")
+
+    def test_history_keeps_fresh_final_when_first_attempt_api_fails(self):
+        old, fresh = run(4, OLD, "2026-01-01T00:00:01Z"), run(9, FRESH, "2026-01-02T00:00:01Z")
+        def api(path):
+            if path.endswith(f"pulls/{PR}"):
+                return self._pull()
+            if "/runs/4/attempts/1" in path:
+                raise OSError("first attempt API unavailable")
+            if "/runs/9/attempts/1/jobs" in path:
+                return {"total_count": 1, "jobs": [{"name": "check", "status": "completed", "conclusion": "success"}]}
+            if "/runs/9/attempts/1" in path:
+                return {**fresh, "status": "completed", "conclusion": "success"}
+            raise AssertionError(path)
+        def listed(path):
+            return pages(fresh) if "head_sha=" in path else pages(old, fresh)
+        with patch.object(quality_report, "gh_api", side_effect=api), patch.object(quality_report, "gh_pages", side_effect=listed):
+            first, current_first, final, head, history = quality_report.history_records(REPO, PR)
+        self.assertEqual(first["verification"], "unknown")
+        self.assertEqual(current_first["verification"], "success")
+        self.assertEqual(final["verification"], "success")
+        self.assertEqual(head, FRESH)
+        self.assertEqual(history, "partial")
+
+    def test_inspect_and_summary_keep_the_same_partial_history(self):
+        old = run(4, OLD, "2026-01-01T00:00:01Z")
+        def api(path):
+            return self._pull() if path.endswith(f"pulls/{PR}") else self._attempt_api(path)
+        def listed(path):
+            return pages() if "head_sha=" in path else pages(old)
+        with tempfile.TemporaryDirectory() as directory:
+            summary_path = Path(directory) / "summary.json"
+            summary_args = argparse.Namespace(repo=REPO, pr=PR, head=OLD, run_id=10, run_attempt=1,
+                                              needs=json.dumps({"check": {"result": "success"}}), out=summary_path)
+            with patch.object(quality_report, "gh_api", side_effect=api), patch.object(quality_report, "gh_pages", side_effect=listed):
+                quality_report.emit_summary(summary_args)
+            with patch.object(quality_report, "gh_api", side_effect=api), patch.object(quality_report, "gh_pages", side_effect=listed), contextlib.redirect_stdout(io.StringIO()) as stdout:
+                quality_report.emit_inspect(argparse.Namespace(repo=REPO, pr=PR))
+            summary, inspected = json.loads(summary_path.read_text()), json.loads(stdout.getvalue())
+        for field in ("history", "current_head_sha", "first_attempt", "current_head_first_attempt", "final_attempt", "counts"):
+            self.assertEqual(summary[field], inspected[field])
 
     def test_attempt_record_keeps_completed_lifecycle_and_conclusion_separate(self):
         with patch.object(quality_report, "gh_api", side_effect=[

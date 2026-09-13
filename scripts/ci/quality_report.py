@@ -337,13 +337,43 @@ def unknown_history_record() -> dict[str, Any]:
     return {"verification": "unknown", "history": "unavailable_or_incomplete", "workflow_lifecycle": "unknown", "workflow_conclusion": "not_available"}
 
 
-def history_records(repo: str, pr: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str | None]:
-    pull = gh_api(f"repos/{repo}/pulls/{pr}")
-    if not isinstance(pull, dict): raise ValueError("pull request response is invalid")
-    first = first_pr_attempt(repo, pr, pull)
-    current_first = current_head_first_attempt(repo, pr, pull)
-    current_head, final = final_pr_attempt(repo, pr, pull)
-    return first, current_first, final, current_head
+def history_records(repo: str, pr: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str | None, str]:
+    """Read independent PR observations without erasing confirmed evidence.
+
+    The pull read is the only shared prerequisite.  Once it has established a
+    current head, a missing new-head run must not turn a confirmed old first
+    attempt into unknown, and a first-attempt API error must not hide a fresh
+    final attempt.
+    """
+    try:
+        pull = gh_api(f"repos/{repo}/pulls/{pr}")
+        if not isinstance(pull, dict):
+            raise ValueError("pull request response is invalid")
+        current_head, _ = _pull_head(pull)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        unknown = unknown_history_record()
+        return unknown, unknown, unknown, None, "unknown"
+
+    first, current_first, final = unknown_history_record(), unknown_history_record(), unknown_history_record()
+    confirmed = 0
+    try:
+        first = first_pr_attempt(repo, pr, pull)
+        confirmed += 1
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pass
+    try:
+        current_first = current_head_first_attempt(repo, pr, pull)
+        confirmed += 1
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pass
+    try:
+        final_head, final = final_pr_attempt(repo, pr, pull)
+        if final_head != current_head:
+            raise ValueError("final attempt returned a stale pull-request head")
+        confirmed += 1
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pass
+    return first, current_first, final, current_head, "available" if confirmed == 3 else "partial" if confirmed else "unknown"
 
 
 def step_summary(data: dict[str, Any]) -> None:
@@ -373,10 +403,7 @@ def emit_receipt(args: argparse.Namespace) -> int:
 
 def emit_summary(args: argparse.Namespace) -> int:
     needs, current = json.loads(args.needs), current_attempt(args.repo, args.run_id, args.run_attempt, args.head, json.loads(args.needs))
-    try:
-        first, current_first, final, current_head = history_records(args.repo, args.pr); history = "available"
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-        first = current_first = final = unknown_history_record(); current_head, history = None, "unknown"
+    first, current_first, final, current_head, history = history_records(args.repo, args.pr)
     data = {"schema": 1, "repository": args.repo, "pull_request": args.pr, "reported_head_sha": args.head, "current_head_sha": current_head,
             "history": history, "source": source_snapshot(), "first_attempt": first, "current_head_first_attempt": current_first,
             "final_attempt": final, "current_run_snapshot": current, "lanes": lane_summary(needs)}
@@ -385,10 +412,7 @@ def emit_summary(args: argparse.Namespace) -> int:
 
 
 def emit_inspect(args: argparse.Namespace) -> int:
-    try:
-        first, current_first, final, current_head = history_records(args.repo, args.pr); history = "available"
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-        first = current_first = final = unknown_history_record(); current_head, history = None, "unknown"
+    first, current_first, final, current_head, history = history_records(args.repo, args.pr)
     data = {"schema": 1, "repository": args.repo, "pull_request": args.pr, "history": history, "current_head_sha": current_head,
             "first_attempt": first, "current_head_first_attempt": current_first, "final_attempt": final}
     data["counts"] = one_pr_counts(first, final, current_first)

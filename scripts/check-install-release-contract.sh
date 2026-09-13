@@ -3,7 +3,12 @@ set -euo pipefail
 
 installer="deploy/install-release.sh"
 ci_workflow=".github/workflows/ci.yml"
+quality_lanes="scripts/ci/quality_lanes.py"
 release_builder="scripts/run-donor-view-consumers.sh"
+canonical_backend_full_go_test() {
+  grep -qF 'scripts/ci/quality_lanes.py backend' "$ci_workflow" &&
+    grep -qF '"go", "test", "-p", "1", "-race", "-count=1", "./..."' "$quality_lanes"
+}
 start_line="$(grep -nE '^if ! systemctl enable aicrm-effects-worker\.service \|\| ! systemctl restart aicrm-effects-worker\.service; then$' "$installer" | cut -d: -f1)"
 test -n "$start_line" || { echo "effects worker enable and restart must be rollback guarded" >&2; exit 1; }
 exit_line="$(grep -nE '^  exit 8$' "$installer" | cut -d: -f1)"
@@ -152,7 +157,7 @@ grep -qx 'test -x "$release_dir/bin/migrate-commerce-history"' "$installer" || {
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history' "$release_builder" || { echo "CI must build the commerce history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-message-archive"' "$installer" || { echo "release must reject a missing message archive migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-message-archive ./cmd/migrate-message-archive' "$release_builder" || { echo "CI must build the message archive migration tool" >&2; exit 1; }
-grep -qF 'go test -p 1 -race -count=1 ./...' .github/workflows/ci.yml || { echo "CI must test the message archive migration command" >&2; exit 1; }
+canonical_backend_full_go_test || { echo "CI must test the message archive migration command through the canonical backend lane" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-order-attribution"' "$installer" || { echo "release must include order history attribution tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution' "$release_builder" || { echo "CI must build the order history attribution tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0047_automation_operations_migration.sql"' "$installer" || { echo "release must require Automation Operations migration schema" >&2; exit 1; }
@@ -173,7 +178,7 @@ grep -qx 'test -x "$release_dir/bin/migrate-v2-commerce-external-push-history"' 
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-commerce-external-push-history ./cmd/migrate-v2-commerce-external-push-history' "$release_builder" || { echo "CI must build commerce external-push history tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-open-platform"' "$installer" || { echo "release must include Open Platform history tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-open-platform ./cmd/migrate-open-platform' "$release_builder" || { echo "CI must build the Open Platform history tool" >&2; exit 1; }
-grep -qF 'go test -p 1 -race -count=1 ./...' .github/workflows/ci.yml || { echo "CI must test the Open Platform history tool" >&2; exit 1; }
+canonical_backend_full_go_test || { echo "CI must test the Open Platform history tool through the canonical backend lane" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-media-legacy-materials"' "$installer" || { echo "release must include legacy Media mapping migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials' "$release_builder" || { echo "CI must build the legacy Media mapping migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
@@ -188,7 +193,7 @@ grep -qx 'test -x "$release_dir/bin/migrate-sidebar-history"' "$installer" || { 
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-history ./cmd/migrate-sidebar-history' "$release_builder" || { echo "release workflow must build sidebar history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-owner-handoff-history"' "$installer" || { echo "release must include owner handoff history migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-owner-handoff-history ./cmd/migrate-owner-handoff-history' "$release_builder" || { echo "release workflow must build owner handoff history migration tool" >&2; exit 1; }
-grep -qF 'go test -p 1 -race -count=1 ./...' .github/workflows/ci.yml || { echo "CI must test owner handoff history migration command" >&2; exit 1; }
+canonical_backend_full_go_test || { echo "CI must test owner handoff history migration command through the canonical backend lane" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/bootstrap-automation-operations"' "$installer" || { echo "release must include Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations' "$release_builder" || { echo "CI must build Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qxF 'ExecStart=/opt/aicrm/current/bin/bootstrap-automation-operations' deploy/aicrm-automation-bootstrap.service || { echo "Automation Operations bootstrap unit must execute the release binary" >&2; exit 1; }
