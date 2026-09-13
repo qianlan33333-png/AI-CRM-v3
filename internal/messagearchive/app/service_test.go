@@ -83,6 +83,18 @@ type storeStub struct {
 	staffIDs         []int64
 }
 
+type v1StoreStub struct {
+	storeStub
+	v1Page  archiveport.V1ChatRecordPage
+	v1Query archiveport.V1ChatRecordQuery
+	v1Err   error
+}
+
+func (s *v1StoreStub) V1ChatRecords(_ context.Context, query archiveport.V1ChatRecordQuery) (archiveport.V1ChatRecordPage, error) {
+	s.v1Query = query
+	return s.v1Page, s.v1Err
+}
+
 func (s *storeStub) CommittedCursor(context.Context, string) (uint64, error) { return s.cursor, nil }
 func (s *storeStub) StartRun(context.Context, SyncRun) (int64, error)        { return 1, nil }
 func (s *storeStub) CommitBatch(_ context.Context, b Batch) (BatchResult, error) {
@@ -215,6 +227,27 @@ func TestExternalCustomerMessagesUsesCanonicalLineageAndTrustedIdentity(t *testi
 	if _, err = service.ExternalCustomerMessages(context.Background(), archiveport.ExternalChatRecordQuery{CustomerID: 1, ChatScene: "private", StartAt: time.Unix(1, 0).UTC(), Limit: 20}); !errors.Is(err, archiveport.ErrNotReady) {
 		t.Fatalf("missing trusted external identity err=%v", err)
 	}
+}
+
+func TestV1ChatRecordsUsesCanonicalLineageAndFailsClosedForMissingStaffProjection(t *testing.T) {
+	store := &v1StoreStub{v1Page: archiveport.V1ChatRecordPage{Items: []archiveport.V1ChatRecord{{MessageID: "archive-message", SourceSystem: "message_archive", SourceRecordID: "7", StaffIDs: []int64{1}}}}}
+	service := serviceFor(&readerStub{}, &store.storeStub)
+	service.Store = store
+	service.Lineage = lineageStub{}
+	page, err := service.V1ChatRecords(context.Background(), archiveport.V1ChatRecordQuery{CustomerID: 1, EndAt: time.Unix(100, 0).UTC(), Limit: 20})
+	if err != nil || len(page.Items) != 1 || len(page.Items[0].Staff) != 1 || page.Items[0].Staff[0].DisplayName != "员工" || len(store.v1Query.CustomerIDs) != 1 || store.v1Query.CustomerIDs[0] != 1 {
+		t.Fatalf("page=%+v query=%+v err=%v", page, store.v1Query, err)
+	}
+	service.StaffDirectory = missingStaffDirectory{}
+	if _, err = service.V1ChatRecords(context.Background(), archiveport.V1ChatRecordQuery{CustomerID: 1, EndAt: time.Unix(100, 0).UTC(), Limit: 20}); !errors.Is(err, archiveport.ErrNotReady) {
+		t.Fatalf("missing staff projection error=%v", err)
+	}
+}
+
+type missingStaffDirectory struct{}
+
+func (missingStaffDirectory) MessageArchiveStaff(context.Context, []int64) ([]accessport.MessageArchiveStaff, error) {
+	return []accessport.MessageArchiveStaff{}, nil
 }
 
 func TestCustomerMessageStaffLookupDeduplicatesAcrossMessages(t *testing.T) {

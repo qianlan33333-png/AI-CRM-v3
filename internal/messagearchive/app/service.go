@@ -596,3 +596,75 @@ func (service Service) recordBlockedIssue(ctx context.Context, issue IngestIssue
 		return service.Store.RecordBlockedIssue(tx, service.CorpScope, issue, service.now().UTC())
 	})
 }
+
+// V1ChatRecords is a local-only, canonical-lineage projection for the Open
+// Platform Chat capability. The Provider is never contacted and media bytes
+// remain inside MessageArchive. A missing dependency is returned as an error,
+// never converted to an empty page.
+func (service Service) V1ChatRecords(ctx context.Context, query archiveport.V1ChatRecordQuery) (archiveport.V1ChatRecordPage, error) {
+	if !service.ReadEnabled || service.Lineage == nil || service.Store == nil || service.StaffDirectory == nil || service.UOW == nil || query.CustomerID < 1 ||
+		(query.ChatType != "" && query.ChatType != "private" && query.ChatType != "group") || query.StaffUserID < 0 ||
+		(query.SourceSystem != "" && query.SourceSystem != "message_archive") || strings.TrimSpace(query.SourceRecordID) != query.SourceRecordID || len(query.SourceRecordID) > 128 ||
+		strings.TrimSpace(query.MessageID) != query.MessageID || len(query.MessageID) > 512 ||
+		query.Limit < 1 || query.Limit > 20 || query.EndAt.IsZero() || query.EndAt.Location() != time.UTC ||
+		(!query.StartAt.IsZero() && query.StartAt.Location() != time.UTC) || (!query.StartAt.IsZero() && !query.StartAt.Before(query.EndAt)) ||
+		(query.BeforeOccurredAt.IsZero() != (query.BeforeMessageID == 0)) || query.BeforeMessageID < 0 {
+		return archiveport.V1ChatRecordPage{}, archiveport.ErrNotReady
+	}
+	store, ok := service.Store.(interface {
+		V1ChatRecords(context.Context, archiveport.V1ChatRecordQuery) (archiveport.V1ChatRecordPage, error)
+	})
+	if !ok || store == nil {
+		return archiveport.V1ChatRecordPage{}, archiveport.ErrNotReady
+	}
+	var page archiveport.V1ChatRecordPage
+	err := service.UOW.Within(ctx, func(tx context.Context) error {
+		lineage, lineageErr := service.Lineage.CanonicalLineage(tx, query.CustomerID)
+		if lineageErr != nil {
+			return lineageErr
+		}
+		query.CustomerIDs = lineage
+		readPage, readErr := store.V1ChatRecords(tx, query)
+		if readErr != nil {
+			return readErr
+		}
+		if enrichErr := service.populateV1ChatStaff(tx, &readPage); enrichErr != nil {
+			return enrichErr
+		}
+		page = readPage
+		return nil
+	})
+	return page, err
+}
+
+func (service Service) populateV1ChatStaff(ctx context.Context, page *archiveport.V1ChatRecordPage) error {
+	if page == nil || len(page.Items) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0)
+	for _, item := range page.Items {
+		ids = append(ids, item.StaffIDs...)
+	}
+	staff, err := service.readStaffDirectory(ctx, ids)
+	if err != nil {
+		return err
+	}
+	byID := make(map[int64]string, len(staff))
+	for _, item := range staff {
+		byID[item.ID] = item.DisplayName
+	}
+	for index := range page.Items {
+		page.Items[index].Staff = page.Items[index].Staff[:0]
+		for _, id := range page.Items[index].StaffIDs {
+			name, found := byID[id]
+			if !found || strings.TrimSpace(name) == "" {
+				// Archive staff IDs are durable Access foreign keys. Returning a
+				// record with an empty staff list would disguise a failed local
+				// projection as a real participant-free conversation.
+				return archiveport.ErrNotReady
+			}
+			page.Items[index].Staff = append(page.Items[index].Staff, archiveport.StaffOption{ID: id, DisplayName: name})
+		}
+	}
+	return nil
+}
