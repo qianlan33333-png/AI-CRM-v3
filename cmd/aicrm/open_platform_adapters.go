@@ -23,6 +23,7 @@ import (
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
@@ -63,25 +64,38 @@ type openPlatformSurveyIdentityReader interface {
 }
 
 type openPlatformExecutor struct {
-	identity        identityport.Resolver
-	externalUsers   openPlatformExternalUserIDReader
-	orders          orderport.Query
-	scopedOrders    orderport.CustomerScopedQuery
-	profiles        customerport.SidebarProfileService
-	archive         archiveport.CustomerMessageReader
-	externalChat    archiveport.ExternalChatRecordReader
-	radarLinks      radarport.ExternalLinkMappingReader
-	survey          surveyport.ExternalSubmissionReader
-	surveyAliases   openPlatformSurveyIdentityReader
-	timeline        customerport.CustomerTimelineReader
-	owners          wecomport.AudiencePrimaryOwnerReader
-	scopes          openPlatformIdentityScopes
-	activities      *openPlatformActivityReaders
-	activityNow     func() time.Time
-	operationAudit  *openPlatformOperationAuditor
-	aiMachineIntake aiassistantport.MachineTransactionalIntake
-	aiMachineReader aiassistantport.MachineReader
-	aiUOW           platformport.UnitOfWork
+	identity         identityport.Resolver
+	externalUsers    openPlatformExternalUserIDReader
+	orders           orderport.Query
+	scopedOrders     orderport.CustomerScopedQuery
+	profiles         customerport.SidebarProfileService
+	archive          archiveport.CustomerMessageReader
+	externalChat     archiveport.ExternalChatRecordReader
+	radarLinks       radarport.ExternalLinkMappingReader
+	survey           surveyport.ExternalSubmissionReader
+	surveyAliases    openPlatformSurveyIdentityReader
+	timeline         customerport.CustomerTimelineReader
+	owners           wecomport.AudiencePrimaryOwnerReader
+	scopes           openPlatformIdentityScopes
+	activities       *openPlatformActivityReaders
+	activityNow      func() time.Time
+	operationAudit   *openPlatformOperationAuditor
+	aiMachineIntake  aiassistantport.MachineTransactionalIntake
+	aiMachineReader  aiassistantport.MachineReader
+	aiUOW            platformport.UnitOfWork
+	v1Orders         orderport.ExternalReadQueryService
+	v1Refunds        paymentport.ExternalOrderRefundReader
+	v1OrderCursorKey []byte
+	v1OrderUOW       platformport.UnitOfWork
+}
+
+func (executor *openPlatformExecutor) BindV1Orders(orders orderport.ExternalReadQueryService, refunds paymentport.ExternalOrderRefundReader, uow platformport.UnitOfWork, signingKey []byte) error {
+	if executor == nil || orders == nil || refunds == nil || uow == nil || len(signingKey) < 16 {
+		return errOpenPlatformRouteUnavailable
+	}
+	executor.v1Orders, executor.v1Refunds, executor.v1OrderCursorKey = orders, refunds, append([]byte(nil), signingKey...)
+	executor.v1OrderUOW = uow
+	return nil
 }
 
 func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
@@ -1648,8 +1662,37 @@ type openPlatformIdentityAdapter struct {
 	resolver     identityport.Resolver
 	values       identityport.ExternalIdentityValueReader
 	directory    identityport.DirectoryIdentityReader
+	machineFacts identityport.MachineIdentityFactReader
 	machineAudit openPlatformMachineAuditWriter
 	uow          platformport.UnitOfWork
+}
+
+func (adapter openPlatformIdentityAdapter) MachineIdentityFacts(ctx context.Context, customerID customerdomain.CustomerID) ([]identityport.MachineIdentityFact, error) {
+	if adapter.machineFacts == nil || adapter.uow == nil {
+		return nil, errors.New("machine identity facts unavailable")
+	}
+	var facts []identityport.MachineIdentityFact
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		facts, e = adapter.machineFacts.MachineIdentityFacts(tx, customerID)
+		return e
+	})
+	return facts, err
+}
+func (adapter openPlatformIdentityAdapter) MachineIdentityFactsForMachine(ctx context.Context, customerID customerdomain.CustomerID, principal accessdomain.MachinePrincipal) ([]identityport.MachineIdentityFact, error) {
+	if principal.ClientRecord < 1 || adapter.machineAudit == nil {
+		return nil, errors.New("machine identity audit unavailable")
+	}
+	var facts []identityport.MachineIdentityFact
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		facts, e = adapter.machineFacts.MachineIdentityFacts(tx, customerID)
+		if e != nil {
+			return e
+		}
+		return adapter.machineAudit.AppendMachineAudit(tx, accessdomain.MachineAudit{MachineClientID: principal.ClientRecord, Action: "machine_sensitive_read", Outcome: "open_platform_identity_read", Details: []byte(`{"field":"identity_facts"}`), CreatedAt: time.Now().UTC()})
+	})
+	return facts, err
 }
 
 func (adapter openPlatformIdentityAdapter) Resolve(ctx context.Context, reference identitydomain.Reference) (identityport.ResolveResult, error) {
@@ -1706,7 +1749,7 @@ func (adapter openPlatformIdentityAdapter) RevealPhoneForMachine(ctx context.Con
 		return adapter.machineAudit.AppendMachineAudit(tx, accessdomain.MachineAudit{
 			MachineClientID: principal.ClientRecord,
 			Action:          "machine_sensitive_read",
-			Outcome:         "external_questionnaire_submissions",
+			Outcome:         "open_platform_identity_read",
 			Details:         []byte(`{"field":"phone"}`),
 			CreatedAt:       time.Now().UTC(),
 		})
@@ -1717,3 +1760,4 @@ func (adapter openPlatformIdentityAdapter) RevealPhoneForMachine(ctx context.Con
 var _ identityport.Resolver = openPlatformIdentityAdapter{}
 var _ openPlatformExternalUserIDReader = openPlatformIdentityAdapter{}
 var _ openPlatformSurveyIdentityReader = openPlatformIdentityAdapter{}
+var _ identityport.MachineIdentityFactReader = openPlatformIdentityAdapter{}

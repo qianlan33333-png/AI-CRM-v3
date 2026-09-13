@@ -987,7 +987,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	// Questionnaire history has one frozen donor Open Platform scope. Do not
 	// infer it from the broader set of configured UnionID integrations.
 	openPlatformScopes.SurveyUnionScopes = distinctScopes([]string{"wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}, "wechat-open-platform:")
-	openPlatformIdentities := openPlatformIdentityAdapter{resolver: oneID, values: queries, directory: queries, machineAudit: accessRepository, uow: uow}
+	openPlatformIdentities := openPlatformIdentityAdapter{resolver: oneID, values: queries, directory: queries, machineFacts: queries, machineAudit: accessRepository, uow: uow}
 	openPlatformExecutor, err := newOpenPlatformExecutor(openPlatformIdentities, orderService, sidebarProfiles, archiveService, openPlatformTimeline, openPlatformOwnerAdapter{uow: uow, reader: customerProfileStore}, openPlatformScopes)
 	if err != nil {
 		return fail(err)
@@ -999,6 +999,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	if err = openPlatformExecutor.BindV1CustomerActivities(surveySubmissions, radarQuery, cursorSigningKey); err != nil {
+		return fail(err)
+	}
+	if err = openPlatformExecutor.BindV1Orders(orderRepository, paymentRepository, uow, cursorSigningKey); err != nil {
 		return fail(err)
 	}
 	if err = openPlatformExecutor.BindV1OperationAudit(accessRepository, uow); err != nil {
