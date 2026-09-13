@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	"time"
 )
 
 // Historical refreshes never create intents. Each new source run must prove a
@@ -26,7 +27,7 @@ func (r *Repository) historyDeltaReceipt(ctx context.Context, kind string, id, b
 	return mapError(e)
 }
 func (r *Repository) importPaymentDelta(ctx context.Context, old, in domain.Payment, digest [32]byte, run string, key [32]byte) (domain.Payment, error) {
-	if !old.Historical || old.EffectID != "" || old.OrderID != in.OrderID || old.Provider != in.Provider || old.MerchantOrderNo != in.MerchantOrderNo || old.PayerIdentityID != in.PayerIdentityID || old.PayerCustomerID != in.PayerCustomerID || old.BeneficiaryCustomerID != in.BeneficiaryCustomerID || old.AmountMinor != in.AmountMinor || old.Currency != in.Currency || old.Channel != in.Channel || !old.CreatedAt.Equal(in.CreatedAt) || in.UpdatedAt.Before(old.UpdatedAt) || old.Status != in.Status || (old.ProviderTransactionDigest != "" && old.ProviderTransactionDigest != in.ProviderTransactionDigest) {
+	if !old.Historical || old.EffectID != "" || old.OrderID != in.OrderID || old.Provider != in.Provider || old.MerchantOrderNo != in.MerchantOrderNo || old.PayerIdentityID != in.PayerIdentityID || old.PayerCustomerID != in.PayerCustomerID || old.BeneficiaryCustomerID != in.BeneficiaryCustomerID || old.AmountMinor != in.AmountMinor || old.Currency != in.Currency || old.Channel != in.Channel || !old.CreatedAt.Equal(in.CreatedAt) || in.UpdatedAt.Before(old.UpdatedAt) || old.Status != in.Status || !samePaidConfirmation(old.PaidConfirmedAt, in.PaidConfirmedAt) || (old.ProviderTransactionDigest != "" && old.ProviderTransactionDigest != in.ProviderTransactionDigest) {
 		return domain.Payment{}, paymentport.ErrConflict
 	}
 	t, e := tx(ctx)
@@ -67,4 +68,11 @@ func (r *Repository) importRefundDelta(ctx context.Context, old, in domain.Refun
 		return domain.Refund{}, mapError(e)
 	}
 	return r.GetRefund(ctx, old.ID, false)
+}
+
+func samePaidConfirmation(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.UTC().Equal(right.UTC())
 }

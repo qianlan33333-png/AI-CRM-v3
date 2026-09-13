@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -67,11 +69,20 @@ type Service struct {
 	store  Store
 	events productport.EventAppender
 	sales  productport.SalesSummaryReader
+	policy productPolicyWriter
 	now    func() time.Time
 }
 
 func NewService(uow platformport.UnitOfWork, store Store, events productport.EventAppender) *Service {
 	return &Service{uow: uow, store: store, events: events, now: time.Now}
+}
+
+func (s *Service) SetDistributionPolicyWriter(writer distributionport.ProductPolicyService) error {
+	if s == nil || writer == nil {
+		return ErrUnavailable
+	}
+	s.policy = writer
+	return nil
 }
 
 func (s *Service) SetSalesSummaryReader(reader productport.SalesSummaryReader) error {
@@ -247,6 +258,10 @@ func (s *Service) Create(ctx context.Context, command productport.CreateCommand)
 	if IsServicePeriodProjection(command.LegacyAdminProjection) {
 		return productport.Product{}, ErrInvalidProduct
 	}
+	policy, err := normalizedDistributionPolicy(command.DistributionPolicy, true)
+	if err != nil {
+		return productport.Product{}, err
+	}
 	if !ready(s) {
 		return productport.Product{}, ErrUnavailable
 	}
@@ -290,6 +305,11 @@ func (s *Service) Create(ctx context.Context, command productport.CreateCommand)
 		if !validProduct(result) {
 			return ErrUnavailable
 		}
+		if s.policy != nil {
+			if e = saveDistributionPolicyWithin(tx, s.policy, result.ID, distributiondomain.ProductTypeStandard, policy, command.Actor, command.IdempotencyKey); e != nil {
+				return e
+			}
+		}
 		snapshot, e := snapshotJSON(result)
 		if e != nil {
 			return e
@@ -321,6 +341,10 @@ func (s *Service) Create(ctx context.Context, command productport.CreateCommand)
 // legacy compatibility projection intentionally remain outside this contract.
 func (s *Service) Update(ctx context.Context, command productport.UpdateCommand) (productport.Product, error) {
 	command, digest, err := normalizeUpdate(command)
+	policy, policyErr := normalizedDistributionPolicy(command.DistributionPolicy, false)
+	if policyErr != nil {
+		return productport.Product{}, policyErr
+	}
 	if err != nil || !ready(s) {
 		if err != nil {
 			return productport.Product{}, err
@@ -389,6 +413,11 @@ func (s *Service) Update(ctx context.Context, command productport.UpdateCommand)
 			result.StockQuantity != command.StockQuantity {
 			return ErrUnavailable
 		}
+		if s.policy != nil {
+			if e = saveDistributionPolicyWithin(tx, s.policy, result.ID, distributiondomain.ProductTypeStandard, policy, command.Actor, command.IdempotencyKey); e != nil {
+				return e
+			}
+		}
 		snapshot, e := snapshotJSON(result)
 		if e != nil {
 			return e
@@ -449,7 +478,8 @@ func normalizeUpdate(c productport.UpdateCommand) (productport.UpdateCommand, [3
 		StockQuantity               int32
 		Images                      []string
 		LegacyAdminProjection       json.RawMessage
-	}{int64(c.ID), c.ExpectedVersion, c.Name, c.Description, c.Currency, c.PriceMinor, c.StockQuantity, c.Images, c.LegacyAdminProjection})
+		DistributionPolicy          *productport.DistributionPolicy
+	}{int64(c.ID), c.ExpectedVersion, c.Name, c.Description, c.Currency, c.PriceMinor, c.StockQuantity, c.Images, c.LegacyAdminProjection, c.DistributionPolicy})
 	if err != nil {
 		return productport.UpdateCommand{}, [32]byte{}, ErrInvalidProduct
 	}
@@ -484,7 +514,8 @@ func normalize(c productport.CreateCommand) (productport.CreateCommand, [32]byte
 		StockQuantity               int32
 		Images                      []string
 		LegacyAdminProjection       json.RawMessage
-	}{c.ProductCode, c.Name, c.Description, c.Currency, c.PriceMinor, c.StockQuantity, c.Images, c.LegacyAdminProjection})
+		DistributionPolicy          *productport.DistributionPolicy
+	}{c.ProductCode, c.Name, c.Description, c.Currency, c.PriceMinor, c.StockQuantity, c.Images, c.LegacyAdminProjection, c.DistributionPolicy})
 	if err != nil {
 		return productport.CreateCommand{}, [32]byte{}, ErrInvalidProduct
 	}

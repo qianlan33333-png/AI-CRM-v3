@@ -24,6 +24,132 @@ import (
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
+func promotionContextToken() string { return "dpc_" + strings.Repeat("A", 43) }
+
+func publicRequest(method, target string, cookies map[string]string) *http.Request {
+	request := httptest.NewRequest(method, target, nil)
+	for name, value := range cookies {
+		request.AddCookie(&http.Cookie{Name: name, Value: value})
+	}
+	return request
+}
+
+func expectLegacyPromotionCookiesCleared(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	cleared := map[string]bool{}
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.MaxAge < 0 {
+			cleared[cookie.Name] = true
+		}
+	}
+	for _, name := range []string{"aicrm_promotion_context", "aicrm_promotion_handoff", "aicrm_promotion_accepted"} {
+		if !cleared[name] {
+			t.Fatalf("cookie %q was not cleared: %v", name, response.Result().Cookies())
+		}
+	}
+}
+
+// TestPromotionContextPublicChain follows the browser-visible /d landing into
+// the Product page and its payment page. GETs only carry the opaque context;
+// they never create or alter a pending order snapshot.
+func TestPromotionContextPublicChainRetainsCheckoutContext(t *testing.T) {
+	product := enabledPublicProduct(7, "course-7")
+	public, err := NewPublicHandler(&testCatalog{product: product})
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := promotionContextToken()
+	destination := "/p/course-7?promotion_context=" + context // Distribution's resolved /d redirect.
+	landing := httptest.NewRecorder()
+	public.ServeHTTP(landing, publicRequest(http.MethodGet, destination, nil))
+	if landing.Code != http.StatusOK || !strings.Contains(landing.Body.String(), `href="/pay/course-7?promotion_context=`+context+`"`) {
+		t.Fatalf("handoff landing status=%d body=%s", landing.Code, landing.Body.String())
+	}
+	payment := httptest.NewRecorder()
+	public.ServeHTTP(payment, publicRequest(http.MethodGet, "/pay/course-7?promotion_context="+context, nil))
+	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "promotionContext='"+context+"'") || !strings.Contains(payment.Body.String(), "location.pathname+(location.search||'')") {
+		t.Fatalf("payment continuation status=%d body=%s", payment.Code, payment.Body.String())
+	}
+	if !strings.Contains(payment.Body.String(), "normalized.promotion_context=promotionContext") {
+		t.Fatalf("checkout body does not retain controlled context: %s", payment.Body.String())
+	}
+}
+
+func TestServicePeriodPromotionContextReachesPaymentAndOAuth(t *testing.T) {
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, ServicePeriodDurationDays: 31}}
+	handler, err := NewServicePeriodPublicHandler(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := promotionContextToken()
+	landing := httptest.NewRecorder()
+	handler.ServeHTTP(landing, publicRequest(http.MethodGet, "/s/term-31?promotion_context="+context, nil))
+	if landing.Code != http.StatusOK || !strings.Contains(landing.Body.String(), "promotionContext='"+context+"'") {
+		t.Fatalf("service promotion landing status=%d body=%s", landing.Code, landing.Body.String())
+	}
+	payment := httptest.NewRecorder()
+	handler.ServeHTTP(payment, publicRequest(http.MethodGet, "/s/term-31/pay?promotion_context="+context, nil))
+	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "promotionContext='"+context+"'") || !strings.Contains(payment.Body.String(), "location.pathname+(location.search||'')") {
+		t.Fatalf("service promotion payment status=%d body=%s", payment.Code, payment.Body.String())
+	}
+}
+
+func TestPublicEntrancesClearLegacyCookiesAndDoNotCarryContext(t *testing.T) {
+	standard, err := NewPublicHandler(&testCatalog{product: enabledPublicProduct(7, "course-7")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	periodReader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, ServicePeriodDurationDays: 31}}
+	period, err := NewServicePeriodPublicHandler(periodReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		handler http.Handler
+		path    string
+	}{
+		{name: "ordinary standard entry", handler: standard, path: "/p/course-7"},
+		{name: "ordinary service-period entry", handler: period, path: "/s/term-31"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			test.handler.ServeHTTP(response, publicRequest(http.MethodGet, test.path, map[string]string{"aicrm_promotion_context": promotionContextToken(), "aicrm_promotion_handoff": "stale", "aicrm_promotion_accepted": "stale"}))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "promotionContext='dpc_") {
+				t.Fatalf("ordinary entry retained promotion context: %s", response.Body.String())
+			}
+			expectLegacyPromotionCookiesCleared(t, response)
+		})
+	}
+}
+
+func TestPublicPromotionContextRejectsForgedAndCrossProductQueries(t *testing.T) {
+	standard, err := NewPublicHandler(&testCatalog{product: enabledPublicProduct(7, "course-7")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/p/course-7?promotion_context=dpc_forged",
+		"/p/course-7?promotion_context=" + promotionContextToken() + "&product_code=other-product",
+		"/p/course-7?distribution_handoff=1",
+	} {
+		response := httptest.NewRecorder()
+		standard.ServeHTTP(response, publicRequest(http.MethodGet, path, map[string]string{"aicrm_promotion_context": promotionContextToken()}))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		expectLegacyPromotionCookiesCleared(t, response)
+	}
+}
+
+func enabledPublicProduct(id productport.ID, code string) productport.Product {
+	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
+	return productport.Product{ID: id, ProductCode: code, Name: "公开商品", PriceMinor: 990, Currency: "CNY", Images: []string{"https://cdn.example.test/product.png"}, CreatedBy: 1, CreatedAt: now, UpdatedAt: now, Version: 1, LocalLifecycle: productport.LocalProductEnabled, LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`)}
+}
+
 func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 	now := time.Date(2026, 9, 4, 1, 0, 0, 0, time.UTC)
 	catalog := &testCatalog{product: productport.Product{

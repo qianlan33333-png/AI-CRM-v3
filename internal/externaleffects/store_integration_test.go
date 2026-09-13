@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -134,6 +135,96 @@ func TestPostgreSQLEffectReplayUnknownAndStaleWorker(t *testing.T) {
 	}
 	if _, _, err = repository.Retry(ctx, ControlCommand{EffectID: first.ID, ReceiptKey: digestForTest("forbidden"), ActorAdminUserID: 7}); !errors.Is(err, ErrTransition) {
 		t.Fatalf("unknown retry=%v", err)
+	}
+}
+
+func TestPostgreSQLCancelQueuedEffectPersistsRefundInitiatorAdmin(t *testing.T) {
+	pool, cleanup := effectIntegrationPool(t)
+	defer cleanup()
+	workers := river.NewWorkers()
+	if err := river.AddWorkerSafely[EffectJobArgs](workers, NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, _, err := repository.AcceptAndQueue(context.Background(), AcceptCommand{ReceiptKey: digestForTest("cancel-with-actor.accept"), Envelope: envelopeForTest()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(context.Background(), func(tx context.Context) error {
+		_, inner := repository.CancelQueuedEffectWithin(tx, effectport.CancelCommand{EffectID: projection.ID, ReceiptKey: digestForTest("cancel-without-actor"), ReasonCode: "commission_cancelled"})
+		return inner
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing actor error=%v", err)
+	}
+	if err = uow.Within(context.Background(), func(tx context.Context) error {
+		_, inner := repository.CancelQueuedEffectWithin(tx, effectport.CancelCommand{EffectID: projection.ID, ReceiptKey: digestForTest("cancel-with-actor"), ReasonCode: "refund_requested", Actor: effectport.ControlActor{AdminUserID: 73}})
+		return inner
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var actor int64
+	if err = pool.QueryRow(context.Background(), `SELECT actor_admin_user_id FROM external_effect_operation_receipts WHERE operation='cancel' AND effect_id=$1`, strings.TrimPrefix(projection.ID, "eer_")).Scan(&actor); err != nil || actor != 73 {
+		t.Fatalf("cancel actor=%d err=%v", actor, err)
+	}
+	current, err := repository.Get(context.Background(), projection.ID)
+	if err != nil || current.State != StateCancelled {
+		t.Fatalf("state=%+v err=%v", current, err)
+	}
+}
+
+func TestPostgreSQLCancelQueuedPaymentSplitPersistsSystemDueActor(t *testing.T) {
+	pool, cleanup := effectIntegrationPool(t)
+	defer cleanup()
+	workers := river.NewWorkers()
+	if err := river.AddWorkerSafely[EffectJobArgs](workers, NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := effectport.Envelope{Owner: effectport.OwnerPayment, Kind: effectport.KindWeChatPayProfitSharing, SourceRefDigest: digestForTest("due-source"), TargetRefDigest: digestForTest("due-target"), PayloadDigest: digestForTest("due-payload"), PolicyVersionHash: digestForTest("due-policy")}
+	projection, _, err := repository.AcceptAndQueue(context.Background(), effectport.AcceptCommand{ReceiptKey: digestForTest("due-cancel-accept"), Envelope: envelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(context.Background(), func(tx context.Context) error {
+		_, inner := repository.CancelQueuedEffectWithin(tx, effectport.CancelCommand{EffectID: projection.ID, ReceiptKey: digestForTest("due-cancel"), ReasonCode: "commission_cancelled", Actor: effectport.ControlActor{SystemRef: effectport.SystemActorPaymentProfitSharingDue}})
+		return inner
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var admin *int64
+	var kind, ref *string
+	if err = pool.QueryRow(context.Background(), `SELECT actor_admin_user_id,actor_kind,actor_ref FROM external_effect_operation_receipts WHERE operation='cancel' AND effect_id=$1`, strings.TrimPrefix(projection.ID, "eer_")).Scan(&admin, &kind, &ref); err != nil || admin != nil || kind == nil || *kind != "system" || ref == nil || *ref != effectport.SystemActorPaymentProfitSharingDue {
+		t.Fatalf("system cancel receipt admin=%v kind=%v ref=%v err=%v", admin, kind, ref, err)
 	}
 }
 
@@ -629,12 +720,14 @@ func effectIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", "0005_external_effects.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = pool.Exec(ctx, string(sql)); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"0001_platform.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0156_distribution_profit_sharing_payment.sql", "0161_payment_paid_confirmation_time.sql", "0160_external_effect_system_control_actor.sql"} {
+		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, err = pool.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
 	if _, err = pool.Exec(ctx, `ALTER TABLE external_effects ADD COLUMN delivery_lane TEXT NOT NULL DEFAULT '' CHECK(delivery_lane IN ('','outbound_excel','outbound_media'))`); err != nil {
 		t.Fatal(err)

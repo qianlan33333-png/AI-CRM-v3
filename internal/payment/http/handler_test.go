@@ -2,6 +2,7 @@ package paymenthttp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -451,6 +452,47 @@ func TestCheckoutAcceptsOnlyOpaqueCookieIdentity(t *testing.T) {
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("field=%s code=%d", rawField, response.Code)
 		}
+	}
+}
+
+func TestCheckoutAcceptsOnlyWellFormedExplicitPromotionContext(t *testing.T) {
+	token := "pays_session_token_0000000001"
+	binding := paymentport.CheckoutSessionBinding(token)
+	promotion := "dpc_" + base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("x", 32)))
+	if len(promotion) != 47 {
+		t.Fatal("test promotion token shape")
+	}
+	for _, test := range []struct {
+		name, context string
+		want          string
+	}{
+		{"valid explicit context", promotion, promotion},
+		{"ordinary checkout", "", ""},
+		{"malformed context", "dpc_" + strings.Repeat("!", 43), ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			application := &appStub{}
+			handler, _ := NewHandler(application, nil, securityStub{}, true)
+			body := `{"product_id":3,"product_kind":"standard","beneficiary_selection":"payer_self","checkout_session_binding":"` + binding + `"}`
+			if test.context != "" {
+				body = `{"product_id":3,"product_kind":"standard","beneficiary_selection":"payer_self","checkout_session_binding":"` + binding + `","promotion_context":"` + test.context + `"}`
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", "checkout-promotion-key-0002")
+			request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if test.name == "malformed context" {
+				if response.Code != http.StatusBadRequest || application.createCalls != 0 {
+					t.Fatalf("malformed context code=%d calls=%d", response.Code, application.createCalls)
+				}
+				return
+			}
+			if response.Code != http.StatusAccepted || application.create.PromotionContext != test.want {
+				t.Fatalf("code=%d promotion=%q want=%q", response.Code, application.create.PromotionContext, test.want)
+			}
+		})
 	}
 }
 

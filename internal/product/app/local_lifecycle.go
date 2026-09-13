@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -55,6 +57,7 @@ type LocalProductLifecycleService struct {
 	uow    platformport.UnitOfWork
 	store  LocalProductLifecycleStore
 	events productport.EventAppender
+	policy productPolicyWriter
 	now    func() time.Time
 }
 
@@ -62,6 +65,14 @@ var _ productport.LocalProductLifecycleApplication = (*LocalProductLifecycleServ
 
 func NewLocalProductLifecycleService(uow platformport.UnitOfWork, store LocalProductLifecycleStore, events productport.EventAppender) *LocalProductLifecycleService {
 	return &LocalProductLifecycleService{uow: uow, store: store, events: events, now: time.Now}
+}
+
+func (service *LocalProductLifecycleService) SetDistributionPolicyWriter(writer distributionport.ProductPolicyService) error {
+	if service == nil || writer == nil {
+		return ErrUnavailable
+	}
+	service.policy = writer
+	return nil
 }
 
 func (service *LocalProductLifecycleService) SetLocalProductEnabled(ctx context.Context, command productport.SetLocalProductEnabledCommand) (productport.LocalProduct, error) {
@@ -154,6 +165,7 @@ func (service *LocalProductLifecycleService) CopyLocalProduct(ctx context.Contex
 		return productport.LocalProduct{}, ErrUnavailable
 	}
 
+	policy := productport.DefaultDistributionPolicy()
 	actorScope := localProductActorScope(normalized.Actor)
 	reservation := localProductLifecycleReservation(normalized.Actor, normalized.IdempotencyKey, digest, now)
 	reservation.Operation = "copy"
@@ -203,6 +215,11 @@ func (service *LocalProductLifecycleService) CopyLocalProduct(ctx context.Contex
 		}, now)
 		if createErr != nil {
 			return createErr
+		}
+		if service.policy != nil {
+			if createErr = saveDistributionPolicyWithin(tx, service.policy, created.ID, distributiondomain.ProductTypeStandard, &policy, normalized.Actor, normalized.IdempotencyKey); createErr != nil {
+				return createErr
+			}
 		}
 		result, createErr = projectLocalProduct(created)
 		if createErr != nil || result.Version != 1 || result.Lifecycle != productport.LocalProductDraft || result.Enabled || result.ID == sourceProjected.ID ||

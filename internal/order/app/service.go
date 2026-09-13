@@ -106,10 +106,13 @@ type Service struct {
 		Encrypt(string) ([]byte, error)
 		KeyVersion() int16
 	}
-	coupons      couponport.OrderCouponCoordinator
-	entitlements orderport.ServicePeriodEntitlementCoordinator
-	paidEvents   orderport.PaidEventConsumer
-	now          func() time.Time
+	coupons                    couponport.OrderCouponCoordinator
+	entitlements               orderport.ServicePeriodEntitlementCoordinator
+	paidEvents                 orderport.PaidEventConsumer
+	refundEvents               orderport.RefundSettlementConsumer
+	attribution                orderport.CheckoutAttributionCoordinator
+	historicalEvidenceVerifier historicalQualificationEvidenceVerifier
+	now                        func() time.Time
 }
 
 // SetCheckoutCouponCoordinator injects Coupon's transaction-bound reserve /
@@ -144,6 +147,29 @@ func (s *Service) SetPaidEventConsumer(consumer orderport.PaidEventConsumer) err
 	return nil
 }
 
+// SetRefundSettlementConsumer binds the payment-final refund observer. It
+// runs only after Order's durable refund status transition was written in the
+// same UoW and is optional while Distribution is disabled.
+func (s *Service) SetRefundSettlementConsumer(consumer orderport.RefundSettlementConsumer) error {
+	if s == nil || consumer == nil {
+		return orderport.ErrConflict
+	}
+	s.refundEvents = consumer
+	return nil
+}
+
+// SetCheckoutAttributionCoordinator binds Distribution's checkout-time
+// promotion recorder. It operates within the Order/Payment UoW, so an order
+// can never become payable before an accepted attribution is frozen. The
+// coordinator is optional while the Distribution module is disabled.
+func (s *Service) SetCheckoutAttributionCoordinator(coordinator orderport.CheckoutAttributionCoordinator) error {
+	if s == nil || coordinator == nil {
+		return orderport.ErrConflict
+	}
+	s.attribution = coordinator
+	return nil
+}
+
 func NewService(uow platformport.UnitOfWork, store Store) *Service {
 	return &Service{uow: uow, store: store, now: time.Now}
 }
@@ -175,7 +201,7 @@ func (s *Service) ReservePaymentWithin(ctx context.Context, id int64) (domain.Sn
 }
 
 func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderport.PaymentOrderCommand) (domain.Snapshot, error) {
-	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
+	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validPromotionContext(command.PromotionContext) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
 		return domain.Snapshot{}, orderport.ErrConflict
 	}
 	productID := command.ProductID
@@ -243,6 +269,24 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 		return domain.Snapshot{}, classify(err)
 	}
 	checkout.OrderID = persisted.Snapshot().ID
+	if command.PromotionContext != "" && s.attribution != nil {
+		attribution, attributionErr := s.attribution.RecordCheckoutAttributionWithin(ctx, orderport.CheckoutAttributionCommand{
+			OrderID: persisted.Snapshot().ID, OrderItemLine: 1, ProductID: command.ProductID,
+			ProductType: command.ProductType, ProductCode: command.ProductCode, ProductName: command.ProductName, PayerCustomerID: command.PayerCustomerID,
+			BeneficiaryCustomerID: command.BeneficiaryCustomerID, PromotionContext: command.PromotionContext,
+			ItemPaidMinor: checkout.PayableAmountMinor, OccurredAt: input.CreatedAt,
+		})
+		if attributionErr != nil {
+			return domain.Snapshot{}, classify(attributionErr)
+		}
+		if attribution.ProfitSharingRequired {
+			checkout.ProfitSharingRequired = true
+		}
+	}
+	// The checkout snapshot is an immutable sale fact. Attribution is evaluated
+	// after the Order has an ID but before that fact is inserted, so the positive
+	// profit-sharing decision is frozen atomically with every other checkout
+	// field; later refund or reconciliation flows cannot rewrite it.
 	if err = s.store.InsertCheckoutSnapshot(ctx, checkout); err != nil {
 		return domain.Snapshot{}, classify(err)
 	}
@@ -255,6 +299,7 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 		}
 	}
 	result := persisted.Snapshot()
+	result.ProfitSharingRequired = checkout.ProfitSharingRequired
 	snapshot, err := json.Marshal(result)
 	if err != nil {
 		return domain.Snapshot{}, orderport.ErrUnavailable
@@ -315,11 +360,32 @@ func (s *Service) SettlePaymentWithin(ctx context.Context, command orderport.Pay
 	if err = s.consumeFirstNativePaidEvent(ctx, current.Snapshot(), updated.Snapshot()); err != nil {
 		return domain.Snapshot{}, err
 	}
+	if command.RefundedDelta > 0 && s.refundEvents != nil {
+		// Checkout is an immutable Order-owned snapshot. Its ID/type only
+		// enrich the already-persisted refund fact for Distribution; a missing
+		// historical snapshot remains usable for downline-order matching but
+		// cannot be asserted as a qualification-purchase refund.
+		checkout, checkoutErr := s.store.ReadCheckoutSnapshot(ctx, updated.ID)
+		if checkoutErr != nil && !errors.Is(checkoutErr, orderport.ErrNotFound) {
+			return domain.Snapshot{}, classify(checkoutErr)
+		}
+		event := orderport.RefundSettlementEvent{Order: updated.Snapshot(), RefundedDelta: command.RefundedDelta, OccurredAt: command.OccurredAt.UTC(), ReceiptKey: command.ReceiptKey}
+		if checkoutErr == nil {
+			event.CheckoutProductID, event.CheckoutProductType = checkout.ProductID, checkout.ProductType
+		}
+		if err = s.refundEvents.ConsumeRefundSettlementWithin(ctx, event); err != nil {
+			return domain.Snapshot{}, err
+		}
+	}
 	return updated.Snapshot(), nil
 }
 
 func validPaymentProductType(kind string, durationDays int32) bool {
 	return (kind == "standard_product" && durationDays == 0) || (kind == "service_period" && durationDays > 0)
+}
+
+func validPromotionContext(value string) bool {
+	return len(value) <= 512 && value == strings.TrimSpace(value) && strings.IndexFunc(value, func(r rune) bool { return r < 0x21 || r > 0x7e }) < 0
 }
 
 func (s *Service) reserveCheckout(ctx context.Context, command orderport.PaymentOrderCommand, at time.Time) (orderport.CheckoutSnapshot, error) {

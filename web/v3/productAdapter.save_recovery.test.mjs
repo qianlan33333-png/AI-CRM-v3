@@ -119,6 +119,7 @@ assert.match(creates[0].key, /^product-save-/, 'subject create must carry an ide
 const createPayload = JSON.parse(creates[0].body);
 assert.deepEqual(createPayload.admin_projection.wecom_tagging, { enabled: true, tag_ids: [37] }, 'product save must forward the enabled catalog-selected numeric tag IDs');
 assert.deepEqual(createPayload.images, ['/api/admin/image-library/39/variants/original'], 'product save must preserve the original picker later-page URL');
+assert.deepEqual(createPayload.distribution_policy, { enabled: false, commission_rate_basis_points: 0, wait_days: 7, version: 0 }, 'ordinary product save must atomically carry the default distribution policy');
 assert.equal(createPayload.admin_projection.purchase_action_enabled, true, 'product save must enable the selected purchase action');
 assert.equal(createPayload.admin_projection.purchase_action_mode, 'qr', 'product save must preserve the selected QR action mode');
 assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101', 'failed external push must recover the created ID into the editor URL');

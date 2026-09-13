@@ -37,7 +37,8 @@ var distAdminAliases = map[string]string{
 	"/admin/channels":     "channels.html",
 	"/admin/channels/new": "channelForm.html",
 	// WeCom tags (frozen staging document retired).
-	"/admin/wecom-tags": "wecom-tags.html",
+	"/admin/wecom-tags":   "wecom-tags.html",
+	"/admin/distribution": "distribution.html",
 	// Product and service-period product workspaces (frozen host bundle retired).
 	"/admin/wechat-pay/products":                        "products.html",
 	"/admin/wechat-pay/products/":                       "products.html",
@@ -85,6 +86,20 @@ func DistAdminPageFile(distRoot, requestPath string) (string, bool) {
 		return "", false
 	}
 	file := filepath.Join(distRoot, "admin", filepath.FromSlash(name))
+	info, err := os.Stat(file)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return file, true
+}
+
+// DistDistributionPageFile resolves the built current-session distributor center.
+// Its data APIs remain owned by Distribution; the shell only serves its public document.
+func DistDistributionPageFile(distRoot string) (string, bool) {
+	if distRoot == "" {
+		return "", false
+	}
+	file := filepath.Join(distRoot, "distribution", "index.html")
 	info, err := os.Stat(file)
 	if err != nil || info.IsDir() {
 		return "", false

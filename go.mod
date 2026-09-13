@@ -26,6 +26,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/wechatpay-apiv3/wechatpay-go v0.2.21 // indirect
 	go.uber.org/goleak v1.3.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect

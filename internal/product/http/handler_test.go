@@ -20,6 +20,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -113,8 +114,10 @@ func (lifecycle *testLifecycle) ShareLocalProduct(context.Context, productport.I
 }
 
 type testServicePeriod struct {
-	page    productport.ServicePeriodPage
-	product productport.ServicePeriodProduct
+	page       productport.ServicePeriodPage
+	product    productport.ServicePeriodProduct
+	createCall *productport.CreateServicePeriodProductCommand
+	updateCall *productport.UpdateServicePeriodProductCommand
 }
 
 func (service *testServicePeriod) ListServicePeriodProducts(context.Context, int32, int32) (productport.ServicePeriodPage, error) {
@@ -125,11 +128,13 @@ func (service *testServicePeriod) GetServicePeriodProduct(context.Context, produ
 	return service.product, nil
 }
 
-func (service *testServicePeriod) CreateServicePeriodProduct(context.Context, productport.CreateServicePeriodProductCommand) (productport.ServicePeriodProduct, error) {
+func (service *testServicePeriod) CreateServicePeriodProduct(_ context.Context, command productport.CreateServicePeriodProductCommand) (productport.ServicePeriodProduct, error) {
+	service.createCall = &command
 	return service.product, nil
 }
 
-func (service *testServicePeriod) UpdateServicePeriodProduct(context.Context, productport.UpdateServicePeriodProductCommand) (productport.ServicePeriodProduct, error) {
+func (service *testServicePeriod) UpdateServicePeriodProduct(_ context.Context, command productport.UpdateServicePeriodProductCommand) (productport.ServicePeriodProduct, error) {
+	service.updateCall = &command
 	return service.product, nil
 }
 
@@ -509,6 +514,20 @@ func (external *testExternalPush) ListExternalPushTests(_ context.Context, id pr
 	external.listCalls++
 	external.listProductID, external.listKind = id, kind
 	return []productport.ExternalPushTest{external.test}, nil
+}
+
+type testPolicyReader struct {
+	policy distributiondomain.Policy
+	err    error
+	calls  int
+}
+
+func (reader *testPolicyReader) ReadProductPolicy(_ context.Context, _ int64, _ distributiondomain.ProductType) (distributiondomain.Policy, error) {
+	reader.calls++
+	return reader.policy, reader.err
+}
+func (reader *testPolicyReader) ReadProductPolicyWithin(context.Context, int64, distributiondomain.ProductType) (distributiondomain.Policy, error) {
+	return reader.policy, reader.err
 }
 
 func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *testLifecycle) {
@@ -1092,5 +1111,47 @@ func TestExternalPushConfigurationHTTPReadsDisabledBindingWithCompleteFrozenShap
 	}
 	if string(raw["configuration_reference"]) != `""` || string(raw["expires_at_ts"]) != `null` || string(raw["custom_params"]) != `{}` || string(raw["custom_params_json"]) != `"{}"` {
 		t.Fatalf("incomplete disabled frozen configuration response=%s", response.Body.String())
+	}
+}
+
+func TestDistributionPolicyDTOUsesActualReadAndKeepsLegacyUpdateCompatible(t *testing.T) {
+	handler, _, catalog, _ := newHandlerForTest(t)
+	reader := &testPolicyReader{policy: distributiondomain.Policy{ProductID: 7, ProductType: distributiondomain.ProductTypeStandard, Enabled: true, CommissionRateBasisPoints: 1234, WaitDays: 8, Version: 3, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}}
+	if err := handler.SetDistributionPolicyReader(reader); err != nil {
+		t.Fatal(err)
+	}
+	get := httptest.NewRecorder()
+	handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/v1/products/7", nil))
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"distribution_policy":{"enabled":true,"commission_rate_basis_points":1234,"wait_days":8,"version":3}`) {
+		t.Fatalf("actual policy missing: %d %s", get.Code, get.Body.String())
+	}
+	create := httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/products", strings.NewReader(`{"product_code":"distribution-http","name":"分销商品","description":"","price_minor":1,"currency":"CNY","stock_quantity":1,"images":[],"distribution_policy":{"enabled":true,"commission_rate_basis_points":1234,"wait_days":8,"version":0}}`))
+	create.Header.Set("Idempotency-Key", "distribution-http-create-0001")
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, create)
+	if created.Code != http.StatusCreated || catalog.createCall == nil || catalog.createCall.DistributionPolicy == nil || !catalog.createCall.DistributionPolicy.Enabled || catalog.createCall.DistributionPolicy.CommissionRateBasisPoints != 1234 {
+		t.Fatalf("policy create=%+v status=%d body=%s", catalog.createCall, created.Code, created.Body.String())
+	}
+	legacy := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7", strings.NewReader(`{"expected_version":2,"name":"商品七","description":"描述","price_minor":1200,"currency":"CNY","stock_quantity":4,"images":[]}`))
+	legacy.Header.Set("Idempotency-Key", "distribution-http-update-0001")
+	updated := httptest.NewRecorder()
+	handler.ServeHTTP(updated, legacy)
+	if updated.Code != http.StatusOK || catalog.updateCall == nil || catalog.updateCall.DistributionPolicy != nil {
+		t.Fatalf("legacy update policy=%+v status=%d body=%s", catalog.updateCall, updated.Code, updated.Body.String())
+	}
+	period := handler.service.(*testServicePeriod)
+	periodCreate := httptest.NewRequest(http.MethodPost, "/api/admin/service-period-products", strings.NewReader(`{"product_code":"distribution-period","name":"周期分销商品","description":"","price_minor":1,"currency":"CNY","duration_days":7,"stock_quantity":1,"images":[],"distribution_policy":{"enabled":true,"commission_rate_basis_points":3000,"wait_days":0,"version":0}}`))
+	periodCreate.Header.Set("Idempotency-Key", "distribution-period-create-0001")
+	periodResponse := httptest.NewRecorder()
+	handler.ServeHTTP(periodResponse, periodCreate)
+	if periodResponse.Code != http.StatusCreated || period.createCall == nil || period.createCall.DistributionPolicy == nil || period.createCall.DistributionPolicy.CommissionRateBasisPoints != 3000 {
+		t.Fatalf("period create=%+v status=%d body=%s", period.createCall, periodResponse.Code, periodResponse.Body.String())
+	}
+	periodUpdate := httptest.NewRequest(http.MethodPut, "/api/admin/service-period-products/7", strings.NewReader(`{"expected_version":2,"name":"周期分销商品更新","description":"","price_minor":1,"currency":"CNY","duration_days":7,"stock_quantity":1,"images":[],"admin_projection":{},"distribution_policy":{"enabled":true,"commission_rate_basis_points":1234,"wait_days":8,"version":1}}`))
+	periodUpdate.Header.Set("Idempotency-Key", "distribution-period-update-0001")
+	periodUpdated := httptest.NewRecorder()
+	handler.ServeHTTP(periodUpdated, periodUpdate)
+	if periodUpdated.Code != http.StatusOK || period.updateCall == nil || period.updateCall.DistributionPolicy == nil || !period.updateCall.DistributionPolicy.Enabled || period.updateCall.DistributionPolicy.CommissionRateBasisPoints != 1234 || period.updateCall.DistributionPolicy.WaitDays != 8 || period.updateCall.DistributionPolicy.ExpectedVersion != 1 {
+		t.Fatalf("period update=%+v status=%d body=%s", period.updateCall, periodUpdated.Code, periodUpdated.Body.String())
 	}
 }

@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import { JSDOM } from 'jsdom';
+import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
+
+const bundle = await buildTestBrowserBundle(new URL('./distributionAdmin.ts', import.meta.url).pathname);
+const delay = (ms = 15) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(check, message) { for (let attempt = 0; attempt < 100; attempt++) { if (check()) return; await delay(); } throw new Error(message); }
+const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+const calls = [];
+const prompts = ['不符合当前协议', '12', 'receipt-1', '12', 'receipt-1', '8', '商户承担原因'];
+let recoveryAttempts = 0;
+const dom = new JSDOM('<!doctype html><main id="distribution-admin-root"></main>', { url: 'https://crm.example/admin/distribution', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
+  window.Response = Response; window.Headers = Headers; Object.defineProperty(window.crypto, 'randomUUID', { value: globalThis.crypto.randomUUID.bind(globalThis.crypto) }); window.prompt = () => prompts.shift() || '';
+  window.fetch = async (input, init = {}) => { const url = new URL(String(input), window.location.href); calls.push({ path: url.pathname, method: init.method || 'GET', body: init.body || '', idempotencyKey: new Headers(init.headers).get('Idempotency-Key') || '' });
+    if (url.pathname === '/api/admin/distribution/distributors') return json({ items: [{ id: 9, public_no: 'D-9', customer_reference: 'customer:masked', agreement_version: '2026-09', enabled: true, receiver_ready: true, receiver_reason: '', registered_at: '2026-09-14T00:00:00Z', version: 3 }], next_cursor: '' });
+    if (url.pathname === '/api/admin/distribution/orders') return json({ items: [{ attribution_id: 'a1', order_reference: 'O-9', item_line: '1', product_id: 7, product_type: 'standard_product', product_name: '增长课', distributor_public_no: 'D-9', qualification_state: 'eligible', qualification_evidence_reference: 'evidence:1', policy_version: 2, rate_basis_points: 333, wait_days: 7, paid_minor: 19900, currency: 'CNY', attributed_at: '2026-09-14T00:00:00Z' }], next_cursor: '' });
+    if (url.pathname === '/api/admin/distribution/exceptions') return json({ items: [{ exception_id: 'x1', commission_id: 'c1', distributor_public_no: 'D-9', order_reference: 'O-9', kind: 'qualification_revoked', status: 'open', unpaid_due_minor: 12, already_paid_minor: 33, amount_minor: 12, reason: '资格退款', payment_instruction_reference: 'pi:1', created_at: '2026-09-14T00:00:00Z', updated_at: '2026-09-14T00:00:00Z', version: 4, can_reconcile: true, can_record_recovery: true, can_record_merchant_liability: true }], next_cursor: '' });
+    if (/\/recoveries$/.test(url.pathname) && recoveryAttempts++ === 0) throw new Error('connection interrupted');
+    if (/\/disable$|\/reconcile$|\/recoveries$|\/merchant-liabilities$/.test(url.pathname)) return json({ ok: true });
+    return json({ error: 'not_found' }, 404);
+  };
+} });
+dom.window.eval(bundle); await waitFor(() => dom.window.document.body.textContent.includes('D-9'), 'distributor list did not render');
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用').click();
+await waitFor(() => calls.some((call) => call.path.endsWith('/disable')), 'disable did not call the real endpoint');
+assert.deepEqual(JSON.parse(calls.find((call) => call.path.endsWith('/disable')).body), { version: 3, reason: '不符合当前协议' }, 'disable body must be version and auditable reason only');
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '异常').click();
+await waitFor(() => dom.window.document.body.textContent.includes('qualification_revoked'), 'exception list did not render');
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记追回').click();
+await waitFor(() => calls.some((call) => call.path.endsWith('/recoveries')), 'recovery did not call real endpoint');
+const recoveryCalls = calls.filter((call) => call.path.endsWith('/recoveries'));
+assert.deepEqual(JSON.parse(recoveryCalls[0].body), { version: 4, amount_minor: 12, evidence_reference: 'receipt-1' }, 'manual recovery cannot claim WeChat payout and must include evidence');
+await waitFor(() => dom.window.document.body.textContent.includes('提交结果未确认'), 'unknown recovery result did not force a server readback');
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记追回').click();
+await waitFor(() => calls.filter((call) => call.path.endsWith('/recoveries')).length === 2, 'recovery retry did not submit');
+const retriedRecoveryCalls = calls.filter((call) => call.path.endsWith('/recoveries'));
+assert.equal(retriedRecoveryCalls[1].idempotencyKey, retriedRecoveryCalls[0].idempotencyKey, 'unknown recovery retry must reuse the original idempotency key');
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记商户承担').click();
+await waitFor(() => calls.some((call) => call.path.endsWith('/merchant-liabilities')), 'merchant liability did not call real endpoint');
+assert.deepEqual(JSON.parse(calls.find((call) => call.path.endsWith('/merchant-liabilities')).body), { version: 4, amount_minor: 8, reason: '商户承担原因' }, 'merchant liability must carry only frozen amount and reason');
+assert.equal(calls.some((call) => /paid|wechat/i.test(call.path)), false, 'admin UI must not invent a manual WeChat-paid action');
+await delay(40);
+dom.window.close();
+console.log('distribution admin contract: PASS');

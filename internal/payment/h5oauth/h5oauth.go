@@ -25,7 +25,9 @@ var ErrIdentityConflict = errors.New("payment H5 OAuth identities require review
 
 // Public commerce routes use one escaped code/slug segment only and keep
 // OAuth returns same-origin. /p is the same-page standard-product checkout;
-// /pay remains compatible with previously shared payment links.
+// /pay remains compatible with previously shared payment links. /distribution
+// is the fixed first-level distributor center, needed only to bridge a trusted
+// short Payment session into Distribution's separate browser session.
 var returnPathPattern = regexp.MustCompile(`^/(?:p/[^/?#]+|pay/[^/?#]+|s/[^/?#]+(?:/pay)?|c/[a-z][a-z0-9-]{5,119})$`)
 
 type Provider interface {
@@ -141,6 +143,9 @@ func safe(value string, maximum int) bool {
 }
 
 func validReturnPath(value string) bool {
+	if value == "/distribution" {
+		return true
+	}
 	if !returnPathPattern.MatchString(value) {
 		return false
 	}

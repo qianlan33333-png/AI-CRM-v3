@@ -52,7 +52,33 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 			t.Fatal(err)
 		}
 	}
-	payment := domain.Payment{OrderID: payOrderID, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "same-merchant", PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, AmountMinor: 100, Currency: "CNY", Status: domain.StatusPaid, Version: 1, CreatedAt: now, UpdatedAt: now}
+	paidConfirmedAt := now
+	payment := domain.Payment{OrderID: payOrderID, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "same-merchant", PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, AmountMinor: 100, Currency: "CNY", Status: domain.StatusPaid, PaidConfirmedAt: &paidConfirmedAt, Version: 1, CreatedAt: now, UpdatedAt: now}
+	missingPaidConfirmation := payment
+	missingPaidConfirmation.OrderID = shopOrderID
+	missingPaidConfirmation.Provider = domain.ProviderWeChatShop
+	missingPaidConfirmation.MerchantOrderNo = "legacy-missing-confirmation"
+	missingPaidConfirmation.PaidConfirmedAt = nil
+	var legacy domain.Payment
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		legacy, inner = repository.ImportTerminalPayment(tx, missingPaidConfirmation, [32]byte{9}, "history-missing-paid-confirmation")
+		if inner == nil && legacy.PaidConfirmedAt != nil {
+			t.Fatalf("legacy payment invented paid confirmation: %+v", legacy)
+		}
+		return inner
+	}); err != nil {
+		t.Fatalf("historical paid row without a source confirmation was rejected: %v", err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		replayed, inner := repository.ImportTerminalPayment(tx, missingPaidConfirmation, [32]byte{9}, "history-missing-paid-confirmation")
+		if inner == nil && (replayed.ID != legacy.ID || replayed.PaidConfirmedAt != nil) {
+			t.Fatalf("legacy payment replay drift: %+v", replayed)
+		}
+		return inner
+	}); err != nil {
+		t.Fatalf("legacy payment replay failed: %v", err)
+	}
 	var persisted domain.Payment
 	err = uow.Within(ctx, func(tx context.Context) error {
 		var inner error
@@ -155,7 +181,7 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 		}
 	}
 	var payments, refunds, effects int
-	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 1 || refunds != 6 || effects != 0 {
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 2 || refunds != 6 || effects != 0 {
 		t.Fatalf("payments=%d refunds=%d effects=%d err=%v", payments, refunds, effects, err)
 	}
 }
@@ -225,7 +251,8 @@ func TestPostgreSQLRefundListScopesExactPayment(t *testing.T) {
 		if err = pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,source_row_digest,created_at,updated_at) VALUES('wechat_pay','commerce-history',$1,$2,11,11,200000,'CNY','paid','history',false,$3,$4,$4) RETURNING id`, "refund-list:"+fixtures[index].merchant, fixtures[index].merchant, digest[:], now).Scan(&fixtures[index].orderID); err != nil {
 			t.Fatal(err)
 		}
-		fixtures[index].payment = domain.Payment{OrderID: fixtures[index].orderID, Provider: domain.ProviderWeChatPay, MerchantOrderNo: fixtures[index].merchant, PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, AmountMinor: 200000, Currency: "CNY", Status: domain.StatusPaid, Version: 1, CreatedAt: now, UpdatedAt: now}
+		paidConfirmedAt := now
+		fixtures[index].payment = domain.Payment{OrderID: fixtures[index].orderID, Provider: domain.ProviderWeChatPay, MerchantOrderNo: fixtures[index].merchant, PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, AmountMinor: 200000, Currency: "CNY", Status: domain.StatusPaid, PaidConfirmedAt: &paidConfirmedAt, Version: 1, CreatedAt: now, UpdatedAt: now}
 		if err = uow.Within(ctx, func(tx context.Context) error {
 			persisted, inner := repository.ImportTerminalPayment(tx, fixtures[index].payment, [32]byte{byte(index + 1)}, "refund-list-run")
 			fixtures[index].payment = persisted
@@ -506,7 +533,7 @@ func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql", "0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql", "0144_payment_checkout_restart_permissions.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql", "0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql", "0144_payment_checkout_restart_permissions.sql", "0156_distribution_profit_sharing_payment.sql", "0161_payment_paid_confirmation_time.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

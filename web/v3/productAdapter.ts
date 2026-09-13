@@ -190,6 +190,83 @@ installMaterialPickerTransport();
 
 const periodicSnapshots = new Map<number, RecordValue>();
 
+// Distribution policy is part of the Product command, never a follow-up
+// browser write.  The Product owner accepts the same wire object for ordinary
+// and service-period products; the UI only converts the human percentage into
+// the integer basis-points value owned by the server contract.
+type DistributionPolicy = { enabled: boolean; commissionRateBasisPoints: number; waitDays: number; version: number };
+const defaultDistributionPolicy = (): DistributionPolicy => ({ enabled: false, commissionRateBasisPoints: 0, waitDays: 7, version: 0 });
+
+function distributionPolicy(raw: unknown): DistributionPolicy {
+  if (raw === undefined || raw === null) return defaultDistributionPolicy();
+  const value = object(raw);
+  const enabled = value.enabled;
+  const rate = Number(value.commission_rate_basis_points);
+  const days = Number(value.wait_days);
+  const version = Number(value.version);
+  if (typeof enabled !== 'boolean' || !Number.isSafeInteger(rate) || rate < 0 || rate > 3000 || !Number.isSafeInteger(days) || days < 0 || days > 29 || !Number.isSafeInteger(version) || version < 0) {
+    throw new Error('商品分销设置响应无效');
+  }
+  return { enabled, commissionRateBasisPoints: rate, waitDays: days, version };
+}
+
+function currentDistributionPolicy(): DistributionPolicy {
+  const host = document.querySelector<HTMLElement>('[data-distribution-policy]');
+  // A new product genuinely has no stored policy. An existing editor without
+  // its authoritative product payload is still loading (or failed), and must
+  // never overwrite the saved policy with the new-product default on save.
+  if (!host) {
+    if (productEditorRoute()) throw new Error('分销设置尚未加载，未提交保存。');
+    return defaultDistributionPolicy();
+  }
+  const enabled = host.querySelector<HTMLInputElement>('[data-distribution-policy-enabled]')?.checked === true;
+  const rateInput = host.querySelector<HTMLInputElement>('[data-distribution-policy-rate]');
+  const daysInput = host.querySelector<HTMLInputElement>('[data-distribution-policy-wait-days]');
+  const version = Number(host.dataset.distributionPolicyVersion || '0');
+  if (!rateInput || !daysInput || rateInput.value.trim() === '' || daysInput.value.trim() === '') throw new Error('分销设置无效：请填写佣金比例和等待天数。');
+  const percentage = Number(rateInput.value);
+  const waitDays = Number(daysInput.value);
+  // Decimal percentage is converted exactly to basis points.  Reject an
+  // imprecise browser value rather than silently rounding a financial policy.
+  const basisPoints = Math.round(percentage * 100);
+  if (!Number.isFinite(percentage) || percentage < 0 || percentage > 30 || Math.abs(percentage * 100 - basisPoints) > 1e-8 || !Number.isSafeInteger(basisPoints) || !Number.isSafeInteger(waitDays) || waitDays < 0 || waitDays > 29 || !Number.isSafeInteger(version) || version < 0) {
+    throw new Error('分销设置无效：佣金比例为 0.00%～30.00%，等待天数为 0～29 天。');
+  }
+  return { enabled, commissionRateBasisPoints: basisPoints, waitDays, version };
+}
+
+function editorDistributionPolicy(): DistributionPolicy {
+  const route = productEditorRoute();
+  if (!route) return defaultDistributionPolicy();
+  const raw = route.prefix === 'pf' ? openedProductPayloads.get(route.id) : periodicSnapshots.get(route.id);
+  if (!raw) throw new Error('分销设置正在读取，请稍候后再保存。');
+  return distributionPolicy(raw?.distribution_policy);
+}
+
+function mountDistributionPolicyControls(): void {
+  const prefix = productPrefix();
+  if (!prefix || document.querySelector('[data-distribution-policy]')) return;
+  const anchor = document.getElementById(prefix === 'pf' ? 'product-action' : 'sp-action');
+  if (!anchor) return;
+  let policy: DistributionPolicy;
+  try { policy = editorDistributionPolicy(); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
+  const host = document.createElement('section');
+  host.dataset.distributionPolicy = '';
+  host.dataset.distributionPolicyVersion = String(policy.version);
+  host.style.cssText = 'display:grid;gap:12px;margin:0 0 14px;padding:16px 18px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
+  host.innerHTML = `<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><h3 style="margin:0;font-size:15px;font-weight:600">分销设置</h3><p style="margin:5px 0 0;color:#667085;font-size:12px;line-height:19px">仅本人有效购买过本商品，才可参与推广。</p></div><label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#344054"><input type="checkbox" data-distribution-policy-enabled> 启用分销</label></div><div data-distribution-policy-fields style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px"><label style="display:grid;gap:6px;font-size:12px;color:#646A73">佣金比例（%）<input data-distribution-policy-rate type="number" min="0" max="30" step="0.01" inputmode="decimal" style="min-height:36px;border:1px solid #DEE0E3;border-radius:6px;padding:0 10px;font-size:13px"></label><label style="display:grid;gap:6px;font-size:12px;color:#646A73">退款复核等待（天）<input data-distribution-policy-wait-days type="number" min="0" max="29" step="1" inputmode="numeric" style="min-height:36px;border:1px solid #DEE0E3;border-radius:6px;padding:0 10px;font-size:13px"></label></div>`;
+  const enabled = host.querySelector<HTMLInputElement>('[data-distribution-policy-enabled]')!;
+  const rate = host.querySelector<HTMLInputElement>('[data-distribution-policy-rate]')!;
+  const days = host.querySelector<HTMLInputElement>('[data-distribution-policy-wait-days]')!;
+  enabled.checked = policy.enabled;
+  rate.value = (policy.commissionRateBasisPoints / 100).toFixed(2);
+  days.value = String(policy.waitDays);
+  const fields = host.querySelector<HTMLElement>('[data-distribution-policy-fields]')!;
+  const update = () => { fields.style.opacity = enabled.checked ? '1' : '.62'; };
+  enabled.addEventListener('change', update); update();
+  anchor.parentElement?.insertBefore(host, anchor);
+}
+
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const request = input instanceof Request ? input : undefined;
   const url = new URL(request?.url || String(input), location.origin);
@@ -226,6 +303,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     nextInit = { ...nextInit, body: JSON.stringify({ ...body, duration_days: duration, expected_version: prior?.version }) };
   }
   if (isProductSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
+  if (isDistributionProductSubjectWrite(url, method)) nextInit = adaptDistributionPolicyWrite(nextInit);
   const response = await donorFetch(input, nextInit);
   if (periodicMatch && (method === 'GET' || method === 'PUT') && response.ok) {
     const value = object(await response.clone().json());
@@ -1172,6 +1250,14 @@ function isProductSubjectWrite(url: URL, method: string): boolean {
   return (method === 'POST' && url.pathname === '/api/v1/products') || (method === 'PUT' && /^\/api\/v1\/products\/[1-9][0-9]*$/.test(url.pathname));
 }
 
+function isDistributionProductSubjectWrite(url: URL, method: string): boolean {
+  return isProductSubjectWrite(url, method)
+    || (method === 'POST' && url.pathname === '/api/admin/wechat-pay/products')
+    || (method === 'PUT' && /^\/api\/admin\/wechat-pay\/products\/[1-9][0-9]*$/.test(url.pathname))
+    || (method === 'POST' && url.pathname === '/api/admin/service-period-products')
+    || (method === 'PUT' && /^\/api\/admin\/service-period-products\/[1-9][0-9]*$/.test(url.pathname));
+}
+
 function adaptPurchaseActionWrite(init: RequestInit | undefined): RequestInit | undefined {
   if (!init || typeof init.body !== 'string') return init;
   let body: RecordValue;
@@ -1200,6 +1286,52 @@ function adaptPurchaseActionWrite(init: RequestInit | undefined): RequestInit | 
   return { ...init, body: JSON.stringify(body) };
 }
 
+function adaptDistributionPolicyWrite(init: RequestInit | undefined): RequestInit | undefined {
+  if (!init || typeof init.body !== 'string') return init;
+  let body: RecordValue;
+  try { body = object(JSON.parse(init.body)); } catch { throw new Error('商品保存请求无效，未提交分销设置。'); }
+  const policy = currentDistributionPolicy();
+  body.distribution_policy = {
+    enabled: policy.enabled,
+    commission_rate_basis_points: policy.commissionRateBasisPoints,
+    wait_days: policy.waitDays,
+    version: policy.version,
+  };
+  return { ...init, body: JSON.stringify(body) };
+}
+
+function distributionPolicyWritePath(url: URL, method: string): boolean {
+  return isDistributionProductSubjectWrite(url, method) && method !== 'GET' && method !== 'HEAD';
+}
+
+// The frozen Product API client is materialized from an ignored donor view, so
+// policy injection lives at this tracked Host seam.  Install it only while the
+// one normal Product save runs: this preserves the Product owner's single
+// command/UoW and avoids changing an immutable donor API source.
+async function saveWithDistributionPolicy<T>(policy: DistributionPolicy, save: () => Promise<T>): Promise<T> {
+  const prior = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : undefined;
+    const url = new URL(request?.url || String(input), location.origin);
+    const method = (init?.method || request?.method || 'GET').toUpperCase();
+    if (!distributionPolicyWritePath(url, method) || typeof init?.body !== 'string') return prior(input, init);
+    let body: RecordValue;
+    try { body = object(JSON.parse(init.body)); } catch { throw new Error('商品保存请求无效，未提交分销设置。'); }
+    body.distribution_policy = {
+      enabled: policy.enabled,
+      commission_rate_basis_points: policy.commissionRateBasisPoints,
+      wait_days: policy.waitDays,
+      version: policy.version,
+    };
+    return prior(input, { ...init, body: JSON.stringify(body) });
+  };
+  try {
+    return await save();
+  } finally {
+    globalThis.fetch = prior;
+  }
+}
+
 function mountPurchaseActionControls(): void {
   const prefix = productPrefix();
   if (!prefix) return;
@@ -1209,6 +1341,9 @@ function mountPurchaseActionControls(): void {
 const purchaseActionObserver = new MutationObserver(mountPurchaseActionControls);
 purchaseActionObserver.observe(document, { childList: true, subtree: true });
 mountPurchaseActionControls();
+const distributionPolicyObserver = new MutationObserver(mountDistributionPolicyControls);
+distributionPolicyObserver.observe(document, { childList: true, subtree: true });
+mountDistributionPolicyControls();
 
 type ProductMaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: { type: 'image'; title: string; selectedIds: number[]; limit: number; onConfirm(item: MaterialPickerItem): void; onCancel(): void }): void } };
 let pendingProductMaterialObserver: MutationObserver | undefined;
@@ -1321,10 +1456,13 @@ const takeProductUploadInput = rememberActionInputs((input) => {
 });
 for (const method of ['saveProduct', 'saveServiceProduct'] as const) {
   const original = api[method].bind(api);
-  api[method] = (input) => runAction(takeProductSaveButton(), () => original(input).then((saved) => {
+  api[method] = (input) => runAction(takeProductSaveButton(), () => {
+    const policy = currentDistributionPolicy();
+    return saveWithDistributionPolicy(policy, () => original(input)).then((saved) => {
     if (['productForm', 'spProductForm'].includes(document.body.dataset.page || '')) completedEditorSaves.push(saved);
     return saved;
-  }).catch((error) => { showMessage(error instanceof Error ? error.message : '商品保存失败'); throw error; }), '保存中…');
+    }).catch((error) => { showMessage(error instanceof Error ? error.message : '商品保存失败'); throw error; });
+  }, '保存中…');
 }
 const originalSaveImageItem = api.saveImageItem.bind(api);
 api.saveImageItem = (originalName, patch) => runAction(takeProductUploadInput() || takeProductUploadButton(), () => originalSaveImageItem(originalName, patch), '上传中…');

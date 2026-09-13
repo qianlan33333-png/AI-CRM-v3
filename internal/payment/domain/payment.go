@@ -31,11 +31,14 @@ type Payment struct {
 	MerchantOrderNo                                         string
 	PayerIdentityID, PayerCustomerID, BeneficiaryCustomerID int64
 	AmountMinor                                             int64
+	ProfitSharingMarked                                     bool
 	Currency                                                string
 	Status                                                  Status
 	EffectID                                                string
+	ProviderTransactionReference                            string
 	ProviderTransactionDigest                               string
 	Version                                                 int64
+	PaidConfirmedAt                                         *time.Time
 	CreatedAt, UpdatedAt                                    time.Time
 }
 type Refund struct {
@@ -52,6 +55,17 @@ type Refund struct {
 }
 
 func NewPayment(order orderdomain.Snapshot, payerIdentityID int64, now time.Time, requestedChannel ...Channel) (Payment, error) {
+	return newPayment(order, payerIdentityID, now, false, requestedChannel...)
+}
+
+// NewPaymentWithProfitSharing is called only by the server-side checkout
+// coordinator after it has frozen a valid first-level attribution. The bool is
+// never derived from public request JSON.
+func NewPaymentWithProfitSharing(order orderdomain.Snapshot, payerIdentityID int64, marked bool, now time.Time, requestedChannel ...Channel) (Payment, error) {
+	return newPayment(order, payerIdentityID, now, marked, requestedChannel...)
+}
+
+func newPayment(order orderdomain.Snapshot, payerIdentityID int64, now time.Time, profitSharingMarked bool, requestedChannel ...Channel) (Payment, error) {
 	if order.ID < 1 || order.RecordOrigin != orderdomain.RecordOriginNative || !order.EffectEligible || order.PayerCustomerID == nil || order.BeneficiaryCustomerID == nil || payerIdentityID < 1 || now.IsZero() || order.Amount.Currency != "CNY" || order.Provider == orderdomain.ProviderAlipay {
 		return Payment{}, ErrInvalid
 	}
@@ -66,7 +80,10 @@ func NewPayment(order orderdomain.Snapshot, payerIdentityID int64, now time.Time
 	if channel != ChannelMiniProgram && channel != ChannelH5Official {
 		return Payment{}, ErrInvalid
 	}
-	return Payment{OrderID: order.ID, Provider: provider, Channel: channel, MerchantOrderNo: order.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: *order.PayerCustomerID, BeneficiaryCustomerID: *order.BeneficiaryCustomerID, AmountMinor: order.Amount.AmountMinor, Currency: order.Amount.Currency, Status: StatusAwaitingPrepay, Version: 1, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, nil
+	if profitSharingMarked && provider != ProviderWeChatPay {
+		return Payment{}, ErrInvalid
+	}
+	return Payment{OrderID: order.ID, Provider: provider, Channel: channel, MerchantOrderNo: order.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: *order.PayerCustomerID, BeneficiaryCustomerID: *order.BeneficiaryCustomerID, AmountMinor: order.Amount.AmountMinor, ProfitSharingMarked: profitSharingMarked, Currency: order.Amount.Currency, Status: StatusAwaitingPrepay, Version: 1, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, nil
 }
 func (p Payment) BindEffect(expected int64, effectID string, now time.Time) (Payment, error) {
 	if expected != p.Version {

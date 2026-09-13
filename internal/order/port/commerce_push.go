@@ -51,6 +51,27 @@ type PaidEventConsumer interface {
 	ConsumePaidEventWithin(context.Context, PaidEvent) error
 }
 
+// RefundSettlementEvent is derived from Order's already-persisted settlement
+// transition. It is not a second refund event stream: Payment remains owner of
+// refund receipts and provider finality, while consumers receive the exact
+// cumulative Order fact in the same UoW.
+type RefundSettlementEvent struct {
+	Order               domain.Snapshot
+	RefundedDelta       int64
+	CheckoutProductID   int64
+	CheckoutProductType string
+	OccurredAt          time.Time
+	ReceiptKey          string
+}
+
+func (event RefundSettlementEvent) Valid() bool {
+	return event.Order.ID > 0 && event.Order.RecordOrigin == domain.RecordOriginNative && event.RefundedDelta > 0 && !event.OccurredAt.IsZero() && event.ReceiptKey != "" && ((event.CheckoutProductID == 0 && event.CheckoutProductType == "") || (event.CheckoutProductID > 0 && (event.CheckoutProductType == "standard_product" || event.CheckoutProductType == "service_period")))
+}
+
+type RefundSettlementConsumer interface {
+	ConsumeRefundSettlementWithin(context.Context, RefundSettlementEvent) error
+}
+
 // CommercePushDeliveryReference is the only Order-owned bridge from the
 // legacy order-details route to Outbound delivery history. Historical source
 // coordinates deliberately remain a source kind/scope/key triple: a legacy

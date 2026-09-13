@@ -41,6 +41,9 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
 	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
+	distributionapp "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/app"
+	distributionhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/http"
+	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
@@ -75,6 +78,7 @@ import (
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
 	orderhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/http"
 	ordermigration "github.com/qianlan33333-png/AI-CRM-v3/internal/order/migration"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	ordersecure "github.com/qianlan33333-png/AI-CRM-v3/internal/order/secure"
 	orderstore "github.com/qianlan33333-png/AI-CRM-v3/internal/order/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
@@ -272,6 +276,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	queries := identityquery.NewPostgreSQL(phoneVault)
 	hxcIdentity := identityapp.HXCSourceService{Inspector: queries, Store: identityRepository, OneID: oneID, VerifiedIdentity: identityadapter.HXCVerifiedUnionIDFactory{Enabled: cfg.HXCDashboard.UnionIDVerified}}
 	paymentRepository := paymentstore.NewPostgreSQL()
+	distributionRepository, err := distributionstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	distributionPolicyService := distributionapp.NewPolicyService(distributionRepository)
 	customerStore := customerstore.NewPostgreSQL()
 	sidebarProfiles, err := customerapp.NewSidebarProfileApplication(uow, customerStore, oneID, customerStore, auditService, platformoutbox.NewPostgreSQL())
 	if err != nil {
@@ -297,6 +306,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	paymentReconciliationWorker := payment.NewReconciliationWorker()
 	if err = river.AddWorkerSafely[payment.ReconciliationJobArgs](effectWorkers, paymentReconciliationWorker); err != nil {
+		return fail(err)
+	}
+	distributionDueWorker := distributionapp.NewCommissionDueWorker()
+	if err = river.AddWorkerSafely[distributionapp.CommissionDueJobArgs](effectWorkers, distributionDueWorker); err != nil {
+		return fail(err)
+	}
+	distributionRefundWorker := distributionapp.NewRefundRecheckWorker()
+	if err = river.AddWorkerSafely[distributionapp.RefundRecheckJobArgs](effectWorkers, distributionRefundWorker); err != nil {
 		return fail(err)
 	}
 	audienceRefreshWorker := segment.NewAudienceRefreshWorker()
@@ -348,6 +365,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	distributionDueEnqueuer, err := distributionapp.NewRiverCommissionDueEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	distributionRefundEnqueuer, err := distributionapp.NewRiverRefundRecheckEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
 	customerSyncEnqueuer, err := wecom.NewRiverCustomerSyncEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
@@ -394,7 +419,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, distributionapp.DistributionSettlementQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -771,6 +796,15 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	productCatalog := productapp.NewService(uow, productRepository, productEvents)
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
+	if err = productCatalog.SetDistributionPolicyWriter(distributionPolicyService); err != nil {
+		return fail(err)
+	}
+	if err = productServicePeriod.SetDistributionPolicyWriter(distributionPolicyService); err != nil {
+		return fail(err)
+	}
+	if err = productLifecycle.SetDistributionPolicyWriter(distributionPolicyService); err != nil {
+		return fail(err)
+	}
 	commercePushRuntimeTargets, err := commercePushTargetsFromRuntime(cfg.CommercePush)
 	if err != nil {
 		return fail(err)
@@ -808,6 +842,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	productExternalPush.SetCommercePushEndpointManager(commercePushTargetResolver)
 	productBindings, err := productModule.Bind(productCatalog, productLifecycle, productServicePeriod, productExternalPush, requestSecurity)
 	if err != nil {
+		return fail(err)
+	}
+	if err = productBindings.ProductHandler.SetDistributionPolicyReader(distributionPolicyService); err != nil {
 		return fail(err)
 	}
 	if err = productBindings.ProductHandler.SetServicePeriodMemberWorkspace(productMemberGrid); err != nil {
@@ -1061,9 +1098,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	paidPurchaseActions.SetPaidGuidanceOrderReader(orderService)
-	if err = orderService.SetPaidEventConsumer(orderPaidEventFanout{commerce: commercePushService, purchase: paidPurchaseActions}); err != nil {
-		return fail(err)
-	}
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	ownerHandoffCipher, cipherErr := customer.NewOwnerHandoffCipher(cfg.Survey.DataKey)
 	if cipherErr != nil {
@@ -1121,6 +1155,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	paymentService := paymentapp.NewService(uow, paymentRepository, orderService, paymentSession, effectRepository, effectRepository)
 	paymentService.SetCanonicalLineageReader(queries)
+	if err = paymentService.SetProfitSharingIdentityReader(queries); err != nil {
+		return fail(err)
+	}
 	if err = paymentService.SetCheckoutProductReader(productTargets); err != nil {
 		return fail(err)
 	}
@@ -1131,7 +1168,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink, automation: generationCompletionSink}); err != nil {
+	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink, paymentDistribution: paymentService, automation: generationCompletionSink}); err != nil {
 		return fail(err)
 	}
 	if err = paymentReconciliationWorker.BindService(paymentService); err != nil {
@@ -1160,10 +1197,29 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(parseErr)
 		}
 		credential := paymentprovider.Credential{MerchantID: cfg.WeChatPay.MerchantID, Serial: cfg.WeChatPay.MerchantSerial, Signer: signer, PlatformKeys: map[string]*rsa.PublicKey{platformSerial: platformKey}}
-		loader := paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository, Identities: queries, AppScope: cfg.WeChatPay.AppScope, H5AppScope: cfg.WeChatPay.H5AppScope}
+		loader := paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository, Identities: queries, AppScope: cfg.WeChatPay.AppScope, H5AppScope: cfg.WeChatPay.H5AppScope, ProfitSharing: paymentService}
 		wechatPayAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{Enabled: true, AppID: cfg.WeChatPay.AppID, AppScope: cfg.WeChatPay.AppScope, H5AppID: cfg.WeChatPay.H5AppID, H5AppScope: cfg.WeChatPay.H5AppScope, APIBaseURL: "https://api.mch.weixin.qq.com", PaymentNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/payment", RefundNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/refund", Credential: credential}, loader, &http.Client{Timeout: 10 * time.Second})
 		if err != nil {
 			return fail(err)
+		}
+		if cfg.WeChatPay.ProfitSharingEnabled {
+			merchantRSAKey, rsaOK := signer.(*rsa.PrivateKey)
+			if !rsaOK {
+				return fail(errors.New("wechat pay merchant signer is not RSA"))
+			}
+			// Reuse the explicitly configured, verified public key. This avoids
+			// the SDK's AutoAuth certificate downloader on ordinary payment
+			// startup and keeps profit sharing an independently enabled provider.
+			profitSharingSDK, sdkErr := paymentprovider.NewOfficialProfitSharingSDKWithPublicKey(ctx, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, cfg.WeChatPay.ProfitSharingPublicKeyID, merchantRSAKey, platformKey)
+			if sdkErr != nil {
+				return fail(sdkErr)
+			}
+			if err = wechatPayAdapter.SetProfitSharingSDK(profitSharingSDK); err != nil {
+				return fail(err)
+			}
+			if err = paymentService.SetProfitSharingReconciler(wechatPayAdapter); err != nil {
+				return fail(err)
+			}
 		}
 		paymentCallbackVerifier, err = paymentprovider.NewCallbackVerifier(credential.PlatformKeys, []byte(cfg.WeChatPay.APIV3Key), cfg.WeChatPay.AppID, cfg.WeChatPay.MerchantID, cfg.WeChatPay.H5AppID)
 		if err != nil {
@@ -1227,6 +1283,84 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	if err = paymentHandler.SetH5OAuth(h5OAuthService); err != nil {
+		return fail(err)
+	}
+	// Distribution is a separate external-customer capability. It is composed
+	// only when the configured Payment channel can provide the exact scoped
+	// WeChat identity and provider boundary it needs; otherwise every public
+	// Distribution route fails closed and no paid-event commission consumer is
+	// installed.
+	var distributionPublic http.Handler = distributionUnavailableHandler{}
+	var distributionAdmin http.Handler = distributionUnavailableHandler{}
+	var distributionCommissionConsumer orderport.PaidEventConsumer
+	if cfg.WeChatPay.Enabled && cfg.WeChatPay.AppID != "" && cfg.WeChatPay.AppScope != "" {
+		qualificationService, distributionErr := distributionapp.NewQualificationService(queries, orderService, paymentService)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		browserSessions, distributionErr := distributionapp.NewBrowserSessionService(uow, distributionRepository)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		bridge, distributionErr := distributionapp.NewPaymentSessionBridge(uow, paymentSession, browserSessions, cfg.WeChatPay.AppID, cfg.WeChatPay.AppScope, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppScope)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		registration, distributionErr := distributionapp.NewRegistrationService(uow, distributionRepository, paymentService)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		promotion, distributionErr := distributionapp.NewPromotionService(uow, distributionRepository, qualificationService, productCatalog, productTargets, queries, cfg.PublicOrigin)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		promotion.SetSettlementEnabled(cfg.WeChatPay.ProfitSharingEnabled)
+		commissionService, distributionErr := distributionapp.NewCommissionService(distributionRepository, distributionDueEnqueuer, qualificationService)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		refundService, distributionErr := distributionapp.NewRefundService(uow, distributionRepository, distributionDueEnqueuer, distributionRefundEnqueuer, qualificationService, orderService)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		settlementService, distributionErr := distributionapp.NewSettlementService(uow, distributionRepository, qualificationService, paymentService)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		if distributionErr = distributionDueWorker.BindService(settlementService); distributionErr != nil {
+			return fail(distributionErr)
+		}
+		if distributionErr = distributionRefundWorker.BindService(refundService); distributionErr != nil {
+			return fail(distributionErr)
+		}
+		if distributionErr = orderService.SetCheckoutAttributionCoordinator(promotion); distributionErr != nil {
+			return fail(distributionErr)
+		}
+		if distributionErr = orderService.SetRefundSettlementConsumer(refundService); distributionErr != nil {
+			return fail(distributionErr)
+		}
+		if distributionErr = paymentService.SetRefundExposureConsumer(refundService); distributionErr != nil {
+			return fail(distributionErr)
+		}
+		readModelService, distributionErr := distributionapp.NewReadModelService(uow, distributionRepository)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		distributionPublic, distributionErr = distributionhttp.NewHandler(distributionhttp.Config{Registration: registration, Promotion: promotion, Earnings: readModelService, Sessions: browserSessions, Bridge: bridge, CookieSecure: true, AllowedOrigins: []string{cfg.PublicOrigin, h5PublicOrigin(cfg)}})
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		adminService, distributionErr := distributionapp.NewAdminService(uow, distributionRepository, paymentService)
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		distributionAdmin, distributionErr = distributionhttp.NewAdminHandler(distributionhttp.AdminConfig{Reader: readModelService, Commands: adminService, Security: requestSecurity})
+		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		distributionCommissionConsumer = commissionService
+	}
+	if err = orderService.SetPaidEventConsumer(orderPaidEventFanout{commerce: commercePushService, purchase: paidPurchaseActions, distribution: distributionCommissionConsumer}); err != nil {
 		return fail(err)
 	}
 	couponPublicHandler, err := couponhttp.NewPublicHandler(couponPublic, couponCheckout, paymentSession, productTargets, uow)
@@ -1810,6 +1944,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	aiReviewAPIs.Handle("/", aiHandler.Routes())
 	handler = mountAIAssistant(handler, aiReviewAPIs, aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
 	handler = securityHeaders(mountPublicCoupon(mountPublicServicePeriod(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler), publicServicePeriodHandler), couponPublicHandler))
+	handler = mountDistribution(handler, distributionPublic, distributionAdmin)
 	handler = redirectH5EntryOrigin(handler, cfg.PublicOrigin, h5PublicOrigin(cfg))
 	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
 	if err != nil {
@@ -2231,7 +2366,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/common/operation-members/", groupOpsHandler)
 	mux.Handle("/api/automation/group-ops/", groupOpsHandler)
 	adminRuntimeAssets := webshell.NewRuntimeAssetsHandler("web/dist", effectsUI)
-	mux.Handle("/assets/", requireAdminSession(authentication, adminRuntimeAssets))
+	mux.Handle("/assets/", distributionRuntimeAssets(requireAdminSession(authentication, adminRuntimeAssets), "web/dist"))
 	mux.Handle("/media-assets/", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/product-assets/", requireAdminSession(authentication, productUI))
 	mux.Handle("/coupon-assets/", requireAdminSession(authentication, couponUI))
@@ -2312,6 +2447,11 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/static/", shell)
 	mux.Handle("/sidebar-assets/", shell)
 	mux.Handle(webshell.SidebarPagePath, shell)
+	// The distributor center has its own Payment-derived browser session. It is
+	// a public shell document; its Distribution API independently authorizes
+	// every read and mutation and must never require an employee Access cookie.
+	mux.Handle("/distribution", shell)
+	mux.Handle("/distribution/", shell)
 	mux.Handle("/admin", requireAdminSession(authentication, shell))
 	mux.Handle("/admin/", requireAdminSession(authentication, shell))
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {

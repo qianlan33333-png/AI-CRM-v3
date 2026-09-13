@@ -166,7 +166,7 @@ func (r *Repository) CreatePayment(ctx context.Context, p domain.Payment, key, p
 	if !errors.Is(e, pgx.ErrNoRows) {
 		return domain.Payment{}, false, e
 	}
-	e = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,created_at,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)RETURNING id`, p.OrderID, p.Provider, p.Channel, p.MerchantOrderNo, p.PayerIdentityID, p.PayerCustomerID, p.BeneficiaryCustomerID, p.AmountMinor, p.Currency, p.Status, p.Version, p.CreatedAt, p.UpdatedAt).Scan(&p.ID)
+	e = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,profit_sharing_marked,currency,status,version,created_at,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)RETURNING id`, p.OrderID, p.Provider, p.Channel, p.MerchantOrderNo, p.PayerIdentityID, p.PayerCustomerID, p.BeneficiaryCustomerID, p.AmountMinor, p.ProfitSharingMarked, p.Currency, p.Status, p.Version, p.CreatedAt, p.UpdatedAt).Scan(&p.ID)
 	if e != nil {
 		return domain.Payment{}, false, mapError(e)
 	}
@@ -229,12 +229,12 @@ func (r *Repository) GetPayment(ctx context.Context, id int64, lock bool) (domai
 	if e != nil {
 		return domain.Payment{}, e
 	}
-	q := `SELECT id,order_id,provider,payment_channel,merchant_order_no,COALESCE(payer_identity_id,0),COALESCE(payer_customer_id,0),COALESCE(beneficiary_customer_id,0),amount_minor,currency,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_transaction_digest,''),version,created_at,updated_at,historical,source_status,history_reason FROM payments WHERE id=$1`
+	q := `SELECT id,order_id,provider,payment_channel,merchant_order_no,COALESCE(payer_identity_id,0),COALESCE(payer_customer_id,0),COALESCE(beneficiary_customer_id,0),amount_minor,profit_sharing_marked,currency,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_transaction_reference,''),COALESCE(provider_transaction_digest,''),version,paid_confirmed_at,created_at,updated_at,historical,source_status,history_reason FROM payments WHERE id=$1`
 	if lock {
 		q += ` FOR UPDATE`
 	}
 	var p domain.Payment
-	e = t.QueryRow(ctx, q, id).Scan(&p.ID, &p.OrderID, &p.Provider, &p.Channel, &p.MerchantOrderNo, &p.PayerIdentityID, &p.PayerCustomerID, &p.BeneficiaryCustomerID, &p.AmountMinor, &p.Currency, &p.Status, &p.EffectID, &p.ProviderTransactionDigest, &p.Version, &p.CreatedAt, &p.UpdatedAt, &p.Historical, &p.SourceStatus, &p.HistoryReason)
+	e = t.QueryRow(ctx, q, id).Scan(&p.ID, &p.OrderID, &p.Provider, &p.Channel, &p.MerchantOrderNo, &p.PayerIdentityID, &p.PayerCustomerID, &p.BeneficiaryCustomerID, &p.AmountMinor, &p.ProfitSharingMarked, &p.Currency, &p.Status, &p.EffectID, &p.ProviderTransactionReference, &p.ProviderTransactionDigest, &p.Version, &p.PaidConfirmedAt, &p.CreatedAt, &p.UpdatedAt, &p.Historical, &p.SourceStatus, &p.HistoryReason)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return domain.Payment{}, paymentport.ErrNotFound
 	}
@@ -706,7 +706,11 @@ func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDi
 }
 
 func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.Payment, digest [32]byte, runID string) (domain.Payment, error) {
-	if payment.EffectID != "" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.PayerIdentityID < 0 || payment.PayerCustomerID < 0 || payment.BeneficiaryCustomerID < 0 || ((payment.PayerIdentityID == 0) != (payment.PayerCustomerID == 0)) || (payment.PayerCustomerID == 0 && payment.BeneficiaryCustomerID != 0) {
+	// Older history snapshots may prove a terminal paid ledger row without
+	// preserving the provider's immutable confirmation timestamp. Keep that
+	// ledger import nullable. Distribution's evidence check rejects nil instead
+	// of turning a later import/update timestamp into a payment fact.
+	if payment.EffectID != "" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.PayerIdentityID < 0 || payment.PayerCustomerID < 0 || payment.BeneficiaryCustomerID < 0 || ((payment.PayerIdentityID == 0) != (payment.PayerCustomerID == 0)) || (payment.PayerCustomerID == 0 && payment.BeneficiaryCustomerID != 0) || (payment.PaidConfirmedAt != nil && (payment.Status != domain.StatusPaid || payment.PaidConfirmedAt.IsZero() || payment.PaidConfirmedAt.Before(payment.CreatedAt) || payment.PaidConfirmedAt.After(payment.UpdatedAt))) {
 		return domain.Payment{}, paymentport.ErrConflict
 	}
 	payment.Historical = true
@@ -737,7 +741,7 @@ func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.P
 	if !errors.Is(lookupErr, paymentport.ErrNotFound) {
 		return domain.Payment{}, lookupErr
 	}
-	err = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at,historical,source_status,history_reason) VALUES($1,$2,$3,$4,NULLIF($5,0),NULLIF($6,0),NULLIF($7,0),$8,$9,$10,NULLIF($11,''),$12,$13,$14,true,$15,$16) RETURNING id`, payment.OrderID, payment.Provider, payment.Channel, payment.MerchantOrderNo, payment.PayerIdentityID, payment.PayerCustomerID, payment.BeneficiaryCustomerID, payment.AmountMinor, payment.Currency, payment.Status, payment.ProviderTransactionDigest, payment.Version, payment.CreatedAt, payment.UpdatedAt, payment.SourceStatus, payment.HistoryReason).Scan(&payment.ID)
+	err = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,paid_confirmed_at,created_at,updated_at,historical,source_status,history_reason) VALUES($1,$2,$3,$4,NULLIF($5,0),NULLIF($6,0),NULLIF($7,0),$8,$9,$10,NULLIF($11,''),$12,$13,$14,$15,true,$16,$17) RETURNING id`, payment.OrderID, payment.Provider, payment.Channel, payment.MerchantOrderNo, payment.PayerIdentityID, payment.PayerCustomerID, payment.BeneficiaryCustomerID, payment.AmountMinor, payment.Currency, payment.Status, payment.ProviderTransactionDigest, payment.Version, payment.PaidConfirmedAt, payment.CreatedAt, payment.UpdatedAt, payment.SourceStatus, payment.HistoryReason).Scan(&payment.ID)
 	if err != nil {
 		return domain.Payment{}, mapError(err)
 	}
@@ -806,7 +810,7 @@ func (r *Repository) ProviderIntent(ctx context.Context, kind effectport.Kind, s
 			COALESCE(p.id, rp.id),COALESCE(i.refund_id,0),
 			COALESCE(p.payer_identity_id,rp.payer_identity_id),COALESCE(p.payment_channel,rp.payment_channel),COALESCE(p.merchant_order_no,rp.merchant_order_no),
 			COALESCE(r.refund_no,''),COALESCE(r.reason,''),
-			COALESCE(r.amount_minor,p.amount_minor),COALESCE(p.amount_minor,rp.amount_minor),COALESCE(p.currency,rp.currency)
+			COALESCE(r.amount_minor,p.amount_minor),COALESCE(p.amount_minor,rp.amount_minor),COALESCE(p.profit_sharing_marked,false),COALESCE(p.currency,rp.currency)
 		FROM payment_provider_intents i
 		LEFT JOIN payments p ON p.id=i.payment_id
 		LEFT JOIN payment_refunds r ON r.id=i.refund_id
@@ -814,7 +818,7 @@ func (r *Repository) ProviderIntent(ctx context.Context, kind effectport.Kind, s
 		WHERE i.effect_kind=$1 AND i.source_ref_digest=$2`, kind, source,
 	).Scan(&storedKind, &storedSource, &payload, &requestSnapshot, &out.PaymentID, &out.RefundID,
 		&out.PayerIdentityID, &out.Channel, &out.MerchantOrderNo, &out.RefundNo, &out.RefundReason,
-		&out.AmountMinor, &out.TotalMinor, &out.Currency)
+		&out.AmountMinor, &out.TotalMinor, &out.ProfitSharingMarked, &out.Currency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return paymentport.ProviderIntent{}, paymentport.ErrNotFound
 	}
@@ -979,7 +983,7 @@ func (r *Repository) UpdatePaymentSettlement(ctx context.Context, p domain.Payme
 	if providerDigest != "" && !effectport.ValidDigest(effectport.Digest(providerDigest)) {
 		return domain.Payment{}, paymentport.ErrConflict
 	}
-	result, e := t.Exec(ctx, `UPDATE payments SET status=$2,provider_transaction_digest=NULLIF($3,''),version=$4,updated_at=$5 WHERE id=$1 AND version=$6`, p.ID, p.Status, providerDigest, p.Version, p.UpdatedAt, p.Version-1)
+	result, e := t.Exec(ctx, `UPDATE payments SET status=$2,provider_transaction_reference=NULLIF($3,''),provider_transaction_digest=NULLIF($4,''),paid_confirmed_at=CASE WHEN $2='paid' THEN COALESCE(paid_confirmed_at,$6) ELSE paid_confirmed_at END,version=$5,updated_at=$6 WHERE id=$1 AND version=$7`, p.ID, p.Status, p.ProviderTransactionReference, providerDigest, p.Version, p.UpdatedAt, p.Version-1)
 	if e != nil || result.RowsAffected() != 1 {
 		if e != nil {
 			return domain.Payment{}, mapError(e)

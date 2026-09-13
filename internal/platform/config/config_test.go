@@ -289,6 +289,30 @@ func TestWeChatPayProviderRequiresMiniProgramIdentityCredential(t *testing.T) {
 	}
 }
 
+func TestWeChatPayProfitSharingIsIndependentlyDisabledAndFailsClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	for key, value := range map[string]string{
+		"AICRM_WECHAT_PAY_PROVIDER_ENABLED": "true", "AICRM_WECHAT_PAY_APP_ID": "wx-app", "AICRM_WECHAT_PAY_APP_SECRET": "app-secret", "AICRM_WECHAT_PAY_APP_SCOPE": "wechat-app:wx-app",
+		"AICRM_WECHAT_PAY_MERCHANT_ID": "merchant", "AICRM_WECHAT_PAY_MERCHANT_SERIAL": "serial", "AICRM_WECHAT_PAY_PRIVATE_KEY_PATH": "/keys/merchant.pem", "AICRM_WECHAT_PAY_PLATFORM_CERT_PATH": "/keys/platform.pem", "AICRM_WECHAT_PAY_API_V3_KEY": strings.Repeat("k", 32),
+	} {
+		t.Setenv(key, value)
+	}
+	cfg, err := Load()
+	if err != nil || !cfg.WeChatPay.Enabled || cfg.WeChatPay.ProfitSharingEnabled {
+		t.Fatalf("ordinary payment must not enable profit sharing: cfg=%+v err=%v", cfg.WeChatPay, err)
+	}
+	t.Setenv("AICRM_WECHAT_PAY_PROFIT_SHARING_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("profit sharing enabled without External Effects and a verified public key id")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECHAT_PAY_PROFIT_SHARING_PUBLIC_KEY_ID", "PUB_KEY_ID")
+	cfg, err = Load()
+	if err != nil || !cfg.WeChatPay.ProfitSharingEnabled || cfg.WeChatPay.ProfitSharingPublicKeyID != "PUB_KEY_ID" {
+		t.Fatalf("independent profit-sharing configuration=%+v err=%v", cfg.WeChatPay, err)
+	}
+}
+
 func TestWeChatPayH5OAuthIsIndependentAndFailClosed(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_WECHAT_PAY_H5_OAUTH_ENABLED", "true")

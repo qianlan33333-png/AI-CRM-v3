@@ -299,6 +299,9 @@ func commerceHistoryCommandMigrate(ctx context.Context, pool *pgxpool.Pool) erro
 		"0061_product_public_purchase.sql",
 		"0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql",
 		"0129_order_history_source_delta.sql",
+		"0134_payment_history_source_delta.sql",
+		"0156_distribution_profit_sharing_payment.sql",
+		"0161_payment_paid_confirmation_time.sql",
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, "migrations", name))
 		if err != nil {

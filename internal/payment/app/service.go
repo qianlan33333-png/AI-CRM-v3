@@ -31,6 +31,7 @@ type Store interface {
 	GetPayment(context.Context, int64, bool) (domain.Payment, error)
 	GetHandoff(context.Context, int64) (paymentport.Handoff, error)
 	ReservedRefundMinor(context.Context, int64) (int64, error)
+	ReservedProfitSharingMinor(context.Context, int64) (int64, error)
 	HasNonTerminalRefund(context.Context, int64) (bool, error)
 	CreateRefund(context.Context, domain.Refund, [32]byte, [32]byte, string) (domain.Refund, bool, error)
 	ReplayRefund(context.Context, [32]byte, [32]byte, string) (domain.Refund, bool, error)
@@ -55,20 +56,23 @@ type Store interface {
 }
 
 type Service struct {
-	lineage        identityport.CanonicalLineageReader
-	uow            platformport.UnitOfWork
-	store          Store
-	orders         orderport.PaymentCoordinator
-	sessions       paymentport.SessionLifecycle
-	effects        effectport.TransactionalAccepter
-	effectReader   effectport.Reader
-	shopReconciler paymentport.ShopRefundReconciler
-	payReconciler  paymentport.WeChatPayReconciler
-	reconcileJobs  paymentport.ReconciliationEnqueuer
-	products       productport.CheckoutProductReader
-	miniAppID      string
-	h5AppID        string
-	now            func() time.Time
+	lineage                 identityport.CanonicalLineageReader
+	receiverIDs             identityport.PaymentIdentityReader
+	uow                     platformport.UnitOfWork
+	store                   Store
+	orders                  orderport.PaymentCoordinator
+	sessions                paymentport.SessionLifecycle
+	effects                 effectport.TransactionalAccepter
+	effectReader            effectport.Reader
+	shopReconciler          paymentport.ShopRefundReconciler
+	payReconciler           paymentport.WeChatPayReconciler
+	profitSharingReconciler paymentport.ProfitSharingReconciler
+	reconcileJobs           paymentport.ReconciliationEnqueuer
+	products                productport.CheckoutProductReader
+	refundExposureConsumer  paymentport.RefundExposureConsumer
+	miniAppID               string
+	h5AppID                 string
+	now                     func() time.Time
 }
 
 func (s *Service) SetPaymentChannelAppIDs(miniProgramAppID, h5OfficialAccountAppID string) error {
@@ -76,6 +80,16 @@ func (s *Service) SetPaymentChannelAppIDs(miniProgramAppID, h5OfficialAccountApp
 		return paymentport.ErrInvalid
 	}
 	s.miniAppID, s.h5AppID = miniProgramAppID, h5OfficialAccountAppID
+	return nil
+}
+
+// SetRefundExposureConsumer registers the in-UoW observer for refund state
+// changes. It is optional until Distribution composition is enabled.
+func (s *Service) SetRefundExposureConsumer(consumer paymentport.RefundExposureConsumer) error {
+	if s == nil || consumer == nil || s.refundExposureConsumer != nil {
+		return paymentport.ErrInvalid
+	}
+	s.refundExposureConsumer = consumer
 	return nil
 }
 
@@ -111,6 +125,25 @@ func (s *Service) SetWeChatPayReconciler(reconciler paymentport.WeChatPayReconci
 	return nil
 }
 
+// SetProfitSharingIdentityReader wires the restricted Identity adapter used to
+// verify an existing, scoped OpenID before a distribution receiver is accepted.
+// It does not resolve, create, merge, or expose customer identity data.
+func (s *Service) SetProfitSharingIdentityReader(reader identityport.PaymentIdentityReader) error {
+	if s == nil || reader == nil || s.receiverIDs != nil {
+		return paymentport.ErrInvalid
+	}
+	s.receiverIDs = reader
+	return nil
+}
+
+func (s *Service) SetProfitSharingReconciler(reconciler paymentport.ProfitSharingReconciler) error {
+	if s == nil || reconciler == nil || s.profitSharingReconciler != nil {
+		return paymentport.ErrInvalid
+	}
+	s.profitSharingReconciler = reconciler
+	return nil
+}
+
 func NewService(uow platformport.UnitOfWork, store Store, orders orderport.PaymentCoordinator, sessions paymentport.SessionLifecycle, effects effectport.TransactionalAccepter, readers ...effectport.Reader) *Service {
 	service := &Service{uow: uow, store: store, orders: orders, sessions: sessions, effects: effects, now: time.Now}
 	if len(readers) > 0 {
@@ -122,7 +155,7 @@ func NewService(uow platformport.UnitOfWork, store Store, orders orderport.Payme
 func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (domain.Payment, error) {
 	fromExistingOrder := c.OrderID > 0 && c.ProductID == 0 && c.ProductType == ""
 	fromProduct := c.OrderID == 0 && c.ProductID > 0 && (c.ProductType == string(productport.ProductOptionStandard) || c.ProductType == string(productport.ProductOptionServicePeriod))
-	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
+	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) || len(c.PromotionContext) > 512 || strings.TrimSpace(c.PromotionContext) != c.PromotionContext {
 		return domain.Payment{}, paymentport.ErrInvalid
 	}
 	// A response-lost browser recovery checkpoint is valid for precisely the
@@ -243,7 +276,7 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 				PayerCustomerID: actor.PayerCustomerID, BeneficiaryCustomerID: actor.BeneficiaryCustomerID,
 				ProductID: int64(product.ID), CouponClaimID: c.CouponClaimID, ProductCode: product.Code, ProductName: product.Name,
 				ProductVersion: product.Version, ProductType: orderCheckoutProductType(product.ProductType), ServicePeriodDurationDays: product.ServicePeriodDurationDays, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
-				MobileE164: c.MobileE164,
+				MobileE164: c.MobileE164, PromotionContext: c.PromotionContext,
 				ActorScope: "payment-session:" + hex.EncodeToString(sessionDigest[:]), IdempotencyKey: c.IdempotencyKey,
 			})
 		}
@@ -253,7 +286,12 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		if order.PayerCustomerID == nil || order.BeneficiaryCustomerID == nil || int64(*order.PayerCustomerID) != actor.PayerCustomerID || int64(*order.BeneficiaryCustomerID) != actor.BeneficiaryCustomerID {
 			return paymentport.ErrConflict
 		}
-		payment, err := domain.NewPayment(order, actor.PayerIdentityID, now, channel)
+		// Distribution is the only coordinator that may decide whether this
+		// checkout needs a profit-sharing reservation. Its result was frozen by
+		// Order in this same Unit of Work. Never accept a caller supplied boolean:
+		// that would let an HTTP request mark an invalid, self, direct, or zero
+		// commission sale as shareable.
+		payment, err := domain.NewPaymentWithProfitSharing(order, actor.PayerIdentityID, order.ProfitSharingRequired, now, channel)
 		if err != nil {
 			return err
 		}
@@ -394,7 +432,14 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 		if err != nil {
 			return err
 		}
-		if reserved < 0 || c.AmountMinor > payment.AmountMinor-reserved {
+		profitSharingReserved, err := s.store.ReservedProfitSharingMinor(tx, payment.ID)
+		if err != nil {
+			return err
+		}
+		// The payment row is the shared coordinator lock. Once a split reserve
+		// exists, an ensuing refund may not consume those retained funds. This
+		// is deliberately checked before creating any refund effect.
+		if reserved < 0 || profitSharingReserved < 0 || c.AmountMinor > payment.AmountMinor-reserved-profitSharingReserved {
 			return paymentport.ErrConflict
 		}
 		refund, err := domain.NewRefund(payment, c.RefundNo, c.AmountMinor, c.Reason, now)
@@ -430,6 +475,9 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 		} else if refund.EffectID != projection.ID {
 			return paymentport.ErrConflict
 		}
+		if err = s.notifyRefundExposureWithin(tx, payment.OrderID, refund.ID, paymentport.RefundExposureOpened, now, "refund-open:"+c.IdempotencyKey); err != nil {
+			return err
+		}
 		result = refund
 		return nil
 	})
@@ -437,6 +485,13 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 		return domain.Refund{}, classify(err)
 	}
 	return result, nil
+}
+
+func (s *Service) notifyRefundExposureWithin(ctx context.Context, orderID, refundID int64, state paymentport.RefundExposureState, at time.Time, receiptKey string) error {
+	if s.refundExposureConsumer == nil {
+		return nil
+	}
+	return s.refundExposureConsumer.ConsumeRefundExposureWithin(ctx, paymentport.RefundExposureEvent{OrderID: orderID, RefundID: refundID, State: state, OccurredAt: at.UTC(), ReceiptKey: receiptKey})
 }
 
 func (s *Service) GetPayment(ctx context.Context, id int64) (domain.Payment, error) {
@@ -807,6 +862,7 @@ func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64
 		if inner != nil {
 			return inner
 		}
+		locked.ProviderTransactionReference = query.TransactionReference
 		receiptKey := "reconcile:" + string(query.EvidenceDigest)
 		current, inner = s.store.UpdatePaymentSettlement(tx, locked, string(query.TransactionDigest), receiptKey)
 		if inner != nil {
@@ -879,8 +935,11 @@ func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) 
 		}
 		receiptKey := "reconcile:" + string(query.EvidenceDigest)
 		current, inner = s.store.UpdateRefundSettlement(tx, locked, string(query.RefundDigest), receiptKey)
-		if inner != nil || outcome == "final_failed" {
+		if inner != nil {
 			return inner
+		}
+		if outcome == "final_failed" {
+			return s.notifyRefundExposureWithin(tx, payment.OrderID, current.ID, paymentport.RefundExposureFinalFailed, query.OccurredAt, receiptKey)
 		}
 		payment, inner = s.store.GetPayment(tx, current.PaymentID, false)
 		if inner != nil {
@@ -917,6 +976,7 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 			if err != nil {
 				return err
 			}
+			payment.ProviderTransactionReference = callback.ProviderTransactionReference
 			receiptKey := "callback:" + hexDigest(callback.EventDigest)
 			if _, err = s.store.UpdatePaymentSettlement(tx, payment, callback.ProviderTransactionDigest, receiptKey); err != nil {
 				return err
