@@ -157,7 +157,7 @@ curl --fail-with-body -X POST \
 | 404 | `plan_not_found` | URL 的 Webhook reference 未解析到计划；核对计划描述符，不能用群名称代替 reference。|
 | 409 | `idempotency_conflict` / `operations_conflict` | 前者表示同事件不一致；后者表示计划未启用、配置不完整或目标不属于该计划。不要自动改 event ID 重发。|
 | 503 | `miniprogram_cover_resolver_not_configured` | 配置已批准的 Media 解析器后，用同一事件和完全相同 JSON 重放。|
-| 503 | `provider_disabled` | 运行时尚未允许接受新的 EER 意图；当前生产正处于此状态。不会调用小程序解析，也不能将它当成已接受或已群发。恢复后只能用原事件和完全相同 JSON 重试。|
+| 503 | `provider_disabled` | 运行时尚未允许接受新的 EER 意图；本次生产排查时此开关处于关闭状态。不会调用小程序解析，也不能将它当成已接受或已群发。恢复后只能用原事件和完全相同 JSON 重试。|
 | 503 | `protocol_auth_unavailable` / `group_ops_unavailable` | 签名验收依赖或 Group Ops 运行时不可用；不要把它当成已接受或已群发。恢复后只能用原事件和完全相同 JSON 重试。|
 
 202 只证明本地 run/EER 意图已原子接受。企微素材准备、实际 Provider 调用和群内送达是后续独立状态，不能由 202 推断为已群发。
