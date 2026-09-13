@@ -165,7 +165,7 @@ func adminAccessRead(users []app.UserSummary) map[string]any {
 			"admin_user_id": user.ID, "display_name": user.DisplayName,
 			"role": adminAccessRole(user.Roles), "staff_id": nil,
 			"staff_wecom_userid": user.WeComUserID, "staff_name": user.DisplayName,
-			"is_active": user.Active, "login_enabled": user.Active,
+			"is_active": user.Active, "login_enabled": user.LoginEnabled,
 		})
 	}
 	return map[string]any{"ok": true, "members": members, "local_only": true, "external": false}
