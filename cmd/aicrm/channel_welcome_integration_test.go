@@ -305,7 +305,7 @@ func seedChannelWelcomeFixtureWithWelcomeMessage(t *testing.T, ctx context.Conte
 func insertChannelWelcomeAdmin(t *testing.T, ctx context.Context, native *pgxpool.Pool) int64 {
 	t.Helper()
 	var id int64
-	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('channel-welcome','$argon2id$channel-welcome','Channel Welcome','channel-welcome',true) RETURNING id`).Scan(&id); err != nil {
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('channel-welcome','$argon2id$channel-welcome','Channel Welcome','channel-welcome',true,false) RETURNING id`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -415,6 +415,11 @@ func channelWelcomeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 			admin.Close()
 			t.Fatalf("apply %s: %v", migration, execErr)
 		}
+	}
+	if err = ensureAccessLoginFixtureSchema(ctx, native); err != nil {
+		native.Close()
+		admin.Close()
+		t.Fatal(err)
 	}
 	return native, func() {
 		native.Close()

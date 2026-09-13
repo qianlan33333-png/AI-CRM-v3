@@ -183,10 +183,10 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 		if txErr != nil {
 			return txErr
 		}
-		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('handoff-runtime-source','$argon2id$fixture','Former','former-user',false) RETURNING id`).Scan(&sourceID); txErr != nil {
+		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('handoff-runtime-source','$argon2id$fixture','Former','former-user',false,false) RETURNING id`).Scan(&sourceID); txErr != nil {
 			return txErr
 		}
-		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('handoff-runtime-target','$argon2id$fixture','Next','next-user',true) RETURNING id`).Scan(&targetID); txErr != nil {
+		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('handoff-runtime-target','$argon2id$fixture','Next','next-user',true,false) RETURNING id`).Scan(&targetID); txErr != nil {
 			return txErr
 		}
 		for index := 0; index < handoffRows; index++ {
@@ -466,10 +466,10 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 		if txErr != nil {
 			return txErr
 		}
-		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('handoff-segment-source','$argon2id$fixture','Former','segment-former',false) RETURNING id`).Scan(&sourceID); txErr != nil {
+		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('handoff-segment-source','$argon2id$fixture','Former','segment-former',false,false) RETURNING id`).Scan(&sourceID); txErr != nil {
 			return txErr
 		}
-		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('handoff-segment-target','$argon2id$fixture','Next','segment-next',true) RETURNING id`).Scan(&targetID); txErr != nil {
+		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('handoff-segment-target','$argon2id$fixture','Next','segment-next',true,false) RETURNING id`).Scan(&targetID); txErr != nil {
 			return txErr
 		}
 		for index := 0; index < handoffRows; index++ {

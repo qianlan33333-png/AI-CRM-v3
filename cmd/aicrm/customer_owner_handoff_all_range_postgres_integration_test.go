@@ -64,13 +64,13 @@ func TestPostgreSQLOwnerHandoffAllRangePreservesCustomerLocalPrecedence(t *testi
 		if txErr != nil {
 			return txErr
 		}
-		if txErr = database.QueryRow(tx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('all-range-source','$argon2id$fixture','Source','all-range-source',false) RETURNING id`).Scan(&source); txErr != nil {
+		if txErr = database.QueryRow(tx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('all-range-source','$argon2id$fixture','Source','all-range-source',false,false) RETURNING id`).Scan(&source); txErr != nil {
 			return txErr
 		}
-		if txErr = database.QueryRow(tx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('all-range-target','$argon2id$fixture','Target','all-range-target',true) RETURNING id`).Scan(&target); txErr != nil {
+		if txErr = database.QueryRow(tx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('all-range-target','$argon2id$fixture','Target','all-range-target',true,false) RETURNING id`).Scan(&target); txErr != nil {
 			return txErr
 		}
-		if txErr = database.QueryRow(tx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('all-range-governance-owner','$argon2id$fixture','Governance Owner','all-range-governance-owner',true) RETURNING id`).Scan(&governanceOwner); txErr != nil {
+		if txErr = database.QueryRow(tx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at) VALUES('all-range-governance-owner','$argon2id$fixture','Governance Owner','all-range-governance-owner',true,true,clock_timestamp()) RETURNING id`).Scan(&governanceOwner); txErr != nil {
 			return txErr
 		}
 		if _, txErr = database.Exec(tx, `INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES($1,'viewer'),($2,'viewer'),($3,'super_admin')`, source, target, governanceOwner); txErr != nil {

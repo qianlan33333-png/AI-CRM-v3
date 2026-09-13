@@ -360,7 +360,7 @@ func (journeyTextMaterials) RegisterMaterialReference(context.Context, aiassista
 type journeyHTTPSecurity struct{}
 
 func (journeyHTTPSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
-	return accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleAdmin, accessdomain.RoleSuperAdmin}}, nil
+	return accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, nil
 }
 func (journeyHTTPSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
 	return journeyHTTPSecurity{}.Authenticate(context.Background(), nil)
@@ -416,8 +416,8 @@ func seedAIAssistantHTTPJourney(t *testing.T, pool *pgxpool.Pool) {
 	for _, query := range []string{
 		`INSERT INTO customers(id,status) OVERRIDING SYSTEM VALUE VALUES(91,'active')`,
 		`INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,status,verified_at) VALUES(91,'wecom_external_userid','wecom-corp:corp-1','external-1','verified','journey',1,'active',clock_timestamp())`,
-		`INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active) OVERRIDING SYSTEM VALUE VALUES(9,'journey-admin','$argon2id$journey','Journey Admin','staff-1',true)`,
-		`INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES(9,'admin'),(9,'super_admin')`,
+		`INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at) OVERRIDING SYSTEM VALUE VALUES(9,'journey-admin','$argon2id$journey','Journey Admin','staff-1',true,true,clock_timestamp())`,
+		`INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES(9,'super_admin')`,
 		`INSERT INTO wecom_follow_relationships(corp_id,employee_id,customer_id,active) VALUES('corp-1','staff-1',91,true)`,
 	} {
 		if _, err := pool.Exec(ctx, query); err != nil {
@@ -466,6 +466,9 @@ func aiAssistantHTTPJourneyPool(t *testing.T) (*pgxpool.Pool, func()) {
 		if err = applyAIAssistantHTTPJourneyMigration(ctx, pool, name); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err = ensureAccessLoginFixtureSchema(ctx, pool); err != nil {
+		t.Fatal(err)
 	}
 	return pool, func() {
 		pool.Close()

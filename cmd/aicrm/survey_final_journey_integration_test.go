@@ -146,7 +146,7 @@ func surveyJourneyGovernedActor(t *testing.T, ctx context.Context, pool *pgxpool
 	}
 	defer tx.Rollback(ctx)
 	var actorID int64
-	if err = tx.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active) VALUES($1,'$argon2id$test',$2,true) RETURNING id`, username, displayName).Scan(&actorID); err != nil {
+	if err = tx.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active,login_enabled,access_granted_at) VALUES($1,'$argon2id$test',$2,true,true,clock_timestamp()) RETURNING id`, username, displayName).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES($1,'super_admin')`, actorID); err != nil {

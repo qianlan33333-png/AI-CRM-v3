@@ -362,7 +362,7 @@ func openPlatformV1ReadMigrate(ctx context.Context, pool *pgxpool.Pool) error {
 			return fmt.Errorf("apply %s: %w", name, err)
 		}
 	}
-	return nil
+	return ensureAccessLoginFixtureSchema(ctx, pool)
 }
 
 func openPlatformV1ReadRequest(method, target, body, bearer string) *http.Request {

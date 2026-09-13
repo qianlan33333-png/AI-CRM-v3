@@ -27,10 +27,10 @@ func TestGroupOpsPostgreSQLPausedBasicSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	var actor, inactive int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active) VALUES('paused-save','$argon2id$test','Operator',true) RETURNING id`).Scan(&actor); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active,login_enabled) VALUES('paused-save','$argon2id$test','Operator',true,false) RETURNING id`).Scan(&actor); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active) VALUES('paused-inactive','$argon2id$test','Inactive',false) RETURNING id`).Scan(&inactive); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active,login_enabled) VALUES('paused-inactive','$argon2id$test','Inactive',false,false) RETURNING id`).Scan(&inactive); err != nil {
 		t.Fatal(err)
 	}
 	store, err := groupopsstore.NewPostgreSQL(native, uow)

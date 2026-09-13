@@ -60,7 +60,7 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	}
 
 	var actorID int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-journey','$argon2id$journey','Group Ops Journey','journey-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('groupops-journey','$argon2id$journey','Group Ops Journey','journey-sender',true,false) RETURNING id`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -373,7 +373,7 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	}
 
 	var actorID int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-river','$argon2id$river','Group Ops River','journey-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('groupops-river','$argon2id$river','Group Ops River','journey-sender',true,false) RETURNING id`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
 	groupStore, err := groupopsstore.NewPostgreSQL(native, uow)
@@ -678,7 +678,7 @@ func TestGroupOpsSharedRiverMaterialPreparationAutoResumes(t *testing.T) {
 	}
 
 	var actorID int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-material-river','$argon2id$material','Group Ops Material River','journey-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('groupops-material-river','$argon2id$material','Group Ops Material River','journey-sender',true,false) RETURNING id`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
 	groupStore, err := groupopsstore.NewPostgreSQL(native, uow)
@@ -872,10 +872,10 @@ func TestGroupOpsOperationMemberDirectoryPersistsVerifiedNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	var first, second int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('member-one','$argon2id$member','本地一','member-one',true) RETURNING id`).Scan(&first); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('member-one','$argon2id$member','本地一','member-one',true,false) RETURNING id`).Scan(&first); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('member-two','$argon2id$member','本地二','member-two',true) RETURNING id`).Scan(&second); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('member-two','$argon2id$member','本地二','member-two',true,false) RETURNING id`).Scan(&second); err != nil {
 		t.Fatal(err)
 	}
 	groupStore, err := groupopsstore.NewPostgreSQL(native, uow)
@@ -947,13 +947,13 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var actorID, replacementID, inactiveID int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-reactivate','$argon2id$reactivate','Group Ops Reactivate','journey-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('groupops-reactivate','$argon2id$reactivate','Group Ops Reactivate','journey-sender',true,false) RETURNING id`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-replacement','$argon2id$replacement','Group Ops Replacement','replacement-sender',true) RETURNING id`).Scan(&replacementID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('groupops-replacement','$argon2id$replacement','Group Ops Replacement','replacement-sender',true,false) RETURNING id`).Scan(&replacementID); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-inactive','$argon2id$inactive','Group Ops Inactive','inactive-sender',false) RETURNING id`).Scan(&inactiveID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('groupops-inactive','$argon2id$inactive','Group Ops Inactive','inactive-sender',false,false) RETURNING id`).Scan(&inactiveID); err != nil {
 		t.Fatal(err)
 	}
 	store, err := groupopsstore.NewPostgreSQL(native, uow)
@@ -1644,6 +1644,11 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 			admin.Close()
 			t.Fatalf("%s: %v", migration, execErr)
 		}
+	}
+	if err = ensureAccessLoginFixtureSchema(ctx, native); err != nil {
+		native.Close()
+		admin.Close()
+		t.Fatal(err)
 	}
 	return native, func() {
 		native.Close()
