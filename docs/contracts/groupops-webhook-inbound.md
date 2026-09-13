@@ -71,25 +71,61 @@ POST https://www.youcangogogo.com/api/automation/group-ops/webhooks/groupops-46d
 - `image_id`、`attachment_id` 是 JSON **数字**，不是字符串。
 - 未支持 `url`、`media_id`、原始图片/附件、任意远程下载地址，也不支持把文字放在图片或文件之后。
 
-小程序消息的 JSON 形式如下：
+小程序支持两种互斥的安全引用形态。
 
-```json
+日课课卡自动解析形态示例：
+
+~~~json
 {
   "webhook_reference": "groupops-46d055d8-0276-449c-a2b5-170af39c3c92",
   "target_chat_references": ["REPLACE_WITH_BOUND_ASSET_REFERENCE"],
   "messages": [
-    {"type": "text", "text": "点击查看课程详情"},
+    {"type": "text", "text": "点击查看今日课程"},
     {
       "type": "miniprogram",
-      "appid": "wx_your_miniprogram_appid",
-      "path": "pages/course/index?id=123",
-      "title": "课程详情"
+      "appid": "wx0ca836834b18e989",
+      "path": "pages/article/article?lesson_id=REPLACE_WITH_LESSON_UUID&from=learn",
+      "title": "今日课程"
     }
   ]
 }
-```
+~~~
 
-`title` 必填，最多 64 个 UTF-8 字节。小程序的封面必须由一个已批准的、Media 所有的 `appid + path` 解析器生成本地素材。当前仓库尚无这个解析器，因此在运行时已允许接受动态发送后，此分支会明确返回 `503 miniprogram_cover_resolver_not_configured`，不会选默认图、预配路径图或从任意 URL 抓图；文字、已上传图片和附件不受此限制。当前生产运行时尚未允许这类接受，所以请求会先得到 `503 provider_disabled`，不会进入小程序解析。
+title 必填，最多 64 个 UTF-8 字节。自动封面只支持此公开 AppID 和严格日课
+path：lesson_id 必须为规范 UUID，from=learn 必须唯一，不能有额外参数、host、
+scheme 或 fragment。Media 才能以固定课卡来源读取并验证 PNG，再在接受事务中
+创建本地图片和小程序素材。请求不能给封面 URL。其他 AppID/path 返回
+503 miniprogram_cover_resolver_unavailable，不会选择默认图或创建发送意图。
+
+无已验证自动封面规则的页面先以管理员 Cookie 加 X-CSRF-Token 上传 PNG/JPEG，
+再调用 POST /api/admin/miniprogram-library 创建已启用本地素材，例如：
+
+~~~json
+{
+  "name": "观察期内容卡片",
+  "appid": "THE_APPROVED_APPID",
+  "pagepath": "pages/observation-issue/observation-issue?id=REPLACE_WITH_ID",
+  "title": "内容详情",
+  "thumb_image_id": 123,
+  "enabled": true
+}
+~~~
+
+以该响应的本地数字 item.id 作为 Webhook 素材引用：
+
+~~~json
+{
+  "webhook_reference": "groupops-46d055d8-0276-449c-a2b5-170af39c3c92",
+  "target_chat_references": ["REPLACE_WITH_BOUND_ASSET_REFERENCE"],
+  "messages": [
+    {"type": "text", "text": "查看内容详情"},
+    {"type": "miniprogram", "miniprogram_id": 789}
+  ]
+}
+~~~
+
+miniprogram_id 是 JSON 数字，且与 appid、path、title、图片和文件字段互斥。
+管理员图片/小程序素材创建的 Cookie/CSRF 鉴权与 Webhook HMAC 鉴权不同。
 
 ## 签名和 cURL
 
