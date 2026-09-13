@@ -59,7 +59,7 @@ func TestEnterpriseDirectoryUsesApplicationVisibleDepartmentReads(t *testing.T) 
 		t.Fatalf("list_id_calls=%d employees=%+v", listIDCalls, employees)
 	}
 	preflight := client.PreflightEnterpriseDirectory(context.Background())
-	if !preflight.Complete || preflight.FailureStage != "" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 1 || preflight.DirectoryDepartments != 2 || preflight.DirectoryComponents != 1 || preflight.DepartmentEmployeeCount != 2 || preflight.DirectEmployeeCount != 0 || preflight.EmployeeCount != 2 {
+	if !preflight.Complete || preflight.FailureStage != "" || preflight.AgentUserInfosShape != "object" || preflight.AgentPartysShape != "object" || preflight.AgentTagsShape != "null" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 1 || preflight.DirectoryDepartments != 2 || preflight.DirectoryComponents != 1 || preflight.DepartmentEmployeeCount != 2 || preflight.DirectEmployeeCount != 0 || preflight.EmployeeCount != 2 {
 		t.Fatalf("preflight=%+v", preflight)
 	}
 }
@@ -82,7 +82,7 @@ func TestEnterpriseDirectoryPreflightReportsSafeFailureStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	preflight := client.PreflightEnterpriseDirectory(context.Background())
-	if preflight.Complete || preflight.FailureStage != "agent_tags" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 0 || preflight.EmployeeCount != 0 {
+	if preflight.Complete || preflight.FailureStage != "agent_tags" || preflight.AgentUserInfosShape != "object" || preflight.AgentPartysShape != "object" || preflight.AgentTagsShape != "object" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 0 || preflight.EmployeeCount != 0 {
 		t.Fatalf("preflight=%+v", preflight)
 	}
 	if got := (&Client{}).PreflightEnterpriseDirectory(context.Background()); got.Complete || got.FailureStage != "config" {

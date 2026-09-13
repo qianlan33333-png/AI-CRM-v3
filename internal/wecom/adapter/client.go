@@ -2153,6 +2153,9 @@ func (client *Client) ListEnterpriseEmployees(ctx context.Context) ([]wecomport.
 type EnterpriseDirectoryPreflight struct {
 	Complete                bool   `json:"complete"`
 	FailureStage            string `json:"failure_stage,omitempty"`
+	AgentUserInfosShape     string `json:"agent_userinfos_shape,omitempty"`
+	AgentPartysShape        string `json:"agent_partys_shape,omitempty"`
+	AgentTagsShape          string `json:"agent_tags_shape,omitempty"`
 	ScopeUsers              int    `json:"scope_user_count"`
 	ScopeDepartments        int    `json:"scope_department_count"`
 	DirectoryDepartments    int    `json:"directory_department_count"`
@@ -2179,7 +2182,10 @@ func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) Enterpri
 		result.FailureStage = "token"
 		return result
 	}
-	scope, stage := client.enterpriseAgentScopePreflight(readCtx, token)
+	scope, stage, evidence := client.enterpriseAgentScopePreflight(readCtx, token)
+	result.AgentUserInfosShape = evidence.userInfos
+	result.AgentPartysShape = evidence.partys
+	result.AgentTagsShape = evidence.tags
 	if stage != "" {
 		result.FailureStage = stage
 		return result
@@ -2230,26 +2236,61 @@ func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) Enterpri
 	return result
 }
 
-func (client *Client) enterpriseAgentScopePreflight(ctx context.Context, token string) (enterpriseAgentScope, string) {
+type enterpriseAgentScopeEvidence struct {
+	userInfos string
+	partys    string
+	tags      string
+}
+
+func enterpriseScopeFieldShape(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return "missing"
+	}
+	if bytes.Equal(raw, []byte("null")) {
+		return "null"
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "malformed"
+	}
+	switch value.(type) {
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	case string:
+		return "string"
+	case float64:
+		return "number"
+	case bool:
+		return "boolean"
+	default:
+		return "unknown"
+	}
+}
+
+func (client *Client) enterpriseAgentScopePreflight(ctx context.Context, token string) (enterpriseAgentScope, string, enterpriseAgentScopeEvidence) {
 	payload, err := client.request(ctx, "/cgi-bin/agent/get", url.Values{"access_token": {token}, "agentid": {client.config.AgentID}})
 	if err != nil {
-		return enterpriseAgentScope{}, "agent_get"
+		return enterpriseAgentScope{}, "agent_get", enterpriseAgentScopeEvidence{}
 	}
+	evidence := enterpriseAgentScopeEvidence{userInfos: enterpriseScopeFieldShape(payload.AllowUserInfos), partys: enterpriseScopeFieldShape(payload.AllowPartys), tags: enterpriseScopeFieldShape(payload.AllowTags)}
 	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 || len(bytes.TrimSpace(payload.AllowTags)) == 0 {
-		return enterpriseAgentScope{}, "agent_scope_shape"
+		return enterpriseAgentScope{}, "agent_scope_shape", evidence
 	}
 	if rawJSONHasItems(payload.AllowTags) {
-		return enterpriseAgentScope{}, "agent_tags"
+		return enterpriseAgentScope{}, "agent_tags", evidence
 	}
 	userIDs, err := enterpriseScopeUserIDs(payload.AllowUserInfos)
 	if err != nil {
-		return enterpriseAgentScope{}, "agent_users"
+		return enterpriseAgentScope{}, "agent_users", evidence
 	}
 	departmentIDs, err := enterpriseScopeDepartmentIDs(payload.AllowPartys)
 	if err != nil {
-		return enterpriseAgentScope{}, "agent_departments"
+		return enterpriseAgentScope{}, "agent_departments", evidence
 	}
-	return enterpriseAgentScope{userIDs: userIDs, departmentIDs: departmentIDs}, ""
+	return enterpriseAgentScope{userIDs: userIDs, departmentIDs: departmentIDs}, "", evidence
 }
 
 func (client *Client) listEnterpriseEmployees(ctx context.Context, token string) ([]wecomport.EnterpriseEmployee, error) {
