@@ -511,6 +511,28 @@
       ],
       "reason": "Record the Root-reviewed 2026-09-13 external Open Platform read contract and its active V3 OpenAPI authority synchronization. Frozen donor payloads remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
       "review_reference": "Root review of 2026-09-13 external read OpenAPI contract and manifest synchronization"
+    },
+    {
+      "base_commit": "7f448ccaa0c0a073b3702ab3af07cc99a5c145a9",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "f83a5600545a7f5af3900d732b4d22a7238eeca9ff3ab5a3f334b8384797d4d2",
+          "head_sha256": "1385101de807789fbcc1a9fcdb6bd50d7d685b848888fc59f21127edd2298893"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "c0114992ec48dc1817d56f247d2ea3fa28c92f1067e3a5dfd5dc8af6ee5875a2",
+          "head_sha256": "7e8bf519c66e4178ef78f0d2cdc6ef4e79fec8eadedf58518aac73bd0a0d11ab"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "5d3978d07befce5e93d3da07075eddb9a411b110016d66062be2ac9d4c96db26",
+          "head_sha256": "0f18a7b97dc5b8857faad62493add91ab0c46d9a6ca40d2c157b7bfce2ae7ca3"
+        }
+      ],
+      "reason": "Synchronize the approved Access governance contract in the active V3 OpenAPI authority metadata; frozen donors remain unchanged.",
+      "review_reference": "Root review of approved Access governance contract and active V3 OpenAPI synchronization"
     }
   ]
 }
