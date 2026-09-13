@@ -992,7 +992,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	if err = openPlatformExecutor.BindExternalRadarLinkMappings(radarManager); err != nil {
+	if err = openPlatformExecutor.BindV1Radar(radarQuery, radarManager); err != nil {
 		return fail(err)
 	}
 	if err = openPlatformExecutor.BindExternalSurveySubmissions(surveySubmissions, openPlatformIdentities); err != nil {

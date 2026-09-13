@@ -72,6 +72,7 @@ type openPlatformExecutor struct {
 	archive             archiveport.CustomerMessageReader
 	externalChat        archiveport.ExternalChatRecordReader
 	radarLinks          radarport.ExternalLinkMappingReader
+	radarClicks         radarport.ExternalClickReader
 	survey              surveyport.ExternalSubmissionReader
 	surveyAliases       openPlatformSurveyIdentityReader
 	timeline            customerport.CustomerTimelineReader
@@ -195,6 +196,16 @@ func (executor *openPlatformExecutor) BindExternalRadarLinkMappings(reader radar
 		return radarport.ErrUnavailable
 	}
 	executor.radarLinks = reader
+	return nil
+}
+
+// BindV1Radar binds the two Radar-owned public read projections together so
+// neither route can be published against a partial Radar composition.
+func (executor *openPlatformExecutor) BindV1Radar(clicks radarport.ExternalClickReader, links radarport.ExternalLinkMappingReader) error {
+	if executor == nil || clicks == nil || links == nil {
+		return radarport.ErrUnavailable
+	}
+	executor.radarClicks, executor.radarLinks = clicks, links
 	return nil
 }
 
