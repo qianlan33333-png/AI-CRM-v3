@@ -87,7 +87,11 @@ func (service *WeComStaffProjector) ProjectWeComStaffWithin(ctx context.Context,
 			return accessport.WeComStaffProjectionResult{}, err
 		}
 		digest := sha256.Sum256([]byte(item.WeComUserID))
-		user, err = service.repository.CreateUser(ctx, domain.User{
+		// Customer-service projection is deliberately not an account grant. It
+		// retains the existing Access-owned staff ID for business FKs, but the
+		// resulting record has no usable local or WeCom login until governance
+		// performs a separate, provider-verified first grant.
+		user, err = service.repository.CreateStaffProjection(ctx, domain.User{
 			Username: "wecom-staff-" + hex.EncodeToString(digest[:]), PasswordHash: service.passwordHash,
 			DisplayName: item.DisplayName, WeComUserID: item.WeComUserID, Active: true,
 			Roles: []domain.Role{domain.RoleViewer},

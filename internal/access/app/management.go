@@ -51,16 +51,18 @@ type LoginAccessChange struct {
 // UserSummary is deliberately safe for employee-management responses.
 // Password hashes and session or CSRF digests cannot be represented here.
 type UserSummary struct {
-	ID             int64         `json:"id"`
-	Username       string        `json:"username"`
-	DisplayName    string        `json:"display_name"`
-	WeComUserID    string        `json:"wecom_userid"`
-	Active         bool          `json:"active"`
-	SessionVersion int64         `json:"-"`
-	Roles          []domain.Role `json:"roles"`
-	LastLoginAt    *time.Time    `json:"last_login_at,omitempty"`
-	CreatedAt      time.Time     `json:"created_at"`
-	UpdatedAt      time.Time     `json:"updated_at"`
+	ID              int64         `json:"id"`
+	Username        string        `json:"username"`
+	DisplayName     string        `json:"display_name"`
+	WeComUserID     string        `json:"wecom_userid"`
+	Active          bool          `json:"active"`
+	SessionVersion  int64         `json:"-"`
+	Roles           []domain.Role `json:"roles"`
+	LoginEnabled    bool          `json:"login_enabled"`
+	AccessGrantedAt *time.Time    `json:"access_granted_at,omitempty"`
+	LastLoginAt     *time.Time    `json:"last_login_at,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
 }
 
 func NewManagement(repository accessport.Repository, uow platformport.UnitOfWork, passwords Passwords, now func() time.Time) (*Management, error) {
@@ -145,6 +147,13 @@ func (service *Management) ListUsers(ctx context.Context, actor domain.Principal
 		}
 		result = make([]UserSummary, 0, len(users))
 		for _, user := range users {
+			// The frozen backend-account list is an Access-management view, not
+			// the Staff Port. Provider-projected customer-service staff remain
+			// addressable by their stable ID elsewhere, but are not login accounts
+			// until an explicit governance grant exists.
+			if user.AccessGrantedAt == nil {
+				continue
+			}
 			result = append(result, summarizeUser(user))
 		}
 		return nil
@@ -196,6 +205,9 @@ func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Prin
 			}
 			result = make([]UserSummary, 0, len(users))
 			for _, user := range users {
+				if user.AccessGrantedAt == nil {
+					continue
+				}
 				result = append(result, summarizeUser(user))
 			}
 			return nil
@@ -223,7 +235,10 @@ func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Prin
 			if roleErr != nil {
 				return domain.ErrConflict
 			}
-			if user.Active == change.LoginEnabled {
+			if user.AccessGrantedAt == nil {
+				return domain.ErrNotFound
+			}
+			if user.LoginEnabled == change.LoginEnabled {
 				continue
 			}
 			if !canManageTarget(actorRole, role) {
@@ -247,13 +262,16 @@ func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Prin
 			}
 			// Recheck after the row lock: concurrent role/access changes cannot
 			// turn a formerly permitted snapshot into an unauthorized mutation.
-			if user.Active == change.LoginEnabled {
+			if user.AccessGrantedAt == nil {
+				return domain.ErrNotFound
+			}
+			if user.LoginEnabled == change.LoginEnabled {
 				continue
 			}
 			if !canManageTarget(actorRole, role) {
 				return domain.ErrPermissionDenied
 			}
-			if err := service.repository.SetActive(txContext, user.ID, change.LoginEnabled, service.now().UTC()); err != nil {
+			if err := service.repository.SetLoginEnabled(txContext, user.ID, change.LoginEnabled, service.now().UTC()); err != nil {
 				return err
 			}
 			if err := service.audit(txContext, actor.InternalID, user.ID, "set_login_enabled", map[string]any{"login_enabled": change.LoginEnabled}); err != nil {
@@ -266,6 +284,9 @@ func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Prin
 		}
 		result = make([]UserSummary, 0, len(users))
 		for _, user := range users {
+			if user.AccessGrantedAt == nil {
+				continue
+			}
 			result = append(result, summarizeUser(user))
 		}
 		return nil
@@ -290,7 +311,7 @@ func loginAccessRequestDigest(changes []LoginAccessChange) [32]byte {
 func summarizeUser(user domain.User) UserSummary {
 	return UserSummary{
 		ID: user.ID, Username: user.Username, DisplayName: user.DisplayName,
-		WeComUserID: user.WeComUserID, Active: user.Active, SessionVersion: user.SessionVersion,
+		WeComUserID: user.WeComUserID, Active: user.Active, LoginEnabled: user.LoginEnabled, AccessGrantedAt: user.AccessGrantedAt, SessionVersion: user.SessionVersion,
 		Roles: append([]domain.Role(nil), user.Roles...), LastLoginAt: user.LastLoginAt,
 		CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt,
 	}
@@ -304,7 +325,7 @@ func (service *Management) DisableUser(ctx context.Context, actor domain.Princip
 		return domain.ErrPermissionDenied
 	}
 	return service.uow.Within(ctx, func(txContext context.Context) error {
-		if err := service.repository.SetActive(txContext, targetID, false, service.now().UTC()); err != nil {
+		if err := service.repository.SetLoginEnabled(txContext, targetID, false, service.now().UTC()); err != nil {
 			return err
 		}
 		return service.audit(txContext, actor.InternalID, targetID, "disable", nil)

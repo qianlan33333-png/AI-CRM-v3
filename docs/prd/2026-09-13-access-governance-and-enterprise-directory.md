@@ -36,14 +36,26 @@
 3. 已初始化数据库的迁移只在“恰有一个 active `super_admin`、所有账号均单角色、控制记录可验证”时通过。0 个、多个、停用负责人、角色异常或控制记录不一致都 fail closed，不猜测应保留哪个账号。
 4. 生产现有两位负责人不写入通用迁移。最终发布窗口在 `0151` 之前先运行受审的一次性运维收敛命令：锁定 Access 行，按最高优先级标准化历史多角色，明确核验被批准的负责人，再原子更新角色、系统审计和受影响账号的 session version。此时控制表尚不存在，因此该命令不写它；`0151` 在已收敛状态上回填并验证单例控制记录。该命令不在本 PR 开发或 CI 中执行。
 5. 每个写操作在 UOW 内重新锁定并核验 actor 是 active `KindAdmin`，其 session version 与授权时一致，且当前数据库角色仍允许该操作。被降级、停用或已 fence 的会话不能凭开始时的 Principal 继续写入。
-6. 转移必须由当前负责人请求，并且 target 是 active `admin`。同一 UOW 将旧负责人降为 `admin`、目标升为 `super_admin`、更新单例控制记录、写审计并递增双方 session version。提交后旧负责人会话为 401；旧 Idempotency-Key 不能绕过重新认证或再次转移。并发请求最多产生一次状态转换。
+6. 转移必须由当前负责人请求，并且 target 是员工状态 active、已开通且 login enabled 的 `admin`。同一 UOW 将旧负责人降为 `admin`、目标升为 `super_admin`、更新单例控制记录、写审计并递增双方 session version。提交后旧负责人会话为 401；旧 Idempotency-Key 不能绕过重新认证或再次转移。并发请求最多产生一次状态转换。
+
+## 客服员工与后台登录分离
+
+现有客服、群运营、渠道、自动化和交接记录均以 `admin_users.id` 作为稳定 staff FK。把企业客服另建为第二主键会要求迁移这些历史 FK，且会使跨领域读模型在转换期间失去稳定员工引用。本 PR 采用 Access Owner 内的两层状态，而不是第二身份体系：
+
+- `is_active` 保留为员工是否可承担既有客服业务；企业目录刷新可创建或维护该员工记录，业务 Staff Port 继续使用稳定 `admin_users.id`。
+- `access_granted_at` 表示该员工已由治理命令明确开通后台；历史账号在 `0152` 中回填为 `created_at`，不会改变既有授权。
+- `login_enabled` 只控制后台登录。认证、会话复核、后台账号列表、角色变更、绑定、密码重置和负责人转移都要求已开通；员工状态 active 但尚未开通时不能登录。
+- **历史停用兼容桥（Owner：Access）**：`0152` 仅为迁移前 `is_active=false` 的既有后台账号写入 `legacy_login_reactivation_pending=true`，并保留 `login_enabled=false`。首次经治理“启用登录”时，Access 同一 UOW 恢复该历史员工的 `is_active=true`、启用登录并清除标记；此后每次启停只改 `login_enabled`，绝不再改变员工业务可用性。迁移后由企业员工状态导致的 `is_active=false` 不带该标记，不能借登录开关重新启用，返回明确冲突。待全部迁移前停用账号都已首次处理或经人工确认不再需要恢复后，Access 才能以独立迁移删除该桥字段和分支；本 PR 不提前删除。
+- 刷新发现的新客服只创建 active 的员工投影（固定 `viewer` 作为无管理能力的占位角色），`access_granted_at` 为空、`login_enabled=false`，随机本地凭据不可知。它不能通过密码或企微 OAuth 登录，也不会出现在“已开通后台账号”列表。
+- `POST /api/admin/access/users` 仍先用 Provider 精确验证大小写 `userid`；若该员工投影已存在但尚未开通，则同一 Access UOW 中首次授予请求角色、写开通时间、启用登录、fence 会话并审计；已开通账号不因新的 key 被重置或提升。普通启停和兼容入口不能把未开通员工变成可登录账号。
+- `0152` 扩展唯一负责人控制断言：唯一 `super_admin` 的 holder 必须 active、已开通且 login enabled。迁移或读取异常 fail closed。
 
 ## 企业员工目录与绑定
 
-- 新 WeCom Owner Port 仅提供受限可见范围的成员 ID 分页和单成员最小投影（`userid`、显示名）；它不复用 `ListContactStaff`，也不能调用任何 Provider 写接口。
-- `GET /api/admin/access/enterprise-employees?cursor=&limit=1..50&query=`：空 query 使用 Provider cursor 返回一页；非空 query 在服务端从可见全集扫描，以精确 `userid` 或显示名匹配。扫描未完成、令牌/权限/Provider 异常一律为 503，而不是错误地返回“没有员工”。查询结果游标与 query 绑定；Provider 是实时数据源，跨页变动只承诺实时 best-effort，不承诺快照事务。
+- 新 WeCom Owner Port 只读取应用可见范围：`department/simplelist` 的 `department_id` 加递归 `user/simplelist`，并合并应用显式可见用户；若可见标签无法完整展开则明确 503。它不复用 `ListContactStaff`，也不能调用任何 Provider 写接口。
+- `GET /api/admin/access/enterprise-employees?cursor=&limit=1..50&query=`：空 query 和非空 query 都先在服务端建立有界、完整的可见员工投影，以精确 `userid` 或显示名匹配。扫描未完成、令牌/权限/Provider 异常一律为 503，而不是错误地返回“没有员工”。查询结果游标与 query 绑定；Provider 是实时数据源，跨页变动只承诺实时 best-effort，不承诺快照事务。
 - 所有 Provider 调用完成后才进入本地 UOW；不持有数据库锁等待网络。
-- 候选项额外标明是否已有 Access 账号、其当前 role 和 login_enabled；目录中出现不等于获得后台权限。
+- 候选项额外标明是否已开通后台账号、其当前 role 和 login_enabled；目录中出现或已有客服员工投影不等于获得后台权限。
 - 创建账号或变更绑定时，服务端再次读取指定企业成员，要求返回的大小写完全一致，才可写入 Access。不会将 `huangyoucan` 与 `HuangYouCan` 合并，也不会用 follow-user、客户、OpenID 或任意历史绑定替代验证。
 - Provider 失败、超时、权限不足不改变本地账号或绑定；日志只含受控错误类别和请求关联信息，不记录全局员工标识。
 
@@ -83,6 +95,6 @@
 
 ## 验收
 
-真实 PostgreSQL 覆盖：空库 Bootstrap；迁移 fail-closed 组合；三角色矩阵；`KindStaff` 拒绝；写入前 role/version 重查；停用/角色改变后的 session fence；唯一负责人转移和并发；大小写不同绑定保留；目录分页、全域搜索、Provider 错误 503 与 UOW 外读取；绑定时二次精确验证；审计原子性。
+真实 PostgreSQL 覆盖：空库 Bootstrap；迁移 fail-closed 组合；三角色矩阵；`KindStaff` 拒绝；写入前 role/version 重查；开通、停用/角色改变后的 session fence；唯一负责人转移和并发；大小写不同绑定保留；未开通客服不能登录而仍可被既有业务 Staff Port 选择；目录分页、全域搜索、Provider 错误 503 与 UOW 外读取；绑定时二次精确验证；审计原子性。
 
 HTTP/OpenAPI 覆盖：401/403/409/503、CSRF、Idempotency-Key、`no-store`、兼容 GET users 包络与冻结 admin-access 路由不绕过权限。前端仅按 `actions` 展示，不能将目录项误称已经授权。

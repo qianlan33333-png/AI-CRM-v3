@@ -103,6 +103,8 @@ test -x "$release_dir/bin/aicrm-operation-cycle-runner"
 test -x "$release_dir/bin/aicrm-operation-cycle-result"
 test -x "$release_dir/bin/wecom-archive-sdk-runner"
 test -x "$release_dir/bin/migrate-platform"
+test -x "$release_dir/bin/migrate-access-role-convergence"
+test -x "$release_dir/bin/check-enterprise-directory"
 test -x "$release_dir/bin/migrate-river"
 test -x "$release_dir/bin/migrate-phone-identities"
 test -x "$release_dir/bin/migrate-identity-phone-vault"
@@ -174,6 +176,8 @@ test -f "$release_dir/migrations/0063_identity_hxc_source_observations.sql"
 test -f "$release_dir/migrations/0064_hxc_dashboard_identity_v2.sql"
 test -f "$release_dir/migrations/0066_channel_welcome_intents.sql"
 test -f "$release_dir/migrations/0150_channel_welcome_message_snapshots.sql"
+test -f "$release_dir/migrations/0151_access_role_governance.sql"
+test -f "$release_dir/migrations/0152_access_login_grants.sql"
 test -f "$release_dir/migrations/0153_wecom_customer_detail_projection.sql"
 test -f "$release_dir/migrations/0067_survey_completion_snapshots.sql"
 test -f "$release_dir/migrations/0084_hxc_shared_facts.sql"
@@ -349,7 +353,19 @@ if [[ "$bootstrap_load_state" == loaded ]]; then
     exit 14
   fi
 fi
+# The Access convergence wrapper holds the exact same host release lock over
+# its pre-0151 reconciliation and delegates to this installer with fd 9
+# inherited. Reopening the file would drop that lock between the two phases.
+inherited_release_lock=false
+if [[ "${AICRM_RELEASE_LOCK_HELD:-}" == 1 ]]; then
+  if [[ "${AICRM_RELEASE_LOCK_FD:-}" != 9 ]]; then
+    echo "invalid inherited release lock" >&2
+    exit 15
+  fi
+  inherited_release_lock=true
+else
 exec 9>"$release_lock"
+fi
 # Terminating an obsolete installer is not sufficient when one of its deeper
 # descendants inherited fd 9: that orphan can keep the kernel lock forever.
 # Only a newer numbered release that actually found an older validated
@@ -497,6 +513,17 @@ install -m 0644 "$release_dir/deploy/aicrm-automation-bootstrap.service" /etc/sy
 systemctl daemon-reload
 
 rollback() {
+	if [[ "${AICRM_ACCESS_GOVERNANCE_RELEASE:-}" == 1 ]]; then
+		# After a pre-0151 convergence, older binaries are not a safe fallback:
+		# they can write the historical multi-role representation against the
+		# new schema. The wrapper has already stopped Access writers, so preserve
+		# that stopped state for controlled recovery instead of restarting them.
+		systemctl stop aicrm-wecom-worker.timer aicrm-customer-sync-daily.timer || true
+		systemctl stop aicrm-wecom-worker.service aicrm-customer-sync-daily.service || true
+		systemctl stop aicrm.service aicrm-effects-worker.service || true
+		echo "access governance release failed; Access writers remain stopped" >&2
+		return
+	fi
   if [[ -n "$previous" && -d "$previous" ]]; then
     ln -sfn "$previous" "${current_link}.rollback"
     mv -Tf "${current_link}.rollback" "$current_link"

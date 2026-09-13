@@ -93,6 +93,8 @@ for migration_contract in \
   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
   '0066_channel_welcome_intents.sql:Channel welcome intents' \
   '0150_channel_welcome_message_snapshots.sql:Channel welcome message snapshots' \
+  '0151_access_role_governance.sql:Access role governance' \
+  '0152_access_login_grants.sql:Access login grants' \
   '0153_wecom_customer_detail_projection.sql:WeCom customer detail projection' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
@@ -136,6 +138,10 @@ for migration_contract in \
   }
 done
 grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-access-role-convergence"' "$installer" || { echo "release must include the Access convergence tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-access-role-convergence ./cmd/migrate-access-role-convergence' "$release_builder" || { echo "release must build the Access convergence tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/check-enterprise-directory"' "$installer" || { echo "release must include the enterprise-directory preflight" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/check-enterprise-directory ./cmd/check-enterprise-directory' "$release_builder" || { echo "release must build the enterprise-directory preflight" >&2; exit 1; }
 for operation_runner_binary in aicrm-operation-cycle-runner aicrm-operation-cycle-result; do
   grep -qx "test -x \"\$release_dir/bin/${operation_runner_binary}\"" "$installer" || { echo "release must require ${operation_runner_binary}" >&2; exit 1; }
 done

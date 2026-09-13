@@ -40,7 +40,7 @@ func TestPostgreSQLAccessGovernanceMigrationAndControl(t *testing.T) {
 	})
 
 	t.Run("empty schema bootstraps one controlled super administrator", func(t *testing.T) {
-		native, cleanup := governanceSchema(t, ctx, "0003_access.sql", "0027_admin_access_login_compat.sql", "0151_access_role_governance.sql")
+		native, cleanup := governanceSchema(t, ctx, "0003_access.sql", "0027_admin_access_login_compat.sql", "0151_access_role_governance.sql", "0152_access_login_grants.sql")
 		defer cleanup()
 		pool, err := platformpostgres.Wrap(native, time.Second)
 		if err != nil {
@@ -78,7 +78,7 @@ func TestPostgreSQLAccessGovernanceMigrationAndControl(t *testing.T) {
 	})
 
 	t.Run("concurrent direct role writes retain one super administrator", func(t *testing.T) {
-		native, cleanup := governanceSchema(t, ctx, "0003_access.sql", "0027_admin_access_login_compat.sql", "0151_access_role_governance.sql")
+		native, cleanup := governanceSchema(t, ctx, "0003_access.sql", "0027_admin_access_login_compat.sql", "0151_access_role_governance.sql", "0152_access_login_grants.sql")
 		defer cleanup()
 		pool, err := platformpostgres.Wrap(native, time.Second)
 		if err != nil {
@@ -157,6 +157,131 @@ func TestPostgreSQLAccessGovernanceMigrationAndControl(t *testing.T) {
 		var superCount int
 		if err = native.QueryRow(ctx, `SELECT COUNT(*) FROM admin_user_roles WHERE role_code='super_admin'`).Scan(&superCount); err != nil || superCount != 1 {
 			t.Fatalf("super count=%d err=%v", superCount, err)
+		}
+	})
+
+	t.Run("0152 preserves and safely reactivates a historical disabled login", func(t *testing.T) {
+		native, cleanup := governanceSchema(t, ctx, "0003_access.sql", "0027_admin_access_login_compat.sql", "0151_access_role_governance.sql")
+		defer cleanup()
+		passwords := credential.PasswordHasher{}
+		ownerHash, err := passwords.Hash("fixture-owner-password")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyHash, err := passwords.Hash("legacy-login-password")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seed, err := native.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer seed.Rollback(ctx)
+		var ownerID, legacyID int64
+		if err = seed.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active)
+			VALUES('migration-owner',$1,'Migration Owner',TRUE) RETURNING id`, ownerHash).Scan(&ownerID); err != nil {
+			t.Fatal(err)
+		}
+		if err = seed.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active)
+			VALUES('historical-disabled',$1,'Historical Disabled',FALSE) RETURNING id`, legacyHash).Scan(&legacyID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = seed.Exec(ctx, `INSERT INTO admin_user_roles(admin_user_id,role_code)
+			VALUES($1,'super_admin'),($2,'viewer')`, ownerID, legacyID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = seed.Exec(ctx, `INSERT INTO access_super_admin_control(singleton,admin_user_id,version,updated_at)
+			VALUES(TRUE,$1,1,clock_timestamp())`, ownerID); err != nil {
+			t.Fatal(err)
+		}
+		if err = seed.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = native.Exec(ctx, migrationSQL(t, "0152_access_login_grants.sql")); err != nil {
+			t.Fatalf("apply 0152: %v", err)
+		}
+
+		pool, err := platformpostgres.Wrap(native, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit, err := platformpostgres.NewUnitOfWork(pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repository := accessstore.NewPostgreSQL()
+		management, err := accessapp.NewManagement(repository, unit, passwords, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = management.SetGovernanceSigningKey([]byte("0123456789abcdef0123456789abcdef")); err != nil {
+			t.Fatal(err)
+		}
+		var owner, legacy domain.User
+		if err = unit.Within(ctx, func(tx context.Context) error {
+			var readErr error
+			owner, readErr = repository.UserByID(tx, ownerID, false)
+			if readErr != nil {
+				return readErr
+			}
+			legacy, readErr = repository.UserByID(tx, legacyID, false)
+			return readErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if legacy.Active || legacy.LoginEnabled || legacy.AccessGrantedAt == nil || !legacy.LegacyLoginReactivationPending {
+			t.Fatalf("unexpected migrated legacy state: %+v", legacy)
+		}
+		actor := domain.Principal{Kind: domain.KindAdmin, InternalID: owner.ID, Roles: owner.Roles, SessionVersion: owner.SessionVersion}
+		if err = management.SetGovernanceLoginEnabled(ctx, actor, accessapp.SetLoginEnabledInput{TargetID: legacy.ID, LoginEnabled: true, IdempotencyKey: "legacy-enable-once"}); err != nil {
+			t.Fatalf("enable legacy account: %v", err)
+		}
+		if err = unit.Within(ctx, func(tx context.Context) error {
+			var readErr error
+			legacy, readErr = repository.UserByID(tx, legacyID, false)
+			return readErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !legacy.Active || !legacy.LoginEnabled || legacy.AccessGrantedAt == nil || legacy.LegacyLoginReactivationPending {
+			t.Fatalf("legacy enable did not restore a usable account: %+v", legacy)
+		}
+		authentication, err := accessapp.NewAuthentication(repository, unit, passwords, accessapp.AuthenticationConfig{
+			SessionTTL: time.Hour, Window: time.Minute, MaxFailures: 5, BlockFor: time.Minute, DummyPHCHash: ownerHash,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = authentication.Login(ctx, accessapp.LoginCommand{Username: "historical-disabled", Password: "legacy-login-password", Remote: "127.0.0.1"}); err != nil {
+			t.Fatalf("reactivated historical account could not authenticate: %v", err)
+		}
+		if err = management.SetGovernanceLoginEnabled(ctx, actor, accessapp.SetLoginEnabledInput{TargetID: legacy.ID, LoginEnabled: false, IdempotencyKey: "legacy-disable-after-bridge"}); err != nil {
+			t.Fatal(err)
+		}
+		if err = management.SetGovernanceLoginEnabled(ctx, actor, accessapp.SetLoginEnabledInput{TargetID: legacy.ID, LoginEnabled: true, IdempotencyKey: "legacy-enable-after-bridge"}); err != nil {
+			t.Fatal(err)
+		}
+		if err = unit.Within(ctx, func(tx context.Context) error {
+			var readErr error
+			legacy, readErr = repository.UserByID(tx, legacyID, false)
+			return readErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !legacy.Active || !legacy.LoginEnabled || legacy.LegacyLoginReactivationPending {
+			t.Fatalf("post-bridge toggles changed employee availability: %+v", legacy)
+		}
+	})
+
+	t.Run("0152 rejects a bare post-migration account insert without a grant", func(t *testing.T) {
+		native, cleanup := governanceSchema(t, ctx, "0003_access.sql", "0027_admin_access_login_compat.sql", "0151_access_role_governance.sql")
+		defer cleanup()
+		if _, err := native.Exec(ctx, migrationSQL(t, "0152_access_login_grants.sql")); err != nil {
+			t.Fatalf("apply 0152: %v", err)
+		}
+		if _, err := native.Exec(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active)
+			VALUES('bare-post-0152','$argon2id$fixture','Bare',TRUE)`); err == nil {
+			t.Fatal("0152 accepted a bare account without explicit grant fields")
 		}
 	})
 }

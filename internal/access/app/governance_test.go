@@ -42,9 +42,10 @@ func (directory *governanceDirectoryStub) ReadEnterpriseEmployee(_ context.Conte
 func governanceFixture(t *testing.T) (*Management, *memoryRepository, *governanceDirectoryStub, domain.Principal) {
 	t.Helper()
 	repository := newMemoryRepository()
-	repository.users[1] = domain.User{ID: 1, Username: "super", DisplayName: "Super", Active: true, SessionVersion: 3, Roles: []domain.Role{domain.RoleSuperAdmin}}
-	repository.users[2] = domain.User{ID: 2, Username: "viewer", DisplayName: "Viewer", Active: true, SessionVersion: 4, Roles: []domain.Role{domain.RoleViewer}}
-	repository.users[3] = domain.User{ID: 3, Username: "admin", DisplayName: "Admin", Active: true, SessionVersion: 5, Roles: []domain.Role{domain.RoleAdmin}}
+	superGrant, viewerGrant, adminGrant := testNow, testNow, testNow
+	repository.users[1] = domain.User{ID: 1, Username: "super", DisplayName: "Super", Active: true, LoginEnabled: true, AccessGrantedAt: &superGrant, SessionVersion: 3, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	repository.users[2] = domain.User{ID: 2, Username: "viewer", DisplayName: "Viewer", Active: true, LoginEnabled: true, AccessGrantedAt: &viewerGrant, SessionVersion: 4, Roles: []domain.Role{domain.RoleViewer}}
+	repository.users[3] = domain.User{ID: 3, Username: "admin", DisplayName: "Admin", Active: true, LoginEnabled: true, AccessGrantedAt: &adminGrant, SessionVersion: 5, Roles: []domain.Role{domain.RoleAdmin}}
 	repository.nextID = 4
 	service, err := NewManagement(repository, testUOW{}, testPasswords{}, func() time.Time { return testNow })
 	if err != nil {

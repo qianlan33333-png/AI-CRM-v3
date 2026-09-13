@@ -75,10 +75,10 @@ func TestPostgreSQLGovernanceRoleMatrixAndProvisioning(t *testing.T) {
 
 				before := fixture.user(t, target.ID)
 				err := fixture.management.SetGovernanceLoginEnabled(fixture.ctx, principal, accessapp.SetLoginEnabledInput{
-					TargetID: target.ID, LoginEnabled: !before.Active, IdempotencyKey: "matrix-login-" + string(actorRole) + "-" + string(targetRole),
+					TargetID: target.ID, LoginEnabled: !before.LoginEnabled, IdempotencyKey: "matrix-login-" + string(actorRole) + "-" + string(targetRole),
 				})
 				fixture.assertMutation(t, "login", err, allowsLogin, before, target.ID, func(after domain.User) bool {
-					return after.Active == !before.Active && after.SessionVersion == before.SessionVersion+1
+					return after.Active == before.Active && after.LoginEnabled == !before.LoginEnabled && after.SessionVersion == before.SessionVersion+1
 				})
 
 				before = fixture.user(t, target.ID)
@@ -160,9 +160,78 @@ func TestPostgreSQLGovernanceHTTPRoutesUseRealManagement(t *testing.T) {
 			t.Fatalf("real management route status=%d body=%s", response.Code, response.Body.String())
 		}
 	}
-	if fixture.user(t, viewerA.ID).Active || fixture.user(t, viewerB.ID).Active {
+	if !fixture.user(t, viewerA.ID).Active || !fixture.user(t, viewerB.ID).Active || fixture.user(t, viewerA.ID).LoginEnabled || fixture.user(t, viewerB.ID).LoginEnabled {
 		t.Fatal("old or canonical route did not persist viewer disable through real Management")
 	}
+}
+
+func TestPostgreSQLUnprovisionedStaffProjectionCannotUseAnyGovernanceMutation(t *testing.T) {
+	if environmentValue("AICRM_DATABASE_URL") == "" {
+		t.Skip("AICRM_DATABASE_URL is not configured; skipping governance PostgreSQL integration test")
+	}
+	fixture := newGovernanceBehaviorFixture(t)
+	fixture.directory.put("projected-only", "企业员工甲")
+	var projected domain.User
+	if err := fixture.unit.Within(fixture.ctx, func(ctx context.Context) error {
+		var createErr error
+		projected, createErr = fixture.repository.CreateStaffProjection(ctx, domain.User{
+			Username: "wecom-staff-projected-only", PasswordHash: fixture.owner.PasswordHash,
+			DisplayName: "企微客服 projected-only", WeComUserID: "projected-only", Active: true,
+			Roles: []domain.Role{domain.RoleViewer},
+		})
+		return createErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if projected.AccessGrantedAt != nil || projected.LoginEnabled {
+		t.Fatalf("projection unexpectedly received a login grant: %+v", projected)
+	}
+
+	routes := mustGovernanceHTTPRoutes(t, fixture)
+	ownerSession := fixture.login(t, "owner")
+	for _, request := range []*http.Request{
+		fixture.httpRequest(t, http.MethodPut, fmt.Sprintf("/api/admin/access/users/%d/login-access", projected.ID), ownerSession, "projection-new-login", map[string]any{"login_enabled": true}),
+		fixture.httpRequest(t, http.MethodPost, fmt.Sprintf("/api/admin/access/users/%d/disable", projected.ID), ownerSession, "projection-old-disable", map[string]any{}),
+		fixture.httpRequest(t, http.MethodPut, fmt.Sprintf("/api/admin/access/users/%d/role", projected.ID), ownerSession, "projection-new-role", map[string]any{"role": "admin"}),
+		fixture.httpRequest(t, http.MethodPost, fmt.Sprintf("/api/admin/access/users/%d/roles", projected.ID), ownerSession, "projection-old-role", map[string]any{"roles": []string{"admin"}}),
+		fixture.httpRequest(t, http.MethodPut, fmt.Sprintf("/api/admin/access/users/%d/wecom-userid", projected.ID), ownerSession, "projection-new-bind", map[string]any{"wecom_userid": "projected-only"}),
+		fixture.httpRequest(t, http.MethodPost, fmt.Sprintf("/api/admin/access/users/%d/wecom-userid", projected.ID), ownerSession, "projection-old-bind", map[string]any{"wecom_userid": "projected-only"}),
+		fixture.httpRequest(t, http.MethodPut, fmt.Sprintf("/api/admin/access/users/%d/password", projected.ID), ownerSession, "projection-new-password", map[string]any{"password": "projected-password-123"}),
+		fixture.httpRequest(t, http.MethodPost, fmt.Sprintf("/api/admin/access/users/%d/password", projected.ID), ownerSession, "projection-old-password", map[string]any{"password": "projected-password-123"}),
+	} {
+		response := httptest.NewRecorder()
+		routes.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("unprovisioned route %s %s status=%d body=%s", request.Method, request.URL.Path, response.Code, response.Body.String())
+		}
+	}
+	beforeGrant := fixture.user(t, projected.ID)
+	if beforeGrant.AccessGrantedAt != nil || beforeGrant.LoginEnabled || beforeGrant.DisplayName != "企微客服 projected-only" {
+		t.Fatalf("rejected governance mutations changed staff projection: %+v", beforeGrant)
+	}
+	granted, err := fixture.management.ProvisionEnterpriseEmployee(fixture.ctx, fixture.principal(fixture.owner), accessapp.ProvisionEnterpriseEmployeeInput{
+		WeComUserID: "projected-only", Role: domain.RoleViewer, IdempotencyKey: "projection-first-grant",
+	})
+	if err != nil {
+		t.Fatalf("provider-verified first grant failed: %v", err)
+	}
+	if granted.ID != projected.ID || granted.AccessGrantedAt == nil || !granted.LoginEnabled || granted.DisplayName != "企业员工甲" {
+		t.Fatalf("first grant did not preserve ID and refresh verified display name: %+v", granted)
+	}
+	if role, roleErr := domain.SingleRole(granted.Roles); roleErr != nil || role != domain.RoleViewer {
+		t.Fatalf("first grant role=%q err=%v", role, roleErr)
+	}
+}
+
+func mustGovernanceHTTPRoutes(t *testing.T, fixture *governanceBehaviorFixture) http.Handler {
+	t.Helper()
+	handler, err := accesshttp.NewHandler(accesshttp.Config{
+		Renderer: governanceTestRenderer{}, Auth: fixture.authentication, Management: fixture.management, CookieSecure: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler.Routes()
 }
 
 func TestPostgreSQLTransferGovernanceSuperAdminFencesSessionsAndIsIdempotent(t *testing.T) {
@@ -296,7 +365,7 @@ type governanceBehaviorFixture struct {
 func newGovernanceBehaviorFixture(t *testing.T) *governanceBehaviorFixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	native, cleanupSchema := governanceSchema(t, ctx, "0003_access.sql", "0027_admin_access_login_compat.sql", "0151_access_role_governance.sql")
+	native, cleanupSchema := governanceSchema(t, ctx, "0003_access.sql", "0027_admin_access_login_compat.sql", "0151_access_role_governance.sql", "0152_access_login_grants.sql")
 	pool, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
 		cleanupSchema()

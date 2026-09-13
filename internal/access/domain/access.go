@@ -55,17 +55,26 @@ func NormalizeRoles(values []Role) ([]Role, error) {
 }
 
 type User struct {
-	ID             int64
-	Username       string
-	PasswordHash   string
-	DisplayName    string
-	WeComUserID    string
-	Active         bool
-	SessionVersion int64
-	Roles          []Role
-	LastLoginAt    *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID           int64
+	Username     string
+	PasswordHash string
+	DisplayName  string
+	WeComUserID  string
+	// Active is employee/staff availability for existing business Staff Ports.
+	// It is intentionally distinct from LoginEnabled, which gates an Access
+	// session after explicit governance approval.
+	Active       bool
+	LoginEnabled bool
+	// LegacyLoginReactivationPending exists only for pre-0152 records whose
+	// single historical is_active flag represented disabled CRM login. The first
+	// governed enable restores staff availability and clears this bridge bit.
+	LegacyLoginReactivationPending bool
+	AccessGrantedAt                *time.Time
+	SessionVersion                 int64
+	Roles                          []Role
+	LastLoginAt                    *time.Time
+	CreatedAt                      time.Time
+	UpdatedAt                      time.Time
 }
 
 func (user User) HasRole(expected Role) bool {

@@ -122,7 +122,7 @@ func (service *Authentication) Login(ctx context.Context, command LoginCommand) 
 		} else {
 			return userErr
 		}
-		if userErr != nil || !validPassword || !user.Active {
+		if userErr != nil || !validPassword || !user.Active || !user.LoginEnabled || user.AccessGrantedAt == nil {
 			limit.FailureCount++
 			limit.UpdatedAt = now
 			if limit.FailureCount >= service.config.MaxFailures {
@@ -140,7 +140,7 @@ func (service *Authentication) Login(ctx context.Context, command LoginCommand) 
 			var userID *int64
 			if userErr == nil {
 				userID = &user.ID
-				if !user.Active {
+				if !user.Active || !user.LoginEnabled || user.AccessGrantedAt == nil {
 					outcome, reason = "disabled", "account_disabled"
 				}
 			}
@@ -208,7 +208,7 @@ func (service *Authentication) LoginWithWeComUserID(ctx context.Context, command
 		if err != nil {
 			return err
 		}
-		if !user.Active {
+		if !user.Active || !user.LoginEnabled || user.AccessGrantedAt == nil {
 			if auditErr := service.auditLogin(txContext, &user.ID, identifierDigest, remoteDigest, "disabled", "account_disabled", now); auditErr != nil {
 				return auditErr
 			}
@@ -277,7 +277,7 @@ func (service *Authentication) Authenticate(ctx context.Context, sessionToken st
 			}
 			return err
 		}
-		if session.RevokedAt != nil || !now.Before(session.ExpiresAt) || !session.User.Active || session.SessionVersion != session.User.SessionVersion {
+		if session.RevokedAt != nil || !now.Before(session.ExpiresAt) || !session.User.Active || !session.User.LoginEnabled || session.User.AccessGrantedAt == nil || session.SessionVersion != session.User.SessionVersion {
 			return domain.ErrAuthentication
 		}
 		if len(session.User.Roles) == 0 {
@@ -300,7 +300,7 @@ func (service *Authentication) AuthorizeCSRF(ctx context.Context, sessionToken, 
 	var principal domain.Principal
 	err := service.uow.Within(ctx, func(txContext context.Context) error {
 		session, err := service.repository.SessionByTokenDigest(txContext, credential.Digest(sessionToken), false)
-		if err != nil || session.RevokedAt != nil || !now.Before(session.ExpiresAt) || !session.User.Active || session.SessionVersion != session.User.SessionVersion {
+		if err != nil || session.RevokedAt != nil || !now.Before(session.ExpiresAt) || !session.User.Active || !session.User.LoginEnabled || session.User.AccessGrantedAt == nil || session.SessionVersion != session.User.SessionVersion {
 			return domain.ErrAuthentication
 		}
 		if !credential.Matches(csrfCookie, session.CSRFTokenDigest) || !credential.Matches(csrfRequest, session.CSRFTokenDigest) {

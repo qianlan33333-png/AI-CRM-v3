@@ -94,6 +94,18 @@ func (repo *memoryRepository) CreateUser(_ context.Context, user domain.User) (d
 	user.ID = repo.nextID
 	repo.nextID++
 	user.SessionVersion = 1
+	if user.AccessGrantedAt == nil {
+		granted := testNow
+		user.AccessGrantedAt = &granted
+	}
+	user.LoginEnabled = user.Active
+	repo.users[user.ID] = user
+	return user, nil
+}
+func (repo *memoryRepository) CreateStaffProjection(_ context.Context, user domain.User) (domain.User, error) {
+	user.ID = repo.nextID
+	repo.nextID++
+	user.SessionVersion, user.Active, user.LoginEnabled, user.AccessGrantedAt, user.Roles = 1, true, false, nil, []domain.Role{domain.RoleViewer}
 	repo.users[user.ID] = user
 	return user, nil
 }
@@ -105,15 +117,33 @@ func (repo *memoryRepository) BootstrapUser(ctx context.Context, user domain.Use
 	created, err := repo.CreateUser(ctx, user)
 	return created, true, err
 }
-func (repo *memoryRepository) SetActive(_ context.Context, id int64, active bool, _ time.Time) error {
+func (repo *memoryRepository) SetLoginEnabled(_ context.Context, id int64, enabled bool, _ time.Time) error {
 	user, ok := repo.users[id]
 	if !ok {
 		return domain.ErrNotFound
 	}
-	if user.Active == active {
+	if user.AccessGrantedAt == nil {
+		return domain.ErrNotFound
+	}
+	if user.LoginEnabled == enabled {
 		return nil
 	}
-	user.Active, user.SessionVersion = active, user.SessionVersion+1
+	if enabled && !user.Active && user.LegacyLoginReactivationPending {
+		user.Active = true
+	}
+	user.LoginEnabled, user.LegacyLoginReactivationPending, user.SessionVersion = enabled, false, user.SessionVersion+1
+	repo.users[id] = user
+	return nil
+}
+func (repo *memoryRepository) GrantAccess(_ context.Context, id int64, role domain.Role, displayName string, now time.Time) error {
+	user, ok := repo.users[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if !user.Active || user.AccessGrantedAt != nil {
+		return domain.ErrConflict
+	}
+	user.Roles, user.DisplayName, user.LoginEnabled, user.AccessGrantedAt, user.SessionVersion = []domain.Role{role}, strings.TrimSpace(displayName), true, &now, user.SessionVersion+1
 	repo.users[id] = user
 	return nil
 }
@@ -132,15 +162,16 @@ func (repo *memoryRepository) ReserveLoginAccessRequest(_ context.Context, actor
 
 func TestSetLoginAccessIsAtomicAtTheAccessBoundaryAndFencesDisabledSessions(t *testing.T) {
 	repository := newMemoryRepository()
-	repository.users[1] = domain.User{ID: 1, Username: "owner", DisplayName: "Owner", Active: true, SessionVersion: 1, Roles: []domain.Role{domain.RoleSuperAdmin}}
-	repository.users[2] = domain.User{ID: 2, Username: "operator", DisplayName: "Operator", Active: true, SessionVersion: 7, Roles: []domain.Role{domain.RoleAdmin}}
+	ownerGrant, operatorGrant := testNow, testNow
+	repository.users[1] = domain.User{ID: 1, Username: "owner", DisplayName: "Owner", Active: true, LoginEnabled: true, AccessGrantedAt: &ownerGrant, SessionVersion: 1, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	repository.users[2] = domain.User{ID: 2, Username: "operator", DisplayName: "Operator", Active: true, LoginEnabled: true, AccessGrantedAt: &operatorGrant, SessionVersion: 7, Roles: []domain.Role{domain.RoleAdmin}}
 	service, err := NewManagement(repository, testUOW{}, testPasswords{}, func() time.Time { return testNow })
 	if err != nil {
 		t.Fatal(err)
 	}
 	actor := domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}, SessionVersion: 1}
 	users, err := service.SetLoginAccess(context.Background(), actor, "access-1", []LoginAccessChange{{AdminUserID: 2, LoginEnabled: false}})
-	if err != nil || len(users) != 2 || repository.users[2].Active || repository.users[2].SessionVersion != 8 {
+	if err != nil || len(users) != 2 || !repository.users[2].Active || repository.users[2].LoginEnabled || repository.users[2].SessionVersion != 8 {
 		t.Fatalf("users=%+v stored=%+v err=%v", users, repository.users[2], err)
 	}
 	_, err = service.SetLoginAccess(context.Background(), actor, "access-1", []LoginAccessChange{{AdminUserID: 2, LoginEnabled: false}})
@@ -153,7 +184,7 @@ func TestSetLoginAccessIsAtomicAtTheAccessBoundaryAndFencesDisabledSessions(t *t
 	if _, err = service.SetLoginAccess(context.Background(), actor, "access-1", []LoginAccessChange{{AdminUserID: 2, LoginEnabled: true}}); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("payload drift error=%v", err)
 	}
-	if repository.users[2].Active || repository.users[2].SessionVersion != 8 {
+	if !repository.users[2].Active || repository.users[2].LoginEnabled || repository.users[2].SessionVersion != 8 {
 		t.Fatalf("payload drift mutated user=%+v", repository.users[2])
 	}
 }
@@ -239,7 +270,8 @@ var testNow = time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
 func authenticationFixture(t *testing.T, maxFailures int) (*Authentication, *memoryRepository, *time.Time) {
 	t.Helper()
 	repository := newMemoryRepository()
-	repository.users[1] = domain.User{ID: 1, Username: "operator", PasswordHash: "hash:correct-password", Active: true,
+	grant := testNow
+	repository.users[1] = domain.User{ID: 1, Username: "operator", PasswordHash: "hash:correct-password", Active: true, LoginEnabled: true, AccessGrantedAt: &grant,
 		SessionVersion: 1, Roles: []domain.Role{domain.RoleSuperAdmin}}
 	now := testNow
 	service, err := NewAuthentication(repository, testUOW{}, testPasswords{}, AuthenticationConfig{
@@ -385,7 +417,8 @@ func TestLoginWithWeComUserIDUnknownDisabledSuccessAndSessionVersion(t *testing.
 	active.WeComUserID = "Alice_01"
 	active.SessionVersion = 7
 	repository.users[1] = active
-	repository.users[2] = domain.User{ID: 2, Username: "disabled", WeComUserID: "Disabled_02", Active: false,
+	disabledGrant := testNow
+	repository.users[2] = domain.User{ID: 2, Username: "disabled", WeComUserID: "Disabled_02", Active: false, LoginEnabled: false, AccessGrantedAt: &disabledGrant,
 		SessionVersion: 4, Roles: []domain.Role{domain.RoleAdmin}}
 
 	if _, err := service.LoginWithWeComUserID(context.Background(), WeComLoginCommand{WeComUserID: "Unknown_03"}); !errors.Is(err, domain.ErrInvalidCredentials) {
@@ -413,10 +446,11 @@ func TestLoginWithWeComUserIDUnknownDisabledSuccessAndSessionVersion(t *testing.
 
 func TestListUsersAllowsActiveAdminAndReturnsOnlyPublicShape(t *testing.T) {
 	repository := newMemoryRepository()
+	operatorGrant, adminGrant := testNow, testNow
 	repository.users[1] = domain.User{ID: 1, Username: "operator", PasswordHash: "never-return-this",
-		DisplayName: "Operator", Active: true, SessionVersion: 2, Roles: []domain.Role{domain.RoleSuperAdmin}}
+		DisplayName: "Operator", Active: true, LoginEnabled: true, AccessGrantedAt: &operatorGrant, SessionVersion: 2, Roles: []domain.Role{domain.RoleSuperAdmin}}
 	repository.users[2] = domain.User{ID: 2, Username: "admin-user", PasswordHash: "never-return-this",
-		DisplayName: "Admin", Active: true, SessionVersion: 1, Roles: []domain.Role{domain.RoleAdmin}}
+		DisplayName: "Admin", Active: true, LoginEnabled: true, AccessGrantedAt: &adminGrant, SessionVersion: 1, Roles: []domain.Role{domain.RoleAdmin}}
 	service, err := NewManagement(repository, testUOW{}, testPasswords{}, nil)
 	if err != nil {
 		t.Fatal(err)

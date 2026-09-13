@@ -158,11 +158,14 @@ func (service *Management) ListGovernance(ctx context.Context, actor domain.Prin
 		result.Capabilities = capabilitiesFor(role)
 		result.Users = make([]GovernanceUser, 0, len(users))
 		for _, user := range users {
+			if user.AccessGrantedAt == nil {
+				continue
+			}
 			userRole, err := domain.SingleRole(user.Roles)
 			if err != nil {
 				return domain.ErrConflict
 			}
-			result.Users = append(result.Users, GovernanceUser{UserSummary: summarizeUser(user), AdminUserID: user.ID, Role: userRole, LoginEnabled: user.Active, Actions: actionsFor(role, current.ID, user, userRole)})
+			result.Users = append(result.Users, GovernanceUser{UserSummary: summarizeUser(user), AdminUserID: user.ID, Role: userRole, LoginEnabled: user.LoginEnabled, Actions: actionsFor(role, current.ID, user, userRole)})
 		}
 		return nil
 	})
@@ -297,9 +300,9 @@ func (service *Management) enterpriseItems(ctx context.Context, employees []weco
 		rolesByUserID[user.WeComUserID] = role
 	}
 	for index := range items {
-		if user, ok := byUserID[items[index].WeComUserID]; ok {
+		if user, ok := byUserID[items[index].WeComUserID]; ok && user.AccessGrantedAt != nil {
 			role := rolesByUserID[user.WeComUserID]
-			items[index].AuthorizedAccount, items[index].Role, items[index].LoginEnabled = true, &role, boolPointer(user.Active)
+			items[index].AuthorizedAccount, items[index].Role, items[index].LoginEnabled = true, &role, boolPointer(user.LoginEnabled)
 		}
 	}
 	return items, nil
@@ -345,10 +348,22 @@ func (service *Management) ProvisionEnterpriseEmployee(ctx context.Context, acto
 			result, err = service.repository.UserByWeComUserID(txContext, employee.UserID, false)
 			return err
 		}
-		if _, err = service.repository.UserByWeComUserID(txContext, employee.UserID, true); err == nil {
-			return domain.ErrConflict
-		} else if !errors.Is(err, domain.ErrNotFound) {
-			return err
+		existing, lookupErr := service.repository.UserByWeComUserID(txContext, employee.UserID, true)
+		if lookupErr == nil {
+			if existing.AccessGrantedAt != nil {
+				return domain.ErrConflict
+			}
+			if err = service.repository.GrantAccess(txContext, existing.ID, input.Role, employee.DisplayName, service.now().UTC()); err != nil {
+				return err
+			}
+			result, err = service.repository.UserByID(txContext, existing.ID, false)
+			if err != nil {
+				return err
+			}
+			return service.audit(txContext, actor.InternalID, result.ID, "provision_"+string(input.Role), map[string]any{"role": input.Role, "wecom_verified": true, "existing_staff_projection": true})
+		}
+		if !errors.Is(lookupErr, domain.ErrNotFound) {
+			return lookupErr
 		}
 		hash := sha256.Sum256([]byte(employee.UserID))
 		result, err = service.repository.CreateUser(txContext, domain.User{Username: "wecom-staff-" + hex.EncodeToString(hash[:]), PasswordHash: passwordHash, DisplayName: employee.DisplayName, WeComUserID: employee.UserID, Active: true, Roles: []domain.Role{input.Role}})
@@ -365,13 +380,16 @@ func (service *Management) SetGovernanceLoginEnabled(ctx context.Context, actor 
 		return ErrEnterpriseDirectoryUnavailable
 	}
 	return service.withGovernanceTarget(ctx, actor, input.TargetID, input.IdempotencyKey, "set_login_enabled", service.governanceDigest("login", boolString(input.LoginEnabled)), func(txContext context.Context, actorRole domain.Role, target domain.User, targetRole domain.Role) error {
-		if !canManageTarget(actorRole, targetRole) || target.Active == input.LoginEnabled {
-			if !canManageTarget(actorRole, targetRole) {
-				return domain.ErrPermissionDenied
+		if !canManageTarget(actorRole, targetRole) {
+			return domain.ErrPermissionDenied
+		}
+		if (!target.Active && !(input.LoginEnabled && target.LegacyLoginReactivationPending)) || target.LoginEnabled == input.LoginEnabled {
+			if !target.Active && !(input.LoginEnabled && target.LegacyLoginReactivationPending) {
+				return domain.ErrConflict
 			}
 			return nil
 		}
-		if err := service.repository.SetActive(txContext, target.ID, input.LoginEnabled, service.now().UTC()); err != nil {
+		if err := service.repository.SetLoginEnabled(txContext, target.ID, input.LoginEnabled, service.now().UTC()); err != nil {
 			return err
 		}
 		action := "disable_login"
@@ -494,7 +512,10 @@ func (service *Management) TransferGovernanceSuperAdmin(ctx context.Context, act
 		if err != nil {
 			return domain.ErrConflict
 		}
-		if !target.Active || targetRole != domain.RoleAdmin {
+		if target.AccessGrantedAt == nil {
+			return domain.ErrNotFound
+		}
+		if !target.Active || !target.LoginEnabled || target.AccessGrantedAt == nil || targetRole != domain.RoleAdmin {
 			return domain.ErrPermissionDenied
 		}
 		reserved, err := service.repository.ReserveGovernanceMutation(txContext, current.ID, input.IdempotencyKey, "transfer_super_admin", target.ID, service.governanceDigest("transfer", integerString(target.ID)), service.now().UTC())
@@ -534,6 +555,9 @@ func (service *Management) withGovernanceTarget(ctx context.Context, actor domai
 		if err != nil {
 			return domain.ErrConflict
 		}
+		if target.AccessGrantedAt == nil {
+			return domain.ErrNotFound
+		}
 		if !canAnyGovernanceMutation(actorRole, targetRole) {
 			return domain.ErrPermissionDenied
 		}
@@ -553,7 +577,7 @@ func (service *Management) currentGovernanceActor(ctx context.Context, actor dom
 	if err != nil {
 		return domain.User{}, "", err
 	}
-	if !user.Active || user.SessionVersion != actor.SessionVersion {
+	if !user.Active || !user.LoginEnabled || user.AccessGrantedAt == nil || user.SessionVersion != actor.SessionVersion {
 		return domain.User{}, "", domain.ErrAuthentication
 	}
 	role, err := domain.SingleRole(user.Roles)
@@ -582,6 +606,9 @@ func (service *Management) verifiedEnterpriseEmployee(ctx context.Context, raw s
 		return wecomport.EnterpriseEmployee{}, ErrEnterpriseDirectoryUnavailable
 	}
 	employee, err := service.enterpriseDirectory.ReadEnterpriseEmployee(ctx, userID)
+	if errors.Is(err, wecomport.ErrEnterpriseEmployeeNotFound) {
+		return wecomport.EnterpriseEmployee{}, domain.ErrNotFound
+	}
 	if err != nil {
 		return wecomport.EnterpriseEmployee{}, ErrEnterpriseDirectoryUnavailable
 	}
@@ -605,10 +632,10 @@ func canAnyGovernanceMutation(actor, target domain.Role) bool {
 }
 func actionsFor(actorRole domain.Role, actorID int64, target domain.User, targetRole domain.Role) GovernanceActions {
 	if target.ID == actorID || targetRole == domain.RoleSuperAdmin {
-		return GovernanceActions{TransferSuperAdmin: actorRole == domain.RoleSuperAdmin && target.ID != actorID && target.Active && targetRole == domain.RoleAdmin}
+		return GovernanceActions{TransferSuperAdmin: actorRole == domain.RoleSuperAdmin && target.ID != actorID && target.Active && target.LoginEnabled && target.AccessGrantedAt != nil && targetRole == domain.RoleAdmin}
 	}
 	canManage := canManageTarget(actorRole, targetRole)
-	return GovernanceActions{SetLoginEnabled: canManage, ChangeRole: actorRole == domain.RoleSuperAdmin && canManage, BindWeComUserID: actorRole == domain.RoleSuperAdmin && canManage, ResetPassword: actorRole == domain.RoleSuperAdmin && canManage, TransferSuperAdmin: actorRole == domain.RoleSuperAdmin && target.Active && targetRole == domain.RoleAdmin}
+	return GovernanceActions{SetLoginEnabled: canManage, ChangeRole: actorRole == domain.RoleSuperAdmin && canManage, BindWeComUserID: actorRole == domain.RoleSuperAdmin && canManage, ResetPassword: actorRole == domain.RoleSuperAdmin && canManage, TransferSuperAdmin: actorRole == domain.RoleSuperAdmin && target.Active && target.LoginEnabled && target.AccessGrantedAt != nil && targetRole == domain.RoleAdmin}
 }
 func validGovernanceIdempotencyKey(key string) bool {
 	return strings.TrimSpace(key) != "" && len(strings.TrimSpace(key)) <= 200 && !strings.ContainsAny(key, "\x00\r\n")

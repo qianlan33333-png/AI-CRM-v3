@@ -566,6 +566,8 @@ func (handler *Handler) writeError(response nethttp.ResponseWriter, request *net
 		status, code = nethttp.StatusNotFound, "not_found"
 	case errors.Is(err, domain.ErrConflict):
 		status, code = nethttp.StatusConflict, "conflict"
+	case errors.Is(err, app.ErrEnterpriseDirectoryUnavailable):
+		status, code = nethttp.StatusServiceUnavailable, "enterprise_directory_unavailable"
 	}
 	if request.URL.Path == "/login" && !wantsJSON(request) {
 		token, tokenErr := handler.issueLoginCSRF(response)
