@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	identitysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/secure"
@@ -124,4 +126,53 @@ func TestHXCRegistrationCoverageFullIndexesIntegration(t *testing.T) {
 		})
 	}
 
+}
+
+func TestPostgresStoreResolveDoesNotUseEmptyPhoneFallbackForInternationalNumber(t *testing.T) {
+	pool, cleanup := identityPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := pool.Native().Exec(ctx, `CREATE TABLE survey_submissions(id BIGINT PRIMARY KEY); CREATE TABLE survey_submission_answers(id BIGINT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(identityMigrationNamed(t, "0038_survey_oauth_phone_vault.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Native().Exec(ctx, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := identitysecure.NewPhoneVault(base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var customerID int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	// This emulates a malformed pre-vault legacy row. It must never be found
+	// through the phone fallback when an unrelated international number has no
+	// valid CN11 lookup key.
+	if _, err = pool.Native().Exec(ctx, `ALTER TABLE customer_identities DROP CONSTRAINT ck_customer_identities_nonempty`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version) VALUES($1,'phone','phone:e164','','declared','legacy',1)`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	service := identityapp.OneIDService{Store: NewPostgresStore(vault)}
+	var resolved identityport.ResolveResult
+	if err = unit.Within(ctx, func(txctx context.Context) error {
+		var resolveErr error
+		resolved, resolveErr = service.Resolve(txctx, identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:e164", Value: "+1 650 555 0123", Assurance: identitydomain.AssuranceDeclared, Source: "integration"})
+		return resolveErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Status != identityport.ResolveNotFound || resolved.CustomerID != 0 {
+		t.Fatalf("international phone resolved malformed empty fallback: %+v", resolved)
+	}
 }
