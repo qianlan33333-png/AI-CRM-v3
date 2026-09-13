@@ -435,6 +435,9 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "customer": []map[string]any{{"external_userid": ids[0], "errcode": 0}}})
 		case "/cgi-bin/externalcontact/transfer_result":
 			transferResultCalls.Add(1)
+			// Keep this response slower than the former browser harness polling
+			// interval. The journey must still issue exactly one Provider read.
+			time.Sleep(250 * time.Millisecond)
 			_ = json.NewEncoder(writer).Encode(map[string]any{"errcode": 0, "customer": []map[string]any{{"external_userid": "browser-external", "status": 1, "takeover_time": 1}}})
 		default:
 			http.NotFound(writer, request)

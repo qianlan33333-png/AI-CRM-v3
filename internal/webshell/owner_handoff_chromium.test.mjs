@@ -260,13 +260,13 @@ try {
         await sleep(50);
       }
       if (!accepted) throw new Error(`provider transfer did not reach an accepted line ${JSON.stringify(batchState)}`);
-      let read = false;
-      for (let attempt = 0; attempt < 80; attempt += 1) {
-        await evaluate("document.querySelector('[data-owner-handoff-host] [data-read-transfer-result]').click(); true", "transfer_result_click");
-        await sleep(100);
-        if (await evaluate("document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('企微转接已完成')", "transfer_result_render")) { read = true; break; }
-      }
-      if (!read) {
+      // This action is a real POST. Click it exactly once, then poll only the
+      // rendered DOM; polling by re-clicking used to issue duplicate Provider
+      // transfer_result reads when a valid response was slow.
+      await evaluate("document.querySelector('[data-owner-handoff-host] [data-read-transfer-result]').click(); true", "transfer_result_click");
+      try {
+        await waitFor("document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('企微转接已完成')", "transfer-result readback did not render final status");
+      } catch (error) {
         const diagnostic = await evaluate(ownerHandoffBatchStateExpression(), "transfer_result_diagnostic");
         throw new Error(`transfer-result readback did not render final status ${JSON.stringify(diagnostic)}`);
       }
