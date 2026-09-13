@@ -681,7 +681,7 @@ effective grant、auth version 和必要水位，不能把内部 offset 当成�
 | 401 | `authentication` | 没有 Bearer、Token 无效/过期、Client 停用或轮换 |
 | 403 | `permission` | scope、capability、CIDR、corp 或 customer owner scope 不足 |
 | 404 | `not_found` | 客户或订单等明确资源不存在 |
-| 409 | `identity_pending` / `identity_conflict` / `conflict` | 身份 pending、冲突、多值或业务冲突；不能转空数组 |
+| 409 | `identity_pending` / `identity_conflict` / `conflict` / `outcome_unknown` | 身份 pending、冲突、多值、业务冲突或结果未知；保留不确定状态，不能转空数组或完成结果 |
 | 429 | `rate_limited` | 访问频率受限 |
 | 503 | `dependency_unavailable` | Owner Port、Unit of Work 或读模型未就绪 |
 

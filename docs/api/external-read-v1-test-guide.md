@@ -34,7 +34,7 @@ go test -count=1 -v ./cmd/aicrm -run 'TestV1|TestOpenPlatformV1Routing'
 1. 页面显示 11 个专用只读 operation、OAuth 占位示例、OneID、cursor、退款语义、错误码。
 2. “下载已认证 OpenAPI YAML”链接到同源的
    `/api/admin/config/openapi.yaml`；它仍需要现有管理员登录，不经过旧 bridge。
-3. `?tab=clients` 才懒加载调用方管理；旧 `?client=<id>` 深链仍进入管理视图。
+3. `?tab=clients` 才懒加载调用方管理；旧 `?client=<id>` 深链仍经既有外层认证路由进入管理视图。
 4. `?tab=docs` 优先显示文档，即使 URL 同时带有 `client`，也不能触发管理请求。
 5. 管理页对 401 显示登录入口、对 403 显示超级管理员说明、对 5xx 显示可重试提示；这些
    状态不能覆盖文档页。

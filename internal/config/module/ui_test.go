@@ -33,14 +33,14 @@ func TestConfigUIOnlyMountsClosedDonorPagesAndPreservesDetailQuery(t *testing.T)
 		_, _ = w.Write([]byte(page + ":" + body + ":" + assets.AdminJS))
 		return nil
 	})
-	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/configDetail.html?cat=wecom_base", "/admin/configDetail.html?cat=admin_access", "/admin/configDetail.html?cat=sidebar_identity", "/admin/configDetail.html?cat=ai_automation", "/admin/configDetail.html?cat=open_api_key", "/admin/configDetail.html?cat=api_token", "/admin/configDetail.html?cat=webhooks_push", "/admin/configDetail.html?cat=reliability", "/admin/configDetail.html?cat=wechat_pay", "/admin/configDetail.html?cat=alipay", "/admin/configDetail.html?cat=wechat_shop", "/admin/configDetail.html?cat=wechat_oauth", "/admin/api-docs", "/admin/api-docs?tab=docs", "/admin/apidocs.html?tab=clients", "/admin/apidocs.html?client=fixture-client.1", "/admin/api-docs?tab=docs&client=fixture-client.1", "/admin/config/releases", "/admin/config/releases/new", "/admin/config/releases/17"} {
+	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/configDetail.html?cat=wecom_base", "/admin/configDetail.html?cat=admin_access", "/admin/configDetail.html?cat=sidebar_identity", "/admin/configDetail.html?cat=ai_automation", "/admin/configDetail.html?cat=open_api_key", "/admin/configDetail.html?cat=api_token", "/admin/configDetail.html?cat=webhooks_push", "/admin/configDetail.html?cat=reliability", "/admin/configDetail.html?cat=wechat_pay", "/admin/configDetail.html?cat=alipay", "/admin/configDetail.html?cat=wechat_shop", "/admin/configDetail.html?cat=wechat_oauth", "/admin/api-docs", "/admin/config/releases", "/admin/config/releases/new", "/admin/config/releases/17"} {
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != 200 {
 			t.Fatalf("%s status=%d", path, response.Code)
 		}
 	}
-	for _, path := range []string{"/admin/config?history=x", "/admin/configDetail.html?cat=customer_state_history", "/admin/configDetail.html?cat=wecom_base&extra=1", "/admin/apidocs.html?download=1", "/admin/apidocs.html?tab=admin", "/admin/apidocs.html?tab=docs&tab=clients", "/admin/apidocs.html?client=fixture&client=other", "/admin/apidocs.html?client=bad%20client", "/admin/apidocs.html?client=x", "/admin/config/releases/0", "/admin/config/releases/not-a-number", "/admin/config/releases/7/usage"} {
+	for _, path := range []string{"/admin/config?history=x", "/admin/configDetail.html?cat=customer_state_history", "/admin/configDetail.html?cat=wecom_base&extra=1", "/admin/apidocs.html?download=1", "/admin/config/releases/0", "/admin/config/releases/not-a-number", "/admin/config/releases/7/usage"} {
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != 404 {
