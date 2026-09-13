@@ -82,7 +82,7 @@ func TestEnterpriseDirectoryPreflightReportsSafeFailureStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	preflight := client.PreflightEnterpriseDirectory(context.Background())
-	if preflight.Complete || preflight.FailureStage != "agent_tags" || preflight.AgentUserInfosShape != "object" || preflight.AgentPartysShape != "object" || preflight.AgentTagsShape != "object" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 0 || preflight.EmployeeCount != 0 {
+	if preflight.Complete || preflight.FailureStage != "agent_tags" || preflight.AgentUserInfosShape != "object" || preflight.AgentPartysShape != "object" || preflight.AgentTagsShape != "object" || preflight.AgentUserInfosDetail != "object_keys=1;user=array_len=0;element_types=none" || preflight.AgentPartysDetail != "object_keys=1;partyid=array_len=1;element_types=number" || preflight.AgentTagsDetail != "object_keys=1;tagid=array_len=1;element_types=number" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 0 || preflight.EmployeeCount != 0 {
 		t.Fatalf("preflight=%+v", preflight)
 	}
 	if got := (&Client{}).PreflightEnterpriseDirectory(context.Background()); got.Complete || got.FailureStage != "config" {

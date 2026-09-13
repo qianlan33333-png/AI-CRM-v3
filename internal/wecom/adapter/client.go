@@ -2156,6 +2156,9 @@ type EnterpriseDirectoryPreflight struct {
 	AgentUserInfosShape     string `json:"agent_userinfos_shape,omitempty"`
 	AgentPartysShape        string `json:"agent_partys_shape,omitempty"`
 	AgentTagsShape          string `json:"agent_tags_shape,omitempty"`
+	AgentUserInfosDetail    string `json:"agent_userinfos_detail,omitempty"`
+	AgentPartysDetail       string `json:"agent_partys_detail,omitempty"`
+	AgentTagsDetail         string `json:"agent_tags_detail,omitempty"`
 	ScopeUsers              int    `json:"scope_user_count"`
 	ScopeDepartments        int    `json:"scope_department_count"`
 	DirectoryDepartments    int    `json:"directory_department_count"`
@@ -2186,6 +2189,9 @@ func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) Enterpri
 	result.AgentUserInfosShape = evidence.userInfos
 	result.AgentPartysShape = evidence.partys
 	result.AgentTagsShape = evidence.tags
+	result.AgentUserInfosDetail = evidence.userInfosDetail
+	result.AgentPartysDetail = evidence.partysDetail
+	result.AgentTagsDetail = evidence.tagsDetail
 	if stage != "" {
 		result.FailureStage = stage
 		return result
@@ -2237,9 +2243,12 @@ func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) Enterpri
 }
 
 type enterpriseAgentScopeEvidence struct {
-	userInfos string
-	partys    string
-	tags      string
+	userInfos       string
+	partys          string
+	tags            string
+	userInfosDetail string
+	partysDetail    string
+	tagsDetail      string
 }
 
 func enterpriseScopeFieldShape(raw json.RawMessage) string {
@@ -2270,12 +2279,63 @@ func enterpriseScopeFieldShape(raw json.RawMessage) string {
 	}
 }
 
+// enterpriseScopeEnvelopeDetail is deliberately value-free preflight
+// evidence. It reveals only a known envelope field's type, collection size,
+// element types, and the enclosing object key count.
+func enterpriseScopeEnvelopeDetail(raw json.RawMessage, expectedField string) string {
+	raw = bytes.TrimSpace(raw)
+	if enterpriseScopeFieldShape(raw) != "object" {
+		return "envelope=" + enterpriseScopeFieldShape(raw)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "envelope=malformed"
+	}
+	field, exists := envelope[expectedField]
+	if !exists {
+		return "object_keys=" + strconv.Itoa(len(envelope)) + ";" + expectedField + "=missing"
+	}
+	return "object_keys=" + strconv.Itoa(len(envelope)) + ";" + expectedField + "=" + enterpriseScopeValueDetail(field)
+}
+
+func enterpriseScopeValueDetail(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return "missing"
+	}
+	if bytes.Equal(raw, []byte("null")) {
+		return "null"
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return enterpriseScopeFieldShape(raw)
+	}
+	if len(values) == 0 {
+		return "array_len=0;element_types=none"
+	}
+	types := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		types[enterpriseScopeFieldShape(value)] = struct{}{}
+	}
+	orderedTypes := make([]string, 0, len(types))
+	for kind := range types {
+		orderedTypes = append(orderedTypes, kind)
+	}
+	sort.Strings(orderedTypes)
+	return "array_len=" + strconv.Itoa(len(values)) + ";element_types=" + strings.Join(orderedTypes, ",")
+}
+
 func (client *Client) enterpriseAgentScopePreflight(ctx context.Context, token string) (enterpriseAgentScope, string, enterpriseAgentScopeEvidence) {
 	payload, err := client.request(ctx, "/cgi-bin/agent/get", url.Values{"access_token": {token}, "agentid": {client.config.AgentID}})
 	if err != nil {
 		return enterpriseAgentScope{}, "agent_get", enterpriseAgentScopeEvidence{}
 	}
-	evidence := enterpriseAgentScopeEvidence{userInfos: enterpriseScopeFieldShape(payload.AllowUserInfos), partys: enterpriseScopeFieldShape(payload.AllowPartys), tags: enterpriseScopeFieldShape(payload.AllowTags)}
+	evidence := enterpriseAgentScopeEvidence{
+		userInfos: enterpriseScopeFieldShape(payload.AllowUserInfos), partys: enterpriseScopeFieldShape(payload.AllowPartys), tags: enterpriseScopeFieldShape(payload.AllowTags),
+		userInfosDetail: enterpriseScopeEnvelopeDetail(payload.AllowUserInfos, "user"),
+		partysDetail:    enterpriseScopeEnvelopeDetail(payload.AllowPartys, "partyid"),
+		tagsDetail:      enterpriseScopeEnvelopeDetail(payload.AllowTags, "tagid"),
+	}
 	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 {
 		return enterpriseAgentScope{}, "agent_scope_shape", evidence
 	}
