@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -18,13 +19,15 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/domain"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
 
 var (
-	ErrProviderDisabled                      = errors.New("group ops provider is disabled")
-	ErrRuntimeInvalid                        = errors.New("invalid Group Ops runtime command")
-	ErrMiniProgramCoverResolverNotConfigured = errors.New("Group Ops mini program cover resolver is not configured")
+	ErrProviderDisabled                    = errors.New("group ops provider is disabled")
+	ErrRuntimeInvalid                      = errors.New("invalid Group Ops runtime command")
+	ErrMiniProgramCoverUnsupported         = errors.New("Group Ops mini program cover is unsupported")
+	ErrMiniProgramCoverResolverUnavailable = errors.New("Group Ops mini program cover resolver is unavailable")
 )
 
 // RuntimeService coordinates local run/execution facts with the stable EER
@@ -282,7 +285,7 @@ func (s *RuntimeService) AcceptWebhook(ctx context.Context, webhookReference, ke
 		return groupopsport.RunSummary{}, ErrProviderDisabled
 	}
 
-	materialPlan, contentRaw, err := s.webhookMessageSnapshot(ctx, inbound)
+	preparedMessages, err := s.prepareWebhookMessageSnapshot(ctx, inbound)
 	if err != nil {
 		return groupopsport.RunSummary{}, classify(err)
 	}
@@ -317,6 +320,10 @@ func (s *RuntimeService) AcceptWebhook(ctx context.Context, webhookReference, ke
 		}
 		if !validDynamicWebhookDetail(detail, webhookReference, inbound.TargetChatReferences) {
 			return ErrStateConflict
+		}
+		materialPlan, contentRaw, materializeErr := s.materializeWebhookMessageSnapshot(tx, detail, run, preparedMessages)
+		if materializeErr != nil {
+			return materializeErr
 		}
 		drafts, draftErr := s.buildWebhookDrafts(tx, detail, run, inbound.TargetChatReferences, materialPlan, contentRaw, now)
 		if draftErr != nil {
@@ -394,42 +401,76 @@ func webhookTargetsAreBound(bindings []groupopsport.GroupAsset, targets []string
 	return true
 }
 
-func (s *RuntimeService) webhookMessageSnapshot(ctx context.Context, inbound groupopsport.WebhookInboundCommand) (groupopsport.MaterialPlan, json.RawMessage, error) {
-	materialPlan := groupopsport.MaterialPlan{References: make([]groupopsport.MaterialReference, 0, len(inbound.Messages))}
-	content := struct {
-		SchemaVersion   int32                            `json:"schema_version"`
-		Kind            string                           `json:"kind"`
-		MessageText     string                           `json:"message_text,omitempty"`
-		AttachmentOrder []groupopsport.MaterialReference `json:"attachment_order"`
-	}{SchemaVersion: 2, Kind: "webhook_message", AttachmentOrder: []groupopsport.MaterialReference{}}
+type webhookMessagePreparation struct {
+	messageText string
+	attachments []webhookPreparedAttachment
+}
+
+type webhookPreparedAttachment struct {
+	reference groupopsport.MaterialReference
+	prepared  *mediaport.PreparedWebhookMiniProgram
+}
+
+func (s *RuntimeService) prepareWebhookMessageSnapshot(ctx context.Context, inbound groupopsport.WebhookInboundCommand) (webhookMessagePreparation, error) {
+	prepared := webhookMessagePreparation{attachments: make([]webhookPreparedAttachment, 0, len(inbound.Messages))}
 	for _, message := range inbound.Messages {
 		switch message.Type {
 		case "text":
-			content.MessageText = message.Text
+			prepared.messageText = message.Text
 		case "image":
-			materialPlan.References = append(materialPlan.References, groupopsport.MaterialReference{Kind: "image", ID: message.ImageID})
+			prepared.attachments = append(prepared.attachments, webhookPreparedAttachment{reference: groupopsport.MaterialReference{Kind: "image", ID: message.ImageID}})
 		case "file":
-			materialPlan.References = append(materialPlan.References, groupopsport.MaterialReference{Kind: "attachment", ID: message.AttachmentID})
+			prepared.attachments = append(prepared.attachments, webhookPreparedAttachment{reference: groupopsport.MaterialReference{Kind: "attachment", ID: message.AttachmentID}})
 		case "miniprogram":
-			resolver, ok := s.materials.(groupopsport.WebhookMiniProgramResolver)
+			if message.MiniProgramID > 0 {
+				prepared.attachments = append(prepared.attachments, webhookPreparedAttachment{reference: groupopsport.MaterialReference{Kind: "miniprogram", ID: message.MiniProgramID}})
+				continue
+			}
+			resolver, ok := s.materials.(mediaport.WebhookMiniProgramResolver)
 			if !ok || resolver == nil {
-				return groupopsport.MaterialPlan{}, nil, ErrMiniProgramCoverResolverNotConfigured
+				return webhookMessagePreparation{}, ErrMiniProgramCoverResolverUnavailable
 			}
-			resolved, resolveErr := resolver.ResolveWebhookMiniProgram(ctx, groupopsport.WebhookMiniProgramRequest{AppID: message.AppID, Path: message.Path, Title: message.Title})
+			cover, resolveErr := resolver.PrepareWebhookMiniProgram(ctx, mediaport.WebhookMiniProgramRequest{AppID: message.AppID, Path: message.Path, Title: message.Title})
+			if errors.Is(resolveErr, mediaport.ErrWebhookMiniProgramUnsupported) {
+				return webhookMessagePreparation{}, ErrMiniProgramCoverUnsupported
+			}
 			if resolveErr != nil {
-				return groupopsport.MaterialPlan{}, nil, resolveErr
+				return webhookMessagePreparation{}, ErrMiniProgramCoverResolverUnavailable
 			}
-			if resolved.Kind != "miniprogram" || resolved.ID < 1 {
-				return groupopsport.MaterialPlan{}, nil, ErrUnavailable
-			}
-			materialPlan.References = append(materialPlan.References, resolved)
+			prepared.attachments = append(prepared.attachments, webhookPreparedAttachment{prepared: &cover})
+		default:
+			return webhookMessagePreparation{}, ErrRuntimeInvalid
 		}
+	}
+	return prepared, nil
+}
+
+func (s *RuntimeService) materializeWebhookMessageSnapshot(ctx context.Context, detail groupopsport.Detail, run groupopsport.Run, prepared webhookMessagePreparation) (groupopsport.MaterialPlan, json.RawMessage, error) {
+	materialPlan := groupopsport.MaterialPlan{References: make([]groupopsport.MaterialReference, 0, len(prepared.attachments))}
+	resolver, _ := s.materials.(mediaport.WebhookMiniProgramResolver)
+	for index, attachment := range prepared.attachments {
+		reference := attachment.reference
+		if attachment.prepared != nil {
+			if resolver == nil || detail.Plan.UpdatedBy < 1 {
+				return groupopsport.MaterialPlan{}, nil, ErrMiniProgramCoverResolverUnavailable
+			}
+			resolved, err := resolver.MaterializeWebhookMiniProgramWithin(ctx, *attachment.prepared, mediaport.WebhookMiniProgramMaterialization{Actor: detail.Plan.UpdatedBy, IdempotencyKey: webhookLessonMaterializationKey(run.ID, index)})
+			if err != nil || resolved.Kind != "miniprogram" || resolved.ID < 1 {
+				return groupopsport.MaterialPlan{}, nil, ErrMiniProgramCoverResolverUnavailable
+			}
+			reference = groupopsport.MaterialReference{Kind: resolved.Kind, ID: resolved.ID}
+		}
+		materialPlan.References = append(materialPlan.References, reference)
 	}
 	if groupopsdomain.ValidateMaterialPlan(materialPlan) != nil {
 		return groupopsport.MaterialPlan{}, nil, ErrRuntimeInvalid
 	}
-	content.AttachmentOrder = append(content.AttachmentOrder, materialPlan.References...)
-	raw, err := json.Marshal(content)
+	raw, err := json.Marshal(map[string]any{
+		"schema_version":   2,
+		"kind":             "webhook_message",
+		"message_text":     prepared.messageText,
+		"attachment_order": materialPlan.References,
+	})
 	if err != nil {
 		return groupopsport.MaterialPlan{}, nil, ErrRuntimeInvalid
 	}
@@ -438,6 +479,11 @@ func (s *RuntimeService) webhookMessageSnapshot(ctx context.Context, inbound gro
 		return groupopsport.MaterialPlan{}, nil, ErrRuntimeInvalid
 	}
 	return materialPlan, canonical, nil
+}
+
+func webhookLessonMaterializationKey(runID int64, index int) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{"group-ops.webhook.lesson-card.material.v1", strconv.FormatInt(runID, 10), strconv.Itoa(index)}, "\x00")))
+	return "groupops_webhook_lesson_" + hex.EncodeToString(sum[:])
 }
 
 func (s *RuntimeService) buildWebhookDrafts(tx context.Context, detail groupopsport.Detail, run groupopsport.Run, targets []string, materialPlan groupopsport.MaterialPlan, contentRaw json.RawMessage, now time.Time) ([]groupopsport.ExecutionDraft, error) {

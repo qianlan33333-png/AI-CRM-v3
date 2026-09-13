@@ -582,7 +582,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	groupOpsMaterials, err := newUnifiedGroupOpsMaterialAdapter(mediaContentBindings.SourceCapturer, materialFreezer, mediaRepository, materialPreparation, materialScopeDigest)
+	webhookLessonCards := mediaapp.NewWebhookLessonCardResolver(mediaRepository, nil)
+	groupOpsMaterials, err := newUnifiedGroupOpsMaterialAdapter(mediaContentBindings.SourceCapturer, materialFreezer, mediaRepository, materialPreparation, materialScopeDigest, webhookLessonCards)
 	if err != nil {
 		return fail(err)
 	}

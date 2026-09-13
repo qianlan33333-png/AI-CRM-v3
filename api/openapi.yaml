@@ -6291,14 +6291,25 @@ components:
       required: [type, attachment_id]
       properties: {type: {const: file}, attachment_id: {$ref: "#/components/schemas/PositiveID"}}
     GroupOpsWebhookMiniProgramMessage:
+      oneOf:
+        - {$ref: "#/components/schemas/GroupOpsWebhookDailyLessonMiniProgramMessage"}
+        - {$ref: "#/components/schemas/GroupOpsWebhookStoredMiniProgramMessage"}
+    GroupOpsWebhookDailyLessonMiniProgramMessage:
       type: object
       additionalProperties: false
       required: [type, appid, path, title]
       properties:
         type: {const: miniprogram}
-        appid: {type: string, minLength: 1, maxLength: 128}
-        path: {type: string, minLength: 1, maxLength: 1024}
-        title: {type: string, minLength: 1, maxLength: 64, description: "At most 64 UTF-8 bytes; the byte bound is enforced by the server."}
+        appid: {type: string, const: wx0ca836834b18e989, description: "The only AppID with automatic cover resolution."}
+        path: {type: string, pattern: '^pages/article/article\\?lesson_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}&from=learn$', description: "Only this daily-lesson path form has automatic cover resolution."}
+        title: {type: string, minLength: 1, maxLength: 64, description: "At most 64 UTF-8 bytes; controls and surrounding whitespace are rejected."}
+    GroupOpsWebhookStoredMiniProgramMessage:
+      type: object
+      additionalProperties: false
+      required: [type, miniprogram_id]
+      properties:
+        type: {const: miniprogram}
+        miniprogram_id: {$ref: "#/components/schemas/PositiveID", description: "An enabled local Media miniprogram created through the admin miniprogram library."}
     GroupOpsWebhookError:
       type: object
       additionalProperties: false

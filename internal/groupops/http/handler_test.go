@@ -99,12 +99,13 @@ type webhookRuntimeStub struct {
 	runtimeStub
 	calls   int
 	inbound groupopsport.WebhookInboundCommand
+	err     error
 }
 
 func (s *webhookRuntimeStub) AcceptWebhook(_ context.Context, _ string, _ string, inbound groupopsport.WebhookInboundCommand) (groupopsport.RunSummary, error) {
 	s.calls++
 	s.inbound = inbound
-	return groupopsport.RunSummary{}, nil
+	return groupopsport.RunSummary{}, s.err
 }
 
 type securityStub struct {
@@ -318,10 +319,10 @@ func TestGroupOpsWebhookDecodesStrictDynamicMessagesBeforeRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"今日话术"},{"type":"image","image_id":7},{"type":"file","attachment_id":8}]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"今日话术"},{"type":"image","image_id":7},{"type":"file","attachment_id":8},{"type":"miniprogram","miniprogram_id":9}]}`))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || !protocols.called || runtime.calls != 1 || len(runtime.inbound.Messages) != 3 || runtime.inbound.Messages[2].AttachmentID != 8 {
+	if response.Code != http.StatusAccepted || !protocols.called || runtime.calls != 1 || len(runtime.inbound.Messages) != 4 || runtime.inbound.Messages[2].AttachmentID != 8 || runtime.inbound.Messages[3].MiniProgramID != 9 {
 		t.Fatalf("status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
 	}
 	protocols.called = false
@@ -330,6 +331,39 @@ func TestGroupOpsWebhookDecodesStrictDynamicMessagesBeforeRuntime(t *testing.T) 
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || protocols.called || runtime.calls != 1 || !strings.Contains(response.Body.String(), `"invalid_request"`) {
 		t.Fatalf("status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"miniprogram","miniprogram_id":"9"}]}`))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || protocols.called || runtime.calls != 1 || !strings.Contains(response.Body.String(), `"invalid_request"`) {
+		t.Fatalf("string miniprogram id status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
+	}
+}
+
+func TestGroupOpsWebhookReportsMiniProgramCoverFailuresPrecisely(t *testing.T) {
+	body := `{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"今日话术"}]}`
+	for _, test := range []struct {
+		name string
+		err  error
+		code int
+		want string
+	}{
+		{name: "unsupported automatic source", err: groupopsapp.ErrMiniProgramCoverUnsupported, code: http.StatusBadRequest, want: "miniprogram_cover_unsupported"},
+		{name: "temporary cover failure", err: groupopsapp.ErrMiniProgramCoverResolverUnavailable, code: http.StatusServiceUnavailable, want: "miniprogram_cover_unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			protocols := &protocolStub{}
+			runtime := &webhookRuntimeStub{err: test.err}
+			handler, err := groupopshttp.NewHandlerWithRuntime(applicationStub{}, runtime, adminSecurity(nil), protocols)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(body)))
+			if response.Code != test.code || !strings.Contains(response.Body.String(), test.want) || runtime.calls != 1 {
+				t.Fatalf("status=%d runtime=%+v body=%s", response.Code, runtime, response.Body.String())
+			}
+		})
 	}
 }
 

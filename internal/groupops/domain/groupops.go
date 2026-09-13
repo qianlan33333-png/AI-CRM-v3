@@ -106,23 +106,30 @@ func ValidateWebhookInbound(value groupopsport.WebhookInboundCommand) error {
 	for index, message := range value.Messages {
 		switch message.Type {
 		case "text":
-			if index != 0 || !ValidText(message.Text, MaxMessageLength) || message.AppID != "" || message.Path != "" || message.Title != "" || message.ImageID != 0 || message.AttachmentID != 0 {
+			if index != 0 || !ValidText(message.Text, MaxMessageLength) || message.AppID != "" || message.Path != "" || message.Title != "" || message.MiniProgramID != 0 || message.ImageID != 0 || message.AttachmentID != 0 {
 				return ErrInvalidWebhook
 			}
 		case "image":
 			attachments++
-			if message.ImageID < 1 || message.Text != "" || message.AppID != "" || message.Path != "" || message.Title != "" || message.AttachmentID != 0 {
+			if message.ImageID < 1 || message.Text != "" || message.AppID != "" || message.Path != "" || message.Title != "" || message.MiniProgramID != 0 || message.AttachmentID != 0 {
 				return ErrInvalidWebhook
 			}
 		case "file":
 			attachments++
-			if message.AttachmentID < 1 || message.Text != "" || message.AppID != "" || message.Path != "" || message.Title != "" || message.ImageID != 0 {
+			if message.AttachmentID < 1 || message.Text != "" || message.AppID != "" || message.Path != "" || message.Title != "" || message.MiniProgramID != 0 || message.ImageID != 0 {
 				return ErrInvalidWebhook
 			}
 		case "miniprogram":
 			attachments++
 			miniPrograms++
-			if !ValidText(message.AppID, 128) || !ValidText(message.Path, 1024) || !validWebhookMiniProgramTitle(message.Title) || message.Text != "" || message.ImageID != 0 || message.AttachmentID != 0 {
+			if message.Text != "" || message.ImageID != 0 || message.AttachmentID != 0 {
+				return ErrInvalidWebhook
+			}
+			if message.MiniProgramID != 0 {
+				if message.MiniProgramID < 1 || message.AppID != "" || message.Path != "" || message.Title != "" {
+					return ErrInvalidWebhook
+				}
+			} else if !ValidText(message.AppID, 128) || !ValidText(message.Path, 1024) || !validWebhookMiniProgramTitle(message.Title) {
 				return ErrInvalidWebhook
 			}
 		default:
@@ -139,7 +146,15 @@ func ValidateWebhookInbound(value groupopsport.WebhookInboundCommand) error {
 // exact bound at inbound validation prevents a Chinese title from passing a
 // rune-count check only to fail after the command has been accepted.
 func validWebhookMiniProgramTitle(value string) bool {
-	return ValidText(value, 64) && len(value) <= 64
+	if !ValidText(value, 64) || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateNode enforces the draft node shape. Legacy free-form material

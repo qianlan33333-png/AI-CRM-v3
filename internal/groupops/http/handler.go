@@ -1425,7 +1425,9 @@ func errorStatus(err error) int {
 		return stdhttp.StatusConflict
 	case errors.Is(err, groupopsapp.ErrProviderDisabled):
 		return stdhttp.StatusServiceUnavailable
-	case errors.Is(err, groupopsapp.ErrMiniProgramCoverResolverNotConfigured):
+	case errors.Is(err, groupopsapp.ErrMiniProgramCoverUnsupported):
+		return stdhttp.StatusBadRequest
+	case errors.Is(err, groupopsapp.ErrMiniProgramCoverResolverUnavailable):
 		return stdhttp.StatusServiceUnavailable
 	case errors.Is(err, groupopsapp.ErrUnavailable):
 		return stdhttp.StatusServiceUnavailable
@@ -1443,8 +1445,10 @@ func errorCode(err error) string {
 		return "operations_conflict"
 	case errors.Is(err, groupopsapp.ErrProviderDisabled):
 		return "provider_disabled"
-	case errors.Is(err, groupopsapp.ErrMiniProgramCoverResolverNotConfigured):
-		return "miniprogram_cover_resolver_not_configured"
+	case errors.Is(err, groupopsapp.ErrMiniProgramCoverUnsupported):
+		return "miniprogram_cover_unsupported"
+	case errors.Is(err, groupopsapp.ErrMiniProgramCoverResolverUnavailable):
+		return "miniprogram_cover_unavailable"
 	case errors.Is(err, groupopsapp.ErrInvalid), errors.Is(err, groupopsapp.ErrRuntimeInvalid):
 		return "invalid_request"
 	default:

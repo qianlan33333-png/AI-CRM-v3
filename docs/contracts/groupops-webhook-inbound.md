@@ -91,11 +91,12 @@ POST https://www.youcangogogo.com/api/automation/group-ops/webhooks/groupops-46d
 }
 ~~~
 
-title 必填，最多 64 个 UTF-8 字节。自动封面只支持此公开 AppID 和严格日课
-path：lesson_id 必须为规范 UUID，from=learn 必须唯一，不能有额外参数、host、
+title 必填，最多 64 个 UTF-8 字节，不能含控制字符或首尾空白。自动封面只支持此公开 AppID 和严格日课
+path：lesson_id 必须为小写规范 UUID，from=learn 必须唯一，不能有额外参数、host、
 scheme 或 fragment。Media 才能以固定课卡来源读取并验证 PNG，再在接受事务中
-创建本地图片和小程序素材。请求不能给封面 URL。其他 AppID/path 返回
-503 miniprogram_cover_resolver_unavailable，不会选择默认图或创建发送意图。
+创建本地图片和小程序素材。请求不能给封面 URL。title 中控制字符、首尾空白或超长会在 JSON 形状校验时返回 400 invalid_request；不匹配该 AppID/path 的输入返回
+400 miniprogram_cover_unsupported；匹配后封面暂时无法取得或验证返回
+503 miniprogram_cover_unavailable。两者都不会选择默认图或创建发送意图。
 
 无已验证自动封面规则的页面先以管理员 Cookie 加 X-CSRF-Token 上传 PNG/JPEG，
 再调用 POST /api/admin/miniprogram-library 创建已启用本地素材，例如：
@@ -192,7 +193,8 @@ curl --fail-with-body -X POST \
 | 401 | `protocol_authentication_failed` | 修正时间戳、客户端 ID、事件 ID 或签名；不要泄露密钥。|
 | 404 | `plan_not_found` | URL 的 Webhook reference 未解析到计划；核对计划描述符，不能用群名称代替 reference。|
 | 409 | `idempotency_conflict` / `operations_conflict` | 前者表示同事件不一致；后者表示计划未启用、配置不完整或目标不属于该计划。不要自动改 event ID 重发。|
-| 503 | `miniprogram_cover_resolver_not_configured` | 配置已批准的 Media 解析器后，用同一事件和完全相同 JSON 重放。|
+| 400 | `miniprogram_cover_unsupported` | AppID/path 不属于日课自动封面契约。上传封面并创建本地小程序素材后，用新的 event ID 和 miniprogram_id 重试。|
+| 503 | `miniprogram_cover_unavailable` | 日课契约已匹配，但固定封面来源暂时不可用或未通过 PNG 校验。用同一事件和完全相同 JSON 重放；不会创建 run 或发送意图。|
 | 503 | `provider_disabled` | 运行时尚未允许接受新的 EER 意图；本次生产排查时此开关处于关闭状态。不会调用小程序解析，也不能将它当成已接受或已群发。恢复后只能用原事件和完全相同 JSON 重试。|
 | 503 | `protocol_auth_unavailable` / `group_ops_unavailable` | 签名验收依赖或 Group Ops 运行时不可用；不要把它当成已接受或已群发。恢复后只能用原事件和完全相同 JSON 重试。|
 

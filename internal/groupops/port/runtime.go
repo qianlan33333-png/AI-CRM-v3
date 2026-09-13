@@ -208,31 +208,14 @@ type WebhookInboundCommand struct {
 // Media-owned adapter from its AppID/path before Group Ops freezes the local
 // material reference.
 type WebhookMessage struct {
-	Type         string `json:"type"`
-	Text         string `json:"text,omitempty"`
-	AppID        string `json:"appid,omitempty"`
-	Path         string `json:"path,omitempty"`
-	Title        string `json:"title,omitempty"`
-	ImageID      int64  `json:"image_id,omitempty"`
-	AttachmentID int64  `json:"attachment_id,omitempty"`
-}
-
-// WebhookMiniProgramRequest contains only caller-declared card semantics.
-// The Media owner must produce a local miniprogram material reference with a
-// verified cover; Group Ops never follows a caller URL or manufactures a
-// thumbnail.
-type WebhookMiniProgramRequest struct {
-	AppID string
-	Path  string
-	Title string
-}
-
-// WebhookMiniProgramResolver is optional until a real Media-owned
-// AppID-plus-path cover resolver is approved. It may perform a Provider read
-// before Group Ops opens its UoW and must return a local material ID, never a
-// provider media ID or remote URL.
-type WebhookMiniProgramResolver interface {
-	ResolveWebhookMiniProgram(context.Context, WebhookMiniProgramRequest) (MaterialReference, error)
+	Type          string `json:"type"`
+	Text          string `json:"text,omitempty"`
+	AppID         string `json:"appid,omitempty"`
+	Path          string `json:"path,omitempty"`
+	Title         string `json:"title,omitempty"`
+	MiniProgramID int64  `json:"miniprogram_id,omitempty"`
+	ImageID       int64  `json:"image_id,omitempty"`
+	AttachmentID  int64  `json:"attachment_id,omitempty"`
 }
 
 type ManualReconcileCommand struct {

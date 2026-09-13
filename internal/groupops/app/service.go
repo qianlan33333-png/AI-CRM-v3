@@ -830,7 +830,8 @@ func invalidOrUnavailable(s *Service) error {
 }
 func classify(err error) error {
 	switch {
-	case errors.Is(err, ErrInvalid), errors.Is(err, ErrNotFound), errors.Is(err, ErrConflict), errors.Is(err, ErrStateConflict):
+	case errors.Is(err, ErrInvalid), errors.Is(err, ErrNotFound), errors.Is(err, ErrConflict), errors.Is(err, ErrStateConflict),
+		errors.Is(err, ErrProviderDisabled), errors.Is(err, ErrMiniProgramCoverUnsupported), errors.Is(err, ErrMiniProgramCoverResolverUnavailable):
 		return err
 	default:
 		// Preserve the owner-side cause for operators and integration journeys;

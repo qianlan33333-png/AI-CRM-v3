@@ -16,7 +16,7 @@ OneID：不涉及。请求只包含计划已绑定的群稳定引用和 Media �
 2. UUID 必须规范；不允许额外或重复 query 参数、scheme、host、fragment 或其他 path。
 3. 只有 Media Adapter 可以从固定来源 https://ip.lhbl.com.cn/api/share/lesson-card/UUID.png 构造读取地址。请求 JSON、计划配置和管理员输入都不能提供来源 URL。
 4. HTTP client 固定 HTTPS host、禁止 redirect、有界 timeout，并以 LimitReader(MaxImageBytes+1) 读取。只接受 image/png；随后以 image.DecodeConfig 和完整 PNG decode 复用现有 Media 的 10 MiB、单边 10,000、40,000,000 像素限制。
-5. 不匹配 AppID/path、读取失败、非 PNG、截断、超限或解码失败，一律返回 miniprogram_cover_resolver_unavailable；不会创建 run、Media 素材、EER、River job 或 Provider 调用。
+5. title 的控制字符、首尾空白或超长在 HTTP 严格 JSON 形状校验中返回 400 invalid_request；其他不匹配 AppID/path 的输入在任何取图前返回 400 miniprogram_cover_unsupported。匹配来源后的读取失败、非 PNG、截断、超限或解码失败返回 503 miniprogram_cover_unavailable。它们都不会创建 run、Media 素材、EER、River job 或 Provider 调用。
 
 来源依据是旧服 release 41f80a11835445c034fdd39f69a6b6712722bb98 的 aicrm_next/automation/automation_engine/group_ops/broadcast.py 第 40 至 99 行及 aicrm_next/channels/integration_gateway/lesson_card_cover_client.py 第 9 至 48 行。旧服仅是只读叶子协议供体，不是 V3 运行时依赖。
 
@@ -24,12 +24,12 @@ Go 实现复用标准库 https://pkg.go.dev/net/http 的取消和 body 关闭语
 
 ## Media Port 和事务边界
 
-Media 的稳定 Port 定义 PreparedLessonCardCover 和两个操作：
+Media 的稳定 Port 定义 PreparedWebhookMiniProgram 和两个操作：
 
-1. PrepareWebhookLessonCardCover 在 Group Ops 验证活动计划、Webhook descriptor 和目标群子集之后执行。它只做受限 GET 和 PNG 验证，返回未持久化的 Media-owned prepared value。
+1. PrepareWebhookMiniProgram 在 Group Ops 验证活动计划、Webhook descriptor 和目标群子集之后执行。它只做受限 GET 和 PNG 验证，返回未持久化的 Media-owned prepared value。
 2. MaterializeWebhookMiniProgramWithin 在最终锁定计划、确认不是既有 replay 之后执行。它从 prepared value 写入本地 enabled 图片及小程序素材，返回 local miniprogram reference。该调用使用已有 Group Ops UoW 的 transaction context，禁止再开事务。
 
-Group Ops 只持有并传递 Media Port 的 prepared value，绝不 import Media app/store。重放存在 run 时跳过 GET 和 materialize；并发同事件只允许一个 run/effect 集合与一套 Media materialization 胜出。锁内会再次检查目标绑定，防止并发解绑后继续接受。
+Group Ops 只持有并传递 Media Port 的 prepared value，绝不 import Media app/store。重放存在 run 时跳过 GET 和 materialize；并发同事件只允许一个 run/effect 集合与一套 Media materialization 胜出。锁内会再次检查目标绑定，防止并发解绑后继续接受。自动创建素材的 Media 审计 actor 取计划 UpdatedBy，仅表示受该计划最后编辑者名义创建；Webhook 调用来源仍由 client ID、event ID 和冻结请求摘要审计，不把该管理员描述为本次请求的直接调用者。
 
 ## 非日课页面和人工封面
 
