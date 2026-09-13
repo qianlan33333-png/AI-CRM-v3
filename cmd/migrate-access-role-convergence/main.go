@@ -105,7 +105,7 @@ func run() error {
 }
 
 func requireApplyApproval(mode string) error {
-	if mode == "apply" && os.Getenv("AICRM_ACCESS_CONVERGENCE_APPROVED") != "1" {
+	if mode == "apply" && !platformconfig.AccessRoleConvergenceApproved() {
 		return errors.New("apply requires AICRM_ACCESS_CONVERGENCE_APPROVED=1")
 	}
 	return nil
