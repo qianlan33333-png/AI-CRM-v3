@@ -201,6 +201,13 @@ func tagHistoryPools(t *testing.T, ctx context.Context, url string) (*pgxpool.Po
 			t.Fatalf("apply %s: %v", name, execErr)
 		}
 	}
+	if _, err := native.Exec(ctx, `ALTER TABLE admin_users
+		ADD COLUMN login_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+		ADD COLUMN legacy_login_reactivation_pending BOOLEAN NOT NULL DEFAULT FALSE,
+		ADD COLUMN access_granted_at TIMESTAMPTZ,
+		ADD CONSTRAINT ck_admin_users_login_requires_access_grant CHECK (access_granted_at IS NOT NULL OR login_enabled = FALSE)`); err != nil {
+		t.Fatalf("apply current Access login fixture contract: %v", err)
+	}
 	return native, source, func() {
 		source.Close()
 		native.Close()
@@ -211,9 +218,13 @@ func tagHistoryPools(t *testing.T, ctx context.Context, url string) (*pgxpool.Po
 }
 func seedTagHistory(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	_, err := pool.Exec(ctx, `INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,session_version) OVERRIDING SYSTEM VALUE VALUES(7,'staff-one','$argon2id$test','Staff','staff-one',true,1),(8,'staff-historical','$argon2id$test','Historical staff','staff-historical',false,1); INSERT INTO customers(id,status) OVERRIDING SYSTEM VALUE VALUES(11,'active'); INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES(11,'wecom_external_userid','wecom-corp:corp-test','external-one','verified','test',1,clock_timestamp()); INSERT INTO tag_groups(id,group_name,sort_order) OVERRIDING SYSTEM VALUE VALUES(13,'history',1); INSERT INTO tag_catalog_tags(id,group_id,tag_name,sort_order) OVERRIDING SYSTEM VALUE VALUES(17,13,'tag',1); INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id) VALUES('provider-tag-one',17)`)
+	_, err := pool.Exec(ctx, `INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at,session_version) OVERRIDING SYSTEM VALUE VALUES(7,'staff-one','$argon2id$test','Staff','staff-one',true,false,NULL,1),(8,'staff-historical','$argon2id$test','Historical staff','staff-historical',false,false,NULL,1); INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES(7,'viewer'),(8,'viewer'); INSERT INTO customers(id,status) OVERRIDING SYSTEM VALUE VALUES(11,'active'); INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES(11,'wecom_external_userid','wecom-corp:corp-test','external-one','verified','test',1,clock_timestamp()); INSERT INTO tag_groups(id,group_name,sort_order) OVERRIDING SYSTEM VALUE VALUES(13,'history',1); INSERT INTO tag_catalog_tags(id,group_id,tag_name,sort_order) OVERRIDING SYSTEM VALUE VALUES(17,13,'tag',1); INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id) VALUES('provider-tag-one',17)`)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var ungrantedStaff int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM admin_users WHERE id IN (7,8) AND login_enabled=FALSE AND access_granted_at IS NULL`).Scan(&ungrantedStaff); err != nil || ungrantedStaff != 2 {
+		t.Fatalf("tag history fixture staff login grant count=%d err=%v", ungrantedStaff, err)
 	}
 }
 func urlWithSchema(t *testing.T, url string, pool *pgxpool.Pool) string {

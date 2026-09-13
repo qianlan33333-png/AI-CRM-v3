@@ -420,6 +420,7 @@ func archiveMigrationIntegrationPool(t *testing.T) (*platformpostgres.Pool, func
 			t.Fatalf("apply archive migration %s: %v", filepath.Base(path), execErr)
 		}
 	}
+	applyArchiveAccessLoginFixture(t, ctx, native)
 	pool, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
 		native.Close()
@@ -427,11 +428,22 @@ func archiveMigrationIntegrationPool(t *testing.T) (*platformpostgres.Pool, func
 		admin.Close()
 		t.Fatal(err)
 	}
-	if _, err = native.Exec(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid) VALUES('archive-staff','$argon2id$integration','Archive Staff','staff-one')`); err != nil {
+	if _, err = native.Exec(ctx, `WITH account AS (
+		INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at)
+		VALUES('archive-staff','$argon2id$integration','Archive Staff','staff-one',TRUE,FALSE,NULL)
+		RETURNING id
+	) INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account`); err != nil {
 		pool.Close()
 		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
 		admin.Close()
 		t.Fatal(err)
+	}
+	var ungrantedStaff int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM admin_users WHERE username='archive-staff' AND login_enabled=FALSE AND access_granted_at IS NULL`).Scan(&ungrantedStaff); err != nil || ungrantedStaff != 1 {
+		pool.Close()
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
+		admin.Close()
+		t.Fatalf("archive fixture staff login grant count=%d err=%v", ungrantedStaff, err)
 	}
 	return pool, func() {
 		pool.Close()
@@ -439,6 +451,21 @@ func archiveMigrationIntegrationPool(t *testing.T) (*platformpostgres.Pool, func
 		defer cleanupCancel()
 		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE")
 		admin.Close()
+	}
+}
+
+// The archive fixture owns only the migrations required for this historical
+// importer. It still calls the current Access read port, so it declares the
+// 0152 login-column contract while keeping this business staff record
+// explicitly ungranted and unable to log in.
+func applyArchiveAccessLoginFixture(t *testing.T, ctx context.Context, database *pgxpool.Pool) {
+	t.Helper()
+	if _, err := database.Exec(ctx, `ALTER TABLE admin_users
+		ADD COLUMN login_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+		ADD COLUMN legacy_login_reactivation_pending BOOLEAN NOT NULL DEFAULT FALSE,
+		ADD COLUMN access_granted_at TIMESTAMPTZ,
+		ADD CONSTRAINT ck_admin_users_login_requires_access_grant CHECK (access_granted_at IS NOT NULL OR login_enabled = FALSE)`); err != nil {
+		t.Fatalf("apply current Access login fixture contract: %v", err)
 	}
 }
 

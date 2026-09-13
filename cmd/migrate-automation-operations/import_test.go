@@ -240,7 +240,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer seed.Rollback(ctx)
-	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES(42,'migration-admin','$argon2id$fixture','Migration Admin','staff-provider-1',true,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&actorID); err != nil {
+	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES(42,'migration-admin','$argon2id$fixture','Migration Admin','staff-provider-1',true,true,clock_timestamp(),clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = seed.Exec(ctx, `INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES($1,'super_admin')`, actorID); err != nil {
