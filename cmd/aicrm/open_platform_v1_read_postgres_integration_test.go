@@ -288,6 +288,23 @@ func openPlatformV1ReadSeed(ctx context.Context, native *pgxpool.Pool, customerI
 	if _, err := native.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,updated_at) VALUES($1,'active','V1 Read Customer','CID-v1-read','active','v1-read-fixture',$2)`, customerID, now); err != nil {
 		return err
 	}
+	var wecomIdentityID, syncRunID int64
+	if err := native.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		VALUES($1,'wecom_external_userid','wecom-corp:open-read','external-v1-read','verified','wecom-fixture',1,$2) RETURNING id`, customerID, now).Scan(&wecomIdentityID); err != nil {
+		return err
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,completed_at)
+		VALUES('open-platform-v1-read-completed','manual','succeeded','wecom-corp:open-read',$1) RETURNING id`, now).Scan(&syncRunID); err != nil {
+		return err
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO wecom_external_contact_profiles(customer_id,corp_scope,external_identity_id,display_name,activation_status,profile_digest,last_seen_run_id,fetched_at,primary_owner_userid,primary_owner_run_id)
+		VALUES($1,'wecom-corp:open-read',$2,'V1 Read Customer','active',$3,$4,$5,'owner-v1-read',$4)`, customerID, wecomIdentityID, bytes.Repeat([]byte{10}, 32), syncRunID, now); err != nil {
+		return err
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO wecom_customer_owner_observations(customer_id,corp_scope,employee_id,remark,relationship_status,last_seen_run_id,observed_at,primary_owner_userid)
+		VALUES($1,'wecom-corp:open-read','owner-v1-read','已完成首次跟进','active',$2,$3,'owner-v1-read'),($1,'wecom-corp:open-read','follow-v1-read','二次跟进','active',$2,$3,'owner-v1-read')`, customerID, syncRunID, now); err != nil {
+		return err
+	}
 	if _, err := native.Exec(ctx, `INSERT INTO message_archive_sync_state(corp_scope) VALUES('wecom-corp:open-read')`); err != nil {
 		return err
 	}
@@ -336,7 +353,7 @@ func openPlatformV1ReadMigrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return os.ErrNotExist
 	}
 	root := filepath.Join(filepath.Dir(source), "..", "..")
-	for _, name := range []string{"0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql", "0018_survey.sql", "0038_survey_oauth_phone_vault.sql", "0020_order.sql", "0022_customer_profile_sections.sql", "0024_order_product_version.sql", "0050_radar_core.sql", "0051_radar_sessions_events.sql", "0071_message_archive_core.sql", "0096_open_platform.sql", "0103_sidebar_customer_profile_annotations.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql", "0018_survey.sql", "0038_survey_oauth_phone_vault.sql", "0020_order.sql", "0022_customer_profile_sections.sql", "0024_order_product_version.sql", "0050_radar_core.sql", "0051_radar_sessions_events.sql", "0071_message_archive_core.sql", "0086_wecom_profile_primary_owner.sql", "0096_open_platform.sql", "0103_sidebar_customer_profile_annotations.sql", "0153_wecom_customer_detail_projection.sql"} {
 		sql, err := os.ReadFile(filepath.Join(root, "migrations", name))
 		if err != nil {
 			return err

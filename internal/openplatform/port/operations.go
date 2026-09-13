@@ -29,6 +29,8 @@ const (
 	OperationIdentityGet              OperationID = "identity.get"
 	OperationQuestionnaireSubmissions OperationID = "questionnaire.submissions.list"
 	OperationCustomerDetail           OperationID = "customer.detail.get"
+	OperationRadarClicks              OperationID = "radar.clicks.list"
+	OperationRadarLinks               OperationID = "radar.links.list"
 )
 
 type Capability string
@@ -44,6 +46,8 @@ const (
 	CapabilityIdentityRead             Capability = "identity.read"
 	CapabilityQuestionnaireRead        Capability = "questionnaire.read"
 	CapabilityCustomerDetailRead       Capability = "customer.detail.read"
+	CapabilityRadarClickRead           Capability = "radar.click.read"
+	CapabilityRadarLinkRead            Capability = "radar.link.read"
 )
 
 // Descriptor is the single catalog entry used by REST, MCP, administration,
@@ -76,6 +80,8 @@ func OperationCatalog() []Descriptor {
 		{OperationID: OperationIdentityGet, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/identities", MCPTool: "get_customer_identities", Capability: CapabilityIdentityRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 		{OperationID: OperationQuestionnaireSubmissions, RESTMethod: "GET", RESTPath: "/open/v1/questionnaire-submissions", MCPTool: "list_questionnaire_submissions", Capability: CapabilityQuestionnaireRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 		{OperationID: OperationCustomerDetail, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/detail", MCPTool: "get_customer_detail", Capability: CapabilityCustomerDetailRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationRadarClicks, RESTMethod: "GET", RESTPath: "/open/v1/radar/clicks", MCPTool: "list_radar_clicks", Capability: CapabilityRadarClickRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationRadarLinks, RESTMethod: "GET", RESTPath: "/open/v1/radar/links", MCPTool: "list_radar_links", Capability: CapabilityRadarLinkRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 	}
 }
 

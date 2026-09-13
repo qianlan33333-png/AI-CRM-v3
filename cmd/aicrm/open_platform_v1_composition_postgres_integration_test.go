@@ -133,7 +133,7 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	client, err := machine.CreateV1(ctx, admin, accessapp.CreateMachineClientInput{
 		ClientID: "v1.composition-machine", DisplayName: "V1 Composition Machine", Purpose: "external_agent",
 		Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"},
-		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.activity.read", "order.read", "identity.read", "questionnaire.read", "ai.review_plan.create", "operation.read"},
+		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.activity.read", "customer.detail.read", "order.read", "identity.read", "questionnaire.read", "ai.review_plan.create", "operation.read"},
 		OwnerScope:   accessdomain.OwnerScope{"customer_id": {fmt.Sprint(provision.CustomerID)}},
 	})
 	if err != nil {
@@ -152,7 +152,7 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	if capabilitiesResponse.Code != http.StatusOK {
 		t.Fatalf("capabilities status=%d body=%s", capabilitiesResponse.Code, capabilitiesResponse.Body.String())
 	}
-	for _, operation := range []string{"platform.capabilities.list", "customer.resolve", "customer.context.get", "customer.activities.list", "ai.review_plan.create", "operation.get"} {
+	for _, operation := range []string{"platform.capabilities.list", "customer.resolve", "customer.context.get", "customer.activities.list", "customer.detail.get", "ai.review_plan.create", "operation.get"} {
 		if !strings.Contains(capabilitiesResponse.Body.String(), `"operation_id":"`+operation+`"`) {
 			t.Fatalf("catalog omitted %s: %s", operation, capabilitiesResponse.Body.String())
 		}
@@ -215,6 +215,27 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	application.handler.ServeHTTP(contextResponse, contextRequest)
 	if contextResponse.Code != http.StatusOK || !strings.Contains(contextResponse.Body.String(), `"display_name":"V1 Read Customer"`) {
 		t.Fatalf("customer context status=%d body=%s", contextResponse.Code, contextResponse.Body.String())
+	}
+	customerDetail := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID)+"/detail", "", readToken)
+	customerDetailResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(customerDetailResponse, customerDetail)
+	for _, expected := range []string{`"business_detail_availability":{"status":"available"}`, `"remark":"已完成首次跟进"`, `"owner":{"user_id":"owner-v1-read"}`, `"follow_users":[{"user_id":"follow-v1-read"},{"user_id":"owner-v1-read"}]`} {
+		if customerDetailResponse.Code != http.StatusOK || !strings.Contains(customerDetailResponse.Body.String(), expected) {
+			t.Fatalf("customer detail expected=%s status=%d body=%s", expected, customerDetailResponse.Code, customerDetailResponse.Body.String())
+		}
+	}
+	detailMCP := openPlatformV1CompositionRequest(http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":"customer-detail","method":"tools/call","params":{"name":"get_customer_detail","arguments":{"customer_id":`+fmt.Sprint(provision.CustomerID)+`}}}`, readToken)
+	detailMCP.Header.Set("Content-Type", "application/json")
+	detailMCPResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(detailMCPResponse, detailMCP)
+	if detailMCPResponse.Code != http.StatusOK || !strings.Contains(detailMCPResponse.Body.String(), `"remark":"已完成首次跟进"`) {
+		t.Fatalf("MCP customer detail status=%d body=%s", detailMCPResponse.Code, detailMCPResponse.Body.String())
+	}
+	deniedDetail := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(int64(provision.CustomerID)+1)+"/detail", "", readToken)
+	deniedDetailResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(deniedDetailResponse, deniedDetail)
+	if deniedDetailResponse.Code != http.StatusNotFound {
+		t.Fatalf("out-of-scope customer detail status=%d body=%s", deniedDetailResponse.Code, deniedDetailResponse.Body.String())
 	}
 
 	activities := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID)+"/activities?types=message&types=survey&types=radar&types=order&limit=1", "", readToken)

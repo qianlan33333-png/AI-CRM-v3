@@ -214,10 +214,10 @@ func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context
 			}
 			seenTags[tag.ProviderTagID] = struct{}{}
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO wecom_customer_owner_observations(customer_id,corp_scope,employee_id,relationship_status,last_seen_run_id,observed_at)
-			VALUES($1,$2,$3,'active',$4,$5) ON CONFLICT(customer_id,corp_scope,employee_id) DO UPDATE SET
-			relationship_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`,
-			customerID, corpScope, employeeID, runID, observedAt.UTC()); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO wecom_customer_owner_observations(customer_id,corp_scope,employee_id,remark,relationship_status,last_seen_run_id,observed_at)
+			VALUES($1,$2,$3,$4,'active',$5,$6) ON CONFLICT(customer_id,corp_scope,employee_id) DO UPDATE SET
+			remark=EXCLUDED.remark,relationship_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`,
+			customerID, corpScope, employeeID, follow.Remark, runID, observedAt.UTC()); err != nil {
 			return err
 		}
 		// The watermark is a shared version row for both a full page and a
@@ -237,6 +237,80 @@ func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context
 	}
 	return nil
 }
+
+// CustomerBusinessDetails exposes only completed directory observations. It
+// deliberately does not select a primary owner: that policy, including
+// cross-scope conflict handling, belongs to AudiencePrimaryOwners.
+func (PostgreSQLCustomerSyncStore) CustomerBusinessDetails(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]wecomport.CustomerBusinessDetail, error) {
+	if len(customerIDs) > maximumAudiencePrimaryOwnerBatch {
+		return nil, ErrSyncCAS
+	}
+	ids := make([]int64, 0, len(customerIDs))
+	seen := map[customerdomain.CustomerID]struct{}{}
+	for _, customerID := range customerIDs {
+		if customerID < 1 {
+			return nil, ErrSyncNotFound
+		}
+		if _, exists := seen[customerID]; exists {
+			continue
+		}
+		seen[customerID] = struct{}{}
+		ids = append(ids, int64(customerID))
+	}
+	if len(ids) == 0 {
+		return []wecomport.CustomerBusinessDetail{}, nil
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `WITH requested AS (
+		SELECT unnest($1::bigint[]) AS customer_id
+	), profiles AS (
+		SELECT profile.customer_id,profile.corp_scope
+		FROM wecom_external_contact_profiles profile
+		JOIN requested ON requested.customer_id=profile.customer_id
+		JOIN wecom_customer_sync_runs profile_run ON profile_run.id=profile.last_seen_run_id AND profile_run.status='succeeded'
+		WHERE profile.activation_status='active'
+	)
+	SELECT requested.customer_id,COALESCE(profiles.corp_scope,''),
+		COALESCE(observation.employee_id,''),NULLIF(observation.remark,'')
+	FROM requested
+	LEFT JOIN profiles ON profiles.customer_id=requested.customer_id
+	LEFT JOIN wecom_customer_owner_observations observation ON observation.customer_id=profiles.customer_id
+		AND observation.corp_scope=profiles.corp_scope AND observation.relationship_status='active'
+		AND EXISTS (SELECT 1 FROM wecom_customer_sync_runs observation_run WHERE observation_run.id=observation.last_seen_run_id AND observation_run.status='succeeded')
+	ORDER BY requested.customer_id,observation.employee_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]wecomport.CustomerBusinessDetail, 0, len(ids))
+	var current *wecomport.CustomerBusinessDetail
+	for rows.Next() {
+		var customerID customerdomain.CustomerID
+		var scope, employeeID string
+		var remark *string
+		if err = rows.Scan(&customerID, &scope, &employeeID, &remark); err != nil {
+			return nil, err
+		}
+		if current == nil || current.CustomerID != customerID {
+			items = append(items, wecomport.CustomerBusinessDetail{CustomerID: customerID, CorpScope: scope, FollowUsers: []wecomport.CustomerFollowUser{}})
+			current = &items[len(items)-1]
+			if scope == "" {
+				current.Availability, current.AvailabilityReason = "missing", "no_completed_wecom_profile"
+			} else {
+				current.Availability = "available"
+			}
+		}
+		if employeeID != "" {
+			current.FollowUsers = append(current.FollowUsers, wecomport.CustomerFollowUser{EmployeeID: employeeID, Remark: remark})
+		}
+	}
+	return items, rows.Err()
+}
+
+var _ wecomport.CustomerBusinessDetailReader = PostgreSQLCustomerSyncStore{}
 
 func (PostgreSQLCustomerSyncStore) AddCountsAndAdvance(ctx context.Context, id, version, activated, linked, conflict, terminal, projected int64, staffIndex int, cursor string, status CustomerSyncStatus) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)

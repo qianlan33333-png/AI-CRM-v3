@@ -77,6 +77,7 @@ type openPlatformExecutor struct {
 	surveyAliases       openPlatformSurveyIdentityReader
 	timeline            customerport.CustomerTimelineReader
 	owners              wecomport.AudiencePrimaryOwnerReader
+	customerDetails     wecomport.CustomerBusinessDetailReader
 	scopes              openPlatformIdentityScopes
 	activities          *openPlatformActivityReaders
 	activityNow         func() time.Time
@@ -206,6 +207,17 @@ func (executor *openPlatformExecutor) BindV1Radar(clicks radarport.ExternalClick
 		return radarport.ErrUnavailable
 	}
 	executor.radarClicks, executor.radarLinks = clicks, links
+	return nil
+}
+
+// BindV1CustomerDetails installs the WeCom-owned business-detail projection.
+// A partial composition must not silently turn unavailable provider facts into
+// empty customer fields.
+func (executor *openPlatformExecutor) BindV1CustomerDetails(reader wecomport.CustomerBusinessDetailReader) error {
+	if executor == nil || reader == nil {
+		return errOpenPlatformRouteUnavailable
+	}
+	executor.customerDetails = reader
 	return nil
 }
 
@@ -1681,6 +1693,23 @@ func (adapter openPlatformOwnerAdapter) AudiencePrimaryOwners(ctx context.Contex
 }
 
 var _ wecomport.AudiencePrimaryOwnerReader = openPlatformOwnerAdapter{}
+
+type openPlatformCustomerBusinessDetailAdapter struct {
+	uow    platformport.UnitOfWork
+	reader wecomport.CustomerBusinessDetailReader
+}
+
+func (adapter openPlatformCustomerBusinessDetailAdapter) CustomerBusinessDetails(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]wecomport.CustomerBusinessDetail, error) {
+	var details []wecomport.CustomerBusinessDetail
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		details, err = adapter.reader.CustomerBusinessDetails(tx, customerIDs)
+		return err
+	})
+	return details, err
+}
+
+var _ wecomport.CustomerBusinessDetailReader = openPlatformCustomerBusinessDetailAdapter{}
 
 // openPlatformIdentityAdapter combines stable Identity Ports at Composition.
 // The machine executor receives no store and cannot issue a cross-domain query.

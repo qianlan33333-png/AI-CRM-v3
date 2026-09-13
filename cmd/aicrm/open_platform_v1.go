@@ -56,7 +56,9 @@ func (executor *openPlatformExecutor) Available(_ context.Context, principal acc
 		openplatformport.OperationOrderGet:                 executor.v1Orders != nil && executor.v1Refunds != nil,
 		openplatformport.OperationIdentityGet:              executor.surveyAliases != nil,
 		openplatformport.OperationQuestionnaireSubmissions: executor.survey != nil && executor.surveyAliases != nil && len(executor.v1ExternalCursorKey) >= 16,
-		openplatformport.OperationCustomerDetail:           executor.profiles != nil,
+		openplatformport.OperationCustomerDetail:           executor.profiles != nil && executor.customerDetails != nil,
+		openplatformport.OperationRadarClicks:              executor.radarClicks != nil && len(executor.v1ExternalCursorKey) >= 16,
+		openplatformport.OperationRadarLinks:               executor.radarLinks != nil && len(executor.v1ExternalCursorKey) >= 16,
 	}
 	return openplatformport.AvailableDescriptors(principal, available), nil
 }
@@ -116,6 +118,10 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 		result, err = executor.v1QuestionnaireSubmissions(ctx, invocation.Principal, invocation.Input)
 	case openplatformport.OperationCustomerDetail:
 		result, err = executor.v1CustomerDetail(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationRadarClicks:
+		result, err = executor.v1RadarClicks(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationRadarLinks:
+		result, err = executor.v1RadarLinks(ctx, invocation.Principal, invocation.Input)
 	default:
 		err = openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
 	}
@@ -137,6 +143,9 @@ func (executor *openPlatformExecutor) v1CustomerDetail(ctx context.Context, prin
 	if err := executor.ensureCustomerScope(ctx, principal, id, nil); err != nil {
 		return openplatformport.Result{}, v1CustomerScopeError(err)
 	}
+	if executor.profiles == nil || executor.customerDetails == nil || executor.owners == nil {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "customer detail is unavailable")
+	}
 	profile, err := executor.profiles.ReadSidebarProfile(ctx, id)
 	if err != nil {
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "customer detail is unavailable")
@@ -144,7 +153,36 @@ func (executor *openPlatformExecutor) v1CustomerDetail(ctx context.Context, prin
 	if profile.CustomerID != id {
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorNotFound, "customer not found")
 	}
-	return openplatformport.Result{Data: map[string]any{"customer_id": strconv.FormatInt(input.CustomerID, 10), "display_name": profile.DisplayName, "avatar_url": profile.AvatarURL, "status": profile.Status, "activation_status": profile.ActivationState, "gender": profile.Gender, "contact_type": profile.ContactType, "corp_name": profile.CorpName, "source": profile.Source, "industry": profile.Industry, "industry_description": profile.IndustryDescription, "needs_blockers_followup": profile.NeedsBlockersFollowup, "updated_at": profile.UpdatedAt, "remark": "", "owner": nil, "follow_users": []any{}}}, nil
+	details, err := executor.customerDetails.CustomerBusinessDetails(ctx, []customerdomain.CustomerID{id})
+	if err != nil || len(details) != 1 || details[0].CustomerID != id {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "customer business detail is unavailable")
+	}
+	detail := details[0]
+	followUsers := make([]map[string]any, 0, len(detail.FollowUsers))
+	remarks := make(map[string]*string, len(detail.FollowUsers))
+	for _, follow := range detail.FollowUsers {
+		if follow.EmployeeID == "" {
+			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "customer business detail is invalid")
+		}
+		followUsers = append(followUsers, map[string]any{"user_id": follow.EmployeeID})
+		remarks[follow.EmployeeID] = follow.Remark
+	}
+	owners, ownerErr := executor.owners.AudiencePrimaryOwners(ctx, []customerdomain.CustomerID{id})
+	if ownerErr != nil || len(owners) != 1 || owners[0].CustomerID != id {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "customer owner detail is unavailable")
+	}
+	var owner, remark any
+	if ownerFact := owners[0]; ownerFact.Status == "known" && ownerFact.OwnerUserID != "" && ownerFact.CorpScope == detail.CorpScope {
+		owner = map[string]any{"user_id": ownerFact.OwnerUserID}
+		if value, exists := remarks[ownerFact.OwnerUserID]; exists && value != nil {
+			remark = *value
+		}
+	}
+	availability := map[string]any{"status": detail.Availability}
+	if detail.AvailabilityReason != "" {
+		availability["reason"] = detail.AvailabilityReason
+	}
+	return openplatformport.Result{Data: map[string]any{"customer_id": strconv.FormatInt(input.CustomerID, 10), "display_name": profile.DisplayName, "avatar_url": profile.AvatarURL, "status": profile.Status, "activation_status": profile.ActivationState, "gender": profile.Gender, "contact_type": profile.ContactType, "corp_name": profile.CorpName, "source": profile.Source, "industry": profile.Industry, "industry_description": profile.IndustryDescription, "needs_blockers_followup": profile.NeedsBlockersFollowup, "updated_at": profile.UpdatedAt, "business_detail_availability": availability, "remark": remark, "owner": owner, "follow_users": followUsers}}, nil
 }
 
 func (executor *openPlatformExecutor) v1AuditedError(ctx context.Context, invocation openplatformport.Invocation, operationErr error) (openplatformport.Result, error) {

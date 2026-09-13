@@ -995,6 +995,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = openPlatformExecutor.BindV1Radar(radarQuery, radarManager); err != nil {
 		return fail(err)
 	}
+	if err = openPlatformExecutor.BindV1CustomerDetails(openPlatformCustomerBusinessDetailAdapter{uow: uow, reader: customerProfileStore}); err != nil {
+		return fail(err)
+	}
 	if err = openPlatformExecutor.BindExternalSurveySubmissions(surveySubmissions, openPlatformIdentities); err != nil {
 		return fail(err)
 	}

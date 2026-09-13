@@ -256,7 +256,7 @@ func (executor *openPlatformExecutor) v1OrderScope(_ context.Context, p accessdo
 }
 func v1ExternalOrderQuery(in v1OrdersInput) (orderport.ExternalReadQuery, error) {
 	if in.Limit == 0 {
-		in.Limit = 50
+		in.Limit = 100
 	}
 	if in.Limit < 1 || in.Limit > 100 || len(in.Cursor) > 4096 {
 		return orderport.ExternalReadQuery{}, errors.New("limit")
@@ -346,7 +346,7 @@ func v1OrderFilterDigest(in v1OrdersInput, ids []int64) string {
 	in.Cursor = ""
 	in.Provider, in.ProductCode, in.MerchantOrderNo, in.ProviderTransactionNo = strings.TrimSpace(in.Provider), strings.TrimSpace(in.ProductCode), strings.TrimSpace(in.MerchantOrderNo), strings.TrimSpace(in.ProviderTransactionNo)
 	if in.Limit == 0 {
-		in.Limit = 50
+		in.Limit = 100
 	}
 	b, _ := json.Marshal(struct {
 		I   v1OrdersInput

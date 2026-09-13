@@ -3751,7 +3751,7 @@ paths:
       operationId: listOpenPlatformOrders
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
-      parameters: [{name: provider, in: query, schema: {type: string, enum: [wechat_pay, wechat_shop, alipay]}}, {name: customer_id, in: query, schema: {type: integer, minimum: 1}}, {name: created_from, in: query, schema: {type: integer, minimum: 0}}, {name: created_to, in: query, schema: {type: integer, minimum: 0}}, {name: paid_from, in: query, schema: {type: integer, minimum: 0}}, {name: paid_to, in: query, schema: {type: integer, minimum: 0}}, {name: is_paid, in: query, schema: {type: boolean}}, {name: is_refunded, in: query, schema: {type: boolean}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}]
+      parameters: [{name: provider, in: query, schema: {type: string, enum: [wechat_pay, wechat_shop, alipay]}}, {name: product_code, in: query, schema: {type: string, maxLength: 200}}, {name: merchant_order_no, in: query, schema: {type: string, maxLength: 200}}, {name: provider_transaction_no, in: query, schema: {type: string, maxLength: 200}}, {name: customer_id, in: query, schema: {type: integer, minimum: 1}}, {name: created_from, in: query, schema: {type: integer, minimum: 0}}, {name: created_to, in: query, schema: {type: integer, minimum: 0}}, {name: paid_from, in: query, schema: {type: integer, minimum: 0}}, {name: paid_to, in: query, schema: {type: integer, minimum: 0}}, {name: is_paid, in: query, schema: {type: boolean}}, {name: is_refunded, in: query, schema: {type: boolean}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}]
       responses: {"200": {description: Machine-authorized orders with signed grant-bound cursor, content: {application/json: {schema: {type: object}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /open/v1/orders/{order_id}:
     parameters: [{name: order_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
@@ -3782,7 +3782,7 @@ paths:
       operationId: getOpenPlatformCustomerDetail
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
-      responses: {"200": {description: Customer-owned business profile without raw identities, content: {application/json: {schema: {type: object}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+      responses: {"200": {description: Customer business profile and completed WeCom ownership facts without raw customer identities, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerBusinessDetailResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /api/admin/open-platform/clients:
     get:
       operationId: listOpenPlatformClients
@@ -7012,6 +7012,43 @@ components:
       additionalProperties: false
       required: [data, error, request_id]
       properties: {data: {$ref: "#/components/schemas/OpenPlatformCustomerActivitiesData"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformFollowUser:
+      type: object
+      additionalProperties: false
+      required: [user_id]
+      properties: {user_id: {type: string, minLength: 1}}
+    OpenPlatformBusinessDetailAvailability:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties: {status: {type: string, enum: [available, missing]}, reason: {type: string, enum: [no_completed_wecom_profile]}}
+    OpenPlatformCustomerBusinessDetail:
+      type: object
+      additionalProperties: false
+      required: [customer_id, display_name, status, activation_status, gender, contact_type, business_detail_availability, remark, owner, follow_users, updated_at]
+      properties:
+        customer_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        display_name: {type: string}
+        avatar_url: {type: string}
+        status: {type: string}
+        activation_status: {type: string}
+        gender: {type: integer}
+        contact_type: {type: integer}
+        corp_name: {type: string}
+        source: {type: string}
+        industry: {type: string}
+        industry_description: {type: string}
+        needs_blockers_followup: {type: string}
+        updated_at: {type: string, format: date-time}
+        business_detail_availability: {$ref: "#/components/schemas/OpenPlatformBusinessDetailAvailability"}
+        remark: {type: [string, "null"], maxLength: 2000}
+        owner: {oneOf: [{$ref: "#/components/schemas/OpenPlatformFollowUser"}, {type: "null"}]}
+        follow_users: {type: array, items: {$ref: "#/components/schemas/OpenPlatformFollowUser"}}
+    OpenPlatformCustomerBusinessDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformCustomerBusinessDetail"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
     OpenPlatformAIReviewContent:
       type: object
       additionalProperties: false

@@ -354,7 +354,11 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 			if follow.UserID == "" || invalid(follow.UserID) {
 				return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
 			}
-			value := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
+			remark, remarkErr := externalContactRemark(follow.Remark)
+			if remarkErr != nil {
+				return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
+			}
+			value := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Remark: remark, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
 			for _, tag := range follow.Tags {
 				tag.ID, tag.Name = strings.TrimSpace(tag.ID), strings.TrimSpace(tag.Name)
 				if tag.ID == "" || invalid(tag.ID) || invalidOptional(tag.Name) || tag.Type < 1 || tag.Type > 2 {
@@ -401,7 +405,8 @@ func (client *Client) ReadExternalContact(ctx context.Context, externalUserID st
 		return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
 	}
 	var rawFollows []struct {
-		UserID string `json:"userid"`
+		UserID string  `json:"userid"`
+		Remark *string `json:"remark"`
 		Tags   []struct {
 			ID   string `json:"tag_id"`
 			Name string `json:"name"`
@@ -417,7 +422,11 @@ func (client *Client) ReadExternalContact(ctx context.Context, externalUserID st
 		if invalid(follow.UserID) {
 			return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
 		}
-		entry := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
+		remark, remarkErr := externalContactRemark(follow.Remark)
+		if remarkErr != nil {
+			return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
+		}
+		entry := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Remark: remark, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
 		for _, tag := range follow.Tags {
 			tag.ID, tag.Name = strings.TrimSpace(tag.ID), strings.TrimSpace(tag.Name)
 			if invalid(tag.ID) || invalidOptional(tag.Name) || tag.Type < 1 || tag.Type > 2 {
@@ -687,7 +696,8 @@ type response struct {
 		// batch/get_by_user is called with one staff ID, and WeCom returns the
 		// corresponding relationship as one object rather than an array.
 		FollowInfo *struct {
-			UserID string `json:"userid"`
+			UserID string  `json:"userid"`
+			Remark *string `json:"remark"`
 			Tags   []struct {
 				ID   string `json:"tag_id"`
 				Name string `json:"tag_name"`
@@ -1929,6 +1939,19 @@ func (client *Client) random() func([]byte) error {
 func invalid(value string) bool { return value == "" || strings.TrimSpace(value) != value }
 func invalidOptional(value string) bool {
 	return strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") || len([]rune(value)) > 200
+}
+
+// externalContactRemark keeps the provider-projected text. A remark may be
+// multi-line; only NUL is rejected because PostgreSQL cannot retain it.
+func externalContactRemark(value *string) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if len([]rune(*value)) > 2000 || strings.ContainsRune(*value, '\x00') {
+		return nil, ErrResponse
+	}
+	copy := *value
+	return &copy, nil
 }
 
 func validCallback(raw string) bool {
