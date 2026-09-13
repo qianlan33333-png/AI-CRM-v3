@@ -90,6 +90,42 @@ func TestEnterpriseDirectoryPreflightReportsSafeFailureStage(t *testing.T) {
 	}
 }
 
+func TestEnterpriseDirectoryAllowsMissingOptionalTagsAfterCompleteEnumeration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
+		case "/cgi-bin/agent/get":
+			// Production's controlled readback has this shape: tags are omitted,
+			// while user and department envelopes remain explicit objects.
+			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]}}`))
+		case "/cgi-bin/department/simplelist":
+			_, _ = response.Write([]byte(`{"errcode":0,"department_id":[{"id":1,"parentid":0}]}`))
+		case "/cgi-bin/user/simplelist":
+			if request.URL.Query().Get("department_id") != "1" || request.URL.Query().Get("fetch_child") != "1" {
+				t.Fatalf("member query=%s", request.URL.Query().Encode())
+			}
+			_, _ = response.Write([]byte(`{"errcode":0,"userlist":[{"userid":"Visible_01","name":"Visible"}]}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := New(Config{Enabled: true, CorpID: "corp", AgentID: "agent", Secret: "application-secret", AdminCallbackURI: "https://crm.example/auth/wecom/callback", SidebarCallbackURI: "https://crm.example/api/sidebar/oauth/callback", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	employees, err := client.ListEnterpriseEmployees(context.Background())
+	if err != nil || len(employees) != 1 || employees[0].UserID != "Visible_01" {
+		t.Fatalf("employees=%+v err=%v", employees, err)
+	}
+	preflight := client.PreflightEnterpriseDirectory(context.Background())
+	if !preflight.Complete || preflight.FailureStage != "" || preflight.AgentUserInfosShape != "object" || preflight.AgentPartysShape != "object" || preflight.AgentTagsShape != "missing" || preflight.EmployeeCount != 1 {
+		t.Fatalf("preflight=%+v", preflight)
+	}
+}
+
 func TestEnterpriseDirectoryUnknownExactEmployeeIsDistinctFromUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
@@ -219,9 +255,10 @@ func TestEnterpriseDirectoryMergesExplicitApplicationUsersOutsideDepartments(t *
 
 func TestEnterpriseDirectoryRejectsTagOnlyOrIncompleteDepartmentScope(t *testing.T) {
 	for name, agentResponse := range map[string]string{
-		"tag":                 `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":{"tagid":[7]}}`,
-		"missing_department":  `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[9]},"allow_tags":null}`,
-		"unknown_scope_shape": `{"errcode":0,"allow_userinfos":{},"allow_partys":{"partyid":[1]},"allow_tags":null}`,
+		"nonempty_tags":        `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":{"tagid":[7]}}`,
+		"invalid_nonnull_tags": `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":true}`,
+		"missing_department":   `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[9]},"allow_tags":null}`,
+		"unknown_scope_shape":  `{"errcode":0,"allow_userinfos":{},"allow_partys":{"partyid":[1]},"allow_tags":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

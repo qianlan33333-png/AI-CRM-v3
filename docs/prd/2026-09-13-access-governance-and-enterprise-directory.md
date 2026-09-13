@@ -55,13 +55,13 @@
 
 ## 企业员工目录与绑定
 
-- 新 WeCom Owner Port 先以只读 `agent/get` 核验应用授权范围，再读取 `department/simplelist` 的 `department_id` 加递归 `user/simplelist`，并合并 `allow_userinfos` 的显式可见用户；`allow_tags` 非空、授权范围字段缺失/结构未知、或授权部门不在返回部门树中时明确 503，绝不把不完整范围当作空目录。它不复用 `ListContactStaff`，也不能调用任何 Provider 写接口。
+- 新 WeCom Owner Port 先以只读 `agent/get` 核验应用授权范围，再读取 `department/simplelist` 的 `department_id` 加递归 `user/simplelist`，并合并 `allow_userinfos` 的显式可见用户；依据[官方 `agent/get` 成功响应结构](https://developer.work.weixin.qq.com/document/path/90363)和受保护预检的脱敏实际 shape，唯一兼容例外是 `allow_tags` 未返回时按空标签范围处理。`allow_tags` 非空或非法、`allow_partys`/`allow_userinfos` 缺失或结构未知、或授权部门不在返回部门树中时明确 503，绝不把不完整范围当作空目录。它不复用 `ListContactStaff`，也不能调用任何 Provider 写接口。
 - `GET /api/admin/access/enterprise-employees?cursor=&limit=1..50&query=`：空 query 和非空 query 都先在服务端建立有界、完整的可见员工投影，以精确 `userid` 或显示名匹配。扫描未完成、令牌/权限/Provider 异常一律为 503，而不是错误地返回“没有员工”。查询结果游标与 query 绑定；Provider 是实时数据源，跨页变动只承诺实时 best-effort，不承诺快照事务。
 - 所有 Provider 调用完成后才进入本地 UOW；不持有数据库锁等待网络。
 - 候选项额外标明是否已开通后台账号、其当前 role 和 login_enabled；目录中出现或已有客服员工投影不等于获得后台权限。
 - 创建账号或变更绑定时，服务端再次读取指定企业成员，要求返回的大小写完全一致，才可写入 Access。不会将 `huangyoucan` 与 `HuangYouCan` 合并，也不会用 follow-user、客户、OpenID 或任意历史绑定替代验证。
 - Provider 失败、超时、权限不足不改变本地账号或绑定；日志只含受控错误类别和请求关联信息，不记录全局员工标识。
-- 发布前在受保护运行时环境中以同一只读 Provider adapter 做目录预检，只报告 `complete` 布尔值和应用可见员工数量，绝不输出 token、scope 原文、userid 或成员名单。`agent/get` 的 `allow_tags` 非空、`allow_partys`/`allow_userinfos` 结构缺失，或 `department_id` 与目录树不一致即为 `complete=false`，不得发布；完整也仅表示“应用可授权范围”，不是“全企业通讯录”。
+- 发布前在受保护运行时环境中以同一只读 Provider adapter 做目录预检，只报告 `complete` 布尔值和应用可见员工数量，绝不输出 token、scope 原文、userid 或成员名单。`agent/get` 的 `allow_tags` 非空或非法、`allow_partys`/`allow_userinfos` 结构缺失，或 `department_id` 与目录树不一致即为 `complete=false`，不得发布；完整也仅表示“应用可授权范围”，不是“全企业通讯录”。
 
 ## API 合同
 

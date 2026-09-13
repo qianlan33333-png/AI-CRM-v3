@@ -2276,10 +2276,10 @@ func (client *Client) enterpriseAgentScopePreflight(ctx context.Context, token s
 		return enterpriseAgentScope{}, "agent_get", enterpriseAgentScopeEvidence{}
 	}
 	evidence := enterpriseAgentScopeEvidence{userInfos: enterpriseScopeFieldShape(payload.AllowUserInfos), partys: enterpriseScopeFieldShape(payload.AllowPartys), tags: enterpriseScopeFieldShape(payload.AllowTags)}
-	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 || len(bytes.TrimSpace(payload.AllowTags)) == 0 {
+	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 {
 		return enterpriseAgentScope{}, "agent_scope_shape", evidence
 	}
-	if rawJSONHasItems(payload.AllowTags) {
+	if !enterpriseAllowTagsAreEmpty(payload.AllowTags) {
 		return enterpriseAgentScope{}, "agent_tags", evidence
 	}
 	userIDs, err := enterpriseScopeUserIDs(payload.AllowUserInfos)
@@ -2341,20 +2341,20 @@ type enterpriseAgentScope struct {
 
 // enterpriseAgentScope reads the application permission envelope before
 // enumerating members. Department reads alone omit employees who are visible
-// through allow_userinfos, while allow_tags cannot be expanded completely by
-// this API and must therefore fail closed.
+// through allow_userinfos, while non-empty allow_tags cannot be expanded
+// completely by this API and must therefore fail closed.
 func (client *Client) enterpriseAgentScope(ctx context.Context, token string) (enterpriseAgentScope, error) {
 	payload, err := client.request(ctx, "/cgi-bin/agent/get", url.Values{"access_token": {token}, "agentid": {client.config.AgentID}})
 	if err != nil {
 		return enterpriseAgentScope{}, err
 	}
-	// A missing scope field differs from the explicit empty/null envelopes the
-	// API uses for "none". It is an unrecognized permission shape and must not
-	// turn into an accidental all-directory read.
-	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 || len(bytes.TrimSpace(payload.AllowTags)) == 0 {
+	// Missing user/department scope fields must never turn into an accidental
+	// all-directory read. agent/get may omit allow_tags when no tag scope is
+	// granted; that one omission is safely equivalent to an empty tag envelope.
+	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 {
 		return enterpriseAgentScope{}, ErrResponse
 	}
-	if rawJSONHasItems(payload.AllowTags) {
+	if !enterpriseAllowTagsAreEmpty(payload.AllowTags) {
 		return enterpriseAgentScope{}, ErrResponse
 	}
 	userIDs, err := enterpriseScopeUserIDs(payload.AllowUserInfos)
@@ -2366,6 +2366,13 @@ func (client *Client) enterpriseAgentScope(ctx context.Context, token string) (e
 		return enterpriseAgentScope{}, err
 	}
 	return enterpriseAgentScope{userIDs: userIDs, departmentIDs: departmentIDs}, nil
+}
+
+// enterpriseAllowTagsAreEmpty accepts only the permitted omitted/empty tag
+// envelope. Any non-empty, malformed, or otherwise unknown value remains a
+// fail-closed condition because this reader cannot enumerate tag members.
+func enterpriseAllowTagsAreEmpty(raw json.RawMessage) bool {
+	return !rawJSONHasItems(raw)
 }
 
 func rawJSONHasItems(raw json.RawMessage) bool {
