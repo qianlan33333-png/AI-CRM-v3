@@ -259,6 +259,22 @@ func nextRefreshAt() time.Time {
 	}
 	return next
 }
+
+// download is deliberately stricter than metadata reads. A library viewer can
+// use the existing safe catalogue but cannot export the underlying attachment.
+func (h *Handler) download(w http.ResponseWriter, r *http.Request) bool {
+	p, err := h.security.Authenticate(r.Context(), r)
+	if err != nil {
+		writeError(w, 401, "unauthorized")
+		return false
+	}
+	if !writeRole(p) {
+		writeError(w, 403, "permission_denied")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
 	p, err := h.security.Authenticate(r.Context(), r)
 	if err != nil {
@@ -538,7 +554,7 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		return
 	}
 	if tail == "facets" {
-		if !method(w, r.Method, http.MethodGet) || !h.read(w, r) {
+		if !method(w, r.Method, http.MethodGet) || !h.download(w, r) {
 			return
 		}
 		categories, tags, e := h.service.ImageFacets(r.Context())

@@ -684,7 +684,7 @@ func (h *Handler) export(w http.ResponseWriter, r *http.Request, id int64) {
 		method(w, "GET")
 		return
 	}
-	principal, ok := h.readPrincipal(w, r)
+	principal, ok := h.exportPrincipal(w, r)
 	if !ok {
 		return
 	}
@@ -1135,6 +1135,17 @@ func (h *Handler) readPrincipal(w http.ResponseWriter, r *http.Request) (accessd
 		return p, false
 	}
 	return p, authorize(w, p, false)
+}
+
+// exportPrincipal separates downloadable CSV from page reads: a viewer may
+// inspect the existing desensitized page but cannot extract submissions.
+func (h *Handler) exportPrincipal(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
+	p, err := h.security.Authenticate(r.Context(), r)
+	if err != nil {
+		writeError(w, 401, "authentication_required")
+		return p, false
+	}
+	return p, authorize(w, p, true)
 }
 func (h *Handler) write(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
 	p, err := h.security.Authenticate(r.Context(), r)

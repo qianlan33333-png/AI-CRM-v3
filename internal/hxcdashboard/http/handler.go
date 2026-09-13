@@ -155,7 +155,7 @@ func (h Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if !principal.IsSuperAdmin() {
+	if !dashboardRefreshWriteRole(principal) {
 		writeError(w, accessdomain.ErrPermissionDenied)
 		return
 	}
@@ -179,6 +179,18 @@ func (h Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, map[string]any{"run": run, "replayed": replay})
+}
+
+func dashboardRefreshWriteRole(principal accessdomain.Principal) bool {
+	if principal.Kind != accessdomain.KindAdmin && principal.Kind != accessdomain.KindStaff {
+		return false
+	}
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleAdmin || role == accessdomain.RoleSuperAdmin {
+			return true
+		}
+	}
+	return false
 }
 func (h Handler) getRefresh(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.authenticate(r); err != nil {

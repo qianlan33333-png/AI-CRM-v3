@@ -191,10 +191,8 @@ func (handler *AssetHTTPHandler) write(w http.ResponseWriter, r *http.Request) (
 		writeCatalogError(w, http.StatusUnauthorized, "UNAUTHORIZED")
 		return accessdomain.Principal{}, false
 	}
-	for _, role := range principal.Roles {
-		if role == accessdomain.RoleSuperAdmin {
-			return principal, true
-		}
+	if channelBusinessWriteRole(principal) {
+		return principal, true
 	}
 	writeCatalogError(w, http.StatusForbidden, "FORBIDDEN")
 	return accessdomain.Principal{}, false

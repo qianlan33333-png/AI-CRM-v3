@@ -126,7 +126,7 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request) {
 			method(w, "GET")
 			return
 		}
-		if h.read(w, r) {
+		if h.exportRead(w, r) {
 			h.exportEvents(w, r, radarID)
 		}
 		return
@@ -199,6 +199,22 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if !role(p, false) {
 		problem(w, 403, "forbidden")
+		return false
+	}
+	return true
+}
+
+// exportRead keeps normal event pages available to the read-only role while
+// preventing their bulk extraction. Exports remain an administrator business
+// capability and do not need CSRF because this GET route has no state change.
+func (h *Handler) exportRead(w http.ResponseWriter, r *http.Request) bool {
+	p, e := h.security.Authenticate(r.Context(), r)
+	if e != nil {
+		problem(w, http.StatusUnauthorized, "unauthorized")
+		return false
+	}
+	if !role(p, true) {
+		problem(w, http.StatusForbidden, "forbidden")
 		return false
 	}
 	return true

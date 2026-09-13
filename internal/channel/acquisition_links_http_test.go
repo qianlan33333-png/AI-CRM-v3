@@ -30,7 +30,7 @@ func TestAcquisitionLinkHTTPFrozenContractAndRoles(t *testing.T) {
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("viewer mutation status=%d body=%s", response.Code, response.Body.String())
 	}
-	security.principal.Roles = []accessdomain.Role{accessdomain.RoleSuperAdmin}
+	security.principal.Roles = []accessdomain.Role{accessdomain.RoleAdmin}
 	response = catalogHTTPRequest(handler, http.MethodPost, acquisitionLinksPath, body, map[string][]string{"Content-Type": {"application/json"}, "Idempotency-Key": {"channel-link-create-0001"}, "X-CSRF-Token": {"valid"}})
 	if response.Code != http.StatusAccepted || app.command.Operation != "create" || app.command.ActorID != 7 || !strings.Contains(response.Body.String(), `"state":"accepted"`) {
 		t.Fatalf("create status=%d command=%+v body=%s", response.Code, app.command, response.Body.String())

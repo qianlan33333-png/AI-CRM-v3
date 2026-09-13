@@ -204,7 +204,7 @@ func TestOwnerHandoffContextRouteUsesAccessProjection(t *testing.T) {
 }
 
 func TestOwnerHandoffPickerKeepsStaffAndWeComIDsDistinct(t *testing.T) {
-	for _, role := range []accessdomain.Role{accessdomain.RoleSuperAdmin, accessdomain.RoleViewer} {
+	for _, role := range []accessdomain.Role{accessdomain.RoleSuperAdmin, accessdomain.RoleAdmin, accessdomain.RoleViewer} {
 		security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{role}}}
 		config := testConfig(security, &testCustomerStore{}, &testIdentities{}, &testAudit{})
 		config.OwnerHandoffStaff = testOwnerHandoffStaffDirectory{}
@@ -214,7 +214,7 @@ func TestOwnerHandoffPickerKeepsStaffAndWeComIDsDistinct(t *testing.T) {
 		}
 		response := httptest.NewRecorder()
 		handler.OwnerHandoffOperationMembersHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/common/operation-members?scope=owner_migration", nil))
-		if role != accessdomain.RoleSuperAdmin {
+		if role == accessdomain.RoleViewer {
 			if response.Code != http.StatusForbidden {
 				t.Fatalf("unprivileged directory status=%d", response.Code)
 			}

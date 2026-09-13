@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	ordermigration "github.com/qianlan33333-png/AI-CRM-v3/internal/order/migration"
 )
 
@@ -45,7 +46,7 @@ func (h *ImportHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	if !principal.IsSuperAdmin() {
+	if !orderImportWriteRole(principal) {
 		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
@@ -86,6 +87,18 @@ func (h *ImportHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func orderImportWriteRole(principal accessdomain.Principal) bool {
+	if principal.Kind != accessdomain.KindAdmin && principal.Kind != accessdomain.KindStaff {
+		return false
+	}
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleAdmin || role == accessdomain.RoleSuperAdmin {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeOrderOnlyManifest(w http.ResponseWriter, r *http.Request) (ordermigration.Manifest, bool) {

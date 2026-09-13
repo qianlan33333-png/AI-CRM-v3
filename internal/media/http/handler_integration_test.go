@@ -34,6 +34,24 @@ import (
 
 type handlerTestSecurity struct{}
 
+func TestAttachmentDownloadRoleMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value accessdomain.Principal
+		want  bool
+	}{
+		{name: "viewer", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleViewer}}, want: false},
+		{name: "admin", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, want: true},
+		{name: "super", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := writeRole(test.value); got != test.want {
+				t.Fatalf("writeRole(%+v)=%v want %v", test.value, got, test.want)
+			}
+		})
+	}
+}
+
 func (handlerTestSecurity) Authenticate(_ context.Context, request *http.Request) (accessdomain.Principal, error) {
 	if request.Header.Get("X-Test-Auth") == "none" {
 		return accessdomain.Principal{}, errors.New("unauthorized")

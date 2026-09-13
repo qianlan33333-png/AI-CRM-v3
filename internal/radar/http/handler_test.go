@@ -179,6 +179,19 @@ func TestEventExportFormatsBusinessTimestampsInShanghai(t *testing.T) {
 	}
 }
 
+func TestEventExportRequiresBusinessRole(t *testing.T) {
+	viewer := accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 8, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	handler, err := NewHandler(&testManager{}, testQuery{}, testPublic{}, visitorSecurity{auth: viewer, csrf: viewer}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links/1/events/export", nil))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("viewer event export status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestOAuthFailureOffersOnlyValidatedManualRetry(t *testing.T) {
 	handler, _ := NewHandler(&testManager{}, testQuery{}, testPublic{}, testSecurity{}, "https://crm.example")
 	for _, code := range []string{"rd_abcdefghijklmnopqrstuv", "//evil.example"} {

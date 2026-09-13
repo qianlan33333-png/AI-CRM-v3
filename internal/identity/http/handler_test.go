@@ -224,7 +224,7 @@ func TestReadAuthenticationAndWriteAuthorization(t *testing.T) {
 		{name: "reverse missing csrf", csrfErr: accessdomain.ErrCSRFRequired, method: nethttp.MethodPost,
 			target:     "/api/admin/oneid/merges/1/reverse",
 			wantStatus: nethttp.StatusForbidden, wantCode: "csrf_required"},
-		{name: "non super admin", csrf: activeAdmin(), method: nethttp.MethodPost,
+		{name: "viewer", csrf: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 8, Roles: []accessdomain.Role{accessdomain.RoleViewer}}, method: nethttp.MethodPost,
 			target: "/api/admin/oneid/merge-candidates/1/confirm", body: `{"survivor_customer_id":1}`,
 			wantStatus: nethttp.StatusForbidden, wantCode: "permission_denied"},
 	}
@@ -248,12 +248,9 @@ func TestConfirmOperatorComesOnlyFromPrincipal(t *testing.T) {
 		Status: identityapp.LinkMerged, CustomerID: 20,
 		Merge: &identityapp.MergeRecord{ID: 71, CandidateID: 8, FromCustomerID: 10, ToCustomerID: 20},
 	}}
-	principal := accessdomain.Principal{
-		Kind: accessdomain.KindAdmin, InternalID: 42, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin},
-	}
 	auditor := &testAuditor{}
 	unit := &testUnitOfWork{}
-	security := &testSecurity{authPrincipal: activeAdmin(), csrfPrincipal: principal}
+	security := &testSecurity{authPrincipal: activeAdmin(), csrfPrincipal: activeAdmin()}
 	handler := configuredHandler(t, unit, security, service, &testQueries{}, auditor)
 	response := perform(handler, nethttp.MethodPost, "/api/admin/oneid/merge-candidates/8/confirm",
 		`{"survivor_customer_id":20,"operator":"forged"}`, true)
@@ -265,11 +262,11 @@ func TestConfirmOperatorComesOnlyFromPrincipal(t *testing.T) {
 	if response.Code != nethttp.StatusOK || service.confirmCalls != 1 {
 		t.Fatalf("status=%d calls=%d body=%q", response.Code, service.confirmCalls, response.Body.String())
 	}
-	if service.confirmInput.CandidateID != 8 || service.confirmInput.SurvivorCustomerID != 20 || service.confirmInput.Operator != "admin:42" {
+	if service.confirmInput.CandidateID != 8 || service.confirmInput.SurvivorCustomerID != 20 || service.confirmInput.Operator != "admin:7" {
 		t.Fatalf("command=%#v", service.confirmInput)
 	}
 	if auditor.calls != 1 || !auditor.transactionBound || auditor.event.Action != "identity.merge_confirmed" ||
-		auditor.event.ActorType != "admin" || auditor.event.ActorID != "42" ||
+		auditor.event.ActorType != "admin" || auditor.event.ActorID != "7" ||
 		auditor.event.ResourceType != "customer_merge" || auditor.event.ResourceID != "71" ||
 		string(auditor.event.IdempotencyKey) != "identity:merge-confirmed:71" {
 		t.Fatalf("audit calls=%d transaction=%v event=%#v", auditor.calls, auditor.transactionBound, auditor.event)

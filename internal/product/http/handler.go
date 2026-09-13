@@ -1284,6 +1284,11 @@ func (h *Handler) memberGridAuthorize(w http.ResponseWriter, r *http.Request, id
 		writeError(w, http.StatusForbidden, "permission_denied")
 		return productport.MemberGridAccess{}, productport.MemberGridActor{}, false
 	}
+	writeAllowed := canWrite(principal)
+	if mutate && !writeAllowed {
+		writeError(w, http.StatusForbidden, "permission_denied")
+		return productport.MemberGridAccess{}, productport.MemberGridActor{}, false
+	}
 	if mutate {
 		if _, err = h.security.AuthorizeCSRF(r.Context(), r); err != nil {
 			writeError(w, http.StatusForbidden, "csrf_required")
@@ -1291,11 +1296,19 @@ func (h *Handler) memberGridAuthorize(w http.ResponseWriter, r *http.Request, id
 		}
 	}
 	actor := productport.MemberGridActor{AdminUserID: principal.InternalID, IsSuperAdmin: principal.IsSuperAdmin()}
-	actor.IsAdmin = canWrite(principal)
+	actor.IsAdmin = writeAllowed
 	access, err := h.workspace.Access(r.Context(), productport.ID(id), actor)
 	if err != nil {
 		writeError(w, http.StatusForbidden, "permission_denied")
 		return productport.MemberGridAccess{}, productport.MemberGridActor{}, false
+	}
+	if !writeAllowed {
+		// A local collaborator grant can refine an administrator's product
+		// workspace access, but it can never turn the global viewer role into a
+		// write, export, or share capability.
+		access.CanEdit = false
+		access.CanManageViews = false
+		access.CanShare = false
 	}
 	return access, actor, true
 }

@@ -83,6 +83,15 @@ func (s operationSecurity) AuthorizeCSRF(context.Context, *nethttp.Request) (acc
 	return accessdomain.Principal{}, s.csrfErr
 }
 
+type principalSecurity struct{ principal accessdomain.Principal }
+
+func (s principalSecurity) Authenticate(context.Context, *nethttp.Request) (accessdomain.Principal, error) {
+	return s.principal, nil
+}
+func (s principalSecurity) AuthorizeCSRF(context.Context, *nethttp.Request) (accessdomain.Principal, error) {
+	return s.principal, nil
+}
+
 type operationRouteSurvey struct {
 	surveyport.PublicApplication
 	surveyport.SubmissionApplication
@@ -180,6 +189,20 @@ func TestQuestionnaireExportFormatsBusinessTimestampsInShanghai(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(nethttp.MethodGet, "/api/admin/questionnaires/7/export", nil))
 	if response.Code != nethttp.StatusOK || survey.exportCalls != 1 || !strings.Contains(response.Body.String(), "2026-09-05 08:01:02") || strings.Contains(response.Body.String(), "2026-09-05T00:01:02") || !strings.Contains(response.Body.String(), "已关联客户") || strings.Contains(response.Body.String(), ",resolved,") {
 		t.Fatalf("business CSV did not use Shanghai display time: status=%d calls=%d body=%q", response.Code, survey.exportCalls, response.Body.String())
+	}
+}
+
+func TestQuestionnaireExportRejectsViewer(t *testing.T) {
+	survey := &routeSurvey{}
+	viewer := accessdomain.Principal{InternalID: 8, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, principalSecurity{principal: viewer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(nethttp.MethodGet, "/api/admin/questionnaires/7/export", nil))
+	if response.Code != nethttp.StatusForbidden || survey.exportCalls != 0 {
+		t.Fatalf("viewer export status=%d calls=%d body=%s", response.Code, survey.exportCalls, response.Body.String())
 	}
 }
 

@@ -130,6 +130,25 @@ func (securityStub) Authenticate(context.Context, *http.Request) (accessdomain.P
 	return accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
 }
 
+func TestPaymentBusinessWriteRoleMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value accessdomain.Principal
+		want  bool
+	}{
+		{name: "admin", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 1, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, want: true},
+		{name: "super admin", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 2, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, want: true},
+		{name: "viewer", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 3, Roles: []accessdomain.Role{accessdomain.RoleViewer}}, want: false},
+		{name: "staff admin is outside payment surface", value: accessdomain.Principal{Kind: accessdomain.KindStaff, InternalID: 4, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := paymentBusinessWriteRole(test.value); got != test.want {
+				t.Fatalf("paymentBusinessWriteRole(%+v)=%v want %v", test.value, got, test.want)
+			}
+		})
+	}
+}
+
 type h5OAuthStub struct {
 	completeError error
 	enabled       bool

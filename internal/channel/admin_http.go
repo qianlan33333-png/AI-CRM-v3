@@ -261,10 +261,22 @@ func (handler *EntrantAdminHandler) writePrincipal(request *http.Request) (acces
 	if err = principal.Validate(); err != nil {
 		return accessdomain.Principal{}, accessdomain.ErrAuthentication
 	}
-	if !principal.IsSuperAdmin() {
+	if !channelBusinessWriteRole(principal) {
 		return accessdomain.Principal{}, accessdomain.ErrPermissionDenied
 	}
 	return principal, nil
+}
+
+func channelBusinessWriteRole(principal accessdomain.Principal) bool {
+	if principal.Kind != accessdomain.KindAdmin && principal.Kind != accessdomain.KindStaff {
+		return false
+	}
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleAdmin || role == accessdomain.RoleSuperAdmin {
+			return true
+		}
+	}
+	return false
 }
 
 func (handler *EntrantAdminHandler) writeError(response http.ResponseWriter, err error) {

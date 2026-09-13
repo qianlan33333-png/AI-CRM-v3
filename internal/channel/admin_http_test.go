@@ -145,7 +145,7 @@ func TestEntrantAdminReconcileRequiresCSRFSuperAdminAndAtomicallyAudits(t *testi
 		wantCode   string
 	}{
 		{name: "csrf", security: &entrantAdminTestSecurity{csrfErr: accessdomain.ErrCSRFRequired}, wantStatus: 403, wantCode: "csrf_required"},
-		{name: "role", security: &entrantAdminTestSecurity{csrfPrincipal: entrantAdminAdmin()}, wantStatus: 403, wantCode: "permission_denied"},
+		{name: "viewer role", security: &entrantAdminTestSecurity{csrfPrincipal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 8, Roles: []accessdomain.Role{accessdomain.RoleViewer}}}, wantStatus: 403, wantCode: "permission_denied"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &entrantAdminTestStore{}
@@ -161,7 +161,7 @@ func TestEntrantAdminReconcileRequiresCSRFSuperAdminAndAtomicallyAudits(t *testi
 	unit := &entrantAdminTestUOW{}
 	store := &entrantAdminTestStore{now: now}
 	auditor := &entrantAdminTestAuditor{}
-	handler := entrantAdminTestHandler(t, unit, &entrantAdminTestSecurity{csrfPrincipal: entrantAdminSuperAdmin()}, store, auditor, func() time.Time { return now })
+	handler := entrantAdminTestHandler(t, unit, &entrantAdminTestSecurity{csrfPrincipal: entrantAdminAdmin()}, store, auditor, func() time.Time { return now })
 	for iteration := range 2 {
 		response := entrantAdminRequest(handler, http.MethodPost, "/api/admin/channel-acquisition-entrant-receipts/8/reconcile", body, true, "entrant-reconcile-key")
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"replayed":`+[]string{"false", "true"}[iteration]) {
@@ -173,11 +173,11 @@ func TestEntrantAdminReconcileRequiresCSRFSuperAdminAndAtomicallyAudits(t *testi
 	}
 	command := store.reconcileCommand
 	if command.ReceiptID != 8 || command.ExpectedStatus != EntrantChannelUnmatched || command.BindingID != 44 ||
-		command.CustomerID != customerdomain.CustomerID(55) || command.ActorAdminUserID != 1 || command.Reason != "verified local binding" ||
+		command.CustomerID != customerdomain.CustomerID(55) || command.ActorAdminUserID != 7 || command.Reason != "verified local binding" ||
 		command.OperationKeyDigest == [32]byte{} || command.CommandDigest == [32]byte{} {
 		t.Fatalf("command=%+v", command)
 	}
-	if auditor.event.Action != "channel.acquisition_entrant_reconciled" || auditor.event.ActorID != "1" ||
+	if auditor.event.Action != "channel.acquisition_entrant_reconciled" || auditor.event.ActorID != "7" ||
 		auditor.event.ResourceID != "8" || auditor.event.IdempotencyKey == "" || !auditor.event.OccurredAt.Equal(now) {
 		t.Fatalf("audit=%+v", auditor.event)
 	}
