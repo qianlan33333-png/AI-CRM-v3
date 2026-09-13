@@ -52,7 +52,7 @@
 
 ## 企业员工目录与绑定
 
-- 新 WeCom Owner Port 只读取应用可见范围：`department/simplelist` 的 `department_id` 加递归 `user/simplelist`，并合并应用显式可见用户；若可见标签无法完整展开则明确 503。它不复用 `ListContactStaff`，也不能调用任何 Provider 写接口。
+- 新 WeCom Owner Port 先以只读 `agent/get` 核验应用授权范围，再读取 `department/simplelist` 的 `department_id` 加递归 `user/simplelist`，并合并 `allow_userinfos` 的显式可见用户；`allow_tags` 非空、授权范围字段缺失/结构未知、或授权部门不在返回部门树中时明确 503，绝不把不完整范围当作空目录。它不复用 `ListContactStaff`，也不能调用任何 Provider 写接口。
 - `GET /api/admin/access/enterprise-employees?cursor=&limit=1..50&query=`：空 query 和非空 query 都先在服务端建立有界、完整的可见员工投影，以精确 `userid` 或显示名匹配。扫描未完成、令牌/权限/Provider 异常一律为 503，而不是错误地返回“没有员工”。查询结果游标与 query 绑定；Provider 是实时数据源，跨页变动只承诺实时 best-effort，不承诺快照事务。
 - 所有 Provider 调用完成后才进入本地 UOW；不持有数据库锁等待网络。
 - 候选项额外标明是否已开通后台账号、其当前 role 和 login_enabled；目录中出现或已有客服员工投影不等于获得后台权限。
