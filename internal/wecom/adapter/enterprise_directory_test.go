@@ -21,6 +21,11 @@ func TestEnterpriseDirectoryUsesApplicationVisibleDepartmentReads(t *testing.T) 
 				t.Fatalf("unexpected credential path")
 			}
 			_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
+		case "/cgi-bin/agent/get":
+			if request.URL.Query().Get("access_token") != "application-token" || request.URL.Query().Get("agentid") != "agent" {
+				t.Fatalf("agent scope query=%s", request.URL.Query().Encode())
+			}
+			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":null}`))
 		case "/cgi-bin/department/simplelist":
 			if request.URL.Query().Get("access_token") != "application-token" {
 				t.Fatalf("department request did not use application token")
@@ -105,6 +110,8 @@ func TestEnterpriseDirectoryReadsEachVisibleComponentRecursively(t *testing.T) {
 		switch request.URL.Path {
 		case "/cgi-bin/gettoken":
 			_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
+		case "/cgi-bin/agent/get":
+			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1,9]},"allow_tags":null}`))
 		case "/cgi-bin/department/simplelist":
 			_, _ = response.Write([]byte(`{"errcode":0,"department_id":[{"id":1,"parentid":0},{"id":2,"parentid":1},{"id":9,"parentid":99},{"id":10,"parentid":9}]}`))
 		case "/cgi-bin/user/simplelist":
@@ -137,5 +144,76 @@ func TestEnterpriseDirectoryReadsEachVisibleComponentRecursively(t *testing.T) {
 	defer requestedMu.Unlock()
 	if len(requested) != 2 || requested["1"] != "1" || requested["9"] != "1" || len(employees) != 2 || employees[0].UserID != "OrphanTree" || employees[1].UserID != "RootTree" {
 		t.Fatalf("scopes=%v employees=%+v", requested, employees)
+	}
+}
+
+func TestEnterpriseDirectoryMergesExplicitApplicationUsersOutsideDepartments(t *testing.T) {
+	var directReads int
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
+		case "/cgi-bin/agent/get":
+			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{"user":["Direct_03"]},"allow_partys":{"partyid":[1]},"allow_tags":null}`))
+		case "/cgi-bin/department/simplelist":
+			_, _ = response.Write([]byte(`{"errcode":0,"department_id":[{"id":1,"parentid":0}]}`))
+		case "/cgi-bin/user/simplelist":
+			if request.URL.Query().Get("department_id") != "1" || request.URL.Query().Get("fetch_child") != "1" {
+				t.Fatalf("department query=%s", request.URL.Query().Encode())
+			}
+			_, _ = response.Write([]byte(`{"errcode":0,"userlist":[{"userid":"Department_01","name":"部门成员"}]}`))
+		case "/cgi-bin/user/get":
+			if request.URL.Query().Get("userid") != "Direct_03" {
+				t.Fatalf("direct userid=%q", request.URL.Query().Get("userid"))
+			}
+			directReads++
+			_, _ = response.Write([]byte(`{"errcode":0,"userid":"Direct_03","name":"直接成员"}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := New(Config{Enabled: true, CorpID: "corp", AgentID: "agent", Secret: "application-secret", AdminCallbackURI: "https://crm.example/auth/wecom/callback", SidebarCallbackURI: "https://crm.example/api/sidebar/oauth/callback", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	employees, err := client.ListEnterpriseEmployees(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if directReads != 1 || len(employees) != 2 || employees[0].UserID != "Department_01" || employees[1].UserID != "Direct_03" {
+		t.Fatalf("direct_reads=%d employees=%+v", directReads, employees)
+	}
+}
+
+func TestEnterpriseDirectoryRejectsTagOnlyOrIncompleteDepartmentScope(t *testing.T) {
+	for name, agentResponse := range map[string]string{
+		"tag":                `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":{"tagid":[7]}}`,
+		"missing_department": `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[9]},"allow_tags":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				response.Header().Set("Content-Type", "application/json")
+				switch request.URL.Path {
+				case "/cgi-bin/gettoken":
+					_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
+				case "/cgi-bin/agent/get":
+					_, _ = response.Write([]byte(agentResponse))
+				case "/cgi-bin/department/simplelist":
+					_, _ = response.Write([]byte(`{"errcode":0,"department_id":[{"id":1,"parentid":0}]}`))
+				default:
+					t.Fatalf("unexpected request %s", request.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, err := New(Config{Enabled: true, CorpID: "corp", AgentID: "agent", Secret: "application-secret", AdminCallbackURI: "https://crm.example/auth/wecom/callback", SidebarCallbackURI: "https://crm.example/api/sidebar/oauth/callback", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.ListEnterpriseEmployees(context.Background()); err == nil {
+				t.Fatal("expected incomplete directory error")
+			}
+		})
 	}
 }

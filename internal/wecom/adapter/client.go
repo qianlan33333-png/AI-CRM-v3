@@ -624,7 +624,14 @@ type response struct {
 		ID       int64 `json:"id"`
 		ParentID int64 `json:"parentid"`
 	} `json:"department_id"`
-	Users []struct {
+	// agent/get has a different shape from department/simplelist. Keep these
+	// raw until the enterprise-directory reader validates its bounded,
+	// minimum projection; an unknown permission shape must never be treated as
+	// an empty visible scope.
+	AllowUserInfos json.RawMessage `json:"allow_userinfos"`
+	AllowPartys    json.RawMessage `json:"allow_partys"`
+	AllowTags      json.RawMessage `json:"allow_tags"`
+	Users          []struct {
 		UserID string `json:"userid"`
 		Name   string `json:"name"`
 	} `json:"userlist"`
@@ -2141,9 +2148,25 @@ func (client *Client) ListEnterpriseEmployees(ctx context.Context) ([]wecomport.
 }
 
 func (client *Client) listEnterpriseEmployees(ctx context.Context, token string) ([]wecomport.EnterpriseEmployee, error) {
+	scope, err := client.enterpriseAgentScope(ctx, token)
+	if err != nil {
+		return nil, err
+	}
 	departments, err := client.enterpriseDepartments(ctx, token)
 	if err != nil {
 		return nil, err
+	}
+	knownDepartments := make(map[int64]struct{}, len(departments))
+	for _, department := range departments {
+		knownDepartments[department.id] = struct{}{}
+	}
+	for _, departmentID := range scope.departmentIDs {
+		if _, known := knownDepartments[departmentID]; !known {
+			// The app scope says this department is visible, but the current
+			// directory projection omitted it. Returning partial results would
+			// turn an authorization/read failure into a false "not found".
+			return nil, ErrResponse
+		}
 	}
 	scopes, err := enterpriseDirectoryScopes(departments)
 	if err != nil {
@@ -2154,7 +2177,134 @@ func (client *Client) listEnterpriseEmployees(ctx context.Context, token string)
 	// absent are both legal Provider projections; using all component roots
 	// prevents an orphan branch from disappearing when a normal root is also
 	// present. Any cycle is rejected by enterpriseDirectoryScopes.
-	return client.enterpriseMembers(ctx, token, scopes)
+	departmentEmployees, err := client.enterpriseMembers(ctx, token, scopes)
+	if err != nil {
+		return nil, err
+	}
+	directEmployees, err := client.enterpriseDirectEmployees(ctx, token, scope.userIDs)
+	if err != nil {
+		return nil, err
+	}
+	return mergeEnterpriseEmployees(departmentEmployees, directEmployees)
+}
+
+type enterpriseAgentScope struct {
+	userIDs       []string
+	departmentIDs []int64
+}
+
+// enterpriseAgentScope reads the application permission envelope before
+// enumerating members. Department reads alone omit employees who are visible
+// through allow_userinfos, while allow_tags cannot be expanded completely by
+// this API and must therefore fail closed.
+func (client *Client) enterpriseAgentScope(ctx context.Context, token string) (enterpriseAgentScope, error) {
+	payload, err := client.request(ctx, "/cgi-bin/agent/get", url.Values{"access_token": {token}, "agentid": {client.config.AgentID}})
+	if err != nil {
+		return enterpriseAgentScope{}, err
+	}
+	if rawJSONHasItems(payload.AllowTags) {
+		return enterpriseAgentScope{}, ErrResponse
+	}
+	userIDs, err := enterpriseScopeUserIDs(payload.AllowUserInfos)
+	if err != nil {
+		return enterpriseAgentScope{}, err
+	}
+	departmentIDs, err := enterpriseScopeDepartmentIDs(payload.AllowPartys)
+	if err != nil {
+		return enterpriseAgentScope{}, err
+	}
+	return enterpriseAgentScope{userIDs: userIDs, departmentIDs: departmentIDs}, nil
+}
+
+func rawJSONHasItems(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) || bytes.Equal(raw, []byte("{}")) || bytes.Equal(raw, []byte("[]")) {
+		return false
+	}
+	var value map[string]json.RawMessage
+	if json.Unmarshal(raw, &value) != nil {
+		// An unrecognized non-empty permission envelope is not safely empty.
+		return true
+	}
+	for _, child := range value {
+		child = bytes.TrimSpace(child)
+		if len(child) > 0 && !bytes.Equal(child, []byte("null")) && !bytes.Equal(child, []byte("[]")) && !bytes.Equal(child, []byte("{}")) {
+			return true
+		}
+	}
+	return false
+}
+
+func enterpriseScopeUserIDs(raw json.RawMessage) ([]string, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	var envelope struct {
+		Users json.RawMessage `json:"user"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return nil, ErrResponse
+	}
+	users := bytes.TrimSpace(envelope.Users)
+	if len(users) == 0 || bytes.Equal(users, []byte("null")) {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal(users, &values); err != nil {
+		return nil, ErrResponse
+	}
+	return normalizeEnterpriseScopeUserIDs(values)
+}
+
+func normalizeEnterpriseScopeUserIDs(values []string) ([]string, error) {
+	if len(values) > 10000 {
+		return nil, ErrResponse
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		userID := strings.TrimSpace(value)
+		if userID == "" || userID != value || invalid(userID) {
+			return nil, ErrResponse
+		}
+		if _, duplicate := seen[userID]; duplicate {
+			return nil, ErrResponse
+		}
+		seen[userID] = struct{}{}
+		result = append(result, userID)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func enterpriseScopeDepartmentIDs(raw json.RawMessage) ([]int64, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	var envelope struct {
+		Departments []int64 `json:"partyid"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || len(envelope.Departments) > 500 {
+		return nil, ErrResponse
+	}
+	seen := make(map[int64]struct{}, len(envelope.Departments))
+	for _, departmentID := range envelope.Departments {
+		if departmentID < 1 {
+			return nil, ErrResponse
+		}
+		if _, duplicate := seen[departmentID]; duplicate {
+			return nil, ErrResponse
+		}
+		seen[departmentID] = struct{}{}
+	}
+	result := make([]int64, 0, len(seen))
+	for departmentID := range seen {
+		result = append(result, departmentID)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result, nil
 }
 
 func (client *Client) enterpriseDepartments(ctx context.Context, token string) ([]enterpriseDepartment, error) {
@@ -2162,7 +2312,7 @@ func (client *Client) enterpriseDepartments(ctx context.Context, token string) (
 	if err != nil {
 		return nil, err
 	}
-	if len(payload.Departments) == 0 || len(payload.Departments) > 500 {
+	if len(payload.Departments) > 500 {
 		return nil, ErrResponse
 	}
 	departments := make([]enterpriseDepartment, len(payload.Departments))
@@ -2216,7 +2366,7 @@ func enterpriseDirectoryScopes(departments []enterpriseDepartment) ([]int64, err
 			current = parent
 		}
 	}
-	if len(roots) == 0 || len(roots) > 500 {
+	if len(roots) > 500 {
 		return nil, ErrResponse
 	}
 	result := make([]int64, 0, len(roots))
@@ -2228,8 +2378,11 @@ func enterpriseDirectoryScopes(departments []enterpriseDepartment) ([]int64, err
 }
 
 func (client *Client) enterpriseMembers(ctx context.Context, token string, departmentIDs []int64) ([]wecomport.EnterpriseEmployee, error) {
-	if len(departmentIDs) == 0 || len(departmentIDs) > 500 {
+	if len(departmentIDs) > 500 {
 		return nil, classifyDirectoryReadError(ErrResponse)
+	}
+	if len(departmentIDs) == 0 {
+		return []wecomport.EnterpriseEmployee{}, nil
 	}
 	readCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -2300,6 +2453,89 @@ func (client *Client) enterpriseMembers(ctx context.Context, token string, depar
 	return result, nil
 }
 
+// enterpriseDirectEmployees completes the application-visible scope for
+// employees granted directly to the app rather than through a department.
+// It deliberately uses bounded, read-only exact lookups; no directory row is
+// written and a single unreadable direct member invalidates the whole list.
+func (client *Client) enterpriseDirectEmployees(ctx context.Context, token string, userIDs []string) ([]wecomport.EnterpriseEmployee, error) {
+	if len(userIDs) == 0 {
+		return []wecomport.EnterpriseEmployee{}, nil
+	}
+	if len(userIDs) > 10000 {
+		return nil, ErrResponse
+	}
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]wecomport.EnterpriseEmployee, len(userIDs))
+	jobs := make(chan int)
+	workers := 4
+	if workers > len(userIDs) {
+		workers = len(userIDs)
+	}
+	var group sync.WaitGroup
+	var once sync.Once
+	var firstErr error
+	fail := func(err error) {
+		once.Do(func() {
+			firstErr = err
+			cancel()
+		})
+	}
+	for worker := 0; worker < workers; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				employee, err := client.enterpriseEmployeeWithToken(readCtx, token, userIDs[index])
+				if err != nil {
+					fail(err)
+					return
+				}
+				results[index] = employee
+			}
+		}()
+	}
+	for index := range userIDs {
+		select {
+		case <-readCtx.Done():
+		case jobs <- index:
+		}
+		if readCtx.Err() != nil {
+			break
+		}
+	}
+	close(jobs)
+	group.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if ctx.Err() != nil {
+		return nil, ErrUnavailable
+	}
+	return results, nil
+}
+
+func mergeEnterpriseEmployees(groups ...[]wecomport.EnterpriseEmployee) ([]wecomport.EnterpriseEmployee, error) {
+	byID := make(map[string]wecomport.EnterpriseEmployee)
+	for _, group := range groups {
+		for _, employee := range group {
+			if existing, duplicate := byID[employee.UserID]; duplicate {
+				if existing.DisplayName != employee.DisplayName {
+					return nil, ErrResponse
+				}
+				continue
+			}
+			byID[employee.UserID] = employee
+		}
+	}
+	result := make([]wecomport.EnterpriseEmployee, 0, len(byID))
+	for _, employee := range byID {
+		result = append(result, employee)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].UserID < result[j].UserID })
+	return result, nil
+}
+
 func (client *Client) enterpriseDepartmentMembers(ctx context.Context, token string, departmentID int64) ([]wecomport.EnterpriseEmployee, error) {
 	values := url.Values{"access_token": {token}, "department_id": {strconv.FormatInt(departmentID, 10)}}
 	values.Set("fetch_child", "1")
@@ -2339,11 +2575,11 @@ func (client *Client) ReadEnterpriseEmployee(ctx context.Context, userID string)
 	if err != nil {
 		return wecomport.EnterpriseEmployee{}, classifyDirectoryReadError(err)
 	}
-	payload, err := client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {userID}})
+	employee, err := client.enterpriseEmployeeWithToken(readCtx, token, userID)
 	if directoryTokenExpired(err) {
 		token, err = client.refreshAccessToken(readCtx)
 		if err == nil {
-			payload, err = client.request(readCtx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {userID}})
+			employee, err = client.enterpriseEmployeeWithToken(readCtx, token, userID)
 		}
 	}
 	if enterpriseEmployeeNotFound(err) {
@@ -2352,9 +2588,17 @@ func (client *Client) ReadEnterpriseEmployee(ctx context.Context, userID string)
 	if err != nil {
 		return wecomport.EnterpriseEmployee{}, classifyDirectoryReadError(err)
 	}
+	return employee, nil
+}
+
+func (client *Client) enterpriseEmployeeWithToken(ctx context.Context, token, userID string) (wecomport.EnterpriseEmployee, error) {
+	payload, err := client.request(ctx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {userID}})
+	if err != nil {
+		return wecomport.EnterpriseEmployee{}, err
+	}
 	returnedID, name := strings.TrimSpace(payload.UserIDLower), strings.TrimSpace(payload.Name)
 	if returnedID != userID || !validDisplayName(name) {
-		return wecomport.EnterpriseEmployee{}, classifyDirectoryReadError(ErrResponse)
+		return wecomport.EnterpriseEmployee{}, ErrResponse
 	}
 	return wecomport.EnterpriseEmployee{UserID: returnedID, DisplayName: name}, nil
 }
