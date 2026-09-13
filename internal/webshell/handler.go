@@ -86,6 +86,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.serveLogin(writer, request)
 	case requestPath == WeComAuthStartPath:
 		handler.serveWeComAuthStart(writer, request)
+	case requestPath == "/distribution" || requestPath == "/distribution/":
+		handler.serveDistribution(writer, request)
 	case requestPath == AdminRootPath || strings.HasPrefix(requestPath, AdminRootPath+"/"):
 		handler.serveAdmin(writer, request)
 	case requestPath == SidebarPagePath:
@@ -123,6 +125,19 @@ func (handler *Handler) serveWeComAuthStart(writer http.ResponseWriter, request 
 	if err := handler.renderer.RenderLoginStatus(writer, http.StatusNotImplemented, data); err != nil {
 		http.Error(writer, "unable to render authentication shell", http.StatusInternalServerError)
 	}
+}
+
+func (handler *Handler) serveDistribution(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		methodNotAllowed(writer, http.MethodGet+", "+http.MethodHead)
+		return
+	}
+	file, ok := DistDistributionPageFile(handler.distDir)
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	serveDistAdminPage(writer, request, file)
 }
 
 func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Request) {
@@ -283,6 +298,11 @@ var adminSpecs = map[string]adminSpec{
 		title:          "周期商品管理",
 		summary:        "周期商品管理入口已预留。",
 		activeEndpoint: "api.admin_service_period_products_page",
+	},
+	"/admin/distribution": {
+		title:          "分销管理",
+		summary:        "查看分销员、归因订单与异常处理。",
+		activeEndpoint: "api.admin_distribution_page",
 	},
 	"/admin/coupons": {
 		title:          "优惠券",

@@ -43,7 +43,8 @@ func TestPostgreSQLUnassignedHistoryNativeAPIAndNoEffects(t *testing.T) {
 	if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,amount_minor,currency,status,record_origin,effect_eligible,source_row_digest,created_at,updated_at) VALUES('wechat_shop','commerce-history','unassigned','unassigned',100,'CNY','paid','history',false,$1,$2,$2) RETURNING id`, make([]byte, 32), now).Scan(&orderID); err != nil {
 		t.Fatal(err)
 	}
-	p := domain.Payment{OrderID: orderID, Provider: domain.ProviderWeChatShop, MerchantOrderNo: "unassigned", AmountMinor: 100, Currency: "CNY", Status: domain.StatusPaid, SourceStatus: "returned", HistoryReason: "refund_evidence_missing", Version: 1, CreatedAt: now, UpdatedAt: now}
+	paidConfirmedAt := now
+	p := domain.Payment{OrderID: orderID, Provider: domain.ProviderWeChatShop, MerchantOrderNo: "unassigned", AmountMinor: 100, Currency: "CNY", Status: domain.StatusPaid, PaidConfirmedAt: &paidConfirmedAt, SourceStatus: "returned", HistoryReason: "refund_evidence_missing", Version: 1, CreatedAt: now, UpdatedAt: now}
 	if err := uow.Within(ctx, func(c context.Context) error {
 		var e error
 		p, e = repo.ImportTerminalPayment(c, p, [32]byte{4}, "unassigned-test")
@@ -106,7 +107,7 @@ func TestPostgreSQLUnassignedHistoryNativeAPIAndNoEffects(t *testing.T) {
 	var payerOnly domain.Payment
 	if err := uow.Within(ctx, func(c context.Context) error {
 		var e error
-		payerOnly, e = repo.ImportTerminalPayment(c, domain.Payment{OrderID: payerOnlyOrder, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "payer-only", PayerIdentityID: 4, PayerCustomerID: 11, AmountMinor: 100, Currency: "CNY", Status: domain.StatusPaid, Version: 1, CreatedAt: now, UpdatedAt: now}, [32]byte{6}, "unassigned-test")
+		payerOnly, e = repo.ImportTerminalPayment(c, domain.Payment{OrderID: payerOnlyOrder, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "payer-only", PayerIdentityID: 4, PayerCustomerID: 11, AmountMinor: 100, Currency: "CNY", Status: domain.StatusPaid, PaidConfirmedAt: &paidConfirmedAt, Version: 1, CreatedAt: now, UpdatedAt: now}, [32]byte{6}, "unassigned-test")
 		return e
 	}); err != nil {
 		t.Fatal(err)

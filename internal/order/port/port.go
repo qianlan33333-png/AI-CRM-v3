@@ -292,7 +292,40 @@ type PaymentOrderCommand struct {
 	ServicePeriodDurationDays       int32
 	Currency                        string
 	MobileE164                      string
-	ActorScope, IdempotencyKey      string
+	// PromotionContext is an opaque, server-carried promotion credential.  It
+	// has no customer, amount, policy or receiver semantics. Order freezes any
+	// accepted attribution through its injected coordinator in this same UoW.
+	PromotionContext           string
+	ActorScope, IdempotencyKey string
+}
+
+// CheckoutAttributionCommand carries only trusted checkout facts from Order
+// to an injected cross-domain coordinator. It is never constructed from a
+// public identity/amount/receiver field. A coordinator treats an invalid or
+// ineligible credential as ordinary purchase (no attribution); unavailable
+// persistence remains an error so the checkout UoW cannot half-commit.
+type CheckoutAttributionCommand struct {
+	OrderID, ProductID                     int64
+	OrderItemLine                          int32
+	ProductType, ProductCode, ProductName  string
+	PayerCustomerID, BeneficiaryCustomerID int64
+	ItemPaidMinor                          int64
+	PromotionContext                       string
+	OccurredAt                             time.Time
+}
+
+// CheckoutAttributionResult is a server-derived checkout fact. The public
+// payment request never supplies it. True means an accepted first-level
+// attribution has a positive frozen commission on this exact paid item; it is
+// the only signal Payment may use to mark a new controlled transaction for
+// profit sharing.
+type CheckoutAttributionResult struct {
+	Attributed            bool
+	ProfitSharingRequired bool
+}
+
+type CheckoutAttributionCoordinator interface {
+	RecordCheckoutAttributionWithin(context.Context, CheckoutAttributionCommand) (CheckoutAttributionResult, error)
 }
 
 // CheckoutSnapshot is an Order-owned, immutable record of a native checkout.
@@ -314,6 +347,7 @@ type CheckoutSnapshot struct {
 	CouponReservationRef      string
 	CouponClaimID, CouponID   int64
 	CouponRuleVersion         int64
+	ProfitSharingRequired     bool
 	ReservedAt                time.Time
 }
 

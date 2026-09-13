@@ -225,6 +225,9 @@ func (s *storeStub) GetHandoff(context.Context, int64) (paymentport.Handoff, err
 func (s *storeStub) ReservedRefundMinor(context.Context, int64) (int64, error) {
 	return s.reserved, nil
 }
+func (s *storeStub) ReservedProfitSharingMinor(context.Context, int64) (int64, error) {
+	return 0, nil
+}
 func (s *storeStub) HasNonTerminalRefund(context.Context, int64) (bool, error) {
 	s.nonTerminalRefundChecks++
 	return s.nonTerminalRefund, nil

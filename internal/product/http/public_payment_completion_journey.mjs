@@ -12,6 +12,7 @@ const script = source.slice(start + '</main><script>'.length, end)
   .replaceAll('{{.Product.PriceMinor}}', '990')
   .replaceAll('{{.Product.ID}}', '7')
   .replaceAll('{{.Product.ProductKind}}', 'standard')
+  .replaceAll('{{.Product.PromotionContext}}', '')
   .replaceAll('{{.Product.CouponTargetRef}}', 'standard_product:7');
 
 assert.equal(source.includes('id="grossAmount"'), false);

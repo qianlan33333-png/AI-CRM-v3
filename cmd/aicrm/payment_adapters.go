@@ -30,7 +30,7 @@ type paymentProviderRouter struct {
 
 func (router paymentProviderRouter) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
 	switch envelope.Kind {
-	case effectport.KindWeChatPayPrepay, effectport.KindWeChatPayRefund:
+	case effectport.KindWeChatPayPrepay, effectport.KindWeChatPayRefund, effectport.KindWeChatPayReceiverAdd, effectport.KindWeChatPayProfitSharing, effectport.KindWeChatPayProfitUnfreeze:
 		if router.wechatPay == nil {
 			return effectport.AdapterResult{}, errors.New("wechat pay provider unavailable")
 		}
@@ -65,13 +65,21 @@ func (router composedProviderRouter) Execute(ctx context.Context, envelope effec
 }
 
 type composedCompletionRouter struct {
-	outbound   effectport.CompletionSink
-	payment    effectport.CompletionSink
-	automation effectport.CompletionSink
+	outbound            effectport.CompletionSink
+	payment             effectport.CompletionSink
+	paymentDistribution effectport.CompletionSink
+	automation          effectport.CompletionSink
 }
 
 func (router composedCompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
 	if envelope.Owner == effectport.OwnerPayment {
+		switch envelope.Kind {
+		case effectport.KindWeChatPayReceiverAdd, effectport.KindWeChatPayProfitSharing, effectport.KindWeChatPayProfitUnfreeze:
+			if router.paymentDistribution == nil {
+				return errors.New("payment distribution completion unavailable")
+			}
+			return router.paymentDistribution.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+		}
 		if router.payment == nil {
 			return errors.New("payment completion unavailable")
 		}

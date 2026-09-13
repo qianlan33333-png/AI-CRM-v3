@@ -32,6 +32,82 @@ func (stub loaderStub) Load(context.Context, effectport.Kind, effectport.Digest)
 	return stub.material, nil
 }
 
+type profitSharingLoaderStub struct {
+	material      ProfitSharingMaterial
+	referenceKind effectport.Kind
+}
+
+func (stub profitSharingLoaderStub) Load(context.Context, effectport.Kind, effectport.Digest) (Material, error) {
+	return Material{}, errors.New("ordinary material must not load for profit sharing")
+}
+func (stub profitSharingLoaderStub) LoadProfitSharing(context.Context, effectport.Kind, effectport.Digest) (ProfitSharingMaterial, error) {
+	return stub.material, nil
+}
+func (stub profitSharingLoaderStub) LoadProfitSharingReference(context.Context, string) (effectport.Kind, ProfitSharingMaterial, error) {
+	kind := stub.referenceKind
+	if kind == "" {
+		kind = effectport.KindWeChatPayProfitSharing
+	}
+	return kind, stub.material, nil
+}
+
+type profitSharingSDKStub struct {
+	add, create, unfreeze int
+	query                 ProfitSharingQuery
+	queryMaterial         ProfitSharingMaterial
+}
+
+func (stub *profitSharingSDKStub) AddReceiver(context.Context, ProfitSharingMaterial) error {
+	stub.add++
+	return nil
+}
+func (stub *profitSharingSDKStub) CreateOrder(context.Context, ProfitSharingMaterial) error {
+	stub.create++
+	return nil
+}
+func (stub *profitSharingSDKStub) QueryOrder(_ context.Context, material ProfitSharingMaterial) (ProfitSharingQuery, error) {
+	stub.queryMaterial = material
+	return stub.query, nil
+}
+
+func TestProfitSharingReconciliationUsesOriginalInstructionMaterial(t *testing.T) {
+	payload := effectport.Hash("profit-sharing-query-payload")
+	when := time.Date(2026, 9, 14, 5, 0, 0, 0, time.UTC)
+	material := ProfitSharingMaterial{PayloadDigest: payload, AppID: "wx-app", ReceiverAccount: "open-id", TransactionReference: "4200000001", ProviderOrderNo: "v3ps_ABCDEFGHIJKLMNOPQRST", AmountMinor: 12}
+	sdk := &profitSharingSDKStub{query: ProfitSharingQuery{State: "FINISHED", ReceiverConfirmedSuccess: true, OutcomeKnown: true, OccurredAt: when}}
+	provider := &WeChatPay{config: Config{Enabled: true}, loader: profitSharingLoaderStub{material: material}, profitSharing: sdk}
+	result, err := provider.QueryProfitSharing(context.Background(), "psinst_7")
+	if err != nil || !result.ReceiverConfirmedSuccess || !result.OutcomeKnown || result.State != "FINISHED" || result.OccurredAt != when || !effectport.ValidDigest(result.EvidenceDigest) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	sdk.query = ProfitSharingQuery{State: "FINISHED", OutcomeKnown: true, OccurredAt: when}
+	result, err = provider.QueryProfitSharing(context.Background(), "psinst_7")
+	if err != nil || result.ReceiverConfirmedSuccess || result.ReceiverConfirmedFailure || result.OutcomeKnown {
+		t.Fatalf("aggregate completion without exact receiver outcome became terminal: %+v err=%v", result, err)
+	}
+	sdk.query = ProfitSharingQuery{State: "FINISHED", ReceiverConfirmedFailure: true, OutcomeKnown: true, OccurredAt: when}
+	result, err = provider.QueryProfitSharing(context.Background(), "psinst_7")
+	if err != nil || result.ReceiverConfirmedSuccess || !result.ReceiverConfirmedFailure || !result.OutcomeKnown {
+		t.Fatalf("exact receiver failure was not preserved: %+v err=%v", result, err)
+	}
+}
+
+func TestProfitSharingUnfreezeReconciliationUsesOriginalUnfreezeOrderNumber(t *testing.T) {
+	payload := effectport.Hash("profit-sharing-unfreeze-query-payload")
+	when := time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC)
+	material := ProfitSharingMaterial{PayloadDigest: payload, AppID: "wx-app", TransactionReference: "4200000002", ProviderOrderNo: "v3psu_ABCDEFGHIJKLMNOPQRST", Reason: "release unused reserve"}
+	sdk := &profitSharingSDKStub{query: ProfitSharingQuery{State: "FINISHED", OccurredAt: when}}
+	provider := &WeChatPay{config: Config{Enabled: true}, loader: profitSharingLoaderStub{material: material, referenceKind: effectport.KindWeChatPayProfitUnfreeze}, profitSharing: sdk}
+	result, err := provider.QueryProfitSharingUnfreeze(context.Background(), "psunfreeze_7")
+	if err != nil || !result.OutcomeKnown || result.ReceiverConfirmedSuccess || result.State != "FINISHED" || sdk.queryMaterial.ProviderOrderNo != material.ProviderOrderNo || !strings.HasPrefix(sdk.queryMaterial.ProviderOrderNo, "v3psu_") {
+		t.Fatalf("unfreeze result=%+v queried=%+v err=%v", result, sdk.queryMaterial, err)
+	}
+}
+func (stub *profitSharingSDKStub) UnfreezeOrder(context.Context, ProfitSharingMaterial) error {
+	stub.unfreeze++
+	return nil
+}
+
 func testEnvelope(kind effectport.Kind, payload effectport.Digest) effectport.Envelope {
 	return effectport.Envelope{Owner: effectport.OwnerPayment, Kind: kind, SourceRefDigest: effectport.Hash("source"), TargetRefDigest: effectport.Hash("target"), PayloadDigest: payload, PolicyVersionHash: effectport.Hash("policy")}
 }
@@ -48,6 +124,49 @@ func TestDisabledProviderMakesZeroCalls(t *testing.T) {
 	result, err := provider.Execute(context.Background(), testEnvelope(effectport.KindWeChatPayPrepay, effectport.Hash("payload")), effectport.Attempt{Number: 1})
 	if err != nil || result.Completion != effectport.StateFinalFailed || result.CallAttempted || calls != 0 {
 		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestProfitSharingEffectsUseInjectedSDKAndFailClosedWithoutIt(t *testing.T) {
+	payload := effectport.Hash("profit-sharing-payload")
+	envelope := testEnvelope(effectport.KindWeChatPayProfitSharing, payload)
+	material := ProfitSharingMaterial{PayloadDigest: payload, AppID: "wx-app", ReceiverAccount: "open-id", TransactionReference: "4200000001", ProviderOrderNo: "v3ps_ABCDEFGHIJKLMNOPQRST", AmountMinor: 12}
+	provider := &WeChatPay{config: Config{Enabled: true}, loader: profitSharingLoaderStub{material: material}}
+	result, err := provider.Execute(context.Background(), envelope, effectport.Attempt{Number: 1})
+	if err != nil || result.Completion != effectport.StateFinalFailed || result.CallAttempted {
+		t.Fatalf("missing SDK result=%+v err=%v", result, err)
+	}
+	sdk := &profitSharingSDKStub{}
+	if err := provider.SetProfitSharingSDK(sdk); err != nil {
+		t.Fatal(err)
+	}
+	result, err = provider.Execute(context.Background(), envelope, effectport.Attempt{Number: 1})
+	if err != nil || result.Completion != effectport.StateExecuted || !result.CallAttempted || !result.RealExternalCallExecuted || sdk.create != 1 || sdk.add != 0 || sdk.unfreeze != 0 {
+		t.Fatalf("split result=%+v calls=%+v err=%v", result, sdk, err)
+	}
+
+	for _, test := range []struct {
+		kind effectport.Kind
+		want func() int
+	}{
+		{effectport.KindWeChatPayReceiverAdd, func() int { return sdk.add }},
+		{effectport.KindWeChatPayProfitUnfreeze, func() int { return sdk.unfreeze }},
+	} {
+		t.Run(string(test.kind), func(t *testing.T) {
+			copy := material
+			if test.kind == effectport.KindWeChatPayReceiverAdd {
+				copy.ProviderOrderNo, copy.TransactionReference, copy.AmountMinor = "", "", 0
+			}
+			if test.kind == effectport.KindWeChatPayProfitUnfreeze {
+				copy.ProviderOrderNo, copy.Reason = "v3psu_ABCDEFGHIJKLMNOPQRST", "release unused reserve"
+			}
+			provider.loader = profitSharingLoaderStub{material: copy}
+			before := test.want()
+			result, callErr := provider.Execute(context.Background(), testEnvelope(test.kind, payload), effectport.Attempt{Number: 1})
+			if callErr != nil || result.Completion != effectport.StateExecuted || test.want() != before+1 {
+				t.Fatalf("result=%+v before=%d after=%d err=%v", result, before, test.want(), callErr)
+			}
+		})
 	}
 }
 

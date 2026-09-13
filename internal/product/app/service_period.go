@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -88,11 +90,20 @@ type ServicePeriodService struct {
 	uow    platformport.UnitOfWork
 	store  ServicePeriodStore
 	events productport.EventAppender
+	policy productPolicyWriter
 	now    func() time.Time
 }
 
 func NewServicePeriodService(uow platformport.UnitOfWork, store ServicePeriodStore, events productport.EventAppender) *ServicePeriodService {
 	return &ServicePeriodService{uow: uow, store: store, events: events, now: time.Now}
+}
+
+func (service *ServicePeriodService) SetDistributionPolicyWriter(writer distributionport.ProductPolicyService) error {
+	if service == nil || writer == nil {
+		return ErrUnavailable
+	}
+	service.policy = writer
+	return nil
 }
 
 func (service *ServicePeriodService) ListServicePeriodProducts(ctx context.Context, limit, offset int32) (productport.ServicePeriodPage, error) {
@@ -225,6 +236,10 @@ func (service *ServicePeriodService) CreateServicePeriodProduct(ctx context.Cont
 	if err != nil {
 		return productport.ServicePeriodProduct{}, err
 	}
+	policy, err := normalizedDistributionPolicy(command.DistributionPolicy, true)
+	if err != nil {
+		return productport.ServicePeriodProduct{}, err
+	}
 	if !servicePeriodReady(service) {
 		return productport.ServicePeriodProduct{}, ErrUnavailable
 	}
@@ -274,6 +289,11 @@ func (service *ServicePeriodService) CreateServicePeriodProduct(ctx context.Cont
 		if createErr = service.store.SetServicePeriodDuration(tx, created.ID, normalized.DurationDays); createErr != nil {
 			return createErr
 		}
+		if service.policy != nil {
+			if createErr = saveDistributionPolicyWithin(tx, service.policy, created.ID, distributiondomain.ProductTypeServicePeriod, policy, normalized.Actor, normalized.IdempotencyKey); createErr != nil {
+				return createErr
+			}
+		}
 		result, createErr = projectServicePeriodProduct(created, normalized.DurationDays)
 		if createErr != nil || result.Version != 1 || result.Lifecycle != productport.ServicePeriodDraft {
 			return ErrUnavailable
@@ -294,6 +314,10 @@ func (service *ServicePeriodService) UpdateServicePeriodProduct(ctx context.Cont
 	if err != nil {
 		return productport.ServicePeriodProduct{}, err
 	}
+	policy, err := normalizedDistributionPolicy(command.DistributionPolicy, false)
+	if err != nil {
+		return productport.ServicePeriodProduct{}, err
+	}
 	return service.updateServicePeriod(ctx, servicePeriodWrite{
 		action:          "update",
 		actor:           normalized.Actor,
@@ -301,6 +325,7 @@ func (service *ServicePeriodService) UpdateServicePeriodProduct(ctx context.Cont
 		id:              normalized.ID,
 		expectedVersion: normalized.ExpectedVersion,
 		digest:          digest,
+		policy:          policy,
 		mutate: func(current productport.Product, projected productport.ServicePeriodProduct) (ServicePeriodStoreUpdate, productport.ServicePeriodLifecycle, bool, error) {
 			if projected.Archived {
 				return ServicePeriodStoreUpdate{}, "", false, ErrConflict
@@ -405,6 +430,7 @@ func (service *ServicePeriodService) CopyServicePeriodProduct(ctx context.Contex
 		return productport.ServicePeriodProduct{}, ErrUnavailable
 	}
 
+	policy := productport.DefaultDistributionPolicy()
 	actorScope := servicePeriodActorScope(normalized.Actor)
 	reservation := Reservation{
 		Operation:     "create",
@@ -461,6 +487,11 @@ func (service *ServicePeriodService) CopyServicePeriodProduct(ctx context.Contex
 		if createErr = service.store.SetServicePeriodDuration(tx, created.ID, sourceDuration); createErr != nil {
 			return createErr
 		}
+		if service.policy != nil {
+			if createErr = saveDistributionPolicyWithin(tx, service.policy, created.ID, distributiondomain.ProductTypeServicePeriod, &policy, normalized.Actor, normalized.IdempotencyKey); createErr != nil {
+				return createErr
+			}
+		}
 		result, createErr = projectServicePeriodProduct(created, sourceDuration)
 		if createErr != nil || result.Version != 1 || result.Lifecycle != productport.ServicePeriodDraft || result.ServiceProductID == source.ID {
 			return ErrUnavailable
@@ -483,6 +514,7 @@ type servicePeriodWrite struct {
 	id              productport.ID
 	expectedVersion int64
 	digest          [32]byte
+	policy          *productport.DistributionPolicy
 	mutate          func(productport.Product, productport.ServicePeriodProduct) (ServicePeriodStoreUpdate, productport.ServicePeriodLifecycle, bool, error)
 }
 
@@ -547,6 +579,11 @@ func (service *ServicePeriodService) updateServicePeriod(ctx context.Context, wr
 			result, updateErr = projectServicePeriodProduct(updated, storeUpdate.DurationDays)
 			if updateErr != nil || result.Version != projected.Version+1 || result.ServiceProductID != projected.ServiceProductID || result.ProductCode != projected.ProductCode || result.DurationDays != storeUpdate.DurationDays || !result.CreatedAt.Equal(projected.CreatedAt) || result.Lifecycle != target || !reflect.DeepEqual(result.Images, storeUpdate.Images) || !jsonEquivalent(result.AdminProjection, storeUpdate.LegacyAdminProjection) {
 				return ErrUnavailable
+			}
+			if write.policy != nil && service.policy != nil {
+				if updateErr = saveDistributionPolicyWithin(tx, service.policy, updated.ID, distributiondomain.ProductTypeServicePeriod, write.policy, write.actor, write.idempotencyKey); updateErr != nil {
+					return updateErr
+				}
 			}
 			if appendErr := service.appendServicePeriodEvent(tx, productport.EventProductUpdated, write.action, result, 0, write.actor, actorScope, write.idempotencyKey, now); appendErr != nil {
 				return appendErr
@@ -786,16 +823,17 @@ func normalizeServicePeriodCreate(command productport.CreateServicePeriodProduct
 		}
 	}
 	raw, err := json.Marshal(struct {
-		ProductCode     string          `json:"product_code"`
-		Name            string          `json:"name"`
-		Description     string          `json:"description"`
-		PriceMinor      int64           `json:"price_minor"`
-		Currency        string          `json:"currency"`
-		DurationDays    int32           `json:"duration_days"`
-		StockQuantity   int32           `json:"stock_quantity"`
-		Images          []string        `json:"images"`
-		AdminProjection json.RawMessage `json:"admin_projection"`
-	}{command.ProductCode, command.Name, command.Description, command.PriceMinor, command.Currency, command.DurationDays, command.StockQuantity, command.Images, command.AdminProjection})
+		ProductCode        string                          `json:"product_code"`
+		Name               string                          `json:"name"`
+		Description        string                          `json:"description"`
+		PriceMinor         int64                           `json:"price_minor"`
+		Currency           string                          `json:"currency"`
+		DurationDays       int32                           `json:"duration_days"`
+		StockQuantity      int32                           `json:"stock_quantity"`
+		Images             []string                        `json:"images"`
+		AdminProjection    json.RawMessage                 `json:"admin_projection"`
+		DistributionPolicy *productport.DistributionPolicy `json:"distribution_policy"`
+	}{command.ProductCode, command.Name, command.Description, command.PriceMinor, command.Currency, command.DurationDays, command.StockQuantity, command.Images, command.AdminProjection, command.DistributionPolicy})
 	if err != nil {
 		return productport.CreateServicePeriodProductCommand{}, [32]byte{}, ErrInvalidProduct
 	}
@@ -825,17 +863,18 @@ func normalizeServicePeriodUpdate(command productport.UpdateServicePeriodProduct
 		}
 	}
 	raw, err := json.Marshal(struct {
-		ID              productport.ID  `json:"service_product_id"`
-		ExpectedVersion int64           `json:"expected_version"`
-		Name            string          `json:"name"`
-		Description     string          `json:"description"`
-		PriceMinor      int64           `json:"price_minor"`
-		Currency        string          `json:"currency"`
-		DurationDays    int32           `json:"duration_days"`
-		StockQuantity   int32           `json:"stock_quantity"`
-		Images          []string        `json:"images"`
-		AdminProjection json.RawMessage `json:"admin_projection"`
-	}{command.ID, command.ExpectedVersion, command.Name, command.Description, command.PriceMinor, command.Currency, command.DurationDays, command.StockQuantity, command.Images, command.AdminProjection})
+		ID                 productport.ID                  `json:"service_product_id"`
+		ExpectedVersion    int64                           `json:"expected_version"`
+		Name               string                          `json:"name"`
+		Description        string                          `json:"description"`
+		PriceMinor         int64                           `json:"price_minor"`
+		Currency           string                          `json:"currency"`
+		DurationDays       int32                           `json:"duration_days"`
+		StockQuantity      int32                           `json:"stock_quantity"`
+		Images             []string                        `json:"images"`
+		AdminProjection    json.RawMessage                 `json:"admin_projection"`
+		DistributionPolicy *productport.DistributionPolicy `json:"distribution_policy"`
+	}{command.ID, command.ExpectedVersion, command.Name, command.Description, command.PriceMinor, command.Currency, command.DurationDays, command.StockQuantity, command.Images, command.AdminProjection, command.DistributionPolicy})
 	if err != nil {
 		return productport.UpdateServicePeriodProductCommand{}, [32]byte{}, ErrInvalidProduct
 	}

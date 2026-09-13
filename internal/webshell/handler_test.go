@@ -19,7 +19,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 		t.Fatalf("group count=%d, want 4", len(ADMIN_NAV_GROUPS))
 	}
 	wantTitles := []string{"运营", "交易", "素材", "配置及后台"}
-	wantCounts := []int{10, 4, 3, 4}
+	wantCounts := []int{10, 5, 3, 4}
 	for index, group := range ADMIN_NAV_GROUPS {
 		if group.Title != wantTitles[index] || len(group.Items) != wantCounts[index] {
 			t.Fatalf("group %d=%+v, want title=%q count=%d", index, group, wantTitles[index], wantCounts[index])

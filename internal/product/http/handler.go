@@ -22,6 +22,8 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
@@ -62,6 +64,8 @@ type Handler struct {
 	// a deployment before HXC has published facts still renders Order/Customer
 	// fields and marks HXC-derived values unavailable.
 	sharedFacts hxcport.VersionedSharedFactsReader
+	// policyReader is a stable Distribution read port; Product never reads Distribution tables.
+	policyReader distributionport.ProductPolicyReader
 	// memberGridCursorKey signs only compact relation fingerprints and canonical
 	// row references; never member names, remarks, or HXC values.
 	memberGridCursorKey []byte
@@ -98,6 +102,14 @@ func (h *Handler) SetServicePeriodMemberReaders(members orderport.EntitlementSer
 		return errors.New("service-period member readers are required")
 	}
 	h.members, h.names = members, names
+	return nil
+}
+
+func (h *Handler) SetDistributionPolicyReader(reader distributionport.ProductPolicyReader) error {
+	if h == nil || reader == nil {
+		return errors.New("distribution policy reader is required")
+	}
+	h.policyReader = reader
 	return nil
 }
 
@@ -174,7 +186,7 @@ func (h *Handler) ordinaryRoot(w http.ResponseWriter, r *http.Request) {
 		}
 		items := make([]productResponse, 0, len(page.Items))
 		for _, item := range page.Items {
-			projected, projectionErr := productResponseFrom(item)
+			projected, projectionErr := h.productResponse(r.Context(), item)
 			if projectionErr != nil {
 				resultError(w, projectionErr)
 				return
@@ -209,13 +221,13 @@ func (h *Handler) ordinaryRoot(w http.ResponseWriter, r *http.Request) {
 			ProductCode: body.ProductCode, Name: body.Name, Description: body.Description,
 			PriceMinor: body.PriceMinor, Currency: body.Currency, StockQuantity: body.StockQuantity,
 			Images: body.Images, LegacyAdminProjection: projection, Actor: principal.InternalID,
-			IdempotencyKey: key,
+			DistributionPolicy: body.DistributionPolicy.command(), IdempotencyKey: key,
 		})
 		if err != nil {
 			resultError(w, err)
 			return
 		}
-		projected, projectionErr := productResponseFrom(product)
+		projected, projectionErr := h.productResponse(r.Context(), product)
 		if projectionErr != nil {
 			resultError(w, projectionErr)
 			return
@@ -286,7 +298,7 @@ func (h *Handler) ordinaryTail(w http.ResponseWriter, r *http.Request, tail stri
 			resultError(w, getErr)
 			return
 		}
-		projected, projectionErr := productResponseFrom(product)
+		projected, projectionErr := h.productResponse(r.Context(), product)
 		if projectionErr != nil {
 			resultError(w, projectionErr)
 			return
@@ -315,13 +327,13 @@ func (h *Handler) ordinaryTail(w http.ResponseWriter, r *http.Request, tail stri
 			ID: productport.ID(id), ExpectedVersion: body.ExpectedVersion, Name: body.Name,
 			Description: body.Description, PriceMinor: body.PriceMinor, Currency: body.Currency,
 			StockQuantity: body.StockQuantity, Images: body.Images, LegacyAdminProjection: body.AdminProjection,
-			Actor: principal.InternalID, IdempotencyKey: key,
+			Actor: principal.InternalID, DistributionPolicy: body.DistributionPolicy.command(), IdempotencyKey: key,
 		})
 		if updateErr != nil {
 			resultError(w, updateErr)
 			return
 		}
-		projected, projectionErr := productResponseFrom(product)
+		projected, projectionErr := h.productResponse(r.Context(), product)
 		if projectionErr != nil {
 			resultError(w, projectionErr)
 			return
@@ -333,13 +345,14 @@ func (h *Handler) ordinaryTail(w http.ResponseWriter, r *http.Request, tail stri
 }
 
 func (h *Handler) ordinaryAdminRoot(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		// The frozen ordinary list uses /api/v1/products. This compatibility
-		// root is deliberately not a second list contract.
-		writeError(w, http.StatusNotFound, "not_found")
-		return
+	// Compatibility callers use the same Product command and nested policy
+	// DTO as /api/v1/products. There is one Product UoW, never a policy follow-up.
+	switch r.Method {
+	case http.MethodGet, http.MethodPost:
+		h.ordinaryRoot(w, r)
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
-	methodNotAllowed(w, http.MethodGet)
 }
 
 func (h *Handler) ordinaryAdminTail(w http.ResponseWriter, r *http.Request, tail string) {
@@ -369,11 +382,14 @@ func (h *Handler) ordinaryAdminTail(w http.ResponseWriter, r *http.Request, tail
 	case "external-push/test":
 		h.externalTest(w, r, id, productport.ExternalPushWeChatPay)
 	case "":
-		if r.Method != http.MethodDelete {
-			methodNotAllowed(w, http.MethodDelete)
-			return
+		switch r.Method {
+		case http.MethodGet, http.MethodPut:
+			h.ordinaryTail(w, r, parts[0])
+		case http.MethodDelete:
+			h.localDelete(w, r, id)
+		default:
+			methodNotAllowed(w, http.MethodGet+", "+http.MethodPut+", "+http.MethodDelete)
 		}
-		h.localDelete(w, r, id)
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
@@ -505,7 +521,16 @@ func (h *Handler) serviceRoot(w http.ResponseWriter, r *http.Request) {
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, page)
+		items := make([]servicePeriodResponse, 0, len(page.Items))
+		for _, item := range page.Items {
+			response, responseErr := h.servicePeriodResponse(r.Context(), item)
+			if responseErr != nil {
+				resultError(w, responseErr)
+				return
+			}
+			items = append(items, response)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": page.OK, "items": items, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
 	case http.MethodPost:
 		principal, ok := h.write(w, r)
 		if !ok {
@@ -532,13 +557,18 @@ func (h *Handler) serviceRoot(w http.ResponseWriter, r *http.Request) {
 		product, err := h.service.CreateServicePeriodProduct(r.Context(), productport.CreateServicePeriodProductCommand{
 			ProductCode: body.ProductCode, Name: body.Name, Description: body.Description,
 			PriceMinor: body.PriceMinor, Currency: body.Currency, DurationDays: body.DurationDays, StockQuantity: body.StockQuantity,
-			Images: body.Images, AdminProjection: projection, Actor: principal.InternalID, IdempotencyKey: key,
+			Images: body.Images, AdminProjection: projection, Actor: principal.InternalID, DistributionPolicy: body.DistributionPolicy.command(), IdempotencyKey: key,
 		})
 		if err != nil {
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "product": product})
+		response, responseErr := h.servicePeriodResponse(r.Context(), product)
+		if responseErr != nil {
+			resultError(w, responseErr)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "product": response})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -623,7 +653,12 @@ func (h *Handler) serviceDetail(w http.ResponseWriter, r *http.Request, id int64
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "product": product})
+		response, responseErr := h.servicePeriodResponse(r.Context(), product)
+		if responseErr != nil {
+			resultError(w, responseErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "product": response})
 	case http.MethodPut:
 		principal, ok := h.write(w, r)
 		if !ok {
@@ -647,13 +682,18 @@ func (h *Handler) serviceDetail(w http.ResponseWriter, r *http.Request, id int64
 			ID: productport.ID(id), ExpectedVersion: body.ExpectedVersion, Name: body.Name,
 			Description: body.Description, PriceMinor: body.PriceMinor, Currency: body.Currency,
 			DurationDays: body.DurationDays, StockQuantity: body.StockQuantity, Images: body.Images, AdminProjection: body.AdminProjection,
-			Actor: principal.InternalID, IdempotencyKey: key,
+			Actor: principal.InternalID, DistributionPolicy: body.DistributionPolicy.command(), IdempotencyKey: key,
 		})
 		if err != nil {
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "product": product})
+		response, responseErr := h.servicePeriodResponse(r.Context(), product)
+		if responseErr != nil {
+			resultError(w, responseErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "product": response})
 	case http.MethodDelete:
 		principal, ok := h.write(w, r)
 		if !ok {
@@ -674,7 +714,12 @@ func (h *Handler) serviceDetail(w http.ResponseWriter, r *http.Request, id int64
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "product": product})
+		response, responseErr := h.servicePeriodResponse(r.Context(), product)
+		if responseErr != nil {
+			resultError(w, responseErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "product": response})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPut+", "+http.MethodDelete)
 	}
@@ -704,7 +749,12 @@ func (h *Handler) serviceEnable(w http.ResponseWriter, r *http.Request, id int64
 		resultError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "product": product})
+	response, responseErr := h.servicePeriodResponse(r.Context(), product)
+	if responseErr != nil {
+		resultError(w, responseErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "product": response})
 }
 
 func (h *Handler) serviceCopy(w http.ResponseWriter, r *http.Request, id int64) {
@@ -731,7 +781,12 @@ func (h *Handler) serviceCopy(w http.ResponseWriter, r *http.Request, id int64) 
 		resultError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "product": product})
+	response, responseErr := h.servicePeriodResponse(r.Context(), product)
+	if responseErr != nil {
+		resultError(w, responseErr)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "product": response})
 }
 
 func (h *Handler) serviceShare(w http.ResponseWriter, r *http.Request, id int64) {
@@ -1540,50 +1595,68 @@ func parseMemberGridMemberRef(value string) (int64, error) {
 	return id, nil
 }
 
+type distributionPolicyRequest struct {
+	Enabled                   bool  `json:"enabled"`
+	CommissionRateBasisPoints int32 `json:"commission_rate_basis_points"`
+	WaitDays                  int32 `json:"wait_days"`
+	Version                   int64 `json:"version"`
+}
+
+func (value *distributionPolicyRequest) command() *productport.DistributionPolicy {
+	if value == nil {
+		return nil
+	}
+	return &productport.DistributionPolicy{Enabled: value.Enabled, CommissionRateBasisPoints: value.CommissionRateBasisPoints, WaitDays: value.WaitDays, ExpectedVersion: value.Version}
+}
+
 type createRequest struct {
-	ProductCode     string          `json:"product_code"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	PriceMinor      int64           `json:"price_minor"`
-	Currency        string          `json:"currency"`
-	StockQuantity   int32           `json:"stock_quantity"`
-	Images          []string        `json:"images"`
-	AdminProjection json.RawMessage `json:"admin_projection"`
+	ProductCode        string                     `json:"product_code"`
+	Name               string                     `json:"name"`
+	Description        string                     `json:"description"`
+	PriceMinor         int64                      `json:"price_minor"`
+	Currency           string                     `json:"currency"`
+	StockQuantity      int32                      `json:"stock_quantity"`
+	Images             []string                   `json:"images"`
+	AdminProjection    json.RawMessage            `json:"admin_projection"`
+	DistributionPolicy *distributionPolicyRequest `json:"distribution_policy"`
 }
 
 type updateRequest struct {
-	ExpectedVersion int64           `json:"expected_version"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	PriceMinor      int64           `json:"price_minor"`
-	Currency        string          `json:"currency"`
-	StockQuantity   int32           `json:"stock_quantity"`
-	Images          []string        `json:"images"`
-	AdminProjection json.RawMessage `json:"admin_projection"`
+	ExpectedVersion    int64                      `json:"expected_version"`
+	Name               string                     `json:"name"`
+	Description        string                     `json:"description"`
+	PriceMinor         int64                      `json:"price_minor"`
+	Currency           string                     `json:"currency"`
+	StockQuantity      int32                      `json:"stock_quantity"`
+	Images             []string                   `json:"images"`
+	AdminProjection    json.RawMessage            `json:"admin_projection"`
+	DistributionPolicy *distributionPolicyRequest `json:"distribution_policy"`
 }
 
 type serviceCreateRequest struct {
-	ProductCode     string          `json:"product_code"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	PriceMinor      int64           `json:"price_minor"`
-	Currency        string          `json:"currency"`
-	DurationDays    int32           `json:"duration_days"`
-	StockQuantity   int32           `json:"stock_quantity"`
-	Images          []string        `json:"images"`
-	AdminProjection json.RawMessage `json:"admin_projection"`
+	ProductCode        string                     `json:"product_code"`
+	Name               string                     `json:"name"`
+	Description        string                     `json:"description"`
+	PriceMinor         int64                      `json:"price_minor"`
+	Currency           string                     `json:"currency"`
+	DurationDays       int32                      `json:"duration_days"`
+	StockQuantity      int32                      `json:"stock_quantity"`
+	Images             []string                   `json:"images"`
+	AdminProjection    json.RawMessage            `json:"admin_projection"`
+	DistributionPolicy *distributionPolicyRequest `json:"distribution_policy"`
 }
 
 type serviceUpdateRequest struct {
-	ExpectedVersion int64           `json:"expected_version"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	PriceMinor      int64           `json:"price_minor"`
-	Currency        string          `json:"currency"`
-	DurationDays    int32           `json:"duration_days"`
-	StockQuantity   int32           `json:"stock_quantity"`
-	Images          []string        `json:"images"`
-	AdminProjection json.RawMessage `json:"admin_projection"`
+	ExpectedVersion    int64                      `json:"expected_version"`
+	Name               string                     `json:"name"`
+	Description        string                     `json:"description"`
+	PriceMinor         int64                      `json:"price_minor"`
+	Currency           string                     `json:"currency"`
+	DurationDays       int32                      `json:"duration_days"`
+	StockQuantity      int32                      `json:"stock_quantity"`
+	Images             []string                   `json:"images"`
+	AdminProjection    json.RawMessage            `json:"admin_projection"`
+	DistributionPolicy *distributionPolicyRequest `json:"distribution_policy"`
 }
 
 type versionRequest struct {
@@ -1779,24 +1852,25 @@ func normalizeExternalConfigurationCustomParams(value map[string]any) (map[strin
 }
 
 type productResponse struct {
-	ID               productport.ID                    `json:"id"`
-	ProductCode      string                            `json:"product_code"`
-	Name             string                            `json:"name"`
-	Description      string                            `json:"description"`
-	PriceMinor       int64                             `json:"price_minor"`
-	Currency         string                            `json:"currency"`
-	StockQuantity    int32                             `json:"stock_quantity"`
-	Images           []string                          `json:"images"`
-	AdminProjection  json.RawMessage                   `json:"admin_projection"`
-	CreatedBy        int64                             `json:"created_by"`
-	CreatedAt        interface{}                       `json:"created_at"`
-	UpdatedAt        interface{}                       `json:"updated_at"`
-	Version          int64                             `json:"version"`
-	Lifecycle        productport.LocalProductLifecycle `json:"lifecycle"`
-	Enabled          bool                              `json:"enabled"`
-	PaidOrderCount   int64                             `json:"paid_order_count"`
-	RefundOrderCount int64                             `json:"refund_order_count"`
-	SoldCount        int64                             `json:"sold_count"`
+	ID                 productport.ID                    `json:"id"`
+	ProductCode        string                            `json:"product_code"`
+	Name               string                            `json:"name"`
+	Description        string                            `json:"description"`
+	PriceMinor         int64                             `json:"price_minor"`
+	Currency           string                            `json:"currency"`
+	StockQuantity      int32                             `json:"stock_quantity"`
+	Images             []string                          `json:"images"`
+	AdminProjection    json.RawMessage                   `json:"admin_projection"`
+	CreatedBy          int64                             `json:"created_by"`
+	CreatedAt          interface{}                       `json:"created_at"`
+	UpdatedAt          interface{}                       `json:"updated_at"`
+	Version            int64                             `json:"version"`
+	Lifecycle          productport.LocalProductLifecycle `json:"lifecycle"`
+	Enabled            bool                              `json:"enabled"`
+	PaidOrderCount     int64                             `json:"paid_order_count"`
+	RefundOrderCount   int64                             `json:"refund_order_count"`
+	SoldCount          int64                             `json:"sold_count"`
+	DistributionPolicy distributionPolicyResponse        `json:"distribution_policy"`
 }
 
 func productResponseFrom(value productport.Product) (productResponse, error) {
@@ -1805,6 +1879,53 @@ func productResponseFrom(value productport.Product) (productResponse, error) {
 		return productResponse{}, productapp.ErrUnavailable
 	}
 	return productResponse{ID: value.ID, ProductCode: value.ProductCode, Name: value.Name, Description: value.Description, PriceMinor: value.PriceMinor, Currency: value.Currency, StockQuantity: value.StockQuantity, Images: append([]string(nil), value.Images...), AdminProjection: append(json.RawMessage(nil), value.LegacyAdminProjection...), CreatedBy: value.CreatedBy, CreatedAt: value.CreatedAt.UTC(), UpdatedAt: value.UpdatedAt.UTC(), Version: value.Version, Lifecycle: local.Lifecycle, Enabled: local.Enabled, PaidOrderCount: value.PaidOrderCount, RefundOrderCount: value.RefundOrderCount, SoldCount: value.SoldCount}, nil
+}
+
+type servicePeriodResponse struct {
+	productport.ServicePeriodProduct
+	DistributionPolicy distributionPolicyResponse `json:"distribution_policy"`
+}
+
+func (h *Handler) servicePeriodResponse(ctx context.Context, value productport.ServicePeriodProduct) (servicePeriodResponse, error) {
+	policy, err := h.distributionPolicy(ctx, value.ServiceProductID, distributiondomain.ProductTypeServicePeriod)
+	if err != nil {
+		return servicePeriodResponse{}, err
+	}
+	return servicePeriodResponse{ServicePeriodProduct: value, DistributionPolicy: policy}, nil
+}
+
+type distributionPolicyResponse struct {
+	Enabled                   bool  `json:"enabled"`
+	CommissionRateBasisPoints int32 `json:"commission_rate_basis_points"`
+	WaitDays                  int32 `json:"wait_days"`
+	Version                   int64 `json:"version"`
+}
+
+func defaultDistributionPolicyResponse() distributionPolicyResponse {
+	return distributionPolicyResponse{Enabled: false, CommissionRateBasisPoints: 0, WaitDays: 7, Version: 0}
+}
+
+func (h *Handler) distributionPolicy(ctx context.Context, id productport.ID, productType distributiondomain.ProductType) (distributionPolicyResponse, error) {
+	if h == nil || h.policyReader == nil {
+		return defaultDistributionPolicyResponse(), nil
+	}
+	policy, err := h.policyReader.ReadProductPolicy(ctx, int64(id), productType)
+	if errors.Is(err, distributionport.ErrNotFound) {
+		return defaultDistributionPolicyResponse(), nil
+	}
+	if err != nil {
+		return distributionPolicyResponse{}, err
+	}
+	return distributionPolicyResponse{Enabled: policy.Enabled, CommissionRateBasisPoints: policy.CommissionRateBasisPoints, WaitDays: policy.WaitDays, Version: policy.Version}, nil
+}
+
+func (h *Handler) productResponse(ctx context.Context, value productport.Product) (productResponse, error) {
+	response, err := productResponseFrom(value)
+	if err != nil {
+		return productResponse{}, err
+	}
+	response.DistributionPolicy, err = h.distributionPolicy(ctx, value.ID, distributiondomain.ProductTypeStandard)
+	return response, err
 }
 
 func maxInt64(left, right int64) int64 {

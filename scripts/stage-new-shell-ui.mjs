@@ -24,6 +24,7 @@ const entryKeys = [
   'admin', 'adminSessionHost', 'standardComponentsHost', 'adminDateTimeHost', 'standardComponentsStableHost', 'tokens', 'labs',
   'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'radarHost',
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost',
+  'distributionCenter', 'distributionAdmin', 'distributionStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {
@@ -48,7 +49,7 @@ const adminPages = fs.readdirSync(sourceAdmin, { withFileTypes: true })
 if (adminPages.length === 0) fail('built admin document set is empty');
 const standardComponentSupport = ['assets/standard-components/operation_member_picker.js', 'assets/standard-components/group_chat_picker.css', 'assets/standard-components/group_chat_picker.js', 'assets/standard-components/material_picker.css', 'assets/standard-components/material_picker.js', 'assets/standard-components/send_content_composer.css', 'assets/standard-components/send_content_composer.js', 'assets/standard-components/wecom_tag_picker.css', 'assets/standard-components/wecom_tag_picker.js', 'assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html', 'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js'];
 const groupOpsSupport = [...standardComponentSupport, 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js'];
-const documents = [...adminPages, 'sidebar/index.html', 'member-grid-share/index.html'];
+const documents = [...adminPages, 'sidebar/index.html', 'member-grid-share/index.html', 'distribution/index.html'];
 
 const sourceFile = (relative) => path.join(source, relative);
 const copyUnchanged = (relative) => {
@@ -81,6 +82,27 @@ for (const relative of [...selected, ...groupOpsSupport, ...documents]) {
 }
 for (const relative of [...selected, ...groupOpsSupport].sort()) copyUnchanged(relative);
 for (const relative of documents) copyUnchanged(relative);
+// tags.html is a private, non-routable adapter carrier derived from the
+// generated donor page. Keep it in the same immutable stage closure instead
+// of relying on a stale file left by an older release candidate.
+const tagsSource = sourceFile('admin/wecom-tags.html');
+const tagsTarget = path.join(stage, 'admin', 'tags.html');
+if (!fs.existsSync(tagsSource) || !fs.statSync(tagsSource).isFile()) fail('expected source release file is absent: admin/wecom-tags.html');
+if (fs.existsSync(tagsTarget) && !fs.readFileSync(tagsTarget).equals(fs.readFileSync(tagsSource))) fail('refusing to replace a different staged file: admin/tags.html');
+fs.mkdirSync(path.dirname(tagsTarget), { recursive: true });
+fs.copyFileSync(tagsSource, tagsTarget);
+// The sidebar adapter deliberately names this generated source under its
+// hashed asset entry. Materialize the stable private path required by the
+// staged shell from that declared asset and bind it to the same digest.
+const sidebarOverlay = sourceManifest.entries?.sidebarStandardOverlay;
+if (typeof sidebarOverlay !== 'string' || !sourceManifest.release_files?.[sidebarOverlay]) fail('sidebar standard overlay is absent from the source release manifest');
+const sidebarOverlayRelative = 'sidebar/sidebar_workbench_v3_overlay.js';
+const sidebarOverlaySource = sourceFile(sidebarOverlayRelative);
+const sidebarOverlayTarget = path.join(stage, sidebarOverlayRelative);
+if (!fs.existsSync(sidebarOverlaySource) || !fs.statSync(sidebarOverlaySource).isFile()) fail('sidebar standard overlay source file is absent');
+if (fs.existsSync(sidebarOverlayTarget) && !fs.readFileSync(sidebarOverlayTarget).equals(fs.readFileSync(sidebarOverlaySource))) fail('refusing to replace a different staged sidebar overlay');
+fs.mkdirSync(path.dirname(sidebarOverlayTarget), { recursive: true });
+fs.copyFileSync(sidebarOverlaySource, sidebarOverlayTarget);
 
 stagedManifest.entries ||= {};
 stagedManifest.files ||= {};
@@ -95,6 +117,9 @@ for (const relative of [...selected, ...groupOpsSupport]) {
   stagedManifest.release_files[relative] = sourceManifest.release_files[relative];
 }
 for (const relative of documents) stagedManifest.release_files[relative] = sourceManifest.release_files[relative];
+stagedManifest.release_files['admin/tags.html'] = sourceManifest.release_files['admin/wecom-tags.html'];
+const sidebarOverlayBytes = fs.readFileSync(sidebarOverlaySource);
+stagedManifest.release_files[sidebarOverlayRelative] = { bytes: sidebarOverlayBytes.byteLength, sha256: crypto.createHash('sha256').update(sidebarOverlayBytes).digest('hex') };
 fs.writeFileSync(stagedManifestPath, `${JSON.stringify(stagedManifest, null, 2)}\n`);
 
 console.log(`staged new shell UI: ${adminPages.length} private admin documents, sidebar/index.html, ${selected.size} recursive runtime assets`);

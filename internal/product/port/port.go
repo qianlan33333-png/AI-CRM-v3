@@ -56,6 +56,18 @@ type SalesSummaryReader interface {
 	ReadSalesSummariesWithin(context.Context, []SalesKey) (map[ID]SalesSummary, error)
 }
 
+// DistributionPolicy is Product's transport-neutral policy snapshot. A nil command field means an older update caller intentionally leaves policy unchanged.
+type DistributionPolicy struct {
+	Enabled                   bool
+	CommissionRateBasisPoints int32
+	WaitDays                  int32
+	ExpectedVersion           int64
+}
+
+func DefaultDistributionPolicy() DistributionPolicy {
+	return DistributionPolicy{Enabled: false, CommissionRateBasisPoints: 0, WaitDays: 7, ExpectedVersion: 0}
+}
+
 type CreateCommand struct {
 	ProductCode, Name, Description, Currency, IdempotencyKey string
 	PriceMinor                                               int64
@@ -63,6 +75,7 @@ type CreateCommand struct {
 	Images                                                   []string
 	LegacyAdminProjection                                    json.RawMessage
 	Actor                                                    int64
+	DistributionPolicy                                       *DistributionPolicy
 }
 
 type UpdateCommand struct {
@@ -74,6 +87,7 @@ type UpdateCommand struct {
 	Images                                      []string
 	LegacyAdminProjection                       json.RawMessage
 	Actor                                       int64
+	DistributionPolicy                          *DistributionPolicy
 }
 
 type Page struct {

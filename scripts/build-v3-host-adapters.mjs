@@ -50,6 +50,12 @@ const entryPoints = {
   presentationStyles: path.join(repository, 'web', 'v3', 'presentation.css'),
   actionFeedbackStyles: path.join(repository, 'web', 'v3', 'actionFeedback.css'),
   memberGridFeedbackHost: path.join(repository, 'web', 'v3', 'memberGridFeedbackHost.ts'),
+  // Distribution owns its own public/current-session and administrator
+  // documents. They use only the frozen Distribution HTTP contract and do
+  // not import donor product, payment, or identity state.
+  distributionCenter: path.join(repository, 'web', 'v3', 'distributionCenter.ts'),
+  distributionAdmin: path.join(repository, 'web', 'v3', 'distributionAdmin.ts'),
+  distributionStyles: path.join(repository, 'web', 'v3', 'distribution.css'),
 };
 const result = await build({
   entryPoints,
@@ -191,7 +197,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'adminDateTimeHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
+  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'memberGridFeedbackHost', 'distributionCenter', 'distributionAdmin', 'distributionStyles'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'adminDateTimeHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
@@ -401,6 +407,26 @@ for (const [mode, index] of [['list',1],['detail',2]]) {
   const relative = `aiassistant/${mode}.html`; const bytes = Buffer.from(fragment);
   fs.writeFileSync(path.join(dist, relative), bytes); manifest.files[relative] = { ...metadataFor(bytes), inputs: ['web/donors/ai-assistant-production/templates/cloud_plan_review.html'], imports: [] }; manifest.release_files[relative] = metadataFor(bytes);
 }
+
+// Distribution documents are deliberately independent from the admin donor:
+// the public center has a current trusted WeChat session only, while the
+// admin page is protected by the existing admin session at its route owner.
+const distributionCenter = manifest.entries.distributionCenter;
+const distributionAdmin = manifest.entries.distributionAdmin;
+const distributionStyles = manifest.entries.distributionStyles;
+if (typeof distributionCenter !== 'string' || typeof distributionAdmin !== 'string' || typeof distributionStyles !== 'string') throw new Error('distribution frontend entries are absent from manifest');
+const distributionDocument = (title, rootID, entry, adminSurface = false) => {
+  const feedback = adminSurface ? `<link rel="stylesheet" href="../${entries.get('surfaceFeedbackStyles')}"><script async src="../${entries.get('surfaceFeedbackHost')}"></script>` : '';
+  const surface = adminSurface ? ' data-ui-surface="admin"' : '';
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${title} · AI-CRM</title><link rel="stylesheet" href="../${distributionStyles}">${feedback}</head><body${surface}><main id="${rootID}" class="distribution-shell" aria-live="polite"></main><script type="module" src="../${entry}"></script></body></html>\n`;
+};
+const distributionPublicHTML = distributionDocument('分销中心', 'distribution-root', distributionCenter);
+const distributionAdminHTML = distributionDocument('分销管理', 'distribution-admin-root', distributionAdmin, true);
+fs.mkdirSync(path.join(dist, 'distribution'), { recursive: true });
+fs.writeFileSync(path.join(dist, 'distribution', 'index.html'), distributionPublicHTML);
+fs.writeFileSync(path.join(dist, 'admin', 'distribution.html'), distributionAdminHTML);
+manifest.release_files['distribution/index.html'] = metadataFor(Buffer.from(distributionPublicHTML));
+manifest.release_files['admin/distribution.html'] = metadataFor(Buffer.from(distributionAdminHTML));
 manifest.entries = Object.fromEntries(Object.entries(manifest.entries).sort(([left], [right]) => left.localeCompare(right)));
 manifest.files = Object.fromEntries(Object.entries(manifest.files).sort(([left], [right]) => left.localeCompare(right)));
 manifest.release_files = Object.fromEntries(Object.entries(manifest.release_files).sort(([left], [right]) => left.localeCompare(right)));

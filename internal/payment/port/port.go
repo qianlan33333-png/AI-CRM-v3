@@ -17,6 +17,12 @@ var ErrInvalid = errors.New("invalid payment command")
 var ErrConflict = errors.New("payment conflict")
 var ErrNotFound = errors.New("payment not found")
 var ErrUnavailable = errors.New("payment unavailable")
+
+// ErrNothingToUnfreeze is the explicit terminal result for a transaction that
+// was never marked for profit sharing.  It is intentionally distinct from a
+// funding conflict, which can mean a refund or split reserve is still active
+// and therefore must be retried/reconciled.
+var ErrNothingToUnfreeze = errors.New("payment has no profit sharing balance to unfreeze")
 var ErrSessionRequired = errors.New("trusted payment session required")
 var ErrSessionMismatch = errors.New("payment checkout session mismatch")
 
@@ -47,9 +53,17 @@ func MatchesCheckoutSessionBinding(token, binding string) bool {
 }
 
 type CreateCommand struct {
-	OrderID, ProductID         int64
-	CouponClaimID              int64
-	ProductType                string
+	OrderID, ProductID int64
+	CouponClaimID      int64
+	ProductType        string
+	// PromotionContext is an opaque, server-issued checkout context. Payment
+	// does not parse it; it is frozen into idempotent checkout facts and passed
+	// to Order's same-UoW attribution coordinator by composition.
+	PromotionContext string
+	// ProfitSharingRequired is an internal-only result from that coordinator's
+	// authoritative attribution preparation. Public HTTP handlers must not bind
+	// it directly from browser input.
+	ProfitSharingRequired      bool
 	SessionToken               string
 	CheckoutSessionBinding     string
 	MobileE164                 string
@@ -225,6 +239,7 @@ type ProviderIntent struct {
 	RefundCount             int64
 	ReasonCode              string
 	AmountMinor, TotalMinor int64
+	ProfitSharingMarked     bool
 	Currency                string
 	SourceRefDigest         effectport.Digest
 	PayloadDigest           effectport.Digest
@@ -310,4 +325,31 @@ type ProviderIntentReader interface {
 type H5OAuthFacts struct {
 	OpenID  identitydomain.VerifiedFact
 	UnionID identitydomain.VerifiedFact
+}
+
+// RefundExposureState is a Payment-owned refund-finality transition delivered
+// inside the existing Payment UoW. It carries no provider payload or amount;
+// Distribution uses it only to hold or re-evaluate its own frozen facts.
+type RefundExposureState string
+
+const (
+	RefundExposureOpened      RefundExposureState = "opened"
+	RefundExposureFinalFailed RefundExposureState = "final_failed"
+)
+
+type RefundExposureEvent struct {
+	OrderID, RefundID int64
+	State             RefundExposureState
+	OccurredAt        time.Time
+	ReceiptKey        string
+}
+
+func (v RefundExposureEvent) Valid() bool {
+	return v.OrderID > 0 && v.RefundID > 0 && (v.State == RefundExposureOpened || v.State == RefundExposureFinalFailed) && !v.OccurredAt.IsZero() && v.ReceiptKey != "" && len(v.ReceiptKey) <= 240
+}
+
+// RefundExposureConsumer joins Payment's current transaction. It must perform
+// no provider calls and must not mutate Payment/Order data.
+type RefundExposureConsumer interface {
+	ConsumeRefundExposureWithin(context.Context, RefundExposureEvent) error
 }

@@ -34,9 +34,70 @@ func (r *Repository) SetCompletionSink(sink port.CompletionSink) error {
 
 var _ port.Accepter = (*Repository)(nil)
 var _ port.TransactionalAccepter = (*Repository)(nil)
+var _ port.TransactionalCanceller = (*Repository)(nil)
 var _ port.TransactionalReconciler = (*Repository)(nil)
 var _ port.UnknownReconciler = (*Repository)(nil)
 var _ port.ClientCompleter = (*Repository)(nil)
+
+func (r *Repository) CancelQueuedEffectWithin(ctx context.Context, command port.CancelCommand) (port.Projection, error) {
+	if r == nil || command.EffectID == "" || !port.ValidDigest(command.ReceiptKey) || command.ReasonCode == "" || len(command.ReasonCode) > 80 || !command.Actor.Valid() {
+		return port.Projection{}, ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return port.Projection{}, err
+	}
+	id, err := parseEffectID(command.EffectID)
+	if err != nil {
+		return port.Projection{}, err
+	}
+	var owner, kind, state string
+	var attempts int32
+	var generation int64
+	var updated time.Time
+	err = tx.QueryRow(ctx, `SELECT owner,kind,state,attempt_count,generation,updated_at FROM external_effects WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &kind, &state, &attempts, &generation, &updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.Projection{}, ErrNotFound
+	}
+	if err != nil {
+		return port.Projection{}, err
+	}
+	commandDigest := port.Hash("cancel", command.EffectID, string(command.ReceiptKey), command.ReasonCode, strconv.FormatInt(command.Actor.AdminUserID, 10), command.Actor.SystemRef)
+	var prior string
+	priorErr := tx.QueryRow(ctx, `SELECT command_digest FROM external_effect_operation_receipts WHERE operation='cancel' AND effect_id=$1 AND receipt_key_digest=$2`, id, command.ReceiptKey).Scan(&prior)
+	if priorErr == nil {
+		if port.Digest(prior) != commandDigest || port.State(state) != port.StateCancelled {
+			return port.Projection{}, ErrPayloadMismatch
+		}
+		return projection(id, port.Owner(owner), port.Kind(kind), port.State(state), attempts, generation, updated), nil
+	}
+	if !errors.Is(priorErr, pgx.ErrNoRows) {
+		return port.Projection{}, priorErr
+	}
+	if port.State(state) != port.StateQueued {
+		return port.Projection{}, ErrTransition
+	}
+	// The named system principal is reserved for the Payment due worker's
+	// unsubmitted split cancellation. It cannot be used to control another
+	// owner or kind merely because it satisfies the receipt schema.
+	if command.Actor.System() && (port.Owner(owner) != port.OwnerPayment || port.Kind(kind) != port.KindWeChatPayProfitSharing) {
+		return port.Projection{}, ErrInvalid
+	}
+	if err = tx.QueryRow(ctx, `UPDATE external_effects SET state='cancelled',updated_at=clock_timestamp() WHERE id=$1 AND state='queued' RETURNING updated_at`, id).Scan(&updated); err != nil {
+		return port.Projection{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_operation_receipts(operation,effect_id,receipt_key_digest,command_digest,actor_admin_user_id,actor_kind,actor_ref,state) VALUES('cancel',$1,$2,$3,NULLIF($4,0),NULLIF($5,''),NULLIF($6,''),'cancelled')`, id, command.ReceiptKey, commandDigest, command.Actor.AdminUserID, systemActorKind(command.Actor), command.Actor.SystemRef); err != nil {
+		return port.Projection{}, err
+	}
+	return projection(id, port.Owner(owner), port.Kind(kind), port.StateCancelled, attempts, generation, updated), nil
+}
+
+func systemActorKind(actor port.ControlActor) string {
+	if actor.System() {
+		return "system"
+	}
+	return ""
+}
 
 func (r *Repository) CompleteClientEffectWithin(ctx context.Context, command port.ClientCompletionCommand) (port.Projection, error) {
 	if r == nil || command.EffectID == "" || !port.ValidDigest(command.ReceiptKey) || !port.ValidDigest(command.EvidenceDigest) || (command.State != port.StateExecuted && command.State != port.StateUnknown && command.State != port.StateFinalFailed) {

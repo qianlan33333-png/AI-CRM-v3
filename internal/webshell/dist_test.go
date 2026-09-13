@@ -30,6 +30,8 @@ func newDistFixture(t *testing.T) string {
 	write("admin/cycles.html", `<!doctype html><title>dist cycles</title><body data-page="cycles">新壳运营闭环</body>`)
 	write("admin/channels.html", `<!doctype html><title>dist channels</title><body data-page="channels">新壳渠道码中心</body>`)
 	write("admin/wecom-tags.html", `<!doctype html><title>dist tags</title><body data-page="tags">新壳企微标签</body>`)
+	write("admin/distribution.html", `<!doctype html><title>distribution admin</title><body data-page="distribution">分销管理</body>`)
+	write("distribution/index.html", `<!doctype html><title>distribution</title><body data-page="distribution-center">分销中心</body>`)
 	write("sidebar/index.html", `<link rel="stylesheet" href="../assets/sidebarStyles-test.css"><script type="module" src="../assets/sidebar-test.js"></script>新侧边栏`)
 	write("assets/sidebar-test.js", `console.log("sidebar")`)
 	write("assets/sidebarStyles-test.css", `.sidebar-shell{}`)
@@ -98,7 +100,7 @@ func TestDistAdminPagesReplacePlaceholderShell(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/../secret.html", nil))
-	if strings.Contains(response.Body.String(), "dist") && response.Code == http.StatusOK {
+	if strings.Contains(response.Body.String(), `data-page="distribution"`) && response.Code == http.StatusOK {
 		t.Fatalf("traversal reached dist document: %q", response.Body.String())
 	}
 	response = httptest.NewRecorder()
@@ -163,5 +165,25 @@ func TestDistAdminPageNameMapping(t *testing.T) {
 	}
 	if _, ok := DistAdminPageFile("", "/admin"); ok {
 		t.Fatal("dist lookup must be disabled without a dist root")
+	}
+}
+
+func TestDistDistributionPageAndAdminAlias(t *testing.T) {
+	handler, err := NewHandler(HandlerOptions{DistDir: newDistFixture(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, marker := range map[string]string{"/distribution": "分销中心", "/distribution/": "分销中心", "/admin/distribution": "distribution.html"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if path == "/admin/distribution" {
+			if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/distribution.html" {
+				t.Fatalf("admin distribution alias status=%d location=%q", response.Code, response.Header().Get("Location"))
+			}
+			continue
+		}
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), marker) {
+			t.Fatalf("distribution page %s status=%d body=%q", path, response.Code, response.Body.String())
+		}
 	}
 }

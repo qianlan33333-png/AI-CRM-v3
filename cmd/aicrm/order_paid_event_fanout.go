@@ -12,8 +12,9 @@ import (
 // Customer tag intent, Outbound effect acceptance, and Commerce push intent
 // cannot split across commits.
 type orderPaidEventFanout struct {
-	commerce orderport.PaidEventConsumer
-	purchase orderport.PaidEventConsumer
+	commerce     orderport.PaidEventConsumer
+	purchase     orderport.PaidEventConsumer
+	distribution orderport.PaidEventConsumer
 }
 
 func (f orderPaidEventFanout) ConsumePaidEventWithin(ctx context.Context, event orderport.PaidEvent) error {
@@ -23,7 +24,13 @@ func (f orderPaidEventFanout) ConsumePaidEventWithin(ctx context.Context, event 
 	if err := f.commerce.ConsumePaidEventWithin(ctx, event); err != nil {
 		return err
 	}
-	return f.purchase.ConsumePaidEventWithin(ctx, event)
+	if err := f.purchase.ConsumePaidEventWithin(ctx, event); err != nil {
+		return err
+	}
+	if f.distribution != nil {
+		return f.distribution.ConsumePaidEventWithin(ctx, event)
+	}
+	return nil
 }
 
 var _ orderport.PaidEventConsumer = orderPaidEventFanout{}

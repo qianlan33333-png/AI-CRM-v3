@@ -104,11 +104,28 @@ type MaterialLoader interface {
 }
 
 type DBMaterialLoader struct {
-	UOW        platformport.UnitOfWork
-	Intents    paymentport.ProviderIntentReader
-	Identities identityport.PaymentIdentityReader
-	AppScope   string
-	H5AppScope string
+	UOW           platformport.UnitOfWork
+	Intents       paymentport.ProviderIntentReader
+	Identities    identityport.PaymentIdentityReader
+	AppScope      string
+	H5AppScope    string
+	ProfitSharing paymentport.ProfitSharingMaterialReader
+}
+
+func (loader DBMaterialLoader) LoadProfitSharing(ctx context.Context, kind effectport.Kind, source effectport.Digest) (ProfitSharingMaterial, error) {
+	if loader.ProfitSharing == nil {
+		return ProfitSharingMaterial{}, ErrInvalidMaterial
+	}
+	value, err := loader.ProfitSharing.LoadProfitSharingEffectMaterial(ctx, kind, source)
+	return ProfitSharingMaterial(value), err
+}
+
+func (loader DBMaterialLoader) LoadProfitSharingReference(ctx context.Context, reference string) (effectport.Kind, ProfitSharingMaterial, error) {
+	if loader.ProfitSharing == nil {
+		return "", ProfitSharingMaterial{}, ErrInvalidMaterial
+	}
+	kind, value, err := loader.ProfitSharing.LoadProfitSharingReferenceMaterial(ctx, reference)
+	return kind, ProfitSharingMaterial(value), err
 }
 
 func (loader DBMaterialLoader) Load(ctx context.Context, kind effectport.Kind, source effectport.Digest) (Material, error) {
@@ -152,8 +169,19 @@ type WeChatPay struct {
 	base   *url.URL
 	loader MaterialLoader
 	client HTTPDoer
-	now    func() time.Time
-	nonce  func() (string, error)
+	// profitSharing is deliberately nil until Composition has supplied the
+	// official SDK and a Payment-only material loader. Nil is fail-closed.
+	profitSharing ProfitSharingSDK
+	now           func() time.Time
+	nonce         func() (string, error)
+}
+
+func (provider *WeChatPay) SetProfitSharingSDK(sdk ProfitSharingSDK) error {
+	if provider == nil || sdk == nil || provider.profitSharing != nil {
+		return ErrInvalidConfig
+	}
+	provider.profitSharing = sdk
+	return nil
 }
 
 func NewWeChatPay(config Config, loader MaterialLoader, client HTTPDoer) (*WeChatPay, error) {
@@ -168,11 +196,14 @@ func NewWeChatPay(config Config, loader MaterialLoader, client HTTPDoer) (*WeCha
 }
 
 func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
-	if provider == nil || envelope.Owner != effectport.OwnerPayment || (envelope.Kind != effectport.KindWeChatPayPrepay && envelope.Kind != effectport.KindWeChatPayRefund) {
+	if provider == nil || envelope.Owner != effectport.OwnerPayment || (envelope.Kind != effectport.KindWeChatPayPrepay && envelope.Kind != effectport.KindWeChatPayRefund && envelope.Kind != effectport.KindWeChatPayReceiverAdd && envelope.Kind != effectport.KindWeChatPayProfitSharing && envelope.Kind != effectport.KindWeChatPayProfitUnfreeze) {
 		return final("wechatpay.unsupported", envelope, attempt), nil
 	}
 	if !provider.config.Enabled {
 		return final("wechatpay.disabled", envelope, attempt), nil
+	}
+	if envelope.Kind == effectport.KindWeChatPayReceiverAdd || envelope.Kind == effectport.KindWeChatPayProfitSharing || envelope.Kind == effectport.KindWeChatPayProfitUnfreeze {
+		return provider.executeProfitSharing(ctx, envelope, attempt)
 	}
 	material, err := provider.loader.Load(ctx, envelope.Kind, envelope.SourceRefDigest)
 	if err != nil || material.Intent.PayloadDigest != envelope.PayloadDigest {
@@ -201,6 +232,9 @@ func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Enve
 			"out_trade_no": material.Intent.MerchantOrderNo, "notify_url": provider.config.PaymentNotifyURL,
 			"amount": map[string]any{"total": material.Intent.AmountMinor, "currency": material.Intent.Currency},
 			"payer":  map[string]any{"openid": material.PayerOpenID},
+		}
+		if material.Intent.ProfitSharingMarked {
+			payload.(map[string]any)["settle_info"] = map[string]any{"profit_sharing": true}
 		}
 	} else {
 		if material.Intent.RefundNo == "" || material.Intent.AmountMinor < 1 || material.Intent.AmountMinor > material.Intent.TotalMinor || material.Intent.Currency != "CNY" {

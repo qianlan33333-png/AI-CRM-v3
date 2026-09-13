@@ -49,32 +49,34 @@ type ServicePeriodPage struct {
 }
 
 type CreateServicePeriodProductCommand struct {
-	ProductCode     string
-	Name            string
-	Description     string
-	PriceMinor      int64
-	Currency        string
-	DurationDays    int32
-	StockQuantity   int32
-	Images          []string
-	AdminProjection json.RawMessage
-	Actor           int64
-	IdempotencyKey  string
+	ProductCode        string
+	Name               string
+	Description        string
+	PriceMinor         int64
+	Currency           string
+	DurationDays       int32
+	StockQuantity      int32
+	Images             []string
+	AdminProjection    json.RawMessage
+	Actor              int64
+	IdempotencyKey     string
+	DistributionPolicy *DistributionPolicy
 }
 
 type UpdateServicePeriodProductCommand struct {
-	ID              ID
-	ExpectedVersion int64
-	Name            string
-	Description     string
-	PriceMinor      int64
-	Currency        string
-	DurationDays    int32
-	StockQuantity   int32
-	Images          []string
-	AdminProjection json.RawMessage
-	Actor           int64
-	IdempotencyKey  string
+	ID                 ID
+	ExpectedVersion    int64
+	Name               string
+	Description        string
+	PriceMinor         int64
+	Currency           string
+	DurationDays       int32
+	StockQuantity      int32
+	Images             []string
+	AdminProjection    json.RawMessage
+	Actor              int64
+	IdempotencyKey     string
+	DistributionPolicy *DistributionPolicy
 }
 
 type SetServicePeriodProductEnabledCommand struct {

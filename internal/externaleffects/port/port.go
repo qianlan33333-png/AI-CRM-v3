@@ -57,6 +57,9 @@ const (
 	KindWeChatPayPrepay         Kind  = "wechat_pay_prepay_v1"
 	KindWeChatPayRefund         Kind  = "wechat_pay_refund_v1"
 	KindWeChatShopRefund        Kind  = "wechat_shop_refund_v1"
+	KindWeChatPayReceiverAdd    Kind  = "wechat_pay_profit_sharing_receiver_v1"
+	KindWeChatPayProfitSharing  Kind  = "wechat_pay_profit_sharing_order_v1"
+	KindWeChatPayProfitUnfreeze Kind  = "wechat_pay_profit_sharing_unfreeze_v1"
 )
 
 type State string
@@ -87,7 +90,7 @@ type Envelope struct {
 
 func (value Envelope) Valid() bool {
 	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
-		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund) ||
+		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund || value.Kind == KindWeChatPayReceiverAdd || value.Kind == KindWeChatPayProfitSharing || value.Kind == KindWeChatPayProfitUnfreeze) ||
 		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }
@@ -156,6 +159,40 @@ type Accepter interface {
 // effects store or queue implementation.
 type TransactionalAccepter interface {
 	AcceptAndQueueWithin(context.Context, AcceptCommand) (Projection, Receipt, error)
+}
+
+// CancelQueuedEffectWithin is deliberately narrow: an owning domain may cancel
+// only a still-queued immutable effect while holding its own business lock in
+// the same PostgreSQL transaction. It is used by Payment to prevent a cancelled
+// commission from racing a split dispatch. It never rewrites an attempted or
+// outcome-unknown Provider operation.
+type CancelCommand struct {
+	EffectID   string
+	ReceiptKey Digest
+	ReasonCode string
+	Actor      ControlActor
+}
+
+// ControlActor identifies the authenticated principal that made an immutable
+// EER control decision. A human operator uses AdminUserID. The one supported
+// system subject is deliberately named and persisted rather than projected as
+// a made-up administrator ID.
+type ControlActor struct {
+	AdminUserID int64
+	SystemRef   string
+}
+
+const SystemActorPaymentProfitSharingDue = "system:payment_profit_sharing_due"
+
+func (actor ControlActor) Valid() bool {
+	return (actor.AdminUserID > 0 && actor.SystemRef == "") ||
+		(actor.AdminUserID == 0 && actor.SystemRef == SystemActorPaymentProfitSharingDue)
+}
+
+func (actor ControlActor) System() bool { return actor.SystemRef != "" }
+
+type TransactionalCanceller interface {
+	CancelQueuedEffectWithin(context.Context, CancelCommand) (Projection, error)
 }
 
 // Reader exposes only the digest-safe effect projection required by owning

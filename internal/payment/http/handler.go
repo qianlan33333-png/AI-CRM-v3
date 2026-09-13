@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -703,6 +704,10 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		MobileE164             string                           `json:"mobile,omitempty"`
 		BeneficiarySelection   paymentport.BeneficiarySelection `json:"beneficiary_selection,omitempty"`
 		CheckoutSessionBinding string                           `json:"checkout_session_binding"`
+		// PromotionContext is an opaque /d credential. Order validates its
+		// target, trusted participants and qualification in its checkout UoW;
+		// the browser cannot submit a commission, amount or receiver.
+		PromotionContext string `json:"promotion_context,omitempty"`
 	}
 	if !decodeJSON(writer, request, &body) {
 		return
@@ -712,12 +717,27 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	idempotency := request.Header.Get("Idempotency-Key")
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	if !validPromotionContext(body.PromotionContext) {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, PromotionContext: body.PromotionContext, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return
 	}
 	writeJSON(writer, http.StatusAccepted, map[string]any{"order_id": payment.OrderID, "merchant_order_no": payment.MerchantOrderNo, "payment_id": payment.ID, "status": payment.Status, "effect_id": payment.EffectID})
+}
+
+func validPromotionContext(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) != 47 || !strings.HasPrefix(value, "dpc_") {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value[4:])
+	return err == nil && len(raw) == 32
 }
 
 func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http.Request, merchantOrderNo string) {

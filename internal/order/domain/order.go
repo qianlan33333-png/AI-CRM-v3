@@ -97,9 +97,13 @@ type Snapshot struct {
 	Items                 []ItemSnapshot `json:"items"`
 	RecordOrigin          RecordOrigin   `json:"record_origin"`
 	EffectEligible        bool           `json:"effect_eligible"`
-	Version               int64          `json:"version"`
-	CreatedAt             time.Time      `json:"created_at"`
-	UpdatedAt             time.Time      `json:"updated_at"`
+	// ProfitSharingRequired is frozen only after Distribution accepted a
+	// positive attribution in the active Order/Payment UoW. Browser payloads
+	// never bind this server-derived payment instruction fact.
+	ProfitSharingRequired bool      `json:"profit_sharing_required"`
+	Version               int64     `json:"version"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 type Order struct {

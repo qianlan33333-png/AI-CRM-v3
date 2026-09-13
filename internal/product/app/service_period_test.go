@@ -17,7 +17,7 @@ import (
 
 func TestServicePeriodServiceDependencySurfaceIsLocalOnly(t *testing.T) {
 	typeOfService := reflect.TypeOf(ServicePeriodService{})
-	want := map[string]bool{"uow": true, "store": true, "events": true, "now": true}
+	want := map[string]bool{"uow": true, "store": true, "events": true, "policy": true, "now": true}
 	if typeOfService.NumField() != len(want) {
 		t.Fatalf("service dependency fields=%d want=%d", typeOfService.NumField(), len(want))
 	}
