@@ -50,7 +50,12 @@ func TestMessageArchivePostgreSQLInboxJourney(t *testing.T) {
 	}
 
 	var staffID int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('archive-journey','$argon2id$journey','Archive Journey','archive-staff',true) RETURNING id`).Scan(&staffID); err != nil {
+	if err = native.QueryRow(ctx, `WITH account AS (
+		INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled)
+		VALUES('archive-journey','$argon2id$journey','Archive Journey','archive-staff',true,false) RETURNING id
+	), role AS (
+		INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account
+	) SELECT id FROM account`).Scan(&staffID); err != nil {
 		t.Fatal(err)
 	}
 	fact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:wx-archive-journey", Value: "wm_unresolved", Source: "wecom.message_archive"})
@@ -141,7 +146,12 @@ func TestMessageArchivePostgreSQLBatchRollbackAndConcurrentCursor(t *testing.T) 
 		t.Fatal(err)
 	}
 	var staffID int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('archive-atomic','$argon2id$atomic','Archive Atomic','archive-atomic',true) RETURNING id`).Scan(&staffID); err != nil {
+	if err = native.QueryRow(ctx, `WITH account AS (
+		INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled)
+		VALUES('archive-atomic','$argon2id$atomic','Archive Atomic','archive-atomic',true,false) RETURNING id
+	), role AS (
+		INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account
+	) SELECT id FROM account`).Scan(&staffID); err != nil {
 		t.Fatal(err)
 	}
 	fact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:wx-archive-atomic", Value: "wm_unresolved", Source: "wecom.message_archive"})
@@ -220,7 +230,12 @@ func TestMessageArchivePostgreSQLCustomerStaffAndFilter(t *testing.T) {
 	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('archive-filter','$argon2id$filter','归档员工','archive-filter',true) RETURNING id`).Scan(&staffID); err != nil {
+	if err = native.QueryRow(ctx, `WITH account AS (
+		INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled)
+		VALUES('archive-filter','$argon2id$filter','归档员工','archive-filter',true,false) RETURNING id
+	), role AS (
+		INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account
+	) SELECT id FROM account`).Scan(&staffID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = native.Exec(ctx, `INSERT INTO message_archive_sync_state(corp_scope) VALUES('wecom-corp:wx-archive-filter')`); err != nil {
@@ -275,7 +290,12 @@ func TestMessageArchivePostgreSQLExternalChatMachineProjectionJourney(t *testing
 	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('archive-external','$argon2id$external','外部读取员工','HuangYouCan',true) RETURNING id`).Scan(&staffID); err != nil {
+	if err = native.QueryRow(ctx, `WITH account AS (
+		INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled)
+		VALUES('archive-external','$argon2id$external','外部读取员工','HuangYouCan',true,false) RETURNING id
+	), role AS (
+		INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account
+	) SELECT id FROM account`).Scan(&staffID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = native.Exec(ctx, `INSERT INTO message_archive_sync_state(corp_scope) VALUES('wecom-corp:wx-archive-external')`); err != nil {
