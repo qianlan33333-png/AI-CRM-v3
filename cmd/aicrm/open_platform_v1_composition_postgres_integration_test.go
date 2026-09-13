@@ -151,11 +151,23 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	}
 	orders := orderapp.NewService(uow, ordersRepository)
 	payer, beneficiary := int64(provision.CustomerID), int64(provision.CustomerID)
-	if _, err = orders.Create(ctx, orderport.CreateCommand{Actor: adminUser.ID, IdempotencyKey: "open-v1-composition-order-0001", Input: orderdomain.NewOrderInput{
+	knownOrder, err := orders.Create(ctx, orderport.CreateCommand{Actor: adminUser.ID, IdempotencyKey: "open-v1-composition-order-0001", Input: orderdomain.NewOrderInput{
 		Provider: orderdomain.ProviderWeChatPay, SourceSystem: "open-v1-composition", SourceKey: "open-v1-composition-order-0001", MerchantOrderNo: "OPEN-V1-COMPOSITION-ORDER-0001",
 		PayerCustomerID: &payer, BeneficiaryCustomerID: &beneficiary, Amount: orderdomain.Money{AmountMinor: 8800, Currency: "CNY"},
 		Items: []orderdomain.ItemSnapshot{{LineNo: 1, ProductCode: "open-v1-composition", ProductName: "Open V1 Composition", UnitAmountMinor: 8800, Quantity: 1, LineAmountMinor: 8800}}, RecordOrigin: orderdomain.RecordOriginNative,
-	}}); err != nil {
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed Payment's completed-refund projection for exactly one order. The
+	// public HTTP assertions below read it through the composed Payment Port;
+	// the separate payer/beneficiary order deliberately has no summary.
+	now := time.Now().UTC()
+	var paymentID int64
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,created_at,updated_at) VALUES($1,'wechat_pay','mini_program',$2,$3,$4,$4,8800,'CNY','paid',1,$5,$5) RETURNING id`, knownOrder.ID, knownOrder.MerchantOrderNo, provision.IdentityID, provision.CustomerID, now).Scan(&paymentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO payment_refunds(payment_id,provider,refund_no,amount_minor,reason,status,version,created_at,updated_at) VALUES($1,'wechat_pay','open-v1-composition-refund-0001',2200,'composition fixture','completed',1,$2,$2)`, paymentID, now); err != nil {
 		t.Fatal(err)
 	}
 	beneficiary = int64(beneficiaryProvision)
@@ -408,9 +420,13 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 		}
 	}
 	type orderItem struct {
-		OrderID    string `json:"order_id"`
-		CustomerID string `json:"customer_id"`
-		AmountYuan string `json:"amount_yuan"`
+		OrderID            string `json:"order_id"`
+		CustomerID         string `json:"customer_id"`
+		AmountYuan         string `json:"amount_yuan"`
+		RefundStatus       string `json:"refund_status"`
+		RefundAmountStatus string `json:"refund_amount_status"`
+		RefundedMinor      int64  `json:"refunded_minor"`
+		IsRefunded         bool   `json:"is_refunded"`
 	}
 	type orderPage struct {
 		Data struct {
@@ -433,14 +449,14 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	payerBeneficiaryLookup := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?source_system=open-v1-composition&source_record_id=open-v1-composition-order-payer-beneficiary", "", readToken)
 	payerBeneficiaryResponse := httptest.NewRecorder()
 	application.handler.ServeHTTP(payerBeneficiaryResponse, payerBeneficiaryLookup)
-	if payerBeneficiaryResponse.Code != http.StatusOK || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"customer_id":"`+fmt.Sprint(provision.CustomerID)+`"`) || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"payer_customer_id":"`+fmt.Sprint(provision.CustomerID)+`"`) || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"beneficiary_customer_id":"`+fmt.Sprint(beneficiaryProvision)+`"`) {
+	if payerBeneficiaryResponse.Code != http.StatusOK || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"customer_id":"`+fmt.Sprint(provision.CustomerID)+`"`) || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"payer_customer_id":"`+fmt.Sprint(provision.CustomerID)+`"`) || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"beneficiary_customer_id":"`+fmt.Sprint(beneficiaryProvision)+`"`) || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"refund_status":"unavailable"`) || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"refund_amount_status":"unavailable"`) {
 		t.Fatalf("orders payer/beneficiary projection status=%d body=%s", payerBeneficiaryResponse.Code, payerBeneficiaryResponse.Body.String())
 	}
 	sourceLookup := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?source_system=open-v1-composition&source_record_id=open-v1-composition-order-0001", "", readToken)
 	sourceLookupResponse := httptest.NewRecorder()
 	application.handler.ServeHTTP(sourceLookupResponse, sourceLookup)
 	var sourceOrders orderPage
-	if err = json.Unmarshal(sourceLookupResponse.Body.Bytes(), &sourceOrders); err != nil || sourceLookupResponse.Code != http.StatusOK || len(sourceOrders.Data.Items) != 1 || sourceOrders.Data.Items[0].OrderID == "" {
+	if err = json.Unmarshal(sourceLookupResponse.Body.Bytes(), &sourceOrders); err != nil || sourceLookupResponse.Code != http.StatusOK || len(sourceOrders.Data.Items) != 1 || sourceOrders.Data.Items[0].OrderID != fmt.Sprint(knownOrder.ID) || sourceOrders.Data.Items[0].RefundStatus != "known" || sourceOrders.Data.Items[0].RefundAmountStatus != "known" || sourceOrders.Data.Items[0].RefundedMinor != 2200 || !sourceOrders.Data.Items[0].IsRefunded {
 		t.Fatalf("orders source lookup status=%d err=%v body=%s", sourceLookupResponse.Code, err, sourceLookupResponse.Body.String())
 	}
 	second := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?customer_id="+fmt.Sprint(provision.CustomerID)+"&limit=100&cursor="+firstOrders.Data.NextCursor, "", readToken)
@@ -450,10 +466,10 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	if err = json.Unmarshal(secondResponse.Body.Bytes(), &secondOrders); err != nil || secondResponse.Code != http.StatusOK || len(secondOrders.Data.Items) != 1 || secondOrders.Data.NextCursor != "" {
 		t.Fatalf("orders second page status=%d err=%v body=%s", secondResponse.Code, err, secondResponse.Body.String())
 	}
-	detail := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders/"+firstOrders.Data.Items[0].OrderID, "", readToken)
+	detail := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders/"+fmt.Sprint(knownOrder.ID), "", readToken)
 	detailResponse := httptest.NewRecorder()
 	application.handler.ServeHTTP(detailResponse, detail)
-	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"amount_yuan":"88.00"`) || !strings.Contains(detailResponse.Body.String(), `"line_no":1`) || !strings.Contains(detailResponse.Body.String(), `"product_code":"open-v1-composition"`) || strings.Contains(detailResponse.Body.String(), `"LineNo"`) || strings.Contains(detailResponse.Body.String(), `"RefundID"`) {
+	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"amount_yuan":"88.00"`) || !strings.Contains(detailResponse.Body.String(), `"line_no":1`) || !strings.Contains(detailResponse.Body.String(), `"product_code":"open-v1-composition"`) || !strings.Contains(detailResponse.Body.String(), `"refund_status":"known"`) || !strings.Contains(detailResponse.Body.String(), `"refund_amount_status":"known"`) || !strings.Contains(detailResponse.Body.String(), `"refunded_minor":2200`) || strings.Contains(detailResponse.Body.String(), `"LineNo"`) || strings.Contains(detailResponse.Body.String(), `"RefundID"`) {
 		t.Fatalf("order detail status=%d body=%s", detailResponse.Code, detailResponse.Body.String())
 	}
 	missing := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders/999999999", "", readToken)

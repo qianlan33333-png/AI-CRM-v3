@@ -577,6 +577,28 @@
       ],
       "reason": "Rebind the approved Access governance OpenAPI authority synchronization to the current main baseline after the independently reviewed external API documentation release; frozen donors remain unchanged.",
       "review_reference": "Root review of approved Access governance contract and active V3 OpenAPI synchronization"
+    },
+    {
+      "base_commit": "1c53b73be2e46c6ef2ab3c64973ac662cab91e90",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "1385101de807789fbcc1a9fcdb6bd50d7d685b848888fc59f21127edd2298893",
+          "head_sha256": "b0e67bb43a4f7a58c53bd267c3df5f0e3b49c0e74e4de39b44f86b3d78a73448"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "7e8bf519c66e4178ef78f0d2cdc6ef4e79fec8eadedf58518aac73bd0a0d11ab",
+          "head_sha256": "8a8b565a5027b25b031d996f10494a25a28aa3944c7331821b8ecb275326b249"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "0f18a7b97dc5b8857faad62493add91ab0c46d9a6ca40d2c157b7bfce2ae7ca3",
+          "head_sha256": "f52ca008354fbbf02868b4d9d6cb8f46615665c014994a7d2c474cad0628762f"
+        }
+      ],
+      "reason": "Repair the reviewed Open Platform order refund amount-status contract: known Payment summaries now emit the required known value and the active V3 OpenAPI enum records both contract states; frozen donors remain unchanged.",
+      "review_reference": "Root review of the approved refund_amount_status contract and active V3 OpenAPI synchronization"
     }
   ]
 }
