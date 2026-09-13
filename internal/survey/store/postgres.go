@@ -709,7 +709,11 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 	}
 	if !query.SubmittedTo.IsZero() {
 		args = append(args, query.SubmittedTo.UTC())
-		condition := "submission.submitted_at <= $" + strconv.Itoa(len(args))
+		operator := "<="
+		if query.SubmittedEndExclusive {
+			operator = "<"
+		}
+		condition := "submission.submitted_at " + operator + " $" + strconv.Itoa(len(args))
 		legacyWhere, nativeWhere = append(legacyWhere, condition), append(nativeWhere, condition)
 	}
 	eligible := `WITH eligible AS (

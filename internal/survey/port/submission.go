@@ -104,8 +104,11 @@ type ExternalSubmissionQuery struct {
 	SourceRecordID string
 	SubmittedFrom  time.Time
 	SubmittedTo    time.Time
-	Limit          int32
-	Offset         int64
+	// SubmittedEndExclusive gives V1 an explicit [start,end) boundary while
+	// retaining the frozen legacy route's inclusive end compatibility.
+	SubmittedEndExclusive bool
+	Limit                 int32
+	Offset                int64
 }
 
 // ExternalSubmission is the unmasked compatibility projection required by the
