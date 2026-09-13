@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -66,6 +67,19 @@ func (r *Repository) ListExternalRead(ctx context.Context, q orderport.ExternalR
 			where = append(where, "NOT EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id=o.id AND h.to_status IN ('paid','partially_refunded','refunded'))")
 		}
 	}
+	if q.IsRefunded != nil {
+		if *q.IsRefunded && len(q.RefundedOrderIDs) == 0 {
+			where = append(where, "FALSE")
+		}
+		if len(q.RefundedOrderIDs) > 0 {
+			add("o.id", q.RefundedOrderIDs)
+			if *q.IsRefunded {
+				where[len(where)-1] = "o.id=ANY($" + itoa(len(args)) + ")"
+			} else {
+				where[len(where)-1] = "o.id<>ALL($" + itoa(len(args)) + ")"
+			}
+		}
+	}
 	if q.AfterID != 0 {
 		args = append(args, q.AfterCreatedAt.UTC(), q.AfterID)
 		n := len(args)
@@ -74,7 +88,8 @@ func (r *Repository) ListExternalRead(ctx context.Context, q orderport.ExternalR
 	args = append(args, q.Limit)
 	rows, err := tx.Query(ctx, `SELECT o.id,o.provider,o.source_system,o.source_key,o.merchant_order_no,o.provider_transaction_no,o.payer_customer_id,o.beneficiary_customer_id,o.amount_minor,o.currency,o.status,o.created_at,pe.occurred_at,
 	 (o.status IN ('paid','partially_refunded','refunded') OR EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id=o.id AND h.to_status IN ('paid','partially_refunded','refunded'))),
- COALESCE((SELECT array_agg(oi.product_code ORDER BY oi.line_no) FROM order_items oi WHERE oi.order_id=o.id),ARRAY[]::text[])
+ COALESCE((SELECT array_agg(oi.product_code ORDER BY oi.line_no) FROM order_items oi WHERE oi.order_id=o.id),ARRAY[]::text[]),
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('line_no',oi.line_no,'product_code',oi.product_code,'product_name',oi.product_name,'unit_amount_minor',oi.unit_amount_minor,'quantity',oi.quantity,'line_amount_minor',oi.line_amount_minor) ORDER BY oi.line_no) FROM order_items oi WHERE oi.order_id=o.id),'[]'::jsonb)
  FROM orders o LEFT JOIN order_paid_events pe ON pe.order_id=o.id WHERE `+strings.Join(where, " AND ")+` ORDER BY o.created_at DESC,o.id DESC LIMIT $`+itoa(len(args)), args...)
 	if err != nil {
 		return orderport.ExternalReadPage{}, mapError(err)
@@ -84,8 +99,12 @@ func (r *Repository) ListExternalRead(ctx context.Context, q orderport.ExternalR
 	for rows.Next() {
 		var x orderport.ExternalOrder
 		var paid *time.Time
-		if err = rows.Scan(&x.ID, &x.Provider, &x.SourceSystem, &x.SourceKey, &x.MerchantOrderNo, &x.ProviderTransactionNo, &x.PayerCustomerID, &x.BeneficiaryCustomerID, &x.Amount.AmountMinor, &x.Amount.Currency, &x.Status, &x.CreatedAt, &paid, &x.IsPaid, &x.ProductCodes); err != nil {
+		var itemsRaw []byte
+		if err = rows.Scan(&x.ID, &x.Provider, &x.SourceSystem, &x.SourceKey, &x.MerchantOrderNo, &x.ProviderTransactionNo, &x.PayerCustomerID, &x.BeneficiaryCustomerID, &x.Amount.AmountMinor, &x.Amount.Currency, &x.Status, &x.CreatedAt, &paid, &x.IsPaid, &x.ProductCodes, &itemsRaw); err != nil {
 			return orderport.ExternalReadPage{}, mapError(err)
+		}
+		if err = json.Unmarshal(itemsRaw, &x.Items); err != nil {
+			return orderport.ExternalReadPage{}, err
 		}
 		x.PaidAt = paid
 		page.Items = append(page.Items, x)
@@ -108,16 +127,41 @@ func (r *Repository) GetExternalRead(ctx context.Context, id int64, customerIDs 
 		args = append(args, customerIDs)
 		where += " AND (o.payer_customer_id=ANY($2) OR o.beneficiary_customer_id=ANY($2))"
 	}
-	row := tx.QueryRow(ctx, `SELECT o.id,o.provider,o.source_system,o.source_key,o.merchant_order_no,o.provider_transaction_no,o.payer_customer_id,o.beneficiary_customer_id,o.amount_minor,o.currency,o.status,o.created_at,pe.occurred_at,(o.status IN ('paid','partially_refunded','refunded') OR EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id=o.id AND h.to_status IN ('paid','partially_refunded','refunded'))),COALESCE((SELECT array_agg(oi.product_code ORDER BY oi.line_no) FROM order_items oi WHERE oi.order_id=o.id),ARRAY[]::text[]) FROM orders o LEFT JOIN order_paid_events pe ON pe.order_id=o.id WHERE `+where, args...)
+	row := tx.QueryRow(ctx, `SELECT o.id,o.provider,o.source_system,o.source_key,o.merchant_order_no,o.provider_transaction_no,o.payer_customer_id,o.beneficiary_customer_id,o.amount_minor,o.currency,o.status,o.created_at,pe.occurred_at,(o.status IN ('paid','partially_refunded','refunded') OR EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id=o.id AND h.to_status IN ('paid','partially_refunded','refunded'))),COALESCE((SELECT array_agg(oi.product_code ORDER BY oi.line_no) FROM order_items oi WHERE oi.order_id=o.id),ARRAY[]::text[]),COALESCE((SELECT jsonb_agg(jsonb_build_object('line_no',oi.line_no,'product_code',oi.product_code,'product_name',oi.product_name,'unit_amount_minor',oi.unit_amount_minor,'quantity',oi.quantity,'line_amount_minor',oi.line_amount_minor) ORDER BY oi.line_no) FROM order_items oi WHERE oi.order_id=o.id),'[]'::jsonb) FROM orders o LEFT JOIN order_paid_events pe ON pe.order_id=o.id WHERE `+where, args...)
 	var x orderport.ExternalOrder
 	var paid *time.Time
-	if err = row.Scan(&x.ID, &x.Provider, &x.SourceSystem, &x.SourceKey, &x.MerchantOrderNo, &x.ProviderTransactionNo, &x.PayerCustomerID, &x.BeneficiaryCustomerID, &x.Amount.AmountMinor, &x.Amount.Currency, &x.Status, &x.CreatedAt, &paid, &x.IsPaid, &x.ProductCodes); errors.Is(err, pgx.ErrNoRows) {
+	var itemsRaw []byte
+	if err = row.Scan(&x.ID, &x.Provider, &x.SourceSystem, &x.SourceKey, &x.MerchantOrderNo, &x.ProviderTransactionNo, &x.PayerCustomerID, &x.BeneficiaryCustomerID, &x.Amount.AmountMinor, &x.Amount.Currency, &x.Status, &x.CreatedAt, &paid, &x.IsPaid, &x.ProductCodes, &itemsRaw); errors.Is(err, pgx.ErrNoRows) {
 		return orderport.ExternalOrder{}, orderport.ErrNotFound
 	} else if err != nil {
 		return orderport.ExternalOrder{}, mapError(err)
 	}
+	if err = json.Unmarshal(itemsRaw, &x.Items); err != nil {
+		return orderport.ExternalOrder{}, err
+	}
 	x.PaidAt = paid
 	return x, nil
+}
+
+func (r *Repository) ExternalOrderTimeline(ctx context.Context, id int64) ([]orderport.ExternalOrderTimelineEvent, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT to_status,refunded_minor,occurred_at FROM order_status_history WHERE order_id=$1 ORDER BY occurred_at,id`, id)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	items := []orderport.ExternalOrderTimelineEvent{}
+	for rows.Next() {
+		var item orderport.ExternalOrderTimelineEvent
+		if err = rows.Scan(&item.Status, &item.RefundedMinor, &item.OccurredAt); err != nil {
+			return nil, mapError(err)
+		}
+		items = append(items, item)
+	}
+	return items, mapError(rows.Err())
 }
 
 func itoa(v int) string {
@@ -135,4 +179,5 @@ func itoa(v int) string {
 }
 
 var _ orderport.ExternalReadQueryService = (*Repository)(nil)
+var _ orderport.ExternalOrderTimelineReader = (*Repository)(nil)
 var _ = orderdomain.StatusPaid

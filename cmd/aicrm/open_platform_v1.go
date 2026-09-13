@@ -48,12 +48,13 @@ func (executor *openPlatformExecutor) Available(_ context.Context, principal acc
 		openplatformport.OperationCustomerContext:  executor.profiles != nil,
 		// Activities and AI are enabled only by their explicit V1 binders. The
 		// legacy compatibility readers are deliberately not a substitute.
-		openplatformport.OperationCustomerActivities: executor.activities != nil,
-		openplatformport.OperationAIReviewPlanCreate: executor.aiMachineIntake != nil && executor.aiMachineReader != nil && executor.aiUOW != nil,
-		openplatformport.OperationGet:                executor.aiMachineReader != nil,
-		openplatformport.OperationOrderList:          executor.v1Orders != nil && executor.v1Refunds != nil,
-		openplatformport.OperationOrderGet:           executor.v1Orders != nil && executor.v1Refunds != nil,
-		openplatformport.OperationIdentityGet:        executor.surveyAliases != nil,
+		openplatformport.OperationCustomerActivities:       executor.activities != nil,
+		openplatformport.OperationAIReviewPlanCreate:       executor.aiMachineIntake != nil && executor.aiMachineReader != nil && executor.aiUOW != nil,
+		openplatformport.OperationGet:                      executor.aiMachineReader != nil,
+		openplatformport.OperationOrderList:                executor.v1Orders != nil && executor.v1Refunds != nil,
+		openplatformport.OperationOrderGet:                 executor.v1Orders != nil && executor.v1Refunds != nil,
+		openplatformport.OperationIdentityGet:              executor.surveyAliases != nil,
+		openplatformport.OperationQuestionnaireSubmissions: executor.survey != nil && executor.surveyAliases != nil && len(executor.v1ExternalCursorKey) >= 16,
 	}
 	return openplatformport.AvailableDescriptors(principal, available), nil
 }
@@ -109,6 +110,8 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 		result, err = executor.v1OrderGet(ctx, invocation.Principal, invocation.Input)
 	case openplatformport.OperationIdentityGet:
 		result, err = executor.v1IdentityGet(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationQuestionnaireSubmissions:
+		result, err = executor.v1QuestionnaireSubmissions(ctx, invocation.Principal, invocation.Input)
 	default:
 		err = openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
 	}

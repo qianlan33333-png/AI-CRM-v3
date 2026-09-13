@@ -3751,7 +3751,7 @@ paths:
       operationId: listOpenPlatformOrders
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
-      parameters: [{name: provider, in: query, schema: {type: string, enum: [wechat_pay, wechat_shop, alipay]}}, {name: customer_id, in: query, schema: {type: integer, minimum: 1}}, {name: created_from, in: query, schema: {type: integer, minimum: 0}}, {name: created_to, in: query, schema: {type: integer, minimum: 0}}, {name: paid_from, in: query, schema: {type: integer, minimum: 0}}, {name: paid_to, in: query, schema: {type: integer, minimum: 0}}, {name: is_paid, in: query, schema: {type: boolean}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}]
+      parameters: [{name: provider, in: query, schema: {type: string, enum: [wechat_pay, wechat_shop, alipay]}}, {name: customer_id, in: query, schema: {type: integer, minimum: 1}}, {name: created_from, in: query, schema: {type: integer, minimum: 0}}, {name: created_to, in: query, schema: {type: integer, minimum: 0}}, {name: paid_from, in: query, schema: {type: integer, minimum: 0}}, {name: paid_to, in: query, schema: {type: integer, minimum: 0}}, {name: is_paid, in: query, schema: {type: boolean}}, {name: is_refunded, in: query, schema: {type: boolean}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}]
       responses: {"200": {description: Machine-authorized orders with signed grant-bound cursor, content: {application/json: {schema: {type: object}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /open/v1/orders/{order_id}:
     parameters: [{name: order_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
@@ -3769,6 +3769,13 @@ paths:
       security: [{machineBearer: []}]
       parameters: [{name: unionid_scope, in: query, style: form, explode: true, schema: {type: array, items: {type: string}}}]
       responses: {"200": {description: Scope-checked sensitive identity projection, content: {application/json: {schema: {type: object}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/questionnaire-submissions:
+    get:
+      operationId: listOpenPlatformQuestionnaireSubmissions
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      parameters: [{name: customer_id, in: query, required: true, schema: {type: integer, minimum: 1}}, {name: questionnaire_id, in: query, schema: {type: integer, minimum: 1}}, {name: source_system, in: query, schema: {type: string}}, {name: source_record_id, in: query, schema: {type: string}}, {name: submitted_from, in: query, schema: {type: integer, minimum: 0}}, {name: submitted_to, in: query, schema: {type: integer, minimum: 0}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}]
+      responses: {"200": {description: Machine-authorized sourced questionnaire snapshots, content: {application/json: {schema: {type: object}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /api/admin/open-platform/clients:
     get:
       operationId: listOpenPlatformClients

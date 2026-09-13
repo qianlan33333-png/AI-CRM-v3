@@ -31,6 +31,7 @@ type v1OrdersInput struct {
 	PaidFrom              *int64 `json:"paid_from"`
 	PaidTo                *int64 `json:"paid_to"`
 	IsPaid                *bool  `json:"is_paid"`
+	IsRefunded            *bool  `json:"is_refunded"`
 	Cursor                string `json:"cursor"`
 	Limit                 int32  `json:"limit"`
 }
@@ -79,6 +80,13 @@ func (executor *openPlatformExecutor) v1OrdersListWithin(ctx context.Context, pr
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorPermission, "order scope is not granted")
 	}
 	q.CustomerIDs = allowed
+	if in.IsRefunded != nil {
+		ids, scopeErr := executor.v1Refunds.ExternalRefundedOrderIDs(ctx, allowed)
+		if scopeErr != nil {
+			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "refunds unavailable")
+		}
+		q.IsRefunded, q.RefundedOrderIDs = in.IsRefunded, ids
+	}
 	filter := v1OrderFilterDigest(in, allowed)
 	grant := v1ActivityGrantDigest(principal)
 	if in.Cursor != "" {
@@ -145,6 +153,11 @@ func (executor *openPlatformExecutor) v1OrderGetWithin(ctx context.Context, prin
 	if e != nil {
 		return openplatformport.Result{}, e
 	}
+	timeline, e := executor.v1OrderTimeline.ExternalOrderTimeline(ctx, item.ID)
+	if e != nil {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "order timeline unavailable")
+	}
+	items[0]["timeline"] = timeline
 	return openplatformport.Result{Data: items[0]}, nil
 }
 func (executor *openPlatformExecutor) v1IdentityGet(ctx context.Context, principal accessdomain.MachinePrincipal, raw json.RawMessage) (openplatformport.Result, error) {
@@ -178,6 +191,12 @@ func (executor *openPlatformExecutor) v1IdentityGet(ctx context.Context, princip
 	export, err := reader.MachineIdentityExportForMachine(ctx, customerdomain.CustomerID(in.CustomerID), principal)
 	if err != nil {
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "identity projection unavailable")
+	}
+	// A request scoped to a historical root must not acquire the facts of its
+	// canonical survivor merely because Identity followed a merge lineage.
+	// Recheck the exact canonical output before rendering or recording success.
+	if export.CanonicalCustomerID < 1 || executor.ensureCustomerScope(ctx, principal, export.CanonicalCustomerID, nil) != nil {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorPermission, "identity canonical customer scope is not granted")
 	}
 	if export.Status == identityport.MachineIdentityExportConflict {
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorConflict, "customer identity is conflicted")
@@ -242,7 +261,7 @@ func v1ExternalOrderQuery(in v1OrdersInput) (orderport.ExternalReadQuery, error)
 	if in.Limit < 1 || in.Limit > 100 || len(in.Cursor) > 4096 {
 		return orderport.ExternalReadQuery{}, errors.New("limit")
 	}
-	q := orderport.ExternalReadQuery{Provider: orderdomain.Provider(in.Provider), ProductCode: strings.TrimSpace(in.ProductCode), MerchantOrderNo: strings.TrimSpace(in.MerchantOrderNo), ProviderTransactionNo: strings.TrimSpace(in.ProviderTransactionNo), IsPaid: in.IsPaid, Limit: in.Limit}
+	q := orderport.ExternalReadQuery{Provider: orderdomain.Provider(in.Provider), ProductCode: strings.TrimSpace(in.ProductCode), MerchantOrderNo: strings.TrimSpace(in.MerchantOrderNo), ProviderTransactionNo: strings.TrimSpace(in.ProviderTransactionNo), IsPaid: in.IsPaid, IsRefunded: in.IsRefunded, Limit: in.Limit}
 	if q.Provider != "" && q.Provider != orderdomain.ProviderWeChatPay && q.Provider != orderdomain.ProviderWeChatShop && q.Provider != orderdomain.ProviderAlipay {
 		return q, errors.New("provider")
 	}
@@ -283,6 +302,10 @@ func (executor *openPlatformExecutor) v1OrderResult(ctx context.Context, items [
 	if err != nil {
 		return nil, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "refunds unavailable")
 	}
+	refundDetails, err := executor.v1Refunds.ExternalOrderRefundDetails(ctx, ids)
+	if err != nil {
+		return nil, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "refund details unavailable")
+	}
 	out := make([]map[string]any, 0, len(items))
 	for _, x := range items {
 		customer := x.BeneficiaryCustomerID
@@ -296,7 +319,7 @@ func (executor *openPlatformExecutor) v1OrderResult(ctx context.Context, items [
 		if x.BeneficiaryCustomerID != nil {
 			beneficiaryID = strconv.FormatInt(*x.BeneficiaryCustomerID, 10)
 		}
-		m := map[string]any{"order_id": strconv.FormatInt(x.ID, 10), "payer_customer_id": payerID, "beneficiary_customer_id": beneficiaryID, "customer_id": customerIDFor(x), "identity_status": identityStatusFor(x), "provider": x.Provider, "source_system": x.SourceSystem, "source_record_id": x.SourceKey, "merchant_order_no": x.MerchantOrderNo, "provider_transaction_no": x.ProviderTransactionNo, "product_codes": x.ProductCodes, "created_at": x.CreatedAt.UTC(), "paid_at": x.PaidAt, "paid_at_status": "unavailable", "status": x.Status, "amount_minor": x.Amount.AmountMinor, "amount_yuan": yuan(x.Amount.AmountMinor), "currency": x.Amount.Currency, "is_paid": x.IsPaid}
+		m := map[string]any{"order_id": strconv.FormatInt(x.ID, 10), "payer_customer_id": payerID, "beneficiary_customer_id": beneficiaryID, "customer_id": customerIDFor(x), "identity_status": identityStatusFor(x), "provider": x.Provider, "source_system": x.SourceSystem, "source_record_id": x.SourceKey, "merchant_order_no": x.MerchantOrderNo, "provider_transaction_no": x.ProviderTransactionNo, "product_codes": x.ProductCodes, "items": x.Items, "created_at": x.CreatedAt.UTC(), "paid_at": x.PaidAt, "paid_at_status": "unavailable", "status": x.Status, "amount_minor": x.Amount.AmountMinor, "amount_yuan": yuan(x.Amount.AmountMinor), "currency": x.Amount.Currency, "is_paid": x.IsPaid, "refund_records": refundDetails[x.ID]}
 		if x.PaidAt != nil {
 			m["paid_at_status"] = "verified"
 		}

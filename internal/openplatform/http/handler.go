@@ -93,6 +93,7 @@ func (handler *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /open/v1/orders", handler.v1Orders)
 	mux.HandleFunc("GET /open/v1/orders/{order_id}", handler.v1Order)
 	mux.HandleFunc("GET /open/v1/customers/{customer_id}/identities", handler.v1Identities)
+	mux.HandleFunc("GET /open/v1/questionnaire-submissions", handler.v1QuestionnaireSubmissions)
 	// These V3 management endpoints are the control plane used by PR #164.
 	// The obsolete donor-shaped config endpoints are intentionally not mounted.
 	mux.HandleFunc("GET /api/admin/open-platform/clients", handler.listClients)
@@ -135,6 +136,7 @@ func Mount(next, machine http.Handler) http.Handler {
 		"POST /open/v1/ai/review-plans", "GET /open/v1/operations/{operation_id}",
 		"GET /open/v1/orders", "GET /open/v1/orders/{order_id}",
 		"GET /open/v1/customers/{customer_id}/identities",
+		"GET /open/v1/questionnaire-submissions",
 		"GET /api/admin/open-platform/clients", "POST /api/admin/open-platform/clients",
 		"GET /api/admin/open-platform/clients/{client_id}", "PATCH /api/admin/open-platform/clients/{client_id}", "GET /api/admin/open-platform/clients/{client_id}/audit",
 		"POST /api/admin/open-platform/clients/{client_id}/activate", "POST /api/admin/open-platform/clients/{client_id}/rotate", "POST /api/admin/open-platform/clients/{client_id}/enable", "POST /api/admin/open-platform/clients/{client_id}/disable",
@@ -321,6 +323,9 @@ func (handler *Handler) v1Order(response http.ResponseWriter, request *http.Requ
 func (handler *Handler) v1Identities(response http.ResponseWriter, request *http.Request) {
 	handler.invokeV1(response, request, openplatformport.OperationIdentityGet, identitiesJSONInput)
 }
+func (handler *Handler) v1QuestionnaireSubmissions(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationQuestionnaireSubmissions, questionnaireSubmissionsJSONInput)
+}
 
 func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Request, operation openplatformport.OperationID, normalize func(*http.Request) (json.RawMessage, error)) {
 	id := requestID(request)
@@ -498,9 +503,9 @@ func ordersJSONInput(request *http.Request) (json.RawMessage, error) {
 				return nil, errors.New("invalid orders number")
 			}
 			values[name] = n
-		case "is_paid":
+		case "is_paid", "is_refunded":
 			if value != "true" && value != "false" {
-				return nil, errors.New("invalid is_paid")
+				return nil, errors.New("invalid order boolean")
 			}
 			values[name] = value == "true"
 		default:
@@ -530,6 +535,33 @@ func identitiesJSONInput(request *http.Request) (json.RawMessage, error) {
 			}
 		}
 		values["unionid_scopes"] = entries
+	}
+	return json.Marshal(values)
+}
+
+func questionnaireSubmissionsJSONInput(request *http.Request) (json.RawMessage, error) {
+	body, err := readBody(request)
+	if err != nil || len(bytes.TrimSpace(body)) != 0 {
+		return nil, errors.New("questionnaire submissions operation does not accept a body")
+	}
+	values := map[string]any{}
+	for name, entries := range request.URL.Query() {
+		if len(entries) != 1 || entries[0] == "" || strings.TrimSpace(entries[0]) != entries[0] {
+			return nil, errors.New("invalid questionnaire submissions query")
+		}
+		value := entries[0]
+		switch name {
+		case "source_system", "source_record_id", "cursor":
+			values[name] = value
+		case "customer_id", "questionnaire_id", "submitted_from", "submitted_to", "limit":
+			n, e := strconv.ParseInt(value, 10, 64)
+			if e != nil || strconv.FormatInt(n, 10) != value {
+				return nil, errors.New("invalid questionnaire submissions number")
+			}
+			values[name] = n
+		default:
+			return nil, errors.New("unknown questionnaire submissions query")
+		}
 	}
 	return json.Marshal(values)
 }
@@ -1520,6 +1552,8 @@ func mcpInputSchema(operation openplatformport.OperationID) map[string]any {
 		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"order_id"}, "properties": map[string]any{"order_id": map[string]any{"type": "integer", "minimum": 1}}}
 	case openplatformport.OperationIdentityGet:
 		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "unionid_scopes": map[string]any{"type": "array", "items": stringValue}}}
+	case openplatformport.OperationQuestionnaireSubmissions:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "questionnaire_id": map[string]any{"type": "integer", "minimum": 1}, "source_system": stringValue, "source_record_id": stringValue, "submitted_from": map[string]any{"type": "integer", "minimum": 0}, "submitted_to": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": stringValue}}
 	default:
 		return map[string]any{"type": "object", "additionalProperties": false}
 	}

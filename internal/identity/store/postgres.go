@@ -11,6 +11,7 @@ import (
 	"errors"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -170,24 +171,54 @@ func (store *PostgresStore) Resolve(ctx context.Context, reference identitydomai
 	if err != nil {
 		return identityapp.StoredIdentity{}, false, err
 	}
+	var phoneDigest []byte
+	phoneE164 := ""
+	if reference.Kind == identitydomain.KindPhone {
+		if store.phoneVault == nil {
+			return identityapp.StoredIdentity{}, false, errStore
+		}
+		cn11 := strings.TrimPrefix(reference.NormalizedValue, "+86")
+		if len(cn11) == 11 {
+			digest := store.phoneVault.LookupDigest(cn11)
+			phoneDigest = digest[:]
+			phoneE164 = "+86" + cn11
+		}
+	}
 	var id, customerID int64
 	var kind, scope, value, assurance, source string
 	var normalizer int16
-	err = tx.QueryRow(ctx, `
+	rows, err := tx.Query(ctx, `
 		WITH RECURSIVE lineage(id, status, merged_into_customer_id) AS (
 			SELECT c.id, c.status, c.merged_into_customer_id FROM customers c
 			JOIN customer_identities i ON i.customer_id=c.id
-			WHERE i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3 AND i.status='active'
+			WHERE i.status='active' AND ((i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3) OR ($1='phone' AND ((i.scope_key='phone:cn11' AND i.normalized_value_digest=$4) OR (i.scope_key='phone:e164' AND i.normalized_value=$5))))
 			UNION ALL SELECT c.id, c.status, c.merged_into_customer_id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id
-		) SELECT i.id, l.id, i.kind, i.scope_key, i.normalized_value, i.assurance, i.source, i.normalizer_version
+		) SELECT DISTINCT ON (l.id) i.id, l.id, i.kind, i.scope_key, i.normalized_value, i.assurance, i.source, i.normalizer_version
 		FROM customer_identities i JOIN lineage l ON true
-		WHERE i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3 AND i.status='active' AND l.status <> 'merged'
-		LIMIT 1`, string(reference.Kind), reference.Scope, reference.NormalizedValue).Scan(&id, &customerID, &kind, &scope, &value, &assurance, &source, &normalizer)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return identityapp.StoredIdentity{}, false, nil
-	}
+		WHERE i.status='active' AND ((i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3) OR ($1='phone' AND ((i.scope_key='phone:cn11' AND i.normalized_value_digest=$4) OR (i.scope_key='phone:e164' AND i.normalized_value=$5)))) AND l.status <> 'merged'
+		ORDER BY l.id,i.id LIMIT 2`, string(reference.Kind), reference.Scope, reference.NormalizedValue, phoneDigest, phoneE164)
 	if err != nil {
 		return identityapp.StoredIdentity{}, false, persistenceFailure(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		if err = rows.Scan(&id, &customerID, &kind, &scope, &value, &assurance, &source, &normalizer); err != nil {
+			return identityapp.StoredIdentity{}, false, persistenceFailure(err)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return identityapp.StoredIdentity{}, false, persistenceFailure(err)
+	}
+	if count == 0 {
+		return identityapp.StoredIdentity{}, false, nil
+	}
+	if count > 1 {
+		return identityapp.StoredIdentity{}, false, identityapp.ErrResolveConflict
+	}
+	if reference.Kind == identitydomain.KindPhone {
+		value = reference.NormalizedValue
 	}
 	return identityapp.StoredIdentity{ID: id, CustomerID: customerdomain.CustomerID(customerID), Reference: identitydomain.NormalizedReference{Kind: identitydomain.Kind(kind), Scope: scope, NormalizedValue: value, Assurance: identitydomain.Assurance(assurance), Source: source, NormalizerVersion: normalizer}}, true, nil
 }

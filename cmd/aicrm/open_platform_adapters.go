@@ -84,6 +84,7 @@ type openPlatformExecutor struct {
 	aiMachineReader     aiassistantport.MachineReader
 	aiUOW               platformport.UnitOfWork
 	v1Orders            orderport.ExternalReadQueryService
+	v1OrderTimeline     orderport.ExternalOrderTimelineReader
 	v1Refunds           paymentport.ExternalOrderRefundReader
 	v1OrderCursorKey    []byte
 	v1OrderUOW          platformport.UnitOfWork
@@ -94,7 +95,12 @@ func (executor *openPlatformExecutor) BindV1Orders(orders orderport.ExternalRead
 	if executor == nil || orders == nil || refunds == nil || uow == nil || len(signingKey) < 16 {
 		return errOpenPlatformRouteUnavailable
 	}
+	timeline, ok := orders.(orderport.ExternalOrderTimelineReader)
+	if !ok || timeline == nil {
+		return errOpenPlatformRouteUnavailable
+	}
 	executor.v1Orders, executor.v1Refunds, executor.v1OrderCursorKey = orders, refunds, append([]byte(nil), signingKey...)
+	executor.v1OrderTimeline = timeline
 	executor.v1OrderUOW = uow
 	return nil
 }

@@ -91,6 +91,16 @@ type ExternalOrderRefundSummary struct {
 
 type ExternalOrderRefundReader interface {
 	ExternalOrderRefundSummaries(context.Context, []int64) (map[int64]ExternalOrderRefundSummary, error)
+	ExternalOrderRefundDetails(context.Context, []int64) (map[int64][]ExternalOrderRefundDetail, error)
+	ExternalRefundedOrderIDs(context.Context, []int64) ([]int64, error)
+}
+
+type ExternalOrderRefundDetail struct {
+	RefundID    int64
+	Status      string
+	AmountMinor int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type RefundProjection struct {

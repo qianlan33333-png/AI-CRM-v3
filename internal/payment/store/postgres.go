@@ -59,6 +59,60 @@ FROM payments p LEFT JOIN payment_refunds r ON r.payment_id=p.id WHERE p.order_i
 	return result, mapError(rows.Err())
 }
 
+func (r *Repository) ExternalOrderRefundDetails(ctx context.Context, orderIDs []int64) (map[int64][]paymentport.ExternalOrderRefundDetail, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := map[int64][]paymentport.ExternalOrderRefundDetail{}
+	if len(orderIDs) == 0 {
+		return result, nil
+	}
+	rows, err := t.Query(ctx, `SELECT p.order_id,r.id,r.status,r.amount_minor,r.created_at,r.updated_at FROM payments p JOIN payment_refunds r ON r.payment_id=p.id WHERE p.order_id=ANY($1) ORDER BY p.order_id,r.created_at,r.id`, orderIDs)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var orderID int64
+		var detail paymentport.ExternalOrderRefundDetail
+		if err = rows.Scan(&orderID, &detail.RefundID, &detail.Status, &detail.AmountMinor, &detail.CreatedAt, &detail.UpdatedAt); err != nil {
+			return nil, mapError(err)
+		}
+		result[orderID] = append(result[orderID], detail)
+	}
+	return result, mapError(rows.Err())
+}
+
+// ExternalRefundedOrderIDs returns only orders with terminal completed money.
+// Requested, accepted, unknown and failed refunds never make is_refunded true.
+func (r *Repository) ExternalRefundedOrderIDs(ctx context.Context, customerIDs []int64) ([]int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := []any{}
+	where := "r.status='completed'"
+	if len(customerIDs) > 0 {
+		args = append(args, customerIDs)
+		where += " AND (p.payer_customer_id=ANY($1) OR p.beneficiary_customer_id=ANY($1))"
+	}
+	rows, err := t.Query(ctx, `SELECT DISTINCT p.order_id FROM payments p JOIN payment_refunds r ON r.payment_id=p.id WHERE `+where+` ORDER BY p.order_id`, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, mapError(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, mapError(rows.Err())
+}
+
 var _ paymentport.ExternalOrderRefundReader = (*Repository)(nil)
 
 func (r *Repository) CreatePayment(ctx context.Context, p domain.Payment, key, payload [32]byte, actor string) (domain.Payment, bool, error) {

@@ -432,6 +432,9 @@ func (store PostgreSQL) MachineIdentityExport(ctx context.Context, customerID cu
 	if err != nil {
 		return identityport.MachineIdentityExport{}, err
 	}
+	if len(lineage) == 0 || lineage[0] < 1 {
+		return identityport.MachineIdentityExport{}, ErrInvalidQuery
+	}
 	result := identityport.MachineIdentityExport{Status: identityport.MachineIdentityExportMissing, CanonicalCustomerID: lineage[0], Facts: []identityport.MachineIdentityFact{}}
 	var conflict bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customer_identity_conflicts WHERE status='open' AND (left_customer_id=ANY($1::bigint[]) OR right_customer_id=ANY($1::bigint[])))`, lineage).Scan(&conflict); err != nil {

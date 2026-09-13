@@ -69,6 +69,7 @@ var machineCapabilities = map[string]struct{}{
 	"operation.read":             {},
 	"order.read":                 {},
 	"identity.read":              {},
+	"questionnaire.read":         {},
 }
 
 // v1ManagedMachineCapabilities is the only capability vocabulary that the
@@ -84,6 +85,7 @@ var v1ManagedMachineCapabilities = map[string]struct{}{
 	"operation.read":             {},
 	"order.read":                 {},
 	"identity.read":              {},
+	"questionnaire.read":         {},
 }
 
 type MachineConfig struct {

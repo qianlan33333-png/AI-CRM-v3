@@ -111,9 +111,13 @@ type ExternalReadQuery struct {
 	CustomerIDs                                         []int64
 	CreatedFrom, CreatedTo, PaidFrom, PaidTo            *time.Time
 	IsPaid                                              *bool
-	AfterCreatedAt                                      time.Time
-	AfterID                                             int64
-	Limit                                               int32
+	// RefundedOrderIDs is supplied by Payment's public-safe read Port. Order
+	// applies the resulting IDs to its own query and never joins Payment tables.
+	IsRefunded       *bool
+	RefundedOrderIDs []int64
+	AfterCreatedAt   time.Time
+	AfterID          int64
+	Limit            int32
 }
 
 type ExternalOrder struct {
@@ -133,6 +137,22 @@ type ExternalOrder struct {
 	PaidAt       *time.Time
 	IsPaid       bool
 	ProductCodes []string
+	Items        []ExternalOrderItem
+}
+
+type ExternalOrderItem struct {
+	LineNo          int32
+	ProductCode     string
+	ProductName     string
+	UnitAmountMinor int64
+	Quantity        int32
+	LineAmountMinor int64
+}
+
+type ExternalOrderTimelineEvent struct {
+	Status        domain.Status
+	RefundedMinor int64
+	OccurredAt    time.Time
 }
 
 type ExternalReadPage struct{ Items []ExternalOrder }
@@ -140,6 +160,10 @@ type ExternalReadPage struct{ Items []ExternalOrder }
 type ExternalReadQueryService interface {
 	ListExternalRead(context.Context, ExternalReadQuery) (ExternalReadPage, error)
 	GetExternalRead(context.Context, int64, []int64) (ExternalOrder, error)
+}
+
+type ExternalOrderTimelineReader interface {
+	ExternalOrderTimeline(context.Context, int64) ([]ExternalOrderTimelineEvent, error)
 }
 
 // CustomerScopedQuery reads one order reference through Order's own customer

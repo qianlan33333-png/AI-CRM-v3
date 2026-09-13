@@ -133,7 +133,7 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	client, err := machine.CreateV1(ctx, admin, accessapp.CreateMachineClientInput{
 		ClientID: "v1.composition-machine", DisplayName: "V1 Composition Machine", Purpose: "external_agent",
 		Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"},
-		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.activity.read", "order.read", "identity.read", "ai.review_plan.create", "operation.read"},
+		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.activity.read", "order.read", "identity.read", "questionnaire.read", "ai.review_plan.create", "operation.read"},
 		OwnerScope:   accessdomain.OwnerScope{"customer_id": {fmt.Sprint(provision.CustomerID)}},
 	})
 	if err != nil {
@@ -176,6 +176,13 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	if resolveResponse.Code != http.StatusOK || !strings.Contains(resolveResponse.Body.String(), `"customer_id":`+fmt.Sprint(provision.CustomerID)) || !strings.Contains(resolveResponse.Body.String(), `"status":"found"`) {
 		t.Fatalf("resolve status=%d body=%s", resolveResponse.Code, resolveResponse.Body.String())
 	}
+	phoneResolve := openPlatformV1CompositionRequest(http.MethodPost, "/open/v1/customers:resolve", `{"references":[{"kind":"phone","scope":"phone:cn11","value":"13800138000"}]}`, readToken)
+	phoneResolve.Header.Set("Content-Type", "application/json")
+	phoneResolveResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(phoneResolveResponse, phoneResolve)
+	if phoneResolveResponse.Code != http.StatusOK || !strings.Contains(phoneResolveResponse.Body.String(), `"customer_id":`+fmt.Sprint(provision.CustomerID)) || !strings.Contains(phoneResolveResponse.Body.String(), `"status":"found"`) {
+		t.Fatalf("declared phone resolve status=%d body=%s", phoneResolveResponse.Code, phoneResolveResponse.Body.String())
+	}
 	identities := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID)+"/identities?unionid_scope=wechat-open-platform:open-read&unionid_scope=wechat-open-platform:secondary", "", readToken)
 	identitiesResponse := httptest.NewRecorder()
 	application.handler.ServeHTTP(identitiesResponse, identities)
@@ -195,6 +202,12 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	application.handler.ServeHTTP(unauthorizedIdentityResponse, unauthorizedIdentity)
 	if unauthorizedIdentityResponse.Code != http.StatusForbidden {
 		t.Fatalf("out-of-scope identity status=%d body=%s", unauthorizedIdentityResponse.Code, unauthorizedIdentityResponse.Body.String())
+	}
+	questionnaire := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/questionnaire-submissions?customer_id="+fmt.Sprint(provision.CustomerID)+"&limit=1", "", readToken)
+	questionnaireResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(questionnaireResponse, questionnaire)
+	if questionnaireResponse.Code != http.StatusOK || !strings.Contains(questionnaireResponse.Body.String(), `"source_system":"aicrm_v3"`) || !strings.Contains(questionnaireResponse.Body.String(), `"identity_status":"resolved"`) {
+		t.Fatalf("questionnaire submissions status=%d body=%s", questionnaireResponse.Code, questionnaireResponse.Body.String())
 	}
 
 	contextRequest := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID), "", readToken)
