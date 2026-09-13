@@ -80,7 +80,7 @@ func (s *MemberGridWorkspaceService) Access(ctx context.Context, id productport.
 				CanView:        true,
 				CanEdit:        true,
 				CanManageViews: true,
-				CanShare:       a.IsSuperAdmin,
+				CanShare:       a.IsAdmin || a.IsSuperAdmin,
 			}
 			return nil
 		}
@@ -215,7 +215,7 @@ func (s *MemberGridWorkspaceService) DeleteView(ctx context.Context, c productpo
 	return out, classify(err)
 }
 func (s *MemberGridWorkspaceService) CreateCollaborator(ctx context.Context, c productport.CreateMemberGridCollaboratorCommand) (out productport.MemberGridCollaborator, err error) {
-	if !c.Actor.IsSuperAdmin || c.ProductID < 1 || c.AdminUserID < 1 || !validPermission(c.Permission) || c.IdempotencyKey == "" || s.staff == nil {
+	if !(c.Actor.IsAdmin || c.Actor.IsSuperAdmin) || c.ProductID < 1 || c.AdminUserID < 1 || !validPermission(c.Permission) || c.IdempotencyKey == "" || s.staff == nil {
 		return out, ErrInvalidCursor
 	}
 	err = s.uow.Within(ctx, func(tx context.Context) error {
@@ -248,7 +248,7 @@ func (s *MemberGridWorkspaceService) CreateCollaborator(ctx context.Context, c p
 	return out, classify(err)
 }
 func (s *MemberGridWorkspaceService) UpdateCollaborator(ctx context.Context, c productport.UpdateMemberGridCollaboratorCommand) (out productport.MemberGridCollaborator, err error) {
-	if !c.Actor.IsSuperAdmin || c.ProductID < 1 || c.CollaboratorID < 1 || c.ExpectedVersion < 1 || !validPermission(c.Permission) || c.IdempotencyKey == "" {
+	if !(c.Actor.IsAdmin || c.Actor.IsSuperAdmin) || c.ProductID < 1 || c.CollaboratorID < 1 || c.ExpectedVersion < 1 || !validPermission(c.Permission) || c.IdempotencyKey == "" {
 		return out, ErrInvalidCursor
 	}
 	err = s.uow.Within(ctx, func(tx context.Context) error {
@@ -274,7 +274,7 @@ func (s *MemberGridWorkspaceService) UpdateCollaborator(ctx context.Context, c p
 	return out, classify(err)
 }
 func (s *MemberGridWorkspaceService) DeleteCollaborator(ctx context.Context, c productport.DeleteMemberGridCollaboratorCommand) (out productport.MemberGridCollaborator, err error) {
-	if !c.Actor.IsSuperAdmin || c.ProductID < 1 || c.CollaboratorID < 1 || c.ExpectedVersion < 1 || c.IdempotencyKey == "" {
+	if !(c.Actor.IsAdmin || c.Actor.IsSuperAdmin) || c.ProductID < 1 || c.CollaboratorID < 1 || c.ExpectedVersion < 1 || c.IdempotencyKey == "" {
 		return out, ErrInvalidCursor
 	}
 	err = s.uow.Within(ctx, func(tx context.Context) error {
@@ -315,7 +315,7 @@ func (s *MemberGridWorkspaceService) Share(ctx context.Context, id productport.I
 	return out, classify(err)
 }
 func (s *MemberGridWorkspaceService) SetShare(ctx context.Context, c productport.SetMemberGridShareCommand) (out productport.MemberGridShare, issued bool, err error) {
-	if !c.Actor.IsSuperAdmin || c.ProductID < 1 || c.ExpectedVersion < 0 || c.IdempotencyKey == "" {
+	if !(c.Actor.IsAdmin || c.Actor.IsSuperAdmin) || c.ProductID < 1 || c.ExpectedVersion < 0 || c.IdempotencyKey == "" {
 		return out, false, ErrInvalidCursor
 	}
 	err = s.uow.Within(ctx, func(tx context.Context) error {
@@ -383,14 +383,11 @@ func validGridWrite(id productport.ID, a productport.MemberGridActor, key string
 // check therefore cannot complete a write.  Admin is the existing Access-wide
 // Product capability; edit is the local workspace grant.
 func (s *MemberGridWorkspaceService) memberGridWriteAllowed(ctx context.Context, productID productport.ID, actor productport.MemberGridActor, manageShare bool) (bool, error) {
-	if actor.IsSuperAdmin {
+	if actor.IsAdmin || actor.IsSuperAdmin {
 		return true, nil
 	}
 	if manageShare {
 		return false, nil
-	}
-	if actor.IsAdmin {
-		return true, nil
 	}
 	c, err := s.store.FindMemberGridCollaborator(ctx, productID, actor.AdminUserID)
 	if err == productport.ErrProductReadNotFound {

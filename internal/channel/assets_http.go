@@ -185,16 +185,28 @@ func (handler *AssetHTTPHandler) read(w http.ResponseWriter, r *http.Request) bo
 	}
 	return true
 }
+
+func (handler *AssetHTTPHandler) export(w http.ResponseWriter, r *http.Request) bool {
+	principal, err := handler.security.Authenticate(r.Context(), r)
+	if err != nil {
+		writeCatalogError(w, http.StatusUnauthorized, "UNAUTHORIZED")
+		return false
+	}
+	if !channelBusinessWriteRole(principal) {
+		writeCatalogError(w, http.StatusForbidden, "FORBIDDEN")
+		return false
+	}
+	return true
+}
+
 func (handler *AssetHTTPHandler) write(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
 	principal, err := handler.security.AuthorizeCSRF(r.Context(), r)
 	if err != nil {
 		writeCatalogError(w, http.StatusUnauthorized, "UNAUTHORIZED")
 		return accessdomain.Principal{}, false
 	}
-	for _, role := range principal.Roles {
-		if role == accessdomain.RoleSuperAdmin {
-			return principal, true
-		}
+	if channelBusinessWriteRole(principal) {
+		return principal, true
 	}
 	writeCatalogError(w, http.StatusForbidden, "FORBIDDEN")
 	return accessdomain.Principal{}, false
@@ -311,7 +323,7 @@ func (handler *AssetHTTPHandler) get(w http.ResponseWriter, r *http.Request, id 
 	writeChannelJSON(w, http.StatusOK, assetJSON(asset))
 }
 func (handler *AssetHTTPHandler) downloadQR(w http.ResponseWriter, r *http.Request, id int64) {
-	if !handler.read(w, r) {
+	if !handler.export(w, r) {
 		return
 	}
 	if r.URL.RawQuery != "" || r.ContentLength > 0 {

@@ -102,11 +102,7 @@ func (handler *AcquisitionLinkHTTPHandler) write(w http.ResponseWriter, r *http.
 		writeCatalogError(w, http.StatusUnauthorized, "UNAUTHORIZED")
 		return accessdomain.Principal{}, "", false
 	}
-	allowed := false
-	for _, role := range principal.Roles {
-		allowed = allowed || role == accessdomain.RoleSuperAdmin
-	}
-	if !allowed {
+	if !channelBusinessWriteRole(principal) {
 		writeCatalogError(w, http.StatusForbidden, "FORBIDDEN")
 		return accessdomain.Principal{}, "", false
 	}

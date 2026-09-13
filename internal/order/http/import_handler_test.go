@@ -38,14 +38,22 @@ func importRequest(path string) *http.Request {
 	return request
 }
 
-func TestOrderImportRequiresSuperAdminAndExactDigest(t *testing.T) {
+func TestOrderImportAllowsDailyBusinessAdminAndKeepsViewerOut(t *testing.T) {
 	app := &importAppStub{}
 	security := securityStub{principal: accessdomain.Principal{InternalID: 9, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
 	handler, _ := NewImportHandler(app, reconcileStub{}, security)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, importRequest("/api/admin/order-imports/apply"))
-	if response.Code != http.StatusForbidden || app.applies != 0 {
+	if response.Code != http.StatusOK || app.applies != 1 {
 		t.Fatalf("admin import status=%d applies=%d", response.Code, app.applies)
+	}
+
+	security.principal.Roles = []accessdomain.Role{accessdomain.RoleViewer}
+	handler, _ = NewImportHandler(app, reconcileStub{}, security)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, importRequest("/api/admin/order-imports/apply"))
+	if response.Code != http.StatusForbidden || app.applies != 1 {
+		t.Fatalf("viewer import status=%d applies=%d", response.Code, app.applies)
 	}
 
 	security.principal.Roles = []accessdomain.Role{accessdomain.RoleSuperAdmin}
@@ -54,7 +62,7 @@ func TestOrderImportRequiresSuperAdminAndExactDigest(t *testing.T) {
 	request.Header.Set("X-Manifest-SHA256", strings.Repeat("0", 64))
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || app.applies != 0 {
+	if response.Code != http.StatusConflict || app.applies != 1 {
 		t.Fatalf("digest mismatch status=%d applies=%d", response.Code, app.applies)
 	}
 }

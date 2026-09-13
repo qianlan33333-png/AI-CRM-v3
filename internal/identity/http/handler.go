@@ -442,10 +442,22 @@ func (handler *Handler) writePrincipal(request *nethttp.Request) (accessdomain.P
 	if err = principal.Validate(); err != nil {
 		return accessdomain.Principal{}, accessdomain.ErrAuthentication
 	}
-	if !principal.IsSuperAdmin() {
+	if !identityBusinessWriteRole(principal) {
 		return accessdomain.Principal{}, accessdomain.ErrPermissionDenied
 	}
 	return principal, nil
+}
+
+func identityBusinessWriteRole(principal accessdomain.Principal) bool {
+	if principal.Kind != accessdomain.KindAdmin && principal.Kind != accessdomain.KindStaff {
+		return false
+	}
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleAdmin || role == accessdomain.RoleSuperAdmin {
+			return true
+		}
+	}
+	return false
 }
 
 func (handler *Handler) writeError(response nethttp.ResponseWriter, err error) {

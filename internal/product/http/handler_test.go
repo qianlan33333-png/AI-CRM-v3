@@ -881,9 +881,12 @@ func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *te
 }
 
 func TestReadOnlyMemberGridCollaboratorGetsExplicitForbiddenAndNoWrites(t *testing.T) {
-	handler, _, _, _ := newHandlerForTest(t)
+	handler, security, _, _ := newHandlerForTest(t)
 	workspace := handler.workspace.(*testMemberWorkspace)
-	workspace.access = productport.MemberGridAccess{CanView: true}
+	security.principal = accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 9, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	// Simulate a stale/local collaborator projection which would otherwise
+	// grant edit rights. The global viewer role must still be read-only.
+	workspace.access = productport.MemberGridAccess{CanView: true, CanEdit: true, CanManageViews: true, CanShare: true}
 	workspace.share = productport.MemberGridShare{ProductID: 7, Enabled: true, PublicID: "mgshare1.abcdefghijklmnopqrstuv.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Version: 1}
 	config := `{"schema_version":1,"filter":{"logic":"and","conditions":[]},"sorts":[],"groups":[]}`
 
@@ -910,6 +913,10 @@ func TestReadOnlyMemberGridCollaboratorGetsExplicitForbiddenAndNoWrites(t *testi
 	settings := request(http.MethodGet, "/api/admin/service-period-products/7/member-grid/share-settings", "")
 	if settings.Code != http.StatusOK || !strings.Contains(settings.Body.String(), `"url":""`) || strings.Contains(settings.Body.String(), workspace.share.PublicID) {
 		t.Fatalf("read-only share settings status=%d body=%s", settings.Code, settings.Body.String())
+	}
+	access, _, ok := handler.memberGridAuthorize(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/admin/service-period-products/7/member-grid/share-settings", nil), 7, false)
+	if !ok || !access.CanView || access.CanEdit || access.CanManageViews || access.CanShare {
+		t.Fatalf("viewer access=%+v ok=%v", access, ok)
 	}
 
 	assertForbidden("create view", request(http.MethodPost, "/api/admin/service-period-products/7/member-views", `{"name":"不可保存","config":`+config+`}`))

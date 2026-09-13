@@ -53,11 +53,23 @@ func (handler *Handler) ownerHandoffPrincipal(response nethttp.ResponseWriter, r
 		handler.writeError(response, err)
 		return accessdomain.Principal{}, false
 	}
-	if !principal.IsSuperAdmin() {
+	if !ownerHandoffWriteRole(principal) {
 		handler.writeError(response, accessdomain.ErrPermissionDenied)
 		return accessdomain.Principal{}, false
 	}
 	return principal, true
+}
+
+func ownerHandoffWriteRole(principal accessdomain.Principal) bool {
+	if principal.Kind != accessdomain.KindAdmin && principal.Kind != accessdomain.KindStaff {
+		return false
+	}
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleAdmin || role == accessdomain.RoleSuperAdmin {
+			return true
+		}
+	}
+	return false
 }
 func decodeOwnerHandoff(request *nethttp.Request, out any) error {
 	decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))

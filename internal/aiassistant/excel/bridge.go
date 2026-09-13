@@ -479,6 +479,12 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		action = accessport.AIAssistantReview
 	}
+	// A per-recipient CSV is an export, rather than an ordinary page read.
+	// Reuse the existing administrator review permission until Access owns a
+	// distinct export action.
+	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/report.csv") {
+		action = accessport.AIAssistantReview
+	}
 	if strings.HasSuffix(r.URL.Path, "/approve") {
 		action = accessport.AIAssistantApprove
 	}

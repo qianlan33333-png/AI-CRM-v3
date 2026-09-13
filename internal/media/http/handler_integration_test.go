@@ -34,6 +34,24 @@ import (
 
 type handlerTestSecurity struct{}
 
+func TestAttachmentDownloadRoleMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value accessdomain.Principal
+		want  bool
+	}{
+		{name: "viewer", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleViewer}}, want: false},
+		{name: "admin", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, want: true},
+		{name: "super", value: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := writeRole(test.value); got != test.want {
+				t.Fatalf("writeRole(%+v)=%v want %v", test.value, got, test.want)
+			}
+		})
+	}
+}
+
 func (handlerTestSecurity) Authenticate(_ context.Context, request *http.Request) (accessdomain.Principal, error) {
 	if request.Header.Get("X-Test-Auth") == "none" {
 		return accessdomain.Principal{}, errors.New("unauthorized")
@@ -206,6 +224,15 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	attachment := responseJSON(t, serve(attachmentRequest), http.StatusOK)
 	requireJSONFields(t, attachment, "ok", "item", "attachment", "id", "version", "download_url")
 	attachmentID := int64(attachment["id"].(float64))
+	viewerDownload := httptest.NewRequest(http.MethodGet, "/api/admin/attachment-library/"+jsonID(attachmentID)+"/download", nil)
+	viewerDownload.Header.Set("X-Test-Role", "viewer")
+	if got := serve(viewerDownload); got.Code != http.StatusForbidden {
+		t.Fatalf("viewer attachment download status=%d", got.Code)
+	}
+	adminDownload := httptest.NewRequest(http.MethodGet, "/api/admin/attachment-library/"+jsonID(attachmentID)+"/download", nil)
+	if got := serve(adminDownload); got.Code != http.StatusOK || got.Header().Get("Content-Disposition") == "" {
+		t.Fatalf("admin attachment download status=%d disposition=%q", got.Code, got.Header().Get("Content-Disposition"))
+	}
 	cas := admin(httptest.NewRequest(http.MethodPut, "/api/admin/attachment-library/"+jsonID(attachmentID), bytes.NewBufferString(`{"name":"guide2","expected_version":1}`)))
 	cas.Header.Set("Idempotency-Key", "attachment-cas-key-0001")
 	if got := serve(cas); got.Code != http.StatusOK {

@@ -479,7 +479,7 @@ func (handler *Handler) shopRefund(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	principal, err := handler.security.AuthorizeCSRF(request.Context(), request)
-	if err != nil || principal.Kind != accessdomain.KindAdmin || !hasRole(principal.Roles, accessdomain.RoleAdmin) {
+	if err != nil || !paymentBusinessWriteRole(principal) {
 		writeError(writer, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -536,7 +536,7 @@ func (handler *Handler) compatRefund(writer http.ResponseWriter, request *http.R
 		return
 	}
 	principal, err := handler.security.AuthorizeCSRF(request.Context(), request)
-	if err != nil || principal.Kind != accessdomain.KindAdmin || !hasRole(principal.Roles, accessdomain.RoleAdmin) {
+	if err != nil || !paymentBusinessWriteRole(principal) {
 		writeError(writer, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -818,7 +818,7 @@ func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	principal, err := handler.security.AuthorizeCSRF(request.Context(), request)
-	if err != nil || principal.Kind != accessdomain.KindAdmin || !hasRole(principal.Roles, accessdomain.RoleAdmin) {
+	if err != nil || !paymentBusinessWriteRole(principal) {
 		writeError(writer, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -957,7 +957,7 @@ func (handler *Handler) reconcileShopRefund(writer http.ResponseWriter, request 
 		return
 	}
 	principal, err := handler.security.AuthorizeCSRF(request.Context(), request)
-	if err != nil || principal.Kind != accessdomain.KindAdmin || !hasRole(principal.Roles, accessdomain.RoleAdmin) {
+	if err != nil || !paymentBusinessWriteRole(principal) {
 		writeError(writer, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -987,7 +987,7 @@ func (handler *Handler) reconcileWeChatPay(writer http.ResponseWriter, request *
 		return
 	}
 	principal, err := handler.security.AuthorizeCSRF(request.Context(), request)
-	if err != nil || principal.Kind != accessdomain.KindAdmin || !hasRole(principal.Roles, accessdomain.RoleAdmin) {
+	if err != nil || !paymentBusinessWriteRole(principal) {
 		writeError(writer, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -1118,6 +1118,15 @@ func hasRole(roles []accessdomain.Role, expected accessdomain.Role) bool {
 		}
 	}
 	return false
+}
+
+// paymentBusinessWriteRole preserves the payment HTTP surface's existing
+// administrator principal kind while treating the two daily-business roles
+// alike. CSRF, idempotency, confirmation and provider safeguards remain at
+// each command boundary.
+func paymentBusinessWriteRole(principal accessdomain.Principal) bool {
+	return principal.Kind == accessdomain.KindAdmin &&
+		(hasRole(principal.Roles, accessdomain.RoleAdmin) || hasRole(principal.Roles, accessdomain.RoleSuperAdmin))
 }
 
 var _ Application = (*paymentapp.Service)(nil)
