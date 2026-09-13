@@ -36,7 +36,7 @@ func TestWeComStaffProjectorCreatesViewerAndPreservesExistingState(t *testing.T)
 		t.Fatalf("result=%+v", result)
 	}
 	created, err := repository.UserByWeComUserID(context.Background(), "staff-2", false)
-	if err != nil || !created.Active || len(created.Roles) != 1 || created.Roles[0] != domain.RoleViewer || created.PasswordHash == "" {
+	if err != nil || !created.Active || created.LoginEnabled || created.AccessGrantedAt != nil || len(created.Roles) != 1 || created.Roles[0] != domain.RoleViewer || created.PasswordHash == "" {
 		t.Fatalf("created=%+v err=%v", created, err)
 	}
 	if repository.users[1].Active || repository.users[1].DisplayName != "Existing" {

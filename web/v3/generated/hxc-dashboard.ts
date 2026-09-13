@@ -598,6 +598,11 @@ export type RequiredIdempotencyKeyParameter = string;
  */
 export type AdminAccessIdempotencyKeyParameter = string;
 
+/**
+ * Stable Access-governance command key. Repeating the same governed command replays its receipt; using the key for a different command is rejected.
+ */
+export type AccessGovernanceIdempotencyKeyParameter = string;
+
 export type GroupOpsWebhookClientIDParameter = "aicrm-webhook-group-ops";
 
 export type GroupOpsWebhookTimestampParameter = string;

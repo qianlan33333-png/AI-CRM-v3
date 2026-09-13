@@ -51,10 +51,10 @@ func TestV1ChatRecordsResolvesLocalStaffSelectorPostgreSQL(t *testing.T) {
 	if err = native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('chat-selector-staff','$argon2id$fixture','Selected staff','follow-user-selected',true) RETURNING id`).Scan(&selectedStaffID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('chat-selector-staff','$argon2id$fixture','Selected staff','follow-user-selected',true,false) RETURNING id`).Scan(&selectedStaffID); err != nil {
 		t.Fatal(err)
 	}
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('chat-other-staff','$argon2id$fixture','Other staff','follow-user-other',true) RETURNING id`).Scan(&otherStaffID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('chat-other-staff','$argon2id$fixture','Other staff','follow-user-other',true,false) RETURNING id`).Scan(&otherStaffID); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 13, 13, 0, 0, 0, time.UTC)

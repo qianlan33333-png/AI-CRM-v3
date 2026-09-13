@@ -235,6 +235,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	if len(cfg.WeCom.ContextSigningKey) >= 32 {
+		if err = management.SetGovernanceSigningKey([]byte(cfg.WeCom.ContextSigningKey)); err != nil {
+			return fail(err)
+		}
+	}
 	machineService, err := accessapp.NewMachineService(accessRepository, uow, passwords, accessapp.MachineConfig{SigningKey: []byte(cfg.OpenPlatform.JWTSigningKey), CorpID: cfg.WeCom.CorpID})
 	if err != nil {
 		return fail(err)
@@ -1259,6 +1264,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	providerClient, err := providerFactory(weComProviderConfig(cfg))
 	if err != nil {
 		return fail(err)
+	}
+	// Enterprise employee selection is a separate, read-only application
+	// directory capability. It never reuses the external-contact follow-user
+	// subset and remains unavailable when the scoped provider/key is absent.
+	if providerClient.EnterpriseDirectoryReady() && len(cfg.WeCom.ContextSigningKey) >= 32 {
+		if err = management.SetEnterpriseEmployeeDirectory(providerClient, []byte(cfg.WeCom.ContextSigningKey), cfg.WeCom.CorpID); err != nil {
+			return fail(err)
+		}
 	}
 	// The transfer-result endpoint is a read-only WeCom protocol leaf. Keep the
 	// Customer UoW separate from this Provider call; its service persists the

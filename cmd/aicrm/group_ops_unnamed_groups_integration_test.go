@@ -29,7 +29,12 @@ func TestGroupOpsDirectoryPersistsMixedNamedAndUnnamedGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	var owner int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('unnamed-groups','$argon2id$test','Directory Test','unnamed-owner',true) RETURNING id`).Scan(&owner); err != nil {
+	if err = native.QueryRow(ctx, `WITH account AS (
+		INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled)
+		VALUES('unnamed-groups','$argon2id$test','Directory Test','unnamed-owner',true,false) RETURNING id
+	), role AS (
+		INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account
+	) SELECT id FROM account`).Scan(&owner); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()

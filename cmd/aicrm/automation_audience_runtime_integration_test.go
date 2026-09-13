@@ -969,7 +969,7 @@ func (s *automationAudienceWeComServer) Uploads() int {
 func automationAudienceInsertProviderStaff(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	var id int64
-	err := pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid) VALUES('runtime-staff','$argon2id$runtime','Runtime sender','sender-a') RETURNING id`).Scan(&id)
+	err := pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,login_enabled) VALUES('runtime-staff','$argon2id$runtime','Runtime sender','sender-a',false) RETURNING id`).Scan(&id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1245,6 +1245,11 @@ func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
 			admin.Close()
 			t.Fatalf("%s: %v", name, execErr)
 		}
+	}
+	if err = ensureAccessLoginFixtureSchema(ctx, native); err != nil {
+		native.Close()
+		admin.Close()
+		t.Fatal(err)
 	}
 	return native, func() {
 		native.Close()

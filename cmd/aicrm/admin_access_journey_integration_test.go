@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -93,9 +94,9 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 		t.Fatalf("disabled target session must be fenced: status=%d body=%s", refreshed.Code, refreshed.Body.String())
 	}
 
-	var active bool
+	var active, loginEnabled bool
 	var audits, receipts int
-	if err = application.pool.Native().QueryRow(ctx, `SELECT is_active FROM admin_users WHERE id=$1`, target.ID).Scan(&active); err != nil {
+	if err = application.pool.Native().QueryRow(ctx, `SELECT is_active,login_enabled FROM admin_users WHERE id=$1`, target.ID).Scan(&active, &loginEnabled); err != nil {
 		t.Fatal(err)
 	}
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM admin_access_audit WHERE actor_admin_user_id=1 AND target_admin_user_id=$1 AND action='set_login_enabled'`, target.ID).Scan(&audits); err != nil {
@@ -104,8 +105,12 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM admin_access_login_compat_receipts WHERE actor_admin_user_id=1 AND idempotency_key='admin-access-journey-save'`).Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
-	if active || audits != 1 || receipts != 1 {
-		t.Fatalf("commit state active=%v audits=%d receipts=%d", active, audits, receipts)
+	if !active || loginEnabled || audits != 1 || receipts != 1 {
+		t.Fatalf("commit state active=%v login_enabled=%v audits=%d receipts=%d", active, loginEnabled, audits, receipts)
+	}
+	readback := adminAccessRequest(t, application.handler, http.MethodGet, nil, session, "")
+	if readback.Code != http.StatusOK || !adminAccessMemberState(t, readback.Body.Bytes(), target.ID, true, false) {
+		t.Fatalf("compatibility readback did not separate staff availability from login: status=%d body=%s", readback.Code, readback.Body.String())
 	}
 
 	// The owner remains active; an exact replay must not create another
@@ -118,15 +123,15 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 	if drift.Code != http.StatusConflict || !strings.Contains(drift.Body.String(), "idempotency_conflict") {
 		t.Fatalf("payload drift=%d body=%s", drift.Code, drift.Body.String())
 	}
-	if err = application.pool.Native().QueryRow(ctx, `SELECT is_active FROM admin_users WHERE id=$1`, target.ID).Scan(&active); err != nil || active {
-		t.Fatalf("drift changed active=%v err=%v", active, err)
+	if err = application.pool.Native().QueryRow(ctx, `SELECT is_active,login_enabled FROM admin_users WHERE id=$1`, target.ID).Scan(&active, &loginEnabled); err != nil || !active || loginEnabled {
+		t.Fatalf("drift changed active=%v login_enabled=%v err=%v", active, loginEnabled, err)
 	}
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM admin_access_audit WHERE target_admin_user_id=$1 AND action='set_login_enabled'`, target.ID).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("replay/drift audits=%d err=%v", audits, err)
 	}
 
 	// A PostgreSQL trigger fails the audit INSERT after this request has already
-	// reserved its receipt and changed admin_users via SetActive. This is a real
+	// reserved its receipt and changed admin_users via SetLoginEnabled. This is a real
 	// store/transaction failpoint, not a repository mock: the HTTP response must
 	// leave all three Access-owned tables exactly as they were before the call.
 	if _, err = application.pool.Native().Exec(ctx, `
@@ -151,12 +156,32 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM admin_access_login_compat_receipts WHERE actor_admin_user_id=1 AND idempotency_key='admin-access-journey-rollback'`).Scan(&receipts); err != nil || receipts != 0 {
 		t.Fatalf("failed request left receipt count=%d err=%v", receipts, err)
 	}
-	if err = application.pool.Native().QueryRow(ctx, `SELECT is_active FROM admin_users WHERE id=$1`, target.ID).Scan(&active); err != nil || active {
-		t.Fatalf("failed request changed target active=%v err=%v", active, err)
+	if err = application.pool.Native().QueryRow(ctx, `SELECT is_active,login_enabled FROM admin_users WHERE id=$1`, target.ID).Scan(&active, &loginEnabled); err != nil || !active || loginEnabled {
+		t.Fatalf("failed request changed target active=%v login_enabled=%v err=%v", active, loginEnabled, err)
 	}
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM admin_access_audit WHERE target_admin_user_id=$1 AND action='set_login_enabled'`, target.ID).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("failed request changed audit count=%d err=%v", audits, err)
 	}
+}
+
+func adminAccessMemberState(t *testing.T, body []byte, targetID int64, active, loginEnabled bool) bool {
+	t.Helper()
+	var payload struct {
+		Members []struct {
+			AdminUserID  int64 `json:"admin_user_id"`
+			Active       bool  `json:"is_active"`
+			LoginEnabled bool  `json:"login_enabled"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range payload.Members {
+		if member.AdminUserID == targetID {
+			return member.Active == active && member.LoginEnabled == loginEnabled
+		}
+	}
+	return false
 }
 
 func adminAccessLogin(t *testing.T, handler http.Handler, username, password string) (session, csrf string) {

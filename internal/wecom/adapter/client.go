@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -616,6 +617,24 @@ func (client *Client) sign(signedURL, ticket string) (wecom.JSSDKSignature, erro
 }
 
 type response struct {
+	DepartmentUsers []struct {
+		UserID string `json:"userid"`
+	} `json:"dept_user"`
+	Departments []struct {
+		ID       int64 `json:"id"`
+		ParentID int64 `json:"parentid"`
+	} `json:"department_id"`
+	// agent/get has a different shape from department/simplelist. Keep these
+	// raw until the enterprise-directory reader validates its bounded,
+	// minimum projection; an unknown permission shape must never be treated as
+	// an empty visible scope.
+	AllowUserInfos json.RawMessage `json:"allow_userinfos"`
+	AllowPartys    json.RawMessage `json:"allow_partys"`
+	AllowTags      json.RawMessage `json:"allow_tags"`
+	Users          []struct {
+		UserID string `json:"userid"`
+		Name   string `json:"name"`
+	} `json:"userlist"`
 	ErrCode     json.RawMessage `json:"errcode"`
 	AccessToken string          `json:"access_token"`
 	UserID      string          `json:"UserId"`
@@ -2086,3 +2105,796 @@ func (client *Client) ReadGroupMembership(ctx context.Context, chatID string) (r
 	}
 	return result, nil
 }
+
+// EnterpriseDirectoryReady reports whether the normal application credential
+// can perform read-only corporate-directory calls. It is intentionally
+// separate from DirectoryReady, which uses the customer-contact secret.
+func (client *Client) EnterpriseDirectoryReady() bool {
+	return client != nil && client.Ready() && !invalid(client.config.Secret)
+}
+
+// ListEnterpriseEmployees reads the application-visible corporate directory
+// through the read-only department/simplelist + user/simplelist APIs. The
+// newer user/list_id endpoint is not universally granted to the existing
+// application credential, so this adapter deliberately uses the standard
+// member-reading APIs and returns a failure rather than a partial directory.
+func (client *Client) ListEnterpriseEmployees(ctx context.Context) ([]wecomport.EnterpriseEmployee, error) {
+	if !client.EnterpriseDirectoryReady() {
+		return nil, wecomport.ErrDirectoryDisabled
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	token, err := client.accessToken(readCtx)
+	if err != nil {
+		return nil, classifyDirectoryReadError(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		employees, readErr := client.listEnterpriseEmployees(readCtx, token)
+		if !directoryTokenExpired(readErr) {
+			if readErr != nil {
+				return nil, classifyDirectoryReadError(readErr)
+			}
+			return employees, nil
+		}
+		if attempt == 1 {
+			return nil, classifyDirectoryRefreshError(readErr)
+		}
+		token, err = client.refreshAccessToken(readCtx)
+		if err != nil {
+			return nil, classifyDirectoryRefreshError(err)
+		}
+	}
+	return nil, classifyDirectoryReadError(ErrUnavailable)
+}
+
+// EnterpriseDirectoryPreflight exposes only safe aggregate evidence for an
+// operator-run, read-only release gate. It retains all provider identifiers,
+// names, tokens, responses and errors inside the adapter.
+type EnterpriseDirectoryPreflight struct {
+	Complete                bool   `json:"complete"`
+	FailureStage            string `json:"failure_stage,omitempty"`
+	AgentUserInfosShape     string `json:"agent_userinfos_shape,omitempty"`
+	AgentPartysShape        string `json:"agent_partys_shape,omitempty"`
+	AgentTagsShape          string `json:"agent_tags_shape,omitempty"`
+	AgentUserInfosDetail    string `json:"agent_userinfos_detail,omitempty"`
+	AgentPartysDetail       string `json:"agent_partys_detail,omitempty"`
+	AgentTagsDetail         string `json:"agent_tags_detail,omitempty"`
+	ScopeUsers              int    `json:"scope_user_count"`
+	ScopeDepartments        int    `json:"scope_department_count"`
+	DirectoryDepartments    int    `json:"directory_department_count"`
+	DirectoryComponents     int    `json:"directory_component_count"`
+	DepartmentEmployeeCount int    `json:"department_employee_count"`
+	DirectEmployeeCount     int    `json:"direct_employee_count"`
+	EmployeeCount           int    `json:"employee_count"`
+}
+
+// PreflightEnterpriseDirectory proves that the application credential can
+// enumerate its whole visible scope. A non-empty FailureStage is deliberately
+// coarse: it distinguishes configuration, token, scope, and page families
+// without disclosing a Provider error code, response body, or identifier.
+func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) EnterpriseDirectoryPreflight {
+	result := EnterpriseDirectoryPreflight{}
+	if !client.EnterpriseDirectoryReady() {
+		result.FailureStage = "config"
+		return result
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	token, err := client.accessToken(readCtx)
+	if err != nil {
+		result.FailureStage = "token"
+		return result
+	}
+	scope, stage, evidence := client.enterpriseAgentScopePreflight(readCtx, token)
+	result.AgentUserInfosShape = evidence.userInfos
+	result.AgentPartysShape = evidence.partys
+	result.AgentTagsShape = evidence.tags
+	result.AgentUserInfosDetail = evidence.userInfosDetail
+	result.AgentPartysDetail = evidence.partysDetail
+	result.AgentTagsDetail = evidence.tagsDetail
+	if stage != "" {
+		result.FailureStage = stage
+		return result
+	}
+	result.ScopeUsers = len(scope.userIDs)
+	result.ScopeDepartments = len(scope.departmentIDs)
+	departments, err := client.enterpriseDepartments(readCtx, token)
+	if err != nil {
+		result.FailureStage = "departments"
+		return result
+	}
+	result.DirectoryDepartments = len(departments)
+	authorizedDepartments, err := enterpriseAuthorizedDepartments(departments, scope.departmentIDs)
+	if err != nil {
+		result.FailureStage = "scope_coverage"
+		return result
+	}
+	scopes, err := enterpriseDirectoryScopes(authorizedDepartments)
+	if err != nil {
+		result.FailureStage = "department_topology"
+		return result
+	}
+	result.DirectoryComponents = len(scopes)
+	departmentEmployees, err := client.enterpriseMembers(readCtx, token, scopes)
+	if err != nil {
+		result.FailureStage = "department_members"
+		return result
+	}
+	result.DepartmentEmployeeCount = len(departmentEmployees)
+	directEmployees, err := client.enterpriseDirectEmployees(readCtx, token, scope.userIDs)
+	if err != nil {
+		result.FailureStage = "direct_members"
+		return result
+	}
+	result.DirectEmployeeCount = len(directEmployees)
+	employees, err := mergeEnterpriseEmployees(departmentEmployees, directEmployees)
+	if err != nil {
+		result.FailureStage = "merge"
+		return result
+	}
+	result.Complete = true
+	result.EmployeeCount = len(employees)
+	return result
+}
+
+type enterpriseAgentScopeEvidence struct {
+	userInfos       string
+	partys          string
+	tags            string
+	userInfosDetail string
+	partysDetail    string
+	tagsDetail      string
+}
+
+func enterpriseScopeFieldShape(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return "missing"
+	}
+	if bytes.Equal(raw, []byte("null")) {
+		return "null"
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "malformed"
+	}
+	switch value.(type) {
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	case string:
+		return "string"
+	case float64:
+		return "number"
+	case bool:
+		return "boolean"
+	default:
+		return "unknown"
+	}
+}
+
+// enterpriseScopeEnvelopeDetail is deliberately value-free preflight
+// evidence. It reveals only a known envelope field's type, collection size,
+// element types, and the enclosing object key count.
+func enterpriseScopeEnvelopeDetail(raw json.RawMessage, expectedField string) string {
+	raw = bytes.TrimSpace(raw)
+	if enterpriseScopeFieldShape(raw) != "object" {
+		return "envelope=" + enterpriseScopeFieldShape(raw)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "envelope=malformed"
+	}
+	field, exists := envelope[expectedField]
+	if !exists {
+		return "object_keys=" + strconv.Itoa(len(envelope)) + ";" + expectedField + "=missing"
+	}
+	return "object_keys=" + strconv.Itoa(len(envelope)) + ";" + expectedField + "=" + enterpriseScopeValueDetail(field)
+}
+
+func enterpriseScopeValueDetail(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return "missing"
+	}
+	if bytes.Equal(raw, []byte("null")) {
+		return "null"
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return enterpriseScopeFieldShape(raw)
+	}
+	if len(values) == 0 {
+		return "array_len=0;element_types=none"
+	}
+	types := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		types[enterpriseScopeFieldShape(value)] = struct{}{}
+	}
+	orderedTypes := make([]string, 0, len(types))
+	for kind := range types {
+		orderedTypes = append(orderedTypes, kind)
+	}
+	sort.Strings(orderedTypes)
+	return "array_len=" + strconv.Itoa(len(values)) + ";element_types=" + strings.Join(orderedTypes, ",")
+}
+
+func (client *Client) enterpriseAgentScopePreflight(ctx context.Context, token string) (enterpriseAgentScope, string, enterpriseAgentScopeEvidence) {
+	payload, err := client.request(ctx, "/cgi-bin/agent/get", url.Values{"access_token": {token}, "agentid": {client.config.AgentID}})
+	if err != nil {
+		return enterpriseAgentScope{}, "agent_get", enterpriseAgentScopeEvidence{}
+	}
+	evidence := enterpriseAgentScopeEvidence{
+		userInfos: enterpriseScopeFieldShape(payload.AllowUserInfos), partys: enterpriseScopeFieldShape(payload.AllowPartys), tags: enterpriseScopeFieldShape(payload.AllowTags),
+		userInfosDetail: enterpriseScopeEnvelopeDetail(payload.AllowUserInfos, "user"),
+		partysDetail:    enterpriseScopeEnvelopeDetail(payload.AllowPartys, "partyid"),
+		tagsDetail:      enterpriseScopeEnvelopeDetail(payload.AllowTags, "tagid"),
+	}
+	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 {
+		return enterpriseAgentScope{}, "agent_scope_shape", evidence
+	}
+	if !enterpriseAllowTagsAreEmpty(payload.AllowTags) {
+		return enterpriseAgentScope{}, "agent_tags", evidence
+	}
+	userIDs, err := enterpriseScopeUserIDs(payload.AllowUserInfos)
+	if err != nil {
+		return enterpriseAgentScope{}, "agent_users", evidence
+	}
+	departmentIDs, err := enterpriseScopeDepartmentIDs(payload.AllowPartys)
+	if err != nil {
+		return enterpriseAgentScope{}, "agent_departments", evidence
+	}
+	return enterpriseAgentScope{userIDs: userIDs, departmentIDs: departmentIDs}, "", evidence
+}
+
+func (client *Client) listEnterpriseEmployees(ctx context.Context, token string) ([]wecomport.EnterpriseEmployee, error) {
+	scope, err := client.enterpriseAgentScope(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	departments, err := client.enterpriseDepartments(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	authorizedDepartments, err := enterpriseAuthorizedDepartments(departments, scope.departmentIDs)
+	if err != nil {
+		// The app scope says this department is visible, but the current
+		// directory projection omitted it. Returning partial results would
+		// turn an authorization/read failure into a false "not found".
+		return nil, ErrResponse
+	}
+	scopes, err := enterpriseDirectoryScopes(authorizedDepartments)
+	if err != nil {
+		return nil, err
+	}
+	// Every authorized connected component gets exactly one recursive read. The
+	// department projection may include branches outside allow_partys, so it is
+	// first reduced to the allowed roots and their descendants. Any cycle in
+	// that selected subtree is rejected by enterpriseDirectoryScopes.
+	departmentEmployees, err := client.enterpriseMembers(ctx, token, scopes)
+	if err != nil {
+		return nil, err
+	}
+	directEmployees, err := client.enterpriseDirectEmployees(ctx, token, scope.userIDs)
+	if err != nil {
+		return nil, err
+	}
+	return mergeEnterpriseEmployees(departmentEmployees, directEmployees)
+}
+
+type enterpriseAgentScope struct {
+	userIDs       []string
+	departmentIDs []int64
+}
+
+// enterpriseAgentScope reads the application permission envelope before
+// enumerating members. Department reads alone omit employees who are visible
+// through allow_userinfos, while non-empty allow_tags cannot be expanded
+// completely by this API and must therefore fail closed.
+func (client *Client) enterpriseAgentScope(ctx context.Context, token string) (enterpriseAgentScope, error) {
+	payload, err := client.request(ctx, "/cgi-bin/agent/get", url.Values{"access_token": {token}, "agentid": {client.config.AgentID}})
+	if err != nil {
+		return enterpriseAgentScope{}, err
+	}
+	// Missing user/department scope fields must never turn into an accidental
+	// all-directory read. agent/get may omit allow_tags when no tag scope is
+	// granted; that one omission is safely equivalent to an empty tag envelope.
+	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 {
+		return enterpriseAgentScope{}, ErrResponse
+	}
+	if !enterpriseAllowTagsAreEmpty(payload.AllowTags) {
+		return enterpriseAgentScope{}, ErrResponse
+	}
+	userIDs, err := enterpriseScopeUserIDs(payload.AllowUserInfos)
+	if err != nil {
+		return enterpriseAgentScope{}, err
+	}
+	departmentIDs, err := enterpriseScopeDepartmentIDs(payload.AllowPartys)
+	if err != nil {
+		return enterpriseAgentScope{}, err
+	}
+	return enterpriseAgentScope{userIDs: userIDs, departmentIDs: departmentIDs}, nil
+}
+
+// enterpriseAllowTagsAreEmpty accepts only the permitted omitted/empty tag
+// envelope. Any non-empty, malformed, or otherwise unknown value remains a
+// fail-closed condition because this reader cannot enumerate tag members.
+func enterpriseAllowTagsAreEmpty(raw json.RawMessage) bool {
+	return !rawJSONHasItems(raw)
+}
+
+func rawJSONHasItems(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) || bytes.Equal(raw, []byte("{}")) || bytes.Equal(raw, []byte("[]")) {
+		return false
+	}
+	var value map[string]json.RawMessage
+	if json.Unmarshal(raw, &value) != nil {
+		// An unrecognized non-empty permission envelope is not safely empty.
+		return true
+	}
+	for _, child := range value {
+		child = bytes.TrimSpace(child)
+		if len(child) > 0 && !bytes.Equal(child, []byte("null")) && !bytes.Equal(child, []byte("[]")) && !bytes.Equal(child, []byte("{}")) {
+			return true
+		}
+	}
+	return false
+}
+
+func enterpriseScopeUserIDs(raw json.RawMessage) ([]string, error) {
+	raw = bytes.TrimSpace(raw)
+	if bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(raw, &envelope) != nil {
+		return nil, ErrResponse
+	}
+	users, exists := envelope["user"]
+	if !exists {
+		if len(envelope) == 0 {
+			return nil, nil
+		}
+		return nil, ErrResponse
+	}
+	users = bytes.TrimSpace(users)
+	if len(users) == 0 || bytes.Equal(users, []byte("null")) {
+		return nil, nil
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(users, &entries); err != nil {
+		return nil, ErrResponse
+	}
+	values := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		var legacyUserID string
+		if err := json.Unmarshal(entry, &legacyUserID); err == nil {
+			values = append(values, legacyUserID)
+			continue
+		}
+		// agent/get's official envelope uses objects. Additional official
+		// metadata is deliberately ignored; only the exact userid is trusted
+		// for the directory read.
+		var person struct {
+			UserID string `json:"userid"`
+		}
+		if err := json.Unmarshal(entry, &person); err != nil || person.UserID == "" {
+			return nil, ErrResponse
+		}
+		values = append(values, person.UserID)
+	}
+	return normalizeEnterpriseScopeUserIDs(values)
+}
+
+func normalizeEnterpriseScopeUserIDs(values []string) ([]string, error) {
+	if len(values) > 10000 {
+		return nil, ErrResponse
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		userID := strings.TrimSpace(value)
+		if userID == "" || userID != value || invalid(userID) {
+			return nil, ErrResponse
+		}
+		if _, duplicate := seen[userID]; duplicate {
+			return nil, ErrResponse
+		}
+		seen[userID] = struct{}{}
+		result = append(result, userID)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func enterpriseScopeDepartmentIDs(raw json.RawMessage) ([]int64, error) {
+	raw = bytes.TrimSpace(raw)
+	if bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(raw, &envelope) != nil {
+		return nil, ErrResponse
+	}
+	parties, exists := envelope["partyid"]
+	if !exists {
+		if len(envelope) == 0 {
+			return nil, nil
+		}
+		return nil, ErrResponse
+	}
+	var departmentIDs []int64
+	if json.Unmarshal(parties, &departmentIDs) != nil || len(departmentIDs) > 500 {
+		return nil, ErrResponse
+	}
+	seen := make(map[int64]struct{}, len(departmentIDs))
+	for _, departmentID := range departmentIDs {
+		if departmentID < 1 {
+			return nil, ErrResponse
+		}
+		if _, duplicate := seen[departmentID]; duplicate {
+			return nil, ErrResponse
+		}
+		seen[departmentID] = struct{}{}
+	}
+	result := make([]int64, 0, len(seen))
+	for departmentID := range seen {
+		result = append(result, departmentID)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result, nil
+}
+
+func (client *Client) enterpriseDepartments(ctx context.Context, token string) ([]enterpriseDepartment, error) {
+	payload, err := client.request(ctx, "/cgi-bin/department/simplelist", url.Values{"access_token": {token}})
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Departments) > 500 {
+		return nil, ErrResponse
+	}
+	departments := make([]enterpriseDepartment, len(payload.Departments))
+	seen := make(map[int64]struct{}, len(payload.Departments))
+	for index, value := range payload.Departments {
+		if value.ID < 1 || value.ParentID < 0 {
+			return nil, ErrResponse
+		}
+		if _, duplicate := seen[value.ID]; duplicate {
+			return nil, ErrResponse
+		}
+		seen[value.ID] = struct{}{}
+		departments[index] = enterpriseDepartment{id: value.ID, parentID: value.ParentID}
+	}
+	return departments, nil
+}
+
+type enterpriseDepartment struct {
+	id       int64
+	parentID int64
+}
+
+// enterpriseAuthorizedDepartments reduces the Provider's department snapshot
+// to the explicit allow_partys roots and their descendants. The snapshot can
+// contain other branches; they are not evidence that this application may
+// enumerate them.
+func enterpriseAuthorizedDepartments(departments []enterpriseDepartment, allowedIDs []int64) ([]enterpriseDepartment, error) {
+	byID := make(map[int64]enterpriseDepartment, len(departments))
+	children := make(map[int64][]int64, len(departments))
+	for _, department := range departments {
+		byID[department.id] = department
+		children[department.parentID] = append(children[department.parentID], department.id)
+	}
+	selected := make(map[int64]struct{}, len(departments))
+	pending := append([]int64(nil), allowedIDs...)
+	for len(pending) > 0 {
+		departmentID := pending[0]
+		pending = pending[1:]
+		if _, alreadySelected := selected[departmentID]; alreadySelected {
+			continue
+		}
+		if _, exists := byID[departmentID]; !exists {
+			return nil, ErrResponse
+		}
+		selected[departmentID] = struct{}{}
+		pending = append(pending, children[departmentID]...)
+	}
+	if len(selected) > 500 {
+		return nil, ErrResponse
+	}
+	result := make([]enterpriseDepartment, 0, len(selected))
+	for departmentID := range selected {
+		result = append(result, byID[departmentID])
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].id < result[j].id })
+	return result, nil
+}
+
+func enterpriseDirectoryScopes(departments []enterpriseDepartment) ([]int64, error) {
+	byID := make(map[int64]enterpriseDepartment, len(departments))
+	for _, department := range departments {
+		byID[department.id] = department
+	}
+	// Resolve every returned department to exactly one visible component root.
+	// The root is either a normal parent_id=0 department or the highest visible
+	// department beneath a parent that the application is not allowed to see.
+	// A loop cannot be safely represented by user/simplelist and therefore
+	// fails the complete-directory contract instead of silently losing members.
+	roots := make(map[int64]struct{}, len(departments))
+	for _, start := range departments {
+		current := start
+		seen := make(map[int64]struct{}, len(departments))
+		for {
+			if _, cycle := seen[current.id]; cycle {
+				return nil, ErrResponse
+			}
+			seen[current.id] = struct{}{}
+			if current.parentID == 0 {
+				roots[current.id] = struct{}{}
+				break
+			}
+			parent, parentVisible := byID[current.parentID]
+			if !parentVisible {
+				roots[current.id] = struct{}{}
+				break
+			}
+			current = parent
+		}
+	}
+	if len(roots) > 500 {
+		return nil, ErrResponse
+	}
+	result := make([]int64, 0, len(roots))
+	for id := range roots {
+		result = append(result, id)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result, nil
+}
+
+func (client *Client) enterpriseMembers(ctx context.Context, token string, departmentIDs []int64) ([]wecomport.EnterpriseEmployee, error) {
+	if len(departmentIDs) > 500 {
+		return nil, classifyDirectoryReadError(ErrResponse)
+	}
+	if len(departmentIDs) == 0 {
+		return []wecomport.EnterpriseEmployee{}, nil
+	}
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	pages := make([][]wecomport.EnterpriseEmployee, len(departmentIDs))
+	jobs := make(chan int)
+	workers := 4
+	if workers > len(departmentIDs) {
+		workers = len(departmentIDs)
+	}
+	var group sync.WaitGroup
+	var once sync.Once
+	var firstErr error
+	fail := func(err error) {
+		once.Do(func() {
+			firstErr = err
+			cancel()
+		})
+	}
+	for worker := 0; worker < workers; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				page, err := client.enterpriseDepartmentMembers(readCtx, token, departmentIDs[index])
+				if err != nil {
+					fail(err)
+					return
+				}
+				pages[index] = page
+			}
+		}()
+	}
+	for index := range departmentIDs {
+		select {
+		case <-readCtx.Done():
+		case jobs <- index:
+		}
+		if readCtx.Err() != nil {
+			break
+		}
+	}
+	close(jobs)
+	group.Wait()
+	if firstErr != nil || ctx.Err() != nil {
+		if firstErr != nil {
+			return nil, classifyDirectoryReadError(firstErr)
+		}
+		return nil, classifyDirectoryReadError(ErrUnavailable)
+	}
+	seen := make(map[string]struct{})
+	result := make([]wecomport.EnterpriseEmployee, 0)
+	for _, page := range pages {
+		for _, employee := range page {
+			if _, duplicate := seen[employee.UserID]; duplicate {
+				continue
+			}
+			seen[employee.UserID] = struct{}{}
+			result = append(result, employee)
+		}
+	}
+	if len(result) > 10000 {
+		return nil, classifyDirectoryReadError(ErrResponse)
+	}
+	// Provider ordering is not a pagination contract. Sorting the complete
+	// snapshot by exact employee userid makes the locally signed cursor stable
+	// across otherwise identical reads.
+	sort.Slice(result, func(i, j int) bool { return result[i].UserID < result[j].UserID })
+	return result, nil
+}
+
+// enterpriseDirectEmployees completes the application-visible scope for
+// employees granted directly to the app rather than through a department.
+// It deliberately uses bounded, read-only exact lookups; no directory row is
+// written and a single unreadable direct member invalidates the whole list.
+func (client *Client) enterpriseDirectEmployees(ctx context.Context, token string, userIDs []string) ([]wecomport.EnterpriseEmployee, error) {
+	if len(userIDs) == 0 {
+		return []wecomport.EnterpriseEmployee{}, nil
+	}
+	if len(userIDs) > 10000 {
+		return nil, ErrResponse
+	}
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]wecomport.EnterpriseEmployee, len(userIDs))
+	jobs := make(chan int)
+	workers := 4
+	if workers > len(userIDs) {
+		workers = len(userIDs)
+	}
+	var group sync.WaitGroup
+	var once sync.Once
+	var firstErr error
+	fail := func(err error) {
+		once.Do(func() {
+			firstErr = err
+			cancel()
+		})
+	}
+	for worker := 0; worker < workers; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				employee, err := client.enterpriseEmployeeWithToken(readCtx, token, userIDs[index])
+				if err != nil {
+					fail(err)
+					return
+				}
+				results[index] = employee
+			}
+		}()
+	}
+	for index := range userIDs {
+		select {
+		case <-readCtx.Done():
+		case jobs <- index:
+		}
+		if readCtx.Err() != nil {
+			break
+		}
+	}
+	close(jobs)
+	group.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if ctx.Err() != nil {
+		return nil, ErrUnavailable
+	}
+	return results, nil
+}
+
+func mergeEnterpriseEmployees(groups ...[]wecomport.EnterpriseEmployee) ([]wecomport.EnterpriseEmployee, error) {
+	byID := make(map[string]wecomport.EnterpriseEmployee)
+	for _, group := range groups {
+		for _, employee := range group {
+			if existing, duplicate := byID[employee.UserID]; duplicate {
+				if existing.DisplayName != employee.DisplayName {
+					return nil, ErrResponse
+				}
+				continue
+			}
+			byID[employee.UserID] = employee
+		}
+	}
+	result := make([]wecomport.EnterpriseEmployee, 0, len(byID))
+	for _, employee := range byID {
+		result = append(result, employee)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].UserID < result[j].UserID })
+	return result, nil
+}
+
+func (client *Client) enterpriseDepartmentMembers(ctx context.Context, token string, departmentID int64) ([]wecomport.EnterpriseEmployee, error) {
+	values := url.Values{"access_token": {token}, "department_id": {strconv.FormatInt(departmentID, 10)}}
+	values.Set("fetch_child", "1")
+	payload, err := client.request(ctx, "/cgi-bin/user/simplelist", values)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Users) > 10000 {
+		return nil, ErrResponse
+	}
+	result := make([]wecomport.EnterpriseEmployee, 0, len(payload.Users))
+	seen := make(map[string]struct{}, len(payload.Users))
+	for _, value := range payload.Users {
+		userID, name := strings.TrimSpace(value.UserID), strings.TrimSpace(value.Name)
+		if userID == "" || userID != value.UserID || invalid(userID) || !validDisplayName(name) {
+			return nil, ErrResponse
+		}
+		if _, duplicate := seen[userID]; duplicate {
+			return nil, ErrResponse
+		}
+		seen[userID] = struct{}{}
+		result = append(result, wecomport.EnterpriseEmployee{UserID: userID, DisplayName: name})
+	}
+	return result, nil
+}
+
+// ReadEnterpriseEmployee verifies one exact employee against the same
+// application-visible corporate directory. It never mutates WeCom or local
+// Access state.
+func (client *Client) ReadEnterpriseEmployee(ctx context.Context, userID string) (wecomport.EnterpriseEmployee, error) {
+	if !client.EnterpriseDirectoryReady() || invalid(userID) || strings.TrimSpace(userID) != userID {
+		return wecomport.EnterpriseEmployee{}, wecomport.ErrDirectoryDisabled
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	token, err := client.accessToken(readCtx)
+	if err != nil {
+		return wecomport.EnterpriseEmployee{}, classifyDirectoryReadError(err)
+	}
+	employee, err := client.enterpriseEmployeeWithToken(readCtx, token, userID)
+	if directoryTokenExpired(err) {
+		token, err = client.refreshAccessToken(readCtx)
+		if err == nil {
+			employee, err = client.enterpriseEmployeeWithToken(readCtx, token, userID)
+		}
+	}
+	if enterpriseEmployeeNotFound(err) {
+		return wecomport.EnterpriseEmployee{}, wecomport.ErrEnterpriseEmployeeNotFound
+	}
+	if err != nil {
+		return wecomport.EnterpriseEmployee{}, classifyDirectoryReadError(err)
+	}
+	return employee, nil
+}
+
+func (client *Client) enterpriseEmployeeWithToken(ctx context.Context, token, userID string) (wecomport.EnterpriseEmployee, error) {
+	payload, err := client.request(ctx, "/cgi-bin/user/get", url.Values{"access_token": {token}, "userid": {userID}})
+	if err != nil {
+		return wecomport.EnterpriseEmployee{}, err
+	}
+	returnedID, name := strings.TrimSpace(payload.UserIDLower), strings.TrimSpace(payload.Name)
+	if returnedID != userID || !validDisplayName(name) {
+		return wecomport.EnterpriseEmployee{}, ErrResponse
+	}
+	return wecomport.EnterpriseEmployee{UserID: returnedID, DisplayName: name}, nil
+}
+
+func enterpriseEmployeeNotFound(cause error) bool {
+	var providerFailure *providerResponseError
+	if !errors.As(cause, &providerFailure) {
+		return false
+	}
+	// Both codes are documented/returned by user/get for an unknown member.
+	// They are safe to distinguish from credential, permission and transient
+	// failures, which remain unavailable.
+	return providerFailure.errCode == 40003 || providerFailure.errCode == 60111
+}
+
+func (client *Client) refreshAccessToken(ctx context.Context) (string, error) {
+	client.mu.Lock()
+	delete(client.tokens, "access_token")
+	client.mu.Unlock()
+	return client.accessToken(ctx)
+}
+
+var _ wecomport.EnterpriseEmployeeDirectory = (*Client)(nil)

@@ -38,7 +38,9 @@ sha_missing_commerce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 sha_missing_archive=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 sha_missing_0066=cccccccccccccccccccccccccccccccccccccccc
 sha_missing_0150=c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0
-sha_missing_0153=c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1
+sha_missing_0151=c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1
+sha_missing_0152=c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2
+sha_missing_0153=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -154,7 +156,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/sidebar" "$release/web/dist/aiassistant" "$release/deploy"
-  for binary in aicrm aicrm-operation-cycle-runner aicrm-operation-cycle-result wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-v2-runtime-config-releases migrate-v2-commerce-external-push-history migrate-open-platform migrate-media-legacy-materials migrate-channel-history migrate-v2-customer-tag-history migrate-radar-v2 migrate-sidebar-history migrate-owner-handoff-history bootstrap-automation-operations; do
+  for binary in aicrm aicrm-operation-cycle-runner aicrm-operation-cycle-result wecom-archive-sdk-runner migrate-platform migrate-access-role-convergence check-enterprise-directory migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-v2-runtime-config-releases migrate-v2-commerce-external-push-history migrate-open-platform migrate-media-legacy-materials migrate-channel-history migrate-v2-customer-tag-history migrate-radar-v2 migrate-sidebar-history migrate-owner-handoff-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -178,6 +180,8 @@ make_release() {
     0053_segment_audience_member_event_fact_kinds.sql \
     0066_channel_welcome_intents.sql \
     0150_channel_welcome_message_snapshots.sql \
+    0151_access_role_governance.sql \
+    0152_access_login_grants.sql \
     0153_wecom_customer_detail_projection.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
@@ -338,6 +342,8 @@ for missing_release in \
   "$sha_missing_archive:bin/migrate-message-archive" \
   "$sha_missing_0066:migrations/0066_channel_welcome_intents.sql" \
   "$sha_missing_0150:migrations/0150_channel_welcome_message_snapshots.sql" \
+  "$sha_missing_0151:migrations/0151_access_role_governance.sql" \
+  "$sha_missing_0152:migrations/0152_access_login_grants.sql" \
   "$sha_missing_0153:migrations/0153_wecom_customer_detail_projection.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \

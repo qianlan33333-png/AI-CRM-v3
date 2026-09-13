@@ -235,7 +235,21 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	applyPlatformSQL(t, ctx, pool)
 	applyRiverSchema(t, ctx, pool)
 	var actorID, customerID, otherCustomerID int64
-	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES(42,'migration-admin','$argon2id$fixture','Migration Admin','staff-provider-1',true,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&actorID); err != nil {
+	seed, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seed.Rollback(ctx)
+	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES(42,'migration-admin','$argon2id$fixture','Migration Admin','staff-provider-1',true,true,clock_timestamp(),clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = seed.Exec(ctx, `INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES($1,'super_admin')`, actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = seed.Exec(ctx, `INSERT INTO access_super_admin_control(singleton,admin_user_id,version,updated_at) VALUES(TRUE,$1,1,clock_timestamp())`, actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err = seed.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err = pool.QueryRow(ctx, `INSERT INTO customers(status,created_at,updated_at) VALUES('active',clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&customerID); err != nil {

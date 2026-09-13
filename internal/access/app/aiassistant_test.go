@@ -23,7 +23,7 @@ func TestAIAssistantAuthorizationMatrix(t *testing.T) {
 	if err := a.AuthorizeAIAssistant(context.Background(), admin, accessport.AIAssistantApprove); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.AuthorizeAIAssistant(context.Background(), admin, accessport.AIAssistantReconcile); !errors.Is(err, domain.ErrPermissionDenied) {
+	if err := a.AuthorizeAIAssistant(context.Background(), admin, accessport.AIAssistantReconcile); err != nil {
 		t.Fatalf("admin reconcile = %v", err)
 	}
 	if err := a.AuthorizeAIAssistant(context.Background(), super, accessport.AIAssistantReconcile); err != nil {

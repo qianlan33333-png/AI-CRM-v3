@@ -37,8 +37,17 @@ func TestPostgreSQLOwnerHandoffHistoryExtractApplyReplayVerify(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,'wecom_external_userid','wecom-corp:history','external-historical','verified','history-fixture',1,clock_timestamp())`, customerID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid) VALUES('history-source','$argon2id$fixture','History source','source-user'),('history-target','$argon2id$fixture','History target','target-user')`); err != nil {
+	if _, err := pool.Exec(ctx, `WITH accounts AS (
+		INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at)
+		VALUES ('history-source','$argon2id$fixture','History source','source-user',TRUE,FALSE,NULL),
+		       ('history-target','$argon2id$fixture','History target','target-user',TRUE,FALSE,NULL)
+		RETURNING id
+	) INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM accounts`); err != nil {
 		t.Fatal(err)
+	}
+	var ungrantedStaff int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM admin_users WHERE username IN ('history-source','history-target') AND login_enabled=FALSE AND access_granted_at IS NULL`).Scan(&ungrantedStaff); err != nil || ungrantedStaff != 2 {
+		t.Fatalf("owner history fixture staff login grant count=%d err=%v", ungrantedStaff, err)
 	}
 
 	captured := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
@@ -195,6 +204,14 @@ func ownerHistoryDatabase(t *testing.T, ctx context.Context) (string, *pgxpool.P
 			pool.Close()
 			t.Fatalf("apply %s: %v", name, execErr)
 		}
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE admin_users
+		ADD COLUMN login_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+		ADD COLUMN legacy_login_reactivation_pending BOOLEAN NOT NULL DEFAULT FALSE,
+		ADD COLUMN access_granted_at TIMESTAMPTZ,
+		ADD CONSTRAINT ck_admin_users_login_requires_access_grant CHECK (access_granted_at IS NOT NULL OR login_enabled = FALSE)`); err != nil {
+		pool.Close()
+		t.Fatalf("apply current Access login fixture contract: %v", err)
 	}
 	return databaseURL + "&search_path=" + schema, pool, func() {
 		pool.Close()

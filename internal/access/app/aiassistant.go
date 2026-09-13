@@ -8,8 +8,8 @@ import (
 )
 
 // AIAssistantAuthorizer keeps the review surface on the existing Access RBAC
-// model. Viewers may inspect, administrators may edit/approve, and only a
-// super-administrator may reconcile an unknown external outcome.
+// model. Viewers may inspect, while administrators and super-administrators
+// may perform the ordinary review, approval and reconciliation operations.
 type AIAssistantAuthorizer struct{}
 
 func (AIAssistantAuthorizer) AuthorizeAIAssistant(_ context.Context, principal domain.Principal, action accessport.AIAssistantAction) error {
@@ -25,7 +25,7 @@ func (AIAssistantAuthorizer) AuthorizeAIAssistant(_ context.Context, principal d
 		return false
 	}
 	if action == accessport.AIAssistantReconcile {
-		if principal.IsSuperAdmin() {
+		if has(domain.RoleAdmin) || principal.IsSuperAdmin() {
 			return nil
 		}
 		return domain.ErrPermissionDenied

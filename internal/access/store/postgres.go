@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,13 +46,70 @@ func (store *PostgreSQL) UserByWeComUserID(ctx context.Context, wecomUserID stri
 	return store.user(ctx, `WHERE u.wecom_userid = $1`, wecomUserID, lock)
 }
 
+func (*PostgreSQL) UsersByWeComUserIDs(ctx context.Context, values []string) ([]domain.User, error) {
+	if len(values) == 0 {
+		return []domain.User{}, nil
+	}
+	if len(values) > 50 {
+		return nil, domain.ErrInvalidInput
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			return nil, domain.ErrInvalidInput
+		}
+		if _, exists := seen[value]; exists {
+			return nil, domain.ErrInvalidInput
+		}
+		seen[value] = struct{}{}
+	}
+	database, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := database.Query(ctx, `
+		SELECT u.id, u.username, u.password_hash, u.display_name,
+			COALESCE(u.wecom_userid, ''), u.is_active, u.login_enabled, u.legacy_login_reactivation_pending, u.access_granted_at, u.session_version,
+			u.last_login_at, u.created_at, u.updated_at, r.role_code
+		FROM admin_users u
+		JOIN admin_user_roles r ON r.admin_user_id=u.id
+		WHERE u.wecom_userid = ANY($1::text[])
+		ORDER BY u.id, r.role_code`, values)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := make([]domain.User, 0, len(values))
+	byID := make(map[int64]int, len(values))
+	for rows.Next() {
+		var user domain.User
+		var role domain.Role
+		if err = rows.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.DisplayName,
+			&user.WeComUserID, &user.Active, &user.LoginEnabled, &user.LegacyLoginReactivationPending, &user.AccessGrantedAt, &user.SessionVersion, &user.LastLoginAt,
+			&user.CreatedAt, &user.UpdatedAt, &role); err != nil {
+			return nil, err
+		}
+		if index, exists := byID[user.ID]; exists {
+			users[index].Roles = append(users[index].Roles, role)
+			continue
+		}
+		user.Roles = []domain.Role{role}
+		byID[user.ID] = len(users)
+		users = append(users, user)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 func (*PostgreSQL) ListUsers(ctx context.Context) ([]domain.User, error) {
 	database, err := tx(ctx)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := database.Query(ctx, `SELECT id, username, password_hash, display_name,
-		COALESCE(wecom_userid, ''), is_active, session_version, last_login_at,
+		COALESCE(wecom_userid, ''), is_active, login_enabled, legacy_login_reactivation_pending, access_granted_at, session_version, last_login_at,
 		created_at, updated_at FROM admin_users ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -60,7 +118,7 @@ func (*PostgreSQL) ListUsers(ctx context.Context) ([]domain.User, error) {
 	for rows.Next() {
 		var user domain.User
 		if err = rows.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.DisplayName,
-			&user.WeComUserID, &user.Active, &user.SessionVersion, &user.LastLoginAt,
+			&user.WeComUserID, &user.Active, &user.LoginEnabled, &user.LegacyLoginReactivationPending, &user.AccessGrantedAt, &user.SessionVersion, &user.LastLoginAt,
 			&user.CreatedAt, &user.UpdatedAt); err != nil {
 			rows.Close()
 			return nil, err
@@ -126,7 +184,7 @@ func (*PostgreSQL) user(ctx context.Context, predicate string, argument any, loc
 		return domain.User{}, err
 	}
 	query := `SELECT u.id, u.username, u.password_hash, u.display_name,
-		COALESCE(u.wecom_userid, ''), u.is_active, u.session_version,
+		COALESCE(u.wecom_userid, ''), u.is_active, u.login_enabled, u.legacy_login_reactivation_pending, u.access_granted_at, u.session_version,
 		u.last_login_at, u.created_at, u.updated_at FROM admin_users u ` + predicate
 	if lock {
 		query += ` FOR UPDATE OF u`
@@ -134,7 +192,7 @@ func (*PostgreSQL) user(ctx context.Context, predicate string, argument any, loc
 	var user domain.User
 	err = database.QueryRow(ctx, query, argument).Scan(
 		&user.ID, &user.Username, &user.PasswordHash, &user.DisplayName,
-		&user.WeComUserID, &user.Active, &user.SessionVersion,
+		&user.WeComUserID, &user.Active, &user.LoginEnabled, &user.LegacyLoginReactivationPending, &user.AccessGrantedAt, &user.SessionVersion,
 		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -153,11 +211,11 @@ func (*PostgreSQL) CreateUser(ctx context.Context, user domain.User) (domain.Use
 		return domain.User{}, err
 	}
 	err = database.QueryRow(ctx, `
-		INSERT INTO admin_users (username, password_hash, display_name, wecom_userid, is_active)
-		VALUES ($1, $2, $3, NULLIF($4, ''), $5)
-		RETURNING id, session_version, created_at, updated_at`,
+		INSERT INTO admin_users (username, password_hash, display_name, wecom_userid, is_active, login_enabled, legacy_login_reactivation_pending, access_granted_at)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $5, FALSE, CURRENT_TIMESTAMP)
+		RETURNING id, login_enabled, access_granted_at, session_version, created_at, updated_at`,
 		user.Username, user.PasswordHash, user.DisplayName, user.WeComUserID, user.Active,
-	).Scan(&user.ID, &user.SessionVersion, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.LoginEnabled, &user.AccessGrantedAt, &user.SessionVersion, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return domain.User{}, mapDatabaseError(err)
 	}
@@ -165,6 +223,29 @@ func (*PostgreSQL) CreateUser(ctx context.Context, user domain.User) (domain.Use
 		if _, err = database.Exec(ctx, `INSERT INTO admin_user_roles (admin_user_id, role_code) VALUES ($1, $2)`, user.ID, role); err != nil {
 			return domain.User{}, mapDatabaseError(err)
 		}
+	}
+	return user, nil
+}
+
+func (*PostgreSQL) CreateStaffProjection(ctx context.Context, user domain.User) (domain.User, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return domain.User{}, err
+	}
+	if !user.Active || user.WeComUserID == "" || len(user.Roles) != 1 || user.Roles[0] != domain.RoleViewer {
+		return domain.User{}, domain.ErrInvalidInput
+	}
+	err = database.QueryRow(ctx, `
+		INSERT INTO admin_users (username, password_hash, display_name, wecom_userid, is_active, login_enabled, legacy_login_reactivation_pending, access_granted_at)
+		VALUES ($1, $2, $3, $4, TRUE, FALSE, FALSE, NULL)
+		RETURNING id, login_enabled, access_granted_at, session_version, created_at, updated_at`,
+		user.Username, user.PasswordHash, user.DisplayName, user.WeComUserID,
+	).Scan(&user.ID, &user.LoginEnabled, &user.AccessGrantedAt, &user.SessionVersion, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return domain.User{}, mapDatabaseError(err)
+	}
+	if _, err = database.Exec(ctx, `INSERT INTO admin_user_roles (admin_user_id, role_code) VALUES ($1, $2)`, user.ID, domain.RoleViewer); err != nil {
+		return domain.User{}, mapDatabaseError(err)
 	}
 	return user, nil
 }
@@ -195,13 +276,15 @@ func (store *PostgreSQL) BootstrapUser(ctx context.Context, user domain.User) (d
 	return created, err == nil, err
 }
 
-func (*PostgreSQL) SetActive(ctx context.Context, id int64, active bool, now time.Time) error {
+func (*PostgreSQL) SetLoginEnabled(ctx context.Context, id int64, enabled bool, now time.Time) error {
 	database, err := tx(ctx)
 	if err != nil {
 		return err
 	}
-	tag, err := database.Exec(ctx, `UPDATE admin_users SET is_active=$2,
-		session_version=session_version+1, updated_at=$3 WHERE id=$1 AND is_active IS DISTINCT FROM $2`, id, active, now)
+	tag, err := database.Exec(ctx, `UPDATE admin_users SET login_enabled=$2,
+		is_active=CASE WHEN $2 AND legacy_login_reactivation_pending THEN TRUE ELSE is_active END,
+		legacy_login_reactivation_pending=FALSE, session_version=session_version+1, updated_at=$3
+		WHERE id=$1 AND access_granted_at IS NOT NULL AND login_enabled IS DISTINCT FROM $2`, id, enabled, now)
 	if err != nil {
 		return err
 	}
@@ -215,6 +298,36 @@ func (*PostgreSQL) SetActive(ctx context.Context, id int64, active bool, now tim
 		}
 	}
 	return nil
+}
+
+func (*PostgreSQL) GrantAccess(ctx context.Context, id int64, role domain.Role, displayName string, now time.Time) error {
+	if (role != domain.RoleAdmin && role != domain.RoleViewer) || strings.TrimSpace(displayName) == "" {
+		return domain.ErrInvalidInput
+	}
+	database, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	var active bool
+	var grantedAt *time.Time
+	if err = database.QueryRow(ctx, `SELECT is_active, access_granted_at FROM admin_users WHERE id=$1 FOR UPDATE`, id).Scan(&active, &grantedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if !active || grantedAt != nil {
+		return domain.ErrConflict
+	}
+	if _, err = database.Exec(ctx, `DELETE FROM admin_user_roles WHERE admin_user_id=$1`, id); err != nil {
+		return err
+	}
+	if _, err = database.Exec(ctx, `INSERT INTO admin_user_roles (admin_user_id, role_code) VALUES ($1,$2)`, id, role); err != nil {
+		return mapDatabaseError(err)
+	}
+	_, err = database.Exec(ctx, `UPDATE admin_users SET display_name=$2, login_enabled=TRUE, access_granted_at=$3,
+		session_version=session_version+1, updated_at=$3 WHERE id=$1`, id, strings.TrimSpace(displayName), now)
+	return err
 }
 
 func (*PostgreSQL) ReserveLoginAccessRequest(ctx context.Context, actorID int64, key string, payloadDigest [32]byte, now time.Time) (bool, error) {
@@ -336,7 +449,7 @@ func (*PostgreSQL) SessionByTokenDigest(ctx context.Context, digest [32]byte, lo
 	query := `SELECT s.id, s.token_digest, s.csrf_token_digest, s.admin_user_id,
 		s.session_version, s.expires_at, s.revoked_at, s.revoked_reason,
 		s.created_at, s.last_seen_at, u.id, u.username, u.password_hash,
-		u.display_name, COALESCE(u.wecom_userid,''), u.is_active,
+		u.display_name, COALESCE(u.wecom_userid,''), u.is_active, u.login_enabled, u.legacy_login_reactivation_pending, u.access_granted_at,
 		u.session_version, u.last_login_at, u.created_at, u.updated_at
 		FROM admin_sessions s JOIN admin_users u ON u.id=s.admin_user_id
 		WHERE s.token_digest=$1`
@@ -350,7 +463,7 @@ func (*PostgreSQL) SessionByTokenDigest(ctx context.Context, digest [32]byte, lo
 		&session.SessionVersion, &session.ExpiresAt, &session.RevokedAt, &session.RevokedReason,
 		&session.CreatedAt, &session.LastSeenAt, &session.User.ID, &session.User.Username,
 		&session.User.PasswordHash, &session.User.DisplayName, &session.User.WeComUserID,
-		&session.User.Active, &session.User.SessionVersion, &session.User.LastLoginAt,
+		&session.User.Active, &session.User.LoginEnabled, &session.User.LegacyLoginReactivationPending, &session.User.AccessGrantedAt, &session.User.SessionVersion, &session.User.LastLoginAt,
 		&session.User.CreatedAt, &session.User.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -487,4 +600,82 @@ func mapDatabaseError(err error) error {
 		return fmt.Errorf("%w: %s", domain.ErrConflict, databaseError.ConstraintName)
 	}
 	return err
+}
+
+func (*PostgreSQL) SuperAdminControl(ctx context.Context, lock bool) (domain.SuperAdminControl, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return domain.SuperAdminControl{}, err
+	}
+	query := `SELECT admin_user_id, version, updated_at FROM access_super_admin_control WHERE singleton = TRUE`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var control domain.SuperAdminControl
+	if err = database.QueryRow(ctx, query).Scan(&control.AdminUserID, &control.Version, &control.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.SuperAdminControl{}, domain.ErrNotFound
+		}
+		return domain.SuperAdminControl{}, err
+	}
+	return control, nil
+}
+
+func (*PostgreSQL) InitializeSuperAdminControl(ctx context.Context, adminUserID int64, now time.Time) error {
+	database, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	command, err := database.Exec(ctx, `INSERT INTO access_super_admin_control (singleton, admin_user_id, version, updated_at)
+		VALUES (TRUE, $1, 1, $2) ON CONFLICT (singleton) DO NOTHING`, adminUserID, now)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return domain.ErrConflict
+	}
+	return nil
+}
+
+func (*PostgreSQL) SetSuperAdminControl(ctx context.Context, adminUserID int64, now time.Time) error {
+	database, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	command, err := database.Exec(ctx, `UPDATE access_super_admin_control
+		SET admin_user_id = $1, version = version + 1, updated_at = $2 WHERE singleton = TRUE`, adminUserID, now)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (*PostgreSQL) ReserveGovernanceMutation(ctx context.Context, actorID int64, key, action string, targetID int64, digest [32]byte, now time.Time) (bool, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	command, err := database.Exec(ctx, `INSERT INTO admin_access_governance_receipts
+		(actor_admin_user_id, idempotency_key, action, target_admin_user_id, payload_digest, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (actor_admin_user_id, idempotency_key) DO NOTHING`, actorID, key, action, targetID, digest[:], now)
+	if err != nil {
+		return false, err
+	}
+	if command.RowsAffected() == 1 {
+		return true, nil
+	}
+	var storedAction string
+	var storedTarget int64
+	var storedDigest []byte
+	if err = database.QueryRow(ctx, `SELECT action, target_admin_user_id, payload_digest
+		FROM admin_access_governance_receipts WHERE actor_admin_user_id=$1 AND idempotency_key=$2`, actorID, key).Scan(&storedAction, &storedTarget, &storedDigest); err != nil {
+		return false, err
+	}
+	if storedAction != action || storedTarget != targetID || len(storedDigest) != len(digest) || string(storedDigest) != string(digest[:]) {
+		return false, domain.ErrConflict
+	}
+	return false, nil
 }

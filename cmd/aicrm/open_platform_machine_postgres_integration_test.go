@@ -636,5 +636,5 @@ func openPlatformMachineMigrate(ctx context.Context, pool *pgxpool.Pool) error {
 			return err
 		}
 	}
-	return nil
+	return ensureAccessLoginFixtureSchema(ctx, pool)
 }

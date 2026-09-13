@@ -38,7 +38,12 @@ func TestGroupOpsPostgreSQLPlanOwnerProjection(t *testing.T) {
 	staffID := func(username, sender string) int64 {
 		t.Helper()
 		var id int64
-		if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES($1,'$argon2id$owner-projection',$2,$3,true) RETURNING id`, username, username, sender).Scan(&id); err != nil {
+		if err = native.QueryRow(ctx, `WITH account AS (
+			INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled)
+			VALUES($1,'$argon2id$owner-projection',$2,$3,true,false) RETURNING id
+		), role AS (
+			INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account
+		) SELECT id FROM account`, username, username, sender).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		return id

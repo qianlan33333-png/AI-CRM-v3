@@ -139,7 +139,7 @@ func TestCallbackAdminReadsRequireCurrentAdminOrStaffAndBoundPagination(t *testi
 	}
 }
 
-func TestCallbackAdminRetryRequiresCSRFSuperAdminAndStableIdempotency(t *testing.T) {
+func TestCallbackAdminRetryRequiresCSRFDailyAdministratorAndStableIdempotency(t *testing.T) {
 	requestBody := `{"expected_status":"failed","expected_attempt":2,"reason":"configuration corrected"}`
 	tests := []struct {
 		name       string
@@ -148,7 +148,8 @@ func TestCallbackAdminRetryRequiresCSRFSuperAdminAndStableIdempotency(t *testing
 		wantCode   string
 	}{
 		{name: "csrf", security: &callbackAdminTestSecurity{csrfErr: accessdomain.ErrCSRFRequired}, wantStatus: http.StatusForbidden, wantCode: "csrf_required"},
-		{name: "role", security: &callbackAdminTestSecurity{csrfPrincipal: callbackAdminAdmin()}, wantStatus: http.StatusForbidden, wantCode: "permission_denied"},
+		{name: "viewer", security: &callbackAdminTestSecurity{csrfPrincipal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleViewer}}}, wantStatus: http.StatusForbidden, wantCode: "permission_denied"},
+		{name: "staff", security: &callbackAdminTestSecurity{csrfPrincipal: accessdomain.Principal{Kind: accessdomain.KindStaff, InternalID: 8, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}, wantStatus: http.StatusForbidden, wantCode: "permission_denied"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -159,6 +160,13 @@ func TestCallbackAdminRetryRequiresCSRFSuperAdminAndStableIdempotency(t *testing
 				t.Fatalf("status=%d calls=%d body=%q", response.Code, store.beginCalls, response.Body.String())
 			}
 		})
+	}
+
+	adminStore := &callbackAdminTestStore{}
+	adminHandler := callbackAdminTestHandler(t, &callbackAdminTestUOW{}, &callbackAdminTestSecurity{csrfPrincipal: callbackAdminAdmin()}, adminStore, &callbackAdminTestRetrier{})
+	adminResponse := callbackAdminRequest(adminHandler, http.MethodPost, "/api/admin/wecom/callback-receipts/8/retry", requestBody, true, "callback-admin-key")
+	if adminResponse.Code != http.StatusOK || adminStore.beginCalls != 1 {
+		t.Fatalf("admin status=%d calls=%d body=%q", adminResponse.Code, adminStore.beginCalls, adminResponse.Body.String())
 	}
 
 	unit := &callbackAdminTestUOW{}

@@ -72,7 +72,7 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 	}
 	seedAIAssistantHTTPJourney(t, native)
 	var groupActor int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('joint-group','$argon2id$joint','Joint Group','journey-sender',true) RETURNING id`).Scan(&groupActor); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('joint-group','$argon2id$joint','Joint Group','journey-sender',true,false) RETURNING id`).Scan(&groupActor); err != nil {
 		t.Fatal(err)
 	}
 
@@ -348,7 +348,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	}
 	staffID := automationAudienceInsertProviderStaff(t, ctx, native)
 	var groupActor int64
-	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('joint-runtime-group','$argon2id$joint','Joint Runtime Group','journey-sender',true) RETURNING id`).Scan(&groupActor); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('joint-runtime-group','$argon2id$joint','Joint Runtime Group','journey-sender',true,false) RETURNING id`).Scan(&groupActor); err != nil {
 		t.Fatal(err)
 	}
 	segmentRepo, err := segmentstore.NewPostgreSQL(native, uow)
