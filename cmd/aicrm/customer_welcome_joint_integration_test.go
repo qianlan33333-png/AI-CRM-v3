@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -24,7 +21,6 @@ import (
 func TestCustomerSyncAndWelcomeShareOneCustomerWithoutReplayingSend(t *testing.T) {
 	fixture := newChannelWelcomeRuntimeFixture(t)
 	defer fixture.close()
-	applyCustomerWelcomeJointMigration(t, fixture)
 	var serverVersion int
 	if err := fixture.native.QueryRow(fixture.ctx, `SELECT current_setting('server_version_num')::int`).Scan(&serverVersion); err != nil {
 		t.Fatal(err)
@@ -147,21 +143,4 @@ func (customerWelcomeDirectoryProvider) BatchExternalContacts(_ context.Context,
 		return wecomport.ExternalContactPage{}, nil
 	}
 	return wecomport.ExternalContactPage{Contacts: []wecomport.ExternalContact{{ExternalUserID: "external-1", Name: "Joint Customer", Gender: 1, Type: 1, FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: staffID}}}}}, nil
-}
-
-func applyCustomerWelcomeJointMigration(t *testing.T, fixture *channelWelcomeRuntimeFixture) {
-	t.Helper()
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate customer/welcome joint journey")
-	}
-	for _, migration := range []string{"0022_customer_profile_sections.sql", "0086_wecom_profile_primary_owner.sql"} {
-		sql, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "migrations", migration))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = fixture.native.Exec(fixture.ctx, string(sql)); err != nil {
-			t.Fatalf("apply %s: %v", migration, err)
-		}
-	}
 }
