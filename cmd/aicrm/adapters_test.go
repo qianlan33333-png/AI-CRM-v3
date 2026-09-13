@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
@@ -91,6 +93,96 @@ func TestAllowedOAuthRedirectsIncludesHiddenExternalEffectsPage(t *testing.T) {
 	if _, ok := allowedOAuthRedirects()["/admin/external-effects"]; !ok {
 		t.Fatal("external effects page is not an allowed OAuth redirect")
 	}
+}
+
+func TestWeComQRLoginAcceptsMountedConfigAliasOnly(t *testing.T) {
+	for _, path := range append(append([]string{}, adminConfigRoutePaths()...), webshell.LoginAccessPath, "/admin/admin-access") {
+		if _, allowed := allowedOAuthRedirects()[path]; !allowed {
+			t.Fatalf("mounted login redirect path %q is missing", path)
+		}
+	}
+	store := &oauthRedirectStateStore{}
+	wecomHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
+		OAuth:             wecom.OAuthService{Enabled: true, CorpID: "wx-corp", StateStore: store, UOW: directUnitOfWork{}, Client: oauthRedirectClient{}, AllowedPaths: allowedOAuthRedirects()},
+		ContextTokens:     wecom.ContextTokenService{CorpID: "wx-corp", SigningKey: []byte(strings.Repeat("k", 32))},
+		JSSDKSigner:       oauthRedirectSigner{},
+		JSSDKOrigin:       "https://crm.example",
+		PrincipalResolver: oauthRedirectPrincipal{},
+		SessionIssuer:     oauthRedirectSessionIssuer{},
+		ExistingIdentity:  oauthRedirectIdentity{},
+		CookieSecure:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthenticated := &fakeAccessAuthentication{err: accessdomain.ErrAuthentication}
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
+	application, err := routeApplication(marker, marker, marker, wecomHandler, marker, unauthenticated, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := httptest.NewRecorder()
+	application.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/admin/config.html", nil))
+	if page.Code != http.StatusSeeOther || page.Header().Get("Location") != "/login?next=%2Fadmin%2Fconfig.html" {
+		t.Fatalf("protected config alias status=%d location=%q", page.Code, page.Header().Get("Location"))
+	}
+	start := httptest.NewRecorder()
+	application.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/wecom/start?mode=qr&next=%2Fadmin%2Fconfig.html%3Ftab%3Dclients", nil))
+	if start.Code != http.StatusFound || start.Header().Get("Location") != "https://provider.example/qr" || store.created.Redirect != "/admin/config.html?tab=clients" {
+		t.Fatalf("start status=%d location=%q redirect=%q", start.Code, start.Header().Get("Location"), store.created.Redirect)
+	}
+
+	for _, next := range []string{"https://attacker.example", "//attacker.example", "/admin\\config.html", "/admin/not-a-route?next=%2Fadmin%2Fconfig.html"} {
+		response := httptest.NewRecorder()
+		application.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/auth/wecom/start?mode=qr&next="+url.QueryEscape(next), nil))
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_oauth_state") {
+			t.Fatalf("next=%q status=%d body=%q", next, response.Code, response.Body.String())
+		}
+	}
+}
+
+type oauthRedirectStateStore struct{ created wecom.OAuthState }
+
+func (store *oauthRedirectStateStore) Create(_ context.Context, state wecom.OAuthState, _ [32]byte, _ [32]byte) error {
+	store.created = state
+	return nil
+}
+func (*oauthRedirectStateStore) Consume(context.Context, wecom.OAuthPurpose, [32]byte, [32]byte, time.Time) (wecom.OAuthState, error) {
+	return wecom.OAuthState{}, wecom.ErrInvalidOAuth
+}
+
+type oauthRedirectClient struct{}
+
+func (oauthRedirectClient) AuthorizationURL(context.Context, wecom.OAuthPurpose, wecom.OAuthMode, string, string) (string, error) {
+	return "https://provider.example/qr", nil
+}
+func (oauthRedirectClient) ExchangeCode(context.Context, wecom.OAuthPurpose, wecom.OAuthMode, string) (wecom.OAuthIdentity, error) {
+	return wecom.OAuthIdentity{}, wecom.ErrInvalidOAuth
+}
+
+type oauthRedirectSigner struct{}
+
+func (oauthRedirectSigner) ConfigForURL(context.Context, string) (wecom.JSSDKConfig, error) {
+	return wecom.JSSDKConfig{}, nil
+}
+
+type oauthRedirectPrincipal struct{}
+
+func (oauthRedirectPrincipal) SidebarPrincipal(context.Context, string) (wecom.SidebarPrincipal, error) {
+	return wecom.SidebarPrincipal{CorpID: "wx-corp", EmployeeID: "employee"}, nil
+}
+
+type oauthRedirectSessionIssuer struct{}
+
+func (oauthRedirectSessionIssuer) IssueWeComSession(context.Context, wecom.OAuthPurpose, wecom.OAuthIdentity) (wecom.BrowserCredentials, error) {
+	return wecom.BrowserCredentials{}, nil
+}
+
+type oauthRedirectIdentity struct{}
+
+func (oauthRedirectIdentity) ResolveExistingWeComIdentity(context.Context, string, string) (customerdomain.CustomerID, bool, error) {
+	return 0, false, nil
 }
 
 func TestMountSurveyAPIsIncludesLegacyOperationsLogRead(t *testing.T) {

@@ -2040,7 +2040,23 @@ func allowedOAuthRedirects() map[string]struct{} {
 			paths[route.Path] = struct{}{}
 		}
 	}
+	// These paths are registered below as authenticated aliases. Keep the
+	// OAuth allowlist exact: a generic /admin/ prefix would turn a login
+	// redirect into an open-redirect boundary.
+	for _, path := range adminConfigRoutePaths() {
+		paths[path] = struct{}{}
+	}
+	for _, path := range []string{webshell.LoginAccessPath, "/admin/admin-access"} {
+		paths[path] = struct{}{}
+	}
 	return paths
+}
+
+func adminConfigRoutePaths() []string {
+	return []string{
+		"/admin/config", "/admin/config/", "/admin/config.html", "/admin/configDetail.html",
+		"/admin/api-docs", "/admin/apidocs.html", "/admin/config/releases", "/admin/config/releases/new",
+	}
 }
 
 func routeApplication(health, access, identity, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
@@ -2300,7 +2316,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	for _, path := range []string{"/admin/automation-agents", "/admin/automation-agents/", "/admin/agents.html", "/admin/agentEdit.html"} {
 		mux.Handle(path, requireAdminSession(authentication, automationUI))
 	}
-	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/config.html", "/admin/configDetail.html", "/admin/api-docs", "/admin/apidocs.html", "/admin/config/releases", "/admin/config/releases/new"} {
+	for _, path := range adminConfigRoutePaths() {
 		mux.Handle(path, requireAdminSession(authentication, configUI))
 	}
 	mux.Handle("/wecom/external-contact/callback", weCom)
