@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildTestBrowserBundle } from '../web/scripts/test-browser-bundle.mjs';
@@ -27,13 +28,77 @@ let selected = {
 };
 let created = null;
 let activationAttempts = 0;
+let clientListFailure = 0;
+let delaySelectedDetail = false;
+let releaseSelectedDetail;
 
 function json(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
 
+const documentationRequests = [];
+const documentationScrollTargets = [];
+let documentationClipboard = '';
+const documentationDOM = new JSDOM(`<!doctype html><html><body data-page="apidocs"><main id="stage"></main><script>${bundle}</script></body></html>`, {
+  // An explicit docs tab wins over an old client deep-link and must never
+  // begin the privileged management fetches.
+  url: 'https://open-platform.test/admin/api-docs?tab=docs&client=legacy-client#operations', runScripts: 'dangerously', pretendToBeVisual: true,
+  beforeParse(window) {
+    window.Headers = Headers;
+    Object.defineProperty(window.HTMLElement.prototype, 'scrollIntoView', { configurable: true, value() { documentationScrollTargets.push(this.id); } });
+    Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { documentationClipboard = value; } } });
+    window.fetch = async (input) => {
+      documentationRequests.push(new URL(String(input), window.location.origin).pathname);
+      throw new Error('documentation view must not fetch management data');
+    };
+  },
+});
+await sleep(40);
+const documentationRoot = documentationDOM.window.document.querySelector('[data-open-platform-docs="v1"]');
+if (!documentationRoot || documentationRequests.length || documentationDOM.window.document.querySelectorAll('#operations tbody tr').length !== 11) {
+  throw new Error(`documentation default leaked management requests or lost its eleven-operation contract: ${JSON.stringify(documentationRequests)}`);
+}
+const openAPIDownload = documentationDOM.window.document.querySelector('a[download="aicrm-openapi.yaml"]');
+if (openAPIDownload?.getAttribute('href') !== '/api/admin/config/openapi.yaml' || !documentationDOM.window.document.body.textContent.includes('refund_amount_status')) {
+  throw new Error('documentation omitted its authenticated OpenAPI download or refund contract note');
+}
+if (!documentationScrollTargets.includes('operations')) throw new Error(`initial API-docs hash was not restored: ${JSON.stringify(documentationScrollTargets)} hash=${documentationDOM.window.location.hash} target=${typeof documentationDOM.window.document.getElementById('operations')?.scrollIntoView}`);
+const documentationCode = (node) => node.firstChild?.textContent || '';
+const resolveBlock = [...documentationDOM.window.document.querySelectorAll('pre')].find((node) => documentationCode(node).includes('customers:resolve'));
+const resolveSnippet = resolveBlock && documentationCode(resolveBlock);
+const resolveData = resolveSnippet?.match(/--data '([^']+)'/)?.[1];
+if (!resolveSnippet || resolveSnippet.includes('\\"') || !resolveData) throw new Error('resolve example did not render ordinary JSON quotes');
+const resolveBody = JSON.parse(resolveData);
+if (!Array.isArray(resolveBody.references) || resolveBody.references.length !== 1 || !resolveBody.references[0].kind || !resolveBody.references[0].scope || !resolveBody.references[0].value) {
+  throw new Error(`resolve example did not use the references request contract: ${resolveData}`);
+}
+resolveBlock.querySelector('button')?.click();
+await sleep(10);
+if (documentationClipboard !== resolveSnippet) throw new Error('copy action did not write the rendered resolve example');
+const oauthBlock = [...documentationDOM.window.document.querySelectorAll('pre')].find((node) => documentationCode(node).includes('TOKEN_RESPONSE='));
+const oauthSnippet = oauthBlock && documentationCode(oauthBlock);
+if (!oauthSnippet || !oauthSnippet.includes('"$AICRM_CLIENT_ID:$AICRM_CLIENT_SECRET"') || oauthSnippet.includes('\\"') || spawnSync('bash', ['-n'], { input: oauthSnippet }).status !== 0) {
+  throw new Error('OAuth example did not render valid shell quoting and continuations');
+}
+const responseExamples = [...documentationDOM.window.document.querySelectorAll('pre')].map(documentationCode).filter((value) => value.startsWith('{\n') && value.includes('"request_id"'));
+if (responseExamples.length !== 11) throw new Error(`documentation did not render eleven copyable response examples: ${responseExamples.length}`);
+for (const response of responseExamples) JSON.parse(response);
+const documentSearch = documentationDOM.window.document.querySelector('input[type="search"]');
+documentSearch.value = 'radar.clicks.list';
+documentSearch.dispatchEvent(new documentationDOM.window.Event('input', { bubbles: true }));
+if ([...documentationDOM.window.document.querySelectorAll('[data-api-doc-operation]')].filter((item) => !item.hidden).length !== 2) {
+  throw new Error('operation search did not narrow the matching table row and operation card');
+}
+documentSearch.value = 'no-such-operation';
+documentSearch.dispatchEvent(new documentationDOM.window.Event('input', { bubbles: true }));
+const noSearchResult = documentationDOM.window.document.querySelector('.open-platform-empty');
+if (noSearchResult?.hidden) throw new Error('documentation search did not report an empty result');
+documentationDOM.window.document.querySelector('a[href="#operations"]')?.dispatchEvent(new documentationDOM.window.MouseEvent('click', { bubbles: true }));
+if (documentSearch.value || !noSearchResult.hidden) throw new Error('documentation table-of-contents did not clear a hiding search state');
+documentationDOM.window.close();
+
 const dom = new JSDOM(`<!doctype html><html><body data-page="apidocs"><main id="stage"></main><script>${bundle}</script></body></html>`, {
-  url: 'https://open-platform.test/admin/api-docs', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole,
+  url: 'https://open-platform.test/admin/api-docs?tab=clients', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole,
   beforeParse(window) {
     window.Headers = Headers;
     window.document.cookie = 'aicrm_admin_csrf=csrf-fixture; path=/';
@@ -45,9 +110,15 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="apidocs"><main id="
       const method = (init.method || 'GET').toUpperCase();
       const body = init.body ? JSON.parse(String(init.body)) : undefined;
       requests.push({ path: url.pathname + url.search, method, headers: Object.fromEntries(new Headers(init.headers || {}).entries()), body });
-      if (method === 'GET' && url.pathname === '/api/admin/open-platform/clients') return json({ items: [selected, ...(created ? [created] : [])] });
+      if (method === 'GET' && url.pathname === '/api/admin/open-platform/clients') {
+        if (clientListFailure) return json({ error: 'management_unavailable' }, clientListFailure);
+        return json({ items: [selected, ...(created ? [created] : [])] });
+      }
       if (method === 'GET' && url.pathname === '/api/admin/open-platform/routes') return json({ items: operations });
-      if (method === 'GET' && url.pathname === `/api/admin/open-platform/clients/${selected.client_id}`) return json({ client: selected });
+      if (method === 'GET' && url.pathname === `/api/admin/open-platform/clients/${selected.client_id}`) {
+        if (delaySelectedDetail) return new Promise((resolve) => { releaseSelectedDetail = () => resolve(json({ client: selected })); });
+        return json({ client: selected });
+      }
       if (method === 'GET' && created && url.pathname === `/api/admin/open-platform/clients/${created.client_id}`) return json({ client: created });
       if (method === 'GET' && /\/audit$/.test(url.pathname)) return json({ items: [{ action: 'machine_client_grants_updated', outcome: 'revoked_prior_bearers', details: {}, created_at: '2026-09-06T10:11:12Z' }, { action: 'unmapped_action', outcome: 'unmapped_outcome', details: {}, created_at: '2026-09-06T10:11:13Z' }] });
       if (method === 'PATCH' && url.pathname === `/api/admin/open-platform/clients/${selected.client_id}`) {
@@ -143,6 +214,34 @@ try {
   await sleep(25);
   if (activationAttempts !== uncertainAttempts) throw new Error('unknown activation outcome retried with the one-time secret');
   if (!requests.some((item, index) => index > requests.indexOf(activations.at(-1)) && item.method === 'GET' && item.path === '/api/admin/open-platform/clients')) throw new Error('unknown activation outcome did not refresh the authoritative client state');
+
+  action('返回接口文档')?.click();
+  await sleep(30);
+  if (!document.querySelector('[data-open-platform-docs="v1"]')) throw new Error('management view could not return to the static documentation tab');
+  delaySelectedDetail = true;
+  dom.window.history.pushState({}, '', '/admin/api-docs?tab=clients&client=existing-agent');
+  dom.window.dispatchEvent(new dom.window.PopStateEvent('popstate'));
+  await sleep(35);
+  if (typeof releaseSelectedDetail !== 'function') throw new Error('delayed client detail did not begin from the legacy client deep-link');
+  action('返回接口文档')?.click();
+  await sleep(20);
+  releaseSelectedDetail();
+  await sleep(35);
+  if (!document.querySelector('[data-open-platform-docs="v1"]')) throw new Error('a stale client-detail response overwrote the documentation tab');
+  delaySelectedDetail = false;
+  const openManagement = () => action('密钥管理')?.click();
+  clientListFailure = 401;
+  openManagement();
+  await sleep(35);
+  if (!document.body.textContent.includes('请先登录后管理调用方。') || !document.querySelector('a[href^="/login?next="]')) throw new Error('management 401 did not render a login prompt');
+  clientListFailure = 403;
+  action('重试')?.click();
+  await sleep(35);
+  if (!document.body.textContent.includes('仅超级管理员可管理调用方。')) throw new Error('management 403 did not render a super-admin prompt');
+  clientListFailure = 503;
+  action('重试')?.click();
+  await sleep(35);
+  if (!document.body.textContent.includes('调用方管理服务暂不可用，请重试。')) throw new Error('management 5xx did not render a retryable prompt');
   if (browserErrors.length) throw new Error(`Host emitted DOM errors: ${JSON.stringify(browserErrors)}`);
   console.log('open platform V1 Host DOM/HTTP journey: PASS');
 } finally {

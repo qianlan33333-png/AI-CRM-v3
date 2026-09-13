@@ -61,14 +61,22 @@ func TestMountOpenPlatformUIUsesAuthenticatedV3Host(t *testing.T) {
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login?next=%2Fadmin%2Fapi-docs" {
 		t.Fatalf("unauthenticated status=%d location=%q", response.Code, response.Header().Get("Location"))
 	}
-
-	authentication.err = nil
-	request = httptest.NewRequest(http.MethodGet, "/admin/apidocs.html?client=fixture", nil)
-	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: "valid"})
+	request = httptest.NewRequest(http.MethodGet, "/admin/apidocs.html?tab=clients&client=fixture-client", nil)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || response.Body.String() != "open-platform-host" || authentication.session != "valid" {
-		t.Fatalf("v3 host status=%d body=%q session=%q", response.Code, response.Body.String(), authentication.session)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login?next=%2Fadmin%2Fapidocs.html%3Ftab%3Dclients%26client%3Dfixture-client" {
+		t.Fatalf("unauthenticated deep-link status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+
+	authentication.err = nil
+	for _, path := range []string{"/admin/apidocs.html?client=fixture", "/admin/apidocs.html?tab=clients&client=fixture-client", "/admin/api-docs?tab=docs&client=fixture-client"} {
+		request = httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: "valid"})
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Body.String() != "open-platform-host" || authentication.session != "valid" {
+			t.Fatalf("v3 host path=%s status=%d body=%q session=%q", path, response.Code, response.Body.String(), authentication.session)
+		}
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/admin/config", nil)

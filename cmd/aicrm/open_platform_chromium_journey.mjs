@@ -179,6 +179,21 @@ try {
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
   const frame = await login;
   if (new URL(frame.frame.url).pathname !== "/admin/apidocs.html") throw new Error("login did not redirect to the V1 caller page");
+  await waitFor(cdp, `(() => {
+    const root=document.querySelector('[data-open-platform-docs="v1"]');
+    const title=root?.querySelector('.open-platform-docs-title');
+    const management=root?.querySelector('button[data-open-platform-action="密钥管理"]');
+    const rows=root?.querySelectorAll('#operations tbody tr') || [];
+    return Boolean(root && title?.textContent?.trim() === 'AI-CRM 外部只读 API v1' && management && rows.length === 11);
+  })()`, "login did not render the default API document");
+  if (resources.has("/api/admin/open-platform/clients") || resources.has("/api/admin/open-platform/routes")) throw new Error("default API document requested caller management data");
+  const managementOpened = await evaluate(cdp, `(() => {
+    const button=document.querySelector('[data-open-platform-docs="v1"] button[data-open-platform-action="密钥管理"]');
+    if (!(button instanceof HTMLButtonElement)) return false;
+    button.click();
+    return true;
+  })()`);
+  if (!managementOpened) throw new Error("default API document did not expose key management");
   // The fixture deliberately delays this selected detail GET. A writable
   // create form during that gap would let a real administrator type into a DOM
   // node that the eventual detail render replaces.
