@@ -2465,15 +2465,36 @@ func enterpriseScopeUserIDs(raw json.RawMessage) ([]string, error) {
 	}
 	users, exists := envelope["user"]
 	if !exists {
+		if len(envelope) == 0 {
+			return nil, nil
+		}
 		return nil, ErrResponse
 	}
 	users = bytes.TrimSpace(users)
 	if len(users) == 0 || bytes.Equal(users, []byte("null")) {
 		return nil, nil
 	}
-	var values []string
-	if err := json.Unmarshal(users, &values); err != nil {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(users, &entries); err != nil {
 		return nil, ErrResponse
+	}
+	values := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		var legacyUserID string
+		if err := json.Unmarshal(entry, &legacyUserID); err == nil {
+			values = append(values, legacyUserID)
+			continue
+		}
+		// agent/get's official envelope uses objects. Additional official
+		// metadata is deliberately ignored; only the exact userid is trusted
+		// for the directory read.
+		var person struct {
+			UserID string `json:"userid"`
+		}
+		if err := json.Unmarshal(entry, &person); err != nil || person.UserID == "" {
+			return nil, ErrResponse
+		}
+		values = append(values, person.UserID)
 	}
 	return normalizeEnterpriseScopeUserIDs(values)
 }
@@ -2510,6 +2531,9 @@ func enterpriseScopeDepartmentIDs(raw json.RawMessage) ([]int64, error) {
 	}
 	parties, exists := envelope["partyid"]
 	if !exists {
+		if len(envelope) == 0 {
+			return nil, nil
+		}
 		return nil, ErrResponse
 	}
 	var departmentIDs []int64

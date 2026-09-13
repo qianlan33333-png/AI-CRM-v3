@@ -221,7 +221,9 @@ func TestEnterpriseDirectoryMergesExplicitApplicationUsersOutsideDepartments(t *
 		case "/cgi-bin/gettoken":
 			_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
 		case "/cgi-bin/agent/get":
-			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{"user":["Direct_03"]},"allow_partys":{"partyid":[1]},"allow_tags":null}`))
+			// agent/get returns objects; extra Provider metadata must not become a
+			// second identity source or alter exact userid validation.
+			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{"user":[{"userid":"Direct_03","name":"untrusted provider metadata"}]},"allow_partys":{"partyid":[1]},"allow_tags":null}`))
 		case "/cgi-bin/department/simplelist":
 			_, _ = response.Write([]byte(`{"errcode":0,"department_id":[{"id":1,"parentid":0}]}`))
 		case "/cgi-bin/user/simplelist":
@@ -258,7 +260,8 @@ func TestEnterpriseDirectoryRejectsTagOnlyOrIncompleteDepartmentScope(t *testing
 		"nonempty_tags":        `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":{"tagid":[7]}}`,
 		"invalid_nonnull_tags": `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":true}`,
 		"missing_department":   `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[9]},"allow_tags":null}`,
-		"unknown_scope_shape":  `{"errcode":0,"allow_userinfos":{},"allow_partys":{"partyid":[1]},"allow_tags":null}`,
+		"unknown_scope_shape":  `{"errcode":0,"allow_userinfos":{"unexpected":[]},"allow_partys":{"partyid":[1]},"allow_tags":null}`,
+		"invalid_user_member":  `{"errcode":0,"allow_userinfos":{"user":[{}]},"allow_partys":{"partyid":[1]},"allow_tags":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -283,5 +286,34 @@ func TestEnterpriseDirectoryRejectsTagOnlyOrIncompleteDepartmentScope(t *testing
 				t.Fatal("expected incomplete directory error")
 			}
 		})
+	}
+}
+
+func TestEnterpriseDirectoryAllowsEmptyScopeObjects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
+		case "/cgi-bin/agent/get":
+			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{},"allow_partys":{}}`))
+		case "/cgi-bin/department/simplelist":
+			_, _ = response.Write([]byte(`{"errcode":0,"department_id":[]}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := New(Config{Enabled: true, CorpID: "corp", AgentID: "agent", Secret: "application-secret", AdminCallbackURI: "https://crm.example/auth/wecom/callback", SidebarCallbackURI: "https://crm.example/api/sidebar/oauth/callback", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	employees, err := client.ListEnterpriseEmployees(context.Background())
+	if err != nil || len(employees) != 0 {
+		t.Fatalf("employees=%+v err=%v", employees, err)
+	}
+	preflight := client.PreflightEnterpriseDirectory(context.Background())
+	if !preflight.Complete || preflight.FailureStage != "" || preflight.AgentUserInfosDetail != "object_keys=0;user=missing" || preflight.AgentPartysDetail != "object_keys=0;partyid=missing" || preflight.AgentTagsShape != "missing" || preflight.EmployeeCount != 0 {
+		t.Fatalf("preflight=%+v", preflight)
 	}
 }
