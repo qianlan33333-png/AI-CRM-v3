@@ -137,6 +137,15 @@ function responseMessage(data: Json, fallback: string): string {
   }
   return fallback;
 }
+function isOperationsConflict(data: Json): boolean {
+  return data?.code === "operations_conflict" || (data?.error as Json)?.code === "operations_conflict";
+}
+function planIDFromAPIURL(value: string): number | null {
+  const match = new URL(value, window.location.origin).pathname.match(/\/plans\/(\d+)(?:\/|$)/);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
 async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
@@ -160,8 +169,15 @@ async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
   } catch {
     /* reported below */
   }
-  if (!response.ok || data.ok === false)
+  if (!response.ok || data.ok === false) {
+    // A lifecycle/configuration conflict invalidates the cached optimistic
+    // revision. The UI re-reads before an operator can choose another write.
+    if (response.status === 409 && isOperationsConflict(data)) {
+      const planID = planIDFromAPIURL(url);
+      if (planID !== null) revisions.delete(planID);
+    }
     throw new Error(responseMessage(data, `HTTP ${response.status}`));
+  }
   return data;
 }
 function planOwner(value: Json): Json {

@@ -873,6 +873,12 @@
   display: none;
 }
 
+.group-ops__notice--error {
+  border-color: rgba(180, 35, 24, 0.28);
+  color: rgb(180, 35, 24);
+  background: rgba(180, 35, 24, 0.08);
+}
+
 @media (max-width: 1040px) {
   .group-ops__metric-grid,
   .group-ops__stats-grid {

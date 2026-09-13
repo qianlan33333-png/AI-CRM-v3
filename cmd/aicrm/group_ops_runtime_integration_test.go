@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -39,6 +40,252 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 )
+
+// failingGroupOpsEffectAccepter proves the Group Ops UoW really encompasses
+// EER acceptance and its River enqueue: it lets the real EER store write into
+// the caller transaction, then fails so the enclosing Group Ops UoW must roll
+// every owner and EER fact back together.
+type failingGroupOpsEffectAccepter struct {
+	delegate effectport.TransactionalAccepter
+}
+
+func (a failingGroupOpsEffectAccepter) AcceptAndQueueWithin(ctx context.Context, command effectport.AcceptCommand) (effectport.Projection, effectport.Receipt, error) {
+	projection, receipt, err := a.delegate.AcceptAndQueueWithin(ctx, command)
+	if err != nil {
+		return effectport.Projection{}, effectport.Receipt{}, err
+	}
+	return projection, receipt, errors.New("test external effect acceptance failed after durable EER write")
+}
+
+// TestGroupOpsWebhookPostgreSQLJourney proves the dynamic inbound path uses
+// the same PostgreSQL UoW for the frozen run, node-less execution/intent and
+// EER acceptance. It deliberately stops before any worker/provider attempt.
+func TestGroupOpsWebhookPostgreSQLJourney(t *testing.T) {
+	native, cleanup := groupOpsIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	platformPool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer platformPool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(platformPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var actorID int64
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-webhook-pg','$argon2id$webhook','Group Ops Webhook','webhook-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	groupStore, err := groupopsstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := groupopsapp.NewService(uow, groupStore, groupOpsStaffAdapter{access: accessstore.NewPostgreSQL(), owners: groupStore}, groupStore)
+	detail, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "Webhook PostgreSQL journey", Actor: actorID, IdempotencyKey: "groupops-webhook-pg-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Name: detail.Plan.Name, PlanType: groupopsport.PlanTypeWebhook, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-type"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.AddMember(ctx, groupopsport.MemberCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, StaffID: actorID, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, target := range []string{"webhook-pg-chat-a", "webhook-pg-chat-b"} {
+		detail, err = service.AddGroupAsset(ctx, groupopsport.GroupAssetCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, AssetRef: target, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-asset-" + strconv.Itoa(index)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, err = service.PutWebhookDescriptor(ctx, groupopsport.WebhookDescriptorCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Reference: "groupops-webhook-pg", Actor: actorID, IdempotencyKey: "groupops-webhook-pg-descriptor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-activate"})
+	if err != nil || detail.Plan.Status != groupopsport.PlanActive || len(detail.Nodes) != 0 {
+		t.Fatalf("activate detail=%+v err=%v", detail, err)
+	}
+
+	workers := river.NewWorkers()
+	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, externaleffects.NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	effectClient, err := platformjobqueue.NewInsertClient(native, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectStore, err := externaleffects.NewRepository(native, effectClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeService := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, effectStore, journeyStaff{}, nil, journeySender{}, nil, nil)
+	runtimeService.SetDispatchEnabled(true)
+	inbound := groupopsport.WebhookInboundCommand{WebhookReference: "groupops-webhook-pg", TargetChatReferences: []string{"webhook-pg-chat-a", "webhook-pg-chat-b"}, Messages: []groupopsport.WebhookMessage{{Type: "text", Text: "动态 PostgreSQL 话术"}}}
+	first, err := runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-0001", inbound)
+	if err != nil || first.Run.ID < 1 || first.Accepted != 2 || len(first.Executions) != 2 || first.RealExternalCallExecuted {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	for _, execution := range first.Executions {
+		if execution.NodeID != 0 {
+			t.Fatalf("dynamic execution exposed node id=%d", execution.NodeID)
+		}
+	}
+	var nullExecutionCount, nullIntentCount int
+	var payloadDigest string
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE run_id=$1 AND node_id IS NULL`, first.Run.ID).Scan(&nullExecutionCount); err != nil || nullExecutionCount != 2 {
+		t.Fatalf("node-less executions=%d err=%v", nullExecutionCount, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE run_id=$1 AND node_id IS NULL`, first.Run.ID).Scan(&nullIntentCount); err != nil || nullIntentCount != 2 {
+		t.Fatalf("node-less intents=%d err=%v", nullIntentCount, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT webhook_payload_digest FROM group_ops_runs WHERE id=$1`, first.Run.ID).Scan(&payloadDigest); err != nil || !effectport.ValidDigest(effectport.Digest(payloadDigest)) {
+		t.Fatalf("frozen webhook payload digest=%q err=%v", payloadDigest, err)
+	}
+
+	// Two first accepts of one event race through independent PostgreSQL UoWs.
+	// The plan lock and durable source key must converge them on one sealed run
+	// and one EER/intent/execution set, not just return two successful mocks.
+	var concurrentRunsBefore, concurrentIntentsBefore, concurrentExecutionsBefore, concurrentEffectsBefore int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_runs WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentRunsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentIntentsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentExecutionsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&concurrentEffectsBefore); err != nil {
+		t.Fatal(err)
+	}
+	type concurrentAcceptResult struct {
+		summary groupopsport.RunSummary
+		err     error
+	}
+	startConcurrentAccept := make(chan struct{})
+	concurrentResults := make(chan concurrentAcceptResult, 2)
+	concurrentInbound := groupopsport.WebhookInboundCommand{WebhookReference: "groupops-webhook-pg", TargetChatReferences: []string{"webhook-pg-chat-a"}, Messages: []groupopsport.WebhookMessage{{Type: "text", Text: "同事件并发冻结"}}}
+	for range 2 {
+		go func() {
+			<-startConcurrentAccept
+			summary, acceptErr := runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-concurrent", concurrentInbound)
+			concurrentResults <- concurrentAcceptResult{summary: summary, err: acceptErr}
+		}()
+	}
+	close(startConcurrentAccept)
+	results := make([]concurrentAcceptResult, 0, 2)
+	for range 2 {
+		select {
+		case result := <-concurrentResults:
+			results = append(results, result)
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent first Webhook accept timed out")
+		}
+	}
+	if results[0].err != nil || results[1].err != nil || results[0].summary.Run.ID < 1 || results[0].summary.Run.ID != results[1].summary.Run.ID {
+		t.Fatalf("concurrent accepts=%+v", results)
+	}
+	var concurrentRunsAfter, concurrentIntentsAfter, concurrentExecutionsAfter, concurrentEffectsAfter int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_runs WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentRunsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentIntentsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentExecutionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&concurrentEffectsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if concurrentRunsAfter != concurrentRunsBefore+1 || concurrentIntentsAfter != concurrentIntentsBefore+1 || concurrentExecutionsAfter != concurrentExecutionsBefore+1 || concurrentEffectsAfter != concurrentEffectsBefore+1 {
+		t.Fatalf("concurrent event duplicated facts: runs %d/%d intents %d/%d executions %d/%d effects %d/%d", concurrentRunsBefore, concurrentRunsAfter, concurrentIntentsBefore, concurrentIntentsAfter, concurrentExecutionsBefore, concurrentExecutionsAfter, concurrentEffectsBefore, concurrentEffectsAfter)
+	}
+
+	// A revision change cannot turn a replay into a second send. Existing runs
+	// are resolved using the descriptor/event source key before active-state
+	// validation, so this works even after the plan is paused.
+	detail, err = service.Pause(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-pause"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-0001", inbound)
+	if err != nil || replayed.Run.ID != first.Run.ID || len(replayed.Executions) != 2 {
+		t.Fatalf("revision replay=%+v err=%v", replayed, err)
+	}
+	changed := inbound
+	changed.Messages = []groupopsport.WebhookMessage{{Type: "text", Text: "different frozen payload"}}
+	if _, err = runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-0001", changed); !errors.Is(err, groupopsapp.ErrConflict) {
+		t.Fatalf("same event different payload err=%v", err)
+	}
+
+	// 0155 marks legacy protocol rows version 1. They deliberately remain a
+	// conflict after upgrade, even if every digest matches, rather than being
+	// reinterpreted as a v2 dynamic Webhook event.
+	legacyEvent := sha256.Sum256([]byte("legacy-webhook-event"))
+	legacyPayload := sha256.Sum256([]byte("legacy-webhook-body"))
+	if _, err = native.Exec(ctx, `INSERT INTO group_ops_protocol_replays(client_id,resource_reference,event_id_digest,payload_digest,created_at) VALUES($1,$2,$3,$4,clock_timestamp())`, groupopsport.WebhookClientID, "groupops-webhook-pg", legacyEvent[:], legacyPayload[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = groupStore.ClaimWebhookReplay(ctx, groupopsport.WebhookClientID, "groupops-webhook-pg", legacyEvent, legacyPayload, time.Now().UTC()); !errors.Is(err, groupopsapp.ErrConflict) {
+		t.Fatalf("legacy replay admitted after upgrade err=%v", err)
+	}
+
+	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-reactivate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runsBefore, intentsBefore, executionsBefore, effectsBefore, effectJobsBefore, riverJobsBefore int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_runs WHERE plan_id=$1`, detail.Plan.ID).Scan(&runsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE plan_id=$1`, detail.Plan.ID).Scan(&intentsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, detail.Plan.ID).Scan(&executionsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effect_jobs`).Scan(&effectJobsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM river_job`).Scan(&riverJobsBefore); err != nil {
+		t.Fatal(err)
+	}
+	failingRuntime := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, failingGroupOpsEffectAccepter{delegate: effectStore}, journeyStaff{}, nil, journeySender{}, nil, nil)
+	failingRuntime.SetDispatchEnabled(true)
+	if _, err = failingRuntime.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-rollback", groupopsport.WebhookInboundCommand{WebhookReference: "groupops-webhook-pg", TargetChatReferences: []string{"webhook-pg-chat-a"}, Messages: []groupopsport.WebhookMessage{{Type: "text", Text: "this must roll back"}}}); err == nil {
+		t.Fatal("accepted a dynamic run despite external-effect transaction failure")
+	}
+	var runsAfter, intentsAfter, executionsAfter, effectsAfter, effectJobsAfter, riverJobsAfter int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_runs WHERE plan_id=$1`, detail.Plan.ID).Scan(&runsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE plan_id=$1`, detail.Plan.ID).Scan(&intentsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, detail.Plan.ID).Scan(&executionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effect_jobs`).Scan(&effectJobsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM river_job`).Scan(&riverJobsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if runsAfter != runsBefore || intentsAfter != intentsBefore || executionsAfter != executionsBefore || effectsAfter != effectsBefore || effectJobsAfter != effectJobsBefore || riverJobsAfter != riverJobsBefore {
+		t.Fatalf("failed EER acceptance leaked facts: runs %d/%d intents %d/%d executions %d/%d effects %d/%d effect_jobs %d/%d river_jobs %d/%d", runsBefore, runsAfter, intentsBefore, intentsAfter, executionsBefore, executionsAfter, effectsBefore, effectsAfter, effectJobsBefore, effectJobsAfter, riverJobsBefore, riverJobsAfter)
+	}
+}
 
 // TestGroupOpsPostgreSQLJourney exercises the real owner stores and EER
 // transaction seam. It intentionally uses opaque local group references and
@@ -1632,7 +1879,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0036_ai_assistant_review.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql", "0119_group_ops_unnamed_groups.sql", "0120_excel_batches.sql", "0124_operation_excel_batch_lifecycle.sql", "0125_outbound_material_preparation.sql", "0126_media_material_source_snapshots.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0036_ai_assistant_review.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql", "0119_group_ops_unnamed_groups.sql", "0120_excel_batches.sql", "0124_operation_excel_batch_lifecycle.sql", "0125_outbound_material_preparation.sql", "0126_media_material_source_snapshots.sql", "0155_group_ops_webhook_dynamic_executions.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

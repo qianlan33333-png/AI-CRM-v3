@@ -22,6 +22,7 @@
     groupFilterOwner: null,
     refreshingOwnerGroups: false,
     notice: "",
+    noticeIsError: false,
     showCreate: false,
     createNotice: "",
     showGroupPicker: false,
@@ -529,20 +530,25 @@
     if (!id || state.changingPlanId) return;
     state.changingPlanId = id;
     state.notice = action === "enable" ? "启用中" : "停用中";
+    state.noticeIsError = false;
     renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
     try {
       const changed = await requestJson(action === "enable" ? routes.apiPlanEnable(id) : routes.apiPlanDisable(id), { method: "POST" });
       const status = (changed.plan || changed).status;
       if (action === "enable" && status !== "active") throw new Error("启用结果未确认，请刷新后重试");
       if (action === "disable" && status === "active") throw new Error("停用结果未确认，请刷新后重试");
-      state.notice = action === "enable" ? "已启用" : "已停用";
       await loadListPage();
+      state.notice = action === "enable" ? "已启用" : "已停用";
+      state.noticeIsError = false;
     } catch (error) {
-      state.changingPlanId = 0;
+      // Re-read the list and plan after conflict/failure. This refreshes the
+      // Host revision cache but never submits an automatic retry write.
+      await Promise.allSettled([requestJson(routes.apiPlan(id)), loadListPage({ preserveView: true })]);
       state.notice = requestErrorMessage(error, action === "enable" ? "启用失败，请重试" : "停用失败，请重试");
-      renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+      state.noticeIsError = true;
     } finally {
       state.changingPlanId = 0;
+      renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
     }
   }
 
@@ -772,8 +778,8 @@
     }
   }
 
-  async function loadListPage() {
-    renderLoading();
+  async function loadListPage({ preserveView = false } = {}) {
+    if (!preserveView) renderLoading();
     try {
       const [payload, ownersPayload] = await Promise.all([requestJson(routes.apiPlans), requestJson(routes.apiMembers)]);
       state.plans = normalizeItems(payload);
@@ -837,7 +843,7 @@
         ${pageButton("查看所有群", routes.groups)}
         ${actionButton("创建计划", "show-create-plan", "group-ops__button--primary")}
       </div>
-      <div class="group-ops__notice" ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}</div>
+      <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}" ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}</div>
       <section class="group-ops__metric-grid">
         ${metricCard("运营计划", formatNumber(total))}
         ${metricCard("已绑定群", formatNumber(boundCount))}
@@ -857,6 +863,7 @@
       </section>
     `);
     state.notice = "";
+    state.noticeIsError = false;
     state.createNotice = "";
   }
 
@@ -1161,7 +1168,7 @@
           ${configured || archived ? "" : `<div class="group-ops__row-actions">${actionButton("生成 Webhook 地址", "save-webhook", "group-ops__button--primary")}</div>`}
           ${configured ? "" : archived ? '<div class="group-ops__empty">计划已归档，Webhook 配置保持只读。</div>' : '<div class="group-ops__empty">点击生成地址，即可复制本计划的接收网址。</div>'}
           ${configured ? `
-          <div class="group-ops__notice">地址已配置；调用仍需签名配置和启用计划。请完成实际接收验证后再使用。</div>
+          <div class="group-ops__notice">地址已配置；无需预设节点。每个动态请求提供话术和已绑定群的子集，调用仍需签名配置和启用计划。</div>
           <div class="group-ops__webhook-line">
             <span class="group-ops__chip">POST</span>
             <div class="group-ops__url">${escapeHtml(config.webhook_url || "")}</div>
@@ -1269,7 +1276,7 @@
 
   function renderDetailShell(summary) {
     return `
-      <div class="group-ops__notice" ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}</div>
+      <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}" ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}</div>
       <section class="group-ops__detail-shell">
         <section class="group-ops__summary-card">
           <div class="group-ops__summary-head">
@@ -1301,6 +1308,7 @@
     };
     renderShell(renderDetailShell(summary));
     state.notice = "";
+    state.noticeIsError = false;
   }
 
   function groupsQueryParams() {

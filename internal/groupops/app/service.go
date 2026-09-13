@@ -511,24 +511,39 @@ func contentValidation(detail groupopsport.Detail) groupopsport.ContentValidatio
 	if len(detail.Members) == 0 {
 		result.IssueCodes = append(result.IssueCodes, "member_required")
 	}
-	if len(detail.Nodes) == 0 {
-		result.IssueCodes = append(result.IssueCodes, "node_required")
-	}
-	for _, node := range detail.Nodes {
-		if node.MaterialRef != "" {
-			result.IssueCodes = append(result.IssueCodes, "legacy_material_reference_unsupported")
+	if detail.Plan.Type == groupopsport.PlanTypeWebhook {
+		// Webhook requests bring their own immutable content and must select a
+		// subset of these bound groups at acceptance. The existing responsible
+		// operator requirement stays in force until sender qualification has a
+		// separately reviewed product rule; only the node requirement is waived.
+		if !detail.WebhookDescriptor.Configured {
+			result.IssueCodes = append(result.IssueCodes, "webhook_descriptor_required")
 		}
-		switch node.Kind {
-		case groupopsport.NodeMessage:
-			if node.MessageText != "" {
-				result.PreviewLines = append(result.PreviewLines, "message: "+node.MessageText)
-			} else {
-				result.PreviewLines = append(result.PreviewLines, fmt.Sprintf("message: %d materials", len(node.MaterialPlan.References)))
+	} else {
+		if len(detail.Nodes) == 0 {
+			result.IssueCodes = append(result.IssueCodes, "node_required")
+		}
+	}
+	// Nodes are not execution inputs for a Webhook plan. Keep structurally
+	// valid legacy nodes readable, but do not let their retired schedule or
+	// free-form material rules block an otherwise valid dynamic plan.
+	if detail.Plan.Type != groupopsport.PlanTypeWebhook {
+		for _, node := range detail.Nodes {
+			if node.MaterialRef != "" {
+				result.IssueCodes = append(result.IssueCodes, "legacy_material_reference_unsupported")
 			}
-		case groupopsport.NodeDelay:
-			result.PreviewLines = append(result.PreviewLines, fmt.Sprintf("delay: %d minutes", node.DelayMinutes))
-		default:
-			result.IssueCodes = append(result.IssueCodes, "invalid_node")
+			switch node.Kind {
+			case groupopsport.NodeMessage:
+				if node.MessageText != "" {
+					result.PreviewLines = append(result.PreviewLines, "message: "+node.MessageText)
+				} else {
+					result.PreviewLines = append(result.PreviewLines, fmt.Sprintf("message: %d materials", len(node.MaterialPlan.References)))
+				}
+			case groupopsport.NodeDelay:
+				result.PreviewLines = append(result.PreviewLines, fmt.Sprintf("delay: %d minutes", node.DelayMinutes))
+			default:
+				result.IssueCodes = append(result.IssueCodes, "invalid_node")
+			}
 		}
 	}
 	result.Valid = len(result.IssueCodes) == 0
@@ -596,7 +611,7 @@ func validCreate(c groupopsport.CreatePlanCommand) bool {
 	return c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name)
 }
 func validUpdate(c groupopsport.UpdatePlanCommand) bool {
-	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name) && (!c.OwnerStaffIDSet || c.OwnerStaffID > 0) && (c.PlanType == "" || c.PlanType == "standard" || c.PlanType == "webhook")
+	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey) && validName(c.Name) && (!c.OwnerStaffIDSet || c.OwnerStaffID > 0) && (c.PlanType == "" || c.PlanType == groupopsport.PlanTypeStandard || c.PlanType == groupopsport.PlanTypeWebhook)
 }
 func validTransition(c groupopsport.TransitionCommand) bool {
 	return c.PlanID > 0 && c.ExpectedRevision > 0 && c.Actor > 0 && validKey(c.IdempotencyKey)
@@ -769,7 +784,7 @@ func sameNodeSchedule(want, got groupopsport.Node) bool {
 }
 
 func samePlan(want, got groupopsport.Plan) bool {
-	return want.ID == got.ID && want.Name == got.Name && want.Status == got.Status && want.Revision == got.Revision && want.CreatedBy == got.CreatedBy && want.UpdatedBy == got.UpdatedBy && want.CreatedAt.Equal(got.CreatedAt) && want.UpdatedAt.Equal(got.UpdatedAt)
+	return want.ID == got.ID && want.Type == got.Type && want.Name == got.Name && want.Status == got.Status && want.Revision == got.Revision && want.CreatedBy == got.CreatedBy && want.UpdatedBy == got.UpdatedBy && want.CreatedAt.Equal(got.CreatedAt) && want.UpdatedAt.Equal(got.UpdatedAt)
 }
 func receiptMatches(value Receipt, operation string, reservation Reservation) bool {
 	return value.ID > 0 && value.Operation == operation && value.ActorScope == reservation.ActorScope && subtle.ConstantTimeCompare(value.KeyDigest[:], reservation.KeyDigest[:]) == 1 && (value.State == "in_progress" || value.State == "completed")

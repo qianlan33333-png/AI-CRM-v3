@@ -331,12 +331,16 @@ func groupMessageRequestWithPreparedMedia(execution groupopsport.DispatchExecuti
 		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops dispatch execution")
 	}
 	var content struct {
-		SchemaVersion int    `json:"schema_version"`
-		Kind          string `json:"kind"`
-		MessageText   string `json:"message_text"`
+		SchemaVersion   int                                   `json:"schema_version"`
+		Kind            string                                `json:"kind"`
+		MessageText     string                                `json:"message_text"`
+		AttachmentOrder []mediaport.GroupOpsMaterialReference `json:"attachment_order"`
 	}
-	if json.Unmarshal(execution.ContentSnapshot, &content) != nil || content.SchemaVersion != 1 || content.Kind != "message" || strings.TrimSpace(content.MessageText) != content.MessageText {
+	if json.Unmarshal(execution.ContentSnapshot, &content) != nil || ((content.SchemaVersion != 1 || content.Kind != "message") && (content.SchemaVersion != 2 || content.Kind != "webhook_message")) || strings.TrimSpace(content.MessageText) != content.MessageText {
 		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops content snapshot")
+	}
+	if content.SchemaVersion == 1 && content.AttachmentOrder != nil {
+		return wecomport.GroupMessageRequest{}, errors.New("invalid legacy Group Ops content snapshot")
 	}
 	canonicalContent, canonicalErr := canonicalGroupMessageJSON(execution.ContentSnapshot)
 	if canonicalErr != nil || string(effectport.Hash("group-ops.content.snapshot.v1", string(canonicalContent))) != execution.ContentDigest {
@@ -347,6 +351,14 @@ func groupMessageRequestWithPreparedMedia(execution groupopsport.DispatchExecuti
 		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops material snapshot")
 	}
 	attachments := []wecomport.GroupMessageAttachment{}
+	var webhookSources mediaport.GroupOpsMaterialSourceSnapshot
+	if content.SchemaVersion == 2 && len(content.AttachmentOrder) > 0 {
+		var sourceErr error
+		webhookSources, sourceErr = groupMessageMaterialSources(execution.MaterialSourceSnapshot)
+		if sourceErr != nil || !webhookAttachmentOrderMatches(content.AttachmentOrder, webhookSources) {
+			return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops webhook attachment order")
+		}
+	}
 	if !emptyGroupMessageMaterial(canonicalMaterial) {
 		var materialAttachments []mediaport.GroupOpsProviderReadyAttachment
 		var sources mediaport.GroupOpsMaterialSourceSnapshot
@@ -377,10 +389,25 @@ func groupMessageRequestWithPreparedMedia(execution groupopsport.DispatchExecuti
 			attachments[index] = wecomport.GroupMessageAttachment{MsgType: attachment.MsgType, MediaID: mediaID, AppID: attachment.AppID, PagePath: attachment.PagePath, Title: attachment.Title, URL: attachment.URL, Description: attachment.Description, PicURL: attachment.PicURL}
 		}
 	}
+	if content.SchemaVersion == 2 && len(content.AttachmentOrder) != len(attachments) {
+		return wecomport.GroupMessageRequest{}, errors.New("Group Ops webhook attachment count mismatch")
+	}
 	if content.MessageText == "" && len(attachments) == 0 {
 		return wecomport.GroupMessageRequest{}, errors.New("Group Ops message is empty")
 	}
 	return wecomport.GroupMessageRequest{SenderUserID: execution.SenderUserID, ChatIDs: []string{execution.TargetReference}, Text: content.MessageText, Attachments: attachments}, nil
+}
+
+func webhookAttachmentOrderMatches(order []mediaport.GroupOpsMaterialReference, sources mediaport.GroupOpsMaterialSourceSnapshot) bool {
+	if len(order) != len(sources.References) {
+		return false
+	}
+	for index, reference := range order {
+		if reference != sources.References[index].Reference {
+			return false
+		}
+	}
+	return true
 }
 
 // DisabledGroupMessageProvider is the deterministic default adapter for the

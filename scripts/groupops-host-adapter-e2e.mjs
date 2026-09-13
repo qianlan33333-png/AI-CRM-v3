@@ -420,7 +420,7 @@ try {
   await waitFor(() => webhookWindow.document.querySelector('[data-action="copy-webhook"]'), "saved webhook did not reread and render its copy action");
   const expectedWebhookURL = `https://groupops.test${webhookDescriptor.path}`;
   assert.equal(webhookWindow.document.querySelector(".group-ops__url")?.textContent, expectedWebhookURL, "Webhook presentation must show the configured callable URL");
-  assert(webhookWindow.document.body.textContent.includes("地址已配置；调用仍需签名配置和启用计划") && webhookWindow.document.body.textContent.includes("签名验证（HMAC-SHA256）") && webhookWindow.document.querySelector(".group-ops__webhook-guide")?.textContent.includes("复制地址不包含凭据，也不能绕过签名验证") && webhookWindow.document.body.textContent.includes("X-Signature / X-Timestamp / X-Nonce / X-Client-ID"), "Webhook presentation must explain the descriptor headers and signing requirement without claiming readiness or exposing a secret");
+  assert(webhookWindow.document.body.textContent.includes("无需预设节点") && webhookWindow.document.body.textContent.includes("已绑定群的子集") && webhookWindow.document.body.textContent.includes("签名验证（HMAC-SHA256）") && webhookWindow.document.querySelector(".group-ops__webhook-guide")?.textContent.includes("复制地址不包含凭据，也不能绕过签名验证") && webhookWindow.document.body.textContent.includes("X-Signature / X-Timestamp / X-Nonce / X-Client-ID"), "Webhook presentation must explain dynamic content, descriptor headers and signing without exposing a secret");
   webhookWindow.document.querySelector('[data-action="copy-webhook"]').click();
   await waitFor(() => copiedWebhook[0] === expectedWebhookURL, "Webhook copy did not reach the clipboard");
   await waitFor(() => webhookWindow.document.body.textContent.includes("Webhook 地址已复制"), "Webhook copy did not render a success receipt");
@@ -434,6 +434,9 @@ try {
 let listPlan = { plan_id: 13, name: "授权测试群计划", revision: 8, status: "disabled", plan_type: "standard", owner: { staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营", name_source: "wecom_profile", profile_read_state: "ready" } };
 let enableCalls = 0;
 let releaseEnable;
+let holdConflictReads = false;
+const pendingConflictReads = [];
+const delayedConflictRead = (body) => new Promise((resolve) => pendingConflictReads.push(() => resolve(response(body))));
 const listJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`, {
   url: "https://groupops.test/admin/automation-conversion/group-ops/ui",
   runScripts: "outside-only",
@@ -447,18 +450,24 @@ listWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
 listWindow.fetch = async (input, init = {}) => {
   const url = new URL(String(input), listWindow.location.href);
   const method = String(init.method || "GET").toUpperCase();
-  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
-  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return response({ items: [clone(listPlan)], total: 1 });
-  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/13" && method === "GET") return response({ plan: clone(listPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return holdConflictReads ? delayedConflictRead({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] }) : response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return holdConflictReads ? delayedConflictRead({ items: [clone(listPlan)], total: 1 }) : response({ items: [clone(listPlan)], total: 1 });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/13" && method === "GET") return holdConflictReads ? delayedConflictRead({ plan: clone(listPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] }) : response({ plan: clone(listPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/13/enable" && method === "POST") {
     enableCalls += 1;
     const body = JSON.parse(String(init.body));
-    assert.equal(body.expected_revision, 8, "enable must use the read revision");
-    if (enableCalls === 1) return response({ error: { code: "operations_conflict" } }, 409);
+    assert.equal(body.expected_revision, enableCalls === 1 ? 8 : 9, "enable must use the latest read revision");
+    if (enableCalls === 1) {
+      // Model a concurrent server mutation. The failure must cause reads only;
+      // a second POST happens only after the next explicit click.
+      listPlan = { ...listPlan, revision: 9 };
+      holdConflictReads = true;
+      return response({ error: { code: "operations_conflict" } }, 409);
+    }
     return new Promise((resolve) => {
       releaseEnable = () => {
-        listPlan = { ...listPlan, status: "active", revision: 9 };
+        listPlan = { ...listPlan, status: "active", revision: 10 };
         resolve(response({ plan: clone(listPlan) }));
       };
     });
@@ -471,7 +480,14 @@ try {
   await waitFor(() => listWindow.document.querySelector('[data-action="enable-plan"]'), "disabled plan did not render its enable control");
   const enable = () => listWindow.document.querySelector('[data-action="enable-plan"]');
   enable().click();
+  await waitFor(() => pendingConflictReads.length === 3 && enableCalls === 1 && enable()?.disabled, "conflict refresh did not keep lifecycle control locked");
+  enable().click();
+  assert.equal(enableCalls, 1, "an explicit click during conflict readback must not submit another POST");
+  holdConflictReads = false;
+  pendingConflictReads.splice(0).forEach((release) => release());
   await waitFor(() => listWindow.document.body.textContent.includes("计划状态、版本或配置不满足要求，请刷新后检查") && !enable()?.disabled, "failed enable must keep a retryable control and visible error");
+  assert.equal(listPlan.revision, 9, "conflict fixture must expose a newer server revision");
+  assert.equal(listWindow.document.querySelector(".group-ops__notice")?.classList.contains("group-ops__notice--error"), true, "failed enable notice must not use the green success style");
   enable().click();
   enable().click();
   await waitFor(() => enableCalls === 2 && enable()?.disabled && enable()?.textContent === "启用中", "enable must lock repeat clicks and show progress");

@@ -176,6 +176,39 @@ func TestGroupMessageProviderUsesEffectBoundSnapshotAndExactChat(t *testing.T) {
 	}
 }
 
+func TestGroupMessageProviderSendsPureTextWebhookSnapshot(t *testing.T) {
+	content := []byte(`{"schema_version":2,"kind":"webhook_message","message_text":"动态话术","attachment_order":[]}`)
+	material := []byte(`{"schema_version":1,"references":[]}`)
+	envelope := groupMessageEnvelope()
+	canonicalContent, err := canonicalGroupMessageJSON(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalMaterial, err := canonicalGroupMessageJSON(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectID := "eer_webhook_text"
+	execution := groupopsport.DispatchExecution{
+		ExecutionID: 74, ExternalEffectID: effectID, State: groupopsport.ExecutionAccepted, TargetReference: "chat-74", SenderUserID: "owner-74",
+		ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(canonicalContent))),
+		MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(canonicalMaterial))),
+		SourceRefDigest: string(envelope.SourceRefDigest), TargetRefDigest: string(envelope.TargetRefDigest), PayloadDigest: string(envelope.PayloadDigest), PolicyVersionHash: string(envelope.PolicyVersionHash),
+	}
+	sender := &groupMessageSenderStub{attempted: true, receipt: wecomport.GroupMessageReceipt{MessageID: "msg-webhook-text"}}
+	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: groupDispatchReaderStub{value: execution}, Materials: materialReadinessStub{}, Writer: sender})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Execute(context.Background(), envelope, effect.Attempt{EffectID: effectID, Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effect.StateExecuted || !result.CallAttempted || !result.RealExternalCallExecuted || sender.calls != 1 {
+		t.Fatalf("result=%+v err=%v sender_calls=%d", result, err, sender.calls)
+	}
+	if sender.request.SenderUserID != "owner-74" || len(sender.request.ChatIDs) != 1 || sender.request.ChatIDs[0] != "chat-74" || sender.request.Text != "动态话术" || len(sender.request.Attachments) != 0 {
+		t.Fatalf("unexpected dynamic text writer request=%+v", sender.request)
+	}
+}
+
 func TestGroupMessageRequestCanonicalizesJSONBSnapshotsWithoutWeakeningDigestChecks(t *testing.T) {
 	content := []byte(` { "message_text" : "hello", "kind":"message", "schema_version":1 } `)
 	material := []byte(` { "references": [ ], "schema_version": 1 } `)
@@ -194,6 +227,31 @@ func TestGroupMessageRequestCanonicalizesJSONBSnapshotsWithoutWeakeningDigestChe
 	execution.ContentSnapshot = []byte(`{"schema_version":1,"kind":"message","message_text":"changed"}`)
 	if _, err = groupMessageRequest(execution); err == nil {
 		t.Fatal("semantic content change bypassed digest check")
+	}
+}
+
+func TestGroupMessageRequestAcceptsWebhookTextThenFrozenAttachmentOrder(t *testing.T) {
+	content := []byte(`{"schema_version":2,"kind":"webhook_message","message_text":"今日话术","attachment_order":[{"kind":"image","id":8},{"kind":"attachment","id":9}]}`)
+	material := []byte(`{"schema_version":2,"node_kind":"message","attachments":[{"msgtype":"image","media_id":"image-8"},{"msgtype":"file","media_id":"file-9"}]}`)
+	sources := []byte(`{"schema_version":1,"references":[{"reference":{"kind":"image","id":8},"source_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"reference":{"kind":"attachment","id":9},"source_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`)
+	canonicalContent, err := canonicalGroupMessageJSON(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalMaterial, err := canonicalGroupMessageJSON(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := groupopsport.DispatchExecution{ExecutionID: 73, TargetReference: "chat-73", SenderUserID: "owner-73", ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(canonicalContent))), MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(canonicalMaterial))), MaterialSourceSnapshot: sources}
+	request, err := groupMessageRequest(execution)
+	if err != nil || request.Text != "今日话术" || len(request.Attachments) != 2 || request.Attachments[0].MsgType != "image" || request.Attachments[1].MsgType != "file" {
+		t.Fatalf("request=%+v err=%v", request, err)
+	}
+	execution.ContentSnapshot = []byte(`{"schema_version":2,"kind":"webhook_message","message_text":"今日话术","attachment_order":[{"kind":"attachment","id":9},{"kind":"image","id":8}]}`)
+	canonicalContent, _ = canonicalGroupMessageJSON(execution.ContentSnapshot)
+	execution.ContentDigest = string(effect.Hash("group-ops.content.snapshot.v1", string(canonicalContent)))
+	if _, err = groupMessageRequest(execution); err == nil {
+		t.Fatal("reordered webhook attachments were accepted")
 	}
 }
 
