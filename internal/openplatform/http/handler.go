@@ -94,6 +94,7 @@ func (handler *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /open/v1/orders/{order_id}", handler.v1Order)
 	mux.HandleFunc("GET /open/v1/customers/{customer_id}/identities", handler.v1Identities)
 	mux.HandleFunc("GET /open/v1/questionnaire-submissions", handler.v1QuestionnaireSubmissions)
+	mux.HandleFunc("GET /open/v1/customers/{customer_id}/detail", handler.v1CustomerDetail)
 	// These V3 management endpoints are the control plane used by PR #164.
 	// The obsolete donor-shaped config endpoints are intentionally not mounted.
 	mux.HandleFunc("GET /api/admin/open-platform/clients", handler.listClients)
@@ -137,6 +138,7 @@ func Mount(next, machine http.Handler) http.Handler {
 		"GET /open/v1/orders", "GET /open/v1/orders/{order_id}",
 		"GET /open/v1/customers/{customer_id}/identities",
 		"GET /open/v1/questionnaire-submissions",
+		"GET /open/v1/customers/{customer_id}/detail",
 		"GET /api/admin/open-platform/clients", "POST /api/admin/open-platform/clients",
 		"GET /api/admin/open-platform/clients/{client_id}", "PATCH /api/admin/open-platform/clients/{client_id}", "GET /api/admin/open-platform/clients/{client_id}/audit",
 		"POST /api/admin/open-platform/clients/{client_id}/activate", "POST /api/admin/open-platform/clients/{client_id}/rotate", "POST /api/admin/open-platform/clients/{client_id}/enable", "POST /api/admin/open-platform/clients/{client_id}/disable",
@@ -325,6 +327,9 @@ func (handler *Handler) v1Identities(response http.ResponseWriter, request *http
 }
 func (handler *Handler) v1QuestionnaireSubmissions(response http.ResponseWriter, request *http.Request) {
 	handler.invokeV1(response, request, openplatformport.OperationQuestionnaireSubmissions, questionnaireSubmissionsJSONInput)
+}
+func (handler *Handler) v1CustomerDetail(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationCustomerDetail, pathJSONInput("customer_id"))
 }
 
 func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Request, operation openplatformport.OperationID, normalize func(*http.Request) (json.RawMessage, error)) {
@@ -1554,6 +1559,8 @@ func mcpInputSchema(operation openplatformport.OperationID) map[string]any {
 		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "unionid_scopes": map[string]any{"type": "array", "items": stringValue}}}
 	case openplatformport.OperationQuestionnaireSubmissions:
 		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "questionnaire_id": map[string]any{"type": "integer", "minimum": 1}, "source_system": stringValue, "source_record_id": stringValue, "submitted_from": map[string]any{"type": "integer", "minimum": 0}, "submitted_to": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": stringValue}}
+	case openplatformport.OperationCustomerDetail:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}}}
 	default:
 		return map[string]any{"type": "object", "additionalProperties": false}
 	}

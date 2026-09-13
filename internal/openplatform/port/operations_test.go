@@ -7,10 +7,10 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 )
 
-func TestOperationCatalogFreezesTheTenV1Operations(t *testing.T) {
+func TestOperationCatalogFreezesTheElevenV1Operations(t *testing.T) {
 	catalog := OperationCatalog()
-	if len(catalog) != 10 {
-		t.Fatalf("catalog count = %d, want 10", len(catalog))
+	if len(catalog) != 11 {
+		t.Fatalf("catalog count = %d, want 11", len(catalog))
 	}
 	got := make([]OperationID, 0, len(catalog))
 	for _, item := range catalog {
@@ -19,7 +19,7 @@ func TestOperationCatalogFreezesTheTenV1Operations(t *testing.T) {
 		}
 		got = append(got, item.OperationID)
 	}
-	want := []OperationID{OperationCapabilitiesList, OperationCustomerResolve, OperationCustomerContext, OperationCustomerActivities, OperationAIReviewPlanCreate, OperationGet, OperationOrderList, OperationOrderGet, OperationIdentityGet, OperationQuestionnaireSubmissions}
+	want := []OperationID{OperationCapabilitiesList, OperationCustomerResolve, OperationCustomerContext, OperationCustomerActivities, OperationAIReviewPlanCreate, OperationGet, OperationOrderList, OperationOrderGet, OperationIdentityGet, OperationQuestionnaireSubmissions, OperationCustomerDetail}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("operation IDs = %#v, want %#v", got, want)
 	}

@@ -28,6 +28,7 @@ const (
 	OperationOrderGet                 OperationID = "order.get"
 	OperationIdentityGet              OperationID = "identity.get"
 	OperationQuestionnaireSubmissions OperationID = "questionnaire.submissions.list"
+	OperationCustomerDetail           OperationID = "customer.detail.get"
 )
 
 type Capability string
@@ -42,6 +43,7 @@ const (
 	CapabilityOrderRead                Capability = "order.read"
 	CapabilityIdentityRead             Capability = "identity.read"
 	CapabilityQuestionnaireRead        Capability = "questionnaire.read"
+	CapabilityCustomerDetailRead       Capability = "customer.detail.read"
 )
 
 // Descriptor is the single catalog entry used by REST, MCP, administration,
@@ -73,6 +75,7 @@ func OperationCatalog() []Descriptor {
 		{OperationID: OperationOrderGet, RESTMethod: "GET", RESTPath: "/open/v1/orders/{order_id}", MCPTool: "get_order", Capability: CapabilityOrderRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 		{OperationID: OperationIdentityGet, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/identities", MCPTool: "get_customer_identities", Capability: CapabilityIdentityRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 		{OperationID: OperationQuestionnaireSubmissions, RESTMethod: "GET", RESTPath: "/open/v1/questionnaire-submissions", MCPTool: "list_questionnaire_submissions", Capability: CapabilityQuestionnaireRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationCustomerDetail, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/detail", MCPTool: "get_customer_detail", Capability: CapabilityCustomerDetailRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 	}
 }
 

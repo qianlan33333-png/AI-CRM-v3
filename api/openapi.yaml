@@ -3776,6 +3776,13 @@ paths:
       security: [{machineBearer: []}]
       parameters: [{name: customer_id, in: query, required: true, schema: {type: integer, minimum: 1}}, {name: questionnaire_id, in: query, schema: {type: integer, minimum: 1}}, {name: source_system, in: query, schema: {type: string}}, {name: source_record_id, in: query, schema: {type: string}}, {name: submitted_from, in: query, schema: {type: integer, minimum: 0}}, {name: submitted_to, in: query, schema: {type: integer, minimum: 0}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}]
       responses: {"200": {description: Machine-authorized sourced questionnaire snapshots, content: {application/json: {schema: {type: object}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/customers/{customer_id}/detail:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getOpenPlatformCustomerDetail
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Customer-owned business profile without raw identities, content: {application/json: {schema: {type: object}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /api/admin/open-platform/clients:
     get:
       operationId: listOpenPlatformClients
