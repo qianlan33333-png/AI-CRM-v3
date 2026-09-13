@@ -6302,7 +6302,7 @@ components:
         type: {const: miniprogram}
         appid: {type: string, const: wx0ca836834b18e989, description: "The only AppID with automatic cover resolution."}
         path: {type: string, pattern: '^pages/article/article\\?lesson_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}&from=learn$', description: "Only this daily-lesson path form has automatic cover resolution."}
-        title: {type: string, minLength: 1, maxLength: 64, description: "At most 64 UTF-8 bytes; controls and surrounding whitespace are rejected."}
+        title: {type: string, minLength: 1, maxLength: 64, description: "At most 64 UTF-8 bytes; control characters and leading or trailing whitespace are rejected."}
     GroupOpsWebhookStoredMiniProgramMessage:
       type: object
       additionalProperties: false

@@ -130,7 +130,7 @@ miniprogram_id 是 JSON 数字，且与 appid、path、title、图片和文件�
 
 ## 签名和 cURL
 
-每个逻辑事件使用一个新 `X-AICRM-Event-Id`，长度 16–256 个可打印字符。它在客户端 ID `aicrm-webhook-group-ops` 下对**所有**群运营 Webhook URL 全局唯一。相同事件只能用完全相同的 JSON 重放；同事件但内容或 URL 不同返回冲突。
+每个逻辑事件使用一个新 `X-AICRM-Event-Id`，长度为 16–256 个 ASCII 字符，范围 `0x21`–`0x7e`（不含空格）。它在客户端 ID `aicrm-webhook-group-ops` 下对**所有**群运营 Webhook URL 全局唯一。相同事件只能用完全相同的 JSON 重放；同事件但内容或 URL 不同返回冲突。
 
 签名原文是以下精确 UTF-8 字节，最后的 JSON 必须保持原始字节，不要重新格式化：
 
