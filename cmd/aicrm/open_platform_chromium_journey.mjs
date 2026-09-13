@@ -200,7 +200,7 @@ try {
     const form=root?.querySelector('[data-open-platform-create="client_id"]');
     const capabilities=root ? [...root.querySelectorAll('input[name="create-capability"]')].map(input=>input.value).sort() : [];
     const csrf=String(document.cookie||'').split(';').some(part=>part.trim().startsWith('aicrm_admin_csrf=')) || String(document.cookie||'').split(';').some(part=>part.trim().startsWith('aicrm_csrf='));
-    return Boolean(root && client && form && csrf && capabilities.length===6 && capabilities.includes('platform.capabilities.read'));
+    return Boolean(root && client && form && csrf && capabilities.length===13 && capabilities.includes('platform.capabilities.read') && capabilities.includes('chat.read') && capabilities.includes('order.read'));
   })()`;
   try { await waitFor(cdp, authenticatedHostReady, "authenticated V1 caller Host did not finish loading"); }
   catch (_) {
@@ -254,7 +254,7 @@ try {
   if (firstActivation.status !== 200) throw new Error(`manual confirmation activation status=${firstActivation.status} category=${await activationFailureCategory(cdp, firstActivation)}`);
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "activation succeeded but the caller Host did not refresh as enabled");
   progress("activated");
-  const expectedCatalogCapabilities = ["ai.review_plan.create", "customer.activity.read", "customer.read", "customer.resolve", "operation.read", "platform.capabilities.read"];
+  const expectedCatalogCapabilities = ["ai.review_plan.create", "chat.read", "customer.activity.read", "customer.detail.read", "customer.read", "customer.resolve", "identity.read", "operation.read", "order.read", "platform.capabilities.read", "questionnaire.read", "radar.click.read", "radar.link.read"];
   // Activation refreshes the selected detail and catalog separately. The caller
   // badge may be enabled while the create form is still withheld during loading.
   // Wait for the exact catalog, then retain the independent contents assertion.
@@ -263,7 +263,7 @@ try {
     const values = [...document.querySelectorAll('input[name="create-capability"]')].map(input=>input.value).sort();
     return JSON.stringify(values) === ${JSON.stringify(JSON.stringify(expectedCatalogCapabilities))} ? values : null;
   })()`, "administrator catalog did not finish refreshing after activation");
-  if (!Array.isArray(catalogCapabilityValues) || catalogCapabilityValues.length !== expectedCatalogCapabilities.length || catalogCapabilityValues.some((value, index) => value !== expectedCatalogCapabilities[index])) throw new Error("administrator catalog did not expose the six current V1 capabilities");
+  if (!Array.isArray(catalogCapabilityValues) || catalogCapabilityValues.length !== expectedCatalogCapabilities.length || catalogCapabilityValues.some((value, index) => value !== expectedCatalogCapabilities[index])) throw new Error("administrator catalog did not expose the complete current V1 capability set");
   const operationIDs = (catalog) => Array.isArray(catalog?.body?.data?.operations) ? catalog.body.data.operations.map((item) => item?.operation_id).filter((item) => typeof item === "string").sort() : [];
   const toolNames = (catalog) => Array.isArray(catalog?.body?.result?.tools) ? catalog.body.result.tools.map((item) => item?.name).filter((item) => typeof item === "string").sort() : [];
   const sameStrings = (actual, expected) => actual.length === expected.length && actual.every((value, index) => value === expected[index]);
