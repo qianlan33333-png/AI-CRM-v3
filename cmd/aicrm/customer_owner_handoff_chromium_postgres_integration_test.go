@@ -95,7 +95,7 @@ func TestPostgreSQLOwnerHandoffComposedTransferResultHTTP(t *testing.T) {
 	if err = application.pool.Native().QueryRow(ctx, `SELECT id FROM admin_users WHERE username='owner-reader'`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
-	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('owner-reader-target','$argon2id$fixture','Reader Target','reader-target',true) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&targetID); err != nil {
+	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at) VALUES('owner-reader-target','$argon2id$fixture','Reader Target','reader-target',true,true,clock_timestamp()) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&targetID); err != nil {
 		t.Fatal(err)
 	}
 	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
@@ -223,10 +223,10 @@ func TestPostgreSQLOwnerHandoffComposedExecutionUsesCustomerUOW(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sourceID, targetID, customerID int64
-	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('owner-execution-source','$argon2id$fixture','Execution Source','execution-source',false) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&sourceID); err != nil {
+	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('owner-execution-source','$argon2id$fixture','Execution Source','execution-source',false,false) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
-	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('owner-execution-target','$argon2id$fixture','Execution Target','execution-target',true) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&targetID); err != nil {
+	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at) VALUES('owner-execution-target','$argon2id$fixture','Execution Target','execution-target',true,true,clock_timestamp()) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&targetID); err != nil {
 		t.Fatal(err)
 	}
 	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
@@ -319,13 +319,13 @@ func TestPostgreSQLOwnerHandoffJourneyFinalCountsQueryUsesAliases(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer seed.Rollback(ctx)
-	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active) VALUES('final-count-actor','$argon2id$fixture','Final Count Actor',true) RETURNING id`).Scan(&actor); err != nil {
+	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active,login_enabled,access_granted_at) VALUES('final-count-actor','$argon2id$fixture','Final Count Actor',true,true,clock_timestamp()) RETURNING id`).Scan(&actor); err != nil {
 		t.Fatal(err)
 	}
-	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('final-count-source','$argon2id$fixture','Final Count Source') RETURNING id`).Scan(&source); err != nil {
+	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,login_enabled,access_granted_at) VALUES('final-count-source','$argon2id$fixture','Final Count Source',true,clock_timestamp()) RETURNING id`).Scan(&source); err != nil {
 		t.Fatal(err)
 	}
-	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('final-count-target','$argon2id$fixture','Final Count Target') RETURNING id`).Scan(&target); err != nil {
+	if err = seed.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,login_enabled,access_granted_at) VALUES('final-count-target','$argon2id$fixture','Final Count Target',true,clock_timestamp()) RETURNING id`).Scan(&target); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = seed.Exec(ctx, `INSERT INTO admin_user_roles(admin_user_id,role_code) VALUES($1,'super_admin'),($2,'viewer'),($3,'viewer')`, actor, source, target); err != nil {
@@ -463,10 +463,10 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	var source, target, localCustomer, wecomCustomer, primaryOnlyCustomer, locallyReassignedCustomer, mixedCustomer int64
-	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('owner-browser-source','$argon2id$fixture','Inactive Source','browser-source',false) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&source); err != nil {
+	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('owner-browser-source','$argon2id$fixture','Inactive Source','browser-source',false,false) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&source); err != nil {
 		t.Fatal(err)
 	}
-	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('owner-browser-target','$argon2id$fixture','Target','browser-target',true) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&target); err != nil {
+	if err = application.pool.Native().QueryRow(ctx, `WITH account AS (INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at) VALUES('owner-browser-target','$argon2id$fixture','Target','browser-target',true,true,clock_timestamp()) RETURNING id), role AS (INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account) SELECT id FROM account`).Scan(&target); err != nil {
 		t.Fatal(err)
 	}
 	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&localCustomer); err != nil {

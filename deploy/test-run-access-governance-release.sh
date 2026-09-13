@@ -97,6 +97,16 @@ if [[ "$command" == stop && "${AICRM_TEST_SCENARIO:-}" == stop_fail && ! -e "$AI
   : >"$AICRM_TEST_STOP_FAILED"
   exit 44
 fi
+if [[ "$command" == stop && "${AICRM_TEST_SCENARIO:-}" == restore_stop_fail && "$*" == *"aicrm-wecom-worker.service"* ]]; then
+  # The first stop is the maintenance barrier. Fail only when the normal
+  # completion path tries to restore this originally inactive oneshot.
+  if [[ ! -e "$AICRM_TEST_RESTORE_STOP_ARMED" ]]; then
+    : >"$AICRM_TEST_RESTORE_STOP_ARMED"
+  elif [[ ! -e "$AICRM_TEST_STOP_FAILED" ]]; then
+    : >"$AICRM_TEST_STOP_FAILED"
+    exit 45
+  fi
+fi
 for unit in "$@"; do
   grep -Fvx "$unit=active" "$AICRM_TEST_STATE" >"$AICRM_TEST_STATE.next" || true
   grep -Fvx "$unit=inactive" "$AICRM_TEST_STATE.next" >"$AICRM_TEST_STATE"
@@ -156,6 +166,7 @@ run_case() {
     AICRM_TEST_LOG="$case_dir/log" \
     AICRM_TEST_STATE="$case_dir/state" \
     AICRM_TEST_STOP_FAILED="$case_dir/stop-failed" \
+    AICRM_TEST_RESTORE_STOP_ARMED="$case_dir/restore-stop-armed" \
     AICRM_TEST_SCENARIO="$scenario" \
     bash "$case_dir/wrapper" "$mode" "$archive" "$release_sha" >"$case_dir/output" 2>&1
   local actual=$?
@@ -186,4 +197,5 @@ run_case interrupted_apply apply signal_apply 1 stopped
 run_case held_lock apply lock_held 15 untouched
 run_case migration_running apply migrate_active 15 untouched
 run_case fd_mismatch apply fd_mismatch 15 untouched
+run_case restore_stop_failure apply restore_stop_fail 45 stopped
 printf 'PASS: %s scenarios\n' "$(wc -l <"$workspace/passed")"

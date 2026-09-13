@@ -30,7 +30,9 @@ func TestEnterpriseDirectoryUsesApplicationVisibleDepartmentReads(t *testing.T) 
 			if request.URL.Query().Get("access_token") != "application-token" {
 				t.Fatalf("department request did not use application token")
 			}
-			_, _ = response.Write([]byte(`{"errcode":0,"department_id":[{"id":1,"parentid":0},{"id":2,"parentid":1}]}`))
+			// The snapshot also contains an unrelated branch. allow_partys=[1]
+			// must never cause a recursive read rooted at 9.
+			_, _ = response.Write([]byte(`{"errcode":0,"department_id":[{"id":1,"parentid":0},{"id":2,"parentid":1},{"id":9,"parentid":0},{"id":10,"parentid":9}]}`))
 		case "/cgi-bin/user/simplelist":
 			query := request.URL.Query()
 			if query.Get("department_id") != "1" || query.Get("fetch_child") != "1" {
@@ -59,7 +61,7 @@ func TestEnterpriseDirectoryUsesApplicationVisibleDepartmentReads(t *testing.T) 
 		t.Fatalf("list_id_calls=%d employees=%+v", listIDCalls, employees)
 	}
 	preflight := client.PreflightEnterpriseDirectory(context.Background())
-	if !preflight.Complete || preflight.FailureStage != "" || preflight.AgentUserInfosShape != "object" || preflight.AgentPartysShape != "object" || preflight.AgentTagsShape != "null" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 1 || preflight.DirectoryDepartments != 2 || preflight.DirectoryComponents != 1 || preflight.DepartmentEmployeeCount != 2 || preflight.DirectEmployeeCount != 0 || preflight.EmployeeCount != 2 {
+	if !preflight.Complete || preflight.FailureStage != "" || preflight.AgentUserInfosShape != "object" || preflight.AgentPartysShape != "object" || preflight.AgentTagsShape != "null" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 1 || preflight.DirectoryDepartments != 4 || preflight.DirectoryComponents != 1 || preflight.DepartmentEmployeeCount != 2 || preflight.DirectEmployeeCount != 0 || preflight.EmployeeCount != 2 {
 		t.Fatalf("preflight=%+v", preflight)
 	}
 }
@@ -314,6 +316,45 @@ func TestEnterpriseDirectoryAllowsEmptyScopeObjects(t *testing.T) {
 	}
 	preflight := client.PreflightEnterpriseDirectory(context.Background())
 	if !preflight.Complete || preflight.FailureStage != "" || preflight.AgentUserInfosDetail != "object_keys=0;user=missing" || preflight.AgentPartysDetail != "object_keys=0;partyid=missing" || preflight.AgentTagsShape != "missing" || preflight.EmployeeCount != 0 {
+		t.Fatalf("preflight=%+v", preflight)
+	}
+}
+
+func TestEnterpriseDirectoryEnumeratesDirectUsersWithoutDepartmentReads(t *testing.T) {
+	var departmentMemberReads int
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
+		case "/cgi-bin/agent/get":
+			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{"user":[{"userid":"Direct_01"}]},"allow_partys":{}}`))
+		case "/cgi-bin/department/simplelist":
+			// A non-empty ungranted branch must not create a user/simplelist read.
+			_, _ = response.Write([]byte(`{"errcode":0,"department_id":[{"id":9,"parentid":0}]}`))
+		case "/cgi-bin/user/simplelist":
+			departmentMemberReads++
+			http.Error(response, "unexpected department member read", http.StatusInternalServerError)
+		case "/cgi-bin/user/get":
+			if request.URL.Query().Get("userid") != "Direct_01" {
+				t.Fatalf("direct user query=%s", request.URL.Query().Encode())
+			}
+			_, _ = response.Write([]byte(`{"errcode":0,"userid":"Direct_01","name":"Direct"}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := New(Config{Enabled: true, CorpID: "corp", AgentID: "agent", Secret: "application-secret", AdminCallbackURI: "https://crm.example/auth/wecom/callback", SidebarCallbackURI: "https://crm.example/api/sidebar/oauth/callback", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	employees, err := client.ListEnterpriseEmployees(context.Background())
+	if err != nil || departmentMemberReads != 0 || len(employees) != 1 || employees[0].UserID != "Direct_01" {
+		t.Fatalf("employees=%+v department_member_reads=%d err=%v", employees, departmentMemberReads, err)
+	}
+	preflight := client.PreflightEnterpriseDirectory(context.Background())
+	if !preflight.Complete || preflight.FailureStage != "" || preflight.DirectoryComponents != 0 || preflight.DepartmentEmployeeCount != 0 || preflight.DirectEmployeeCount != 1 || preflight.EmployeeCount != 1 {
 		t.Fatalf("preflight=%+v", preflight)
 	}
 }

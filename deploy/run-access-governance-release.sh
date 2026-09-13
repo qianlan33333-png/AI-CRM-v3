@@ -112,6 +112,6 @@ run_with_runtime_env "$stage/bin/migrate-access-role-convergence" --mode=replay-
 # prior active set; units that were inactive stay stopped (enabled state is not
 # changed here). Excel and HXC are not Access writers and were never stopped.
 for unit in "${units[@]}"; do
-  if [[ "${initially_active[$unit]}" == 1 ]]; then systemctl start "$unit"; else systemctl stop "$unit" || true; fi
+  if [[ "${initially_active[$unit]}" == 1 ]]; then systemctl start "$unit"; else systemctl stop "$unit"; fi
 done
 echo '{"mode":"apply","status":"active"}'

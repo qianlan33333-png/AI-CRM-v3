@@ -2204,17 +2204,12 @@ func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) Enterpri
 		return result
 	}
 	result.DirectoryDepartments = len(departments)
-	knownDepartments := make(map[int64]struct{}, len(departments))
-	for _, department := range departments {
-		knownDepartments[department.id] = struct{}{}
+	authorizedDepartments, err := enterpriseAuthorizedDepartments(departments, scope.departmentIDs)
+	if err != nil {
+		result.FailureStage = "scope_coverage"
+		return result
 	}
-	for _, departmentID := range scope.departmentIDs {
-		if _, known := knownDepartments[departmentID]; !known {
-			result.FailureStage = "scope_coverage"
-			return result
-		}
-	}
-	scopes, err := enterpriseDirectoryScopes(departments)
+	scopes, err := enterpriseDirectoryScopes(authorizedDepartments)
 	if err != nil {
 		result.FailureStage = "department_topology"
 		return result
@@ -2362,27 +2357,21 @@ func (client *Client) listEnterpriseEmployees(ctx context.Context, token string)
 	if err != nil {
 		return nil, err
 	}
-	knownDepartments := make(map[int64]struct{}, len(departments))
-	for _, department := range departments {
-		knownDepartments[department.id] = struct{}{}
+	authorizedDepartments, err := enterpriseAuthorizedDepartments(departments, scope.departmentIDs)
+	if err != nil {
+		// The app scope says this department is visible, but the current
+		// directory projection omitted it. Returning partial results would
+		// turn an authorization/read failure into a false "not found".
+		return nil, ErrResponse
 	}
-	for _, departmentID := range scope.departmentIDs {
-		if _, known := knownDepartments[departmentID]; !known {
-			// The app scope says this department is visible, but the current
-			// directory projection omitted it. Returning partial results would
-			// turn an authorization/read failure into a false "not found".
-			return nil, ErrResponse
-		}
-	}
-	scopes, err := enterpriseDirectoryScopes(departments)
+	scopes, err := enterpriseDirectoryScopes(authorizedDepartments)
 	if err != nil {
 		return nil, err
 	}
-	// Every visible connected component gets exactly one recursive read. A
-	// component rooted at department 0 and a component whose visible parent is
-	// absent are both legal Provider projections; using all component roots
-	// prevents an orphan branch from disappearing when a normal root is also
-	// present. Any cycle is rejected by enterpriseDirectoryScopes.
+	// Every authorized connected component gets exactly one recursive read. The
+	// department projection may include branches outside allow_partys, so it is
+	// first reduced to the allowed roots and their descendants. Any cycle in
+	// that selected subtree is rejected by enterpriseDirectoryScopes.
 	departmentEmployees, err := client.enterpriseMembers(ctx, token, scopes)
 	if err != nil {
 		return nil, err
@@ -2584,6 +2573,42 @@ func (client *Client) enterpriseDepartments(ctx context.Context, token string) (
 type enterpriseDepartment struct {
 	id       int64
 	parentID int64
+}
+
+// enterpriseAuthorizedDepartments reduces the Provider's department snapshot
+// to the explicit allow_partys roots and their descendants. The snapshot can
+// contain other branches; they are not evidence that this application may
+// enumerate them.
+func enterpriseAuthorizedDepartments(departments []enterpriseDepartment, allowedIDs []int64) ([]enterpriseDepartment, error) {
+	byID := make(map[int64]enterpriseDepartment, len(departments))
+	children := make(map[int64][]int64, len(departments))
+	for _, department := range departments {
+		byID[department.id] = department
+		children[department.parentID] = append(children[department.parentID], department.id)
+	}
+	selected := make(map[int64]struct{}, len(departments))
+	pending := append([]int64(nil), allowedIDs...)
+	for len(pending) > 0 {
+		departmentID := pending[0]
+		pending = pending[1:]
+		if _, alreadySelected := selected[departmentID]; alreadySelected {
+			continue
+		}
+		if _, exists := byID[departmentID]; !exists {
+			return nil, ErrResponse
+		}
+		selected[departmentID] = struct{}{}
+		pending = append(pending, children[departmentID]...)
+	}
+	if len(selected) > 500 {
+		return nil, ErrResponse
+	}
+	result := make([]enterpriseDepartment, 0, len(selected))
+	for departmentID := range selected {
+		result = append(result, byID[departmentID])
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].id < result[j].id })
+	return result, nil
 }
 
 func enterpriseDirectoryScopes(departments []enterpriseDepartment) ([]int64, error) {
