@@ -224,6 +224,15 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	attachment := responseJSON(t, serve(attachmentRequest), http.StatusOK)
 	requireJSONFields(t, attachment, "ok", "item", "attachment", "id", "version", "download_url")
 	attachmentID := int64(attachment["id"].(float64))
+	viewerDownload := httptest.NewRequest(http.MethodGet, "/api/admin/attachment-library/"+jsonID(attachmentID)+"/download", nil)
+	viewerDownload.Header.Set("X-Test-Role", "viewer")
+	if got := serve(viewerDownload); got.Code != http.StatusForbidden {
+		t.Fatalf("viewer attachment download status=%d", got.Code)
+	}
+	adminDownload := httptest.NewRequest(http.MethodGet, "/api/admin/attachment-library/"+jsonID(attachmentID)+"/download", nil)
+	if got := serve(adminDownload); got.Code != http.StatusOK || got.Header().Get("Content-Disposition") == "" {
+		t.Fatalf("admin attachment download status=%d disposition=%q", got.Code, got.Header().Get("Content-Disposition"))
+	}
 	cas := admin(httptest.NewRequest(http.MethodPut, "/api/admin/attachment-library/"+jsonID(attachmentID), bytes.NewBufferString(`{"name":"guide2","expected_version":1}`)))
 	cas.Header.Set("Idempotency-Key", "attachment-cas-key-0001")
 	if got := serve(cas); got.Code != http.StatusOK {

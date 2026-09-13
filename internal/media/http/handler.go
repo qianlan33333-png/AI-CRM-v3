@@ -554,7 +554,7 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		return
 	}
 	if tail == "facets" {
-		if !method(w, r.Method, http.MethodGet) || !h.download(w, r) {
+		if !method(w, r.Method, http.MethodGet) || !h.read(w, r) {
 			return
 		}
 		categories, tags, e := h.service.ImageFacets(r.Context())
@@ -904,7 +904,7 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 		return
 	}
 	if len(parts) == 2 && parts[1] == "download" {
-		if !method(w, r.Method, http.MethodGet) || !h.read(w, r) {
+		if !method(w, r.Method, http.MethodGet) || !h.download(w, r) {
 			return
 		}
 		item, content, e := h.service.Attachment(r.Context(), attachmentID)
