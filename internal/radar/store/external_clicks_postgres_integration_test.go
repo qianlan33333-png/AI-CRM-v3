@@ -133,7 +133,10 @@ func TestPostgreSQLExternalClicksGroupSuccessfulStagesAndApplyScopeBeforePaging(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(broad.Items) != 2 || broad.Items[0].SessionID != conflict || broad.Items[0].CustomerID != nil || broad.Items[0].AttributionStatus != radarport.AttributionConflict || broad.Items[1].SessionID != pending || broad.Items[1].EventID != pendingEvent || broad.Items[1].CustomerID != nil || broad.Items[1].AttributionStatus != radarport.AttributionPending || !broad.HasMore {
+	// The unbound client sees all auditable statuses, ordered by the first
+	// successful opening. The newer resolved visit for another Customer must
+	// not be hidden simply because this is not a customer-scoped query.
+	if len(broad.Items) != 2 || broad.Items[0].SessionID != other || broad.Items[0].CustomerID == nil || *broad.Items[0].CustomerID != customerdomain.CustomerID(customerTwo) || broad.Items[0].AttributionStatus != radarport.AttributionResolved || broad.Items[1].SessionID != conflict || broad.Items[1].CustomerID != nil || broad.Items[1].AttributionStatus != radarport.AttributionConflict || !broad.HasMore {
 		t.Fatalf("broad=%+v", broad)
 	}
 
@@ -141,7 +144,7 @@ func TestPostgreSQLExternalClicksGroupSuccessfulStagesAndApplyScopeBeforePaging(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Items) != 2 || second.Items[0].SessionID != resolved || second.Items[1].SessionID != other || second.Items[0].SessionID == anonymous || second.Items[1].SessionID == failed {
+	if len(second.Items) != 2 || second.Items[0].SessionID != pending || second.Items[0].EventID != pendingEvent || second.Items[0].AttributionStatus != radarport.AttributionPending || second.Items[1].SessionID != resolved || second.Items[1].EventID != firstResolvedEvent || second.Items[0].SessionID == anonymous || second.Items[1].SessionID == failed {
 		t.Fatalf("second=%+v", second)
 	}
 }
