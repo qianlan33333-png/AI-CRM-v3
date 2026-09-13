@@ -434,7 +434,7 @@ function staticDocumentation(onClients: () => void): HTMLElement {
 
   const orders = docSection('orders', '订单、退款与业务数据');
   orders.append(element('p', '订单金额使用整数分 amount_minor 与两位小数字符串 amount_yuan；不要用浮点金额。payer 与 beneficiary 是不同事实，payer 优先形成 customer_id，beneficiary 不能被冒充为 payer。退款完成金额才决定 is_refunded；申请中、outcome_unknown 和 final_failed 均单独表达。'));
-  const refundWarning = element('p', '已知合同注意事项：OpenAPI 将 refund_amount_status 标为必填且仅允许 unavailable；当前实现的已知退款分支未始终赋值。测试客户端应按实际响应容错读取，不应把示例当作严格 schema 通过证明。该问题已记录，本页不改变 API 合同。'); refundWarning.className = 'open-platform-doc-note open-platform-doc-warning'; orders.append(refundWarning);
+  const refundStatusNote = element('p', '退款金额状态合同：refund_amount_status 为必填字段。Payment 的本地退款摘要存在时返回 known；没有摘要时返回 unavailable。调用方应按完整 OpenAPI schema 校验该字段。is_refunded 仍只表示已完成退款金额；申请中、outcome_unknown 与 final_failed 的金额分别读取对应分项字段。'); refundStatusNote.className = 'open-platform-doc-note'; orders.append(refundStatusNote);
   orders.append(codeExample(`curl --fail-with-body --silent --show-error \\\n  -H \"Authorization: Bearer $AICRM_ACCESS_TOKEN\" \\\n  \"$AICRM_BASE_URL/open/v1/orders?customer_id=<canonical-customer-id>&limit=100\"`));
 
   const errors = docSection('errors', '错误码与处理');
