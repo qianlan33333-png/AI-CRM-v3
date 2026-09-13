@@ -97,16 +97,26 @@ type ExternalSubmissionQuery struct {
 	CustomerID            int64
 	HistoricalUnionIDs    []string
 	QuestionnaireSourceID int64
-	SubmittedFrom         time.Time
-	SubmittedTo           time.Time
-	Limit                 int32
-	Offset                int64
+	// SourceSystem and SourceRecordID are the stable provenance selector. A
+	// non-empty pair is applied by Survey before pagination; callers must not
+	// scan a customer page and match source IDs themselves.
+	SourceSystem   string
+	SourceRecordID string
+	SubmittedFrom  time.Time
+	SubmittedTo    time.Time
+	Limit          int32
+	Offset         int64
 }
 
 // ExternalSubmission is the unmasked compatibility projection required by the
 // authorized external questionnaire API. It deliberately has no Customer or
 // Identity fields; the API Host supplies current identity aliases separately.
 type ExternalSubmission struct {
+	SubmissionID ID `json:"submission_id"`
+	// SourceSystem and SourceRecordID preserve the native or imported source
+	// record without exposing its historical identity value.
+	SourceSystem          string                     `json:"source_system"`
+	SourceRecordID        string                     `json:"source_record_id"`
 	HistoricalUnionID     string                     `json:"unionid"`
 	Legacy                bool                       `json:"-"`
 	QuestionnaireSourceID int64                      `json:"questionnaire_id"`

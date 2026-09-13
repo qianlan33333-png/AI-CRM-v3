@@ -284,7 +284,7 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 		t.Fatalf("external page=%+v", page)
 	}
 	first := page.Items[0]
-	if first.HistoricalUnionID != "union-history" || first.QuestionnaireSourceID != 41 || first.QuestionnaireTitle != "External projection" || !first.SubmittedAt.Equal(now.Add(-time.Hour)) || string(first.FinalTags) != `["hot"]` || len(first.Answers) != 1 || first.Answers[0].QuestionTitle != "What do you need?" || len(first.Answers[0].SelectedOptionTexts) != 1 || first.Answers[0].SelectedOptionTexts[0] != "Consulting" || first.Answers[0].TextValue != "new protected answer" || first.Answers[0].ScoreContribution != 2.5 {
+	if int64(first.SubmissionID) != newest || first.SourceSystem != "ai-crm-v2" || first.SourceRecordID != "502" || first.HistoricalUnionID != "union-history" || first.QuestionnaireSourceID != 41 || first.QuestionnaireTitle != "External projection" || !first.SubmittedAt.Equal(now.Add(-time.Hour)) || string(first.FinalTags) != `["hot"]` || len(first.Answers) != 1 || first.Answers[0].QuestionTitle != "What do you need?" || len(first.Answers[0].SelectedOptionTexts) != 1 || first.Answers[0].SelectedOptionTexts[0] != "Consulting" || first.Answers[0].TextValue != "new protected answer" || first.Answers[0].ScoreContribution != 2.5 {
 		t.Fatalf("external item=%+v", first)
 	}
 	var assessment map[string]any
@@ -301,6 +301,13 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 	}
 	if _, err = service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{" union-history"}, Limit: 100}); !errors.Is(err, surveyport.ErrInvalid) {
 		t.Fatalf("invalid historic union error=%v", err)
+	}
+	sourceFiltered, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, SourceSystem: "ai-crm-v2", SourceRecordID: "502", Limit: 100})
+	if err != nil || sourceFiltered.Total != 1 || len(sourceFiltered.Items) != 1 || int64(sourceFiltered.Items[0].SubmissionID) != newest || sourceFiltered.Items[0].SourceRecordID != "502" {
+		t.Fatalf("source filtered page=%+v err=%v", sourceFiltered, err)
+	}
+	if _, err = service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, SourceSystem: "ai-crm-v2", Limit: 100}); !errors.Is(err, surveyport.ErrInvalid) {
+		t.Fatalf("partial source filter error=%v", err)
 	}
 
 	// A newly submitted V3 record has no migration source row or historic
@@ -325,7 +332,7 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 		t.Fatal(err)
 	}
 	mixed, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 2})
-	if err != nil || mixed.Total != 3 || len(mixed.Items) != 2 || mixed.Items[0].Legacy || mixed.Items[0].HistoricalUnionID != "" || mixed.Items[0].QuestionnaireSourceID != 41 || !mixed.Items[0].SubmittedAt.Equal(nativeAt) || string(mixed.Items[0].FinalTags) != `["native-tag"]` || mixed.Items[0].Answers[0].TextValue != "native protected answer" {
+	if err != nil || mixed.Total != 3 || len(mixed.Items) != 2 || int64(mixed.Items[0].SubmissionID) != nativeSubmissionID || mixed.Items[0].SourceSystem != "aicrm_v3" || mixed.Items[0].SourceRecordID != fmt.Sprint(nativeSubmissionID) || mixed.Items[0].Legacy || mixed.Items[0].HistoricalUnionID != "" || mixed.Items[0].QuestionnaireSourceID != 41 || !mixed.Items[0].SubmittedAt.Equal(nativeAt) || string(mixed.Items[0].FinalTags) != `["native-tag"]` || mixed.Items[0].Answers[0].TextValue != "native protected answer" {
 		t.Fatalf("mixed first page=%+v err=%v", mixed, err)
 	}
 	mixedNext, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 2, Offset: 2})
