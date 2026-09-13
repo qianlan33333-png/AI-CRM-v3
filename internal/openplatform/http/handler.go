@@ -97,6 +97,7 @@ func (handler *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /open/v1/customers/{customer_id}/detail", handler.v1CustomerDetail)
 	mux.HandleFunc("GET /open/v1/radar/clicks", handler.v1RadarClicks)
 	mux.HandleFunc("GET /open/v1/radar/links", handler.v1RadarLinks)
+	mux.HandleFunc("GET /open/v1/chat-records", handler.v1ChatRecords)
 	// These V3 management endpoints are the control plane used by PR #164.
 	// The obsolete donor-shaped config endpoints are intentionally not mounted.
 	mux.HandleFunc("GET /api/admin/open-platform/clients", handler.listClients)
@@ -142,6 +143,7 @@ func Mount(next, machine http.Handler) http.Handler {
 		"GET /open/v1/questionnaire-submissions",
 		"GET /open/v1/customers/{customer_id}/detail",
 		"GET /open/v1/radar/clicks", "GET /open/v1/radar/links",
+		"GET /open/v1/chat-records",
 		"GET /api/admin/open-platform/clients", "POST /api/admin/open-platform/clients",
 		"GET /api/admin/open-platform/clients/{client_id}", "PATCH /api/admin/open-platform/clients/{client_id}", "GET /api/admin/open-platform/clients/{client_id}/audit",
 		"POST /api/admin/open-platform/clients/{client_id}/activate", "POST /api/admin/open-platform/clients/{client_id}/rotate", "POST /api/admin/open-platform/clients/{client_id}/enable", "POST /api/admin/open-platform/clients/{client_id}/disable",
@@ -340,6 +342,9 @@ func (handler *Handler) v1RadarClicks(response http.ResponseWriter, request *htt
 func (handler *Handler) v1RadarLinks(response http.ResponseWriter, request *http.Request) {
 	handler.invokeV1(response, request, openplatformport.OperationRadarLinks, radarLinksJSONInput)
 }
+func (handler *Handler) v1ChatRecords(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationChatRecords, chatRecordsJSONInput)
+}
 
 func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Request, operation openplatformport.OperationID, normalize func(*http.Request) (json.RawMessage, error)) {
 	id := requestID(request)
@@ -509,7 +514,7 @@ func ordersJSONInput(request *http.Request) (json.RawMessage, error) {
 		}
 		value := entries[0]
 		switch name {
-		case "provider", "product_code", "merchant_order_no", "provider_transaction_no", "cursor":
+		case "provider", "product_code", "merchant_order_no", "provider_transaction_no", "source_system", "source_record_id", "cursor":
 			values[name] = value
 		case "customer_id", "created_from", "created_to", "paid_from", "paid_to", "limit":
 			n, e := strconv.ParseInt(value, 10, 64)
@@ -588,20 +593,28 @@ func radarLinksJSONInput(request *http.Request) (json.RawMessage, error) {
 	return radarJSONInput(request, map[string]bool{"radar_id": true, "limit": true}, map[string]bool{"radar_code": true, "cursor": true})
 }
 
+func chatRecordsJSONInput(request *http.Request) (json.RawMessage, error) {
+	return externalRecordsJSONInput(request, "chat records", map[string]bool{"customer_id": true, "staff_user_id": true, "occurred_from": true, "occurred_to": true, "limit": true}, map[string]bool{"chat_type": true, "staff_wecom_userid": true, "source_system": true, "source_record_id": true, "message_id": true, "cursor": true})
+}
+
 func radarJSONInput(request *http.Request, numbers, stringsOnly map[string]bool) (json.RawMessage, error) {
+	return externalRecordsJSONInput(request, "radar", numbers, stringsOnly)
+}
+
+func externalRecordsJSONInput(request *http.Request, operation string, numbers, stringsOnly map[string]bool) (json.RawMessage, error) {
 	body, err := readBody(request)
 	if err != nil || len(bytes.TrimSpace(body)) != 0 {
-		return nil, errors.New("radar operation does not accept a body")
+		return nil, errors.New(operation + " operation does not accept a body")
 	}
 	values := map[string]any{}
 	for name, entries := range request.URL.Query() {
 		if len(entries) != 1 || entries[0] == "" || strings.TrimSpace(entries[0]) != entries[0] {
-			return nil, errors.New("invalid radar query")
+			return nil, errors.New("invalid " + operation + " query")
 		}
 		if numbers[name] {
 			n, parseErr := strconv.ParseInt(entries[0], 10, 64)
 			if parseErr != nil || strconv.FormatInt(n, 10) != entries[0] {
-				return nil, errors.New("invalid radar number")
+				return nil, errors.New("invalid " + operation + " number")
 			}
 			values[name] = n
 			continue
@@ -610,7 +623,7 @@ func radarJSONInput(request *http.Request, numbers, stringsOnly map[string]bool)
 			values[name] = entries[0]
 			continue
 		}
-		return nil, errors.New("unknown radar query")
+		return nil, errors.New("unknown " + operation + " query")
 	}
 	return json.Marshal(values)
 }
@@ -1596,7 +1609,7 @@ func mcpInputSchema(operation openplatformport.OperationID) map[string]any {
 	case openplatformport.OperationGet:
 		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation_id"}, "properties": map[string]any{"operation_id": stringValue}}
 	case openplatformport.OperationOrderList:
-		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"provider": stringValue, "product_code": stringValue, "merchant_order_no": stringValue, "provider_transaction_no": stringValue, "customer_id": map[string]any{"type": "integer", "minimum": 1}, "created_from": map[string]any{"type": "integer", "minimum": 0}, "created_to": map[string]any{"type": "integer", "minimum": 0}, "paid_from": map[string]any{"type": "integer", "minimum": 0}, "paid_to": map[string]any{"type": "integer", "minimum": 0}, "is_paid": map[string]any{"type": "boolean"}, "cursor": stringValue, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}
+		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"provider": stringValue, "product_code": stringValue, "merchant_order_no": stringValue, "provider_transaction_no": stringValue, "source_system": stringValue, "source_record_id": stringValue, "customer_id": map[string]any{"type": "integer", "minimum": 1}, "created_from": map[string]any{"type": "integer", "minimum": 0}, "created_to": map[string]any{"type": "integer", "minimum": 0}, "paid_from": map[string]any{"type": "integer", "minimum": 0}, "paid_to": map[string]any{"type": "integer", "minimum": 0}, "is_paid": map[string]any{"type": "boolean"}, "is_refunded": map[string]any{"type": "boolean"}, "cursor": stringValue, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}
 	case openplatformport.OperationOrderGet:
 		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"order_id"}, "properties": map[string]any{"order_id": map[string]any{"type": "integer", "minimum": 1}}}
 	case openplatformport.OperationIdentityGet:
@@ -1609,6 +1622,8 @@ func mcpInputSchema(operation openplatformport.OperationID) map[string]any {
 		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "radar_id": map[string]any{"type": "integer", "minimum": 1}, "radar_code": stringValue, "session_id": map[string]any{"type": "integer", "minimum": 1}, "clicked_from": map[string]any{"type": "integer", "minimum": 0}, "clicked_to": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": stringValue}}
 	case openplatformport.OperationRadarLinks:
 		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"radar_id": map[string]any{"type": "integer", "minimum": 1}, "radar_code": stringValue, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": stringValue}}
+	case openplatformport.OperationChatRecords:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "chat_type": map[string]any{"type": "string", "enum": []string{"private", "group"}}, "staff_user_id": map[string]any{"type": "integer", "minimum": 1}, "staff_wecom_userid": stringValue, "occurred_from": map[string]any{"type": "integer", "minimum": 0}, "occurred_to": map[string]any{"type": "integer", "minimum": 0}, "source_system": stringValue, "source_record_id": stringValue, "message_id": stringValue, "limit": map[string]any{"type": "integer", "enum": []int{20}, "default": 20}, "cursor": stringValue}}
 	default:
 		return map[string]any{"type": "object", "additionalProperties": false}
 	}

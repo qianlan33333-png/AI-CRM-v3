@@ -16,6 +16,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	archiveport "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/port"
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
@@ -43,6 +44,7 @@ func (executor *openPlatformExecutor) Available(_ context.Context, principal acc
 	}
 	// Do not publish an operation merely because its route is known. Each false
 	// value is an uncomposed Owner Port and therefore absent from the catalog.
+	_, chatRecordsAvailable := executor.archive.(archiveport.V1ChatRecordReader)
 	available := map[openplatformport.OperationID]bool{
 		openplatformport.OperationCapabilitiesList: true,
 		openplatformport.OperationCustomerResolve:  executor.identity != nil,
@@ -59,6 +61,7 @@ func (executor *openPlatformExecutor) Available(_ context.Context, principal acc
 		openplatformport.OperationCustomerDetail:           executor.profiles != nil && executor.customerDetails != nil,
 		openplatformport.OperationRadarClicks:              executor.radarClicks != nil && len(executor.v1ExternalCursorKey) >= 16,
 		openplatformport.OperationRadarLinks:               executor.radarLinks != nil && len(executor.v1ExternalCursorKey) >= 16,
+		openplatformport.OperationChatRecords:              chatRecordsAvailable && len(executor.v1ExternalCursorKey) >= 16,
 	}
 	return openplatformport.AvailableDescriptors(principal, available), nil
 }
@@ -122,6 +125,8 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 		result, err = executor.v1RadarClicks(ctx, invocation.Principal, invocation.Input)
 	case openplatformport.OperationRadarLinks:
 		result, err = executor.v1RadarLinks(ctx, invocation.Principal, invocation.Input)
+	case openplatformport.OperationChatRecords:
+		result, err = executor.v1ChatRecords(ctx, invocation.Principal, invocation.Input)
 	default:
 		err = openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
 	}

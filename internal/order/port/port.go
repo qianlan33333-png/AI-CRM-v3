@@ -108,16 +108,18 @@ type Query interface {
 type ExternalReadQuery struct {
 	Provider                                            domain.Provider
 	ProductCode, MerchantOrderNo, ProviderTransactionNo string
+	SourceSystem, SourceRecordID                        string
 	CustomerIDs                                         []int64
 	CreatedFrom, CreatedTo, PaidFrom, PaidTo            *time.Time
 	IsPaid                                              *bool
 	// RefundedOrderIDs is supplied by Payment's public-safe read Port. Order
 	// applies the resulting IDs to its own query and never joins Payment tables.
-	IsRefunded       *bool
-	RefundedOrderIDs []int64
-	AfterCreatedAt   time.Time
-	AfterID          int64
-	Limit            int32
+	IsRefunded          *bool
+	RefundedOrderIDs    []int64
+	RefundKnownOrderIDs []int64
+	AfterCreatedAt      time.Time
+	AfterID             int64
+	Limit               int32
 }
 
 type ExternalOrder struct {

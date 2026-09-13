@@ -44,6 +44,10 @@ func (r *Repository) ListExternalRead(ctx context.Context, q orderport.ExternalR
 	if q.ProviderTransactionNo != "" {
 		add("o.provider_transaction_no=", q.ProviderTransactionNo)
 	}
+	if q.SourceSystem != "" {
+		add("o.source_system=", q.SourceSystem)
+		add("o.source_key=", q.SourceRecordID)
+	}
 	if len(q.CustomerIDs) > 0 {
 		add("(o.payer_customer_id=ANY(", q.CustomerIDs)
 		where[len(where)-1] += ") OR o.beneficiary_customer_id=ANY($" + itoa(len(args)) + ") )"
@@ -79,6 +83,14 @@ func (r *Repository) ListExternalRead(ctx context.Context, q orderport.ExternalR
 				where[len(where)-1] = "o.id<>ALL($" + itoa(len(args)) + ")"
 			}
 		}
+		if !*q.IsRefunded {
+			if len(q.RefundKnownOrderIDs) == 0 {
+				where = append(where, "FALSE")
+			} else {
+				add("o.id", q.RefundKnownOrderIDs)
+				where[len(where)-1] = "o.id=ANY($" + itoa(len(args)) + ")"
+			}
+		}
 	}
 	if q.AfterID != 0 {
 		args = append(args, q.AfterCreatedAt.UTC(), q.AfterID)
@@ -103,7 +115,7 @@ func (r *Repository) ListExternalRead(ctx context.Context, q orderport.ExternalR
 		if err = rows.Scan(&x.ID, &x.Provider, &x.SourceSystem, &x.SourceKey, &x.MerchantOrderNo, &x.ProviderTransactionNo, &x.PayerCustomerID, &x.BeneficiaryCustomerID, &x.Amount.AmountMinor, &x.Amount.Currency, &x.Status, &x.CreatedAt, &paid, &x.IsPaid, &x.ProductCodes, &itemsRaw); err != nil {
 			return orderport.ExternalReadPage{}, mapError(err)
 		}
-		if err = json.Unmarshal(itemsRaw, &x.Items); err != nil {
+		if x.Items, err = decodeExternalReadItems(itemsRaw); err != nil {
 			return orderport.ExternalReadPage{}, err
 		}
 		x.PaidAt = paid
@@ -136,11 +148,30 @@ func (r *Repository) GetExternalRead(ctx context.Context, id int64, customerIDs 
 	} else if err != nil {
 		return orderport.ExternalOrder{}, mapError(err)
 	}
-	if err = json.Unmarshal(itemsRaw, &x.Items); err != nil {
+	if x.Items, err = decodeExternalReadItems(itemsRaw); err != nil {
 		return orderport.ExternalOrder{}, err
 	}
 	x.PaidAt = paid
 	return x, nil
+}
+
+func decodeExternalReadItems(raw []byte) ([]orderport.ExternalOrderItem, error) {
+	var encoded []struct {
+		LineNo          int32  `json:"line_no"`
+		ProductCode     string `json:"product_code"`
+		ProductName     string `json:"product_name"`
+		UnitAmountMinor int64  `json:"unit_amount_minor"`
+		Quantity        int32  `json:"quantity"`
+		LineAmountMinor int64  `json:"line_amount_minor"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	items := make([]orderport.ExternalOrderItem, 0, len(encoded))
+	for _, item := range encoded {
+		items = append(items, orderport.ExternalOrderItem{LineNo: item.LineNo, ProductCode: item.ProductCode, ProductName: item.ProductName, UnitAmountMinor: item.UnitAmountMinor, Quantity: item.Quantity, LineAmountMinor: item.LineAmountMinor})
+	}
+	return items, nil
 }
 
 func (r *Repository) ExternalOrderTimeline(ctx context.Context, id int64) ([]orderport.ExternalOrderTimelineEvent, error) {

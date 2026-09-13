@@ -38,10 +38,10 @@ func (r *Repository) ExternalOrderRefundSummaries(ctx context.Context, orderIDs 
 	}
 	rows, err := t.Query(ctx, `SELECT p.order_id,COUNT(r.id)>0,
 COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='completed'),0),
-COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='requested'),0),
-COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='effect_accepted'),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status IN ('requested','history_requested')),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status IN ('effect_accepted','history_processing')),0),
 COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='outcome_unknown'),0),
-COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='final_failed'),0)
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status IN ('final_failed','history_failed','history_closed')),0)
 FROM payments p LEFT JOIN payment_refunds r ON r.payment_id=p.id WHERE p.order_id=ANY($1) GROUP BY p.order_id`, orderIDs)
 	if err != nil {
 		return nil, mapError(err)
@@ -98,6 +98,36 @@ func (r *Repository) ExternalRefundedOrderIDs(ctx context.Context, customerIDs [
 		where += " AND (p.payer_customer_id=ANY($1) OR p.beneficiary_customer_id=ANY($1))"
 	}
 	rows, err := t.Query(ctx, `SELECT DISTINCT p.order_id FROM payments p JOIN payment_refunds r ON r.payment_id=p.id WHERE `+where+` ORDER BY p.order_id`, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, mapError(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, mapError(rows.Err())
+}
+
+// ExternalRefundKnownOrderIDs identifies orders whose refund state is backed
+// by Payment's local projection. It lets Order distinguish `false` from an
+// order for which no Payment/refund facts are available at all.
+func (r *Repository) ExternalRefundKnownOrderIDs(ctx context.Context, customerIDs []int64) ([]int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := []any{}
+	where := "TRUE"
+	if len(customerIDs) > 0 {
+		args = append(args, customerIDs)
+		where = "(p.payer_customer_id=ANY($1) OR p.beneficiary_customer_id=ANY($1))"
+	}
+	rows, err := t.Query(ctx, `SELECT DISTINCT p.order_id FROM payments p WHERE `+where+` ORDER BY p.order_id`, args...)
 	if err != nil {
 		return nil, mapError(err)
 	}

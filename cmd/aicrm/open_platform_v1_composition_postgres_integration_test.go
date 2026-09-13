@@ -115,6 +115,21 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	if err = openPlatformV1ReadSeed(ctx, application.pool.Native(), provision.CustomerID, provision.IdentityID, adminUser.ID); err != nil {
 		t.Fatal(err)
 	}
+	beneficiaryFact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:open-read", Value: "union-composed-v1-beneficiary", Source: "open-platform-v1-composition-fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beneficiaryProvision customerdomain.CustomerID
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		resolved, provisionErr := oneID.ProvisionCustomerFromVerifiedIdentity(tx, beneficiaryFact)
+		if provisionErr != nil {
+			return provisionErr
+		}
+		beneficiaryProvision = resolved.CustomerID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	ordersRepository, err := orderstore.NewPostgreSQL(application.pool.Native(), uow)
 	if err != nil {
 		t.Fatal(err)
@@ -128,12 +143,20 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	beneficiary = int64(beneficiaryProvision)
+	if _, err = orders.Create(ctx, orderport.CreateCommand{Actor: adminUser.ID, IdempotencyKey: "open-v1-composition-order-payer-beneficiary", Input: orderdomain.NewOrderInput{
+		Provider: orderdomain.ProviderWeChatPay, SourceSystem: "open-v1-composition", SourceKey: "open-v1-composition-order-payer-beneficiary", MerchantOrderNo: "OPEN-V1-COMPOSITION-ORDER-PAYER-BENEFICIARY",
+		PayerCustomerID: &payer, BeneficiaryCustomerID: &beneficiary, Amount: orderdomain.Money{AmountMinor: 6600, Currency: "CNY"},
+		Items: []orderdomain.ItemSnapshot{{LineNo: 1, ProductCode: "open-v1-composition-beneficiary", ProductName: "Open V1 Payer and Beneficiary", UnitAmountMinor: 6600, Quantity: 1, LineAmountMinor: 6600}}, RecordOrigin: orderdomain.RecordOriginNative,
+	}}); err != nil {
+		t.Fatal(err)
+	}
 
 	machine := mustOpenPlatformV1CompositionMachine(t, uow, signingKey, "open-read")
 	client, err := machine.CreateV1(ctx, admin, accessapp.CreateMachineClientInput{
 		ClientID: "v1.composition-machine", DisplayName: "V1 Composition Machine", Purpose: "external_agent",
 		Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"},
-		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.activity.read", "customer.detail.read", "order.read", "identity.read", "questionnaire.read", "ai.review_plan.create", "operation.read"},
+		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.activity.read", "customer.detail.read", "order.read", "identity.read", "questionnaire.read", "radar.click.read", "radar.link.read", "chat.read", "ai.review_plan.create", "operation.read"},
 		OwnerScope:   accessdomain.OwnerScope{"customer_id": {fmt.Sprint(provision.CustomerID)}},
 	})
 	if err != nil {
@@ -152,7 +175,7 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	if capabilitiesResponse.Code != http.StatusOK {
 		t.Fatalf("capabilities status=%d body=%s", capabilitiesResponse.Code, capabilitiesResponse.Body.String())
 	}
-	for _, operation := range []string{"platform.capabilities.list", "customer.resolve", "customer.context.get", "customer.activities.list", "customer.detail.get", "ai.review_plan.create", "operation.get"} {
+	for _, operation := range []string{"platform.capabilities.list", "customer.resolve", "customer.context.get", "customer.activities.list", "customer.detail.get", "questionnaire.submissions.list", "radar.clicks.list", "radar.links.list", "chat.records.list", "ai.review_plan.create", "operation.get"} {
 		if !strings.Contains(capabilitiesResponse.Body.String(), `"operation_id":"`+operation+`"`) {
 			t.Fatalf("catalog omitted %s: %s", operation, capabilitiesResponse.Body.String())
 		}
@@ -209,6 +232,25 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	if questionnaireResponse.Code != http.StatusOK || !strings.Contains(questionnaireResponse.Body.String(), `"source_system":"aicrm_v3"`) || !strings.Contains(questionnaireResponse.Body.String(), `"identity_status":"resolved"`) {
 		t.Fatalf("questionnaire submissions status=%d body=%s", questionnaireResponse.Code, questionnaireResponse.Body.String())
 	}
+	chatRecords := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/chat-records?customer_id="+fmt.Sprint(provision.CustomerID)+"&staff_user_id="+fmt.Sprint(adminUser.ID)+"&limit=20", "", readToken)
+	chatRecordsResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(chatRecordsResponse, chatRecords)
+	if chatRecordsResponse.Code != http.StatusOK || !strings.Contains(chatRecordsResponse.Body.String(), `"message_id":"v1-read-message"`) || !strings.Contains(chatRecordsResponse.Body.String(), `"source_system":"message_archive"`) || !strings.Contains(chatRecordsResponse.Body.String(), `"media_availability":"not_applicable"`) {
+		t.Fatalf("chat records status=%d body=%s", chatRecordsResponse.Code, chatRecordsResponse.Body.String())
+	}
+	chatMCP := openPlatformV1CompositionRequest(http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":"chat","method":"tools/call","params":{"name":"list_chat_records","arguments":{"customer_id":`+fmt.Sprint(provision.CustomerID)+`,"staff_user_id":`+fmt.Sprint(adminUser.ID)+`,"message_id":"v1-read-message","limit":20}}}`, readToken)
+	chatMCP.Header.Set("Content-Type", "application/json")
+	chatMCPResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(chatMCPResponse, chatMCP)
+	if chatMCPResponse.Code != http.StatusOK || !strings.Contains(chatMCPResponse.Body.String(), `"message_id":"v1-read-message"`) {
+		t.Fatalf("MCP chat records status=%d body=%s", chatMCPResponse.Code, chatMCPResponse.Body.String())
+	}
+	radarClicks := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/radar/clicks?customer_id="+fmt.Sprint(provision.CustomerID)+"&limit=100", "", readToken)
+	radarClicksResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(radarClicksResponse, radarClicks)
+	if radarClicksResponse.Code != http.StatusOK || !strings.Contains(radarClicksResponse.Body.String(), `"source_system":"aicrm_v3"`) || !strings.Contains(radarClicksResponse.Body.String(), `"identity_status":"resolved"`) {
+		t.Fatalf("radar clicks status=%d body=%s", radarClicksResponse.Code, radarClicksResponse.Body.String())
+	}
 
 	contextRequest := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID), "", readToken)
 	contextResponse := httptest.NewRecorder()
@@ -236,6 +278,54 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	application.handler.ServeHTTP(deniedDetailResponse, deniedDetail)
 	if deniedDetailResponse.Code != http.StatusNotFound {
 		t.Fatalf("out-of-scope customer detail status=%d body=%s", deniedDetailResponse.Code, deniedDetailResponse.Body.String())
+	}
+
+	// A dedicated external-read client uses the existing Access grant model:
+	// explicit corp scope plus a precise read-only capability list. It must not
+	// acquire any AI/write operation and disabling it must revoke issued JWTs.
+	readonlyClient, err := machine.CreateV1(ctx, admin, accessapp.CreateMachineClientInput{
+		ClientID: "v1.composition-readonly", DisplayName: "V1 Composition Read Only", Purpose: "external_agent",
+		Audiences: []string{"external_integration"}, Scopes: []string{"read"},
+		Capabilities: []string{"platform.capabilities.read", "customer.resolve", "customer.read", "customer.detail.read", "identity.read", "order.read", "questionnaire.read", "radar.click.read", "radar.link.read", "chat.read"},
+		OwnerScope:   accessdomain.OwnerScope{"corp_id": {"open-read"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = machine.Activate(ctx, admin, readonlyClient.Client.ClientID, readonlyClient.Secret, true); err != nil {
+		t.Fatal(err)
+	}
+	readonlyToken := openPlatformV1CompositionOAuthToken(t, application.handler, readonlyClient.Client.ClientID, readonlyClient.Secret, "read")
+	for _, path := range []string{"/open/v1/customers/" + fmt.Sprint(provision.CustomerID) + "/detail", "/open/v1/customers/" + fmt.Sprint(provision.CustomerID) + "/identities"} {
+		request := openPlatformV1CompositionRequest(http.MethodGet, path, "", readonlyToken)
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("readonly client path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	readonlyRadarLinks := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/radar/links?limit=100", "", readonlyToken)
+	readonlyRadarLinksResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(readonlyRadarLinksResponse, readonlyRadarLinks)
+	if readonlyRadarLinksResponse.Code != http.StatusOK || !strings.Contains(readonlyRadarLinksResponse.Body.String(), `"source_system":"aicrm_v3"`) {
+		t.Fatalf("readonly radar links status=%d body=%s", readonlyRadarLinksResponse.Code, readonlyRadarLinksResponse.Body.String())
+	}
+	readonlyWrite := openPlatformV1CompositionRequest(http.MethodPost, "/open/v1/ai/review-plans", `{}`, readonlyToken)
+	readonlyWrite.Header.Set("Content-Type", "application/json")
+	readonlyWrite.Header.Set("Idempotency-Key", "readonly-write-denied")
+	readonlyWriteResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(readonlyWriteResponse, readonlyWrite)
+	if readonlyWriteResponse.Code != http.StatusForbidden {
+		t.Fatalf("readonly client write status=%d body=%s", readonlyWriteResponse.Code, readonlyWriteResponse.Body.String())
+	}
+	if _, err = machine.SetEnabled(ctx, admin, readonlyClient.Client.ClientID, false); err != nil {
+		t.Fatal(err)
+	}
+	revokedRead := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/capabilities", "", readonlyToken)
+	revokedReadResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(revokedReadResponse, revokedRead)
+	if revokedReadResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked readonly token status=%d body=%s", revokedReadResponse.Code, revokedReadResponse.Body.String())
 	}
 
 	activities := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/customers/"+fmt.Sprint(provision.CustomerID)+"/activities?types=message&types=survey&types=radar&types=order&limit=1", "", readToken)
@@ -271,7 +361,7 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	// Create a real owner-owned page boundary. The HTTP API must ask the
 	// Order Port for a look-ahead row, then advance with its signed cursor;
 	// this catches a merely-composed route that never reads PostgreSQL.
-	for index := 2; index <= 101; index++ {
+	for index := 2; index <= 100; index++ {
 		key := fmt.Sprintf("open-v1-composition-order-%04d", index)
 		if _, err = orders.Create(ctx, orderport.CreateCommand{Actor: adminUser.ID, IdempotencyKey: key, Input: orderdomain.NewOrderInput{
 			Provider: orderdomain.ProviderWeChatPay, SourceSystem: "open-v1-composition", SourceKey: key, MerchantOrderNo: strings.ToUpper(key),
@@ -300,9 +390,22 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 		t.Fatalf("orders first page status=%d err=%v body=%s", listResponse.Code, err, listResponse.Body.String())
 	}
 	for _, item := range firstOrders.Data.Items {
-		if item.OrderID == "" || item.CustomerID != fmt.Sprint(provision.CustomerID) || item.AmountYuan != "88.00" {
+		if item.OrderID == "" || item.CustomerID != fmt.Sprint(provision.CustomerID) || (item.AmountYuan != "88.00" && item.AmountYuan != "66.00") {
 			t.Fatalf("orders first page item=%+v", item)
 		}
+	}
+	payerBeneficiaryLookup := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?source_system=open-v1-composition&source_record_id=open-v1-composition-order-payer-beneficiary", "", readToken)
+	payerBeneficiaryResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(payerBeneficiaryResponse, payerBeneficiaryLookup)
+	if payerBeneficiaryResponse.Code != http.StatusOK || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"customer_id":"`+fmt.Sprint(provision.CustomerID)+`"`) || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"payer_customer_id":"`+fmt.Sprint(provision.CustomerID)+`"`) || !strings.Contains(payerBeneficiaryResponse.Body.String(), `"beneficiary_customer_id":"`+fmt.Sprint(beneficiaryProvision)+`"`) {
+		t.Fatalf("orders payer/beneficiary projection status=%d body=%s", payerBeneficiaryResponse.Code, payerBeneficiaryResponse.Body.String())
+	}
+	sourceLookup := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?source_system=open-v1-composition&source_record_id=open-v1-composition-order-0001", "", readToken)
+	sourceLookupResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(sourceLookupResponse, sourceLookup)
+	var sourceOrders orderPage
+	if err = json.Unmarshal(sourceLookupResponse.Body.Bytes(), &sourceOrders); err != nil || sourceLookupResponse.Code != http.StatusOK || len(sourceOrders.Data.Items) != 1 || sourceOrders.Data.Items[0].OrderID == "" {
+		t.Fatalf("orders source lookup status=%d err=%v body=%s", sourceLookupResponse.Code, err, sourceLookupResponse.Body.String())
 	}
 	second := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders?customer_id="+fmt.Sprint(provision.CustomerID)+"&limit=100&cursor="+firstOrders.Data.NextCursor, "", readToken)
 	secondResponse := httptest.NewRecorder()
@@ -314,7 +417,7 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	detail := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders/"+firstOrders.Data.Items[0].OrderID, "", readToken)
 	detailResponse := httptest.NewRecorder()
 	application.handler.ServeHTTP(detailResponse, detail)
-	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"amount_yuan":"88.00"`) {
+	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"amount_yuan":"88.00"`) || !strings.Contains(detailResponse.Body.String(), `"line_no":1`) || !strings.Contains(detailResponse.Body.String(), `"product_code":"open-v1-composition"`) || strings.Contains(detailResponse.Body.String(), `"LineNo"`) || strings.Contains(detailResponse.Body.String(), `"RefundID"`) {
 		t.Fatalf("order detail status=%d body=%s", detailResponse.Code, detailResponse.Body.String())
 	}
 	missing := openPlatformV1CompositionRequest(http.MethodGet, "/open/v1/orders/999999999", "", readToken)

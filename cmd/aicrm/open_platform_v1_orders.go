@@ -15,6 +15,7 @@ import (
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,8 @@ type v1OrdersInput struct {
 	ProductCode           string `json:"product_code"`
 	MerchantOrderNo       string `json:"merchant_order_no"`
 	ProviderTransactionNo string `json:"provider_transaction_no"`
+	SourceSystem          string `json:"source_system"`
+	SourceRecordID        string `json:"source_record_id"`
 	CustomerID            int64  `json:"customer_id"`
 	CreatedFrom           *int64 `json:"created_from"`
 	CreatedTo             *int64 `json:"created_to"`
@@ -37,6 +40,10 @@ type v1OrdersInput struct {
 }
 type v1OrderGetInput struct {
 	OrderID int64 `json:"order_id"`
+}
+
+type v1RefundKnownOrderReader interface {
+	ExternalRefundKnownOrderIDs(context.Context, []int64) ([]int64, error)
 }
 type v1IdentityGetInput struct {
 	CustomerID    int64    `json:"customer_id"`
@@ -86,6 +93,17 @@ func (executor *openPlatformExecutor) v1OrdersListWithin(ctx context.Context, pr
 			return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "refunds unavailable")
 		}
 		q.IsRefunded, q.RefundedOrderIDs = in.IsRefunded, ids
+		if !*in.IsRefunded {
+			knownReader, ok := executor.v1Refunds.(v1RefundKnownOrderReader)
+			if !ok {
+				return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "refund filter unavailable")
+			}
+			known, knownErr := knownReader.ExternalRefundKnownOrderIDs(ctx, allowed)
+			if knownErr != nil {
+				return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "refund filter unavailable")
+			}
+			q.RefundKnownOrderIDs = known
+		}
 	}
 	filter := v1OrderFilterDigest(in, allowed)
 	grant := v1ActivityGrantDigest(principal)
@@ -157,7 +175,7 @@ func (executor *openPlatformExecutor) v1OrderGetWithin(ctx context.Context, prin
 	if e != nil {
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "order timeline unavailable")
 	}
-	items[0]["timeline"] = timeline
+	items[0]["timeline"] = v1OrderTimeline(timeline)
 	return openplatformport.Result{Data: items[0]}, nil
 }
 func (executor *openPlatformExecutor) v1IdentityGet(ctx context.Context, principal accessdomain.MachinePrincipal, raw json.RawMessage) (openplatformport.Result, error) {
@@ -261,7 +279,10 @@ func v1ExternalOrderQuery(in v1OrdersInput) (orderport.ExternalReadQuery, error)
 	if in.Limit < 1 || in.Limit > 100 || len(in.Cursor) > 4096 {
 		return orderport.ExternalReadQuery{}, errors.New("limit")
 	}
-	q := orderport.ExternalReadQuery{Provider: orderdomain.Provider(in.Provider), ProductCode: strings.TrimSpace(in.ProductCode), MerchantOrderNo: strings.TrimSpace(in.MerchantOrderNo), ProviderTransactionNo: strings.TrimSpace(in.ProviderTransactionNo), IsPaid: in.IsPaid, IsRefunded: in.IsRefunded, Limit: in.Limit}
+	if (strings.TrimSpace(in.SourceSystem) == "") != (strings.TrimSpace(in.SourceRecordID) == "") || len(in.SourceSystem) > 128 || len(in.SourceRecordID) > 200 || strings.TrimSpace(in.SourceSystem) != in.SourceSystem || strings.TrimSpace(in.SourceRecordID) != in.SourceRecordID {
+		return orderport.ExternalReadQuery{}, errors.New("source")
+	}
+	q := orderport.ExternalReadQuery{Provider: orderdomain.Provider(in.Provider), ProductCode: strings.TrimSpace(in.ProductCode), MerchantOrderNo: strings.TrimSpace(in.MerchantOrderNo), ProviderTransactionNo: strings.TrimSpace(in.ProviderTransactionNo), SourceSystem: in.SourceSystem, SourceRecordID: in.SourceRecordID, IsPaid: in.IsPaid, IsRefunded: in.IsRefunded, Limit: in.Limit}
 	if q.Provider != "" && q.Provider != orderdomain.ProviderWeChatPay && q.Provider != orderdomain.ProviderWeChatShop && q.Provider != orderdomain.ProviderAlipay {
 		return q, errors.New("provider")
 	}
@@ -308,10 +329,6 @@ func (executor *openPlatformExecutor) v1OrderResult(ctx context.Context, items [
 	}
 	out := make([]map[string]any, 0, len(items))
 	for _, x := range items {
-		customer := x.BeneficiaryCustomerID
-		if customer == nil {
-			customer = x.PayerCustomerID
-		}
 		var payerID, beneficiaryID any
 		if x.PayerCustomerID != nil {
 			payerID = strconv.FormatInt(*x.PayerCustomerID, 10)
@@ -319,7 +336,7 @@ func (executor *openPlatformExecutor) v1OrderResult(ctx context.Context, items [
 		if x.BeneficiaryCustomerID != nil {
 			beneficiaryID = strconv.FormatInt(*x.BeneficiaryCustomerID, 10)
 		}
-		m := map[string]any{"order_id": strconv.FormatInt(x.ID, 10), "payer_customer_id": payerID, "beneficiary_customer_id": beneficiaryID, "customer_id": customerIDFor(x), "identity_status": identityStatusFor(x), "provider": x.Provider, "source_system": x.SourceSystem, "source_record_id": x.SourceKey, "merchant_order_no": x.MerchantOrderNo, "provider_transaction_no": x.ProviderTransactionNo, "product_codes": x.ProductCodes, "items": x.Items, "created_at": x.CreatedAt.UTC(), "paid_at": x.PaidAt, "paid_at_status": "unavailable", "status": x.Status, "amount_minor": x.Amount.AmountMinor, "amount_yuan": yuan(x.Amount.AmountMinor), "currency": x.Amount.Currency, "is_paid": x.IsPaid, "refund_records": refundDetails[x.ID]}
+		m := map[string]any{"order_id": strconv.FormatInt(x.ID, 10), "payer_customer_id": payerID, "beneficiary_customer_id": beneficiaryID, "customer_id": customerIDFor(x), "identity_status": identityStatusFor(x), "provider": x.Provider, "source_system": x.SourceSystem, "source_record_id": x.SourceKey, "merchant_order_no": x.MerchantOrderNo, "provider_transaction_no": x.ProviderTransactionNo, "product_codes": x.ProductCodes, "items": v1OrderItems(x.Items), "created_at": x.CreatedAt.UTC(), "paid_at": x.PaidAt, "paid_at_status": "unavailable", "status": x.Status, "amount_minor": x.Amount.AmountMinor, "amount_yuan": yuan(x.Amount.AmountMinor), "currency": x.Amount.Currency, "is_paid": x.IsPaid, "refund_records": v1RefundRecords(refundDetails[x.ID])}
 		if x.PaidAt != nil {
 			m["paid_at_status"] = "verified"
 		}
@@ -342,9 +359,33 @@ func (executor *openPlatformExecutor) v1OrderResult(ctx context.Context, items [
 	}
 	return out, nil
 }
+
+func v1OrderItems(items []orderport.ExternalOrderItem) []map[string]any {
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		result = append(result, map[string]any{"line_no": item.LineNo, "product_code": item.ProductCode, "product_name": item.ProductName, "unit_amount_minor": item.UnitAmountMinor, "quantity": item.Quantity, "line_amount_minor": item.LineAmountMinor})
+	}
+	return result
+}
+
+func v1RefundRecords(records []paymentport.ExternalOrderRefundDetail) []map[string]any {
+	result := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		result = append(result, map[string]any{"refund_id": strconv.FormatInt(record.RefundID, 10), "status": record.Status, "amount_minor": record.AmountMinor, "created_at": record.CreatedAt.UTC(), "updated_at": record.UpdatedAt.UTC()})
+	}
+	return result
+}
+
+func v1OrderTimeline(events []orderport.ExternalOrderTimelineEvent) []map[string]any {
+	result := make([]map[string]any, 0, len(events))
+	for _, event := range events {
+		result = append(result, map[string]any{"status": event.Status, "refunded_minor": event.RefundedMinor, "occurred_at": event.OccurredAt.UTC()})
+	}
+	return result
+}
 func v1OrderFilterDigest(in v1OrdersInput, ids []int64) string {
 	in.Cursor = ""
-	in.Provider, in.ProductCode, in.MerchantOrderNo, in.ProviderTransactionNo = strings.TrimSpace(in.Provider), strings.TrimSpace(in.ProductCode), strings.TrimSpace(in.MerchantOrderNo), strings.TrimSpace(in.ProviderTransactionNo)
+	in.Provider, in.ProductCode, in.MerchantOrderNo, in.ProviderTransactionNo, in.SourceSystem, in.SourceRecordID = strings.TrimSpace(in.Provider), strings.TrimSpace(in.ProductCode), strings.TrimSpace(in.MerchantOrderNo), strings.TrimSpace(in.ProviderTransactionNo), strings.TrimSpace(in.SourceSystem), strings.TrimSpace(in.SourceRecordID)
 	if in.Limit == 0 {
 		in.Limit = 100
 	}
@@ -364,9 +405,6 @@ func yuan(minor int64) string {
 	return fmt.Sprintf("%s%d.%02d", sign, minor/100, minor%100)
 }
 func customerIDFor(x orderport.ExternalOrder) any {
-	if x.BeneficiaryCustomerID != nil {
-		return strconv.FormatInt(*x.BeneficiaryCustomerID, 10)
-	}
 	if x.PayerCustomerID != nil {
 		return strconv.FormatInt(*x.PayerCustomerID, 10)
 	}
