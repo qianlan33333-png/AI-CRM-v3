@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -82,7 +83,7 @@ func configPage(r *http.Request) (string, bool) {
 		}
 		return "", false
 	case "/admin/api-docs", "/admin/apidocs.html":
-		return "apidocs", len(r.URL.Query()) == 0
+		return "apidocs", apiDocsQuery(r.URL.Query())
 	default:
 		if strings.HasPrefix(r.URL.Path, "/admin/config/releases/") && len(r.URL.Query()) == 0 {
 			id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/admin/config/releases/"), 10, 64)
@@ -92,6 +93,44 @@ func configPage(r *http.Request) (string, bool) {
 		}
 		return "", false
 	}
+}
+
+// apiDocsQuery is intentionally limited to document navigation. Config pages
+// remain closed to arbitrary query strings; the selected caller is handled by
+// the already-authenticated API-docs host and is never used as a server-side
+// authorization input.
+func apiDocsQuery(values url.Values) bool {
+	for name, entries := range values {
+		if len(entries) != 1 {
+			return false
+		}
+		switch name {
+		case "tab":
+			if entries[0] != "docs" && entries[0] != "clients" {
+				return false
+			}
+		case "client":
+			if !apiDocsClientID(entries[0]) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func apiDocsClientID(value string) bool {
+	if len(value) < 3 || len(value) > 120 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || (index > 0 && (character == '-' || character == '_' || character == '.')) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func isRuntimeConfigHostPage(page string) bool {

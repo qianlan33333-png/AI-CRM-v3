@@ -1,9 +1,10 @@
 # AI-CRM-v3 外部只读 v1 接入指南
 
-状态：**本地真实 PostgreSQL/HTTP 已验证，尚未合并、部署或完成外部工作台验收**。
-本文按 `codex/external-read` 当前工作树记录；生产仍是旧版本，本次新增/变更的
-`/open/v1` 能力尚未部署到生产。当前 GitHub 认证失效，合并和发布也被阻断。代码、CI、部署、有效
-Client、Token、真实 HTTP 读取和工作台同步是独立验收项。
+代码基线：`origin/main` 已包含 PR #264，提交为
+`7f448ccaa0c0a073b3702ab3af07cc99a5c145a9`。本文维护的是该提交的外部读取合同；
+其中“真实 PostgreSQL/HTTP 已验证”的表述是原维护方测试报告，不等同于当前环境的
+重新执行结果。生产仍是旧版本，本次新增/变更的 `/open/v1` 能力尚未部署到生产。
+代码、CI、部署、有效 Client、Token、真实 HTTP 读取和工作台同步是独立验收项。
 
 生产覆盖快照见：[2026-09-13 脱敏覆盖报告](external-read-v1-coverage-2026-09-13.md)。
 它只记录聚合数量，不包含手机号、UnionID、客户 ID、订单号或其他客户字段。
@@ -735,7 +736,7 @@ beneficiary 覆盖，也不能相加。active phone 共 1,557 条，全部为
 多值审计，也不能因为没有 verified phone 就伪造 verified e164。缺失、匿名、
 pending、conflict 和未解析记录必须作为数据事实保留，不通过本只读 API 补数据。
 
-当前工作树的本地验证已经覆盖最终 Catalog、HTTP、MCP、source pair、订单
+维护方在 PR #264 合入前报告的本地验证覆盖最终 Catalog、HTTP、MCP、source pair、订单
 payer/beneficiary 分离、订单嵌套 snake_case/string 映射、101 条 lookahead、
 客户详情真实 remark/Owner/follow、Chat staff selector、Radar、身份的
 declared/verified/多 UnionID/wrong scope 与非 CN phone 空回退保护，以及专用
@@ -744,8 +745,8 @@ declared/verified/多 UnionID/wrong scope 与非 CN phone 空回退保护，以�
 `refund_id`；不能根据旧的 CamelCase/数字响应改写本文。OpenAPI 源文件与嵌入副本、
 14 项 Catalog、生成客户端和真实 PostgreSQL/HTTP composition 均已通过本地验证。
 
-仍未完成的是发布门槛：代码尚未合并或部署，生产仍运行旧版本，GitHub SSH/HTTPS
-认证无效，外部工作台同步和真实业务回读也尚未验收。不能把本地测试、OpenAPI
+仍未完成的是发布门槛：代码已合入 `origin/main`，但尚未部署，生产仍运行旧版本；
+外部工作台同步和真实业务回读也尚未验收。不能把本地测试、OpenAPI
 源文件、生成客户端或有效 Client 自检写成已上线；发布前仍要分别留下迁移/备份、
 公网 TLS、凭据注入、工作台同步和真实业务回读证据。
 
@@ -754,4 +755,5 @@ declared/verified/多 UnionID/wrong scope 与非 CN phone 空回退保护，以�
 本地代码验证不代表 927 条订单、1,587 条问卷或 5,657 条 archive 记录全部有可
 回溯身份；pending、conflict、unresolved、匿名和 legacy 缺口必须继续按覆盖报告
 处理，不能通过本只读 API 修补数据或补绑客户。生产旧版不应按本文 v1 路径操作，
-直到合并、部署和外部工作台回读分别完成。
+直到部署和外部工作台回读分别完成。可复现的本地无敏感数据检查见
+[external-read-v1-test-guide.md](external-read-v1-test-guide.md)。
