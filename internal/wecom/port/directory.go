@@ -38,7 +38,10 @@ type ExternalContact struct {
 
 type ExternalContactFollowInfo struct {
 	EmployeeID string
-	Tags       []ExternalContactTag
+	// Remark is nil when the Provider response did not project this field. An
+	// explicit empty string remains distinct from not-yet-projected history.
+	Remark *string
+	Tags   []ExternalContactTag
 }
 
 type ExternalContactTag struct {

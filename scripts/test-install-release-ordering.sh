@@ -38,6 +38,7 @@ sha_missing_commerce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 sha_missing_archive=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 sha_missing_0066=cccccccccccccccccccccccccccccccccccccccc
 sha_missing_0150=c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0
+sha_missing_0153=c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -177,6 +178,7 @@ make_release() {
     0053_segment_audience_member_event_fact_kinds.sql \
     0066_channel_welcome_intents.sql \
     0150_channel_welcome_message_snapshots.sql \
+    0153_wecom_customer_detail_projection.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -336,6 +338,7 @@ for missing_release in \
   "$sha_missing_archive:bin/migrate-message-archive" \
   "$sha_missing_0066:migrations/0066_channel_welcome_intents.sql" \
   "$sha_missing_0150:migrations/0150_channel_welcome_message_snapshots.sql" \
+  "$sha_missing_0153:migrations/0153_wecom_customer_detail_projection.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \

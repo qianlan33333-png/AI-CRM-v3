@@ -3746,6 +3746,64 @@ paths:
       tags: [OpenPlatform]
       security: [{machineBearer: []}]
       responses: {"200": {description: Machine-authorized review-plan operation status, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOperationStatusResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/orders:
+    get:
+      operationId: listOpenPlatformOrders
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      parameters: [{name: provider, in: query, schema: {type: string, enum: [wechat_pay, wechat_shop, alipay]}}, {name: product_code, in: query, schema: {type: string, maxLength: 200}}, {name: merchant_order_no, in: query, schema: {type: string, maxLength: 200}}, {name: provider_transaction_no, in: query, schema: {type: string, maxLength: 200}}, {name: source_system, in: query, schema: {type: string, minLength: 1, maxLength: 128}, description: Requires source_record_id.}, {name: source_record_id, in: query, schema: {type: string, minLength: 1, maxLength: 200}, description: Requires source_system.}, {name: customer_id, in: query, schema: {type: integer, minimum: 1}}, {name: created_from, in: query, schema: {type: integer, minimum: 0}}, {name: created_to, in: query, schema: {type: integer, minimum: 0}}, {name: paid_from, in: query, schema: {type: integer, minimum: 0}}, {name: paid_to, in: query, schema: {type: integer, minimum: 0}}, {name: is_paid, in: query, schema: {type: boolean}}, {name: is_refunded, in: query, schema: {type: boolean}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}]
+      responses: {"200": {description: Machine-authorized orders with signed grant-bound cursor, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOrderPageResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/orders/{order_id}:
+    parameters: [{name: order_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getOpenPlatformOrder
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Machine-authorized order detail, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOrderResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/customers/{customer_id}/identities:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getOpenPlatformCustomerIdentities
+      tags: [OpenPlatform]
+      description: Requires explicit identity.read capability. It returns current declared or verified phone facts and explicit-scope UnionID facts, with no implicit identity linking.
+      security: [{machineBearer: []}]
+      parameters: [{name: unionid_scope, in: query, style: form, explode: true, schema: {type: array, items: {type: string}}}]
+      responses: {"200": {description: Scope-checked sensitive identity projection, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformIdentityResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/questionnaire-submissions:
+    get:
+      operationId: listOpenPlatformQuestionnaireSubmissions
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      parameters: [{name: customer_id, in: query, required: true, schema: {type: integer, minimum: 1}}, {name: questionnaire_id, in: query, schema: {type: integer, minimum: 1}}, {name: source_system, in: query, schema: {type: string}}, {name: source_record_id, in: query, schema: {type: string}}, {name: submitted_from, in: query, schema: {type: integer, minimum: 0}}, {name: submitted_to, in: query, schema: {type: integer, minimum: 0}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}]
+      responses: {"200": {description: Machine-authorized sourced questionnaire snapshots, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformQuestionnaireSubmissionPageResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/customers/{customer_id}/detail:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get:
+      operationId: getOpenPlatformCustomerDetail
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      responses: {"200": {description: Customer business profile and completed WeCom ownership facts without raw customer identities, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformCustomerBusinessDetailResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/radar/clicks:
+    get:
+      operationId: listOpenPlatformRadarClicks
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      parameters: [{name: customer_id, in: query, schema: {type: integer, minimum: 1}}, {name: radar_id, in: query, schema: {type: integer, minimum: 1}}, {name: radar_code, in: query, schema: {type: string, maxLength: 128}}, {name: session_id, in: query, schema: {type: integer, minimum: 1}}, {name: clicked_from, in: query, schema: {type: integer, minimum: 0}}, {name: clicked_to, in: query, schema: {type: integer, minimum: 0}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}]
+      responses: {"200": {description: Local Radar opening projections without raw identities, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformRadarClickPageResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/radar/links:
+    get:
+      operationId: listOpenPlatformRadarLinks
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      parameters: [{name: radar_id, in: query, schema: {type: integer, minimum: 1}}, {name: radar_code, in: query, schema: {type: string, maxLength: 128}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}]
+      responses: {"200": {description: Local Radar link mappings, content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformRadarLinkPageResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
+  /open/v1/chat-records:
+    get:
+      operationId: listOpenPlatformChatRecords
+      tags: [OpenPlatform]
+      security: [{machineBearer: []}]
+      parameters: [{name: customer_id, in: query, required: true, schema: {type: integer, minimum: 1}}, {name: chat_type, in: query, schema: {type: string, enum: [private, group], default: private}}, {name: staff_user_id, in: query, schema: {type: integer, minimum: 1}, description: Required for private chat unless staff_wecom_userid is supplied.}, {name: staff_wecom_userid, in: query, schema: {type: string, minLength: 1, maxLength: 128}, description: Exact local WeCom staff ID; required for private chat unless staff_user_id is supplied.}, {name: occurred_from, in: query, schema: {type: integer, minimum: 0}}, {name: occurred_to, in: query, schema: {type: integer, minimum: 0}}, {name: source_system, in: query, schema: {type: string, enum: [message_archive]}, description: Requires source_record_id.}, {name: source_record_id, in: query, schema: {type: string, maxLength: 128}, description: Requires source_system.}, {name: message_id, in: query, schema: {type: string, maxLength: 512}}, {name: cursor, in: query, schema: {type: string, maxLength: 4096}}, {name: limit, in: query, schema: {type: integer, enum: [20], default: 20}}]
+      responses: {"200": {description: "Safe local chat archive records; this route never retrieves provider media, content payloads, or raw identities", content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformChatRecordPageResponse"}}}}, "400": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "401": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "403": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "404": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "409": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "429": {$ref: "#/components/responses/OpenPlatformV1Failure"}, "503": {$ref: "#/components/responses/OpenPlatformV1Failure"}}
   /api/admin/open-platform/clients:
     get:
       operationId: listOpenPlatformClients
@@ -6818,7 +6876,7 @@ components:
       additionalProperties: false
       required: [name]
       properties:
-        name: {type: string, enum: [list_capabilities, resolve_customer, get_customer_context, list_customer_activities, create_ai_review_plan, get_operation_status]}
+        name: {type: string, enum: [list_capabilities, resolve_customer, get_customer_context, list_customer_activities, create_ai_review_plan, get_operation_status, list_orders, get_order, get_customer_identities, list_questionnaire_submissions, get_customer_detail, list_radar_clicks, list_radar_links, list_chat_records]}
         arguments:
           oneOf:
             - {$ref: "#/components/schemas/OpenPlatformCustomerResolveRequest"}
@@ -6874,7 +6932,7 @@ components:
       additionalProperties: false
       required: [operation_id, rest_method, rest_path, mcp_tool, capability, required_scope, schema_version]
       properties:
-        operation_id: {type: string, enum: [platform.capabilities.list, customer.resolve, customer.context.get, customer.activities.list, ai.review_plan.create, operation.get]}
+        operation_id: {type: string, enum: [platform.capabilities.list, customer.resolve, customer.context.get, customer.activities.list, ai.review_plan.create, operation.get, order.list, order.get, identity.get, questionnaire.submissions.list, customer.detail.get, radar.clicks.list, radar.links.list, chat.records.list]}
         rest_method: {type: string, enum: [GET, POST]}
         rest_path: {type: string}
         mcp_tool: {type: string}
@@ -6975,6 +7033,276 @@ components:
       additionalProperties: false
       required: [data, error, request_id]
       properties: {data: {$ref: "#/components/schemas/OpenPlatformCustomerActivitiesData"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformFollowUser:
+      type: object
+      additionalProperties: false
+      required: [user_id]
+      properties: {user_id: {type: string, minLength: 1}}
+    OpenPlatformBusinessDetailAvailability:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties: {status: {type: string, enum: [available, missing]}, reason: {type: string, enum: [no_completed_wecom_profile]}}
+    OpenPlatformCustomerBusinessDetail:
+      type: object
+      additionalProperties: false
+      required: [customer_id, display_name, status, activation_status, gender, contact_type, business_detail_availability, remark, owner, follow_users, updated_at]
+      properties:
+        customer_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        display_name: {type: string}
+        avatar_url: {type: string}
+        status: {type: string}
+        activation_status: {type: string}
+        gender: {type: integer}
+        contact_type: {type: integer}
+        corp_name: {type: string}
+        source: {type: string}
+        industry: {type: string}
+        industry_description: {type: string}
+        needs_blockers_followup: {type: string}
+        updated_at: {type: string, format: date-time}
+        business_detail_availability: {$ref: "#/components/schemas/OpenPlatformBusinessDetailAvailability"}
+        remark: {type: [string, "null"], maxLength: 2000}
+        owner: {oneOf: [{$ref: "#/components/schemas/OpenPlatformFollowUser"}, {type: "null"}]}
+        follow_users: {type: array, items: {$ref: "#/components/schemas/OpenPlatformFollowUser"}}
+    OpenPlatformCustomerBusinessDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformCustomerBusinessDetail"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformOrderItem:
+      type: object
+      additionalProperties: false
+      required: [line_no, product_code, product_name, unit_amount_minor, quantity, line_amount_minor]
+      properties:
+        line_no: {type: integer, minimum: 1}
+        product_code: {type: string}
+        product_name: {type: string}
+        quantity: {type: integer, minimum: 1}
+        unit_amount_minor: {type: integer}
+        line_amount_minor: {type: integer}
+    OpenPlatformRefundRecord:
+      type: object
+      additionalProperties: false
+      required: [refund_id, status, amount_minor, created_at, updated_at]
+      properties:
+        refund_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        status: {type: string}
+        amount_minor: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    OpenPlatformOrderTimelineEvent:
+      type: object
+      additionalProperties: false
+      required: [status, refunded_minor, occurred_at]
+      properties:
+        status: {type: string}
+        refunded_minor: {type: integer}
+        occurred_at: {type: string, format: date-time}
+    OpenPlatformOrder:
+      type: object
+      additionalProperties: false
+      required: [order_id, payer_customer_id, beneficiary_customer_id, customer_id, identity_status, provider, source_system, source_record_id, product_codes, items, created_at, paid_at, paid_at_status, status, amount_minor, amount_yuan, currency, is_paid, refund_records, refund_status, refund_amount_status]
+      properties:
+        order_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        payer_customer_id: {type: [string, "null"], pattern: "^[1-9][0-9]*$", description: Payer Customer ID when resolved.}
+        beneficiary_customer_id: {type: [string, "null"], pattern: "^[1-9][0-9]*$", description: Beneficiary Customer ID when resolved.}
+        customer_id: {type: [string, "null"], pattern: "^[1-9][0-9]*$", description: The payer Customer ID; null when the payer is unresolved even if a beneficiary is known.}
+        identity_status: {type: string, enum: [linked, unresolved]}
+        provider: {type: string, enum: [wechat_pay, wechat_shop, alipay]}
+        source_system: {type: string}
+        source_record_id: {type: string}
+        merchant_order_no: {type: string}
+        provider_transaction_no: {type: string}
+        product_codes: {type: array, items: {type: string}}
+        items: {type: array, items: {$ref: "#/components/schemas/OpenPlatformOrderItem"}}
+        created_at: {type: string, format: date-time}
+        paid_at: {type: [string, "null"], format: date-time}
+        paid_at_status: {type: string, enum: [verified, unavailable]}
+        status: {type: string}
+        amount_minor: {type: integer}
+        amount_yuan: {type: string, pattern: "^-?[0-9]+\\.[0-9]{2}$"}
+        currency: {type: string}
+        is_paid: {type: boolean}
+        is_refunded: {type: boolean}
+        has_refund_request: {type: boolean}
+        refunded_minor: {type: integer}
+        refunded_yuan: {type: string, pattern: "^-?[0-9]+\\.[0-9]{2}$"}
+        refund_requested_minor: {type: integer}
+        refund_processing_minor: {type: integer}
+        refund_outcome_unknown_minor: {type: integer}
+        refund_final_failed_minor: {type: integer}
+        refund_status: {type: string, enum: [known, unavailable]}
+        refund_amount_status: {type: string, enum: [unavailable]}
+        refund_records: {type: array, items: {$ref: "#/components/schemas/OpenPlatformRefundRecord"}}
+        timeline: {type: array, items: {$ref: "#/components/schemas/OpenPlatformOrderTimelineEvent"}}
+    OpenPlatformOrderPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OpenPlatformOrder"}}
+        next_cursor: {type: string, minLength: 1, maxLength: 4096}
+    OpenPlatformOrderPageResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformOrderPage"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformOrderResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformOrder"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformIdentityFact:
+      type: object
+      additionalProperties: false
+      required: [kind, scope, value, assurance, source, status]
+      properties:
+        kind: {type: string, enum: [phone, unionid]}
+        scope: {type: string}
+        value: {type: string}
+        assurance: {type: string, enum: [declared, verified]}
+        source: {type: string}
+        status: {type: string}
+    OpenPlatformIdentityData:
+      type: object
+      additionalProperties: false
+      required: [customer_id, canonical_customer_id, status, identities]
+      properties:
+        customer_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        canonical_customer_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        status: {type: string}
+        identities: {type: array, items: {$ref: "#/components/schemas/OpenPlatformIdentityFact"}}
+    OpenPlatformIdentityResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformIdentityData"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformQuestionnaireAnswer:
+      type: object
+      additionalProperties: false
+      required: [question_title_snapshot, selected_option_texts_snapshot, text_value, score_contribution]
+      properties:
+        question_title_snapshot: {type: string}
+        selected_option_texts_snapshot: {type: array, items: {type: string}}
+        text_value: {type: string}
+        score_contribution: {type: number}
+    OpenPlatformQuestionnaireSubmission:
+      type: object
+      additionalProperties: false
+      required: [submission_id, questionnaire_id, definition_version, questionnaire_title, submitted_at, answers, final_tags, assessment_result_snapshot, source_system, source_record_id, customer_id, identity_status]
+      properties:
+        submission_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        questionnaire_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        definition_version: {type: integer, minimum: 1}
+        questionnaire_title: {type: string}
+        submitted_at: {type: string, format: date-time}
+        answers: {type: array, items: {$ref: "#/components/schemas/OpenPlatformQuestionnaireAnswer"}}
+        final_tags: {type: array, items: {type: string}}
+        assessment_result_snapshot: {}
+        source_system: {type: string}
+        source_record_id: {type: string}
+        customer_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        identity_status: {const: resolved}
+    OpenPlatformQuestionnaireSubmissionPage:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items]
+      properties:
+        customer_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OpenPlatformQuestionnaireSubmission"}}
+        next_cursor: {type: string, minLength: 1, maxLength: 4096}
+    OpenPlatformQuestionnaireSubmissionPageResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformQuestionnaireSubmissionPage"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformRadarClick:
+      type: object
+      additionalProperties: false
+      required: [click_id, event_id, session_id, radar_id, radar_code, clicked_at, open_stage, source_system, source_record_id, customer_id, identity_status, attribution_status]
+      properties:
+        click_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        event_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        session_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        radar_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        radar_code: {type: string}
+        clicked_at: {type: string, format: date-time}
+        open_stage: {type: string}
+        source_system: {const: aicrm_v3}
+        source_record_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        customer_id: {type: [string, "null"], pattern: "^[1-9][0-9]*$"}
+        identity_status: {type: string, enum: [resolved, pending, conflict]}
+        attribution_status: {type: string}
+    OpenPlatformRadarClickPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties: {items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OpenPlatformRadarClick"}}, next_cursor: {type: string, minLength: 1, maxLength: 4096}}
+    OpenPlatformRadarClickPageResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformRadarClickPage"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformRadarLink:
+      type: object
+      additionalProperties: false
+      required: [link_id, radar_id, radar_code, title, status, is_enabled, source_system, source_record_id]
+      properties:
+        link_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        radar_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        radar_code: {type: string}
+        title: {type: string}
+        status: {type: string}
+        is_enabled: {type: boolean}
+        source_system: {const: aicrm_v3}
+        source_record_id: {type: string, pattern: "^[1-9][0-9]*$"}
+    OpenPlatformRadarLinkPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties: {items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/OpenPlatformRadarLink"}}, next_cursor: {type: string, minLength: 1, maxLength: 4096}}
+    OpenPlatformRadarLinkPageResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformRadarLinkPage"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
+    OpenPlatformChatStaff:
+      type: object
+      additionalProperties: false
+      required: [staff_id, display_name]
+      properties: {staff_id: {type: string, pattern: "^[1-9][0-9]*$"}, display_name: {type: string, minLength: 1}}
+    OpenPlatformChatRecord:
+      type: object
+      additionalProperties: false
+      required: [message_id, customer_id, identity_status, chat_type, message_type, content, render_type, direction, occurred_at, conversation_id, group_name, media_archive_status, media_availability, staff, source_system, source_record_id]
+      properties:
+        message_id: {type: string}
+        customer_id: {type: string, pattern: "^[1-9][0-9]*$"}
+        identity_status: {const: resolved}
+        chat_type: {type: string, enum: [private, group]}
+        message_type: {type: string}
+        content: {type: string}
+        render_type: {type: string}
+        direction: {type: string, enum: [customer_to_staff, staff_to_customer, unknown]}
+        occurred_at: {type: string, format: date-time}
+        conversation_id: {type: string}
+        group_name: {type: string}
+        media_archive_status: {type: string, enum: [available, unavailable, not_applicable]}
+        media_availability: {type: string, enum: [api_unavailable, unavailable, not_applicable]}
+        staff: {type: array, items: {$ref: "#/components/schemas/OpenPlatformChatStaff"}}
+        source_system: {const: message_archive}
+        source_record_id: {type: string, pattern: "^[1-9][0-9]*$"}
+    OpenPlatformChatRecordPage:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items]
+      properties: {customer_id: {type: string, pattern: "^[1-9][0-9]*$"}, items: {type: array, maxItems: 20, items: {$ref: "#/components/schemas/OpenPlatformChatRecord"}}, next_cursor: {type: string, minLength: 1, maxLength: 4096}}
+    OpenPlatformChatRecordPageResponse:
+      type: object
+      additionalProperties: false
+      required: [data, error, request_id]
+      properties: {data: {$ref: "#/components/schemas/OpenPlatformChatRecordPage"}, error: {type: "null"}, request_id: {type: string, minLength: 1}}
     OpenPlatformAIReviewContent:
       type: object
       additionalProperties: false
@@ -7045,7 +7373,7 @@ components:
         credential_hint: {type: string}
         audiences: {type: array, minItems: 1, items: {type: string}}
         scopes: {type: array, minItems: 1, items: {type: string, enum: [read, write]}}
-        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, ai.review_plan.create, operation.read]}}
+        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, customer.detail.read, identity.read, order.read, questionnaire.read, radar.click.read, radar.link.read, chat.read, ai.review_plan.create, operation.read]}}
         allowed_cidrs: {type: array, items: {type: string}}
         corp_id: {type: string}
         owner_scope: {$ref: "#/components/schemas/OpenPlatformOwnerScope"}
@@ -7066,7 +7394,7 @@ components:
         purpose: {const: external_agent}
         audiences: {type: array, minItems: 1, items: {type: string}}
         scopes: {type: array, minItems: 1, items: {type: string, enum: [read, write]}}
-        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, ai.review_plan.create, operation.read]}}
+        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, customer.detail.read, identity.read, order.read, questionnaire.read, radar.click.read, radar.link.read, chat.read, ai.review_plan.create, operation.read]}}
         allowed_cidrs: {type: array, items: {type: string}}
         owner_scope: {$ref: "#/components/schemas/OpenPlatformOwnerScope"}
         token_ttl_seconds: {type: integer, minimum: 1}
@@ -7079,7 +7407,7 @@ components:
         display_name: {type: string, minLength: 1}
         audiences: {type: array, minItems: 1, items: {type: string}}
         scopes: {type: array, minItems: 1, items: {type: string, enum: [read, write]}}
-        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, ai.review_plan.create, operation.read]}}
+        capabilities: {type: array, minItems: 1, items: {type: string, enum: [platform.capabilities.read, customer.resolve, customer.read, customer.activity.read, customer.detail.read, identity.read, order.read, questionnaire.read, radar.click.read, radar.link.read, chat.read, ai.review_plan.create, operation.read]}}
         allowed_cidrs: {type: array, items: {type: string}}
         token_ttl_seconds: {type: integer, minimum: 1}
         owner_scope: {oneOf: [{$ref: "#/components/schemas/OpenPlatformOwnerScope"}, {type: "null"}]}

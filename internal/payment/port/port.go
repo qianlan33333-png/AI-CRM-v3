@@ -77,6 +77,32 @@ type RefundExposureReader interface {
 	RefundRelatedOrderIDsWithin(context.Context, []int64) (map[int64]struct{}, error)
 }
 
+// ExternalOrderRefundSummary is Payment's read-only public-safe projection.
+// Successful money is never combined with in-flight or unknown outcomes.
+type ExternalOrderRefundSummary struct {
+	Available           bool
+	HasRefund           bool
+	CompletedMinor      int64
+	RequestedMinor      int64
+	ProcessingMinor     int64
+	OutcomeUnknownMinor int64
+	FinalFailedMinor    int64
+}
+
+type ExternalOrderRefundReader interface {
+	ExternalOrderRefundSummaries(context.Context, []int64) (map[int64]ExternalOrderRefundSummary, error)
+	ExternalOrderRefundDetails(context.Context, []int64) (map[int64][]ExternalOrderRefundDetail, error)
+	ExternalRefundedOrderIDs(context.Context, []int64) ([]int64, error)
+}
+
+type ExternalOrderRefundDetail struct {
+	RefundID    int64
+	Status      string
+	AmountMinor int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type RefundProjection struct {
 	Refund        domain.Refund
 	OrderID       int64

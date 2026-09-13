@@ -265,7 +265,7 @@ func TestOpenPlatformIdentityAdapterAuditsRawPhoneWithoutPersistingItInDetails(t
 	audit := &openPlatformMachineAuditStub{}
 	adapter := openPlatformIdentityAdapter{directory: directory, machineAudit: audit, uow: directUnitOfWork{}}
 	phone, found, err := adapter.RevealPhoneForMachine(context.Background(), 42, accessdomain.MachinePrincipal{ClientRecord: 7, ClientID: "external-reader"})
-	if err != nil || !found || phone != "13800000000" || audit.calls != 1 || audit.audit.MachineClientID != 7 || audit.audit.Action != "machine_sensitive_read" || audit.audit.Outcome != "external_questionnaire_submissions" || strings.Contains(string(audit.audit.Details), phone) {
+	if err != nil || !found || phone != "13800000000" || audit.calls != 1 || audit.audit.MachineClientID != 7 || audit.audit.Action != "machine_sensitive_read" || audit.audit.Outcome != "open_platform_identity_read" || strings.Contains(string(audit.audit.Details), phone) {
 		t.Fatalf("phone=%q found=%v err=%v audit=%+v", phone, found, err, audit.audit)
 	}
 }

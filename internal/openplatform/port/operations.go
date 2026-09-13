@@ -18,12 +18,20 @@ const SchemaVersion = "v1"
 type OperationID string
 
 const (
-	OperationCapabilitiesList   OperationID = "platform.capabilities.list"
-	OperationCustomerResolve    OperationID = "customer.resolve"
-	OperationCustomerContext    OperationID = "customer.context.get"
-	OperationCustomerActivities OperationID = "customer.activities.list"
-	OperationAIReviewPlanCreate OperationID = "ai.review_plan.create"
-	OperationGet                OperationID = "operation.get"
+	OperationCapabilitiesList         OperationID = "platform.capabilities.list"
+	OperationCustomerResolve          OperationID = "customer.resolve"
+	OperationCustomerContext          OperationID = "customer.context.get"
+	OperationCustomerActivities       OperationID = "customer.activities.list"
+	OperationAIReviewPlanCreate       OperationID = "ai.review_plan.create"
+	OperationGet                      OperationID = "operation.get"
+	OperationOrderList                OperationID = "order.list"
+	OperationOrderGet                 OperationID = "order.get"
+	OperationIdentityGet              OperationID = "identity.get"
+	OperationQuestionnaireSubmissions OperationID = "questionnaire.submissions.list"
+	OperationCustomerDetail           OperationID = "customer.detail.get"
+	OperationRadarClicks              OperationID = "radar.clicks.list"
+	OperationRadarLinks               OperationID = "radar.links.list"
+	OperationChatRecords              OperationID = "chat.records.list"
 )
 
 type Capability string
@@ -35,6 +43,13 @@ const (
 	CapabilityCustomerActivityRead     Capability = "customer.activity.read"
 	CapabilityAIReviewPlanCreate       Capability = "ai.review_plan.create"
 	CapabilityOperationRead            Capability = "operation.read"
+	CapabilityOrderRead                Capability = "order.read"
+	CapabilityIdentityRead             Capability = "identity.read"
+	CapabilityQuestionnaireRead        Capability = "questionnaire.read"
+	CapabilityCustomerDetailRead       Capability = "customer.detail.read"
+	CapabilityRadarClickRead           Capability = "radar.click.read"
+	CapabilityRadarLinkRead            Capability = "radar.link.read"
+	CapabilityChatRead                 Capability = "chat.read"
 )
 
 // Descriptor is the single catalog entry used by REST, MCP, administration,
@@ -62,6 +77,14 @@ func OperationCatalog() []Descriptor {
 		{OperationID: OperationCustomerActivities, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/activities", MCPTool: "list_customer_activities", Capability: CapabilityCustomerActivityRead, RequiredScope: "read", SchemaVersion: SchemaVersion, ActivityTypes: []string{"message", "survey", "radar", "order"}, ActivityItemFields: []string{"activity_id", "type", "occurred_at", "source", "payload"}},
 		{OperationID: OperationAIReviewPlanCreate, RESTMethod: "POST", RESTPath: "/open/v1/ai/review-plans", MCPTool: "create_ai_review_plan", Capability: CapabilityAIReviewPlanCreate, RequiredScope: "write", SchemaVersion: SchemaVersion},
 		{OperationID: OperationGet, RESTMethod: "GET", RESTPath: "/open/v1/operations/{operation_id}", MCPTool: "get_operation_status", Capability: CapabilityOperationRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationOrderList, RESTMethod: "GET", RESTPath: "/open/v1/orders", MCPTool: "list_orders", Capability: CapabilityOrderRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationOrderGet, RESTMethod: "GET", RESTPath: "/open/v1/orders/{order_id}", MCPTool: "get_order", Capability: CapabilityOrderRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationIdentityGet, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/identities", MCPTool: "get_customer_identities", Capability: CapabilityIdentityRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationQuestionnaireSubmissions, RESTMethod: "GET", RESTPath: "/open/v1/questionnaire-submissions", MCPTool: "list_questionnaire_submissions", Capability: CapabilityQuestionnaireRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationCustomerDetail, RESTMethod: "GET", RESTPath: "/open/v1/customers/{customer_id}/detail", MCPTool: "get_customer_detail", Capability: CapabilityCustomerDetailRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationRadarClicks, RESTMethod: "GET", RESTPath: "/open/v1/radar/clicks", MCPTool: "list_radar_clicks", Capability: CapabilityRadarClickRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationRadarLinks, RESTMethod: "GET", RESTPath: "/open/v1/radar/links", MCPTool: "list_radar_links", Capability: CapabilityRadarLinkRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationChatRecords, RESTMethod: "GET", RESTPath: "/open/v1/chat-records", MCPTool: "list_chat_records", Capability: CapabilityChatRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 	}
 }
 

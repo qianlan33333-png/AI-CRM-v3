@@ -24,6 +24,127 @@ type Repository struct{}
 func NewPostgreSQL() *Repository             { return &Repository{} }
 func tx(ctx context.Context) (pgx.Tx, error) { return platformpostgres.RequireTransaction(ctx) }
 
+// ExternalOrderRefundSummaries is the only Payment projection consumed by the
+// public Order API. It deliberately exposes amounts and terminal state only,
+// never provider references, callback payloads, or effect identifiers.
+func (r *Repository) ExternalOrderRefundSummaries(ctx context.Context, orderIDs []int64) (map[int64]paymentport.ExternalOrderRefundSummary, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[int64]paymentport.ExternalOrderRefundSummary, len(orderIDs))
+	if len(orderIDs) == 0 {
+		return result, nil
+	}
+	rows, err := t.Query(ctx, `SELECT p.order_id,COUNT(r.id)>0,
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='completed'),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status IN ('requested','history_requested')),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status IN ('effect_accepted','history_processing')),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status='outcome_unknown'),0),
+COALESCE(SUM(r.amount_minor) FILTER (WHERE r.status IN ('final_failed','history_failed','history_closed')),0)
+FROM payments p LEFT JOIN payment_refunds r ON r.payment_id=p.id WHERE p.order_id=ANY($1) GROUP BY p.order_id`, orderIDs)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var s paymentport.ExternalOrderRefundSummary
+		s.Available = true
+		if err = rows.Scan(&id, &s.HasRefund, &s.CompletedMinor, &s.RequestedMinor, &s.ProcessingMinor, &s.OutcomeUnknownMinor, &s.FinalFailedMinor); err != nil {
+			return nil, mapError(err)
+		}
+		result[id] = s
+	}
+	return result, mapError(rows.Err())
+}
+
+func (r *Repository) ExternalOrderRefundDetails(ctx context.Context, orderIDs []int64) (map[int64][]paymentport.ExternalOrderRefundDetail, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := map[int64][]paymentport.ExternalOrderRefundDetail{}
+	if len(orderIDs) == 0 {
+		return result, nil
+	}
+	rows, err := t.Query(ctx, `SELECT p.order_id,r.id,r.status,r.amount_minor,r.created_at,r.updated_at FROM payments p JOIN payment_refunds r ON r.payment_id=p.id WHERE p.order_id=ANY($1) ORDER BY p.order_id,r.created_at,r.id`, orderIDs)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var orderID int64
+		var detail paymentport.ExternalOrderRefundDetail
+		if err = rows.Scan(&orderID, &detail.RefundID, &detail.Status, &detail.AmountMinor, &detail.CreatedAt, &detail.UpdatedAt); err != nil {
+			return nil, mapError(err)
+		}
+		result[orderID] = append(result[orderID], detail)
+	}
+	return result, mapError(rows.Err())
+}
+
+// ExternalRefundedOrderIDs returns only orders with terminal completed money.
+// Requested, accepted, unknown and failed refunds never make is_refunded true.
+func (r *Repository) ExternalRefundedOrderIDs(ctx context.Context, customerIDs []int64) ([]int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := []any{}
+	where := "r.status='completed'"
+	if len(customerIDs) > 0 {
+		args = append(args, customerIDs)
+		where += " AND (p.payer_customer_id=ANY($1) OR p.beneficiary_customer_id=ANY($1))"
+	}
+	rows, err := t.Query(ctx, `SELECT DISTINCT p.order_id FROM payments p JOIN payment_refunds r ON r.payment_id=p.id WHERE `+where+` ORDER BY p.order_id`, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, mapError(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, mapError(rows.Err())
+}
+
+// ExternalRefundKnownOrderIDs identifies orders whose refund state is backed
+// by Payment's local projection. It lets Order distinguish `false` from an
+// order for which no Payment/refund facts are available at all.
+func (r *Repository) ExternalRefundKnownOrderIDs(ctx context.Context, customerIDs []int64) ([]int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := []any{}
+	where := "TRUE"
+	if len(customerIDs) > 0 {
+		args = append(args, customerIDs)
+		where = "(p.payer_customer_id=ANY($1) OR p.beneficiary_customer_id=ANY($1))"
+	}
+	rows, err := t.Query(ctx, `SELECT DISTINCT p.order_id FROM payments p WHERE `+where+` ORDER BY p.order_id`, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, mapError(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, mapError(rows.Err())
+}
+
+var _ paymentport.ExternalOrderRefundReader = (*Repository)(nil)
+
 func (r *Repository) CreatePayment(ctx context.Context, p domain.Payment, key, payload [32]byte, actor string) (domain.Payment, bool, error) {
 	t, e := tx(ctx)
 	if e != nil {

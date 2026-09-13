@@ -12,6 +12,9 @@ import (
 var (
 	ErrWorkBudgetExceeded = errors.New("message archive delivery work budget exceeded")
 	ErrNotReady           = errors.New("message archive not ready")
+	// ErrStaffNotFound is returned only by the archive-owned local staff
+	// selector. It never triggers a Provider directory request.
+	ErrStaffNotFound = errors.New("message archive staff not found")
 )
 
 // InboxDelivery is a safe projection of a platform webhook row.  It is

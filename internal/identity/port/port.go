@@ -144,6 +144,42 @@ type ExternalIdentityValueReader interface {
 	VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error)
 }
 
+// MachineIdentityFactReader is the explicit, audited Identity-owned export
+// seam for machine clients. Values retain their real scope and assurance; a
+// caller must never infer either from a normalized string.
+type MachineIdentityFact struct {
+	Kind      identitydomain.Kind
+	Scope     string
+	Value     string
+	Assurance identitydomain.Assurance
+	Source    string
+	Status    string
+}
+type MachineIdentityFactReader interface {
+	MachineIdentityFacts(context.Context, customerdomain.CustomerID) ([]MachineIdentityFact, error)
+}
+
+// MachineIdentityExport is the canonical, typed result for an authorized
+// machine identity read. A caller must preserve Conflict and Missing instead
+// of treating either state as an empty set of identities.
+type MachineIdentityExportStatus string
+
+const (
+	MachineIdentityExportFound    MachineIdentityExportStatus = "found"
+	MachineIdentityExportMissing  MachineIdentityExportStatus = "missing"
+	MachineIdentityExportConflict MachineIdentityExportStatus = "conflict"
+)
+
+type MachineIdentityExport struct {
+	Status              MachineIdentityExportStatus
+	CanonicalCustomerID customerdomain.CustomerID
+	Facts               []MachineIdentityFact
+}
+
+type MachineIdentityExportReader interface {
+	MachineIdentityExport(context.Context, customerdomain.CustomerID) (MachineIdentityExport, error)
+}
+
 // GroupCandidateIdentityReader reads a unique active verified identity only.
 // Missing or ambiguous evidence must remain unknown; this never provisions.
 type GroupCandidateIdentityReader interface {

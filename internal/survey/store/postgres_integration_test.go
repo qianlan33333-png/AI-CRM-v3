@@ -284,7 +284,7 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 		t.Fatalf("external page=%+v", page)
 	}
 	first := page.Items[0]
-	if first.HistoricalUnionID != "union-history" || first.QuestionnaireSourceID != 41 || first.QuestionnaireTitle != "External projection" || !first.SubmittedAt.Equal(now.Add(-time.Hour)) || string(first.FinalTags) != `["hot"]` || len(first.Answers) != 1 || first.Answers[0].QuestionTitle != "What do you need?" || len(first.Answers[0].SelectedOptionTexts) != 1 || first.Answers[0].SelectedOptionTexts[0] != "Consulting" || first.Answers[0].TextValue != "new protected answer" || first.Answers[0].ScoreContribution != 2.5 {
+	if int64(first.SubmissionID) != newest || first.SourceSystem != "ai-crm-v2" || first.SourceRecordID != "502" || first.HistoricalUnionID != "union-history" || first.QuestionnaireSourceID != 41 || first.DefinitionVersion != 1 || first.QuestionnaireTitle != "External projection" || !first.SubmittedAt.Equal(now.Add(-time.Hour)) || string(first.FinalTags) != `["hot"]` || len(first.Answers) != 1 || first.Answers[0].QuestionTitle != "What do you need?" || len(first.Answers[0].SelectedOptionTexts) != 1 || first.Answers[0].SelectedOptionTexts[0] != "Consulting" || first.Answers[0].TextValue != "new protected answer" || first.Answers[0].ScoreContribution != 2.5 {
 		t.Fatalf("external item=%+v", first)
 	}
 	var assessment map[string]any
@@ -295,12 +295,23 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 	if err != nil || paged.Total != 1 || len(paged.Items) != 1 || !paged.Items[0].SubmittedAt.Equal(now.Add(-time.Hour)) {
 		t.Fatalf("time filtered page=%+v err=%v", paged, err)
 	}
+	exclusive, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, SubmittedFrom: now.Add(-3 * time.Hour), SubmittedTo: now.Add(-time.Hour), SubmittedEndExclusive: true, Limit: 100})
+	if err != nil || exclusive.Total != 1 || len(exclusive.Items) != 1 || int64(exclusive.Items[0].SubmissionID) != oldest {
+		t.Fatalf("exclusive end page=%+v err=%v", exclusive, err)
+	}
 	empty, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 42, Limit: 100})
 	if err != nil || empty.Total != 0 || len(empty.Items) != 0 {
 		t.Fatalf("questionnaire filter page=%+v err=%v", empty, err)
 	}
 	if _, err = service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{" union-history"}, Limit: 100}); !errors.Is(err, surveyport.ErrInvalid) {
 		t.Fatalf("invalid historic union error=%v", err)
+	}
+	sourceFiltered, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, SourceSystem: "ai-crm-v2", SourceRecordID: "502", Limit: 100})
+	if err != nil || sourceFiltered.Total != 1 || len(sourceFiltered.Items) != 1 || int64(sourceFiltered.Items[0].SubmissionID) != newest || sourceFiltered.Items[0].SourceRecordID != "502" {
+		t.Fatalf("source filtered page=%+v err=%v", sourceFiltered, err)
+	}
+	if _, err = service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, SourceSystem: "ai-crm-v2", Limit: 100}); !errors.Is(err, surveyport.ErrInvalid) {
+		t.Fatalf("partial source filter error=%v", err)
 	}
 
 	// A newly submitted V3 record has no migration source row or historic
@@ -325,13 +336,36 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 		t.Fatal(err)
 	}
 	mixed, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 2})
-	if err != nil || mixed.Total != 3 || len(mixed.Items) != 2 || mixed.Items[0].Legacy || mixed.Items[0].HistoricalUnionID != "" || mixed.Items[0].QuestionnaireSourceID != 41 || !mixed.Items[0].SubmittedAt.Equal(nativeAt) || string(mixed.Items[0].FinalTags) != `["native-tag"]` || mixed.Items[0].Answers[0].TextValue != "native protected answer" {
+	if err != nil || mixed.Total != 3 || len(mixed.Items) != 2 || int64(mixed.Items[0].SubmissionID) != nativeSubmissionID || mixed.Items[0].SourceSystem != "aicrm_v3" || mixed.Items[0].SourceRecordID != fmt.Sprint(nativeSubmissionID) || mixed.Items[0].Legacy || mixed.Items[0].HistoricalUnionID != "" || mixed.Items[0].QuestionnaireSourceID != 41 || !mixed.Items[0].SubmittedAt.Equal(nativeAt) || string(mixed.Items[0].FinalTags) != `["native-tag"]` || mixed.Items[0].Answers[0].TextValue != "native protected answer" {
 		t.Fatalf("mixed first page=%+v err=%v", mixed, err)
 	}
 	mixedNext, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 2, Offset: 2})
 	if err != nil || mixedNext.Total != 3 || len(mixedNext.Items) != 1 || !mixedNext.Items[0].Legacy || !mixedNext.Items[0].SubmittedAt.Equal(now.Add(-2*time.Hour)) {
 		t.Fatalf("mixed second page=%+v err=%v", mixedNext, err)
 	}
+
+	// V1 uses an exclusive end watermark plus a descending keyset rather than
+	// an offset. A record committed after the first page with a submitted_at
+	// past that watermark cannot shift the next page or create a duplicate.
+	windowEnd := now
+	keysetFirst, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, SubmittedTo: windowEnd, SubmittedEndExclusive: true, Limit: 1})
+	if err != nil || keysetFirst.Total != 3 || len(keysetFirst.Items) != 1 || int64(keysetFirst.Items[0].SubmissionID) != nativeSubmissionID {
+		t.Fatalf("keyset first page=%+v err=%v", keysetFirst, err)
+	}
+	var concurrentSubmissionID int64
+	if err := native.QueryRow(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,evidence_digest,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,result_snapshot,submitted_at,created_at) VALUES($1,$2,1,$3,'resolved',$4,$5,$6,'external-projection','External projection','survey','{}',$7,$8) RETURNING id`, questionnaireID, versionID, nativeCustomerID, bytes32(105), bytes32(106), bytes32(107), now.Add(time.Minute), now).Scan(&concurrentSubmissionID); err != nil {
+		t.Fatal(err)
+	}
+	keysetNext, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, SubmittedTo: windowEnd, SubmittedEndExclusive: true, BeforeSubmittedAt: keysetFirst.Items[0].SubmittedAt, BeforeSubmissionID: keysetFirst.Items[0].SubmissionID, Limit: 2})
+	if err != nil || keysetNext.Total != 2 || len(keysetNext.Items) != 2 || int64(keysetNext.Items[0].SubmissionID) != newest || int64(keysetNext.Items[1].SubmissionID) != oldest {
+		t.Fatalf("keyset next page=%+v err=%v", keysetNext, err)
+	}
+	for _, item := range keysetNext.Items {
+		if int64(item.SubmissionID) == nativeSubmissionID || int64(item.SubmissionID) == concurrentSubmissionID {
+			t.Fatalf("keyset page repeated or admitted post-watermark item=%+v", item)
+		}
+	}
+
 	foreign, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: otherCustomerID, Limit: 100})
 	if err != nil || foreign.Total != 0 || len(foreign.Items) != 0 {
 		t.Fatalf("foreign customer native page=%+v err=%v", foreign, err)

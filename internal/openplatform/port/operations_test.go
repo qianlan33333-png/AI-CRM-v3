@@ -7,10 +7,10 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 )
 
-func TestOperationCatalogFreezesTheSixV1Operations(t *testing.T) {
+func TestOperationCatalogFreezesTheFourteenV1Operations(t *testing.T) {
 	catalog := OperationCatalog()
-	if len(catalog) != 6 {
-		t.Fatalf("catalog count = %d, want 6", len(catalog))
+	if len(catalog) != 14 {
+		t.Fatalf("catalog count = %d, want 14", len(catalog))
 	}
 	got := make([]OperationID, 0, len(catalog))
 	for _, item := range catalog {
@@ -19,9 +19,17 @@ func TestOperationCatalogFreezesTheSixV1Operations(t *testing.T) {
 		}
 		got = append(got, item.OperationID)
 	}
-	want := []OperationID{OperationCapabilitiesList, OperationCustomerResolve, OperationCustomerContext, OperationCustomerActivities, OperationAIReviewPlanCreate, OperationGet}
+	want := []OperationID{OperationCapabilitiesList, OperationCustomerResolve, OperationCustomerContext, OperationCustomerActivities, OperationAIReviewPlanCreate, OperationGet, OperationOrderList, OperationOrderGet, OperationIdentityGet, OperationQuestionnaireSubmissions, OperationCustomerDetail, OperationRadarClicks, OperationRadarLinks, OperationChatRecords}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("operation IDs = %#v, want %#v", got, want)
+	}
+	chat, found := DescriptorForOperation(OperationChatRecords)
+	if !found {
+		t.Fatal("chat records descriptor absent")
+	}
+	wantChat := Descriptor{OperationID: OperationChatRecords, RESTMethod: "GET", RESTPath: "/open/v1/chat-records", MCPTool: "list_chat_records", Capability: CapabilityChatRead, RequiredScope: "read", SchemaVersion: SchemaVersion}
+	if !reflect.DeepEqual(chat, wantChat) {
+		t.Fatalf("chat records descriptor = %#v, want %#v", chat, wantChat)
 	}
 }
 

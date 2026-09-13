@@ -21,6 +21,8 @@ type PostgreSQL struct{ phoneVault *identitysecure.PhoneVault }
 
 var _ Reader = PostgreSQL{}
 var _ identityport.DirectoryIdentityReader = PostgreSQL{}
+var _ identityport.MachineIdentityFactReader = PostgreSQL{}
+var _ identityport.MachineIdentityExportReader = PostgreSQL{}
 var _ identityport.CommerceResolver = PostgreSQL{}
 var _ identityport.PaymentIdentityReader = PostgreSQL{}
 var _ identityport.OutboundIdentityReader = PostgreSQL{}
@@ -405,6 +407,73 @@ func (PostgreSQL) DirectoryIdentities(ctx context.Context, customerID customerdo
 		return nil, nil, fmt.Errorf("iterate directory identities: %w", err)
 	}
 	return identities, phones, nil
+}
+
+func (store PostgreSQL) MachineIdentityFacts(ctx context.Context, customerID customerdomain.CustomerID) ([]identityport.MachineIdentityFact, error) {
+	export, err := store.MachineIdentityExport(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	return export.Facts, nil
+}
+
+// MachineIdentityExport follows the Identity-owned canonical lineage before
+// exposing facts. It deliberately includes declared phones: assurance remains
+// an output fact and callers must not turn it into verified evidence.
+func (store PostgreSQL) MachineIdentityExport(ctx context.Context, customerID customerdomain.CustomerID) (identityport.MachineIdentityExport, error) {
+	if customerID < 1 {
+		return identityport.MachineIdentityExport{}, ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return identityport.MachineIdentityExport{}, err
+	}
+	lineage, err := store.CanonicalLineage(ctx, customerID)
+	if err != nil {
+		return identityport.MachineIdentityExport{}, err
+	}
+	if len(lineage) == 0 || lineage[0] < 1 {
+		return identityport.MachineIdentityExport{}, ErrInvalidQuery
+	}
+	result := identityport.MachineIdentityExport{Status: identityport.MachineIdentityExportMissing, CanonicalCustomerID: lineage[0], Facts: []identityport.MachineIdentityFact{}}
+	var conflict bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customer_identity_conflicts WHERE status='open' AND (left_customer_id=ANY($1::bigint[]) OR right_customer_id=ANY($1::bigint[])))`, lineage).Scan(&conflict); err != nil {
+		return identityport.MachineIdentityExport{}, fmt.Errorf("query machine identity conflict: %w", err)
+	}
+	if conflict {
+		result.Status = identityport.MachineIdentityExportConflict
+		return result, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT i.kind,i.scope_key,i.normalized_value,i.assurance,i.source,i.status,p.ciphertext FROM customer_identities i LEFT JOIN identity_phone_secrets p ON p.identity_id=i.id WHERE i.customer_id=ANY($1::bigint[]) AND i.status='active' ORDER BY i.kind,i.scope_key,i.id`, lineage)
+	if err != nil {
+		return identityport.MachineIdentityExport{}, fmt.Errorf("query machine identity facts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item identityport.MachineIdentityFact
+		var ciphertext []byte
+		if err = rows.Scan(&item.Kind, &item.Scope, &item.Value, &item.Assurance, &item.Source, &item.Status, &ciphertext); err != nil {
+			return identityport.MachineIdentityExport{}, err
+		}
+		if item.Kind == identitydomain.KindPhone && len(ciphertext) > 0 {
+			if store.phoneVault == nil {
+				return identityport.MachineIdentityExport{}, errors.New("identity phone vault unavailable")
+			}
+			value, e := store.phoneVault.Decrypt(ciphertext)
+			if e != nil {
+				return identityport.MachineIdentityExport{}, errors.New("identity phone decrypt failed")
+			}
+			item.Value = value
+		}
+		result.Facts = append(result.Facts, item)
+	}
+	if err = rows.Err(); err != nil {
+		return identityport.MachineIdentityExport{}, err
+	}
+	if len(result.Facts) > 0 {
+		result.Status = identityport.MachineIdentityExportFound
+	}
+	return result, nil
 }
 
 func (store PostgreSQL) RevealPhone(ctx context.Context, customerID customerdomain.CustomerID) (string, bool, error) {

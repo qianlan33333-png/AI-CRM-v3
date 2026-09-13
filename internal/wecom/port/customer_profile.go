@@ -66,6 +66,31 @@ type AudiencePrimaryOwnerReader interface {
 	AudiencePrimaryOwners(context.Context, []customerdomain.CustomerID) ([]AudiencePrimaryOwner, error)
 }
 
+// CustomerBusinessDetail is a completed WeCom directory projection for an
+// explicitly-authorized business-detail read. A missing profile is reported
+// as coverage state; it is never converted into an invented empty remark.
+type CustomerBusinessDetail struct {
+	CustomerID         customerdomain.CustomerID
+	CorpScope          string
+	Availability       string // available, missing
+	AvailabilityReason string // empty when available
+	FollowUsers        []CustomerFollowUser
+}
+
+// CustomerFollowUser is a trusted provider observation. Remark is scoped to
+// this employee and nil when WeCom did not provide a remark.
+type CustomerFollowUser struct {
+	EmployeeID string
+	Remark     *string
+}
+
+// CustomerBusinessDetailReader exposes only completed WeCom observations.
+// Primary-owner selection remains with AudiencePrimaryOwnerReader, where its
+// cross-scope ambiguity rules are already owned.
+type CustomerBusinessDetailReader interface {
+	CustomerBusinessDetails(context.Context, []customerdomain.CustomerID) ([]CustomerBusinessDetail, error)
+}
+
 // OwnerHandoffPrimaryOwnerLister enumerates canonical customers whose current
 // completed WeCom profile has one unambiguous primary owner in the requested
 // corp scope. It is read-only: Customer applies its own local-owner precedence

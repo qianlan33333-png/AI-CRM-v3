@@ -23,6 +23,7 @@ import (
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
@@ -63,25 +64,59 @@ type openPlatformSurveyIdentityReader interface {
 }
 
 type openPlatformExecutor struct {
-	identity        identityport.Resolver
-	externalUsers   openPlatformExternalUserIDReader
-	orders          orderport.Query
-	scopedOrders    orderport.CustomerScopedQuery
-	profiles        customerport.SidebarProfileService
-	archive         archiveport.CustomerMessageReader
-	externalChat    archiveport.ExternalChatRecordReader
-	radarLinks      radarport.ExternalLinkMappingReader
-	survey          surveyport.ExternalSubmissionReader
-	surveyAliases   openPlatformSurveyIdentityReader
-	timeline        customerport.CustomerTimelineReader
-	owners          wecomport.AudiencePrimaryOwnerReader
-	scopes          openPlatformIdentityScopes
-	activities      *openPlatformActivityReaders
-	activityNow     func() time.Time
-	operationAudit  *openPlatformOperationAuditor
-	aiMachineIntake aiassistantport.MachineTransactionalIntake
-	aiMachineReader aiassistantport.MachineReader
-	aiUOW           platformport.UnitOfWork
+	identity            identityport.Resolver
+	externalUsers       openPlatformExternalUserIDReader
+	orders              orderport.Query
+	scopedOrders        orderport.CustomerScopedQuery
+	profiles            customerport.SidebarProfileService
+	archive             archiveport.CustomerMessageReader
+	externalChat        archiveport.ExternalChatRecordReader
+	radarLinks          radarport.ExternalLinkMappingReader
+	radarClicks         radarport.ExternalClickReader
+	survey              surveyport.ExternalSubmissionReader
+	surveyAliases       openPlatformSurveyIdentityReader
+	timeline            customerport.CustomerTimelineReader
+	owners              wecomport.AudiencePrimaryOwnerReader
+	customerDetails     wecomport.CustomerBusinessDetailReader
+	scopes              openPlatformIdentityScopes
+	activities          *openPlatformActivityReaders
+	activityNow         func() time.Time
+	operationAudit      *openPlatformOperationAuditor
+	aiMachineIntake     aiassistantport.MachineTransactionalIntake
+	aiMachineReader     aiassistantport.MachineReader
+	aiUOW               platformport.UnitOfWork
+	v1Orders            orderport.ExternalReadQueryService
+	v1OrderTimeline     orderport.ExternalOrderTimelineReader
+	v1Refunds           paymentport.ExternalOrderRefundReader
+	v1OrderCursorKey    []byte
+	v1OrderUOW          platformport.UnitOfWork
+	v1ExternalCursorKey []byte
+}
+
+func (executor *openPlatformExecutor) BindV1Orders(orders orderport.ExternalReadQueryService, refunds paymentport.ExternalOrderRefundReader, uow platformport.UnitOfWork, signingKey []byte) error {
+	if executor == nil || orders == nil || refunds == nil || uow == nil || len(signingKey) < 16 {
+		return errOpenPlatformRouteUnavailable
+	}
+	timeline, ok := orders.(orderport.ExternalOrderTimelineReader)
+	if !ok || timeline == nil {
+		return errOpenPlatformRouteUnavailable
+	}
+	executor.v1Orders, executor.v1Refunds, executor.v1OrderCursorKey = orders, refunds, append([]byte(nil), signingKey...)
+	executor.v1OrderTimeline = timeline
+	executor.v1OrderUOW = uow
+	return nil
+}
+
+// BindV1ExternalCursorKey keeps signed cursors for independent external
+// record families separate from order pagination. The same process-local key
+// material is acceptable; the cursor payload's operation discriminator keeps
+// the MAC domains distinct.
+func (executor *openPlatformExecutor) BindV1ExternalCursorKey(signingKey []byte) error {
+	if executor == nil || len(signingKey) < 16 {
+		return errOpenPlatformRouteUnavailable
+	}
+	executor.v1ExternalCursorKey = append([]byte(nil), signingKey...)
+	return nil
 }
 
 func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
@@ -162,6 +197,27 @@ func (executor *openPlatformExecutor) BindExternalRadarLinkMappings(reader radar
 		return radarport.ErrUnavailable
 	}
 	executor.radarLinks = reader
+	return nil
+}
+
+// BindV1Radar binds the two Radar-owned public read projections together so
+// neither route can be published against a partial Radar composition.
+func (executor *openPlatformExecutor) BindV1Radar(clicks radarport.ExternalClickReader, links radarport.ExternalLinkMappingReader) error {
+	if executor == nil || clicks == nil || links == nil {
+		return radarport.ErrUnavailable
+	}
+	executor.radarClicks, executor.radarLinks = clicks, links
+	return nil
+}
+
+// BindV1CustomerDetails installs the WeCom-owned business-detail projection.
+// A partial composition must not silently turn unavailable provider facts into
+// empty customer fields.
+func (executor *openPlatformExecutor) BindV1CustomerDetails(reader wecomport.CustomerBusinessDetailReader) error {
+	if executor == nil || reader == nil {
+		return errOpenPlatformRouteUnavailable
+	}
+	executor.customerDetails = reader
 	return nil
 }
 
@@ -1638,6 +1694,23 @@ func (adapter openPlatformOwnerAdapter) AudiencePrimaryOwners(ctx context.Contex
 
 var _ wecomport.AudiencePrimaryOwnerReader = openPlatformOwnerAdapter{}
 
+type openPlatformCustomerBusinessDetailAdapter struct {
+	uow    platformport.UnitOfWork
+	reader wecomport.CustomerBusinessDetailReader
+}
+
+func (adapter openPlatformCustomerBusinessDetailAdapter) CustomerBusinessDetails(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]wecomport.CustomerBusinessDetail, error) {
+	var details []wecomport.CustomerBusinessDetail
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		details, err = adapter.reader.CustomerBusinessDetails(tx, customerIDs)
+		return err
+	})
+	return details, err
+}
+
+var _ wecomport.CustomerBusinessDetailReader = openPlatformCustomerBusinessDetailAdapter{}
+
 // openPlatformIdentityAdapter combines stable Identity Ports at Composition.
 // The machine executor receives no store and cannot issue a cross-domain query.
 type openPlatformMachineAuditWriter interface {
@@ -1648,8 +1721,48 @@ type openPlatformIdentityAdapter struct {
 	resolver     identityport.Resolver
 	values       identityport.ExternalIdentityValueReader
 	directory    identityport.DirectoryIdentityReader
+	machineFacts identityport.MachineIdentityFactReader
 	machineAudit openPlatformMachineAuditWriter
 	uow          platformport.UnitOfWork
+}
+
+func (adapter openPlatformIdentityAdapter) MachineIdentityFacts(ctx context.Context, customerID customerdomain.CustomerID) ([]identityport.MachineIdentityFact, error) {
+	if adapter.machineFacts == nil || adapter.uow == nil {
+		return nil, errors.New("machine identity facts unavailable")
+	}
+	var facts []identityport.MachineIdentityFact
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		facts, e = adapter.machineFacts.MachineIdentityFacts(tx, customerID)
+		return e
+	})
+	return facts, err
+}
+func (adapter openPlatformIdentityAdapter) MachineIdentityFactsForMachine(ctx context.Context, customerID customerdomain.CustomerID, principal accessdomain.MachinePrincipal) ([]identityport.MachineIdentityFact, error) {
+	export, err := adapter.MachineIdentityExportForMachine(ctx, customerID, principal)
+	if err != nil {
+		return nil, err
+	}
+	return export.Facts, nil
+}
+func (adapter openPlatformIdentityAdapter) MachineIdentityExportForMachine(ctx context.Context, customerID customerdomain.CustomerID, principal accessdomain.MachinePrincipal) (identityport.MachineIdentityExport, error) {
+	if principal.ClientRecord < 1 || adapter.machineAudit == nil {
+		return identityport.MachineIdentityExport{}, errors.New("machine identity audit unavailable")
+	}
+	exporter, ok := adapter.machineFacts.(identityport.MachineIdentityExportReader)
+	if !ok || exporter == nil {
+		return identityport.MachineIdentityExport{}, errors.New("machine identity export unavailable")
+	}
+	var export identityport.MachineIdentityExport
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		export, e = exporter.MachineIdentityExport(tx, customerID)
+		if e != nil {
+			return e
+		}
+		return adapter.machineAudit.AppendMachineAudit(tx, accessdomain.MachineAudit{MachineClientID: principal.ClientRecord, Action: "machine_sensitive_read", Outcome: "open_platform_identity_read", Details: []byte(`{"field":"identity_facts"}`), CreatedAt: time.Now().UTC()})
+	})
+	return export, err
 }
 
 func (adapter openPlatformIdentityAdapter) Resolve(ctx context.Context, reference identitydomain.Reference) (identityport.ResolveResult, error) {
@@ -1706,7 +1819,7 @@ func (adapter openPlatformIdentityAdapter) RevealPhoneForMachine(ctx context.Con
 		return adapter.machineAudit.AppendMachineAudit(tx, accessdomain.MachineAudit{
 			MachineClientID: principal.ClientRecord,
 			Action:          "machine_sensitive_read",
-			Outcome:         "external_questionnaire_submissions",
+			Outcome:         "open_platform_identity_read",
 			Details:         []byte(`{"field":"phone"}`),
 			CreatedAt:       time.Now().UTC(),
 		})
@@ -1717,3 +1830,4 @@ func (adapter openPlatformIdentityAdapter) RevealPhoneForMachine(ctx context.Con
 var _ identityport.Resolver = openPlatformIdentityAdapter{}
 var _ openPlatformExternalUserIDReader = openPlatformIdentityAdapter{}
 var _ openPlatformSurveyIdentityReader = openPlatformIdentityAdapter{}
+var _ identityport.MachineIdentityFactReader = openPlatformIdentityAdapter{}

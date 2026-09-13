@@ -21,6 +21,7 @@ var (
 	ErrLinkIntentPayloadMismatch = errors.New("link intent replay payload mismatch")
 	ErrDeclaredPayloadMismatch   = errors.New("declared identity replay payload mismatch")
 	ErrHistoricalSubjectConflict = errors.New("historical subject identity conflict")
+	ErrResolveConflict           = errors.New("identity resolution conflict")
 )
 
 // ProvisionHistoricalSubject creates or resolves one Customer root from the
@@ -248,6 +249,9 @@ func (service OneIDService) Resolve(ctx context.Context, reference identitydomai
 		return identityport.ResolveResult{}, err
 	}
 	stored, found, err := service.Store.Resolve(ctx, normalized)
+	if errors.Is(err, ErrResolveConflict) {
+		return identityport.ResolveResult{Status: identityport.ResolveConflict}, nil
+	}
 	if err != nil {
 		return identityport.ResolveResult{}, err
 	}

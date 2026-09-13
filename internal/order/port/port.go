@@ -102,6 +102,72 @@ type Query interface {
 	List(context.Context, ListQuery) (Page, error)
 }
 
+// ExternalReadQuery is the deliberately narrow, public-read projection.  It
+// accepts only canonical customer constraints supplied by Access; it never
+// resolves identities or accepts an untrusted owner predicate.
+type ExternalReadQuery struct {
+	Provider                                            domain.Provider
+	ProductCode, MerchantOrderNo, ProviderTransactionNo string
+	SourceSystem, SourceRecordID                        string
+	CustomerIDs                                         []int64
+	CreatedFrom, CreatedTo, PaidFrom, PaidTo            *time.Time
+	IsPaid                                              *bool
+	// RefundedOrderIDs is supplied by Payment's public-safe read Port. Order
+	// applies the resulting IDs to its own query and never joins Payment tables.
+	IsRefunded          *bool
+	RefundedOrderIDs    []int64
+	RefundKnownOrderIDs []int64
+	AfterCreatedAt      time.Time
+	AfterID             int64
+	Limit               int32
+}
+
+type ExternalOrder struct {
+	ID                    int64
+	Provider              domain.Provider
+	SourceSystem          string
+	SourceKey             string
+	MerchantOrderNo       string
+	ProviderTransactionNo string
+	PayerCustomerID       *int64
+	BeneficiaryCustomerID *int64
+	Amount                domain.Money
+	Status                domain.Status
+	CreatedAt             time.Time
+	// PaidAt is present only for the immutable, verified Order paid event.
+	// Imported/history transition timestamps are intentionally not payment time.
+	PaidAt       *time.Time
+	IsPaid       bool
+	ProductCodes []string
+	Items        []ExternalOrderItem
+}
+
+type ExternalOrderItem struct {
+	LineNo          int32
+	ProductCode     string
+	ProductName     string
+	UnitAmountMinor int64
+	Quantity        int32
+	LineAmountMinor int64
+}
+
+type ExternalOrderTimelineEvent struct {
+	Status        domain.Status
+	RefundedMinor int64
+	OccurredAt    time.Time
+}
+
+type ExternalReadPage struct{ Items []ExternalOrder }
+
+type ExternalReadQueryService interface {
+	ListExternalRead(context.Context, ExternalReadQuery) (ExternalReadPage, error)
+	GetExternalRead(context.Context, int64, []int64) (ExternalOrder, error)
+}
+
+type ExternalOrderTimelineReader interface {
+	ExternalOrderTimeline(context.Context, int64) ([]ExternalOrderTimelineEvent, error)
+}
+
 // CustomerScopedQuery reads one order reference through Order's own customer
 // predicate. Callers that hold a customer-bounded credential must use this
 // seam instead of fetching an unbounded order and filtering it afterwards.

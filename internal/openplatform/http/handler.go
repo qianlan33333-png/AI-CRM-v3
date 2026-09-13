@@ -90,6 +90,14 @@ func (handler *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /open/v1/customers/{customer_id}/activities", handler.v1CustomerActivities)
 	mux.HandleFunc("POST /open/v1/ai/review-plans", handler.v1AIReviewPlan)
 	mux.HandleFunc("GET /open/v1/operations/{operation_id}", handler.v1OperationStatus)
+	mux.HandleFunc("GET /open/v1/orders", handler.v1Orders)
+	mux.HandleFunc("GET /open/v1/orders/{order_id}", handler.v1Order)
+	mux.HandleFunc("GET /open/v1/customers/{customer_id}/identities", handler.v1Identities)
+	mux.HandleFunc("GET /open/v1/questionnaire-submissions", handler.v1QuestionnaireSubmissions)
+	mux.HandleFunc("GET /open/v1/customers/{customer_id}/detail", handler.v1CustomerDetail)
+	mux.HandleFunc("GET /open/v1/radar/clicks", handler.v1RadarClicks)
+	mux.HandleFunc("GET /open/v1/radar/links", handler.v1RadarLinks)
+	mux.HandleFunc("GET /open/v1/chat-records", handler.v1ChatRecords)
 	// These V3 management endpoints are the control plane used by PR #164.
 	// The obsolete donor-shaped config endpoints are intentionally not mounted.
 	mux.HandleFunc("GET /api/admin/open-platform/clients", handler.listClients)
@@ -130,6 +138,12 @@ func Mount(next, machine http.Handler) http.Handler {
 		"GET /open/v1/capabilities", "POST /open/v1/customers:resolve",
 		"GET /open/v1/customers/{customer_id}", "GET /open/v1/customers/{customer_id}/activities",
 		"POST /open/v1/ai/review-plans", "GET /open/v1/operations/{operation_id}",
+		"GET /open/v1/orders", "GET /open/v1/orders/{order_id}",
+		"GET /open/v1/customers/{customer_id}/identities",
+		"GET /open/v1/questionnaire-submissions",
+		"GET /open/v1/customers/{customer_id}/detail",
+		"GET /open/v1/radar/clicks", "GET /open/v1/radar/links",
+		"GET /open/v1/chat-records",
 		"GET /api/admin/open-platform/clients", "POST /api/admin/open-platform/clients",
 		"GET /api/admin/open-platform/clients/{client_id}", "PATCH /api/admin/open-platform/clients/{client_id}", "GET /api/admin/open-platform/clients/{client_id}/audit",
 		"POST /api/admin/open-platform/clients/{client_id}/activate", "POST /api/admin/open-platform/clients/{client_id}/rotate", "POST /api/admin/open-platform/clients/{client_id}/enable", "POST /api/admin/open-platform/clients/{client_id}/disable",
@@ -307,6 +321,30 @@ func (handler *Handler) v1AIReviewPlan(response http.ResponseWriter, request *ht
 func (handler *Handler) v1OperationStatus(response http.ResponseWriter, request *http.Request) {
 	handler.invokeV1(response, request, openplatformport.OperationGet, pathJSONInput("operation_id"))
 }
+func (handler *Handler) v1Orders(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationOrderList, ordersJSONInput)
+}
+func (handler *Handler) v1Order(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationOrderGet, pathJSONInput("order_id"))
+}
+func (handler *Handler) v1Identities(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationIdentityGet, identitiesJSONInput)
+}
+func (handler *Handler) v1QuestionnaireSubmissions(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationQuestionnaireSubmissions, questionnaireSubmissionsJSONInput)
+}
+func (handler *Handler) v1CustomerDetail(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationCustomerDetail, pathJSONInput("customer_id"))
+}
+func (handler *Handler) v1RadarClicks(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationRadarClicks, radarClicksJSONInput)
+}
+func (handler *Handler) v1RadarLinks(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationRadarLinks, radarLinksJSONInput)
+}
+func (handler *Handler) v1ChatRecords(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationChatRecords, chatRecordsJSONInput)
+}
 
 func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Request, operation openplatformport.OperationID, normalize func(*http.Request) (json.RawMessage, error)) {
 	id := requestID(request)
@@ -398,7 +436,7 @@ func pathJSONInput(name string) func(*http.Request) (json.RawMessage, error) {
 		if value == "" {
 			return nil, errors.New("path value is required")
 		}
-		if name == "customer_id" {
+		if name == "customer_id" || name == "order_id" {
 			parsed, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || parsed < 1 {
 				return nil, errors.New("invalid customer_id")
@@ -458,6 +496,134 @@ func activityJSONInput(request *http.Request) (json.RawMessage, error) {
 		default:
 			return nil, errors.New("unknown activity query")
 		}
+	}
+	return json.Marshal(values)
+}
+
+// ordersJSONInput makes REST query parameters the exact object consumed by the
+// MCP tool. Unknown/repeated scalar values and GET bodies are rejected.
+func ordersJSONInput(request *http.Request) (json.RawMessage, error) {
+	body, err := readBody(request)
+	if err != nil || len(bytes.TrimSpace(body)) != 0 {
+		return nil, errors.New("orders operation does not accept a body")
+	}
+	values := map[string]any{}
+	for name, entries := range request.URL.Query() {
+		if len(entries) != 1 || entries[0] == "" || strings.TrimSpace(entries[0]) != entries[0] {
+			return nil, errors.New("invalid orders query")
+		}
+		value := entries[0]
+		switch name {
+		case "provider", "product_code", "merchant_order_no", "provider_transaction_no", "source_system", "source_record_id", "cursor":
+			values[name] = value
+		case "customer_id", "created_from", "created_to", "paid_from", "paid_to", "limit":
+			n, e := strconv.ParseInt(value, 10, 64)
+			if e != nil || strconv.FormatInt(n, 10) != value {
+				return nil, errors.New("invalid orders number")
+			}
+			values[name] = n
+		case "is_paid", "is_refunded":
+			if value != "true" && value != "false" {
+				return nil, errors.New("invalid order boolean")
+			}
+			values[name] = value == "true"
+		default:
+			return nil, errors.New("unknown orders query")
+		}
+	}
+	return json.Marshal(values)
+}
+
+func identitiesJSONInput(request *http.Request) (json.RawMessage, error) {
+	body, err := readBody(request)
+	if err != nil || len(bytes.TrimSpace(body)) != 0 {
+		return nil, errors.New("identity operation does not accept a body")
+	}
+	id, err := strconv.ParseInt(request.PathValue("customer_id"), 10, 64)
+	if err != nil || id < 1 {
+		return nil, errors.New("invalid customer_id")
+	}
+	values := map[string]any{"customer_id": id}
+	for name, entries := range request.URL.Query() {
+		if name != "unionid_scope" || len(entries) == 0 {
+			return nil, errors.New("invalid identity query")
+		}
+		for _, v := range entries {
+			if strings.TrimSpace(v) != v || v == "" {
+				return nil, errors.New("invalid unionid scope")
+			}
+		}
+		values["unionid_scopes"] = entries
+	}
+	return json.Marshal(values)
+}
+
+func questionnaireSubmissionsJSONInput(request *http.Request) (json.RawMessage, error) {
+	body, err := readBody(request)
+	if err != nil || len(bytes.TrimSpace(body)) != 0 {
+		return nil, errors.New("questionnaire submissions operation does not accept a body")
+	}
+	values := map[string]any{}
+	for name, entries := range request.URL.Query() {
+		if len(entries) != 1 || entries[0] == "" || strings.TrimSpace(entries[0]) != entries[0] {
+			return nil, errors.New("invalid questionnaire submissions query")
+		}
+		value := entries[0]
+		switch name {
+		case "source_system", "source_record_id", "cursor":
+			values[name] = value
+		case "customer_id", "questionnaire_id", "submitted_from", "submitted_to", "limit":
+			n, e := strconv.ParseInt(value, 10, 64)
+			if e != nil || strconv.FormatInt(n, 10) != value {
+				return nil, errors.New("invalid questionnaire submissions number")
+			}
+			values[name] = n
+		default:
+			return nil, errors.New("unknown questionnaire submissions query")
+		}
+	}
+	return json.Marshal(values)
+}
+
+func radarClicksJSONInput(request *http.Request) (json.RawMessage, error) {
+	return radarJSONInput(request, map[string]bool{"customer_id": true, "radar_id": true, "session_id": true, "clicked_from": true, "clicked_to": true, "limit": true}, map[string]bool{"radar_code": true, "cursor": true})
+}
+
+func radarLinksJSONInput(request *http.Request) (json.RawMessage, error) {
+	return radarJSONInput(request, map[string]bool{"radar_id": true, "limit": true}, map[string]bool{"radar_code": true, "cursor": true})
+}
+
+func chatRecordsJSONInput(request *http.Request) (json.RawMessage, error) {
+	return externalRecordsJSONInput(request, "chat records", map[string]bool{"customer_id": true, "staff_user_id": true, "occurred_from": true, "occurred_to": true, "limit": true}, map[string]bool{"chat_type": true, "staff_wecom_userid": true, "source_system": true, "source_record_id": true, "message_id": true, "cursor": true})
+}
+
+func radarJSONInput(request *http.Request, numbers, stringsOnly map[string]bool) (json.RawMessage, error) {
+	return externalRecordsJSONInput(request, "radar", numbers, stringsOnly)
+}
+
+func externalRecordsJSONInput(request *http.Request, operation string, numbers, stringsOnly map[string]bool) (json.RawMessage, error) {
+	body, err := readBody(request)
+	if err != nil || len(bytes.TrimSpace(body)) != 0 {
+		return nil, errors.New(operation + " operation does not accept a body")
+	}
+	values := map[string]any{}
+	for name, entries := range request.URL.Query() {
+		if len(entries) != 1 || entries[0] == "" || strings.TrimSpace(entries[0]) != entries[0] {
+			return nil, errors.New("invalid " + operation + " query")
+		}
+		if numbers[name] {
+			n, parseErr := strconv.ParseInt(entries[0], 10, 64)
+			if parseErr != nil || strconv.FormatInt(n, 10) != entries[0] {
+				return nil, errors.New("invalid " + operation + " number")
+			}
+			values[name] = n
+			continue
+		}
+		if stringsOnly[name] {
+			values[name] = entries[0]
+			continue
+		}
+		return nil, errors.New("unknown " + operation + " query")
 	}
 	return json.Marshal(values)
 }
@@ -1442,6 +1608,22 @@ func mcpInputSchema(operation openplatformport.OperationID) map[string]any {
 
 	case openplatformport.OperationGet:
 		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation_id"}, "properties": map[string]any{"operation_id": stringValue}}
+	case openplatformport.OperationOrderList:
+		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"provider": stringValue, "product_code": stringValue, "merchant_order_no": stringValue, "provider_transaction_no": stringValue, "source_system": stringValue, "source_record_id": stringValue, "customer_id": map[string]any{"type": "integer", "minimum": 1}, "created_from": map[string]any{"type": "integer", "minimum": 0}, "created_to": map[string]any{"type": "integer", "minimum": 0}, "paid_from": map[string]any{"type": "integer", "minimum": 0}, "paid_to": map[string]any{"type": "integer", "minimum": 0}, "is_paid": map[string]any{"type": "boolean"}, "is_refunded": map[string]any{"type": "boolean"}, "cursor": stringValue, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}
+	case openplatformport.OperationOrderGet:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"order_id"}, "properties": map[string]any{"order_id": map[string]any{"type": "integer", "minimum": 1}}}
+	case openplatformport.OperationIdentityGet:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "unionid_scopes": map[string]any{"type": "array", "items": stringValue}}}
+	case openplatformport.OperationQuestionnaireSubmissions:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "questionnaire_id": map[string]any{"type": "integer", "minimum": 1}, "source_system": stringValue, "source_record_id": stringValue, "submitted_from": map[string]any{"type": "integer", "minimum": 0}, "submitted_to": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": stringValue}}
+	case openplatformport.OperationCustomerDetail:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}}}
+	case openplatformport.OperationRadarClicks:
+		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "radar_id": map[string]any{"type": "integer", "minimum": 1}, "radar_code": stringValue, "session_id": map[string]any{"type": "integer", "minimum": 1}, "clicked_from": map[string]any{"type": "integer", "minimum": 0}, "clicked_to": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": stringValue}}
+	case openplatformport.OperationRadarLinks:
+		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"radar_id": map[string]any{"type": "integer", "minimum": 1}, "radar_code": stringValue, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": stringValue}}
+	case openplatformport.OperationChatRecords:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "chat_type": map[string]any{"type": "string", "enum": []string{"private", "group"}}, "staff_user_id": map[string]any{"type": "integer", "minimum": 1}, "staff_wecom_userid": stringValue, "occurred_from": map[string]any{"type": "integer", "minimum": 0}, "occurred_to": map[string]any{"type": "integer", "minimum": 0}, "source_system": stringValue, "source_record_id": stringValue, "message_id": stringValue, "limit": map[string]any{"type": "integer", "enum": []int{20}, "default": 20}, "cursor": stringValue}}
 	default:
 		return map[string]any{"type": "object", "additionalProperties": false}
 	}
