@@ -506,6 +506,17 @@ func TestAdminLayoutScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	}
 }
 
+func TestAccessGovernanceScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_ACCESS_UI_SCREENSHOT_DIR", "")
+	if value := AccessGovernanceScreenshotDirectory(); value != "" {
+		t.Fatalf("missing screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_ACCESS_UI_SCREENSHOT_DIR", "/tmp/aicrm-access-evidence")
+	if value := AccessGovernanceScreenshotDirectory(); value != "/tmp/aicrm-access-evidence" {
+		t.Fatalf("screenshot directory=%q", value)
+	}
+}
+
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	t.Setenv("AICRM_V2_AUTOMATION_DATABASE_URL", "postgres://readonly@source/aicrm")
 	value, err := NamedDatabaseURL("AICRM_V2_AUTOMATION_DATABASE_URL")
