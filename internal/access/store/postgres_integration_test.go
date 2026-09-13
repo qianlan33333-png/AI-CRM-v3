@@ -69,12 +69,18 @@ func TestPostgreSQLAccessIntegration(t *testing.T) {
 	if _, err = native.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
-	compatibilityMigration, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "migrations", "0027_admin_access_login_compat.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = native.Exec(ctx, string(compatibilityMigration)); err != nil {
-		t.Fatal(err)
+	for _, migrationName := range []string{
+		"0027_admin_access_login_compat.sql",
+		"0151_access_role_governance.sql",
+		"0152_access_login_grants.sql",
+	} {
+		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "migrations", migrationName))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := native.Exec(ctx, string(migration)); execErr != nil {
+			t.Fatalf("apply %s: %v", migrationName, execErr)
+		}
 	}
 	pool, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
@@ -101,6 +107,9 @@ func TestPostgreSQLAccessIntegration(t *testing.T) {
 		first, created, createErr = repository.BootstrapUser(txContext, input)
 		if createErr == nil && !created {
 			t.Error("first bootstrap was not created")
+		}
+		if createErr == nil && created {
+			createErr = repository.InitializeSuperAdminControl(txContext, first.ID, time.Now().UTC())
 		}
 		return createErr
 	}); err != nil {
