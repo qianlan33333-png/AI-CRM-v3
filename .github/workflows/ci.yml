@@ -70,44 +70,60 @@ jobs:
   preflight:
     needs: plan
     if: needs.plan.outputs.full == 'true'
+    outputs:
+      classification: ${{ steps.receipt.outputs.classification }}
+      observations: ${{ steps.receipt.outputs.observations }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - id: setup-node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0'}
-      - name: Fast source and architecture gates
-        run: python3 scripts/dev_preflight.py fast --report-dir "$RUNNER_TEMP/preflight"
-      - name: Verify CI evidence policy and source governance
+      - id: verify
+        if: ${{ steps.checkout.outcome == 'success' && steps.setup-go.outcome == 'success' && steps.setup-node.outcome == 'success' }}
+        name: Run canonical preflight verification lane
         env:
-          AICRM_DEDUP_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          # workflow_dispatch has no event.before; an empty value deliberately
+          # selects the checked-out HEAD parent in check-dedup-base-diff.sh.
+          AICRM_DEDUP_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before || '' }}
           AICRM_DEDUP_HEAD_SHA: ${{ github.sha }}
-        run: |
-          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
-          python3 scripts/audit/test_scan_exact_duplicates.py
-          python3 scripts/audit/test_check_new_exact_duplicates.py
-          python3 scripts/audit/test_check_source_authority_changes.py
-          scripts/audit/check-dedup-base-diff.sh .
-      - name: Verify controlled runtime configuration contracts
-        run: bash scripts/test-configure-wecom-tag-catalog-mutation-runtime.sh
+        run: python3 scripts/ci/quality_lanes.py preflight --report-dir "$RUNNER_TEMP/preflight"
+      - id: receipt
+        if: always()
+        name: Record structured preflight receipt
+        env:
+          SETUP_CHECKOUT: ${{ steps.checkout.outcome }}
+          SETUP_GO: ${{ steps.setup-go.outcome }}
+          SETUP_NODE: ${{ steps.setup-node.outcome }}
+          VERIFY: ${{ steps.verify.outcome }}
+          JOB: ${{ job.status }}
+        run: python3 scripts/ci/quality_report.py receipt --lane preflight --setup "checkout=$SETUP_CHECKOUT" --setup "go=$SETUP_GO" --setup "node=$SETUP_NODE" --verification "$VERIFY" --job "$JOB" --out "$RUNNER_TEMP/ci-receipts/preflight.json"
       - name: Upload preflight evidence
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
         with:
           name: preflight-${{ github.sha }}
-          path: ${{ runner.temp }}/preflight
+          path: |
+            ${{ runner.temp }}/preflight
+            ${{ runner.temp }}/ci-receipts/preflight.json
           retention-days: 14
 
   backend:
     needs: [plan, preflight]
     if: needs.plan.outputs.full == 'true'
+    outputs:
+      classification: ${{ steps.receipt.outputs.classification }}
+      observations: ${{ steps.receipt.outputs.observations }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -124,56 +140,83 @@ jobs:
     env:
       AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_ci?sslmode=disable
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
+      - id: setup
+        uses: ./.github/actions/ci-setup
         with:
           lane: race
           donors: 'true'
-      - name: Prepare browser assets required by backend fixtures
-        run: bash scripts/run-donor-view-consumers.sh stage
-      - name: Verify independent Excel component
-        run: |
-          python3 -m venv "$RUNNER_TEMP/excel-venv"
-          "$RUNNER_TEMP/excel-venv/bin/pip" install -r components/excel-batches/requirements.txt
-          "$RUNNER_TEMP/excel-venv/bin/python" -m unittest discover -s components/excel-batches -v
-      - name: Vet all Go packages
-        run: scripts/run-go-with-donor-views.sh go vet ./...
-      - name: Test every Go package once with PostgreSQL and race detection
-        # Includes all cmd/* importers (archive, open-platform, owner-handoff,
-        # and future commands). Each job owns its database; packages stay serial.
-        run: scripts/run-go-with-donor-views.sh go test -p 1 -race -count=1 ./...
+      - id: verify
+        if: ${{ steps.checkout.outcome == 'success' && steps.setup.outcome == 'success' }}
+        name: Run canonical backend verification lane
+        run: python3 scripts/ci/quality_lanes.py backend --report-dir "$RUNNER_TEMP/quality-lanes/backend"
+      - id: receipt
+        if: always()
+        name: Record structured backend receipt
+        env:
+          SETUP_CHECKOUT: ${{ steps.checkout.outcome }}
+          SETUP: ${{ steps.setup.outcome }}
+          VERIFY: ${{ steps.verify.outcome }}
+          JOB: ${{ job.status }}
+        run: python3 scripts/ci/quality_report.py receipt --lane backend --setup "checkout=$SETUP_CHECKOUT" --setup "ci-setup=$SETUP" --verification "$VERIFY" --job "$JOB" --out "$RUNNER_TEMP/ci-receipts/backend.json"
+      - if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: ci-receipt-backend-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-receipts/backend.json
+          if-no-files-found: warn
+          retention-days: 14
 
   frontend:
     needs: [plan, preflight]
     if: needs.plan.outputs.full == 'true'
+    outputs:
+      classification: ${{ steps.receipt.outputs.classification }}
+      observations: ${{ steps.receipt.outputs.observations }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
+      - id: setup
+        uses: ./.github/actions/ci-setup
         with:
           lane: frontend
           donors: 'true'
-      - name: Verify frontend, frozen contracts and final package layout
-        run: |
-          node scripts/excel-batches-dom-test.mjs
-          node scripts/validate-openapi.mjs
-          node scripts/verify-donor-sources.mjs
-          node --test scripts/donor-source-views.test.mjs
-          bash scripts/run-donor-view-consumers.sh check
-          node scripts/media-shell-interactions-e2e.mjs
-          node scripts/tags-shell-interactions-e2e.mjs
-          node scripts/customer-directory-shell-e2e.mjs
+      - id: verify
+        if: ${{ steps.checkout.outcome == 'success' && steps.setup.outcome == 'success' }}
+        name: Run canonical frontend verification lane
+        run: python3 scripts/ci/quality_lanes.py frontend --report-dir "$RUNNER_TEMP/quality-lanes/frontend"
+      - id: receipt
+        if: always()
+        name: Record structured frontend receipt
+        env:
+          SETUP_CHECKOUT: ${{ steps.checkout.outcome }}
+          SETUP: ${{ steps.setup.outcome }}
+          VERIFY: ${{ steps.verify.outcome }}
+          JOB: ${{ job.status }}
+        run: python3 scripts/ci/quality_report.py receipt --lane frontend --setup "checkout=$SETUP_CHECKOUT" --setup "ci-setup=$SETUP" --verification "$VERIFY" --job "$JOB" --out "$RUNNER_TEMP/ci-receipts/frontend.json"
+      - if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: ci-receipt-frontend-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-receipts/frontend.json
+          if-no-files-found: warn
+          retention-days: 14
 
   browser:
     needs: [plan, preflight]
     if: needs.plan.outputs.full == 'true'
+    outputs:
+      classification: ${{ steps.receipt.outputs.classification }}
+      observations: ${{ steps.receipt.outputs.observations }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -190,34 +233,41 @@ jobs:
     env:
       AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_ci?sslmode=disable
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
+      - id: setup
+        uses: ./.github/actions/ci-setup
         with:
           lane: browser
           donors: 'true'
-      - name: Install required Chromium fonts
+      - id: setup-browser
+        name: Install required Chromium fonts
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes fonts-noto-cjk
           fc-match "Noto Sans CJK SC" | rg -qi "Noto"
           command -v google-chrome
-      - name: Install required Excel browser-journey dependencies
-        run: |
-          python3 -m venv "$RUNNER_TEMP/excel-browser-venv"
-          "$RUNNER_TEMP/excel-browser-venv/bin/pip" install -r components/excel-batches/requirements.txt
-          "$RUNNER_TEMP/excel-browser-venv/bin/python" -c 'import openpyxl'
-          echo "$RUNNER_TEMP/excel-browser-venv/bin" >> "$GITHUB_PATH"
-      - name: Prepare frontend inputs
-        run: node scripts/generate-ai-assistant-client.mjs
-      - name: Run every required Chromium journey against the staged release
+      - id: verify
+        if: ${{ steps.checkout.outcome == 'success' && steps.setup.outcome == 'success' && steps.setup-browser.outcome == 'success' }}
+        name: Run canonical browser verification lane
         env:
           AICRM_REQUIRE_CHROMIUM_JOURNEY: '1'
           AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/admin-shell-layout
           AICRM_SIDEBAR_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/sidebar-standard
-        run: python3 scripts/dev_preflight.py browser --group all --report-dir "$RUNNER_TEMP/browser-evidence"
+        run: python3 scripts/ci/quality_lanes.py browser --report-dir "$RUNNER_TEMP/browser-evidence"
+      - id: receipt
+        if: always()
+        name: Record structured browser receipt
+        env:
+          SETUP_CHECKOUT: ${{ steps.checkout.outcome }}
+          SETUP: ${{ steps.setup.outcome }}
+          SETUP_BROWSER: ${{ steps.setup-browser.outcome }}
+          VERIFY: ${{ steps.verify.outcome }}
+          JOB: ${{ job.status }}
+        run: python3 scripts/ci/quality_report.py receipt --lane browser --setup "checkout=$SETUP_CHECKOUT" --setup "ci-setup=$SETUP" --setup "browser-runtime=$SETUP_BROWSER" --verification "$VERIFY" --job "$JOB" --out "$RUNNER_TEMP/ci-receipts/browser.json"
       - name: Upload browser results and screenshots
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
@@ -227,24 +277,48 @@ jobs:
             ${{ runner.temp }}/browser-evidence
             artifacts/admin-shell-layout
             artifacts/sidebar-standard
+            ${{ runner.temp }}/ci-receipts/browser.json
           retention-days: 14
 
   archive-sdk:
     needs: [plan, preflight]
     if: needs.plan.outputs.full == 'true'
+    outputs:
+      classification: ${{ steps.receipt.outputs.classification }}
+      observations: ${{ steps.receipt.outputs.observations }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
+      - id: setup
+        uses: ./.github/actions/ci-setup
         with:
           lane: sdk
           donors: 'false'
-      - name: Verify official WeCom archive SDK ABI in isolation
-        run: scripts/check-wecom-message-archive-sdk.sh
+      - id: verify
+        if: ${{ steps.checkout.outcome == 'success' && steps.setup.outcome == 'success' }}
+        name: Run canonical archive SDK verification lane
+        run: python3 scripts/ci/quality_lanes.py archive-sdk --report-dir "$RUNNER_TEMP/quality-lanes/archive-sdk"
+      - id: receipt
+        if: always()
+        name: Record structured archive SDK receipt
+        env:
+          SETUP_CHECKOUT: ${{ steps.checkout.outcome }}
+          SETUP: ${{ steps.setup.outcome }}
+          VERIFY: ${{ steps.verify.outcome }}
+          JOB: ${{ job.status }}
+        run: python3 scripts/ci/quality_report.py receipt --lane archive-sdk --setup "checkout=$SETUP_CHECKOUT" --setup "ci-setup=$SETUP" --verification "$VERIFY" --job "$JOB" --out "$RUNNER_TEMP/ci-receipts/archive-sdk.json"
+      - if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: ci-receipt-archive-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-receipts/archive-sdk.json
+          if-no-files-found: warn
+          retention-days: 14
 
   check:
     if: always()
@@ -267,6 +341,36 @@ jobs:
           name: ci-verification-${{ github.run_id }}-${{ github.run_attempt }}
           path: verification.json
           if-no-files-found: error
+          retention-days: 30
+
+  quality-report:
+    # This is read-only reporting. It is intentionally outside the check gate:
+    # an unavailable history query must never make a failed verification green.
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [plan, preflight, backend, frontend, browser, archive-sdk, check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Summarize exact PR attempts and structured lane outcomes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/quality_report.py summary --repo "$GITHUB_REPOSITORY" --pr "${{ github.event.pull_request.number }}" --head "${{ github.event.pull_request.head.sha }}" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --needs "$CI_NEEDS" --out "$RUNNER_TEMP/ci-quality-summary.json"
+      - name: Upload read-only CI quality summary
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: ci-quality-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-quality-summary.json
+          if-no-files-found: warn
           retention-days: 30
 
   # Production installation is opt-in. An unset repository variable is not

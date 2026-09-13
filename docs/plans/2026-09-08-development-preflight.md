@@ -15,9 +15,9 @@ External Effects：不涉及，不修改 Provider、生产参数或部署动作�
 2. 运行 `python3 scripts/dev_preflight.py compile`：所有 Go 包及测试编译，复用现有供体视图入口；这一步不是业务测试通过。
 3. 用独立 PostgreSQL 16 测试库重现原失败用例，并执行受影响领域、Composition 与 race 测试。不得指向生产库；不得用跳过数据库用例的结果作为通过证据。
 4. UI 变更按现有固定工具版本、两个冻结供体和 `scripts/run-donor-view-consumers.sh check` 构建最终 Host/暂存产物，再运行 `python3 scripts/dev_preflight.py browser`。macOS 无法启动 Chromium 时，明确保留 Linux CI 验证项。
-5. 本地专项通过后提交 PR，完整 Linux CI 是最终门禁。刷新准确 HEAD 后再审核；改动后旧 HEAD 的绿灯不能继承。
+5. 本地专项通过后提交 PR，完整 Linux CI 是最终门禁。刷新准确 HEAD 后再审核；改动后旧 HEAD 的绿灯不能继承。`fast`、`compile` 和局部 `browser` 只能汇报对应局部 claim；如需本地完整证据，运行 `python3 scripts/dev_preflight.py full`。该入口复用 CI lane 命令，要求源树在开始、每个 lane 前后和结束均干净且 HEAD/tree 一致；缺 PostgreSQL 16、Linux amd64 Chromium、固定工具或冻结供体会明确拒绝，不会以 skip 声称完整通过。本地数据库只接受 loopback 的 `aicrm_ci` 或 `aicrm_test_*` 隔离库，拒绝共享/远程地址；远程测试需求须另行明确设计。
 
-每次预检打印证据目录，包含 HEAD、工作区状态、命令、耗时、退出码和日志；可用 `--report-dir` 指定目录。证据不要提交为源码。默认写系统临时目录，不自动记录环境变量或凭据；日志仍应遵守现有测试脱敏规范。
+每次预检打印证据目录，包含 HEAD、tree、工作区状态、命令、耗时、退出码和日志；可用 `--report-dir` 指定目录。完整本地入口的证据目录必须在 Git 工作树外，不能靠忽略源文件绕过 clean 检查。默认写系统临时目录，不自动记录环境变量、数据库 URL 或凭据；环境指纹仅记录 OS、arch 与 Go/Node/Python 版本，且不等同于 Linux CI；日志仍应遵守现有测试脱敏规范。
 
 `fast` 只验证列出的快速项：完整冻结合同（含 20 个逻辑文件）、去重基线比较、全部领域和业务测试仍在 CI 必跑。去重检查读取提交对象，所以最终证据必须对应已提交 HEAD；本地工作区状态不会被冒充为准确提交验证。
 
