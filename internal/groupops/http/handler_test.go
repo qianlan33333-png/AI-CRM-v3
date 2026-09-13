@@ -85,11 +85,27 @@ func (s *contentDeliveryStub) Preview(context.Context, mediaport.ContentPackageC
 	return mediaport.ContentPackage{ID: 1, Name: "内容包", ContentText: "正文", Version: 1, Refs: []mediaport.ContentRef{}}, nil
 }
 
-type protocolStub struct{ called bool }
+type protocolStub struct {
+	called bool
+	err    error
+}
 
 func (s *protocolStub) AuthenticateGroupOpsWebhook(context.Context, *http.Request, string, []byte) (string, error) {
 	s.called = true
-	return "group-ops-webhook-test-key", nil
+	return "group-ops-webhook-test-key", s.err
+}
+
+type webhookRuntimeStub struct {
+	runtimeStub
+	calls   int
+	inbound groupopsport.WebhookInboundCommand
+	err     error
+}
+
+func (s *webhookRuntimeStub) AcceptWebhook(_ context.Context, _ string, _ string, inbound groupopsport.WebhookInboundCommand) (groupopsport.RunSummary, error) {
+	s.calls++
+	s.inbound = inbound
+	return groupopsport.RunSummary{}, s.err
 }
 
 type securityStub struct {
@@ -293,6 +309,92 @@ func TestGroupOpsWebhookRejectsBodiesBeyondHMACBound(t *testing.T) {
 	newBoundaryHandler(t, adminSecurity(nil), protocols).ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"invalid_request"`) || protocols.called {
 		t.Fatalf("status=%d protocol_called=%v body=%s", response.Code, protocols.called, response.Body.String())
+	}
+}
+
+func TestGroupOpsWebhookDecodesStrictDynamicMessagesBeforeRuntime(t *testing.T) {
+	protocols := &protocolStub{}
+	runtime := &webhookRuntimeStub{}
+	handler, err := groupopshttp.NewHandlerWithRuntime(applicationStub{}, runtime, adminSecurity(nil), protocols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"今日话术"},{"type":"image","image_id":7},{"type":"file","attachment_id":8},{"type":"miniprogram","miniprogram_id":9}]}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || !protocols.called || runtime.calls != 1 || len(runtime.inbound.Messages) != 4 || runtime.inbound.Messages[2].AttachmentID != 8 || runtime.inbound.Messages[3].MiniProgramID != 9 {
+		t.Fatalf("status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
+	}
+	protocols.called = false
+	request = httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"image","image_id":7},{"type":"text","text":"too late"}]}`))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || protocols.called || runtime.calls != 1 || !strings.Contains(response.Body.String(), `"invalid_request"`) {
+		t.Fatalf("status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"miniprogram","miniprogram_id":"9"}]}`))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || protocols.called || runtime.calls != 1 || !strings.Contains(response.Body.String(), `"invalid_request"`) {
+		t.Fatalf("string miniprogram id status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"has\u0000nul"}]}`))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || protocols.called || runtime.calls != 1 || !strings.Contains(response.Body.String(), `"invalid_request"`) {
+		t.Fatalf("NUL text status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
+	}
+}
+
+func TestGroupOpsWebhookReportsMiniProgramCoverFailuresPrecisely(t *testing.T) {
+	body := `{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"今日话术"}]}`
+	for _, test := range []struct {
+		name string
+		err  error
+		code int
+		want string
+	}{
+		{name: "unsupported automatic source", err: groupopsapp.ErrMiniProgramCoverUnsupported, code: http.StatusBadRequest, want: "miniprogram_cover_unsupported"},
+		{name: "temporary cover failure", err: groupopsapp.ErrMiniProgramCoverResolverUnavailable, code: http.StatusServiceUnavailable, want: "miniprogram_cover_unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			protocols := &protocolStub{}
+			runtime := &webhookRuntimeStub{err: test.err}
+			handler, err := groupopshttp.NewHandlerWithRuntime(applicationStub{}, runtime, adminSecurity(nil), protocols)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(body)))
+			if response.Code != test.code || !strings.Contains(response.Body.String(), test.want) || runtime.calls != 1 {
+				t.Fatalf("status=%d runtime=%+v body=%s", response.Code, runtime, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestGroupOpsWebhookReturnsReplayPayloadConflict(t *testing.T) {
+	protocols := &protocolStub{err: groupopshttp.ErrProtocolReplayConflict}
+	request := httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"今日话术"}]}`))
+	response := httptest.NewRecorder()
+	newBoundaryHandler(t, adminSecurity(nil), protocols).ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"idempotency_conflict"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestGroupOpsWebhookRejectsSignedBodyForDifferentURLBeforeRuntime(t *testing.T) {
+	protocols := &protocolStub{}
+	runtime := &webhookRuntimeStub{}
+	handler, err := groupopshttp.NewHandlerWithRuntime(applicationStub{}, runtime, adminSecurity(nil), protocols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/second-hook", strings.NewReader(`{"webhook_reference":"first-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"今日话术"}]}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || protocols.called || runtime.calls != 0 || !strings.Contains(response.Body.String(), `"invalid_request"`) {
+		t.Fatalf("status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
 	}
 }
 

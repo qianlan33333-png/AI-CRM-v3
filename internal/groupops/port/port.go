@@ -15,6 +15,14 @@ const (
 	PlanArchived PlanStatus = "archived"
 )
 
+// PlanType controls how a plan obtains its message content. A zero value is
+// retained for already-persisted standard plans; new callers should use the
+// explicit standard value when they mean scheduled node content.
+const (
+	PlanTypeStandard = "standard"
+	PlanTypeWebhook  = "webhook"
+)
+
 type NodeKind string
 
 const (

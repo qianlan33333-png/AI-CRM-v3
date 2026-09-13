@@ -56,13 +56,14 @@ type RunDuePreview struct {
 }
 
 type Run struct {
-	ID           int64      `json:"run_id,string"`
-	PlanID       int64      `json:"plan_id,string"`
-	Trigger      RunTrigger `json:"trigger"`
-	PlanRevision int64      `json:"plan_revision"`
-	ScheduledFor time.Time  `json:"scheduled_for"`
-	AcceptedAt   time.Time  `json:"accepted_at"`
-	AcceptedBy   string     `json:"accepted_by"`
+	ID                   int64      `json:"run_id,string"`
+	PlanID               int64      `json:"plan_id,string"`
+	Trigger              RunTrigger `json:"trigger"`
+	PlanRevision         int64      `json:"plan_revision"`
+	ScheduledFor         time.Time  `json:"scheduled_for"`
+	AcceptedAt           time.Time  `json:"accepted_at"`
+	AcceptedBy           string     `json:"accepted_by"`
+	WebhookPayloadDigest string     `json:"-"`
 }
 
 type Execution struct {
@@ -192,6 +193,31 @@ type AcceptPlanCommand struct {
 	IdempotencyKey string
 }
 
+// WebhookInboundCommand is the strict, signed request body accepted by a
+// Webhook plan. Group references are the plan-bound opaque identifiers, never
+// display names or provider chat IDs supplied ad hoc by a caller.
+type WebhookInboundCommand struct {
+	WebhookReference     string           `json:"webhook_reference"`
+	TargetChatReferences []string         `json:"target_chat_references"`
+	Messages             []WebhookMessage `json:"messages"`
+}
+
+// WebhookMessage describes the single WeCom-representable message shape:
+// optional text first, followed by ordered Media-backed attachments. Images
+// and files use existing local Media IDs. A miniprogram is resolved by a
+// Media-owned adapter from its AppID/path before Group Ops freezes the local
+// material reference.
+type WebhookMessage struct {
+	Type          string `json:"type"`
+	Text          string `json:"text,omitempty"`
+	AppID         string `json:"appid,omitempty"`
+	Path          string `json:"path,omitempty"`
+	Title         string `json:"title,omitempty"`
+	MiniProgramID int64  `json:"miniprogram_id,omitempty"`
+	ImageID       int64  `json:"image_id,omitempty"`
+	AttachmentID  int64  `json:"attachment_id,omitempty"`
+}
+
 type ManualReconcileCommand struct {
 	ExecutionID    int64
 	ActorID        int64
@@ -296,13 +322,14 @@ type ExecutionKey struct {
 }
 
 type RunReservation struct {
-	PlanID          int64
-	Trigger         RunTrigger
-	SourceKeyDigest [sha256.Size]byte
-	PlanRevision    int64
-	ScheduledFor    time.Time
-	AcceptedAt      time.Time
-	AcceptedBy      string
+	PlanID               int64
+	Trigger              RunTrigger
+	SourceKeyDigest      [sha256.Size]byte
+	WebhookPayloadDigest string
+	PlanRevision         int64
+	ScheduledFor         time.Time
+	AcceptedAt           time.Time
+	AcceptedBy           string
 }
 
 type ExecutionDraft struct {
@@ -327,6 +354,7 @@ type ExecutionDraft struct {
 // ReserveRun/InsertExecution and outcome projection.
 type RuntimeStore interface {
 	ListExecutionKeys(context.Context, int64, int64) ([]ExecutionKey, error)
+	FindRunBySourceKey(context.Context, int64, RunTrigger, [sha256.Size]byte) (Run, bool, error)
 	ReserveRun(context.Context, RunReservation) (Run, error)
 	CreateExecutionIntents(context.Context, []ExecutionDraft) ([]ExecutionIntent, error)
 	InitialExecutionIntents(context.Context, int64) ([]ExecutionDraft, error)

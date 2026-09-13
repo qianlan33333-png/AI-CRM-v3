@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -18,12 +19,15 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/domain"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
 
 var (
-	ErrProviderDisabled = errors.New("group ops provider is disabled")
-	ErrRuntimeInvalid   = errors.New("invalid Group Ops runtime command")
+	ErrProviderDisabled                    = errors.New("group ops provider is disabled")
+	ErrRuntimeInvalid                      = errors.New("invalid Group Ops runtime command")
+	ErrMiniProgramCoverUnsupported         = errors.New("Group Ops mini program cover is unsupported")
+	ErrMiniProgramCoverResolverUnavailable = errors.New("Group Ops mini program cover resolver is unavailable")
 )
 
 // RuntimeService coordinates local run/execution facts with the stable EER
@@ -221,25 +225,294 @@ func (s *RuntimeService) AcceptPlan(ctx context.Context, command groupopsport.Ac
 	return summary, nil
 }
 
-func (s *RuntimeService) AcceptWebhook(ctx context.Context, webhookReference, key string) (groupopsport.RunSummary, error) {
-	if !s.ready() || !validRuntimeKey(key) || !validOpaqueReference(webhookReference) {
+// AcceptWebhook accepts only a typed, signed dynamic message. It does not
+// traverse plan nodes: a webhook run freezes its own message and its selected
+// subset of bound targets. Existing runs are read before any dynamic Media
+// resolution so a repeated event cannot mint a changed cover or effect.
+func (s *RuntimeService) AcceptWebhook(ctx context.Context, webhookReference, key string, inbound groupopsport.WebhookInboundCommand) (groupopsport.RunSummary, error) {
+	if !s.ready() || !validRuntimeKey(key) || !validOpaqueReference(webhookReference) || inbound.WebhookReference != webhookReference || groupopsdomain.ValidateWebhookInbound(inbound) != nil {
 		return groupopsport.RunSummary{}, invalidOrUnavailableRuntime(s)
 	}
-	var command groupopsport.AcceptPlanCommand
+	now := s.nowUTC()
+	if now.IsZero() {
+		return groupopsport.RunSummary{}, ErrUnavailable
+	}
+	payloadDigest, digestErr := webhookPayloadDigest(inbound)
+	if digestErr != nil {
+		return groupopsport.RunSummary{}, ErrRuntimeInvalid
+	}
+
+	var planID int64
+	var prior groupopsport.RunSummary
+	var found bool
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		planID, err := s.runtime.FindPlanByWebhookReference(tx, webhookReference)
+		var err error
+		planID, err = s.runtime.FindPlanByWebhookReference(tx, webhookReference)
 		if err != nil {
 			return err
 		}
-		command = groupopsport.AcceptPlanCommand{PlanID: planID, Trigger: groupopsport.RunTriggerWebhook, AcceptedBy: "webhook:" + webhookReference, IdempotencyKey: key}
+		run, exists, findErr := s.runtime.FindRunBySourceKey(tx, planID, groupopsport.RunTriggerWebhook, webhookRunSourceKey(planID, webhookReference, key))
+		if findErr != nil || !exists {
+			if findErr != nil {
+				return findErr
+			}
+			detail, detailErr := s.plans.Get(tx, planID)
+			if detailErr != nil {
+				return detailErr
+			}
+			if !validDynamicWebhookDetail(detail, webhookReference, inbound.TargetChatReferences) {
+				return ErrStateConflict
+			}
+			return nil
+		}
+		if run.WebhookPayloadDigest != payloadDigest {
+			return ErrConflict
+		}
+		prior, findErr = s.runtime.ReadRunSummary(tx, run.ID)
+		if findErr == nil {
+			prior.RuntimeSafety = s.safety()
+			found = true
+		}
+		return findErr
+	})
+	if err != nil {
+		return groupopsport.RunSummary{}, classify(err)
+	}
+	if found {
+		return prior, nil
+	}
+	if !s.dispatchEnabled {
+		return groupopsport.RunSummary{}, ErrProviderDisabled
+	}
+
+	preparedMessages, err := s.prepareWebhookMessageSnapshot(ctx, inbound)
+	if err != nil {
+		return groupopsport.RunSummary{}, classify(err)
+	}
+	var summary groupopsport.RunSummary
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		detail, lockErr := s.plans.Lock(tx, planID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if groupopsdomain.ValidateDetail(detail) != nil {
+			return ErrUnavailable
+		}
+		sourceKey := webhookRunSourceKey(planID, webhookReference, key)
+		run, reserveErr := s.runtime.ReserveRun(tx, groupopsport.RunReservation{PlanID: planID, Trigger: groupopsport.RunTriggerWebhook, SourceKeyDigest: sourceKey, WebhookPayloadDigest: payloadDigest, PlanRevision: detail.Plan.Revision, ScheduledFor: now, AcceptedAt: now, AcceptedBy: "webhook:" + webhookReference})
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if run.WebhookPayloadDigest != payloadDigest {
+			return ErrConflict
+		}
+		// A concurrent first request may have completed while this request was
+		// resolving local Media facts. Return its sealed result before checking
+		// mutable plan state or creating another intent.
+		existing, readErr := s.runtime.ReadRunSummary(tx, run.ID)
+		if readErr != nil {
+			return readErr
+		}
+		if len(existing.Executions) != 0 || len(existing.PendingIntents) != 0 {
+			existing.RuntimeSafety = s.safety()
+			summary = existing
+			return nil
+		}
+		if !validDynamicWebhookDetail(detail, webhookReference, inbound.TargetChatReferences) {
+			return ErrStateConflict
+		}
+		materialPlan, contentRaw, materializeErr := s.materializeWebhookMessageSnapshot(tx, detail, run, preparedMessages)
+		if materializeErr != nil {
+			return materializeErr
+		}
+		drafts, draftErr := s.buildWebhookDrafts(tx, detail, run, inbound.TargetChatReferences, materialPlan, contentRaw, now)
+		if draftErr != nil {
+			return draftErr
+		}
+		if _, draftErr = s.runtime.CreateExecutionIntents(tx, drafts); draftErr != nil {
+			return draftErr
+		}
+		initial, initialErr := s.runtime.InitialExecutionIntents(tx, run.ID)
+		if initialErr != nil {
+			return initialErr
+		}
+		for _, draft := range initial {
+			projection, receipt, acceptErr := s.effects.AcceptAndQueueWithin(tx, groupOpsEffectAcceptCommand(draft, key))
+			if acceptErr != nil {
+				return acceptErr
+			}
+			if projection.ID == "" || projection.QueueJobID < 1 || receipt.ID == "" || receipt.QueueReceiptID == "" {
+				return ErrUnavailable
+			}
+			draft.ExternalEffectID = projection.ID
+			if _, insertErr := s.runtime.InsertExecution(tx, draft); insertErr != nil {
+				return insertErr
+			}
+			if bindErr := s.runtime.BindAcceptedExecutionIntent(tx, draft.IntentID, projection.ID); bindErr != nil {
+				return bindErr
+			}
+		}
+		summary, readErr = s.runtime.ReadRunSummary(tx, run.ID)
+		if readErr != nil {
+			return readErr
+		}
+		summary.RuntimeSafety = s.safety()
 		return nil
 	})
 	if err != nil {
 		return groupopsport.RunSummary{}, classify(err)
 	}
-	// The lookup transaction is read-only. AcceptPlan obtains the plan lock and
-	// creates the run/EER intents atomically in its own Unit of Work.
-	return s.AcceptPlan(ctx, command)
+	return summary, nil
+}
+
+func webhookRunSourceKey(planID int64, webhookReference, key string) [sha256.Size]byte {
+	// Deliberately excludes plan revision and payload digest: protocol replay
+	// owns payload conflict detection, while this run key means an event can
+	// never send twice after a plan edit.
+	return sha256.Sum256([]byte(strings.Join([]string{"group-ops.webhook-run.v2", strconv.FormatInt(planID, 10), webhookReference, key}, "\x00")))
+}
+
+func webhookPayloadDigest(inbound groupopsport.WebhookInboundCommand) (string, error) {
+	raw, err := json.Marshal(inbound)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := canonicalRuntimeJSON(raw)
+	if err != nil {
+		return "", err
+	}
+	return string(effectport.Hash("group-ops.webhook.payload.v1", string(canonical))), nil
+}
+
+func validDynamicWebhookDetail(detail groupopsport.Detail, webhookReference string, targets []string) bool {
+	return groupopsdomain.ValidateDetail(detail) == nil && detail.Plan.Type == groupopsport.PlanTypeWebhook && detail.Plan.Status == groupopsport.PlanActive && detail.WebhookDescriptor.Configured && detail.WebhookDescriptor.Reference == webhookReference && contentValidation(detail).Valid && webhookTargetsAreBound(detail.GroupAssets, targets)
+}
+
+func webhookTargetsAreBound(bindings []groupopsport.GroupAsset, targets []string) bool {
+	bound := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		bound[binding.AssetRef] = struct{}{}
+	}
+	for _, target := range targets {
+		if _, exists := bound[target]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+type webhookMessagePreparation struct {
+	messageText string
+	attachments []webhookPreparedAttachment
+}
+
+type webhookPreparedAttachment struct {
+	reference groupopsport.MaterialReference
+	prepared  *mediaport.PreparedWebhookMiniProgram
+}
+
+func (s *RuntimeService) prepareWebhookMessageSnapshot(ctx context.Context, inbound groupopsport.WebhookInboundCommand) (webhookMessagePreparation, error) {
+	prepared := webhookMessagePreparation{attachments: make([]webhookPreparedAttachment, 0, len(inbound.Messages))}
+	for _, message := range inbound.Messages {
+		switch message.Type {
+		case "text":
+			prepared.messageText = message.Text
+		case "image":
+			prepared.attachments = append(prepared.attachments, webhookPreparedAttachment{reference: groupopsport.MaterialReference{Kind: "image", ID: message.ImageID}})
+		case "file":
+			prepared.attachments = append(prepared.attachments, webhookPreparedAttachment{reference: groupopsport.MaterialReference{Kind: "attachment", ID: message.AttachmentID}})
+		case "miniprogram":
+			if message.MiniProgramID > 0 {
+				prepared.attachments = append(prepared.attachments, webhookPreparedAttachment{reference: groupopsport.MaterialReference{Kind: "miniprogram", ID: message.MiniProgramID}})
+				continue
+			}
+			resolver, ok := s.materials.(mediaport.WebhookMiniProgramResolver)
+			if !ok || resolver == nil {
+				return webhookMessagePreparation{}, ErrMiniProgramCoverResolverUnavailable
+			}
+			cover, resolveErr := resolver.PrepareWebhookMiniProgram(ctx, mediaport.WebhookMiniProgramRequest{AppID: message.AppID, Path: message.Path, Title: message.Title})
+			if errors.Is(resolveErr, mediaport.ErrWebhookMiniProgramUnsupported) {
+				return webhookMessagePreparation{}, ErrMiniProgramCoverUnsupported
+			}
+			if resolveErr != nil {
+				return webhookMessagePreparation{}, ErrMiniProgramCoverResolverUnavailable
+			}
+			prepared.attachments = append(prepared.attachments, webhookPreparedAttachment{prepared: &cover})
+		default:
+			return webhookMessagePreparation{}, ErrRuntimeInvalid
+		}
+	}
+	return prepared, nil
+}
+
+func (s *RuntimeService) materializeWebhookMessageSnapshot(ctx context.Context, detail groupopsport.Detail, run groupopsport.Run, prepared webhookMessagePreparation) (groupopsport.MaterialPlan, json.RawMessage, error) {
+	materialPlan := groupopsport.MaterialPlan{References: make([]groupopsport.MaterialReference, 0, len(prepared.attachments))}
+	resolver, _ := s.materials.(mediaport.WebhookMiniProgramResolver)
+	for index, attachment := range prepared.attachments {
+		reference := attachment.reference
+		if attachment.prepared != nil {
+			if resolver == nil || detail.Plan.UpdatedBy < 1 {
+				return groupopsport.MaterialPlan{}, nil, ErrMiniProgramCoverResolverUnavailable
+			}
+			resolved, err := resolver.MaterializeWebhookMiniProgramWithin(ctx, *attachment.prepared, mediaport.WebhookMiniProgramMaterialization{Actor: detail.Plan.UpdatedBy, IdempotencyKey: webhookLessonMaterializationKey(run.ID, index)})
+			if err != nil || resolved.Kind != "miniprogram" || resolved.ID < 1 {
+				return groupopsport.MaterialPlan{}, nil, ErrMiniProgramCoverResolverUnavailable
+			}
+			reference = groupopsport.MaterialReference{Kind: resolved.Kind, ID: resolved.ID}
+		}
+		materialPlan.References = append(materialPlan.References, reference)
+	}
+	if groupopsdomain.ValidateMaterialPlan(materialPlan) != nil {
+		return groupopsport.MaterialPlan{}, nil, ErrRuntimeInvalid
+	}
+	raw, err := json.Marshal(map[string]any{
+		"schema_version":   2,
+		"kind":             "webhook_message",
+		"message_text":     prepared.messageText,
+		"attachment_order": materialPlan.References,
+	})
+	if err != nil {
+		return groupopsport.MaterialPlan{}, nil, ErrRuntimeInvalid
+	}
+	canonical, err := canonicalRuntimeJSON(raw)
+	if err != nil {
+		return groupopsport.MaterialPlan{}, nil, ErrRuntimeInvalid
+	}
+	return materialPlan, canonical, nil
+}
+
+func webhookLessonMaterializationKey(runID int64, index int) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{"group-ops.webhook.lesson-card.material.v1", strconv.FormatInt(runID, 10), strconv.Itoa(index)}, "\x00")))
+	return "groupops_webhook_lesson_" + hex.EncodeToString(sum[:])
+}
+
+func (s *RuntimeService) buildWebhookDrafts(tx context.Context, detail groupopsport.Detail, run groupopsport.Run, targets []string, materialPlan groupopsport.MaterialPlan, contentRaw json.RawMessage, now time.Time) ([]groupopsport.ExecutionDraft, error) {
+	materialRaw, _, materialSourceRaw, materialSourceDigest, err := s.resolveMaterialSnapshot(tx, materialPlan, now)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	materialRaw, err = canonicalRuntimeJSON(materialRaw)
+	if err != nil {
+		return nil, ErrRuntimeInvalid
+	}
+	materialDigest := string(effectport.Hash("group-ops.material.snapshot.v1", string(materialRaw)))
+	contentDigest := string(effectport.Hash("group-ops.content.snapshot.v1", string(contentRaw)))
+	drafts := make([]groupopsport.ExecutionDraft, 0, len(targets))
+	for _, target := range targets {
+		sender, found, senderErr := s.senders.ResolveExecutionSender(tx, target)
+		if senderErr != nil {
+			return nil, ErrUnavailable
+		}
+		if !found || sender == "" {
+			return nil, ErrUnavailable
+		}
+		keyDigest := sha256.Sum256([]byte(strings.Join([]string{"group-ops.webhook.execution.v1", strconv.FormatInt(run.ID, 10), target}, "\x00")))
+		drafts = append(drafts, groupopsport.ExecutionDraft{RunID: run.ID, PlanID: run.PlanID, PlanRevision: run.PlanRevision, NodePosition: 1, TargetReference: target, SenderUserID: sender, TargetDigest: string(effectport.Hash("group-ops.target", target)), ContentSnapshot: contentRaw, ContentDigest: contentDigest, MaterialSnapshot: materialRaw, MaterialDigest: materialDigest, MaterialSourceSnapshot: materialSourceRaw, MaterialSourceDigest: materialSourceDigest, ExecutionKeyDigest: keyDigest, ScheduledFor: now, CreatedAt: now})
+	}
+	if len(drafts) == 0 {
+		return nil, ErrStateConflict
+	}
+	return drafts, nil
 }
 
 func canonicalRuntimeJSON(raw []byte) (json.RawMessage, error) {

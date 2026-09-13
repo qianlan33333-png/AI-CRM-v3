@@ -4,6 +4,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
+	groupopsdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/domain"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 )
@@ -72,7 +74,7 @@ type RuntimeApplication interface {
 	PreviewRunDue(context.Context, int64) (groupopsport.RunDuePreview, error)
 	RunDue(context.Context, groupopsport.RunDueCommand) (groupopsport.RunSummary, error)
 	AcceptBroadcast(context.Context, int64, int64, string) (groupopsport.RunSummary, error)
-	AcceptWebhook(context.Context, string, string) (groupopsport.RunSummary, error)
+	AcceptWebhook(context.Context, string, string, groupopsport.WebhookInboundCommand) (groupopsport.RunSummary, error)
 	ListExecutions(context.Context, int64, int32, int32) (groupopsport.ExecutionPage, error)
 	ProjectExecutionOutcome(context.Context, groupopsport.ExecutionOutcomeCommand) (groupopsport.Execution, error)
 	ManualReconcile(context.Context, groupopsport.ManualReconcileCommand) (groupopsport.Execution, error)
@@ -90,10 +92,13 @@ type ProtocolAuthenticator interface {
 	AuthenticateGroupOpsWebhook(context.Context, *stdhttp.Request, string, []byte) (string, error)
 }
 
-// ErrProtocolUnavailable distinguishes a missing/failed verifier or replay
-// store from an invalid caller signature. Public inbound routes return 503 for
-// the former and 401 for the latter; neither path accepts unsigned input.
-var ErrProtocolUnavailable = errors.New("Group Ops protocol authentication unavailable")
+// Protocol errors are intentionally typed at this boundary. A transport
+// adapter may reveal an idempotency conflict to an authenticated caller, but
+// never exposes signature-verification detail to an unauthenticated caller.
+var (
+	ErrProtocolUnavailable    = errors.New("Group Ops protocol authentication unavailable")
+	ErrProtocolReplayConflict = errors.New("Group Ops protocol replay payload conflict")
+)
 
 type Handler struct {
 	application     Application
@@ -1260,16 +1265,29 @@ func (h *Handler) webhook(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeError(w, stdhttp.StatusBadRequest, "invalid_request")
 		return
 	}
+	// Decode and bind the signed body to this URL before the protocol adapter
+	// claims its replay receipt. A valid request copied to another descriptor
+	// must leave no replay receipt behind there, or the caller could not retry
+	// the same event at the descriptor named in its signed body.
+	var inbound groupopsport.WebhookInboundCommand
+	if !decodeWebhookBody(body, &inbound) || inbound.WebhookReference != key || groupopsdomain.ValidateWebhookInbound(inbound) != nil {
+		writeError(w, stdhttp.StatusBadRequest, "invalid_request")
+		return
+	}
 	idempotency, err := h.protocols.AuthenticateGroupOpsWebhook(r.Context(), r, key, body)
 	if errors.Is(err, ErrProtocolUnavailable) {
 		writeError(w, stdhttp.StatusServiceUnavailable, "protocol_auth_unavailable")
+		return
+	}
+	if errors.Is(err, ErrProtocolReplayConflict) {
+		writeError(w, stdhttp.StatusConflict, "idempotency_conflict")
 		return
 	}
 	if err != nil || !validIdempotency(idempotency) {
 		writeError(w, stdhttp.StatusUnauthorized, "protocol_authentication_failed")
 		return
 	}
-	value, err := h.runtime.AcceptWebhook(r.Context(), key, idempotency)
+	value, err := h.runtime.AcceptWebhook(r.Context(), key, idempotency, inbound)
 	h.respondStatus(w, stdhttp.StatusAccepted, value, err)
 }
 
@@ -1407,6 +1425,10 @@ func errorStatus(err error) int {
 		return stdhttp.StatusConflict
 	case errors.Is(err, groupopsapp.ErrProviderDisabled):
 		return stdhttp.StatusServiceUnavailable
+	case errors.Is(err, groupopsapp.ErrMiniProgramCoverUnsupported):
+		return stdhttp.StatusBadRequest
+	case errors.Is(err, groupopsapp.ErrMiniProgramCoverResolverUnavailable):
+		return stdhttp.StatusServiceUnavailable
 	case errors.Is(err, groupopsapp.ErrUnavailable):
 		return stdhttp.StatusServiceUnavailable
 	case errors.Is(err, groupopsapp.ErrInvalid), errors.Is(err, groupopsapp.ErrRuntimeInvalid):
@@ -1423,6 +1445,10 @@ func errorCode(err error) string {
 		return "operations_conflict"
 	case errors.Is(err, groupopsapp.ErrProviderDisabled):
 		return "provider_disabled"
+	case errors.Is(err, groupopsapp.ErrMiniProgramCoverUnsupported):
+		return "miniprogram_cover_unsupported"
+	case errors.Is(err, groupopsapp.ErrMiniProgramCoverResolverUnavailable):
+		return "miniprogram_cover_unavailable"
 	case errors.Is(err, groupopsapp.ErrInvalid), errors.Is(err, groupopsapp.ErrRuntimeInvalid):
 		return "invalid_request"
 	default:
@@ -1444,6 +1470,16 @@ func methodNotAllowed(w stdhttp.ResponseWriter, methods ...string) {
 }
 func decodeJSON(r *stdhttp.Request, value any) bool {
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return false
+	}
+	var extra any
+	return decoder.Decode(&extra) == io.EOF
+}
+
+func decodeWebhookBody(body []byte, value any) bool {
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		return false

@@ -58,6 +58,12 @@ AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND index
 AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_v1_history_plans' AND column_name='source_created_by_reference')
 AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_v1_history_directory' AND column_name='source_owner_reference')
 AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_plans' AND column_name='plan_type')
+AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_runs' AND column_name='webhook_payload_digest')
+AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_executions' AND column_name='node_id' AND is_nullable='YES')
+AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_execution_intents' AND column_name='node_id' AND is_nullable='YES')
+AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_protocol_replays' AND column_name='protocol_version')
+AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname='group_ops_executions_webhook_run_target_unique')
+AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname='group_ops_execution_intents_webhook_run_target_unique')
 AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['day_index','scheduled_time','trigger_time_label','action_title','node_status']) AS required(name) WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='group_ops_plan_nodes' AND column_name=required.name))`).Scan(&ready)
 	if err != nil {
 		return err
@@ -76,7 +82,8 @@ AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['day_index','scheduled_time','trigger
 AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0081' AND name='0081_group_ops_webhook_unconfigured_reference.sql')
 AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0082' AND name='0082_group_ops_history_import.sql')
 AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0101' AND name='0101_group_ops_ui_metadata.sql')
-AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0116' AND name='0116_group_ops_operation_member_directory.sql')`).Scan(&ready); err != nil {
+AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0116' AND name='0116_group_ops_operation_member_directory.sql')
+AND EXISTS (SELECT 1 FROM platform_schema_migrations WHERE version='0155' AND name='0155_group_ops_webhook_dynamic_executions.sql')`).Scan(&ready); err != nil {
 		return err
 	}
 	if !ready {

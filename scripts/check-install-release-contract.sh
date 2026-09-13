@@ -101,6 +101,7 @@ for migration_contract in \
   '0151_access_role_governance.sql:Access role governance' \
   '0152_access_login_grants.sql:Access login grants' \
   '0153_wecom_customer_detail_projection.sql:WeCom customer detail projection' \
+  '0155_group_ops_webhook_dynamic_executions.sql:Group Ops dynamic webhook executions' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

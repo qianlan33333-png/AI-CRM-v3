@@ -76,13 +76,14 @@ func (a *groupOpsProtocolAuthenticator) AuthenticateGroupOpsWebhook(ctx context.
 	created, err := a.replay.ClaimWebhookReplay(ctx, groupOpsWebhookClientID, resource, eventDigest, payloadDigest, now)
 	if err != nil {
 		if errors.Is(err, groupopsapp.ErrConflict) {
-			return "", errors.New("group ops webhook authentication failed")
+			return "", groupopshttp.ErrProtocolReplayConflict
 		}
 		return "", groupopshttp.ErrProtocolUnavailable
 	}
-	if !created {
-		return "", errors.New("group ops webhook replay rejected")
-	}
+	// A verified repeat with the same scoped event/body is intentionally passed
+	// through to the runtime. Its durable run source key returns the already
+	// frozen run and prevents a second effect from being accepted.
+	_ = created
 	// The event id is retained only as a digest in the replay store. Returning
 	// a derived key keeps long (up to 256-byte) protocol event IDs within the
 	// application idempotency contract and prevents the raw ID becoming an

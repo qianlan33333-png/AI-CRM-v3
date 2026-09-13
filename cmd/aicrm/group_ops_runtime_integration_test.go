@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +33,7 @@ import (
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
+	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
@@ -39,6 +46,376 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 )
+
+// failingGroupOpsEffectAccepter proves the Group Ops UoW really encompasses
+// EER acceptance and its River enqueue: it lets the real EER store write into
+// the caller transaction, then fails so the enclosing Group Ops UoW must roll
+// every owner and EER fact back together.
+type failingGroupOpsEffectAccepter struct {
+	delegate effectport.TransactionalAccepter
+}
+
+func (a failingGroupOpsEffectAccepter) AcceptAndQueueWithin(ctx context.Context, command effectport.AcceptCommand) (effectport.Projection, effectport.Receipt, error) {
+	projection, receipt, err := a.delegate.AcceptAndQueueWithin(ctx, command)
+	if err != nil {
+		return effectport.Projection{}, effectport.Receipt{}, err
+	}
+	return projection, receipt, errors.New("test external effect acceptance failed after durable EER write")
+}
+
+type groupOpsLessonCardRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTrip groupOpsLessonCardRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+func groupOpsLessonCardPNG(t *testing.T) []byte {
+	t.Helper()
+	canvas := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	canvas.SetRGBA(0, 0, color.RGBA{R: 1, G: 2, B: 3, A: 255})
+	var output bytes.Buffer
+	if err := png.Encode(&output, canvas); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func groupOpsLessonCardInbound(reference, target string) groupopsport.WebhookInboundCommand {
+	return groupopsport.WebhookInboundCommand{
+		WebhookReference:     reference,
+		TargetChatReferences: []string{target},
+		Messages: []groupopsport.WebhookMessage{
+			{Type: "text", Text: "日课话术"},
+			{Type: "miniprogram", AppID: "wx0ca836834b18e989", Path: "pages/article/article?lesson_id=11111111-2222-3333-4444-555555555555&from=learn", Title: "日课"},
+		},
+	}
+}
+
+// TestGroupOpsWebhookPostgreSQLJourney proves the dynamic inbound path uses
+// the same PostgreSQL UoW for the frozen run, node-less execution/intent and
+// EER acceptance. It deliberately stops before any worker/provider attempt.
+func TestGroupOpsWebhookPostgreSQLJourney(t *testing.T) {
+	native, cleanup := groupOpsIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	platformPool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer platformPool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(platformPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var actorID int64
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled) VALUES('groupops-webhook-pg','$argon2id$webhook','Group Ops Webhook','webhook-sender',true,false) RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	groupStore, err := groupopsstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaStore, err := mediastore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lessonPNG := groupOpsLessonCardPNG(t)
+	var lessonFetches atomic.Int32
+	lessonCards := mediaapp.NewWebhookLessonCardResolver(mediaStore, groupOpsLessonCardRoundTripper(func(request *http.Request) (*http.Response, error) {
+		lessonFetches.Add(1)
+		if request.Method != http.MethodGet || request.URL.String() != "https://ip.lhbl.com.cn/api/share/lesson-card/11111111-2222-3333-4444-555555555555.png" {
+			return nil, fmt.Errorf("unexpected lesson cover request %s %s", request.Method, request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/png"}}, ContentLength: int64(len(lessonPNG)), Body: io.NopCloser(bytes.NewReader(lessonPNG))}, nil
+	}))
+	materialResolver, err := newGroupOpsMaterialAdapter(mediaStore, freezer, lessonCards)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := groupopsapp.NewService(uow, groupStore, groupOpsStaffAdapter{access: accessstore.NewPostgreSQL(), owners: groupStore}, groupStore)
+	detail, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "Webhook PostgreSQL journey", Actor: actorID, IdempotencyKey: "groupops-webhook-pg-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Name: detail.Plan.Name, PlanType: groupopsport.PlanTypeWebhook, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-type"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.AddMember(ctx, groupopsport.MemberCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, StaffID: actorID, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, target := range []string{"webhook-pg-chat-a", "webhook-pg-chat-b"} {
+		detail, err = service.AddGroupAsset(ctx, groupopsport.GroupAssetCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, AssetRef: target, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-asset-" + strconv.Itoa(index)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, err = service.PutWebhookDescriptor(ctx, groupopsport.WebhookDescriptorCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Reference: "groupops-webhook-pg", Actor: actorID, IdempotencyKey: "groupops-webhook-pg-descriptor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-activate"})
+	if err != nil || detail.Plan.Status != groupopsport.PlanActive || len(detail.Nodes) != 0 {
+		t.Fatalf("activate detail=%+v err=%v", detail, err)
+	}
+
+	workers := river.NewWorkers()
+	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, externaleffects.NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	effectClient, err := platformjobqueue.NewInsertClient(native, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectStore, err := externaleffects.NewRepository(native, effectClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeService := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, effectStore, journeyStaff{}, nil, journeySender{}, nil, nil, materialResolver)
+	runtimeService.SetDispatchEnabled(true)
+	inbound := groupopsport.WebhookInboundCommand{WebhookReference: "groupops-webhook-pg", TargetChatReferences: []string{"webhook-pg-chat-a", "webhook-pg-chat-b"}, Messages: []groupopsport.WebhookMessage{{Type: "text", Text: "动态 PostgreSQL 话术"}}}
+	first, err := runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-0001", inbound)
+	if err != nil || first.Run.ID < 1 || first.Accepted != 2 || len(first.Executions) != 2 || first.RealExternalCallExecuted {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	for _, execution := range first.Executions {
+		if execution.NodeID != 0 {
+			t.Fatalf("dynamic execution exposed node id=%d", execution.NodeID)
+		}
+	}
+	var nullExecutionCount, nullIntentCount int
+	var payloadDigest string
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE run_id=$1 AND node_id IS NULL`, first.Run.ID).Scan(&nullExecutionCount); err != nil || nullExecutionCount != 2 {
+		t.Fatalf("node-less executions=%d err=%v", nullExecutionCount, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE run_id=$1 AND node_id IS NULL`, first.Run.ID).Scan(&nullIntentCount); err != nil || nullIntentCount != 2 {
+		t.Fatalf("node-less intents=%d err=%v", nullIntentCount, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT webhook_payload_digest FROM group_ops_runs WHERE id=$1`, first.Run.ID).Scan(&payloadDigest); err != nil || !effectport.ValidDigest(effectport.Digest(payloadDigest)) {
+		t.Fatalf("frozen webhook payload digest=%q err=%v", payloadDigest, err)
+	}
+
+	// The automatic daily-lesson branch must freeze a locally materialized
+	// Media miniprogram in the same UoW as its run and EER. In particular, the
+	// Media capture below reads through the transaction rather than a separate
+	// pool, so an uncommitted image/card is visible to source freezing.
+	miniInbound := groupOpsLessonCardInbound("groupops-webhook-pg", "webhook-pg-chat-a")
+	miniSummary, err := runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-mini-0001", miniInbound)
+	if err != nil || miniSummary.Run.ID < 1 || miniSummary.Accepted != 1 || len(miniSummary.Executions) != 1 || lessonFetches.Load() != 1 {
+		t.Fatalf("mini summary=%+v fetches=%d err=%v", miniSummary, lessonFetches.Load(), err)
+	}
+	var imageCount, miniCount, mediaAuditCount, mediaOutboxCount int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_images`).Scan(&imageCount); err != nil || imageCount != 1 {
+		t.Fatalf("images=%d err=%v", imageCount, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_miniprograms`).Scan(&miniCount); err != nil || miniCount != 1 {
+		t.Fatalf("miniprograms=%d err=%v", miniCount, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_audit_events`).Scan(&mediaAuditCount); err != nil || mediaAuditCount != 2 {
+		t.Fatalf("media audit=%d err=%v", mediaAuditCount, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_outbox`).Scan(&mediaOutboxCount); err != nil || mediaOutboxCount != 2 {
+		t.Fatalf("media outbox=%d err=%v", mediaOutboxCount, err)
+	}
+	var frozenSnapshot, frozenSources []byte
+	if err = native.QueryRow(ctx, `SELECT material_snapshot,material_source_snapshot FROM group_ops_executions WHERE run_id=$1`, miniSummary.Run.ID).Scan(&frozenSnapshot, &frozenSources); err != nil || !bytes.Contains(frozenSnapshot, []byte(`miniprogram`)) || !bytes.Contains(frozenSources, []byte(`thumbnail_image_id`)) || !bytes.Contains(frozenSources, []byte(`wx0ca836834b18e989`)) {
+		t.Fatalf("frozen snapshot=%s sources=%s err=%v", frozenSnapshot, frozenSources, err)
+	}
+	miniReplay, err := runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-mini-0001", miniInbound)
+	if err != nil || miniReplay.Run.ID != miniSummary.Run.ID || lessonFetches.Load() != 1 {
+		t.Fatalf("mini replay=%+v fetches=%d err=%v", miniReplay, lessonFetches.Load(), err)
+	}
+
+	// Two first accepts of one event race through independent PostgreSQL UoWs.
+	// The plan lock and durable source key must converge them on one sealed run
+	// and one EER/intent/execution set, not just return two successful mocks.
+	var concurrentRunsBefore, concurrentIntentsBefore, concurrentExecutionsBefore, concurrentEffectsBefore, concurrentImagesBefore, concurrentMiniProgramsBefore int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_runs WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentRunsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentIntentsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentExecutionsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&concurrentEffectsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_images`).Scan(&concurrentImagesBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_miniprograms`).Scan(&concurrentMiniProgramsBefore); err != nil {
+		t.Fatal(err)
+	}
+	type concurrentAcceptResult struct {
+		summary groupopsport.RunSummary
+		err     error
+	}
+	startConcurrentAccept := make(chan struct{})
+	concurrentResults := make(chan concurrentAcceptResult, 2)
+	concurrentInbound := groupOpsLessonCardInbound("groupops-webhook-pg", "webhook-pg-chat-a")
+	for range 2 {
+		go func() {
+			<-startConcurrentAccept
+			summary, acceptErr := runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-concurrent", concurrentInbound)
+			concurrentResults <- concurrentAcceptResult{summary: summary, err: acceptErr}
+		}()
+	}
+	close(startConcurrentAccept)
+	results := make([]concurrentAcceptResult, 0, 2)
+	for range 2 {
+		select {
+		case result := <-concurrentResults:
+			results = append(results, result)
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent first Webhook accept timed out")
+		}
+	}
+	if results[0].err != nil || results[1].err != nil || results[0].summary.Run.ID < 1 || results[0].summary.Run.ID != results[1].summary.Run.ID {
+		t.Fatalf("concurrent accepts=%+v", results)
+	}
+	var concurrentRunsAfter, concurrentIntentsAfter, concurrentExecutionsAfter, concurrentEffectsAfter, concurrentImagesAfter, concurrentMiniProgramsAfter int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_runs WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentRunsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentIntentsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, detail.Plan.ID).Scan(&concurrentExecutionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&concurrentEffectsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_images`).Scan(&concurrentImagesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_miniprograms`).Scan(&concurrentMiniProgramsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if concurrentRunsAfter != concurrentRunsBefore+1 || concurrentIntentsAfter != concurrentIntentsBefore+1 || concurrentExecutionsAfter != concurrentExecutionsBefore+1 || concurrentEffectsAfter != concurrentEffectsBefore+1 || concurrentImagesAfter != concurrentImagesBefore+1 || concurrentMiniProgramsAfter != concurrentMiniProgramsBefore+1 {
+		t.Fatalf("concurrent event duplicated facts: runs %d/%d intents %d/%d executions %d/%d effects %d/%d images %d/%d miniprograms %d/%d", concurrentRunsBefore, concurrentRunsAfter, concurrentIntentsBefore, concurrentIntentsAfter, concurrentExecutionsBefore, concurrentExecutionsAfter, concurrentEffectsBefore, concurrentEffectsAfter, concurrentImagesBefore, concurrentImagesAfter, concurrentMiniProgramsBefore, concurrentMiniProgramsAfter)
+	}
+
+	// A revision change cannot turn a replay into a second send. Existing runs
+	// are resolved using the descriptor/event source key before active-state
+	// validation, so this works even after the plan is paused.
+	detail, err = service.Pause(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-pause"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-0001", inbound)
+	if err != nil || replayed.Run.ID != first.Run.ID || len(replayed.Executions) != 2 {
+		t.Fatalf("revision replay=%+v err=%v", replayed, err)
+	}
+	changed := inbound
+	changed.Messages = []groupopsport.WebhookMessage{{Type: "text", Text: "different frozen payload"}}
+	if _, err = runtimeService.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-0001", changed); !errors.Is(err, groupopsapp.ErrConflict) {
+		t.Fatalf("same event different payload err=%v", err)
+	}
+
+	// 0155 marks legacy protocol rows version 1. They deliberately remain a
+	// conflict after upgrade, even if every digest matches, rather than being
+	// reinterpreted as a v2 dynamic Webhook event.
+	legacyEvent := sha256.Sum256([]byte("legacy-webhook-event"))
+	legacyPayload := sha256.Sum256([]byte("legacy-webhook-body"))
+	if _, err = native.Exec(ctx, `INSERT INTO group_ops_protocol_replays(client_id,resource_reference,event_id_digest,payload_digest,created_at) VALUES($1,$2,$3,$4,clock_timestamp())`, groupopsport.WebhookClientID, "groupops-webhook-pg", legacyEvent[:], legacyPayload[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = groupStore.ClaimWebhookReplay(ctx, groupopsport.WebhookClientID, "groupops-webhook-pg", legacyEvent, legacyPayload, time.Now().UTC()); !errors.Is(err, groupopsapp.ErrConflict) {
+		t.Fatalf("legacy replay admitted after upgrade err=%v", err)
+	}
+
+	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-webhook-pg-reactivate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runsBefore, intentsBefore, executionsBefore, effectsBefore, effectJobsBefore, riverJobsBefore int
+	var imagesBefore, miniprogramsBefore, mediaReceiptsBefore, mediaAuditBefore, mediaOutboxBefore int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_runs WHERE plan_id=$1`, detail.Plan.ID).Scan(&runsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE plan_id=$1`, detail.Plan.ID).Scan(&intentsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, detail.Plan.ID).Scan(&executionsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effect_jobs`).Scan(&effectJobsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM river_job`).Scan(&riverJobsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_images`).Scan(&imagesBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_miniprograms`).Scan(&miniprogramsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_operation_receipts`).Scan(&mediaReceiptsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_audit_events`).Scan(&mediaAuditBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_outbox`).Scan(&mediaOutboxBefore); err != nil {
+		t.Fatal(err)
+	}
+	failingRuntime := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, failingGroupOpsEffectAccepter{delegate: effectStore}, journeyStaff{}, nil, journeySender{}, nil, nil, materialResolver)
+	failingRuntime.SetDispatchEnabled(true)
+	if _, err = failingRuntime.AcceptWebhook(ctx, "groupops-webhook-pg", "webhook-event-pg-mini-rollback", groupOpsLessonCardInbound("groupops-webhook-pg", "webhook-pg-chat-a")); err == nil {
+		t.Fatal("accepted a dynamic run despite external-effect transaction failure")
+	}
+	var runsAfter, intentsAfter, executionsAfter, effectsAfter, effectJobsAfter, riverJobsAfter int
+	var imagesAfter, miniprogramsAfter, mediaReceiptsAfter, mediaAuditAfter, mediaOutboxAfter int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_runs WHERE plan_id=$1`, detail.Plan.ID).Scan(&runsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents WHERE plan_id=$1`, detail.Plan.ID).Scan(&intentsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, detail.Plan.ID).Scan(&executionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effect_jobs`).Scan(&effectJobsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM river_job`).Scan(&riverJobsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_images`).Scan(&imagesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_miniprograms`).Scan(&miniprogramsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_operation_receipts`).Scan(&mediaReceiptsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_audit_events`).Scan(&mediaAuditAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_outbox`).Scan(&mediaOutboxAfter); err != nil {
+		t.Fatal(err)
+	}
+	if runsAfter != runsBefore || intentsAfter != intentsBefore || executionsAfter != executionsBefore || effectsAfter != effectsBefore || effectJobsAfter != effectJobsBefore || riverJobsAfter != riverJobsBefore || imagesAfter != imagesBefore || miniprogramsAfter != miniprogramsBefore || mediaReceiptsAfter != mediaReceiptsBefore || mediaAuditAfter != mediaAuditBefore || mediaOutboxAfter != mediaOutboxBefore {
+		t.Fatalf("failed EER acceptance leaked facts: runs %d/%d intents %d/%d executions %d/%d effects %d/%d effect_jobs %d/%d river_jobs %d/%d images %d/%d miniprograms %d/%d receipts %d/%d media_audit %d/%d media_outbox %d/%d", runsBefore, runsAfter, intentsBefore, intentsAfter, executionsBefore, executionsAfter, effectsBefore, effectsAfter, effectJobsBefore, effectJobsAfter, riverJobsBefore, riverJobsAfter, imagesBefore, imagesAfter, miniprogramsBefore, miniprogramsAfter, mediaReceiptsBefore, mediaReceiptsAfter, mediaAuditBefore, mediaAuditAfter, mediaOutboxBefore, mediaOutboxAfter)
+	}
+}
 
 // TestGroupOpsPostgreSQLJourney exercises the real owner stores and EER
 // transaction seam. It intentionally uses opaque local group references and
@@ -726,7 +1103,16 @@ func TestGroupOpsSharedRiverMaterialPreparationAutoResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	materials, err := newUnifiedGroupOpsMaterialAdapter(mediaStore, freezer, mediaStore, materialPreparation, scopeDigest)
+	lessonPNG := groupOpsLessonCardPNG(t)
+	var lessonCoverReads atomic.Int32
+	lessonCards := mediaapp.NewWebhookLessonCardResolver(mediaStore, groupOpsLessonCardRoundTripper(func(request *http.Request) (*http.Response, error) {
+		lessonCoverReads.Add(1)
+		if request.Method != http.MethodGet || request.URL.String() != "https://ip.lhbl.com.cn/api/share/lesson-card/11111111-2222-3333-4444-555555555555.png" {
+			return nil, fmt.Errorf("unexpected daily lesson cover request %s %s", request.Method, request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/png"}}, ContentLength: int64(len(lessonPNG)), Body: io.NopCloser(bytes.NewReader(lessonPNG))}, nil
+	}))
+	materials, err := newUnifiedGroupOpsMaterialAdapter(mediaStore, freezer, mediaStore, materialPreparation, scopeDigest, lessonCards)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -851,6 +1237,64 @@ func TestGroupOpsSharedRiverMaterialPreparationAutoResumes(t *testing.T) {
 	}
 	if mediaIDs := provider.mediaIDsByChat()["chat-river-1"]; len(mediaIDs) != 1 || mediaIDs[0] != "runtime-prepared-media-1" {
 		t.Fatalf("group did not use prepared media ID: %+v", provider.mediaIDsByChat())
+	}
+
+	// Exercise the new automatic daily-lesson source through the production
+	// unified Media adapter. The local image/card is accepted with its Group
+	// Ops run, then the existing Material EER prepares its thumbnail and the
+	// original Group EER resumes into a miniprogram pic_media_id request.
+	planService := groupopsapp.NewService(uow, groupStore, staff, groupStore)
+	webhookDetail, err := planService.Create(ctx, groupopsport.CreatePlanCommand{Name: "River daily lesson webhook", Actor: actorID, IdempotencyKey: "groupops-river-webhook-create-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webhookDetail, err = planService.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: webhookDetail.Plan.ID, ExpectedRevision: webhookDetail.Plan.Revision, Name: webhookDetail.Plan.Name, PlanType: groupopsport.PlanTypeWebhook, Actor: actorID, IdempotencyKey: "groupops-river-webhook-type-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webhookDetail, err = planService.AddMember(ctx, groupopsport.MemberCommand{PlanID: webhookDetail.Plan.ID, ExpectedRevision: webhookDetail.Plan.Revision, StaffID: actorID, Actor: actorID, IdempotencyKey: "groupops-river-webhook-member-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webhookDetail, err = planService.AddGroupAsset(ctx, groupopsport.GroupAssetCommand{PlanID: webhookDetail.Plan.ID, ExpectedRevision: webhookDetail.Plan.Revision, AssetRef: "chat-river-1", Actor: actorID, IdempotencyKey: "groupops-river-webhook-group-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webhookDetail, err = planService.PutWebhookDescriptor(ctx, groupopsport.WebhookDescriptorCommand{PlanID: webhookDetail.Plan.ID, ExpectedRevision: webhookDetail.Plan.Revision, Reference: "river-daily-lesson-hook", Actor: actorID, IdempotencyKey: "groupops-river-webhook-descriptor-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webhookDetail, err = planService.Activate(ctx, groupopsport.TransitionCommand{PlanID: webhookDetail.Plan.ID, ExpectedRevision: webhookDetail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-river-webhook-activate-0001"})
+	if err != nil || webhookDetail.Plan.Status != groupopsport.PlanActive || len(webhookDetail.Nodes) != 0 {
+		t.Fatalf("webhook detail=%+v err=%v", webhookDetail, err)
+	}
+	autoSummary, err := runtimeService.AcceptWebhook(ctx, "river-daily-lesson-hook", "river-daily-lesson-event-0001", groupOpsLessonCardInbound("river-daily-lesson-hook", "chat-river-1"))
+	if err != nil || autoSummary.Accepted != 1 || len(autoSummary.Executions) != 1 || lessonCoverReads.Load() != 1 {
+		t.Fatalf("daily lesson acceptance=%+v reads=%d err=%v", autoSummary, lessonCoverReads.Load(), err)
+	}
+	waitGroupOpsProviderCalls(t, native, provider, 2)
+	autoEffectID, parseErr := strconv.ParseInt(autoSummary.Executions[0].ExternalEffectID[len("eer_"):], 10, 64)
+	if parseErr != nil || autoEffectID < 1 {
+		t.Fatalf("daily lesson effect=%q err=%v", autoSummary.Executions[0].ExternalEffectID, parseErr)
+	}
+	completedAuto := false
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		if err = native.QueryRow(ctx, `SELECT state FROM external_effects WHERE id=$1`, autoEffectID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state == "executed" {
+			completedAuto = true
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !completedAuto || provider.uploadCount() != 2 {
+		t.Fatalf("daily lesson effect did not complete; uploads=%d", provider.uploadCount())
+	}
+	if mediaIDs := provider.miniProgramPicMediaIDsByChat()["chat-river-1"]; len(mediaIDs) != 1 || mediaIDs[0] != "runtime-prepared-media-1" {
+		t.Fatalf("daily lesson miniprogram did not use pic_media_id: %+v", provider.miniProgramPicMediaIDsByChat())
 	}
 }
 
@@ -1097,8 +1541,8 @@ type groupOpsRuntimeWeCom struct {
 }
 
 type groupOpsRuntimeWeComCall struct {
-	chat, text, messageID string
-	mediaIDs              []string
+	chat, text, messageID     string
+	mediaIDs, miniPicMediaIDs []string
 }
 
 type groupOpsRuntimeEffectSecurity struct{}
@@ -1133,6 +1577,9 @@ func newGroupOpsRuntimeWeCom(t *testing.T) *groupOpsRuntimeWeCom {
 					Image       struct {
 						MediaID string `json:"media_id"`
 					} `json:"image"`
+					MiniProgram struct {
+						PicMediaID string `json:"pic_media_id"`
+					} `json:"miniprogram"`
 				} `json:"attachments"`
 			}
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.ChatType != "group" || body.Sender != "journey-sender" || len(body.ChatIDs) != 1 || (body.ChatIDs[0] != "chat-river-1" && body.ChatIDs[0] != "chat-river-2") {
@@ -1141,14 +1588,18 @@ func newGroupOpsRuntimeWeCom(t *testing.T) *groupOpsRuntimeWeCom {
 				return
 			}
 			mediaIDs := make([]string, 0, len(body.Attachments))
+			miniPicMediaIDs := make([]string, 0, len(body.Attachments))
 			for _, attachment := range body.Attachments {
 				if attachment.MessageType == "image" && attachment.Image.MediaID != "" {
 					mediaIDs = append(mediaIDs, attachment.Image.MediaID)
 				}
+				if attachment.MessageType == "miniprogram" && attachment.MiniProgram.PicMediaID != "" {
+					miniPicMediaIDs = append(miniPicMediaIDs, attachment.MiniProgram.PicMediaID)
+				}
 			}
 			fixture.mu.Lock()
 			messageID := "runtime-task-" + strconv.Itoa(len(fixture.calls)+1)
-			fixture.calls = append(fixture.calls, groupOpsRuntimeWeComCall{chat: body.ChatIDs[0], text: body.Text.Content, messageID: messageID, mediaIDs: mediaIDs})
+			fixture.calls = append(fixture.calls, groupOpsRuntimeWeComCall{chat: body.ChatIDs[0], text: body.Text.Content, messageID: messageID, mediaIDs: mediaIDs, miniPicMediaIDs: miniPicMediaIDs})
 			fixture.mu.Unlock()
 			if body.Text.Content == "provider result intentionally unknown" {
 				connection, _, hijackErr := writer.(http.Hijacker).Hijack()
@@ -1274,6 +1725,16 @@ func (fixture *groupOpsRuntimeWeCom) mediaIDsByChat() map[string][]string {
 	items := make(map[string][]string)
 	for _, call := range fixture.calls {
 		items[call.chat] = append(items[call.chat], call.mediaIDs...)
+	}
+	return items
+}
+
+func (fixture *groupOpsRuntimeWeCom) miniProgramPicMediaIDsByChat() map[string][]string {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	items := make(map[string][]string)
+	for _, call := range fixture.calls {
+		items[call.chat] = append(items[call.chat], call.miniPicMediaIDs...)
 	}
 	return items
 }
@@ -1632,7 +2093,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0036_ai_assistant_review.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql", "0119_group_ops_unnamed_groups.sql", "0120_excel_batches.sql", "0124_operation_excel_batch_lifecycle.sql", "0125_outbound_material_preparation.sql", "0126_media_material_source_snapshots.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0036_ai_assistant_review.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0101_group_ops_ui_metadata.sql", "0116_group_ops_operation_member_directory.sql", "0119_group_ops_unnamed_groups.sql", "0120_excel_batches.sql", "0124_operation_excel_batch_lifecycle.sql", "0125_outbound_material_preparation.sql", "0126_media_material_source_snapshots.sql", "0155_group_ops_webhook_dynamic_executions.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

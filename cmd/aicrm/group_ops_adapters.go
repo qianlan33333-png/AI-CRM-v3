@@ -401,11 +401,12 @@ var _ groupopsport.ExternalReconciler = groupOpsExternalReconciler{}
 // only the frozen JSON snapshot and its digest. In particular, this adapter
 // does not derive a digest from a kind/id pair or reopen a mutable package.
 type groupOpsMaterialAdapter struct {
-	capturer    mediaport.GroupOpsMaterialSourceCapturer
-	freezer     mediaport.GroupOpsMaterialSnapshotFreezer
-	sources     outboundport.MaterialSourceReader
-	preparer    outboundport.MaterialPreparer
-	scopeDigest string
+	capturer            mediaport.GroupOpsMaterialSourceCapturer
+	freezer             mediaport.GroupOpsMaterialSnapshotFreezer
+	sources             outboundport.MaterialSourceReader
+	preparer            outboundport.MaterialPreparer
+	scopeDigest         string
+	webhookMiniPrograms mediaport.WebhookMiniProgramResolver
 }
 
 // groupOpsMaterialReadinessAdapter repeats Media's capture/read boundary
@@ -628,24 +629,46 @@ func groupOpsMaterialIntentSnapshot(sources mediaport.GroupOpsMaterialSourceSnap
 
 var _ groupopsport.MaterialSnapshotResolver = groupOpsMaterialAdapter{}
 var _ groupopsport.MaterialIntentSnapshotResolver = groupOpsMaterialAdapter{}
+var _ mediaport.WebhookMiniProgramResolver = groupOpsMaterialAdapter{}
 
-func newGroupOpsMaterialAdapter(capturer mediaport.GroupOpsMaterialSourceCapturer, freezer mediaport.GroupOpsMaterialSnapshotFreezer) (groupopsport.MaterialSnapshotResolver, error) {
+func (adapter groupOpsMaterialAdapter) PrepareWebhookMiniProgram(ctx context.Context, request mediaport.WebhookMiniProgramRequest) (mediaport.PreparedWebhookMiniProgram, error) {
+	if adapter.webhookMiniPrograms == nil {
+		return mediaport.PreparedWebhookMiniProgram{}, mediaport.ErrWebhookMiniProgramUnavailable
+	}
+	return adapter.webhookMiniPrograms.PrepareWebhookMiniProgram(ctx, request)
+}
+
+func (adapter groupOpsMaterialAdapter) MaterializeWebhookMiniProgramWithin(ctx context.Context, prepared mediaport.PreparedWebhookMiniProgram, command mediaport.WebhookMiniProgramMaterialization) (mediaport.GroupOpsMaterialReference, error) {
+	if adapter.webhookMiniPrograms == nil {
+		return mediaport.GroupOpsMaterialReference{}, mediaport.ErrWebhookMiniProgramUnavailable
+	}
+	return adapter.webhookMiniPrograms.MaterializeWebhookMiniProgramWithin(ctx, prepared, command)
+}
+
+func newGroupOpsMaterialAdapter(capturer mediaport.GroupOpsMaterialSourceCapturer, freezer mediaport.GroupOpsMaterialSnapshotFreezer, webhookMiniPrograms ...mediaport.WebhookMiniProgramResolver) (groupopsport.MaterialSnapshotResolver, error) {
 	if capturer == nil || freezer == nil {
 		return nil, errors.New("Media Group Ops material ports are unavailable")
 	}
-	return groupOpsMaterialAdapter{capturer: capturer, freezer: freezer}, nil
+	adapter := groupOpsMaterialAdapter{capturer: capturer, freezer: freezer}
+	if len(webhookMiniPrograms) > 0 {
+		adapter.webhookMiniPrograms = webhookMiniPrograms[0]
+	}
+	return adapter, nil
 }
 
-func newUnifiedGroupOpsMaterialAdapter(capturer mediaport.GroupOpsMaterialSourceCapturer, freezer mediaport.GroupOpsMaterialSnapshotFreezer, sources outboundport.MaterialSourceReader, preparer outboundport.MaterialPreparer, scopeDigest string) (groupopsport.MaterialSnapshotResolver, error) {
+func newUnifiedGroupOpsMaterialAdapter(capturer mediaport.GroupOpsMaterialSourceCapturer, freezer mediaport.GroupOpsMaterialSnapshotFreezer, sources outboundport.MaterialSourceReader, preparer outboundport.MaterialPreparer, scopeDigest string, webhookMiniPrograms ...mediaport.WebhookMiniProgramResolver) (groupopsport.MaterialSnapshotResolver, error) {
 	if sources == nil || preparer == nil || !effectport.ValidDigest(effectport.Digest(scopeDigest)) {
 		return nil, errors.New("Outbound Group Ops material preparation ports are unavailable")
 	}
-	base, err := newGroupOpsMaterialAdapter(capturer, freezer)
+	base, err := newGroupOpsMaterialAdapter(capturer, freezer, webhookMiniPrograms...)
 	if err != nil {
 		return nil, err
 	}
 	adapter := base.(groupOpsMaterialAdapter)
 	adapter.sources, adapter.preparer, adapter.scopeDigest = sources, preparer, scopeDigest
+	if len(webhookMiniPrograms) > 0 {
+		adapter.webhookMiniPrograms = webhookMiniPrograms[0]
+	}
 	return adapter, nil
 }
 

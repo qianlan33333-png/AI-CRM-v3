@@ -2823,8 +2823,9 @@ paths:
       operationId: acceptGroupOpsWebhook
       tags: [GroupOps]
       security: [{groupOpsWebhook: []}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
-      responses: {"202": {description: Durable local run/EER intent accepted after HMAC and digest-only replay claim; Provider remains disabled, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRunSummary"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+      description: The signed JSON `webhook_reference` must exactly equal `webhook_key`. Text is optional but, when present, is the first and only text block; following Media IDs retain attachment order. Targets are opaque references from this plan's existing bindings.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsWebhookInboundRequest"}}}}
+      responses: {"202": {description: Durable local run/EER intent accepted after HMAC and global event replay protection; Provider delivery remains a separate state, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRunSummary"}}}}, "400": {$ref: "#/components/responses/GroupOpsWebhookFailure"}, "401": {$ref: "#/components/responses/GroupOpsWebhookFailure"}, "404": {$ref: "#/components/responses/GroupOpsWebhookFailure"}, "409": {$ref: "#/components/responses/GroupOpsWebhookFailure"}, "503": {$ref: "#/components/responses/GroupOpsWebhookFailure"}}
   /admin/automation-agents:
     get:
       operationId: openAutomationAgentsWorkspace
@@ -4138,8 +4139,8 @@ components:
     GroupOpsWebhookKey: {name: webhook_key, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
     GroupOpsWebhookClientID: {name: X-AICRM-Client-Id, in: header, required: true, schema: {type: string, const: aicrm-webhook-group-ops}}
     GroupOpsWebhookTimestamp: {name: X-AICRM-Timestamp, in: header, required: true, schema: {type: string, pattern: "^[0-9]{1,20}$"}}
-    GroupOpsWebhookEventID: {name: X-AICRM-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
-    GroupOpsWebhookSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^[0-9a-fA-F]{64}$"}}
+    GroupOpsWebhookEventID: {name: X-AICRM-Event-Id, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 256, pattern: "^[!-~]{16,256}$"}}
+    GroupOpsWebhookSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^(sha256=)?[0-9a-f]{64}$"}}
     OrderReference: {name: order_ref, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
     AutomationOpsGroupID: {name: group_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     AutomationOpsPackageID: {name: package_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -4166,6 +4167,7 @@ components:
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
+    GroupOpsWebhookFailure: {description: Group Ops Webhook failure envelope; `error.code` is the stable caller-visible code and the two safety fields never prove a provider write or delivery., content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsWebhookError"}}}}
     OpenPlatformOAuthFailure:
       description: OAuth client-credential failure. `invalid_source_ip` and `https_required` are emitted before OAuth Basic authentication; all other listed OAuth failures use the same JSON shape.
       content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformOAuthError"}}}
@@ -5859,6 +5861,7 @@ components:
       additionalProperties: false
       required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at, owner]
       properties:
+        plan_type: {type: string, enum: [standard, webhook]}
         plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
         name: {type: string, minLength: 1, maxLength: 128}
         status: {$ref: "#/components/schemas/GroupOpsPlanStatus"}
@@ -6101,7 +6104,7 @@ components:
         run_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
         plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
         plan_revision: {type: integer, minimum: 1}
-        node_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        node_id: {type: string, pattern: "^(0|[1-9][0-9]{0,18})$", description: "`0` is the API sentinel for a dynamic Webhook execution, whose database node_id is NULL; positive values identify standard-plan nodes."}
         node_position: {type: integer, minimum: 1}
         target_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
         target_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
@@ -6123,7 +6126,7 @@ components:
       required: [intent_id, node_id, node_position, target_reference, scheduled_for, state, manual_blocker]
       properties:
         intent_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
-        node_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        node_id: {type: string, pattern: "^(0|[1-9][0-9]{0,18})$", description: "`0` is the API sentinel for a dynamic Webhook intent, whose database node_id is NULL."}
         node_position: {type: integer, minimum: 1}
         target_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
         scheduled_for: {type: string, format: date-time}
@@ -6210,7 +6213,7 @@ components:
       type: object
       additionalProperties: false
       required: [expected_revision, name]
-      properties: {expected_revision: {type: integer, minimum: 1}, name: {type: string, minLength: 1, maxLength: 128}}
+      properties: {expected_revision: {type: integer, minimum: 1}, name: {type: string, minLength: 1, maxLength: 128}, plan_type: {type: string, enum: [standard, webhook]}, owner_staff_id: {$ref: "#/components/schemas/PositiveID"}}
     GroupOpsRevisionRequest:
       type: object
       additionalProperties: false
@@ -6258,6 +6261,68 @@ components:
       additionalProperties: false
       required: [plan_id]
       properties: {plan_id: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsWebhookInboundRequest:
+      type: object
+      additionalProperties: false
+      required: [webhook_reference, target_chat_references, messages]
+      properties:
+        webhook_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$", description: "Must equal the final opaque segment in the signed request URL."}
+        target_chat_references: {type: array, minItems: 1, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
+        messages: {type: array, minItems: 1, maxItems: 10, items: {$ref: "#/components/schemas/GroupOpsWebhookMessage"}}
+    GroupOpsWebhookMessage:
+      oneOf:
+        - {$ref: "#/components/schemas/GroupOpsWebhookTextMessage"}
+        - {$ref: "#/components/schemas/GroupOpsWebhookImageMessage"}
+        - {$ref: "#/components/schemas/GroupOpsWebhookFileMessage"}
+        - {$ref: "#/components/schemas/GroupOpsWebhookMiniProgramMessage"}
+    GroupOpsWebhookTextMessage:
+      type: object
+      additionalProperties: false
+      required: [type, text]
+      properties: {type: {const: text}, text: {type: string, minLength: 1, maxLength: 1000, description: "UTF-8 text without surrounding whitespace or a NUL code point; ordinary newlines and tabs are allowed."}}
+    GroupOpsWebhookImageMessage:
+      type: object
+      additionalProperties: false
+      required: [type, image_id]
+      properties: {type: {const: image}, image_id: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsWebhookFileMessage:
+      type: object
+      additionalProperties: false
+      required: [type, attachment_id]
+      properties: {type: {const: file}, attachment_id: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsWebhookMiniProgramMessage:
+      oneOf:
+        - {$ref: "#/components/schemas/GroupOpsWebhookDailyLessonMiniProgramMessage"}
+        - {$ref: "#/components/schemas/GroupOpsWebhookStoredMiniProgramMessage"}
+    GroupOpsWebhookDailyLessonMiniProgramMessage:
+      type: object
+      additionalProperties: false
+      required: [type, appid, path, title]
+      properties:
+        type: {const: miniprogram}
+        appid: {type: string, const: wx0ca836834b18e989, description: "The only AppID with automatic cover resolution."}
+        path: {type: string, pattern: '^pages/article/article\\?lesson_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}&from=learn$', description: "Only this daily-lesson path form has automatic cover resolution."}
+        title: {type: string, minLength: 1, maxLength: 64, description: "At most 64 UTF-8 bytes; control characters and leading or trailing whitespace are rejected."}
+    GroupOpsWebhookStoredMiniProgramMessage:
+      type: object
+      additionalProperties: false
+      required: [type, miniprogram_id]
+      properties:
+        type: {const: miniprogram}
+        miniprogram_id: {$ref: "#/components/schemas/PositiveID", description: "An enabled local Media miniprogram created through the admin miniprogram library."}
+    GroupOpsWebhookError:
+      type: object
+      additionalProperties: false
+      required: [ok, error, provider_execution_eligible, real_external_call_executed]
+      properties:
+        ok: {const: false}
+        error:
+          type: object
+          additionalProperties: false
+          required: [code]
+          properties: {code: {type: string, minLength: 1, maxLength: 128}}
+        provider_execution_eligible: {const: false}
+        real_external_call_executed: {const: false}
     GroupOpsReconcileRequest:
       type: object
       additionalProperties: false
@@ -6295,7 +6360,7 @@ components:
       properties: {id: {$ref: "#/components/schemas/PositiveID"}, resource_id: {$ref: "#/components/schemas/PositiveID"}, file_name: {type: string}, name: {type: string}, description: {type: string}, tags: {type: array, items: {type: string}}, category: {type: string}, mime_type: {type: string}, content_type: {type: string}, file_size: {type: integer}, width: {type: integer}, height: {type: integer}, enabled: {type: boolean}, source: {const: upload}, source_url: {type: string}, thumb_media_id: {type: string}, thumb_media_id_expires_at: {type: string}, ai_metadata: {type: object}, thumb_160_url: {type: string}, thumb_320_url: {type: string}, thumb_url: {type: string}, preview_url: {type: string}, mobile_1080_url: {type: string}, large_1440_url: {type: string}, original_url: {type: string}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}, data_url: {type: string}, variant: {type: string, enum: [thumb_160, thumb_320, mobile_1080, large_1440, original]}, variant_url: {type: string}}
     MediaImageEnvelope: {type: object, required: [ok, item, image, item_id, local_only, provider_call_executed, real_external_call_executed], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaImage"}, image: {$ref: "#/components/schemas/MediaImage"}, item_id: {$ref: "#/components/schemas/PositiveID"}, local_only: {const: true}, provider_call_executed: {const: false}, real_external_call_executed: {const: false}}}
     MediaImageUploadItem: {type: object, required: [id, file_name, name, description, tags, category, mime_type, file_size, width, height, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, file_name: {type: string}, name: {type: string}, description: {type: string}, tags: {type: string}, category: {type: string}, mime_type: {type: string, enum: [image/png, image/jpeg, image/gif]}, file_size: {type: integer, minimum: 1, maximum: 10485760}, width: {type: integer, minimum: 1, maximum: 10000}, height: {type: integer, minimum: 1, maximum: 10000}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}}}
-    MediaImageUploadEnvelope: {type: object, required: [ok, item, source_status, route_owner, fallback_used, real_external_call_executed, storage_adapter_mode, adapter_mode], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaImageUploadItem"}, source_status: {const: local_upload}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, real_external_call_executed: {const: false}, storage_adapter_mode: {const: postgresql}, adapter_mode: {const: postgresql}}}
+    MediaImageUploadEnvelope: {type: object, required: [ok, item, item_id, source_status, route_owner, fallback_used, real_external_call_executed, storage_adapter_mode, adapter_mode], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaImageUploadItem"}, item_id: {$ref: "#/components/schemas/PositiveID"}, source_status: {const: local_upload}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, real_external_call_executed: {const: false}, storage_adapter_mode: {const: postgresql}, adapter_mode: {const: postgresql}}}
     MediaImageListEnvelope: {type: object, required: [ok, items, images, total, limit, offset, count, has_more, next_offset, source_status, route_owner, fallback_used, local_fact_only, storage_adapter_mode, adapter_mode], properties: {ok: {const: true}, items: {type: array, items: {$ref: "#/components/schemas/MediaImage"}}, images: {type: array, items: {$ref: "#/components/schemas/MediaImage"}}, total: {type: integer}, limit: {type: integer}, offset: {type: integer}, count: {type: integer}, has_more: {type: boolean}, next_offset: {type: [integer, "null"]}, source_status: {const: next_media_library}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, local_fact_only: {const: true}, storage_adapter_mode: {const: postgresql}, adapter_mode: {const: postgresql}}}
     MediaImageFacetsEnvelope: {type: object, required: [ok, categories, tags, items], properties: {ok: {const: true}, categories: {type: array, items: {type: string}}, tags: {type: array, items: {type: string}}, items: {type: array, items: {type: string}}}}
     MediaAttachment: {type: object, required: [id, resource_id, file_name, name, tags, mime_type, file_size, enabled, version, created_by, updated_by, created_at, updated_at, download_url], properties: {id: {$ref: "#/components/schemas/PositiveID"}, resource_id: {$ref: "#/components/schemas/PositiveID"}, file_name: {type: string}, name: {type: string}, description: {type: string}, tags: {type: array, items: {type: string}}, mime_type: {type: string}, file_size: {type: integer}, enabled: {type: boolean}, version: {type: integer}, created_by: {$ref: "#/components/schemas/PositiveID"}, updated_by: {$ref: "#/components/schemas/PositiveID"}, download_url: {type: string}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}}}

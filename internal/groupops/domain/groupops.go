@@ -19,6 +19,7 @@ var (
 	ErrInvalidDetail   = errors.New("invalid Group Ops plan detail")
 	ErrInvalidNode     = errors.New("invalid Group Ops node")
 	ErrInvalidMaterial = errors.New("invalid Group Ops material plan")
+	ErrInvalidWebhook  = errors.New("invalid Group Ops webhook message")
 	ErrInvalidScope    = errors.New("Group Ops payload contains excluded scope")
 )
 
@@ -31,7 +32,7 @@ const (
 // ValidatePlan checks persisted plan metadata without silently normalizing it.
 func ValidatePlan(value groupopsport.Plan) error {
 	if value.ID < 1 || !ValidText(value.Name, MaxNameLength) || !validStatus(value.Status) || value.Revision < 1 ||
-		value.CreatedBy < 1 || value.UpdatedBy < 1 || value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) {
+		!validPlanType(value.Type) || value.CreatedBy < 1 || value.UpdatedBy < 1 || value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) {
 		return ErrInvalidPlan
 	}
 	return nil
@@ -81,6 +82,87 @@ func ValidateMaterialPlan(value groupopsport.MaterialPlan) error {
 		}
 	}
 	return nil
+}
+
+// ValidateWebhookInbound keeps the public dynamic-message shape independent
+// of HTTP while preserving the provider capability we actually have: one
+// optional leading text block and up to nine ordered attachments.
+func ValidateWebhookInbound(value groupopsport.WebhookInboundCommand) error {
+	if !ValidOpaque(value.WebhookReference) || len(value.TargetChatReferences) == 0 || len(value.Messages) == 0 || len(value.Messages) > MaxMaterials+1 {
+		return ErrInvalidWebhook
+	}
+	targets := make(map[string]struct{}, len(value.TargetChatReferences))
+	for _, target := range value.TargetChatReferences {
+		if !ValidOpaque(target) {
+			return ErrInvalidWebhook
+		}
+		if _, exists := targets[target]; exists {
+			return ErrInvalidWebhook
+		}
+		targets[target] = struct{}{}
+	}
+	attachments := 0
+	miniPrograms := 0
+	for index, message := range value.Messages {
+		switch message.Type {
+		case "text":
+			if index != 0 || !validWebhookText(message.Text) || message.AppID != "" || message.Path != "" || message.Title != "" || message.MiniProgramID != 0 || message.ImageID != 0 || message.AttachmentID != 0 {
+				return ErrInvalidWebhook
+			}
+		case "image":
+			attachments++
+			if message.ImageID < 1 || message.Text != "" || message.AppID != "" || message.Path != "" || message.Title != "" || message.MiniProgramID != 0 || message.AttachmentID != 0 {
+				return ErrInvalidWebhook
+			}
+		case "file":
+			attachments++
+			if message.AttachmentID < 1 || message.Text != "" || message.AppID != "" || message.Path != "" || message.Title != "" || message.MiniProgramID != 0 || message.ImageID != 0 {
+				return ErrInvalidWebhook
+			}
+		case "miniprogram":
+			attachments++
+			miniPrograms++
+			if message.Text != "" || message.ImageID != 0 || message.AttachmentID != 0 {
+				return ErrInvalidWebhook
+			}
+			if message.MiniProgramID != 0 {
+				if message.MiniProgramID < 1 || message.AppID != "" || message.Path != "" || message.Title != "" {
+					return ErrInvalidWebhook
+				}
+			} else if !ValidText(message.AppID, 128) || !ValidText(message.Path, 1024) || !validWebhookMiniProgramTitle(message.Title) {
+				return ErrInvalidWebhook
+			}
+		default:
+			return ErrInvalidWebhook
+		}
+	}
+	if attachments > MaxMaterials || miniPrograms > 1 {
+		return ErrInvalidWebhook
+	}
+	return nil
+}
+
+// Webhook text is persisted in JSONB. PostgreSQL rejects a NUL code point in
+// JSON strings, so reject it at the strict inbound boundary rather than
+// accepting the request and later returning a persistence failure. Ordinary
+// newlines and tabs remain valid message content.
+func validWebhookText(value string) bool {
+	return ValidText(value, MaxMessageLength) && !strings.ContainsRune(value, '\x00')
+}
+
+// WeCom applies its mini-program title bound in UTF-8 bytes. Keeping that
+// exact bound at inbound validation prevents a Chinese title from passing a
+// rune-count check only to fail after the command has been accepted.
+func validWebhookMiniProgramTitle(value string) bool {
+	if !ValidText(value, 64) || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateNode enforces the draft node shape. Legacy free-form material
@@ -180,6 +262,13 @@ func ValidOpaque(value string) bool {
 
 func validStatus(value groupopsport.PlanStatus) bool {
 	return value == groupopsport.PlanDraft || value == groupopsport.PlanActive || value == groupopsport.PlanPaused || value == groupopsport.PlanArchived
+}
+
+func validPlanType(value string) bool {
+	// The empty value is the immutable storage representation of standard
+	// plans created before the explicit type was added. It must keep its
+	// existing standard-node validation rather than becoming a node-free plan.
+	return value == "" || value == groupopsport.PlanTypeStandard || value == groupopsport.PlanTypeWebhook
 }
 
 func validMembers(items []groupopsport.Member) bool {
