@@ -2147,6 +2147,89 @@ func (client *Client) ListEnterpriseEmployees(ctx context.Context) ([]wecomport.
 	return nil, classifyDirectoryReadError(ErrUnavailable)
 }
 
+// EnterpriseDirectoryPreflight exposes only safe aggregate evidence for an
+// operator-run, read-only release gate. It retains all provider identifiers,
+// names, tokens, responses and errors inside the adapter.
+type EnterpriseDirectoryPreflight struct {
+	Complete                bool   `json:"complete"`
+	FailureStage            string `json:"failure_stage,omitempty"`
+	ScopeUsers              int    `json:"scope_user_count"`
+	ScopeDepartments        int    `json:"scope_department_count"`
+	DirectoryDepartments    int    `json:"directory_department_count"`
+	DirectoryComponents     int    `json:"directory_component_count"`
+	DepartmentEmployeeCount int    `json:"department_employee_count"`
+	DirectEmployeeCount     int    `json:"direct_employee_count"`
+	EmployeeCount           int    `json:"employee_count"`
+}
+
+// PreflightEnterpriseDirectory proves that the application credential can
+// enumerate its whole visible scope. A non-empty FailureStage is deliberately
+// coarse: it distinguishes configuration, token, scope, and page families
+// without disclosing a Provider error code, response body, or identifier.
+func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) EnterpriseDirectoryPreflight {
+	result := EnterpriseDirectoryPreflight{}
+	if !client.EnterpriseDirectoryReady() {
+		result.FailureStage = "config"
+		return result
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	token, err := client.accessToken(readCtx)
+	if err != nil {
+		result.FailureStage = "token"
+		return result
+	}
+	scope, err := client.enterpriseAgentScope(readCtx, token)
+	if err != nil {
+		result.FailureStage = "agent_scope"
+		return result
+	}
+	result.ScopeUsers = len(scope.userIDs)
+	result.ScopeDepartments = len(scope.departmentIDs)
+	departments, err := client.enterpriseDepartments(readCtx, token)
+	if err != nil {
+		result.FailureStage = "departments"
+		return result
+	}
+	result.DirectoryDepartments = len(departments)
+	knownDepartments := make(map[int64]struct{}, len(departments))
+	for _, department := range departments {
+		knownDepartments[department.id] = struct{}{}
+	}
+	for _, departmentID := range scope.departmentIDs {
+		if _, known := knownDepartments[departmentID]; !known {
+			result.FailureStage = "scope_coverage"
+			return result
+		}
+	}
+	scopes, err := enterpriseDirectoryScopes(departments)
+	if err != nil {
+		result.FailureStage = "department_topology"
+		return result
+	}
+	result.DirectoryComponents = len(scopes)
+	departmentEmployees, err := client.enterpriseMembers(readCtx, token, scopes)
+	if err != nil {
+		result.FailureStage = "department_members"
+		return result
+	}
+	result.DepartmentEmployeeCount = len(departmentEmployees)
+	directEmployees, err := client.enterpriseDirectEmployees(readCtx, token, scope.userIDs)
+	if err != nil {
+		result.FailureStage = "direct_members"
+		return result
+	}
+	result.DirectEmployeeCount = len(directEmployees)
+	employees, err := mergeEnterpriseEmployees(departmentEmployees, directEmployees)
+	if err != nil {
+		result.FailureStage = "merge"
+		return result
+	}
+	result.Complete = true
+	result.EmployeeCount = len(employees)
+	return result
+}
+
 func (client *Client) listEnterpriseEmployees(ctx context.Context, token string) ([]wecomport.EnterpriseEmployee, error) {
 	scope, err := client.enterpriseAgentScope(ctx, token)
 	if err != nil {

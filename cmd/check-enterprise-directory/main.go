@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -20,15 +21,16 @@ func main() {
 	if err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		// Keep the concrete employee values in adapter memory only. The command
-		// reports a count, never IDs, scope envelopes, tokens, or error details.
-		items, listErr := client.ListEnterpriseEmployees(ctx)
-		err = listErr
-		if err == nil {
-			fmt.Printf("{\"complete\":true,\"employee_count\":%d}\n", len(items))
+		// Keep provider values in adapter memory only. This contains aggregates
+		// and a coarse stage name, never IDs, scope envelopes, tokens, errors or
+		// raw provider responses.
+		preflight := client.PreflightEnterpriseDirectory(ctx)
+		encoded, _ := json.Marshal(preflight)
+		fmt.Println(string(encoded))
+		if preflight.Complete {
 			return
 		}
 	}
-	fmt.Println(`{"complete":false,"employee_count":0}`)
+	fmt.Println(`{"complete":false,"failure_stage":"config","scope_user_count":0,"scope_department_count":0,"directory_department_count":0,"directory_component_count":0,"department_employee_count":0,"direct_employee_count":0,"employee_count":0}`)
 	os.Exit(1)
 }

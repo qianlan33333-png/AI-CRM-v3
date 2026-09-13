@@ -58,6 +58,36 @@ func TestEnterpriseDirectoryUsesApplicationVisibleDepartmentReads(t *testing.T) 
 	if listIDCalls != 0 || len(employees) != 2 || employees[0].UserID != "Alice_01" || employees[1].DisplayName != "Bob" {
 		t.Fatalf("list_id_calls=%d employees=%+v", listIDCalls, employees)
 	}
+	preflight := client.PreflightEnterpriseDirectory(context.Background())
+	if !preflight.Complete || preflight.FailureStage != "" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 1 || preflight.DirectoryDepartments != 2 || preflight.DirectoryComponents != 1 || preflight.DepartmentEmployeeCount != 2 || preflight.DirectEmployeeCount != 0 || preflight.EmployeeCount != 2 {
+		t.Fatalf("preflight=%+v", preflight)
+	}
+}
+
+func TestEnterpriseDirectoryPreflightReportsSafeFailureStage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = response.Write([]byte(`{"errcode":0,"access_token":"application-token","expires_in":7200}`))
+		case "/cgi-bin/agent/get":
+			_, _ = response.Write([]byte(`{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":{"tagid":[7]}}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := New(Config{Enabled: true, CorpID: "corp", AgentID: "agent", Secret: "application-secret", AdminCallbackURI: "https://crm.example/auth/wecom/callback", SidebarCallbackURI: "https://crm.example/api/sidebar/oauth/callback", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflight := client.PreflightEnterpriseDirectory(context.Background())
+	if preflight.Complete || preflight.FailureStage != "agent_scope" || preflight.ScopeUsers != 0 || preflight.ScopeDepartments != 0 || preflight.EmployeeCount != 0 {
+		t.Fatalf("preflight=%+v", preflight)
+	}
+	if got := (&Client{}).PreflightEnterpriseDirectory(context.Background()); got.Complete || got.FailureStage != "config" {
+		t.Fatalf("config preflight=%+v", got)
+	}
 }
 
 func TestEnterpriseDirectoryUnknownExactEmployeeIsDistinctFromUnavailable(t *testing.T) {
