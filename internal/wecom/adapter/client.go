@@ -2202,6 +2202,12 @@ func (client *Client) enterpriseAgentScope(ctx context.Context, token string) (e
 	if err != nil {
 		return enterpriseAgentScope{}, err
 	}
+	// A missing scope field differs from the explicit empty/null envelopes the
+	// API uses for "none". It is an unrecognized permission shape and must not
+	// turn into an accidental all-directory read.
+	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 || len(bytes.TrimSpace(payload.AllowTags)) == 0 {
+		return enterpriseAgentScope{}, ErrResponse
+	}
 	if rawJSONHasItems(payload.AllowTags) {
 		return enterpriseAgentScope{}, ErrResponse
 	}
@@ -2237,16 +2243,18 @@ func rawJSONHasItems(raw json.RawMessage) bool {
 
 func enterpriseScopeUserIDs(raw json.RawMessage) ([]string, error) {
 	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+	if bytes.Equal(raw, []byte("null")) {
 		return nil, nil
 	}
-	var envelope struct {
-		Users json.RawMessage `json:"user"`
-	}
+	var envelope map[string]json.RawMessage
 	if json.Unmarshal(raw, &envelope) != nil {
 		return nil, ErrResponse
 	}
-	users := bytes.TrimSpace(envelope.Users)
+	users, exists := envelope["user"]
+	if !exists {
+		return nil, ErrResponse
+	}
+	users = bytes.TrimSpace(users)
 	if len(users) == 0 || bytes.Equal(users, []byte("null")) {
 		return nil, nil
 	}
@@ -2280,17 +2288,23 @@ func normalizeEnterpriseScopeUserIDs(values []string) ([]string, error) {
 
 func enterpriseScopeDepartmentIDs(raw json.RawMessage) ([]int64, error) {
 	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+	if bytes.Equal(raw, []byte("null")) {
 		return nil, nil
 	}
-	var envelope struct {
-		Departments []int64 `json:"partyid"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil || len(envelope.Departments) > 500 {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(raw, &envelope) != nil {
 		return nil, ErrResponse
 	}
-	seen := make(map[int64]struct{}, len(envelope.Departments))
-	for _, departmentID := range envelope.Departments {
+	parties, exists := envelope["partyid"]
+	if !exists {
+		return nil, ErrResponse
+	}
+	var departmentIDs []int64
+	if json.Unmarshal(parties, &departmentIDs) != nil || len(departmentIDs) > 500 {
+		return nil, ErrResponse
+	}
+	seen := make(map[int64]struct{}, len(departmentIDs))
+	for _, departmentID := range departmentIDs {
 		if departmentID < 1 {
 			return nil, ErrResponse
 		}

@@ -189,8 +189,9 @@ func TestEnterpriseDirectoryMergesExplicitApplicationUsersOutsideDepartments(t *
 
 func TestEnterpriseDirectoryRejectsTagOnlyOrIncompleteDepartmentScope(t *testing.T) {
 	for name, agentResponse := range map[string]string{
-		"tag":                `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":{"tagid":[7]}}`,
-		"missing_department": `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[9]},"allow_tags":null}`,
+		"tag":                 `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[1]},"allow_tags":{"tagid":[7]}}`,
+		"missing_department":  `{"errcode":0,"allow_userinfos":{"user":[]},"allow_partys":{"partyid":[9]},"allow_tags":null}`,
+		"unknown_scope_shape": `{"errcode":0,"allow_userinfos":{},"allow_partys":{"partyid":[1]},"allow_tags":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
