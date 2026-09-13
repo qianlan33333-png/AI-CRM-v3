@@ -17,6 +17,7 @@ OneID：不涉及。请求只包含计划已绑定的群稳定引用和 Media �
 3. 只有 Media Adapter 可以从固定来源 https://ip.lhbl.com.cn/api/share/lesson-card/UUID.png 构造读取地址。请求 JSON、计划配置和管理员输入都不能提供来源 URL。
 4. HTTP client 固定 HTTPS host、禁止 redirect、有界 timeout，并以 LimitReader(MaxImageBytes+1) 读取。只接受 image/png；随后以 image.DecodeConfig 和完整 PNG decode 复用现有 Media 的 10 MiB、单边 10,000、40,000,000 像素限制。
 5. title 的控制字符、首尾空白或超长在 HTTP 严格 JSON 形状校验中返回 400 invalid_request；其他不匹配 AppID/path 的输入在任何取图前返回 400 miniprogram_cover_unsupported。匹配来源后的读取失败、非 PNG、截断、超限或解码失败返回 503 miniprogram_cover_unavailable。它们都不会创建 run、Media 素材、EER、River job 或 Provider 调用。
+6. Webhook text 同样在严格入口拒绝 NUL，以免 PostgreSQL JSONB 在接受事务中才拒绝；正常换行和 Tab 仍可用于话术。
 
 来源依据是旧服 release 41f80a11835445c034fdd39f69a6b6712722bb98 的 aicrm_next/automation/automation_engine/group_ops/broadcast.py 第 40 至 99 行及 aicrm_next/channels/integration_gateway/lesson_card_cover_client.py 第 9 至 48 行。旧服仅是只读叶子协议供体，不是 V3 运行时依赖。
 

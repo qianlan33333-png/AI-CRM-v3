@@ -59,6 +59,7 @@ func TestWebhookInboundAllowsOnlyLeadingTextThenOrderedAttachments(t *testing.T)
 	for _, invalid := range []groupopsport.WebhookInboundCommand{
 		{WebhookReference: valid.WebhookReference, TargetChatReferences: valid.TargetChatReferences, Messages: []groupopsport.WebhookMessage{{Type: "image", ImageID: 7}, {Type: "text", Text: "too late"}}},
 		{WebhookReference: valid.WebhookReference, TargetChatReferences: valid.TargetChatReferences, Messages: []groupopsport.WebhookMessage{{Type: "text", Text: "one"}, {Type: "text", Text: "two"}}},
+		{WebhookReference: valid.WebhookReference, TargetChatReferences: valid.TargetChatReferences, Messages: []groupopsport.WebhookMessage{{Type: "text", Text: "has\x00nul"}}},
 		{WebhookReference: valid.WebhookReference, TargetChatReferences: []string{"bound-chat-a", "bound-chat-a"}, Messages: []groupopsport.WebhookMessage{{Type: "text", Text: "duplicate target"}}},
 		{WebhookReference: valid.WebhookReference, TargetChatReferences: valid.TargetChatReferences, Messages: []groupopsport.WebhookMessage{{Type: "image", ImageID: 7, Text: "mixed fields"}}},
 		{WebhookReference: valid.WebhookReference, TargetChatReferences: valid.TargetChatReferences, Messages: []groupopsport.WebhookMessage{{Type: "miniprogram", AppID: "wx-course", Path: "pages/course/index", Title: strings.Repeat("中", 22)}}},

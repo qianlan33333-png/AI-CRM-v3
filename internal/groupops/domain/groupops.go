@@ -106,7 +106,7 @@ func ValidateWebhookInbound(value groupopsport.WebhookInboundCommand) error {
 	for index, message := range value.Messages {
 		switch message.Type {
 		case "text":
-			if index != 0 || !ValidText(message.Text, MaxMessageLength) || message.AppID != "" || message.Path != "" || message.Title != "" || message.MiniProgramID != 0 || message.ImageID != 0 || message.AttachmentID != 0 {
+			if index != 0 || !validWebhookText(message.Text) || message.AppID != "" || message.Path != "" || message.Title != "" || message.MiniProgramID != 0 || message.ImageID != 0 || message.AttachmentID != 0 {
 				return ErrInvalidWebhook
 			}
 		case "image":
@@ -140,6 +140,14 @@ func ValidateWebhookInbound(value groupopsport.WebhookInboundCommand) error {
 		return ErrInvalidWebhook
 	}
 	return nil
+}
+
+// Webhook text is persisted in JSONB. PostgreSQL rejects a NUL code point in
+// JSON strings, so reject it at the strict inbound boundary rather than
+// accepting the request and later returning a persistence failure. Ordinary
+// newlines and tabs remain valid message content.
+func validWebhookText(value string) bool {
+	return ValidText(value, MaxMessageLength) && !strings.ContainsRune(value, '\x00')
 }
 
 // WeCom applies its mini-program title bound in UTF-8 bytes. Keeping that

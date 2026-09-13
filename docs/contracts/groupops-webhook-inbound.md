@@ -67,7 +67,7 @@ POST https://www.youcangogogo.com/api/automation/group-ops/webhooks/groupops-46d
 
 - `webhook_reference` 必填，且必须严格等于 URL 最后一个片段；它也在被签名的 JSON 内。
 - `target_chat_references` 至少一个，不允许重复；每个值都必须属于该计划的绑定群。
-- `messages` 至少一个、最多十个。`text` 最多一个且只能放第一个；其余最多九个附件按数组顺序发送。
+- `messages` 至少一个、最多十个。`text` 最多一个且只能放第一个；其余最多九个附件按数组顺序发送。文字不能含 NUL；普通换行和 Tab 可以保留。
 - `image_id`、`attachment_id` 是 JSON **数字**，不是字符串。
 - 未支持 `url`、`media_id`、原始图片/附件、任意远程下载地址，也不支持把文字放在图片或文件之后。
 

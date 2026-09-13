@@ -599,6 +599,28 @@
       ],
       "reason": "Repair the reviewed Open Platform order refund amount-status contract: known Payment summaries now emit the required known value and the active V3 OpenAPI enum records both contract states; frozen donors remain unchanged.",
       "review_reference": "Root review of the approved refund_amount_status contract and active V3 OpenAPI synchronization"
+    },
+    {
+      "base_commit": "8f19a3155ff162407e83fc2fb7994be24e27715a",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b0e67bb43a4f7a58c53bd267c3df5f0e3b49c0e74e4de39b44f86b3d78a73448",
+          "head_sha256": "9a29718fc7be00d28aee17c513ec658951f62fde5f9a692b496cbdbd4ecd745c"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "8a8b565a5027b25b031d996f10494a25a28aa3944c7331821b8ecb275326b249",
+          "head_sha256": "294b761034c26add248d76a0c407bdc144e67a87717e83bf5d0749efab069c34"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "f52ca008354fbbf02868b4d9d6cb8f46615665c014994a7d2c474cad0628762f",
+          "head_sha256": "f9403ed1bc539f7151e6195697c2e019f11f900f2fd839715d4a8da86d223bde"
+        }
+      ],
+      "reason": "Record the Root-reviewed daily-lesson automatic cover and stored-miniprogram Webhook contract in the active V3 OpenAPI authority; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of the daily-lesson automatic cover Webhook contract and active V3 OpenAPI synchronization"
     }
   ]
 }

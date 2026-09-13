@@ -338,6 +338,12 @@ func TestGroupOpsWebhookDecodesStrictDynamicMessagesBeforeRuntime(t *testing.T) 
 	if response.Code != http.StatusBadRequest || protocols.called || runtime.calls != 1 || !strings.Contains(response.Body.String(), `"invalid_request"`) {
 		t.Fatalf("string miniprogram id status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
 	}
+	request = httptest.NewRequest(http.MethodPost, "/api/automation/group-ops/webhooks/plan-hook", strings.NewReader(`{"webhook_reference":"plan-hook","target_chat_references":["bound-chat"],"messages":[{"type":"text","text":"has\u0000nul"}]}`))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || protocols.called || runtime.calls != 1 || !strings.Contains(response.Body.String(), `"invalid_request"`) {
+		t.Fatalf("NUL text status=%d protocol=%v runtime=%+v body=%s", response.Code, protocols.called, runtime, response.Body.String())
+	}
 }
 
 func TestGroupOpsWebhookReportsMiniProgramCoverFailuresPrecisely(t *testing.T) {
