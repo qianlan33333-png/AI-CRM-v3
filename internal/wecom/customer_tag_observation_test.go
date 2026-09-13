@@ -289,6 +289,9 @@ func TestCustomerTagObservationVersionSerializesInterleavedCompleteReadsPostgreS
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Keep the raw lock-owning transaction fail-safe: t.Fatal below must not
+	// leave the concurrent UnitOfWork blocked while the pool is being closed.
+	defer func() { _ = oldTx.Rollback(context.Background()) }()
 	oldCtx := platformpostgres.BindTransaction(ctx, oldTx)
 	if advanced, advanceErr := advanceCustomerTagObservation(oldCtx, oldTx, fullOlder, "wecom-corp:corp-1", "staff-1", fullRun, at.Add(time.Second)); advanceErr != nil || !advanced {
 		t.Fatalf("full advance=%t err=%v", advanced, advanceErr)
@@ -321,6 +324,8 @@ func TestCustomerTagObservationVersionSerializesInterleavedCompleteReadsPostgreS
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Roll back on every failure path before the test pool is closed.
+	defer func() { _ = refreshTx.Rollback(context.Background()) }()
 	refreshCtx := platformpostgres.BindTransaction(ctx, refreshTx)
 	if advanced, advanceErr := advanceCustomerTagObservation(refreshCtx, refreshTx, refreshOlder, "wecom-corp:corp-1", "staff-1", oldRefreshRun, at.Add(time.Second)); advanceErr != nil || !advanced {
 		t.Fatalf("refresh advance=%t err=%v", advanced, advanceErr)
@@ -406,6 +411,8 @@ func TestCustomerTagObservationReconcileWaitsForRefreshAndKeepsLaterCompleteRead
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Roll back on every failure path before the test pool is closed.
+	defer func() { _ = refreshTx.Rollback(context.Background()) }()
 	refreshCtx := platformpostgres.BindTransaction(ctx, refreshTx)
 	if advanced, advanceErr := advanceCustomerTagObservation(refreshCtx, refreshTx, customerID, "wecom-corp:corp-1", "staff-1", refreshRun, at.Add(time.Minute)); advanceErr != nil || !advanced {
 		t.Fatalf("refresh advance=%t err=%v", advanced, advanceErr)
