@@ -550,10 +550,17 @@ try {
   const assertStaticOpenLayout = async label => {
     const layout = await evaluate(cdp, `(() => {
       const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop}; };
-      const title=document.querySelector('.open-platform-header h1');
-      return {side:box('.side'),stage:box('#stage'),root:box('[data-open-platform-host="v1"]'),header:box('.open-platform-header'),title:box('.open-platform-header h1'),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('.open-platform-header').length,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+      const docs=Boolean(document.querySelector('[data-open-platform-docs="v1"]'));
+      const rootSelector=docs ? '[data-open-platform-docs="v1"]' : '[data-open-platform-host="v1"]';
+      const headerSelector=docs ? '.open-platform-docs-header' : '.open-platform-header';
+      const titleSelector=docs ? '.open-platform-docs-title' : '.open-platform-header h1';
+      const title=document.querySelector(titleSelector);
+      return {docs,side:box('.side'),stage:box('#stage'),root:box(rootSelector),header:box(headerSelector),title:box(titleSelector),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll(headerSelector).length,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
     })()`);
-    if (!layout.side || !layout.stage || !layout.root || !layout.header || !layout.title || !layout.titleText || layout.headers !== 1 || layout.overflow || Math.abs(layout.side.right-layout.stage.left) > 1 || Math.abs(layout.stage.top) > 1 || Math.abs(layout.root.left-layout.stage.left) > 1 || Math.abs(layout.root.top-layout.stage.top) > 1 || Math.abs(layout.header.left-layout.stage.left) > 1 || Math.abs(layout.header.top-layout.stage.top) > 1 || layout.stage.paddingLeft !== "0px" || layout.stage.paddingTop !== "0px" || layout.root.paddingLeft !== "0px" || layout.root.paddingTop !== "0px" || Math.abs(layout.header.right-layout.stage.right) > 1 || layout.header.height < 48) throw new Error(label + " static topbar/sidebar geometry invalid");
+    const commonInvalid = !layout.side || !layout.stage || !layout.root || !layout.header || !layout.title || !layout.titleText || layout.headers !== 1 || layout.overflow || Math.abs(layout.side.right-layout.stage.left) > 1 || Math.abs(layout.stage.top) > 1 || layout.stage.paddingLeft !== "0px" || layout.stage.paddingTop !== "0px" || layout.root.top + 1 < layout.stage.top || layout.root.left + 1 < layout.stage.left || layout.root.right > layout.stage.right + 1 || layout.header.left + 1 < layout.root.left || layout.header.right > layout.root.right + 1 || layout.header.height < 48;
+    if (commonInvalid) throw new Error(label + " static topbar/sidebar geometry invalid");
+    if (layout.docs) return;
+    if (Math.abs(layout.root.left-layout.stage.left) > 1 || Math.abs(layout.root.top-layout.stage.top) > 1 || Math.abs(layout.header.left-layout.stage.left) > 1 || Math.abs(layout.header.top-layout.stage.top) > 1 || layout.root.paddingLeft !== "0px" || layout.root.paddingTop !== "0px" || Math.abs(layout.header.right-layout.stage.right) > 1) throw new Error(label + " caller management geometry invalid");
   };
   const navigateStaticHost = async (pathname, ready, label) => {
     currentStep = label;
@@ -704,9 +711,26 @@ try {
   currentStep = "api-docs";
   await clickNavigation("/admin/api-docs", "api-docs");
   await waitFor(cdp, "location.pathname === '/admin/apidocs.html' && document.readyState !== 'loading'", "api-docs did not canonicalize to its V3 Host document");
-  // The Host creates its root before its two V1 read requests settle. Do not
-  // turn that loading sentinel into a geometry-ready signal: wait for the
-  // rendered header, its control, and a populated V1 directory.
+  // API docs are the default surface. They must be useful before the
+  // super-admin-only management requests are made.
+  await waitFor(cdp, `(() => {
+    const root=document.querySelector('[data-open-platform-docs="v1"]');
+    const title=root?.querySelector('.open-platform-docs-title');
+    const management=root?.querySelector('button[data-open-platform-action="密钥管理"]');
+    const rows=root?.querySelectorAll('#operations tbody tr') || [];
+    return Boolean(root && title?.textContent?.trim() === 'AI-CRM 外部只读 API v1' && management && rows.length === 11);
+  })()`, "api-docs default document did not become ready");
+  await waitForFonts("api-docs");
+  await recordGeometry("api-docs", () => assertStaticOpenLayout("api-docs"), true);
+  const managementOpened = await evaluate(cdp, `(() => {
+    const button=document.querySelector('[data-open-platform-docs="v1"] button[data-open-platform-action="密钥管理"]');
+    if (!(button instanceof HTMLButtonElement)) return false;
+    button.click();
+    return true;
+  })()`);
+  if (!managementOpened) throw new Error("api-docs visible key-management entry was unavailable");
+  // Keep the prior caller-management readiness assertion after the explicit
+  // user transition so this geometry journey still covers the old controls.
   await waitFor(cdp, `(() => {
     const root=document.querySelector('[data-open-platform-host="v1"]');
     const title=root?.querySelector('.open-platform-header h1');
@@ -714,9 +738,8 @@ try {
     const catalog=Array.from(root?.querySelectorAll('.open-platform-catalog') || []).find(node => node.querySelector('h2')?.textContent?.trim() === 'V1 能力目录');
     const rows=catalog?.querySelectorAll('tbody tr') || [];
     return Boolean(root && title?.textContent?.trim() === '开放平台调用方' && refresh && rows.length > 0);
-  })()`, "api-docs V1 header, control, and directory did not become ready");
-  await waitForFonts("api-docs");
-  await recordGeometry("api-docs", () => assertStaticOpenLayout("api-docs"), true);
+  })()`, "api-docs key management did not become ready");
+  await assertStaticOpenLayout("api-docs-key-management");
 
   // Detail and frozen aliases remain on their business Host, including the
   // order history panel whose source mapping is independently seeded below.
