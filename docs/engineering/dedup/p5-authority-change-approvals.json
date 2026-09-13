@@ -489,6 +489,28 @@
       ],
       "reason": "Add the reviewed admin-only Radar visitor-session API contract and rebind its active V3 OpenAPI authority metadata without changing frozen donors.",
       "review_reference": "root review of PR #263 Radar visitor contract"
+    },
+    {
+      "base_commit": "db884d26e749fe3dac820c590ceb19f7e7316ebe",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "e70bf3092c095cfa91a545181f3da6fb5c10f6056930e96acd4d0fac6ff5c19e",
+          "head_sha256": "f83a5600545a7f5af3900d732b4d22a7238eeca9ff3ab5a3f334b8384797d4d2"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "da9fae2bb291a147728208d67f379262de8c01d84f2510cf1f6d9eae9f514561",
+          "head_sha256": "c0114992ec48dc1817d56f247d2ea3fa28c92f1067e3a5dfd5dc8af6ee5875a2"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "a20aa5b0c293b6ffc5646d3d26bc74f570ad55444941947b278999a539b256a5",
+          "head_sha256": "5d3978d07befce5e93d3da07075eddb9a411b110016d66062be2ac9d4c96db26"
+        }
+      ],
+      "reason": "Record the Root-reviewed 2026-09-13 external Open Platform read contract and its active V3 OpenAPI authority synchronization. Frozen donor payloads remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of 2026-09-13 external read OpenAPI contract and manifest synchronization"
     }
   ]
 }
