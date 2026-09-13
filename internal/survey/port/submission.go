@@ -107,8 +107,13 @@ type ExternalSubmissionQuery struct {
 	// SubmittedEndExclusive gives V1 an explicit [start,end) boundary while
 	// retaining the frozen legacy route's inclusive end compatibility.
 	SubmittedEndExclusive bool
-	Limit                 int32
-	Offset                int64
+	// BeforeSubmittedAt and BeforeSubmissionID form a stable descending
+	// (submitted_at,id) keyset boundary for snapshot paging. They must either
+	// both be absent or both be supplied.
+	BeforeSubmittedAt  time.Time
+	BeforeSubmissionID ID
+	Limit              int32
+	Offset             int64
 }
 
 // ExternalSubmission is the unmasked compatibility projection required by the
@@ -123,6 +128,7 @@ type ExternalSubmission struct {
 	HistoricalUnionID     string                     `json:"unionid"`
 	Legacy                bool                       `json:"-"`
 	QuestionnaireSourceID int64                      `json:"questionnaire_id"`
+	DefinitionVersion     int64                      `json:"definition_version"`
 	QuestionnaireTitle    string                     `json:"questionnaire_title"`
 	SubmittedAt           time.Time                  `json:"submitted_at"`
 	FinalTags             json.RawMessage            `json:"final_tags"`

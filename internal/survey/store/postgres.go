@@ -718,7 +718,7 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 	}
 	eligible := `WITH eligible AS (
 		SELECT submission.id AS submission_id,submission_map.source_system,submission_map.source_pk AS source_record_id,projection.historical_unionid,questionnaire_map.source_pk AS questionnaire_source_id,
-			submission.title_snapshot AS questionnaire_title,submission.submitted_at,submission.result_snapshot,TRUE AS legacy
+			submission.definition_version_number AS definition_version,submission.title_snapshot AS questionnaire_title,submission.submitted_at,submission.result_snapshot,TRUE AS legacy
 		FROM survey_submissions submission
 		JOIN survey_legacy_external_projections projection ON projection.submission_id=submission.id
 		JOIN survey_migration_source_map submission_map ON submission_map.target_table='survey_submissions'
@@ -734,7 +734,7 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 		UNION ALL
 		SELECT submission.id AS submission_id,'aicrm_v3'::text AS source_system,submission.id::text AS source_record_id,''::text AS historical_unionid,
 			COALESCE(native_questionnaire_map.source_pk,submission.questionnaire_id::text) AS questionnaire_source_id,
-			submission.title_snapshot AS questionnaire_title,submission.submitted_at,submission.result_snapshot,FALSE AS legacy
+			submission.definition_version_number AS definition_version,submission.title_snapshot AS questionnaire_title,submission.submitted_at,submission.result_snapshot,FALSE AS legacy
 		FROM survey_submissions submission
 		LEFT JOIN LATERAL (
 			SELECT source_pk FROM survey_migration_source_map
@@ -751,6 +751,10 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 		args = append(args, query.SourceRecordID)
 		sourceWhere = append(sourceWhere, "source_record_id=$"+strconv.Itoa(len(args)))
 	}
+	if !query.BeforeSubmittedAt.IsZero() {
+		args = append(args, query.BeforeSubmittedAt.UTC(), int64(query.BeforeSubmissionID))
+		sourceWhere = append(sourceWhere, "(submitted_at,submission_id) < ($"+strconv.Itoa(len(args)-1)+",$"+strconv.Itoa(len(args))+")")
+	}
 	var total int64
 	if err = t.QueryRow(ctx, eligible+` SELECT count(*) FROM eligible WHERE `+strings.Join(sourceWhere, " AND "), args...).Scan(&total); err != nil {
 		return surveyport.ExternalSubmissionPage{}, mapError(err)
@@ -758,7 +762,7 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 	limitPosition := len(args) + 1
 	offsetPosition := len(args) + 2
 	args = append(args, query.Limit, query.Offset)
-	rows, err := t.Query(ctx, eligible+` SELECT submission_id,source_system,source_record_id,historical_unionid,questionnaire_source_id,questionnaire_title,submitted_at,result_snapshot,legacy FROM eligible WHERE `+strings.Join(sourceWhere, " AND ")+` ORDER BY submitted_at DESC,submission_id DESC LIMIT $`+strconv.Itoa(limitPosition)+` OFFSET $`+strconv.Itoa(offsetPosition), args...)
+	rows, err := t.Query(ctx, eligible+` SELECT submission_id,source_system,source_record_id,historical_unionid,questionnaire_source_id,definition_version,questionnaire_title,submitted_at,result_snapshot,legacy FROM eligible WHERE `+strings.Join(sourceWhere, " AND ")+` ORDER BY submitted_at DESC,submission_id DESC LIMIT $`+strconv.Itoa(limitPosition)+` OFFSET $`+strconv.Itoa(offsetPosition), args...)
 	if err != nil {
 		return surveyport.ExternalSubmissionPage{}, mapError(err)
 	}
@@ -771,7 +775,7 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 		var row externalSubmissionRow
 		var questionnaireSource string
 		var result []byte
-		if err = rows.Scan(&row.id, &row.item.SourceSystem, &row.item.SourceRecordID, &row.item.HistoricalUnionID, &questionnaireSource, &row.item.QuestionnaireTitle, &row.item.SubmittedAt, &result, &row.item.Legacy); err != nil {
+		if err = rows.Scan(&row.id, &row.item.SourceSystem, &row.item.SourceRecordID, &row.item.HistoricalUnionID, &questionnaireSource, &row.item.DefinitionVersion, &row.item.QuestionnaireTitle, &row.item.SubmittedAt, &result, &row.item.Legacy); err != nil {
 			rows.Close()
 			return surveyport.ExternalSubmissionPage{}, mapError(err)
 		}

@@ -422,6 +422,7 @@ func (s *SubmissionService) ExternalSubmissions(ctx context.Context, query surve
 func validExternalSubmissionQuery(query surveyport.ExternalSubmissionQuery) bool {
 	if query.CustomerID < 1 || len(query.HistoricalUnionIDs) > 32 || query.QuestionnaireSourceID < 0 || query.Limit < 1 || query.Limit > 500 || query.Offset < 0 ||
 		((query.SourceSystem == "") != (query.SourceRecordID == "") || len(query.SourceSystem) > 200 || len(query.SourceRecordID) > 500) ||
+		(query.BeforeSubmittedAt.IsZero() != (query.BeforeSubmissionID == 0)) || query.BeforeSubmissionID < 0 ||
 		(!query.SubmittedFrom.IsZero() && !query.SubmittedTo.IsZero() && query.SubmittedFrom.After(query.SubmittedTo)) {
 		return false
 	}
