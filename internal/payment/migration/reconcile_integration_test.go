@@ -61,6 +61,24 @@ func TestPostgreSQLHistoricalPaymentVerifierRejectsPerRowDrift(t *testing.T) {
 	if err != nil || matched.Payments != 1 || matched.Refunds != 1 || matched.AmountMinor != 100 || matched.RefundMinor != 40 {
 		t.Fatalf("matched=%+v err=%v", matched, err)
 	}
+	// A legacy ledger can reconcile with no claimed source confirmation. Once a
+	// source does claim one, it must match the immutable persisted fact exactly.
+	confirmed := now
+	payments[0].PaidConfirmedAt = &confirmed
+	if _, err = verifier.VerifyHistorical(ctx, "run-001", []int64{orderID}, payments, refunds); !errors.Is(err, ErrHistoricalReconciliationMismatch) {
+		t.Fatalf("missing persisted confirmation accepted claimed source fact: %v", err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE payments SET paid_confirmed_at=$1 WHERE id=$2`, confirmed, paymentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = verifier.VerifyHistorical(ctx, "run-001", []int64{orderID}, payments, refunds); err != nil {
+		t.Fatalf("exact persisted confirmation rejected: %v", err)
+	}
+	payments[0].PaidConfirmedAt = nil
+	if _, err = verifier.VerifyHistorical(ctx, "run-001", []int64{orderID}, payments, refunds); !errors.Is(err, ErrHistoricalReconciliationMismatch) {
+		t.Fatalf("claimed confirmation cannot disappear from reconciliation: %v", err)
+	}
+	payments[0].PaidConfirmedAt = &confirmed
 
 	for _, status := range []paymentdomain.RefundStatus{paymentdomain.RefundHistoryRequested, paymentdomain.RefundHistoryProcessing, paymentdomain.RefundHistoryFailed, paymentdomain.RefundHistoryClosed} {
 		if _, err = pool.Exec(ctx, `UPDATE payment_refunds SET status=$1 WHERE id=$2`, status, refundID); err != nil {
@@ -145,7 +163,7 @@ func historicalPaymentPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate payment migration test")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql", "0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql", "0144_payment_checkout_restart_permissions.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql", "0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql", "0144_payment_checkout_restart_permissions.sql", "0161_payment_paid_confirmation_time.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

@@ -155,11 +155,16 @@ func (runner Runner) Apply(ctx context.Context, manifest Manifest) (Result, erro
 			result.Orders++
 			paymentStatus, hasPayment := historicalPaymentStatus(status)
 			if hasPayment && row.Provider != orderdomain.ProviderAlipay {
+				var paidConfirmedAt *time.Time
+				if row.PaidConfirmedAt != nil {
+					value := row.PaidConfirmedAt.UTC()
+					paidConfirmedAt = &value
+				}
 				transactionDigest := ""
 				if row.ProviderTransactionNo != "" {
 					transactionDigest = string(effectport.Hash("history.transaction", row.ProviderTransactionNo))
 				}
-				payment := paymentdomain.Payment{Historical: true, SourceStatus: row.SourceStatus, HistoryReason: row.HistoryReason, OrderID: imported.ID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: payer.customerID, BeneficiaryCustomerID: beneficiary.customerID, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: paymentStatus, ProviderTransactionDigest: transactionDigest, Version: 1, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
+				payment := paymentdomain.Payment{Historical: true, SourceStatus: row.SourceStatus, HistoryReason: row.HistoryReason, OrderID: imported.ID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: payer.customerID, BeneficiaryCustomerID: beneficiary.customerID, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: paymentStatus, ProviderTransactionDigest: transactionDigest, Version: 1, PaidConfirmedAt: paidConfirmedAt, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
 				persisted, err := runner.Payments.ImportTerminalPayment(ctx, payment, digest, manifest.RunKey)
 				if err != nil {
 					return err

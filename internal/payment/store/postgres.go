@@ -706,7 +706,11 @@ func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDi
 }
 
 func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.Payment, digest [32]byte, runID string) (domain.Payment, error) {
-	if payment.EffectID != "" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.PayerIdentityID < 0 || payment.PayerCustomerID < 0 || payment.BeneficiaryCustomerID < 0 || ((payment.PayerIdentityID == 0) != (payment.PayerCustomerID == 0)) || (payment.PayerCustomerID == 0 && payment.BeneficiaryCustomerID != 0) || (payment.Status == domain.StatusPaid && (payment.PaidConfirmedAt == nil || payment.PaidConfirmedAt.IsZero() || payment.PaidConfirmedAt.Before(payment.CreatedAt) || payment.PaidConfirmedAt.After(payment.UpdatedAt))) {
+	// Older history snapshots may prove a terminal paid ledger row without
+	// preserving the provider's immutable confirmation timestamp. Keep that
+	// ledger import nullable. Distribution's evidence check rejects nil instead
+	// of turning a later import/update timestamp into a payment fact.
+	if payment.EffectID != "" || (payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled) || payment.PayerIdentityID < 0 || payment.PayerCustomerID < 0 || payment.BeneficiaryCustomerID < 0 || ((payment.PayerIdentityID == 0) != (payment.PayerCustomerID == 0)) || (payment.PayerCustomerID == 0 && payment.BeneficiaryCustomerID != 0) || (payment.PaidConfirmedAt != nil && (payment.Status != domain.StatusPaid || payment.PaidConfirmedAt.IsZero() || payment.PaidConfirmedAt.Before(payment.CreatedAt) || payment.PaidConfirmedAt.After(payment.UpdatedAt))) {
 		return domain.Payment{}, paymentport.ErrConflict
 	}
 	payment.Historical = true

@@ -46,6 +46,25 @@ func intField(r rawRow, k string) int64 { v, _ := strconv.ParseInt(textField(r, 
 func timeField(r rawRow, k string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, textField(r, k))
 }
+
+// sourcePaidConfirmedAt only accepts an explicit provider payment fact. It
+// intentionally does not fall back to updated_at: that timestamp may describe
+// a later import, refund, or reconciliation rather than payment success.
+func sourcePaidConfirmedAt(r rawRow) (*time.Time, error) {
+	for _, key := range []string{"paid_confirmed_at", "paid_at"} {
+		value := textField(r, key)
+		if value == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return nil, errors.New("invalid source paid confirmation")
+		}
+		utc := at.UTC()
+		return &utc, nil
+	}
+	return nil, nil
+}
 func tableRows(s snapshot, name string) ([]rawRow, error) {
 	var rows []rawRow
 	d := json.NewDecoder(bytes.NewReader(s.Tables[name]))
@@ -338,6 +357,19 @@ func normalizeOrder(table string, r rawRow) (ordermigration.OrderRow, error) {
 		if refunded == o.AmountMinor {
 			o.Status = "refunded"
 		}
+	}
+	confirmedAt, e := sourcePaidConfirmedAt(r)
+	if e != nil {
+		return o, e
+	}
+	if confirmedAt != nil {
+		if o.Status != "paid" && o.Status != "partially_refunded" && o.Status != "refunded" {
+			return o, errors.New("paid confirmation on non-paid source order")
+		}
+		if confirmedAt.Before(o.CreatedAt) || confirmedAt.After(o.UpdatedAt) {
+			return o, errors.New("source paid confirmation outside order timeline")
+		}
+		o.PaidConfirmedAt = confirmedAt
 	}
 	if quantity < 1 || quantity > 2147483647 || o.AmountMinor%quantity != 0 {
 		return o, errors.New("invalid quantity")

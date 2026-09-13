@@ -207,8 +207,8 @@ func TestQualificationRefundKeepsAlternativePurchaseThenCancelsAfterLastOne(t *t
 		4: {{OrderID: 4, OrderItemLine: 1, ProductID: 77, ProductType: "standard_product", PayerCustomerID: 9, BeneficiaryCustomerID: 9, ItemPaidMinor: 1000, PaymentConfirmedAt: now.Add(-time.Hour), RecordOrigin: "native"}},
 	}}
 	states := map[int64]paymentport.DistributionPaymentState{
-		3: {ConfirmedPaid: true, SuccessfulRefundMinor: 1000},
-		4: {ConfirmedPaid: true},
+		3: {ConfirmedPaid: true, ConfirmedPaidAt: now.Add(-2 * time.Hour), SuccessfulRefundMinor: 1000},
+		4: {ConfirmedPaid: true, ConfirmedPaidAt: now.Add(-time.Hour)},
 	}
 	service, _, _ := refundServiceFixture(t, store, evidence, purchase, states, now)
 	if err := service.RunRefundRecheck(context.Background(), RefundRecheckJobArgs{OrderID: 3, State: "successful", OccurredAt: now, ReceiptKey: "qualification-a-refund"}); err != nil {
@@ -218,7 +218,7 @@ func TestQualificationRefundKeepsAlternativePurchaseThenCancelsAfterLastOne(t *t
 		t.Fatalf("replacement purchase should retain qualification: %+v", got)
 	}
 
-	states[4] = paymentport.DistributionPaymentState{ConfirmedPaid: true, SuccessfulRefundMinor: 1000}
+	states[4] = paymentport.DistributionPaymentState{ConfirmedPaid: true, ConfirmedPaidAt: now.Add(-time.Hour), SuccessfulRefundMinor: 1000}
 	service, _, _ = refundServiceFixture(t, store, evidence, purchase, states, now.Add(time.Minute))
 	if err := service.RunRefundRecheck(context.Background(), RefundRecheckJobArgs{OrderID: 4, State: "successful", OccurredAt: now.Add(time.Minute), ReceiptKey: "qualification-b-refund"}); err != nil {
 		t.Fatal(err)

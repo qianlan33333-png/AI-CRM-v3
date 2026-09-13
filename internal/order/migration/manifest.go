@@ -74,8 +74,12 @@ type OrderRow struct {
 	Currency              string               `json:"currency"`
 	Status                string               `json:"status"`
 	Items                 []ItemRow            `json:"items"`
-	CreatedAt             time.Time            `json:"created_at"`
-	UpdatedAt             time.Time            `json:"updated_at"`
+	// PaidConfirmedAt is optional source evidence. History may be imported
+	// without it, but distribution deliberately treats a missing value as
+	// ineligible rather than inferring it from an import/update timestamp.
+	PaidConfirmedAt *time.Time `json:"paid_confirmed_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 type ItemRow struct {
@@ -201,7 +205,8 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 	merchantStatuses := make(map[string]string, len(manifest.Orders))
 
 	for _, row := range manifest.Orders {
-		if _, err := orderStatus(row.Status); err != nil {
+		status, err := orderStatus(row.Status)
+		if err != nil {
 			return ErrInvalidManifest
 		}
 		_, payerIdentity := identityKeys[row.PayerIdentityKey]
@@ -210,6 +215,9 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		resolved := payerIdentity && payerSubject && (beneficiarySubject || row.BeneficiarySubjectKey == "")
 		floating := row.PayerIdentityKey == "" && row.PayerSubjectKey == "" && row.BeneficiarySubjectKey == ""
 		if (row.SourceStatus != "" && !valid(row.SourceStatus, 80)) || (row.HistoryReason != "" && !valid(row.HistoryReason, 120)) || (!resolved && !floating) || !valid(row.SourceKey, 200) || !valid(row.MerchantOrderNo, 200) || len(row.ProviderTransactionNo) > 200 || strings.TrimSpace(row.ProviderTransactionNo) != row.ProviderTransactionNo || row.AmountMinor < 1 || row.Currency != "CNY" || row.CreatedAt.IsZero() || row.UpdatedAt.Before(row.CreatedAt) || len(row.Items) == 0 || len(row.Items) > 100 {
+			return ErrInvalidManifest
+		}
+		if row.PaidConfirmedAt != nil && (row.PaidConfirmedAt.IsZero() || (status != orderdomain.StatusPaid && status != orderdomain.StatusPartiallyRefunded && status != orderdomain.StatusRefunded) || row.PaidConfirmedAt.Before(row.CreatedAt) || row.PaidConfirmedAt.After(row.UpdatedAt)) {
 			return ErrInvalidManifest
 		}
 		var itemTotal int64

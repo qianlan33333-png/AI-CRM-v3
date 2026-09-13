@@ -55,12 +55,29 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 	paidConfirmedAt := now
 	payment := domain.Payment{OrderID: payOrderID, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "same-merchant", PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, AmountMinor: 100, Currency: "CNY", Status: domain.StatusPaid, PaidConfirmedAt: &paidConfirmedAt, Version: 1, CreatedAt: now, UpdatedAt: now}
 	missingPaidConfirmation := payment
+	missingPaidConfirmation.OrderID = shopOrderID
+	missingPaidConfirmation.Provider = domain.ProviderWeChatShop
+	missingPaidConfirmation.MerchantOrderNo = "legacy-missing-confirmation"
 	missingPaidConfirmation.PaidConfirmedAt = nil
+	var legacy domain.Payment
 	if err = uow.Within(ctx, func(tx context.Context) error {
-		_, inner := repository.ImportTerminalPayment(tx, missingPaidConfirmation, [32]byte{9}, "history-missing-paid-confirmation")
+		var inner error
+		legacy, inner = repository.ImportTerminalPayment(tx, missingPaidConfirmation, [32]byte{9}, "history-missing-paid-confirmation")
+		if inner == nil && legacy.PaidConfirmedAt != nil {
+			t.Fatalf("legacy payment invented paid confirmation: %+v", legacy)
+		}
 		return inner
-	}); !errors.Is(err, paymentport.ErrConflict) {
-		t.Fatalf("historical paid row without source confirmation was accepted: %v", err)
+	}); err != nil {
+		t.Fatalf("historical paid row without a source confirmation was rejected: %v", err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		replayed, inner := repository.ImportTerminalPayment(tx, missingPaidConfirmation, [32]byte{9}, "history-missing-paid-confirmation")
+		if inner == nil && (replayed.ID != legacy.ID || replayed.PaidConfirmedAt != nil) {
+			t.Fatalf("legacy payment replay drift: %+v", replayed)
+		}
+		return inner
+	}); err != nil {
+		t.Fatalf("legacy payment replay failed: %v", err)
 	}
 	var persisted domain.Payment
 	err = uow.Within(ctx, func(tx context.Context) error {
@@ -164,7 +181,7 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 		}
 	}
 	var payments, refunds, effects int
-	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 1 || refunds != 6 || effects != 0 {
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM payments),(SELECT count(*) FROM payment_refunds),(SELECT count(*) FROM external_effects WHERE owner='payment')`).Scan(&payments, &refunds, &effects); err != nil || payments != 2 || refunds != 6 || effects != 0 {
 		t.Fatalf("payments=%d refunds=%d effects=%d err=%v", payments, refunds, effects, err)
 	}
 }

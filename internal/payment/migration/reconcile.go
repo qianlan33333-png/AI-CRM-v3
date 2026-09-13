@@ -34,6 +34,7 @@ type HistoricalPaymentFact struct {
 	Status                                                  paymentdomain.Status
 	ProviderTransactionReference                            string
 	SourceDigest                                            [32]byte
+	PaidConfirmedAt                                         *time.Time
 	CreatedAt, UpdatedAt                                    time.Time
 }
 
@@ -69,7 +70,7 @@ func (v PostgreSQLVerifier) VerifyHistorical(ctx context.Context, runKey string,
 	}
 	paymentByOrder := make(map[int64]HistoricalPaymentFact, len(payments))
 	for _, fact := range payments {
-		if !containsOrderID(orderIDs, fact.OrderID) || fact.OrderID < 1 || fact.Provider != paymentdomain.ProviderWeChatPay && fact.Provider != paymentdomain.ProviderWeChatShop || fact.MerchantOrderNo == "" || fact.PayerIdentityID < 0 || fact.PayerCustomerID < 0 || fact.BeneficiaryCustomerID < 0 || ((fact.PayerIdentityID == 0) != (fact.PayerCustomerID == 0)) || (fact.PayerCustomerID == 0 && fact.BeneficiaryCustomerID != 0) || fact.AmountMinor < 1 || fact.Currency != "CNY" || (fact.Status != paymentdomain.StatusPaid && fact.Status != paymentdomain.StatusFailed && fact.Status != paymentdomain.StatusCancelled) || fact.CreatedAt.IsZero() || fact.UpdatedAt.Before(fact.CreatedAt) || fact.SourceDigest == ([32]byte{}) {
+		if !containsOrderID(orderIDs, fact.OrderID) || fact.OrderID < 1 || fact.Provider != paymentdomain.ProviderWeChatPay && fact.Provider != paymentdomain.ProviderWeChatShop || fact.MerchantOrderNo == "" || fact.PayerIdentityID < 0 || fact.PayerCustomerID < 0 || fact.BeneficiaryCustomerID < 0 || ((fact.PayerIdentityID == 0) != (fact.PayerCustomerID == 0)) || (fact.PayerCustomerID == 0 && fact.BeneficiaryCustomerID != 0) || fact.AmountMinor < 1 || fact.Currency != "CNY" || (fact.Status != paymentdomain.StatusPaid && fact.Status != paymentdomain.StatusFailed && fact.Status != paymentdomain.StatusCancelled) || fact.CreatedAt.IsZero() || fact.UpdatedAt.Before(fact.CreatedAt) || !validOptionalPaidConfirmation(fact.Status, fact.PaidConfirmedAt, fact.CreatedAt, fact.UpdatedAt) || fact.SourceDigest == ([32]byte{}) {
 			return HistoricalReconciliation{}, ErrHistoricalReconciliationMismatch
 		}
 		if _, duplicate := paymentByOrder[fact.OrderID]; duplicate {
@@ -138,19 +139,20 @@ func (v PostgreSQLVerifier) verifyPayment(ctx context.Context, runKey string, ex
 		amount, version                                        int64
 		externalEffect                                         *int64
 		transactionDigest                                      string
+		paidConfirmedAt                                        *time.Time
 		createdAt, updatedAt                                   time.Time
 		historical                                             bool
 		sourceStatus, historyReason                            string
 	)
-	if err := v.Pool.QueryRow(ctx, `SELECT id,order_id,provider,payment_channel,merchant_order_no,COALESCE(payer_identity_id,0),COALESCE(payer_customer_id,0),COALESCE(beneficiary_customer_id,0),amount_minor,currency,status,external_effect_id,COALESCE(provider_transaction_digest,''),version,created_at,updated_at,historical,source_status,history_reason FROM payments WHERE order_id=$1`, expected.OrderID).
-		Scan(&id, &orderID, &provider, &channel, &merchant, &payerIdentity, &payerCustomer, &beneficiary, &amount, &currency, &status, &externalEffect, &transactionDigest, &version, &createdAt, &updatedAt, &historical, &sourceStatus, &historyReason); err != nil {
+	if err := v.Pool.QueryRow(ctx, `SELECT id,order_id,provider,payment_channel,merchant_order_no,COALESCE(payer_identity_id,0),COALESCE(payer_customer_id,0),COALESCE(beneficiary_customer_id,0),amount_minor,currency,status,external_effect_id,COALESCE(provider_transaction_digest,''),version,paid_confirmed_at,created_at,updated_at,historical,source_status,history_reason FROM payments WHERE order_id=$1`, expected.OrderID).
+		Scan(&id, &orderID, &provider, &channel, &merchant, &payerIdentity, &payerCustomer, &beneficiary, &amount, &currency, &status, &externalEffect, &transactionDigest, &version, &paidConfirmedAt, &createdAt, &updatedAt, &historical, &sourceStatus, &historyReason); err != nil {
 		return 0, paymentReconciliationError(err)
 	}
 	expectedTransactionDigest := ""
 	if expected.ProviderTransactionReference != "" {
 		expectedTransactionDigest = string(effectport.Hash("history.transaction", expected.ProviderTransactionReference))
 	}
-	if !historical || sourceStatus != expected.SourceStatus || historyReason != expected.HistoryReason || orderID != expected.OrderID || provider != string(expected.Provider) || channel != string(paymentdomain.ChannelMiniProgram) || merchant != expected.MerchantOrderNo || payerIdentity != expected.PayerIdentityID || payerCustomer != expected.PayerCustomerID || beneficiary != expected.BeneficiaryCustomerID || amount != expected.AmountMinor || currency != expected.Currency || status != string(expected.Status) || externalEffect != nil || transactionDigest != expectedTransactionDigest || version < 1 || !sameTime(createdAt, expected.CreatedAt) || !sameTime(updatedAt, expected.UpdatedAt) {
+	if !historical || sourceStatus != expected.SourceStatus || historyReason != expected.HistoryReason || orderID != expected.OrderID || provider != string(expected.Provider) || channel != string(paymentdomain.ChannelMiniProgram) || merchant != expected.MerchantOrderNo || payerIdentity != expected.PayerIdentityID || payerCustomer != expected.PayerCustomerID || beneficiary != expected.BeneficiaryCustomerID || amount != expected.AmountMinor || currency != expected.Currency || status != string(expected.Status) || externalEffect != nil || transactionDigest != expectedTransactionDigest || version < 1 || !sameOptionalTime(paidConfirmedAt, expected.PaidConfirmedAt) || !sameTime(createdAt, expected.CreatedAt) || !sameTime(updatedAt, expected.UpdatedAt) {
 		return 0, ErrHistoricalReconciliationMismatch
 	}
 	key := sha256.Sum256([]byte("payment-history:" + runKey + ":" + expected.MerchantOrderNo))
@@ -254,6 +256,20 @@ func containsOrderID(ids []int64, target int64) bool {
 }
 
 func sameTime(actual, expected time.Time) bool { return actual.UTC().Equal(expected.UTC()) }
+
+func sameOptionalTime(actual, expected *time.Time) bool {
+	if actual == nil || expected == nil {
+		return actual == nil && expected == nil
+	}
+	return sameTime(*actual, *expected)
+}
+
+func validOptionalPaidConfirmation(status paymentdomain.Status, confirmed *time.Time, created, updated time.Time) bool {
+	if confirmed == nil {
+		return true
+	}
+	return status == paymentdomain.StatusPaid && !confirmed.IsZero() && !confirmed.Before(created) && !confirmed.After(updated)
+}
 
 func paymentReconciliationError(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {

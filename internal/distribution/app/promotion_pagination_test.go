@@ -83,10 +83,10 @@ func (s promotionPaginationOrders) ListQualificationPurchaseEvidenceWithin(_ con
 	return []orderport.QualificationPurchaseEvidence{{OrderID: query.ProductID, OrderItemLine: 1, ProductID: query.ProductID, PayerCustomerID: 11, BeneficiaryCustomerID: 11, ItemPaidMinor: 1000, PaymentConfirmedAt: s.now, RecordOrigin: "native"}}, nil
 }
 
-type promotionPaginationPayment struct{}
+type promotionPaginationPayment struct{ now time.Time }
 
-func (promotionPaginationPayment) DistributionPaymentStateWithin(context.Context, int64) (paymentport.DistributionPaymentState, error) {
-	return paymentport.DistributionPaymentState{ConfirmedPaid: true}, nil
+func (s promotionPaginationPayment) DistributionPaymentStateWithin(context.Context, int64) (paymentport.DistributionPaymentState, error) {
+	return paymentport.DistributionPaymentState{ConfirmedPaid: true, ConfirmedPaidAt: s.now}, nil
 }
 
 func promotionPaginationFixture(t *testing.T, productCount int) (*PromotionService, *promotionPaginationProducts, distributionport.TrustedSessionActor) {
@@ -97,7 +97,7 @@ func promotionPaginationFixture(t *testing.T, productCount int) (*PromotionServi
 		items = append(items, productport.ProductOption{ID: productport.ID(id), Code: "p" + strconv.Itoa(id), ProductType: productport.ProductOptionStandard, Name: "商品", PriceMinor: 1000, Currency: "CNY"})
 	}
 	products := &promotionPaginationProducts{items: items}
-	qualification, err := NewQualificationService(lineageStub{roots: []customerdomain.CustomerID{11}}, promotionPaginationOrders{now: now}, promotionPaginationPayment{})
+	qualification, err := NewQualificationService(lineageStub{roots: []customerdomain.CustomerID{11}}, promotionPaginationOrders{now: now}, promotionPaginationPayment{now: now})
 	if err != nil {
 		t.Fatal(err)
 	}

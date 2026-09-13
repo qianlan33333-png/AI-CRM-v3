@@ -90,7 +90,7 @@ func (s *QualificationService) CheckWithin(ctx context.Context, customerID, prod
 			continue
 		}
 		payment, paymentErr := s.payments.DistributionPaymentStateWithin(ctx, candidate.OrderID)
-		if paymentErr != nil || !payment.ConfirmedPaid {
+		if paymentErr != nil || !payment.ConfirmedPaid || payment.ConfirmedPaidAt.IsZero() || !payment.ConfirmedPaidAt.UTC().Equal(candidate.PaymentConfirmedAt.UTC()) {
 			// This item cannot prove a qualification, but a later independent
 			// purchase can. A total Port failure is returned above; a per-order
 			// unavailable mapping is retained as a fail-closed fallback only.

@@ -80,7 +80,7 @@ func TestQualificationUsesAlternativeEvidenceWhenOnePaymentMappingUnavailable(t 
 	service, err := NewQualificationService(lineageStub{roots: []customerdomain.CustomerID{11, 12}}, qualificationOrderStub{evidence: []orderport.QualificationPurchaseEvidence{
 		{OrderID: 100, OrderItemLine: 1, ProductID: 9, PayerCustomerID: 11, BeneficiaryCustomerID: 11, ItemPaidMinor: 1000, PaymentConfirmedAt: now, RecordOrigin: "history"},
 		{OrderID: 101, OrderItemLine: 1, ProductID: 9, PayerCustomerID: 12, BeneficiaryCustomerID: 12, ItemPaidMinor: 800, PaymentConfirmedAt: now, RecordOrigin: "native"},
-	}}, qualificationPaymentStub{states: map[int64]paymentport.DistributionPaymentState{101: {ConfirmedPaid: true}}, errs: map[int64]error{100: errors.New("unmapped")}})
+	}}, qualificationPaymentStub{states: map[int64]paymentport.DistributionPaymentState{101: {ConfirmedPaid: true, ConfirmedPaidAt: now}}, errs: map[int64]error{100: errors.New("unmapped")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,13 +109,26 @@ func TestQualificationDoesNotLetPendingRefundHideAlternativeValidPurchase(t *tes
 	service, err := NewQualificationService(lineageStub{roots: []customerdomain.CustomerID{11}}, qualificationOrderStub{evidence: []orderport.QualificationPurchaseEvidence{
 		{OrderID: 100, OrderItemLine: 1, ProductID: 9, PayerCustomerID: 11, BeneficiaryCustomerID: 11, ItemPaidMinor: 1000, PaymentConfirmedAt: now, RecordOrigin: "native"},
 		{OrderID: 101, OrderItemLine: 1, ProductID: 9, PayerCustomerID: 11, BeneficiaryCustomerID: 11, ItemPaidMinor: 900, PaymentConfirmedAt: now, RecordOrigin: "native"},
-	}}, qualificationPaymentStub{states: map[int64]paymentport.DistributionPaymentState{100: {ConfirmedPaid: true, RefundExposure: true}, 101: {ConfirmedPaid: true}}})
+	}}, qualificationPaymentStub{states: map[int64]paymentport.DistributionPaymentState{100: {ConfirmedPaid: true, ConfirmedPaidAt: now, RefundExposure: true}, 101: {ConfirmedPaid: true, ConfirmedPaidAt: now}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	service.now = func() time.Time { return now }
 	got, err := service.CheckWithin(qualificationContext(), 11, 9, distributiondomain.ProductTypeStandard)
 	if err != nil || got.State != distributiondomain.QualificationEligible || got.EvidenceRef != "order:101:item:1" {
+		t.Fatalf("qualification=%+v err=%v", got, err)
+	}
+}
+
+func TestQualificationRejectsHistoricalPaymentWithoutImmutableConfirmation(t *testing.T) {
+	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
+	service, err := NewQualificationService(lineageStub{roots: []customerdomain.CustomerID{11}}, qualificationOrderStub{evidence: []orderport.QualificationPurchaseEvidence{{OrderID: 100, OrderItemLine: 1, ProductID: 9, PayerCustomerID: 11, BeneficiaryCustomerID: 11, ItemPaidMinor: 1000, PaymentConfirmedAt: now, RecordOrigin: "history"}}}, qualificationPaymentStub{states: map[int64]paymentport.DistributionPaymentState{100: {ConfirmedPaid: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now }
+	got, err := service.CheckWithin(qualificationContext(), 11, 9, distributiondomain.ProductTypeStandard)
+	if err != nil || got.State != distributiondomain.QualificationUnavailable || got.Reason != "payment_evidence_unavailable" {
 		t.Fatalf("qualification=%+v err=%v", got, err)
 	}
 }
