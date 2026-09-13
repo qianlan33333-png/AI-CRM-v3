@@ -258,6 +258,54 @@ func TestFullApplicationRouterExposesOrderImportAPI(t *testing.T) {
 	}
 }
 
+func TestFullApplicationRouterCanonicalizesLegacyAdminAccessPage(t *testing.T) {
+	marker := func(name string) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("X-Owner", name)
+			writer.WriteHeader(http.StatusNoContent)
+		})
+	}
+	authentication := &fakeAccessAuthentication{err: accessdomain.ErrAuthentication}
+	other := marker("other")
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(
+		other, marker("access"), other, other, other, other,
+		other, other, other, other, other, other, other, other,
+		other, other, other, other, other, other, other, other,
+		other, marker("shell"), authentication, "https://crm.example",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/admin-access?journey_as=super", nil))
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login?next=%2Fadmin%2Fadmin-access%3Fjourney_as%3Dsuper" {
+		t.Fatalf("unauthenticated legacy page status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+
+	authentication.err = nil
+	request := httptest.NewRequest(http.MethodGet, "/admin/admin-access?journey_as=super", nil)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != webshell.LoginAccessPath+"?journey_as=super" {
+		t.Fatalf("legacy canonicalization status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+
+	request = httptest.NewRequest(http.MethodGet, webshell.LoginAccessPath, nil)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "shell" {
+		t.Fatalf("canonical access page status=%d owner=%q", response.Code, response.Header().Get("X-Owner"))
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/admin-access", nil))
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "access" {
+		t.Fatalf("compatibility API status=%d owner=%q", response.Code, response.Header().Get("X-Owner"))
+	}
+}
+
 func TestFullApplicationRouterDelegatesExactOperationMemberScopeToAdminAPIs(t *testing.T) {
 	marker := func(name string) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

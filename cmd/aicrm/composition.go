@@ -2245,6 +2245,15 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	// module Host above: the new shell must not replace approved product, tag,
 	// operation-cycle or configuration workflows with a generic document.
 	mux.Handle(webshell.LoginAccessPath, requireAdminSession(authentication, shell))
+	// The Config catalog used this path before Access gained its V3-owned page.
+	// Preserve bookmarked links, but always render through the canonical shell.
+	mux.Handle("/admin/admin-access", requireAdminSession(authentication, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		target := webshell.LoginAccessPath
+		if request.URL.RawQuery != "" {
+			target += "?" + request.URL.RawQuery
+		}
+		http.Redirect(writer, request, target, http.StatusSeeOther)
+	})))
 	// OneID remains a backend Port/API foundation; its former admin screen is deliberately unavailable.
 	mux.Handle("/admin/oneid", http.NotFoundHandler())
 	mux.Handle("/admin/oneid.html", http.NotFoundHandler())
