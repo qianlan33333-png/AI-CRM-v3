@@ -2,12 +2,15 @@
 """Contracts for automatic inclusion and truthful browser execution evidence."""
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 import contextlib
 import io
 import sys
+from unittest.mock import patch
 
+import dev_preflight
 from dev_preflight import Preflight, REQUIRED_JOURNEYS, SHELL_JOURNEYS, select_journeys, verify_journey_results
 
 
@@ -77,6 +80,48 @@ class BrowserCoverage(unittest.TestCase):
             check.run("success", command)
             self.assertEqual(check.report["steps"][0]["command"], command)
             self.assertEqual(check.report["steps"][0]["exit_code"], 0)
+
+    def test_full_rejects_dirty_source_before_any_lane(self):
+        dirty = {"head": "a" * 40, "tree": "b" * 40, "status": [" M user-source.go"]}
+        with tempfile.TemporaryDirectory() as directory, patch.object(Preflight, "source_snapshot", return_value=dirty):
+            check = Preflight(Path(directory))
+            with self.assertRaisesRegex(ValueError, "clean committed"):
+                check.full()
+
+    def test_full_records_source_drift_per_lane_and_refuses_claim(self):
+        clean = {"head": "a" * 40, "tree": "b" * 40, "status": []}
+        drifted = {"head": "a" * 40, "tree": "b" * 40, "status": [" M source.go"]}
+        with tempfile.TemporaryDirectory() as directory, patch.object(Preflight, "source_snapshot", side_effect=[clean, clean, drifted]), \
+                patch("dev_preflight.subprocess.check_output", return_value="c" * 40 + "\n"), \
+                patch.object(Preflight, "run", return_value=Path(directory) / "lane.log"):
+            check = Preflight(Path(directory))
+            with self.assertRaisesRegex(RuntimeError, "changed during"):
+                check.full()
+            self.assertEqual(check.report["lanes"][0]["result"], "source_changed")
+
+    def test_full_evidence_directory_cannot_be_inside_source_tree(self):
+        with patch.object(sys, "argv", ["dev_preflight.py", "full", "--report-dir", str(dev_preflight.ROOT / "evidence")]):
+            with self.assertRaises(SystemExit):
+                dev_preflight.main()
+
+    def test_full_child_python_does_not_dirty_a_real_temporary_git_checkout(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as evidence:
+            repo = Path(directory)
+            script = repo / "scripts" / "ci" / "quality_lanes.py"
+            script.parent.mkdir(parents=True)
+            (script.parent / "helper.py").write_text("value = 1\n")
+            script.write_text("import helper\n")
+            for command in (["git", "init", "-q"], ["git", "config", "user.email", "test@example.invalid"],
+                            ["git", "config", "user.name", "test"], ["git", "add", "."],
+                            ["git", "commit", "-qm", "fixture"], ["git", "update-ref", "refs/remotes/origin/main", "HEAD"]):
+                subprocess.run(command, cwd=repo, check=True)
+            with patch.object(dev_preflight, "ROOT", repo), patch.object(dev_preflight, "FULL_LANES", ("probe",)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                check = Preflight(Path(evidence))
+                check.full()
+            self.assertEqual(subprocess.check_output(["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                                                     cwd=repo, text=True), "")
+            self.assertEqual(check.report["lanes"][0]["result"], "success")
 
 
 if __name__ == "__main__":

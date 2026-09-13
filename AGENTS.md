@@ -70,7 +70,8 @@
 ## 9. 提交前验证顺序
 
 - 首次推送和修复后再次推送前，先运行 `python3 scripts/dev_preflight.py fast`；Go 改动再运行 `python3 scripts/dev_preflight.py compile`，然后执行受影响领域的专项测试。编译成功不等于测试通过。
+- `fast`、`compile` 和局部 `browser` 的证据只能汇报对应局部 claim，不能称为完整回归或可交付验证。需要本地完整证据时运行 `python3 scripts/dev_preflight.py full`；它要求开始、每个 lane 前后及结束时都是同一干净已提交树，并拒绝缺 PostgreSQL 16、Linux amd64 Chromium、固定工具或冻结供体的环境。其环境指纹不等同于 GitHub Linux CI，完整 CI 仍是最终门禁。
 - CI 失败先重现准确失败用例，修复后跑完整失败阶段，再提交全量 CI；不能通过删断言、接受 skip 或反复推送猜测修复。
 - 新增真实 Host 浏览器旅程放在 `cmd/aicrm`，使用 `Test…ChromiumJourney` 命名，自动进入必跑集合；其他包或命名必须明确接入。运行 `python3 scripts/dev_preflight.py browser` 前准备最终 Host 产物和独立 PostgreSQL 16 测试库。
-- 测试汇报附准确 HEAD、工作区状态、命令及证据目录，区分编译、专项、完整 CI、跳过和未验证；修改代码后不能沿用旧 HEAD 绿灯。
+- 测试汇报附准确 HEAD、tree、工作区状态、命令及证据目录，区分编译、专项、本地完整、完整 CI、取消、跳过和未验证；修改代码后不能沿用旧 HEAD 绿灯。PR 首轮质量保留该 PR 最早 CI attempt 的原始 SHA；最终质量只对应当前 PR head 的最新 attempt。
 - 共享 Composition、构建和工作流改动先核对并行任务，避免重复修复；不能恢复手工维护的 Chromium 用例正则。操作细则见 `docs/plans/2026-09-08-development-preflight.md`。
