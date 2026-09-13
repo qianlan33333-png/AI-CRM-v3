@@ -2179,9 +2179,9 @@ func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) Enterpri
 		result.FailureStage = "token"
 		return result
 	}
-	scope, err := client.enterpriseAgentScope(readCtx, token)
-	if err != nil {
-		result.FailureStage = "agent_scope"
+	scope, stage := client.enterpriseAgentScopePreflight(readCtx, token)
+	if stage != "" {
+		result.FailureStage = stage
 		return result
 	}
 	result.ScopeUsers = len(scope.userIDs)
@@ -2228,6 +2228,28 @@ func (client *Client) PreflightEnterpriseDirectory(ctx context.Context) Enterpri
 	result.Complete = true
 	result.EmployeeCount = len(employees)
 	return result
+}
+
+func (client *Client) enterpriseAgentScopePreflight(ctx context.Context, token string) (enterpriseAgentScope, string) {
+	payload, err := client.request(ctx, "/cgi-bin/agent/get", url.Values{"access_token": {token}, "agentid": {client.config.AgentID}})
+	if err != nil {
+		return enterpriseAgentScope{}, "agent_get"
+	}
+	if len(bytes.TrimSpace(payload.AllowUserInfos)) == 0 || len(bytes.TrimSpace(payload.AllowPartys)) == 0 || len(bytes.TrimSpace(payload.AllowTags)) == 0 {
+		return enterpriseAgentScope{}, "agent_scope_shape"
+	}
+	if rawJSONHasItems(payload.AllowTags) {
+		return enterpriseAgentScope{}, "agent_tags"
+	}
+	userIDs, err := enterpriseScopeUserIDs(payload.AllowUserInfos)
+	if err != nil {
+		return enterpriseAgentScope{}, "agent_users"
+	}
+	departmentIDs, err := enterpriseScopeDepartmentIDs(payload.AllowPartys)
+	if err != nil {
+		return enterpriseAgentScope{}, "agent_departments"
+	}
+	return enterpriseAgentScope{userIDs: userIDs, departmentIDs: departmentIDs}, ""
 }
 
 func (client *Client) listEnterpriseEmployees(ctx context.Context, token string) ([]wecomport.EnterpriseEmployee, error) {
