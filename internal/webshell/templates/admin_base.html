@@ -129,7 +129,7 @@
   {{else}}
   <link rel="stylesheet" href="{{.SurveyAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.SurveyAssets.LabsCSS}}">
-  <script type="module" src="{{.SurveyAssets.AdminJS}}"></script>
+  {{if .SurveyAssets.SurveyHostJS}}<script type="module" src="{{.SurveyAssets.SurveyHostJS}}"></script>{{else}}<script type="module" src="{{.SurveyAssets.AdminJS}}"></script>{{end}}
   {{end}}
   <script defer src="/static/admin_console/survey_operations.js?v=survey-bridge-v2"></script>
   {{end}}

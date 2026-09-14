@@ -14,8 +14,8 @@ import (
 )
 
 type UIAssets struct {
-	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS string
-	StandardCSS                                                      []string
+	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS, SurveyHostJS string
+	StandardCSS                                                                    []string
 }
 
 type PageRenderer func(http.ResponseWriter, *http.Request, string, string, UIAssets) error
@@ -164,7 +164,7 @@ func surveyAssets(dist string) (UIAssets, error) {
 	if assets.LabsCSS, err = get("labs"); err != nil {
 		return UIAssets{}, err
 	}
-	if assets.AdminJS, err = get("admin"); err != nil {
+	if assets.SurveyHostJS, err = get("surveyHost"); err != nil {
 		return UIAssets{}, err
 	}
 	if assets.EditorJS, err = get("questionnaireEditor"); err != nil {

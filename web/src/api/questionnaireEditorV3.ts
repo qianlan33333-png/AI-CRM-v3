@@ -10,14 +10,14 @@ const notifySurveyEditorSave = (promise: Promise<unknown>) => {
 export const listEditorQuestionnaires=()=>request('/api/admin/questionnaires?limit=200&offset=0');
 export const getEditorQuestionnaire=(id:number)=>request(`/api/admin/questionnaires/${id}`);
 export const listEditorTags=()=>request('/api/admin/wecom/tags?limit=100&offset=0');
-export const saveEditorQuestionnaire=(id:number|null,payload:LegacyQuestionnaireCreateRequest)=>{
+export const saveEditorQuestionnaire=(id:number|null,payload:LegacyQuestionnaireCreateRequest,options:{notifyLegacyPublish?:boolean}={})=>{
   const saved=request(id?`/api/admin/questionnaires/${id}`:'/api/admin/questionnaires',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify(payload)});
-  // The frozen assessment editor owns validation. Once it has begun a save,
-  // expose this exact response promise to the Host so “保存并发布” cannot be
-  // inferred from timing or from an unrelated later save request.
-  notifySurveyEditorSave(saved);
+  // Assessment's existing “保存并发布” action is still owned by the frozen
+  // bridge. Normal questionnaires use the V3 publish/readback lifecycle.
+  if (options.notifyLegacyPublish) notifySurveyEditorSave(saved);
   return saved;
 };
+export const publishEditorQuestionnaire=(id:number,expectedVersion:number)=>request(`/api/admin/questionnaires/${id}/public-publish`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({expected_questionnaire_version:expectedVersion})});
 export const setEditorQuestionnaireDisabled=(id:number,disabled:boolean)=>request(`/api/admin/questionnaires/${id}/${disabled?'disable':'enable'}`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
 export const deleteEditorQuestionnaire=(id:number)=>request(`/api/admin/questionnaires/${id}`,{method:'DELETE',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
 export const duplicateEditorQuestionnaire=(id:number)=>request(`/api/admin/questionnaires/${id}/duplicate`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
