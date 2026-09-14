@@ -89,6 +89,7 @@ def isolated_env(database_url: str, candidate_sha: str, dedup_base_sha: str) -> 
         "AICRM_RELEASE_SHA": candidate_sha,
         "AICRM_DEDUP_HEAD_SHA": candidate_sha,
         "AICRM_DEDUP_BASE_SHA": dedup_base_sha,
+        "PYTHONDONTWRITEBYTECODE": "1",
     })
     return env
 
@@ -142,9 +143,12 @@ def main() -> int:
     dedup_base = git(source_root, "rev-parse", "HEAD^")
     result = subprocess.run(command, cwd=source_root,
                             env=isolated_env(database_url, current, dedup_base), check=False)
-    receipt["exit_code"] = result.returncode
+    source_dirty_after = bool(git(source_root, "status", "--porcelain=v1", "--untracked-files=all"))
+    receipt["lane_exit_code"] = result.returncode
+    receipt["source_dirty_after_run"] = source_dirty_after
+    receipt["exit_code"] = 3 if source_dirty_after else result.returncode
     write_receipt(report_dir, receipt)
-    return result.returncode
+    return int(receipt["exit_code"])
 
 
 if __name__ == "__main__":
