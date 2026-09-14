@@ -40,6 +40,18 @@ search.dispatchEvent(reverse);
 assert.equal(reverse.defaultPrevented, true);
 assert.equal(document.activeElement.id, 'last', 'Shift+Tab cycles from search to the last focusable control');
 
+let composerClosed = 0;
+const composer = mod.installSelectionDialog({ dialog, initialFocus: document.getElementById('message'), submit() {}, close() { composerClosed += 1; } });
+const message = document.getElementById('message');
+message.dispatchEvent(new dom.window.Event('compositionstart', { bubbles: true }));
+const imeEscape = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' });
+Object.defineProperty(imeEscape, 'keyCode', { value: 229 });
+message.dispatchEvent(imeEscape);
+assert.equal(imeEscape.defaultPrevented, false, 'IME Escape keeps native candidate handling');
+assert.equal(composerClosed, 0, 'IME Escape in a textarea cannot close the composer');
+message.dispatchEvent(new dom.window.Event('compositionend', { bubbles: true }));
+composer.dispose();
+
 controller.dispose();
 assert.equal(closed, 0, 'disposing a child dialog does not close its owner dialog');
 assert.equal(document.activeElement, trigger, 'closing an inner dialog restores its own trigger');

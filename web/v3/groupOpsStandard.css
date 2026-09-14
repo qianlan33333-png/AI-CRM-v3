@@ -1,3 +1,5 @@
+@import "./shared/ui/contentComposer.css";
+
 .group-ops {
   display: grid;
   gap: 14px;
