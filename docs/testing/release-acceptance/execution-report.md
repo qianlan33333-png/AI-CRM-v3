@@ -11,7 +11,7 @@
 | CI | GitHub Actions [34797031338](https://github.com/qianlan33333-png/AI-CRM-v3/actions/runs/34797031338)，`workflow_dispatch`，同一候选 SHA，completed/success |
 | CI lanes | plan、preflight、backend、frontend、browser、archive-sdk、check 均 success；deploy 与 quality-report 均 skipped |
 | 本地 Provider 状态 | disabled；未读取生产凭据，未调用真实 Provider |
-| 迁移环境 | 独立 PostgreSQL 16.13，仅 `127.0.0.1:51011`；`aicrm_test_release_acceptance` 与 `aicrm_test_release_restore_dcfc022` |
+| 迁移环境 | 独立 PostgreSQL 16.13，仅 `127.0.0.1:51011`；`aicrm_test_release_acceptance` 与 `aicrm_test_release_restore_dcfc022`；证据完成后已停止本任务实例，数据、dump 与日志保留，可显式重启用于后续隔离测试 |
 
 CI 的成功是技术层证据，不能替代白名单业务验收、Provider receipt 或上线后的 readback。
 
@@ -47,5 +47,6 @@ CI browser lane 的历史 artifact 显示 14 个 journey 均通过，但 `eligib
 - 至少 24 小时稳定性与按实际峰值定义的容量/并发测试；尚未执行。
 - 新库迁移、备份恢复之外的真实发布包构建、目标主机升级、服务切换、回退兼容与上线后认证 readback；用户未授权部署，尚未执行。
 - 每个必测 skip 的同候选 SHA 闭合证据；任何未关闭必测 skip 均阻断。
+- 候选本身的 route 合同问题和 HTTP 证据缺口，详见 [route-gap-triage.md](route-gap-triage.md)：退款对账 `POST /api/admin/wechat-pay/refunds/{refund_id}/reconcile` 已有 handler 分支但 Composition Root 没有挂载该前缀，当前候选无法作为该 HTTP 合同通过；修复在进行中，但未纳入本候选验收。OpenAPI 的 `/api/ai/audience/packages/{package_key}/webhook` 与实际挂载的 canonical integrations webhook 路径不一致，须先确定对外合同再修正文档或实现。另有 9 个已挂载路径以及 acquisition PATCH/DELETE 缺少 method+path 的 HTTP contract 测试，不能以服务层、存储层或通用鉴权测试闭合。
 
 本报告不将本机 macOS 缺少 Linux Chrome/archive SDK 计为业务失败；对应技术 lane 已由同候选 SHA 的 CI 运行通过。它同样不把 CI 或本地 lane 的成功推导为外部业务效果成功。
