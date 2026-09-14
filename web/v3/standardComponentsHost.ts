@@ -6,10 +6,16 @@ export {};
 // guarantees dependency order and one evaluation per page.
 declare global {
   interface Window {
-    AICRMStandardComponents?: { ready(): Promise<void> };
+    AICRMStandardComponents?: {
+      ready(): Promise<void>;
+      readyFor(capabilities: readonly OnDemandStandardComponentCapability[]): Promise<void>;
+    };
     AICRMWeComTagPicker?: unknown;
   }
 }
+
+type StandardComponentCapability = 'operationMembers' | 'groupChats' | 'materials' | 'sendContent' | 'tags';
+type OnDemandStandardComponentCapability = 'tags';
 
 // The frozen picker refreshes the common saved staff-profile projection.
 // This is a Provider read plus a local projection update, never a message send.
@@ -65,15 +71,20 @@ document.addEventListener('click', (event) => {
   })();
 }, true);
 
-const scripts = [
-  '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948',
-  '/assets/standard-components/group_chat_picker.js',
-  '/assets/standard-components/material_picker.js',
-  '/assets/standard-components/send_content_composer.js',
-  '/assets/standard-components/wecom_tag_picker.js',
+const components: ReadonlyArray<{ capability: StandardComponentCapability; source: string; ready: () => boolean }> = [
+  { capability: 'operationMembers', source: '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).OperationMemberPicker?.open === 'function' },
+  { capability: 'groupChats', source: '/assets/standard-components/group_chat_picker.js', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).AICRMGroupChatPicker?.open === 'function' },
+  { capability: 'materials', source: '/assets/standard-components/material_picker.js', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).AICRMMaterialPicker?.open === 'function' },
+  { capability: 'sendContent', source: '/assets/standard-components/send_content_composer.js', ready: () => {
+    const composer = (window as unknown as Record<string, { open?: unknown; mount?: unknown }>).AICRMSendContentComposer;
+    return typeof composer?.open === 'function' && typeof composer.mount === 'function';
+  } },
+  { capability: 'tags', source: '/assets/standard-components/wecom_tag_picker.js', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).AICRMWeComTagPicker?.open === 'function' },
 ];
 
-let loading: Promise<void> | undefined;
+const componentByCapability = new Map(components.map((component) => [component.capability, component]));
+const componentLoads = new Map<StandardComponentCapability, Promise<void>>();
+const readyComponents = new Set<StandardComponentCapability>();
 let tagPickerLocked = false;
 
 function lockOriginalTagPicker(): void {
@@ -89,26 +100,87 @@ function lockOriginalTagPicker(): void {
   });
 }
 
-function load(source: string): Promise<void> {
-  if (document.querySelector(`script[data-aicrm-standard-component="${source}"]`)) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.defer = true;
-    script.src = source;
-    script.dataset.aicrmStandardComponent = source;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('标准选择组件加载失败，请刷新页面后重试'));
-    document.head.append(script);
+function matchingScript(source: string): HTMLScriptElement | undefined {
+  return [...document.querySelectorAll<HTMLScriptElement>('script[data-aicrm-standard-component]')]
+    .find((script) => script.dataset.aicrmStandardComponent === source && script.src === new URL(source, document.baseURI).href);
+}
+
+function load(component: { capability: StandardComponentCapability; source: string; ready: () => boolean }): Promise<void> {
+  if (readyComponents.has(component.capability)) return Promise.resolve();
+  const pending = componentLoads.get(component.capability);
+  if (pending) return pending;
+
+  let startRequest: (() => void) | undefined;
+  const request = new Promise<void>((resolve, reject) => {
+    let script = matchingScript(component.source);
+    let appendScript = false;
+    let settled = false;
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      script?.remove();
+      componentLoads.delete(component.capability);
+      reject(new Error('标准选择组件加载失败，请刷新页面后重试'));
+    };
+    const succeed = () => {
+      if (settled) return;
+      if (!component.ready()) {
+        fail();
+        return;
+      }
+      settled = true;
+      readyComponents.add(component.capability);
+      if (component.capability === 'tags') lockOriginalTagPicker();
+      resolve();
+    };
+
+    if (!script) {
+      script = document.createElement('script');
+      script.defer = true;
+      script.src = component.source;
+      script.dataset.aicrmStandardComponent = component.source;
+      script.dataset.aicrmStandardComponentProvenance = 'v3-standard-components-host';
+      script.dataset.aicrmStandardComponentState = 'pending';
+      appendScript = true;
+    }
+    script.addEventListener('load', () => {
+      script!.dataset.aicrmStandardComponentState = 'loaded';
+      succeed();
+    }, { once: true });
+    script.addEventListener('error', fail, { once: true });
+    if (appendScript) startRequest = () => { if (!settled) document.head.append(script!); };
+    else if (script.dataset.aicrmStandardComponentState === 'loaded') queueMicrotask(succeed);
   });
+  componentLoads.set(component.capability, request);
+  // Register the source-level single-flight before a loader can dispatch an
+  // immediate load/error event.
+  startRequest?.();
+  return request;
+}
+
+function readyFor(capabilities: readonly OnDemandStandardComponentCapability[]): Promise<void> {
+  const requested = [...new Set(capabilities)];
+  const selected = requested.map((capability) => {
+    if (capability !== 'tags') throw new Error(`未知标准选择组件：${capability}`);
+    const component = componentByCapability.get(capability);
+    if (!component) throw new Error(`未知标准选择组件：${capability}`);
+    return component;
+  });
+  return Promise.all(selected.map(load)).then(() => undefined);
 }
 
 window.AICRMStandardComponents = {
   ready(): Promise<void> {
-    loading ||= scripts.reduce(async (previous, source) => {
+    return components.reduce(async (previous, component) => {
       await previous;
-      await load(source);
-    }, Promise.resolve()).then(() => { lockOriginalTagPicker(); });
-    return loading;
+      await load(component);
+    }, Promise.resolve());
   },
+  readyFor,
 };
-void window.AICRMStandardComponents.ready();
+const autoStart = document.querySelector('[data-customer-directory-root]')
+  ? window.AICRMStandardComponents.readyFor(['tags'])
+  : window.AICRMStandardComponents.ready();
+// The automatic preload has no page-level error surface. Explicit callers keep
+// the original rejected promise so their local UI can explain and retry it.
+void autoStart.catch(() => undefined);
