@@ -31,9 +31,15 @@ func TestPostgreSQLTagPickerChromiumJourney(t *testing.T) {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
 	fixture := newTagPickerChromiumFixture(t)
-	screenshotDir := os.Getenv("AICRM_TAG_PICKER_SCREENSHOT_DIR")
-	if screenshotDir == "" {
-		screenshotDir = t.TempDir()
+	screenshotDir := t.TempDir()
+	if configured := platformconfig.TagPickerScreenshotDirectory(); configured != "" {
+		if !filepath.IsAbs(configured) {
+			t.Fatal("AICRM_TAG_PICKER_SCREENSHOT_DIR must be absolute")
+		}
+		if err := os.MkdirAll(configured, 0o700); err != nil {
+			t.Fatalf("create tag picker screenshot directory: %v", err)
+		}
+		screenshotDir = configured
 	}
 	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
 	command.Env = append(os.Environ(),

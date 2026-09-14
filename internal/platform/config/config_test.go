@@ -557,6 +557,17 @@ func TestAccessGovernanceScreenshotDirectoryUsesConfigurationBoundary(t *testing
 	}
 }
 
+func TestTagPickerScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_TAG_PICKER_SCREENSHOT_DIR", "")
+	if value := TagPickerScreenshotDirectory(); value != "" {
+		t.Fatalf("missing screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_TAG_PICKER_SCREENSHOT_DIR", "/tmp/aicrm-tag-picker-evidence")
+	if value := TagPickerScreenshotDirectory(); value != "/tmp/aicrm-tag-picker-evidence" {
+		t.Fatalf("screenshot directory=%q", value)
+	}
+}
+
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	allowed := map[string]string{
 		"AICRM_DATABASE_URL":                 "postgres://target@localhost/aicrm",
