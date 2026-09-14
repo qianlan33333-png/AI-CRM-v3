@@ -163,7 +163,7 @@ def commands(lane: str, report_dir: Path | None) -> list[list[str]]:
             "bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-p", "1", "-race", "-count=1", "./..."
         ]]
     if lane == "frontend":
-        return [["node", "scripts/excel-batches-dom-test.mjs"], ["node", "scripts/validate-openapi.mjs"], [
+        return [["node", "scripts/excel-batches-dom-test.mjs"], ["node", "scripts/excel-batches-pagination-dom-test.mjs"], ["node", "scripts/validate-openapi.mjs"], [
             "node", "scripts/verify-donor-sources.mjs"
         ], ["node", "--test", "scripts/donor-source-views.test.mjs"], [
             "bash", "scripts/run-donor-view-consumers.sh", "check"
