@@ -168,8 +168,8 @@ type GroupOpsAssets struct {
 type AutomationAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 type SurveyAssets struct {
-	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS string
-	StandardCSS                                                      []string
+	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS, SurveyHostJS string
+	StandardCSS                                                                    []string
 }
 
 // OperationCycleAssets keep the immutable donor presentation separate from
@@ -557,7 +557,7 @@ func (renderer *Renderer) RenderAutomation(writer http.ResponseWriter, data Admi
 // v3 admin shell. The editor bootstrap contains no record data; it directs the
 // frozen controller to the v3 API adapter.
 func (renderer *Renderer) RenderSurvey(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets SurveyAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.EditorJS == "" || assets.EditorCSS == "" || (page != "questionnaires" && page != "questionnaireDetail" && page != "questionnaireOps") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || (assets.AdminJS == "" && assets.SurveyHostJS == "") || assets.EditorJS == "" || assets.EditorCSS == "" || (page != "questionnaires" && page != "questionnaireDetail" && page != "questionnaireOps") {
 		return errors.New("survey shell assets are required")
 	}
 	normalizeAdminPage(&data)

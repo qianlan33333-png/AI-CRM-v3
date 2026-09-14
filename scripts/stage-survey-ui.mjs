@@ -27,7 +27,7 @@ const copy = (relative) => {
 
 if (!fs.existsSync(stage) || !fs.statSync(stage).isDirectory()) fail(`missing existing release stage: ${stage}`);
 
-const entryKeys = ['h5', 'h5AuthHost', 'questionnaireEditor', 'questionnaireEditorStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
+const entryKeys = ['h5', 'h5AuthHost', 'questionnaireEditor', 'questionnaireEditorStyles', 'surveyHost', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
 const selected = new Set();
 const includeStatic = (relative) => {
   if (selected.has(relative)) return;
@@ -43,6 +43,20 @@ for (const key of entryKeys) {
   if (typeof entry !== 'string') fail(`missing manifest entry: ${key}`);
   includeStatic(entry);
 }
+
+// SurveyHost deliberately imports the frozen controller before main so the
+// patch and runtime share one prototype. Keep that explicit dynamic closure
+// in this release slice rather than exposing all donor dynamic imports.
+const surveyHost = sourceManifest.entries?.surveyHost;
+const surveyHostImports = sourceManifest.files?.[surveyHost]?.imports || [];
+const owns = (relative, source) => sourceManifest.files?.[relative]?.entry_point === source || sourceManifest.files?.[relative]?.inputs?.includes(source);
+const surveyController = surveyHostImports.find((item) => item.kind === 'dynamic-import' && owns(item.path, 'web/src/admin/controller.ts'))?.path;
+const surveyMain = surveyHostImports.find((item) => item.kind === 'dynamic-import' && owns(item.path, 'web/src/admin/main.ts'))?.path;
+const surveyLegacy = surveyMain && (sourceManifest.files?.[surveyMain]?.imports || []).find((item) => item.kind === 'dynamic-import' && owns(item.path, 'web/src/admin/legacy.ts'))?.path;
+if (!surveyController || !surveyMain || !surveyLegacy) fail('Survey Host lacks the controller -> main -> legacy runtime closure');
+includeStatic(surveyController);
+includeStatic(surveyMain);
+includeStatic(surveyLegacy);
 
 // Survey sharing is loaded with import('./sections/qr') from the shared admin
 // controller.  esbuild therefore emits it outside the static entry closure.

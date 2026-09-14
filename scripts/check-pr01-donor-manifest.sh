@@ -24,6 +24,7 @@ cat > "$scratch/v3-owned-overrides" <<'EOF'
 web/scripts/e2e.mjs
 web/scripts/channel-center-characterization.mjs
 web/scripts/survey-editor-characterization.mjs
+web/scripts/questionnaire-editor-publish-lifecycle.mjs
 web/scripts/survey-public-characterization.mjs
 web/scripts/ui-shell-contract.mjs
 web/scripts/payment-history-read-contract.mjs

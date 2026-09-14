@@ -644,7 +644,7 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 	}
 	dist := surveyJourneyBuiltDist(t, root)
 	ui := surveymodule.NewModuleRegistration().UIBinding(dist, func(writer http.ResponseWriter, request *http.Request, page, donor string, assets surveymodule.UIAssets) error {
-		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, "问卷编辑", "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donor, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS})
+		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, "问卷编辑", "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donor, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS, StandardHostJS: assets.StandardHostJS, SurveyHostJS: assets.SurveyHostJS})
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/admin/questionnaires", ui)
@@ -760,23 +760,46 @@ func surveyJourneyRepositoryRoot(t *testing.T) string {
 func surveyJourneyBuiltDist(t *testing.T, root string) string {
 	t.Helper()
 	dist := filepath.Join(root, "web", "dist")
-	for _, required := range []string{"asset-manifest.json", filepath.Join("admin", "questionnaireDetail.html")} {
-		if _, err := os.Stat(filepath.Join(dist, required)); err != nil {
-			command := exec.Command("npm", "run", "build", "--silent")
+	if !surveyJourneyHasHostAssets(dist) {
+		for _, command := range []*exec.Cmd{
+			exec.Command("npm", "run", "build", "--silent"),
+			exec.Command("node", "scripts/build-v3-host-adapters.mjs"),
+		} {
 			command.Dir = root
 			output, buildErr := command.CombinedOutput()
 			if buildErr != nil {
-				t.Fatalf("build frozen Survey assets for Host journey: %v\n%s", buildErr, output)
+				t.Fatalf("build Survey Host assets for runtime journey: %v\n%s", buildErr, output)
 			}
-			break
 		}
 	}
-	for _, required := range []string{"asset-manifest.json", filepath.Join("admin", "questionnaireDetail.html")} {
-		if _, err := os.Stat(filepath.Join(dist, required)); err != nil {
-			t.Fatalf("frozen Survey build did not produce %s: %v", required, err)
-		}
+	if !surveyJourneyHasHostAssets(dist) {
+		t.Fatal("Survey Host build did not produce its runtime asset closure")
 	}
 	return dist
+}
+
+func surveyJourneyHasHostAssets(dist string) bool {
+	for _, required := range []string{"asset-manifest.json", filepath.Join("admin", "questionnaireDetail.html")} {
+		if _, err := os.Stat(filepath.Join(dist, required)); err != nil {
+			return false
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dist, "asset-manifest.json"))
+	if err != nil {
+		return false
+	}
+	var manifest struct {
+		Entries map[string]string `json:"entries"`
+	}
+	if json.Unmarshal(raw, &manifest) != nil {
+		return false
+	}
+	host := manifest.Entries["surveyHost"]
+	if !strings.HasPrefix(host, "assets/") || strings.Contains(host, "..") {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(dist, host))
+	return err == nil
 }
 
 type surveyJourneySecurity struct{ actorID int64 }

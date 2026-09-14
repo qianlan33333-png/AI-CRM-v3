@@ -842,6 +842,28 @@ func TestSurveyEditorUsesFullWidthDonorWorkspaceInsideAdminShell(t *testing.T) {
 	}
 }
 
+func TestSurveyListUsesV3HostAsItsOnlyRuntimeEntrypoint(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderSurvey(
+		response,
+		AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/questionnaires.html", nil), "问卷管理", "", "api.admin_questionnaires"),
+		"questionnaires",
+		`<section>问卷列表</section>`,
+		SurveyAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", SurveyHostJS: "/assets/survey-host.js", EditorJS: "/assets/editor.js", EditorCSS: "/assets/editor.css"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `src="/assets/survey-host.js"`) || strings.Contains(body, `src="/assets/admin.js"`) {
+		t.Fatalf("survey list must use only the V3 Host runtime: status=%d body=%q", response.Code, body)
+	}
+}
+
 func TestSurveyQRBridgeBrowserFallback(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is unavailable")

@@ -12,7 +12,7 @@ const stagedManifest = readManifest(stage);
 const surfaceFeedbackHost = sourceManifest.entries?.surfaceFeedbackHost;
 const surfaceFeedbackStyles = sourceManifest.entries?.surfaceFeedbackStyles;
 
-const requiredEntries = ['h5', 'questionnaireEditor', 'questionnaireEditorStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
+const requiredEntries = ['h5', 'questionnaireEditor', 'questionnaireEditorStyles', 'surveyHost', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
 for (const key of requiredEntries) {
   assert.equal(stagedManifest.entries?.[key], sourceManifest.entries?.[key], `staged manifest omits Survey entry ${key}`);
 }
@@ -26,6 +26,16 @@ const includeStatic = (relative) => {
   }
 };
 for (const key of requiredEntries) includeStatic(sourceManifest.entries[key]);
+const surveyHost = sourceManifest.entries?.surveyHost;
+const surveyHostImports = sourceManifest.files?.[surveyHost]?.imports || [];
+const owns = (relative, source) => sourceManifest.files?.[relative]?.entry_point === source || sourceManifest.files?.[relative]?.inputs?.includes(source);
+const surveyController = surveyHostImports.find((item) => item.kind === 'dynamic-import' && owns(item.path, 'web/src/admin/controller.ts'))?.path;
+const surveyMain = surveyHostImports.find((item) => item.kind === 'dynamic-import' && owns(item.path, 'web/src/admin/main.ts'))?.path;
+const surveyLegacy = surveyMain && (sourceManifest.files?.[surveyMain]?.imports || []).find((item) => item.kind === 'dynamic-import' && owns(item.path, 'web/src/admin/legacy.ts'))?.path;
+assert.ok(surveyController && surveyMain && surveyLegacy, 'Survey Host must retain the controller -> main -> legacy runtime closure');
+includeStatic(surveyController);
+includeStatic(surveyMain);
+includeStatic(surveyLegacy);
 const qrChunks = Object.entries(sourceManifest.files || {})
   .filter(([, metadata]) => (metadata.inputs || []).includes('web/src/admin/sections/qr.ts'))
   .map(([relative]) => relative);

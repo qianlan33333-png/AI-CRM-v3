@@ -7,6 +7,7 @@ import {
   getEditorQuestionnaire,
   listEditorQuestionnaires,
   listEditorTags,
+  publishEditorQuestionnaire,
   saveEditorQuestionnaire,
   setEditorQuestionnaireDisabled,
 } from '../../api/questionnaireEditorV3';
@@ -58,6 +59,8 @@ const state = {
   selectedOverallLevelKey: '',
   initialSnapshot: '',
   persistedIsDisabled: false,
+  persistedPublishedAndEnabled: false,
+  pendingRepublish: false,
   listSearch: '',
   statusFilter: 'all',
   loadingList: false,
@@ -1089,6 +1092,9 @@ function hydrateQuestionnaire(source = null) {
   return {
     ...draft,
     id: questionnaire.id ?? null,
+    enabled: questionnaire.enabled === true,
+    status: questionnaire.status || '',
+    version: questionnaire.version ?? null,
     public_url: questionnaire.public_url || '',
     public_path: questionnaire.public_path || '',
     name: questionnaire.name || '',
@@ -1156,9 +1162,10 @@ function enterRuleMode() {
   renderWorkspace();
 }
 
-function resetDraft(data = null) {
+function resetDraft(data = null, options = {}) {
   state.questionnaire = hydrateQuestionnaire(data);
   state.currentId = state.questionnaire.id;
+  if (!options.preservePendingRepublish) state.pendingRepublish = false;
   state.ruleMode = false;
   state.lastRuleKey = state.questionnaire.score_rules[0]?.local_key || '';
   state.selection = editorConfig.defaultAssessment && !data
@@ -1257,6 +1264,12 @@ function updateDraftIndicator() {
 function rememberDraftSnapshot() {
   state.initialSnapshot = state.questionnaire ? serializeDraftSnapshot() : '';
   state.persistedIsDisabled = Boolean(state.currentId && state.questionnaire && state.questionnaire.is_disabled);
+  state.persistedPublishedAndEnabled = Boolean(
+    state.currentId
+      && state.questionnaire
+      && state.questionnaire.enabled === true
+      && ['active', 'published'].includes(String(state.questionnaire.status || '').toLowerCase()),
+  );
   updateDraftIndicator();
 }
 
@@ -1522,16 +1535,11 @@ function renderEditorSecondaryActions() {
     return;
   }
   editorSecondaryActionsEl.innerHTML = state.currentId ? `
-      <button id="editor-share-btn" type="button" class="btn ghost">分享</button>
       <button id="editor-duplicate-btn" type="button" class="btn ghost">复制问卷</button>
       <button id="editor-export-btn" type="button" class="btn ghost">下载数据</button>
     ` : '';
-  const shareBtn = document.getElementById('editor-share-btn');
   const duplicateBtn = document.getElementById('editor-duplicate-btn');
   const exportBtn = document.getElementById('editor-export-btn');
-  shareBtn?.addEventListener('click', () => {
-    copyText(buildPublicUrl(), '分享链接已复制');
-  });
   duplicateBtn?.addEventListener('click', () => {
     duplicateQuestionnaire({ ...(state.questionnaire || {}), id: state.currentId }).catch((error) => showToast(error.message || '问卷复制失败，请稍后重试', true));
   });
@@ -3886,8 +3894,61 @@ async function saveQuestionnaire() {
   validateOtherOptionsBeforeSave();
   const wasEditing = Boolean(state.currentId);
   const payload = serializePayload();
-  const data = await saveEditorQuestionnaire(state.currentId, payload);
-  resetDraft(data.questionnaire);
+  // Updating an immutable published definition creates a draft. Preserve the
+  // operator's published state only when the initial read confirmed it, and
+  // never override an explicit request to stop the questionnaire.
+  const shouldRepublish = !editorConfig.defaultAssessment && wasEditing && !payload.is_disabled
+    && (state.persistedPublishedAndEnabled || state.pendingRepublish);
+  const data = await saveEditorQuestionnaire(state.currentId, payload, { notifyLegacyPublish: editorConfig.defaultAssessment });
+  let saved = data.questionnaire;
+  if (shouldRepublish) {
+    const questionnaireId = Number(saved?.id || state.currentId);
+    const expectedVersion = Number(saved?.version);
+    if (!Number.isSafeInteger(questionnaireId) || questionnaireId < 1 || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+      state.pendingRepublish = true;
+      resetDraft(saved, { preservePendingRepublish: true });
+      throw new Error('问卷已保存为草稿，但缺少准确版本，未执行发布');
+    }
+    let publishedVersion = 0;
+    try {
+      const published = await publishEditorQuestionnaire(questionnaireId, expectedVersion);
+      const publishedQuestionnaire = published?.questionnaire;
+      publishedVersion = Number(publishedQuestionnaire?.version);
+      if (Number(publishedQuestionnaire?.id) !== questionnaireId || !Number.isSafeInteger(publishedVersion) || publishedVersion <= expectedVersion) {
+        throw new Error('发布响应缺少准确问卷版本，未确认上线');
+      }
+      const readback = await getEditorQuestionnaire(questionnaireId);
+      if (!(readback.questionnaire?.enabled === true
+        && ['active', 'published'].includes(String(readback.questionnaire?.status || '').toLowerCase())
+        && Number(readback.questionnaire?.version) === publishedVersion)) {
+        throw new Error('发布回读未确认本次保存的上线版本');
+      }
+      saved = readback.questionnaire;
+      state.pendingRepublish = false;
+    } catch (error) {
+      state.pendingRepublish = true;
+      let readback;
+      try {
+        readback = await getEditorQuestionnaire(questionnaireId);
+      } catch (readbackError) {
+        resetDraft(saved, { preservePendingRepublish: true });
+        throw new Error(`问卷已保存，发布状态未确认：${readbackError instanceof Error ? readbackError.message : '请查看当前状态'}`);
+      }
+      if (readback.questionnaire?.enabled === true
+        && ['active', 'published'].includes(String(readback.questionnaire?.status || '').toLowerCase())
+        && publishedVersion > expectedVersion
+        && Number(readback.questionnaire?.version) === publishedVersion) {
+        saved = readback.questionnaire;
+        state.pendingRepublish = false;
+      } else {
+        resetDraft(readback.questionnaire, { preservePendingRepublish: true });
+        throw new Error(`问卷已保存，但未确认本次版本上线；发布失败：${error instanceof Error ? error.message : '未知错误'}`);
+      }
+    }
+  } else if (payload.is_disabled) {
+    state.pendingRepublish = false;
+  }
+  resetDraft(saved, { preservePendingRepublish: true });
   state.editorMode = state.currentId ? 'edit' : 'new';
   if (!wasEditing && state.currentId) {
     window.history.replaceState({}, '', `questionnaireDetail.html?id=${state.currentId}`);
