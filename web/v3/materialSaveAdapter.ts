@@ -54,9 +54,75 @@ function installFileFeedback(): void {
   }
 }
 
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installFileFeedback);
-else installFileFeedback();
-new MutationObserver(installFileFeedback).observe(document.documentElement, { childList: true, subtree: true });
+type ThumbnailControl = {
+  originalLabel: string;
+  unavailableLabel: string;
+  explanation: string;
+  kind: 'upload' | 'refresh';
+  modalAction: '创建' | '保存';
+};
+
+const thumbnailControls: ThumbnailControl[] = [
+  {
+    originalLabel: '＋ 上传缩略图（将缓存到企微）',
+    unavailableLabel: '上传缩略图（暂不支持）',
+    explanation: '当前不支持企微缩略图上传；不会上传至企微。',
+    kind: 'upload',
+    modalAction: '创建',
+  },
+  {
+    originalLabel: '刷新缩略图缓存',
+    unavailableLabel: '刷新缩略图缓存（暂不支持）',
+    explanation: '当前不支持企微缩略图刷新；不会发起企微调用。',
+    kind: 'refresh',
+    modalAction: '保存',
+  },
+];
+
+function isMiniProgramModal(button: HTMLButtonElement, modalAction: ThumbnailControl['modalAction']): boolean {
+  const modal = button.closest<HTMLElement>('div[style*="position:fixed"]');
+  if (!modal) return false;
+  return Boolean(
+    modal.querySelector('#fMpName') &&
+    modal.querySelector('#fMpAppid') &&
+    modal.querySelector('#fMpPath') &&
+    modal.querySelector('#fMpTitle') &&
+    [...modal.querySelectorAll('button')].some((candidate) => candidate.textContent?.trim() === modalAction),
+  );
+}
+
+function installMiniProgramThumbnailFeedback(): void {
+  if (typeof document === 'undefined' || !document.body || document.body.dataset.page !== 'mpLib') return;
+  for (const control of thumbnailControls) {
+    for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
+      if (button.dataset.materialMiniThumbnailUnavailable || button.textContent?.trim() !== control.originalLabel) continue;
+      if (!isMiniProgramModal(button, control.modalAction)) continue;
+      const help = document.createElement('p');
+      help.id = `material-mp-thumbnail-${control.kind}-unavailable`;
+      help.dataset.materialMiniThumbnailUnavailableHelp = 'true';
+      help.setAttribute('role', 'status');
+      help.textContent = control.explanation;
+      help.style.cssText = 'margin:6px 0 0;color:#646A73;font-size:12px;line-height:1.5';
+      button.dataset.materialMiniThumbnailUnavailable = control.kind;
+      button.disabled = true;
+      button.setAttribute('aria-disabled', 'true');
+      button.setAttribute('aria-describedby', help.id);
+      button.style.cursor = 'not-allowed';
+      button.style.opacity = '0.58';
+      button.textContent = control.unavailableLabel;
+      button.after(help);
+    }
+  }
+}
+
+function installMaterialFeedback(): void {
+  installFileFeedback();
+  installMiniProgramThumbnailFeedback();
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installMaterialFeedback);
+else installMaterialFeedback();
+new MutationObserver(installMaterialFeedback).observe(document.documentElement, { childList: true, subtree: true });
 
 function isMediaMutation(url: URL, method: string): boolean {
   if (method === 'GET' || method === 'HEAD') return false;
@@ -302,6 +368,14 @@ document.addEventListener('click', (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
   const button = target.closest('button');
+  // Native disabled buttons do not dispatch a click, but this capture guard
+  // also covers programmatic/synthetic clicks before the frozen controller's
+  // inline handler can show its inaccurate generic capability toast.
+  if (page === 'mpLib' && button?.dataset.materialMiniThumbnailUnavailable) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
   if (!button || !['保存', '创建', '上传'].includes(button.textContent?.trim() || '')) return;
   if (miniProgramPreflight(button)) {
     event.preventDefault();
