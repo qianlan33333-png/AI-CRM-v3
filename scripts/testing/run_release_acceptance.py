@@ -75,7 +75,7 @@ def require_clean_source(source_root: Path) -> None:
         raise RuntimeError("source tree is dirty; commit the harness or create a fresh test worktree before running")
 
 
-def isolated_env(database_url: str, candidate_sha: str) -> dict[str, str]:
+def isolated_env(database_url: str, candidate_sha: str, dedup_base_sha: str) -> dict[str, str]:
     env = dict(os.environ)
     # A test run must not inherit credentials, runtime files, or a provider gate
     # from the caller.  Non-AICRM toolchain configuration remains available.
@@ -87,6 +87,8 @@ def isolated_env(database_url: str, candidate_sha: str) -> dict[str, str]:
         "AICRM_DATABASE_URL": database_url,
         "AICRM_PUBLIC_ORIGIN": "https://release-acceptance.invalid",
         "AICRM_RELEASE_SHA": candidate_sha,
+        "AICRM_DEDUP_HEAD_SHA": candidate_sha,
+        "AICRM_DEDUP_BASE_SHA": dedup_base_sha,
     })
     return env
 
@@ -137,7 +139,9 @@ def main() -> int:
         "command": ["scripts/ci/quality_lanes.py", args.lane, "--check-prerequisites" if not args.execute else "execute"],
     }
     write_receipt(report_dir, receipt)
-    result = subprocess.run(command, cwd=source_root, env=isolated_env(database_url, current), check=False)
+    dedup_base = git(source_root, "rev-parse", "HEAD^")
+    result = subprocess.run(command, cwd=source_root,
+                            env=isolated_env(database_url, current, dedup_base), check=False)
     receipt["exit_code"] = result.returncode
     write_receipt(report_dir, receipt)
     return result.returncode
