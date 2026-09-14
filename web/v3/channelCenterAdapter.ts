@@ -5,6 +5,9 @@
 import { api } from '../src/shared/api/client';
 import type { AdminDb } from '../src/shared/api/types';
 import { startChannelAdmissionHost } from './channelAdmissionHost';
+import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+
+installCommittedTextSearch();
 
 // The standard admission form is a complete, persistent V3 page.  Keep the
 // older frozen-controller seam only for the list and any legacy fixture route.

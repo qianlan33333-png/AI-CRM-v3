@@ -35,13 +35,13 @@ const fs = await import('node:fs/promises');
 const picker = await fs.readFile(path.join(root,'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js'),'utf8');
 const pause = (ms) => new Promise(resolve=>setTimeout(resolve,ms));
 for (const syncStatus of [200,503]) {
- let posts=0;let reads=0;let selected;
+ let posts=0;let reads=0;let selected;const readQueries=[];
  const dom=new JSDOM('<!doctype html><body></body>',{url:'https://test.invalid/admin/channels/17/edit',runScripts:'dangerously',beforeParse(w){
   w.Request=Request;w.Response=Response;w.Headers=Headers;
   w.AdminApi={responseErrorMessage:(_r,_d,f)=>f,errorMessage:(e,f)=>e?.message||f};
   w.fetch=async (input,init={})=>{
    if (init.method==='POST') { posts++;return new Response(JSON.stringify({ok:syncStatus===200}),{status:syncStatus}); }
-   reads++;return new Response(JSON.stringify({items:[{staff_id:12,user_id:'alice',display_name:posts&&syncStatus===200?'刷新后昵称':'原昵称'}]}),{status:200});
+   reads++;readQueries.push(new URL(typeof input==='string'?input:input.url,w.location.href).searchParams.get('q'));return new Response(JSON.stringify({items:[{staff_id:12,user_id:'alice',display_name:posts&&syncStatus===200?'刷新后昵称':'原昵称'}]}),{status:200});
   };
  }});
  try {
@@ -49,6 +49,10 @@ for (const syncStatus of [200,503]) {
   dom.window.eval(bundle);dom.window.eval(picker);
   await dom.window.OperationMemberPicker.open({scope:'channel_code',onSelect:m=>{selected=m;}});
   dom.window.document.querySelector('[data-operation-member-row-select]').click();
+  const search=dom.window.document.querySelector('[data-operation-member-search]');
+  search.value='未提交草稿';search.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+  await pause(300);
+  assert.equal(reads,1,'a directory draft must not trigger the frozen debounce read');
   dom.window.document.querySelector('[data-operation-member-refresh]').click();
   await pause(350);
   assert.equal(posts,1,'the Host and frozen picker must not issue duplicate refresh commands');
@@ -58,6 +62,9 @@ for (const syncStatus of [200,503]) {
    assert.match(dom.window.document.querySelector('[data-operation-member-list]').textContent,/原昵称/);
   } else {
    assert.equal(reads,2,'a successful refresh reloads through the existing search pathway');
+   assert.equal(readQueries[1],null,'refresh repeats the last committed query rather than submitting a newer draft');
+   assert.equal(search.value,'未提交草稿','refresh preserves the visible uncommitted directory draft');
+   assert.equal(dom.window.document.activeElement,search,'refresh preserves the directory search focus');
    assert.match(dom.window.document.querySelector('[data-operation-member-list]').textContent,/刷新后昵称/);
   }
   dom.window.document.querySelector('[data-operation-member-confirm]').click();

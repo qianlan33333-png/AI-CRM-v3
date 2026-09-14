@@ -1,3 +1,5 @@
+import { installCommittedTextSearch, replayCommittedTextSearch } from './shared/ui/committedTextSearch';
+
 export {};
 
 // Release-only loader for the byte-frozen dd8 selection components.  It does
@@ -50,7 +52,8 @@ document.addEventListener('click', (event) => {
       const response = await window.fetch('/api/admin/common/operation-members/sync', { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json' } });
       const data = await response.clone().json().catch(() => ({})) as { ok?: boolean };
       if (!response.ok || data.ok === false) throw new Error(`刷新客服失败（HTTP ${response.status}），已保留当前列表和选择。`);
-      modal.querySelector<HTMLInputElement>('[data-operation-member-search]')?.dispatchEvent(new Event('input', { bubbles: true }));
+      const search = modal.querySelector<HTMLInputElement>('[data-operation-member-search]');
+      if (search) replayCommittedTextSearch(search);
     } catch (error) {
       const notice = document.createElement('div');
       notice.dataset.v3DirectoryRefreshError = '1';
@@ -112,3 +115,4 @@ window.AICRMStandardComponents = {
   },
 };
 void window.AICRMStandardComponents.ready();
+installCommittedTextSearch();
