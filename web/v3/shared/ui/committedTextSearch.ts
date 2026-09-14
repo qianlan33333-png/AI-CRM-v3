@@ -23,6 +23,10 @@ const registeredSearches: RegisteredSearch[] = [
   { selector: '#list-search', trigger: 'input' },
   { selector: 'input[placeholder="搜索计划名称、发送人"]:not(:disabled)', trigger: 'input' },
   { selector: 'input[placeholder="按名称、链接、文件名搜索"]', trigger: 'input' },
+  { selector: 'input[data-image-library-query]', trigger: 'input' },
+  { selector: 'input[data-open-platform-doc-search]', trigger: 'input' },
+  { selector: 'input[data-field-mapping-variable-search]', trigger: 'input' },
+  { selector: '#group-ops-app input[name="keyword"][data-filter]', trigger: 'keydown' },
   { selector: '.aicrm-group-chat-picker-mask [data-group-picker-search]', trigger: 'input' },
   { selector: '.aicrm-tag-picker [data-role="search"]', trigger: 'input' },
   { selector: '[data-operation-member-picker] [data-operation-member-search]', trigger: 'keydown' },
@@ -90,7 +94,7 @@ function forward(input: HTMLInputElement, search: RegisteredSearch): void {
   dispatchLegacySearch(input, search);
   restoreSelection();
   queueMicrotask(restoreSelection);
-  window.requestAnimationFrame(restoreSelection);
+  if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(restoreSelection);
 }
 
 function deferCompositionEnd(input: HTMLInputElement): void {

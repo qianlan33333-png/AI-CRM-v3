@@ -1,6 +1,10 @@
 // V3 Host adapter for the byte-derived Group Ops presentation. It owns only
 // authenticated transport and DTO projection; plan, node and directory facts
 // remain in internal/groupops and the existing WeCom read adapter.
+import { installCommittedTextSearch } from "./shared/ui/committedTextSearch";
+
+installCommittedTextSearch();
+
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";
 const revisions = new Map<number, number>();

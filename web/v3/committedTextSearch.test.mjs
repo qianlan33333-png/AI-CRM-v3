@@ -45,6 +45,10 @@ const dom = new JSDOM(`<!doctype html><body data-page="channels">
   <div class="aicrm-tag-picker"><input data-role="search"></div>
   <div data-operation-member-picker><input data-operation-member-search></div>
   <div class="aicrm-material-picker-mask"><input data-picker-search></div>
+  <input data-image-library-query>
+  <input data-open-platform-doc-search>
+  <input data-field-mapping-variable-search>
+  <section id="group-ops-app"><input name="keyword" data-filter><select data-filter><option>all</option></select></section>
 </body>`, {
   url: 'https://test.invalid/admin/channels', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
 });
@@ -74,6 +78,12 @@ try {
   window.document.querySelector('[data-operation-member-search]').addEventListener('input', () => { calls.staffInput += 1; });
   window.document.querySelector('[data-operation-member-search]').addEventListener('keydown', (event) => { if (event.key === 'Enter') calls.staffEnter += 1; });
   window.document.querySelector('[data-picker-search]').addEventListener('keydown', (event) => { if (event.key === 'Enter') calls.materialEnter += 1; });
+  const newCalls = { image: 0, docs: 0, variables: 0, groupDirectory: 0, groupSelect: 0 };
+  window.document.querySelector('[data-image-library-query]').addEventListener('input', () => { newCalls.image += 1; });
+  window.document.querySelector('[data-open-platform-doc-search]').addEventListener('input', () => { newCalls.docs += 1; });
+  window.document.querySelector('[data-field-mapping-variable-search]').addEventListener('input', () => { newCalls.variables += 1; });
+  window.document.querySelector('#group-ops-app input[name="keyword"]').addEventListener('keydown', (event) => { if (event.key === 'Enter') newCalls.groupDirectory += 1; });
+  window.document.querySelector('#group-ops-app select[data-filter]').addEventListener('change', () => { newCalls.groupSelect += 1; });
 
   // The two production bundles both call the installer. The document-scoped
   // Symbol state keeps exactly one capture policy for forwarded events.
@@ -124,6 +134,27 @@ try {
   const staffImeEnter = enter(window, staff, { isComposing: true });
   assert.equal(staffImeEnter.defaultPrevented, false, 'staff picker IME confirmation keeps its default browser behavior');
   assert.equal(calls.staffEnter, 1, 'staff picker IME confirmation does not submit a directory read');
+
+  const image = window.document.querySelector('[data-image-library-query]');
+  const docs = window.document.querySelector('[data-open-platform-doc-search]');
+  const variables = window.document.querySelector('[data-field-mapping-variable-search]');
+  const groupDirectory = window.document.querySelector('#group-ops-app input[name="keyword"]');
+  for (const input of [image, docs, variables, groupDirectory]) {
+    input.value = '草稿';
+    input.dispatchEvent(new window.Event('input', { bubbles: true, cancelable: true }));
+    input.dispatchEvent(new window.FocusEvent('blur', { bubbles: true }));
+  }
+  assert.deepEqual(newCalls, { image: 0, docs: 0, variables: 0, groupDirectory: 0, groupSelect: 0 }, 'the four remaining search inputs retain drafts on input and blur');
+  image.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }));
+  image.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }));
+  const imageCandidateEnter = enter(window, image, { keyCode: 229 });
+  assert.equal(imageCandidateEnter.defaultPrevented, false, 'an image-search IME candidate Enter stays with the browser');
+  assert.equal(newCalls.image, 0, 'an image-search IME candidate Enter does not schedule a read');
+  await pause();
+  for (const input of [image, docs, variables, groupDirectory]) enter(window, input);
+  assert.deepEqual(newCalls, { image: 1, docs: 1, variables: 1, groupDirectory: 1, groupSelect: 0 }, 'a normal Enter forwards each remaining search exactly once to its existing handler');
+  window.document.querySelector('#group-ops-app select[data-filter]').dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(newCalls.groupSelect, 1, 'Group Ops select filters keep their existing change behavior');
 } finally {
   await pause(20);
   dom.window.close();
