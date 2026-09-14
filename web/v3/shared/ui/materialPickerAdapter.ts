@@ -51,9 +51,9 @@ type MaterialPickerOptions = {
   limit?: number;
   allowedMimeTypes?: string[];
   readonly?: boolean;
-  onConfirm?: (item: Material) => void;
+  onConfirm?: (item: Material) => void | Promise<void>;
   /** Required when a caller permits removing already-selected material. */
-  onCommit?: (result: { selected: Material[]; added: Material[]; removed: Material[] }) => void;
+  onCommit?: (result: { selected: Material[]; added: Material[]; removed: Material[] }) => void | Promise<void>;
   onCancel?: () => void;
 };
 type MaterialPicker = { open(options?: MaterialPickerOptions): unknown };
@@ -65,6 +65,9 @@ const labels: Record<MaterialType, string> = { image: '图片', miniprogram: '�
 
 function runtime(): MaterialWindow { return window as unknown as MaterialWindow; }
 function escape(value: unknown): string { return String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] || character); }
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim() ? error.message.trim() : fallback;
+}
 function validID(value: number | string): number | null { const id = Number(value); return Number.isSafeInteger(id) && id > 0 ? id : null; }
 function isMaterialType(value: string): value is MaterialType { return value === 'image' || value === 'miniprogram' || value === 'attachment'; }
 
@@ -184,6 +187,8 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
   const more = mask.querySelector<HTMLButtonElement>('[data-v3-picker-more]')!;
   const confirm = mask.querySelector<HTMLButtonElement>('[data-v3-picker-confirm]')!;
   let closed = false;
+  let applying = false;
+  let applyError: string | undefined;
   let restoreRemovedFocus: string | undefined;
   let dialogControl!: SelectionDialogController;
 
@@ -199,6 +204,10 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
 
   const close = (cancelled: boolean) => {
     if (closed) return;
+    if (applying) {
+      status.textContent = '正在应用选择，请等待完成。';
+      return;
+    }
     closed = true;
     unsubscribe();
     session.cancel();
@@ -211,11 +220,11 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     if (closed) return;
     const snapshot = session.snapshot();
     if (document.activeElement !== search && search.value !== snapshot.query.draft) search.value = snapshot.query.draft;
-    status.textContent = snapshot.readonlyReason || (snapshot.overLimit ? (options.limit === 1 ? '初始选择超过单选限制，请先保留一项。' : `初始选择超过 ${options.limit} 项，请先移除多余选择。`) : undefined) || snapshot.error || snapshot.notice || (snapshot.loading ? `正在加载${labels[type]}…` : `已暂选 ${snapshot.draft.length} 项`);
+    status.textContent = applying ? '正在应用选择…' : applyError || snapshot.readonlyReason || (snapshot.overLimit ? (options.limit === 1 ? '初始选择超过单选限制，请先保留一项。' : `初始选择超过 ${options.limit} 项，请先移除多余选择。`) : undefined) || snapshot.error || snapshot.notice || (snapshot.loading ? `正在加载${labels[type]}…` : `已暂选 ${snapshot.draft.length} 项`);
     selectedRoot.innerHTML = snapshot.draft.map((item) => {
       const key = selectionKey(item.kind, item.source, item.value.library_id);
       const unavailable = item.disabledReason ? `<span class="aicrm-material-picker__subtitle">${escape(item.disabledReason)}</span>` : '';
-      return `<button class="aicrm-material-picker__item is-selected" type="button" data-v3-material-remove="${escape(key)}"${snapshot.readonlyReason ? ' disabled' : ''}><span class="aicrm-material-picker__title">${escape(item.value.title)}</span>${unavailable}<span aria-hidden="true">移除</span></button>`;
+      return `<button class="aicrm-material-picker__item is-selected" type="button" data-v3-material-remove="${escape(key)}"${snapshot.readonlyReason || applying ? ' disabled' : ''}><span class="aicrm-material-picker__title">${escape(item.value.title)}</span>${unavailable}<span aria-hidden="true">移除</span></button>`;
     }).join('') || '<div class="aicrm-material-picker__empty">尚未选择素材</div>';
     const rows = snapshot.items;
     empty.hidden = snapshot.loading || rows.length > 0;
@@ -225,7 +234,7 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
       const key = selectionKey(item.kind, item.source, item.value.library_id);
       const selected = session.isDraftSelected(key);
       const unavailable = Boolean(item.disabledReason);
-      const disabled = Boolean(snapshot.readonlyReason || (!selected && unavailable));
+      const disabled = Boolean(applying || snapshot.readonlyReason || (!selected && unavailable));
       const thumbnail = item.value.thumbnail_url
         ? `<img src="${escape(item.value.thumbnail_url)}" alt="" data-v3-material-preview><span class="aicrm-material-picker__preview-unavailable" data-v3-material-preview-unavailable hidden>预览暂不可用</span>`
         : `<span>${labels[type]}</span>`;
@@ -239,8 +248,11 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
       });
     }
     more.hidden = !snapshot.nextCursor;
-    more.disabled = snapshot.loading;
-    confirm.disabled = Boolean(snapshot.readonlyReason || snapshot.loading || snapshot.overLimit);
+    search.disabled = applying;
+    mask.querySelector<HTMLButtonElement>('[data-v3-picker-search]')!.disabled = applying;
+    mask.querySelector<HTMLButtonElement>('[data-v3-picker-reload]')!.disabled = applying;
+    more.disabled = applying || snapshot.loading;
+    confirm.disabled = Boolean(applying || snapshot.readonlyReason || snapshot.loading || snapshot.overLimit);
     restoreSelectionFocus(grid, '[data-v3-material-key]', 'v3MaterialKey', focusKey);
     if (restoreRemovedFocus !== undefined) {
       const next = Array.from(selectedRoot.querySelectorAll<HTMLElement>('[data-v3-material-remove]')).find((button) => button.dataset.v3MaterialRemove === restoreRemovedFocus);
@@ -255,6 +267,7 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
     if (target === mask || target.closest('[data-v3-picker-close],[data-v3-picker-cancel]')) { close(true); return; }
+    if (applying) return;
     if (target.closest('[data-v3-picker-search]')) { submit(); return; }
     if (target.closest('[data-v3-picker-reload]')) { void session.reload(loader); return; }
     if (target.closest('[data-v3-picker-more]')) { void session.loadNextPage(loader); return; }
@@ -265,11 +278,27 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
         status.textContent = '该页面尚未支持移除已选素材；请取消后保持原选择。';
         return;
       }
-      const result = session.commit();
-      const translated = { selected: result.selected.map((item) => item.value), added: result.added.map((item) => item.value), removed: result.removed.map((item) => item.value) };
-      if (options.onCommit) options.onCommit(translated);
-      else for (const item of translated.added) options.onConfirm?.(item);
-      close(false);
+      if (!options.onCommit && preview.added.length > 1) {
+        status.textContent = '多选素材需要调用方提供 onCommit 后再应用，当前不会逐项保存以免部分应用。';
+        return;
+      }
+      const translated = { selected: preview.selected.map((item) => item.value), added: preview.added.map((item) => item.value), removed: preview.removed.map((item) => item.value) };
+      applying = true;
+      applyError = undefined;
+      render();
+      void (async () => {
+        try {
+          if (options.onCommit) await options.onCommit(translated);
+          else if (translated.added.length === 1) await options.onConfirm?.(translated.added[0]);
+          session.commit();
+          applying = false;
+          close(false);
+        } catch (error) {
+          applying = false;
+          applyError = `应用素材失败：${errorMessage(error, '请从调用方重新确认实际保存结果')}`;
+          render();
+        }
+      })();
       return;
     }
     const remove = target.closest<HTMLElement>('[data-v3-material-remove]');
