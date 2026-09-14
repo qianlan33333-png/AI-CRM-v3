@@ -135,6 +135,11 @@ type composedApplication struct {
 	weComProcessor        wecom.InboxProcessor
 	weComArchiveProcessor wecom.ArchiveInboxProcessor
 	effectsRuntime        *platformjobqueue.Runtime
+	// paymentDistribution is the already-composed Payment completion sink. It
+	// remains unexported and is retained so same-package PostgreSQL journeys can
+	// exercise an EER terminal callback through the exact Production observer
+	// wiring without contacting a Provider.
+	paymentDistribution   effectport.CompletionSink
 	channelEntrantActions *channelstore.EntrantActionStore
 	customerSync          wecom.CustomerSyncService
 	adminOps              *adminopsapp.ProjectionService
@@ -1158,6 +1163,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = paymentService.SetProfitSharingIdentityReader(queries); err != nil {
 		return fail(err)
 	}
+	if err = paymentService.SetProfitSharingEnabled(cfg.WeChatPay.ProfitSharingEnabled); err != nil {
+		return fail(err)
+	}
 	if err = paymentService.SetCheckoutProductReader(productTargets); err != nil {
 		return fail(err)
 	}
@@ -1207,10 +1215,23 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			if !rsaOK {
 				return fail(errors.New("wechat pay merchant signer is not RSA"))
 			}
-			// Reuse the explicitly configured, verified public key. This avoids
-			// the SDK's AutoAuth certificate downloader on ordinary payment
-			// startup and keeps profit sharing an independently enabled provider.
-			profitSharingSDK, sdkErr := paymentprovider.NewOfficialProfitSharingSDKWithPublicKey(ctx, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, cfg.WeChatPay.ProfitSharingPublicKeyID, merchantRSAKey, platformKey)
+			// Profit-sharing trust material is intentionally selected by the
+			// explicit runtime mode. A platform-certificate serial is not a
+			// public-key ID, and Composition never falls back to another SDK mode.
+			var authentication paymentprovider.ProfitSharingAuthentication
+			switch cfg.WeChatPay.ProfitSharingAuthMode {
+			case "certificate":
+				certificate, certificateErr := paymentprovider.ParsePlatformX509Certificate(platformCertificate)
+				if certificateErr != nil {
+					return fail(certificateErr)
+				}
+				authentication = paymentprovider.ProfitSharingAuthentication{Mode: paymentprovider.ProfitSharingAuthenticationCertificate, PlatformCertificate: certificate}
+			case "public_key":
+				authentication = paymentprovider.ProfitSharingAuthentication{Mode: paymentprovider.ProfitSharingAuthenticationPublicKey, PlatformPublicKeyID: cfg.WeChatPay.ProfitSharingPublicKeyID, PlatformPublicKey: platformKey}
+			default:
+				return fail(errors.New("invalid enabled WeChat Pay profit-sharing authentication mode"))
+			}
+			profitSharingSDK, sdkErr := paymentprovider.NewOfficialProfitSharingSDKWithAuthentication(ctx, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, merchantRSAKey, authentication)
 			if sdkErr != nil {
 				return fail(sdkErr)
 			}
@@ -1342,8 +1363,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if distributionErr = paymentService.SetRefundExposureConsumer(refundService); distributionErr != nil {
 			return fail(distributionErr)
 		}
+		if distributionErr = paymentService.SetProfitSharingReceiverStatusObserver(registration); distributionErr != nil {
+			return fail(distributionErr)
+		}
 		readModelService, distributionErr := distributionapp.NewReadModelService(uow, distributionRepository)
 		if distributionErr != nil {
+			return fail(distributionErr)
+		}
+		if distributionErr = readModelService.SetDirectoryDisplayNameReader(orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); distributionErr != nil {
 			return fail(distributionErr)
 		}
 		distributionPublic, distributionErr = distributionhttp.NewHandler(distributionhttp.Config{Registration: registration, Promotion: promotion, Earnings: readModelService, Sessions: browserSessions, Bridge: bridge, CookieSecure: true, AllowedOrigins: []string{cfg.PublicOrigin, h5PublicOrigin(cfg)}})
@@ -1986,7 +2013,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = runtimeReleaseService.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: runtimeSnapshot.Revision, Source: runtimeSnapshot.Source, Role: string(cfg.Role), ReleaseSHA: cfg.ReleaseSHA, SnapshotChecksum: runtimeSnapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
 		return fail(err)
 	}
-	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {

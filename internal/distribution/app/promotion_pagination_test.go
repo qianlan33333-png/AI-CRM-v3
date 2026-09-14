@@ -108,6 +108,39 @@ func (s promotionPaginationPayment) DistributionPaymentStateWithin(context.Conte
 	return paymentport.DistributionPaymentState{ConfirmedPaid: true, ConfirmedPaidAt: s.now}, nil
 }
 
+type strictPromotionStore struct{ promotionPaginationStore }
+
+func (s strictPromotionStore) ReadProductPolicyWithin(_ context.Context, id int64, kind distributiondomain.ProductType) (distributiondomain.Policy, error) {
+	policy, err := s.promotionPaginationStore.ReadProductPolicyWithin(context.Background(), id, kind)
+	policy.Enabled = id != 5
+	return policy, err
+}
+func (s strictPromotionStore) ReadProductPolicyForUpdateWithin(ctx context.Context, id int64, kind distributiondomain.ProductType) (distributiondomain.Policy, error) {
+	return s.ReadProductPolicyWithin(ctx, id, kind)
+}
+
+type strictPromotionOrders struct{ now time.Time }
+
+func (s strictPromotionOrders) ListQualificationPurchaseEvidenceWithin(_ context.Context, query orderport.QualificationPurchaseQuery) ([]orderport.QualificationPurchaseEvidence, error) {
+	if query.ProductID == 1 {
+		return nil, nil
+	}
+	return []orderport.QualificationPurchaseEvidence{{OrderID: query.ProductID, OrderItemLine: 1, ProductID: query.ProductID, PayerCustomerID: 11, BeneficiaryCustomerID: 11, ItemPaidMinor: 1000, PaymentConfirmedAt: s.now, RecordOrigin: "native"}}, nil
+}
+
+type strictPromotionPayment struct{ now time.Time }
+
+func (s strictPromotionPayment) DistributionPaymentStateWithin(_ context.Context, orderID int64) (paymentport.DistributionPaymentState, error) {
+	switch orderID {
+	case 2:
+		return paymentport.DistributionPaymentState{ConfirmedPaid: true, ConfirmedPaidAt: s.now, RefundExposure: true}, nil
+	case 3:
+		return paymentport.DistributionPaymentState{ConfirmedPaid: true}, nil
+	default:
+		return paymentport.DistributionPaymentState{ConfirmedPaid: true, ConfirmedPaidAt: s.now}, nil
+	}
+}
+
 func promotionPaginationFixture(t *testing.T, productCount int) (*PromotionService, *promotionPaginationProducts, distributionport.TrustedSessionActor) {
 	t.Helper()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -187,6 +220,38 @@ func TestListPromotionProductsScanLimitReturnsCursor(t *testing.T) {
 	page, err := service.ListPromotionProducts(context.Background(), actor, "", 1)
 	if err != nil || len(page.Items) != 0 || page.NextCursor != strconv.Itoa(int(promotionProductScanMaximum)) {
 		t.Fatalf("bounded filtered page=%+v err=%v", page, err)
+	}
+}
+
+func TestListPromotionProductsStrictlyExcludesUnqualifiedCardsAndReportsEvidenceGap(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	products := &promotionPaginationProducts{items: []productport.ProductOption{
+		{ID: 1, ProductType: productport.ProductOptionStandard, Name: "未购买", PriceMinor: 1000, Currency: "CNY"},
+		{ID: 2, ProductType: productport.ProductOptionStandard, Name: "退款中", PriceMinor: 1000, Currency: "CNY"},
+		{ID: 3, ProductType: productport.ProductOptionStandard, Name: "待补付款确认", PriceMinor: 1000, Currency: "CNY"},
+		{ID: 4, ProductType: productport.ProductOptionStandard, Name: "可推广", PriceMinor: 1000, Currency: "CNY"},
+		{ID: 5, ProductType: productport.ProductOptionStandard, Name: "未启用政策", PriceMinor: 1000, Currency: "CNY"},
+	}}
+	qualification, err := NewQualificationService(lineageStub{roots: []customerdomain.CustomerID{11}}, strictPromotionOrders{now: now}, strictPromotionPayment{now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualification.now = func() time.Time { return now }
+	service, err := NewPromotionService(settlementUOWStub{}, strictPromotionStore{promotionPaginationStore{now: now}}, qualification, products, promotionPaginationSaleable{}, lineageStub{roots: []customerdomain.CustomerID{11}}, "https://crm.example.test", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.ListPromotionProducts(context.Background(), distributionport.TrustedSessionActor{CustomerID: 11, IdentityID: 12, AppID: "app-1", AppScope: "scope-1", Channel: "mini_program", OccurredAt: now}, "", 20)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ProductID != 4 || page.EmptyReason != "" || page.NextCursor != "" {
+		t.Fatalf("strict page=%+v err=%v", page, err)
+	}
+	// When every saleable, policy-enabled product is excluded, the page must
+	// explain the highest-priority server fact without leaking one of those
+	// products as a purchase or application card.
+	products.items = products.items[:3]
+	page, err = service.ListPromotionProducts(context.Background(), distributionport.TrustedSessionActor{CustomerID: 11, IdentityID: 12, AppID: "app-1", AppScope: "scope-1", Channel: "mini_program", OccurredAt: now}, "", 20)
+	if err != nil || len(page.Items) != 0 || page.EmptyReason != "qualification_payment_confirmation_missing" {
+		t.Fatalf("strict empty page=%+v err=%v", page, err)
 	}
 }
 

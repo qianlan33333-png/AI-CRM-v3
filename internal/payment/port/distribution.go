@@ -17,6 +17,11 @@ import (
 // Payment implementation atomically records the reserve, immutable instruction,
 // audit facts and EER acceptance. It never makes a Provider call in that UoW.
 type DistributionSettlementPort interface {
+	// SettlementCapability is the safe, runtime capability projection used by
+	// Distribution to distinguish a merchant-level disabled settlement feature
+	// from a distributor's receiver readiness. It never exposes configuration,
+	// keys, accounts, or Provider responses.
+	SettlementCapability(context.Context) (SettlementCapability, error)
 	PrepareProfitSharingReceiverWithin(context.Context, ReceiverPreparation) (ReceiverReadiness, error)
 	ReceiverReadiness(context.Context, int64, string) (ReceiverReadiness, error)
 	// ReceiverReadinessWithin joins an existing business UoW and locks the
@@ -35,6 +40,14 @@ type DistributionSettlementPort interface {
 	ReconcileProfitSharingUnfreeze(context.Context, string) (ProfitSharingUnfreeze, error)
 	CancelUnsubmittedProfitSharingWithin(context.Context, string, string, ProfitSharingCancellationActor) (ProfitSharingInstruction, error)
 	UnfreezeProfitSharingRemainingWithin(context.Context, ProfitSharingUnfreezeRequest) (ProfitSharingUnfreeze, error)
+}
+
+// SettlementCapability is intentionally separate from ReceiverReadiness:
+// registering a distributor and preparing their receiver may remain valid
+// facts while the merchant has not enabled money-moving settlement.
+type SettlementCapability struct {
+	Enabled bool
+	Reason  string
 }
 
 // ReceiverPreparation may only be made from a server-trusted Payment session
@@ -62,6 +75,29 @@ type ReceiverReadiness struct {
 	Ready, OutcomeKnown                bool
 	Version                            int64
 	UpdatedAt                          time.Time
+}
+
+// ProfitSharingReceiverStatusObserver is an optional same-UoW projection
+// bridge. Payment remains the authority for receiver state; Distribution may
+// persist only this safe readiness snapshot for its own profile and admin
+// reads after Payment has transitioned the owned receiver record.
+type ProfitSharingReceiverStatusObserver interface {
+	SyncProfitSharingReceiverStatusWithin(context.Context, ReceiverReadiness) error
+}
+
+// ProfitSharingReceiverRecoveryCommand is an administrator-only Payment
+// command. The caller never supplies an OpenID, current account digest,
+// Provider result, or replacement effect reference; Payment re-verifies all
+// of those facts from its own records before accepting a new intent.
+type ProfitSharingReceiverRecoveryCommand struct {
+	ReceiverReference string
+	ActorAdminUserID  int64
+	IdempotencyKey    string
+	EvidenceReference string
+}
+
+func (v ProfitSharingReceiverRecoveryCommand) Valid() bool {
+	return validProfitSharingReceiverReference(v.ReceiverReference) && v.ActorAdminUserID > 0 && validTrimmed(v.IdempotencyKey, 12, 240) && validTrimmed(v.EvidenceReference, 1, 200)
 }
 
 // DistributionPaymentState is the original-transaction projection used for
@@ -210,6 +246,22 @@ func PaymentReference(paymentID int64) string {
 		return ""
 	}
 	return "payref_" + decimal(paymentID)
+}
+
+func validProfitSharingReceiverReference(value string) bool {
+	if !strings.HasPrefix(value, "psrecv_") {
+		return false
+	}
+	id := strings.TrimPrefix(value, "psrecv_")
+	if id == "" || id[0] == '0' {
+		return false
+	}
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func validPaymentReference(value string) bool {

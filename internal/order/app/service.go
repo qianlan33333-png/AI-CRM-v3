@@ -99,6 +99,13 @@ type Store interface {
 	CommercePushDeliveryReference(context.Context, domain.Provider, string) (orderport.CommercePushDeliveryReference, error)
 }
 
+// paymentConfirmationEvidenceStore is deliberately a private read seam. A
+// Provider reconciliation may prove an existing paid event, but it must never
+// manufacture one for an already-paid order whose immutable event is absent.
+type paymentConfirmationEvidenceStore interface {
+	PaymentConfirmationOccurredAtWithin(context.Context, int64) (time.Time, error)
+}
+
 type Service struct {
 	uow           platformport.UnitOfWork
 	store         Store
@@ -378,6 +385,35 @@ func (s *Service) SettlePaymentWithin(ctx context.Context, command orderport.Pay
 		}
 	}
 	return updated.Snapshot(), nil
+}
+
+// VerifyPaymentConfirmationEvidenceWithin proves that an existing native
+// Order paid event is exactly the Provider query fact Payment is about to use
+// to restore its own missing timestamp. This is read-only and joins the
+// caller's UoW; it cannot settle or otherwise alter an Order.
+func (s *Service) VerifyPaymentConfirmationEvidenceWithin(ctx context.Context, evidence orderport.PaymentConfirmationEvidence) (domain.Snapshot, error) {
+	if !ready(s) || evidence.OrderID < 1 || evidence.ProviderTransactionNo == "" || evidence.ProviderTransactionNo != strings.TrimSpace(evidence.ProviderTransactionNo) || evidence.OccurredAt.IsZero() {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	reader, ok := s.store.(paymentConfirmationEvidenceStore)
+	if !ok {
+		return domain.Snapshot{}, orderport.ErrUnavailable
+	}
+	current, err := s.store.Get(ctx, evidence.OrderID, true)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	if current.RecordOrigin != domain.RecordOriginNative || current.Status != domain.StatusPaid || current.ProviderTransactionNo != evidence.ProviderTransactionNo {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	paidAt, err := reader.PaymentConfirmationOccurredAtWithin(ctx, evidence.OrderID)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	if !paidAt.UTC().Equal(evidence.OccurredAt.UTC()) {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	return current.Snapshot(), nil
 }
 
 func validPaymentProductType(kind string, durationDays int32) bool {

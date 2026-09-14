@@ -303,13 +303,29 @@ func TestWeChatPayProfitSharingIsIndependentlyDisabledAndFailsClosed(t *testing.
 	}
 	t.Setenv("AICRM_WECHAT_PAY_PROFIT_SHARING_ENABLED", "true")
 	if _, err = Load(); err == nil {
-		t.Fatal("profit sharing enabled without External Effects and a verified public key id")
+		t.Fatal("profit sharing enabled without External Effects and an explicit authentication mode")
 	}
 	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("profit sharing enabled without explicit authentication mode")
+	}
+	t.Setenv("AICRM_WECHAT_PAY_PROFIT_SHARING_AUTH_MODE", "certificate")
+	cfg, err = Load()
+	if err != nil || !cfg.WeChatPay.ProfitSharingEnabled || cfg.WeChatPay.ProfitSharingAuthMode != "certificate" {
+		t.Fatalf("certificate profit-sharing configuration=%+v err=%v", cfg.WeChatPay, err)
+	}
+	t.Setenv("AICRM_WECHAT_PAY_PROFIT_SHARING_AUTH_MODE", "public_key")
+	if _, err = Load(); err == nil {
+		t.Fatal("public-key profit sharing authentication requires a key id")
+	}
 	t.Setenv("AICRM_WECHAT_PAY_PROFIT_SHARING_PUBLIC_KEY_ID", "PUB_KEY_ID")
 	cfg, err = Load()
-	if err != nil || !cfg.WeChatPay.ProfitSharingEnabled || cfg.WeChatPay.ProfitSharingPublicKeyID != "PUB_KEY_ID" {
+	if err != nil || !cfg.WeChatPay.ProfitSharingEnabled || cfg.WeChatPay.ProfitSharingAuthMode != "public_key" || cfg.WeChatPay.ProfitSharingPublicKeyID != "PUB_KEY_ID" {
 		t.Fatalf("independent profit-sharing configuration=%+v err=%v", cfg.WeChatPay, err)
+	}
+	t.Setenv("AICRM_WECHAT_PAY_PROFIT_SHARING_AUTH_MODE", "certificate")
+	if _, err = Load(); err == nil {
+		t.Fatal("certificate profit sharing authentication must reject a public key id")
 	}
 }
 

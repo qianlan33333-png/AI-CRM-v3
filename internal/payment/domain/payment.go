@@ -109,6 +109,21 @@ func (p Payment) Settle(expected int64, status Status, now time.Time) (Payment, 
 	p.UpdatedAt = now.UTC()
 	return p, nil
 }
+
+// RestorePaidConfirmation records a Provider-verified original success time
+// for a legacy native payment already marked paid but missing that immutable
+// fact. It cannot settle a new payment, change an existing confirmation, or
+// substitute bookkeeping UpdatedAt for Provider time.
+func (p Payment) RestorePaidConfirmation(expected int64, confirmedAt, reconciledAt time.Time) (Payment, error) {
+	if expected != p.Version || p.Status != StatusPaid || p.PaidConfirmedAt != nil || confirmedAt.IsZero() || reconciledAt.IsZero() || confirmedAt.Before(p.CreatedAt) || reconciledAt.Before(p.UpdatedAt) || reconciledAt.Before(confirmedAt) {
+		return Payment{}, ErrTransition
+	}
+	confirmed := confirmedAt.UTC()
+	p.PaidConfirmedAt = &confirmed
+	p.Version++
+	p.UpdatedAt = reconciledAt.UTC()
+	return p, nil
+}
 func NewRefund(payment Payment, refundNo string, amount int64, reason string, now time.Time) (Refund, error) {
 	refundNo = strings.TrimSpace(refundNo)
 	reason = strings.TrimSpace(reason)

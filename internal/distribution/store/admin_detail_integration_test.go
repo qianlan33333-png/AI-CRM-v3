@@ -57,15 +57,26 @@ func TestPostgreSQLAdminDistributorOrderDetailPagination(t *testing.T) {
 	var first, secondIDs []int64
 	var cursor string
 	var earnings distributionport.Earnings
+	var distributorPage distributionport.AdminPage[distributionport.AdminDistributor]
+	var globalOrderPage distributionport.AdminPage[distributionport.AdminOrder]
 	err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		distributorPage, readErr = repository.ListAdminDistributors(tx, "", 10)
+		if readErr != nil {
+			return readErr
+		}
+		globalOrderPage, readErr = repository.ListAdminOrders(tx, "", 50)
+		if readErr != nil {
+			return readErr
+		}
 		page, readErr := repository.ListAdminOrdersByDistributor(tx, owner, "", 10)
 		if readErr != nil {
 			return readErr
 		}
 		for _, item := range page.Items {
 			first = append(first, item.AttributionID)
-			if item.DistributorPublicNo != "DSTDETAIL301" {
-				return fmt.Errorf("leaked distributor %q", item.DistributorPublicNo)
+			if item.DistributorPublicNo != "DSTDETAIL301" || item.DistributorCustomerID != 301 {
+				return fmt.Errorf("wrong distributor projection public=%q customer=%d", item.DistributorPublicNo, item.DistributorCustomerID)
 			}
 		}
 		cursor = page.NextCursor
@@ -75,8 +86,8 @@ func TestPostgreSQLAdminDistributorOrderDetailPagination(t *testing.T) {
 		}
 		for _, item := range page.Items {
 			secondIDs = append(secondIDs, item.AttributionID)
-			if item.DistributorPublicNo != "DSTDETAIL301" {
-				return fmt.Errorf("leaked distributor %q", item.DistributorPublicNo)
+			if item.DistributorPublicNo != "DSTDETAIL301" || item.DistributorCustomerID != 301 {
+				return fmt.Errorf("wrong distributor projection public=%q customer=%d", item.DistributorPublicNo, item.DistributorCustomerID)
 			}
 		}
 		if page.NextCursor != "" {
@@ -86,11 +97,25 @@ func TestPostgreSQLAdminDistributorOrderDetailPagination(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
+		if detail.Distributor.CustomerID != 301 {
+			return fmt.Errorf("detail customer projection=%d", detail.Distributor.CustomerID)
+		}
 		earnings = detail.Earnings
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(distributorPage.Items) != 2 || distributorPage.Items[0].CustomerID != 301 || distributorPage.Items[1].CustomerID != 302 {
+		t.Fatalf("admin distributor customer projections=%+v", distributorPage.Items)
+	}
+	if len(globalOrderPage.Items) != 12 {
+		t.Fatalf("global admin order page count=%d", len(globalOrderPage.Items))
+	}
+	for _, item := range globalOrderPage.Items {
+		if item.DistributorCustomerID != 301 && item.DistributorCustomerID != 302 {
+			t.Fatalf("global order customer projection=%d", item.DistributorCustomerID)
+		}
 	}
 	if len(first) != 10 || cursor != fmt.Sprint(ownerIDs[9]) {
 		t.Fatalf("first detail page ids=%v cursor=%q", first, cursor)

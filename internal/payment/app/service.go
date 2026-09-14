@@ -55,6 +55,10 @@ type Store interface {
 	ImportTerminalRefund(context.Context, domain.Refund, [32]byte, string) (domain.Refund, error)
 }
 
+type paidConfirmationRestorer interface {
+	RestorePaidConfirmation(context.Context, domain.Payment, string, string) (domain.Payment, error)
+}
+
 type Service struct {
 	lineage                 identityport.CanonicalLineageReader
 	receiverIDs             identityport.PaymentIdentityReader
@@ -67,11 +71,13 @@ type Service struct {
 	shopReconciler          paymentport.ShopRefundReconciler
 	payReconciler           paymentport.WeChatPayReconciler
 	profitSharingReconciler paymentport.ProfitSharingReconciler
+	receiverStatusObserver  paymentport.ProfitSharingReceiverStatusObserver
 	reconcileJobs           paymentport.ReconciliationEnqueuer
 	products                productport.CheckoutProductReader
 	refundExposureConsumer  paymentport.RefundExposureConsumer
 	miniAppID               string
 	h5AppID                 string
+	profitSharingEnabled    bool
 	now                     func() time.Time
 }
 
@@ -80,6 +86,17 @@ func (s *Service) SetPaymentChannelAppIDs(miniProgramAppID, h5OfficialAccountApp
 		return paymentport.ErrInvalid
 	}
 	s.miniAppID, s.h5AppID = miniProgramAppID, h5OfficialAccountAppID
+	return nil
+}
+
+// SetProfitSharingEnabled records Composition's explicit merchant capability
+// decision. It is not a browser setting: Payment checks it before accepting a
+// receiver-add effect or any money-moving distribution instruction.
+func (s *Service) SetProfitSharingEnabled(enabled bool) error {
+	if s == nil {
+		return paymentport.ErrInvalid
+	}
+	s.profitSharingEnabled = enabled
 	return nil
 }
 
@@ -141,6 +158,17 @@ func (s *Service) SetProfitSharingReconciler(reconciler paymentport.ProfitSharin
 		return paymentport.ErrInvalid
 	}
 	s.profitSharingReconciler = reconciler
+	return nil
+}
+
+// SetProfitSharingReceiverStatusObserver is wired by Composition to the
+// Distribution-owned snapshot projector. It runs only inside an existing
+// Payment/UoW transition; it never reads Provider state or creates a queue.
+func (s *Service) SetProfitSharingReceiverStatusObserver(observer paymentport.ProfitSharingReceiverStatusObserver) error {
+	if s == nil || observer == nil || s.receiverStatusObserver != nil {
+		return paymentport.ErrInvalid
+	}
+	s.receiverStatusObserver = observer
 	return nil
 }
 
@@ -809,48 +837,66 @@ func (s *Service) ApplyVerifiedShopCallback(ctx context.Context, callback paymen
 }
 
 func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64) (domain.Payment, error) {
-	if s == nil || s.uow == nil || s.store == nil || s.payReconciler == nil || paymentID < 1 {
-		return domain.Payment{}, paymentport.ErrInvalid
-	}
-	var current domain.Payment
-	err := s.uow.Within(ctx, func(tx context.Context) error {
-		var inner error
-		current, inner = s.store.GetPayment(tx, paymentID, false)
-		if inner != nil {
-			return inner
-		}
-		if current.Historical || current.Provider != domain.ProviderWeChatPay || (current.Status != domain.StatusAwaitingPayment && current.Status != domain.StatusAwaitingPrepay && current.Status != domain.StatusPaid) {
-			return paymentport.ErrConflict
-		}
-		return nil
-	})
+	current, query, outcome, err := s.queriedWeChatPayPayment(ctx, paymentID)
 	if err != nil {
-		return domain.Payment{}, classify(err)
-	}
-	query, err := s.payReconciler.QueryPayment(ctx, current.MerchantOrderNo)
-	if err != nil {
-		return domain.Payment{}, paymentport.ErrUnavailable
-	}
-	if query.MerchantOrderNo != current.MerchantOrderNo || query.AmountMinor != current.AmountMinor || query.Currency != current.Currency || !effectport.ValidDigest(query.EvidenceDigest) || query.OccurredAt.IsZero() {
-		return domain.Payment{}, paymentport.ErrConflict
-	}
-	outcome := "pending"
-	switch query.Status {
-	case "SUCCESS":
-		if !effectport.ValidDigest(query.TransactionDigest) || !validProviderTransactionReference(query.TransactionReference) || query.TransactionDigest != effectport.Hash("wechatpay.transaction", query.TransactionReference) {
-			return domain.Payment{}, paymentport.ErrConflict
-		}
-		outcome = "paid"
-	case "CLOSED", "REVOKED", "PAYERROR":
-		outcome = "final_failed"
+		return domain.Payment{}, err
 	}
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		locked, inner := s.store.GetPayment(tx, paymentID, true)
 		if inner != nil {
 			return inner
 		}
+		if locked.Status == domain.StatusPaid {
+			current = locked
+			// A historical native payment missing its confirmation time is the
+			// narrow recovery case.  Do not even persist a reconciliation read
+			// until the signed Provider SUCCESS fact and immutable Order paid
+			// evidence agree exactly; unknown or mismatched queries change
+			// nothing.
+			if locked.PaidConfirmedAt == nil {
+				if outcome != "paid" {
+					return nil
+				}
+				verifier, ok := s.orders.(orderport.PaymentConfirmationEvidenceVerifier)
+				if !ok {
+					return paymentport.ErrUnavailable
+				}
+				if _, inner = verifier.VerifyPaymentConfirmationEvidenceWithin(tx, orderport.PaymentConfirmationEvidence{OrderID: locked.OrderID, ProviderTransactionNo: query.TransactionReference, OccurredAt: query.OccurredAt}); inner != nil {
+					return inner
+				}
+				// Pre-0161 native rows may have neither field.  A verified query may
+				// fill those missing immutable transaction facts, but it must never
+				// replace a prior non-empty value with a different Provider result.
+				if locked.ProviderTransactionReference != "" && locked.ProviderTransactionReference != query.TransactionReference || locked.ProviderTransactionDigest != "" && locked.ProviderTransactionDigest != string(query.TransactionDigest) {
+					return paymentport.ErrConflict
+				}
+				if _, inner = s.store.RecordPaymentReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC()); inner != nil {
+					return inner
+				}
+				reconciledAt := s.now().UTC()
+				locked, inner = locked.RestorePaidConfirmation(locked.Version, query.OccurredAt, reconciledAt)
+				if inner != nil {
+					return inner
+				}
+				locked.ProviderTransactionReference = query.TransactionReference
+				locked.ProviderTransactionDigest = string(query.TransactionDigest)
+				restorer, ok := s.store.(paidConfirmationRestorer)
+				if !ok {
+					return paymentport.ErrUnavailable
+				}
+				current, inner = restorer.RestorePaidConfirmation(tx, locked, string(query.TransactionDigest), "reconcile:"+string(query.EvidenceDigest))
+				return inner
+			}
+			if _, inner = s.store.RecordPaymentReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC()); inner != nil {
+				return inner
+			}
+			if outcome != "paid" {
+				return nil
+			}
+			return nil
+		}
 		_, inner = s.store.RecordPaymentReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC())
-		if inner != nil || outcome == "pending" || locked.Status == domain.StatusPaid || locked.Status == domain.StatusFailed {
+		if inner != nil || outcome == "pending" || locked.Status == domain.StatusFailed {
 			current = locked
 			return inner
 		}
@@ -872,6 +918,100 @@ func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64
 		return inner
 	})
 	return current, classify(err)
+}
+
+// PreviewReconcileWeChatPayPayment repeats the same signed Provider and Order
+// fact validation as the paid-confirmation repair without writing a receipt,
+// audit, Payment, Order, or external effect.  It is intentionally limited to
+// the already-paid-but-unconfirmed native Payment case.
+func (s *Service) PreviewReconcileWeChatPayPayment(ctx context.Context, paymentID int64) (paymentport.PaymentReconciliationPreview, error) {
+	current, query, outcome, err := s.queriedWeChatPayPayment(ctx, paymentID)
+	if err != nil {
+		return paymentport.PaymentReconciliationPreview{}, err
+	}
+	preview := paymentport.PaymentReconciliationPreview{PaymentID: current.ID}
+	if current.Status != domain.StatusPaid {
+		preview.Reason = "payment_not_paid"
+		return preview, nil
+	}
+	if current.PaidConfirmedAt != nil {
+		preview.Reason = "already_confirmed"
+		return preview, nil
+	}
+	if outcome != "paid" {
+		preview.Reason = "provider_not_success"
+		return preview, nil
+	}
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		locked, inner := s.store.GetPayment(tx, paymentID, false)
+		if inner != nil {
+			return inner
+		}
+		if locked.Status != domain.StatusPaid || locked.PaidConfirmedAt != nil {
+			return paymentport.ErrConflict
+		}
+		// Keep preview semantics identical to the mutating repair: a previously
+		// stored immutable transaction fact can only agree with the signed query,
+		// never be silently replaced after an operator sees a dry-run result.
+		if locked.ProviderTransactionReference != "" && locked.ProviderTransactionReference != query.TransactionReference || locked.ProviderTransactionDigest != "" && locked.ProviderTransactionDigest != string(query.TransactionDigest) {
+			return paymentport.ErrConflict
+		}
+		verifier, ok := s.orders.(orderport.PaymentConfirmationEvidenceVerifier)
+		if !ok {
+			return paymentport.ErrUnavailable
+		}
+		_, inner = verifier.VerifyPaymentConfirmationEvidenceWithin(tx, orderport.PaymentConfirmationEvidence{OrderID: locked.OrderID, ProviderTransactionNo: query.TransactionReference, OccurredAt: query.OccurredAt})
+		return inner
+	})
+	if err != nil {
+		if errors.Is(classify(err), paymentport.ErrConflict) {
+			preview.Reason = "payment_evidence_mismatch"
+			return preview, nil
+		}
+		return paymentport.PaymentReconciliationPreview{}, classify(err)
+	}
+	preview.WouldRestorePaidConfirmation = true
+	preview.Reason = "payment_confirmation_missing"
+	return preview, nil
+}
+
+func (s *Service) queriedWeChatPayPayment(ctx context.Context, paymentID int64) (domain.Payment, paymentport.WeChatPayPaymentQuery, string, error) {
+	if s == nil || s.uow == nil || s.store == nil || s.payReconciler == nil || paymentID < 1 {
+		return domain.Payment{}, paymentport.WeChatPayPaymentQuery{}, "", paymentport.ErrInvalid
+	}
+	var current domain.Payment
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		current, inner = s.store.GetPayment(tx, paymentID, false)
+		if inner != nil {
+			return inner
+		}
+		if current.Historical || current.Provider != domain.ProviderWeChatPay || (current.Status != domain.StatusAwaitingPayment && current.Status != domain.StatusAwaitingPrepay && current.Status != domain.StatusPaid) {
+			return paymentport.ErrConflict
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.Payment{}, paymentport.WeChatPayPaymentQuery{}, "", classify(err)
+	}
+	query, err := s.payReconciler.QueryPayment(ctx, current.MerchantOrderNo)
+	if err != nil {
+		return domain.Payment{}, paymentport.WeChatPayPaymentQuery{}, "", paymentport.ErrUnavailable
+	}
+	if query.MerchantOrderNo != current.MerchantOrderNo || query.AmountMinor != current.AmountMinor || query.Currency != current.Currency || !effectport.ValidDigest(query.EvidenceDigest) || query.OccurredAt.IsZero() {
+		return domain.Payment{}, paymentport.WeChatPayPaymentQuery{}, "", paymentport.ErrConflict
+	}
+	outcome := "pending"
+	switch query.Status {
+	case "SUCCESS":
+		if !effectport.ValidDigest(query.TransactionDigest) || !validProviderTransactionReference(query.TransactionReference) || query.TransactionDigest != effectport.Hash("wechatpay.transaction", query.TransactionReference) {
+			return domain.Payment{}, paymentport.WeChatPayPaymentQuery{}, "", paymentport.ErrConflict
+		}
+		outcome = "paid"
+	case "CLOSED", "REVOKED", "PAYERROR":
+		outcome = "final_failed"
+	}
+	return current, query, outcome, nil
 }
 
 func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) (domain.Refund, error) {
@@ -1120,7 +1260,7 @@ func classify(err error) error {
 		return paymentport.ErrSessionRequired
 	case errors.Is(err, paymentport.ErrSessionMismatch):
 		return paymentport.ErrSessionMismatch
-	case errors.Is(err, paymentport.ErrConflict), errors.Is(err, orderport.ErrConflict), errors.Is(err, domain.ErrInvalid), errors.Is(err, domain.ErrTransition), errors.Is(err, domain.ErrVersion):
+	case errors.Is(err, paymentport.ErrConflict), errors.Is(err, orderport.ErrConflict), errors.Is(err, domain.ErrInvalid), errors.Is(err, domain.ErrTransition), errors.Is(err, domain.ErrVersion), errors.Is(err, effectport.ErrReconciliationConflict), errors.Is(err, effectport.ErrPayloadMismatch):
 		return paymentport.ErrConflict
 	default:
 		return paymentport.ErrUnavailable

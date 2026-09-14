@@ -77,6 +77,7 @@ func (s *QualificationService) CheckWithin(ctx context.Context, customerID, prod
 	var eligibleRef string
 	pendingRefund := false
 	unavailableEvidence := false
+	missingPaymentConfirmation := false
 	for _, candidate := range evidence {
 		if candidate.OrderID < 1 || candidate.OrderItemLine < 1 || candidate.ProductID != productID || candidate.ItemPaidMinor < 1 || candidate.PaymentConfirmedAt.IsZero() || (candidate.RecordOrigin != "native" && candidate.RecordOrigin != "history") {
 			// A malformed candidate is no purchase proof. It cannot erase an
@@ -90,10 +91,21 @@ func (s *QualificationService) CheckWithin(ctx context.Context, customerID, prod
 			continue
 		}
 		payment, paymentErr := s.payments.DistributionPaymentStateWithin(ctx, candidate.OrderID)
-		if paymentErr != nil || !payment.ConfirmedPaid || payment.ConfirmedPaidAt.IsZero() || !payment.ConfirmedPaidAt.UTC().Equal(candidate.PaymentConfirmedAt.UTC()) {
+		if paymentErr != nil || !payment.ConfirmedPaid {
 			// This item cannot prove a qualification, but a later independent
 			// purchase can. A total Port failure is returned above; a per-order
 			// unavailable mapping is retained as a fail-closed fallback only.
+			unavailableEvidence = true
+			continue
+		}
+		if payment.ConfirmedPaidAt.IsZero() {
+			// Payment is known paid, but the immutable Provider confirmation time
+			// is absent. Keep the gate closed and preserve this distinct recovery
+			// path: only a signed Provider query can restore the fact.
+			missingPaymentConfirmation = true
+			continue
+		}
+		if !payment.ConfirmedPaidAt.UTC().Equal(candidate.PaymentConfirmedAt.UTC()) {
 			unavailableEvidence = true
 			continue
 		}
@@ -118,6 +130,9 @@ func (s *QualificationService) CheckWithin(ctx context.Context, customerID, prod
 	}
 	if unavailableEvidence {
 		return unavailableQualification(now, "payment_evidence_unavailable"), nil
+	}
+	if missingPaymentConfirmation {
+		return unavailableQualification(now, "payment_confirmation_missing"), nil
 	}
 	return distributiondomain.Qualification{State: distributiondomain.QualificationIneligible, Reason: "no_valid_purchase", CheckedAt: now}, nil
 }

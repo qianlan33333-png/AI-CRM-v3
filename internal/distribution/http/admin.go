@@ -114,7 +114,7 @@ func (h *AdminHandler) distributorDetail(w http.ResponseWriter, r *http.Request,
 	}
 	d := value.Distributor
 	e := value.Earnings
-	adminWriteJSON(w, http.StatusOK, map[string]any{"distributor": distributorJSON(d), "earnings": earningsJSON(e)})
+	adminWriteJSON(w, http.StatusOK, map[string]any{"distributor": distributorDetailJSON(d), "earnings": earningsJSON(e)})
 }
 func (h *AdminHandler) distributorOrders(w http.ResponseWriter, r *http.Request, rawID string) {
 	id, ok := adminID(rawID)
@@ -189,11 +189,47 @@ func (h *AdminHandler) exceptionDetail(w http.ResponseWriter, r *http.Request, r
 	adminWriteJSON(w, http.StatusOK, exceptionDetailJSON(value))
 }
 
-func distributorJSON(x distributionport.AdminDistributor) map[string]any {
-	return map[string]any{"id": x.ID, "public_no": x.PublicNo, "customer_reference": x.CustomerReference, "agreement_version": x.AgreementVersion, "enabled": x.Enabled, "receiver_ready": x.ReceiverReady, "receiver_reason": x.ReceiverReason, "registered_at": x.RegisteredAt.UTC(), "version": x.Version}
+func adminReceiverStatusLabel(ready bool, reason string) string {
+	if ready {
+		return "收款准备完成"
+	}
+	switch reason {
+	case "receiver_accepted":
+		return "收款申请已受理，等待支付侧确认"
+	case "receiver_outcome_unknown":
+		return "收款结果待支付侧核验"
+	case "receiver_final_failed":
+		return "收款准备失败，需管理员核验支付侧状态"
+	case "receiver_unavailable":
+		return "收款准备不可用，需管理员核验支付侧条件"
+	default:
+		return "收款准备待支付侧核验"
+	}
+}
+
+func distributorListJSON(x distributionport.AdminDistributor) map[string]any {
+	return map[string]any{
+		"id":                    x.ID,
+		"display_name":          x.DisplayName,
+		"agreement_version":     x.AgreementVersion,
+		"enabled":               x.Enabled,
+		"receiver_ready":        x.ReceiverReady,
+		"receiver_status":       x.ReceiverReason,
+		"receiver_status_label": adminReceiverStatusLabel(x.ReceiverReady, x.ReceiverReason),
+		"registered_at":         x.RegisteredAt.UTC(),
+		"version":               x.Version,
+	}
+}
+func distributorDetailJSON(x distributionport.AdminDistributor) map[string]any {
+	value := distributorListJSON(x)
+	// The opaque distribution number is only useful when staff have opened a
+	// specific drawer. Customer IDs and synthetic customer references never
+	// leave Distribution's read model.
+	value["public_no"] = x.PublicNo
+	return value
 }
 func orderJSON(x distributionport.AdminOrder) map[string]any {
-	return map[string]any{"attribution_id": x.AttributionID, "order_reference": x.OrderReference, "item_line": x.ItemLine, "product_id": x.ProductID, "product_type": x.ProductType, "product_name": x.ProductName, "distributor_public_no": x.DistributorPublicNo, "qualification_state": x.QualificationState, "qualification_evidence_reference": x.QualificationEvidenceReference, "policy_version": x.PolicyVersion, "rate_basis_points": x.RateBasisPoints, "wait_days": x.WaitDays, "paid_minor": x.PaidMinor, "currency": x.Currency, "attributed_at": x.AttributedAt.UTC()}
+	return map[string]any{"attribution_id": x.AttributionID, "order_reference": x.OrderReference, "item_line": x.ItemLine, "product_id": x.ProductID, "product_type": x.ProductType, "product_name": x.ProductName, "distributor_display_name": x.DistributorDisplayName, "qualification_state": x.QualificationState, "qualification_evidence_reference": x.QualificationEvidenceReference, "policy_version": x.PolicyVersion, "rate_basis_points": x.RateBasisPoints, "wait_days": x.WaitDays, "paid_minor": x.PaidMinor, "currency": x.Currency, "attributed_at": x.AttributedAt.UTC()}
 }
 func earningsJSON(x distributionport.Earnings) map[string]any {
 	return map[string]any{"gross_paid_sales_minor": x.GrossPaidSalesMinor, "successful_refunds_minor": x.SuccessfulRefundsMinor, "initial_commission_minor": x.InitialCommissionMinor, "commission_adjustments_minor": x.CommissionAdjustmentsMinor, "unsettled_payable_minor": x.UnsettledPayableMinor, "paid_commission_minor": x.PaidCommissionMinor, "recovered_minor": x.RecoveredMinor, "currency": x.Currency}
@@ -225,7 +261,7 @@ func settlementJSONs(xs []distributionport.AdminSettlement) []any {
 	return result
 }
 func exceptionJSON(x distributionport.AdminException) map[string]any {
-	return map[string]any{"exception_id": x.ExceptionID, "commission_id": x.CommissionID, "distributor_public_no": x.DistributorPublicNo, "order_reference": x.OrderReference, "kind": x.Kind, "status": x.Status, "unpaid_due_minor": x.UnpaidDueMinor, "already_paid_minor": x.AlreadyPaidMinor, "amount_minor": x.AmountMinor, "reason": x.Reason, "payment_instruction_reference": x.PaymentInstructionReference, "reconcile_target": x.ReconcileTarget, "created_at": x.CreatedAt.UTC(), "updated_at": x.UpdatedAt.UTC(), "version": x.Version, "can_reconcile": x.CanReconcile, "can_record_recovery": x.CanRecordRecovery, "can_record_merchant_liability": x.CanRecordMerchantLiability}
+	return map[string]any{"exception_id": x.ExceptionID, "commission_id": x.CommissionID, "distributor_display_name": x.DistributorDisplayName, "order_reference": x.OrderReference, "kind": x.Kind, "status": x.Status, "unpaid_due_minor": x.UnpaidDueMinor, "already_paid_minor": x.AlreadyPaidMinor, "amount_minor": x.AmountMinor, "reason": x.Reason, "payment_instruction_reference": x.PaymentInstructionReference, "reconcile_target": x.ReconcileTarget, "created_at": x.CreatedAt.UTC(), "updated_at": x.UpdatedAt.UTC(), "version": x.Version, "can_reconcile": x.CanReconcile, "can_record_recovery": x.CanRecordRecovery, "can_record_merchant_liability": x.CanRecordMerchantLiability}
 }
 func exceptionDetailJSON(x distributionport.AdminException) map[string]any {
 	value := exceptionJSON(x)
@@ -259,7 +295,7 @@ func (h *AdminHandler) listDistributors(w http.ResponseWriter, r *http.Request) 
 	}
 	items := make([]any, 0, len(page.Items))
 	for _, x := range page.Items {
-		items = append(items, distributorJSON(x))
+		items = append(items, distributorListJSON(x))
 	}
 	adminWriteJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
 }

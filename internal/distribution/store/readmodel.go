@@ -39,7 +39,7 @@ func (r *Repository) ListAdminDistributors(ctx context.Context, cursor string, l
 	if e != nil {
 		return distributionport.AdminPage[distributionport.AdminDistributor]{}, e
 	}
-	rows, e := tx.Query(ctx, `SELECT id,public_no,'customer-'||customer_id,agreement_version,enabled,receiver_ready,receiver_reason,registered_at,version FROM distribution_distributors WHERE id>$1 ORDER BY id LIMIT $2`, after, adminLimit(limit))
+	rows, e := tx.Query(ctx, `SELECT id,customer_id,public_no,agreement_version,enabled,receiver_ready,receiver_reason,registered_at,version FROM distribution_distributors WHERE id>$1 ORDER BY id LIMIT $2`, after, adminLimit(limit))
 	if e != nil {
 		return distributionport.AdminPage[distributionport.AdminDistributor]{}, mapError(e)
 	}
@@ -47,7 +47,7 @@ func (r *Repository) ListAdminDistributors(ctx context.Context, cursor string, l
 	p := distributionport.AdminPage[distributionport.AdminDistributor]{}
 	for rows.Next() {
 		var x distributionport.AdminDistributor
-		if e = rows.Scan(&x.ID, &x.PublicNo, &x.CustomerReference, &x.AgreementVersion, &x.Enabled, &x.ReceiverReady, &x.ReceiverReason, &x.RegisteredAt, &x.Version); e != nil {
+		if e = rows.Scan(&x.ID, &x.CustomerID, &x.PublicNo, &x.AgreementVersion, &x.Enabled, &x.ReceiverReady, &x.ReceiverReason, &x.RegisteredAt, &x.Version); e != nil {
 			return p, mapError(e)
 		}
 		p.Items = append(p.Items, x)
@@ -66,7 +66,7 @@ func (r *Repository) ListAdminOrders(ctx context.Context, cursor string, limit i
 	if e != nil {
 		return distributionport.AdminPage[distributionport.AdminOrder]{}, e
 	}
-	rows, e := tx.Query(ctx, `SELECT a.id,'order-'||a.order_id,a.order_item_line,p.product_id,p.product_type,a.product_name,d.public_no,a.qualification_state,a.qualification_evidence_reference,a.policy_version,a.commission_rate_basis_points,a.wait_days,COALESCE(c.original_item_paid_minor,0),'CNY',a.attributed_at FROM distribution_order_attributions a JOIN distribution_product_policies p ON p.id=a.policy_id JOIN distribution_distributors d ON d.id=a.distributor_id LEFT JOIN distribution_commissions c ON c.attribution_id=a.id WHERE a.id>$1 ORDER BY a.id LIMIT $2`, after, adminLimit(limit))
+	rows, e := tx.Query(ctx, `SELECT a.id,'order-'||a.order_id,a.order_item_line,p.product_id,p.product_type,a.product_name,d.public_no,d.customer_id,a.qualification_state,a.qualification_evidence_reference,a.policy_version,a.commission_rate_basis_points,a.wait_days,COALESCE(c.original_item_paid_minor,0),'CNY',a.attributed_at FROM distribution_order_attributions a JOIN distribution_product_policies p ON p.id=a.policy_id JOIN distribution_distributors d ON d.id=a.distributor_id LEFT JOIN distribution_commissions c ON c.attribution_id=a.id WHERE a.id>$1 ORDER BY a.id LIMIT $2`, after, adminLimit(limit))
 	if e != nil {
 		return distributionport.AdminPage[distributionport.AdminOrder]{}, mapError(e)
 	}
@@ -74,7 +74,7 @@ func (r *Repository) ListAdminOrders(ctx context.Context, cursor string, limit i
 	p := distributionport.AdminPage[distributionport.AdminOrder]{}
 	for rows.Next() {
 		var x distributionport.AdminOrder
-		if e = rows.Scan(&x.AttributionID, &x.OrderReference, &x.ItemLine, &x.ProductID, &x.ProductType, &x.ProductName, &x.DistributorPublicNo, &x.QualificationState, &x.QualificationEvidenceReference, &x.PolicyVersion, &x.RateBasisPoints, &x.WaitDays, &x.PaidMinor, &x.Currency, &x.AttributedAt); e != nil {
+		if e = rows.Scan(&x.AttributionID, &x.OrderReference, &x.ItemLine, &x.ProductID, &x.ProductType, &x.ProductName, &x.DistributorPublicNo, &x.DistributorCustomerID, &x.QualificationState, &x.QualificationEvidenceReference, &x.PolicyVersion, &x.RateBasisPoints, &x.WaitDays, &x.PaidMinor, &x.Currency, &x.AttributedAt); e != nil {
 			return p, mapError(e)
 		}
 		p.Items = append(p.Items, x)
@@ -93,7 +93,7 @@ func (r *Repository) ListAdminExceptions(ctx context.Context, cursor string, lim
 	if e != nil {
 		return distributionport.AdminPage[distributionport.AdminException]{}, e
 	}
-	rows, e := tx.Query(ctx, `SELECT e.id,e.commission_id,d.public_no,'order-'||c.order_id,e.kind,e.status,e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,e.reason,COALESCE(s.payment_instruction_reference,''),e.created_at,e.updated_at,e.version,
+	rows, e := tx.Query(ctx, `SELECT e.id,e.commission_id,d.public_no,d.customer_id,'order-'||c.order_id,e.kind,e.status,e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,e.reason,COALESCE(s.payment_instruction_reference,''),e.created_at,e.updated_at,e.version,
 		CASE WHEN e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[0-9]+$' THEN 'unfreeze' WHEN COALESCE(s.payment_instruction_reference,'') ~ '^psinstr_[0-9]+$' THEN 'split' ELSE '' END,
 		(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','querying') AND ((e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[0-9]+$') OR COALESCE(s.payment_instruction_reference,'') ~ '^psinstr_[0-9]+$')),
 		(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','resolved')),
@@ -106,7 +106,7 @@ func (r *Repository) ListAdminExceptions(ctx context.Context, cursor string, lim
 	p := distributionport.AdminPage[distributionport.AdminException]{}
 	for rows.Next() {
 		var x distributionport.AdminException
-		if e = rows.Scan(&x.ExceptionID, &x.CommissionID, &x.DistributorPublicNo, &x.OrderReference, &x.Kind, &x.Status, &x.UnpaidDueMinor, &x.AlreadyPaidMinor, &x.AmountMinor, &x.Reason, &x.PaymentInstructionReference, &x.CreatedAt, &x.UpdatedAt, &x.Version, &x.ReconcileTarget, &x.CanReconcile, &x.CanRecordRecovery, &x.CanRecordMerchantLiability); e != nil {
+		if e = rows.Scan(&x.ExceptionID, &x.CommissionID, &x.DistributorPublicNo, &x.DistributorCustomerID, &x.OrderReference, &x.Kind, &x.Status, &x.UnpaidDueMinor, &x.AlreadyPaidMinor, &x.AmountMinor, &x.Reason, &x.PaymentInstructionReference, &x.CreatedAt, &x.UpdatedAt, &x.Version, &x.ReconcileTarget, &x.CanReconcile, &x.CanRecordRecovery, &x.CanRecordMerchantLiability); e != nil {
 			return p, mapError(e)
 		}
 		p.Items = append(p.Items, x)

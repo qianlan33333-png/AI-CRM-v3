@@ -23,8 +23,9 @@ import (
 const promotionCredentialTTL = 30 * 24 * time.Hour
 
 // promotionProductScanMaximum bounds one public request while still allowing
-// qualification filtering to advance past a Product-owned source page that
-// contains no promotable rows.
+// the server-side eligibility gate to advance past a Product-owned source page
+// that contains no promotable rows. The browser never receives an ineligible
+// candidate as a substitute for an empty-state explanation.
 const promotionProductScanMaximum = int32(500)
 
 type promotionStore interface {
@@ -108,7 +109,12 @@ func (s *PromotionService) ListPromotionProducts(ctx context.Context, actor dist
 		return distributionport.PromotionPage{}, err
 	}
 	page := distributionport.PromotionPage{Items: make([]distributionport.PromotionProduct, 0, limit)}
+	if !distributor.Enabled {
+		page.EmptyReason = "distributor_disabled"
+		return page, nil
+	}
 	scanned := int32(0)
+	emptyReason := "no_saleable_policy_products"
 	for int32(len(page.Items)) < limit && scanned < promotionProductScanMaximum {
 		remaining := promotionProductScanMaximum - scanned
 		// The cursor is a raw Product offset. Fetch no more than this client
@@ -133,6 +139,9 @@ func (s *PromotionService) ListPromotionProducts(ctx context.Context, actor dist
 			if int64(offset) != options.Total {
 				return distributionport.PromotionPage{}, distributionport.ErrUnavailable
 			}
+			if len(page.Items) == 0 {
+				page.EmptyReason = "no_saleable_policy_products"
+			}
 			return page, nil
 		}
 		offset = int32(next)
@@ -144,8 +153,11 @@ func (s *PromotionService) ListPromotionProducts(ctx context.Context, actor dist
 			}
 			// This current Product read excludes draft/disabled/archived products.
 			saleable, saleableErr := s.saleableProduct.ReadSidebarShareProduct(ctx, option.ProductType, option.ID)
-			if saleableErr != nil {
+			if errors.Is(saleableErr, productport.ErrSaleableProductNotFound) {
 				continue
+			}
+			if saleableErr != nil {
+				return distributionport.PromotionPage{}, distributionport.ErrUnavailable
 			}
 			var policy distributiondomain.Policy
 			var qualification distributiondomain.Qualification
@@ -158,31 +170,40 @@ func (s *PromotionService) ListPromotionProducts(ctx context.Context, actor dist
 				if err != nil {
 					return err
 				}
-				if !policy.Enabled || !distributor.Enabled {
+				if !policy.Enabled {
 					return nil
 				}
 				qualification, err = s.qualification.CheckWithin(tx, distributor.CustomerID, int64(option.ID), kind)
 				return err
 			})
-			if readErr != nil || !policy.Enabled || !distributor.Enabled || !qualification.AllowsPromotion() {
+			if readErr != nil {
+				return distributionport.PromotionPage{}, readErr
+			}
+			if !policy.Enabled {
+				continue
+			}
+			if !qualification.AllowsPromotion() {
+				emptyReason = preferredPromotionEmptyReason(emptyReason, promotionQualificationBlock(qualification))
 				continue
 			}
 			estimated, calcErr := distributiondomain.CalculateCommission(option.PriceMinor, policy.CommissionRateBasisPoints)
 			if calcErr != nil {
-				continue
+				return distributionport.PromotionPage{}, distributionport.ErrUnavailable
 			}
 			purchaseURL := "/p/" + saleable.Code
 			if kind == distributiondomain.ProductTypeServicePeriod {
 				purchaseURL = "/s/" + saleable.Code
 			}
+			// Qualification is a strict server-side inclusion gate. A qualified
+			// product may still report a Payment-owned settlement block, but it
+			// never turns an unqualified product into a visible promotion card.
 			ready := s.settlementEnabled && receiver.Ready && receiver.AppID == actor.AppID
 			block := ""
-			if !ready {
-				if !s.settlementEnabled {
-					block = "profit_sharing_provider_disabled"
-				} else {
-					block = receiver.Reason
-				}
+			if !s.settlementEnabled {
+				block = "merchant_settlement_disabled"
+			}
+			if block == "" && !ready {
+				block = receiver.Reason
 				if block == "" {
 					block = "receiver_not_ready"
 				}
@@ -193,6 +214,9 @@ func (s *PromotionService) ListPromotionProducts(ctx context.Context, actor dist
 			}
 		}
 		if int64(offset) >= options.Total {
+			if len(page.Items) == 0 {
+				page.EmptyReason = emptyReason
+			}
 			return page, nil
 		}
 		if int32(len(page.Items)) == limit || scanned == promotionProductScanMaximum {
@@ -204,6 +228,43 @@ func (s *PromotionService) ListPromotionProducts(ctx context.Context, actor dist
 		page.NextCursor = strconv.FormatInt(int64(offset), 10)
 	}
 	return page, nil
+}
+
+func promotionQualificationBlock(qualification distributiondomain.Qualification) string {
+	if qualification.AllowsPromotion() {
+		return ""
+	}
+	switch qualification.State {
+	case distributiondomain.QualificationIneligible:
+		return "qualification_purchase_required"
+	case distributiondomain.QualificationSuspended:
+		return "qualification_refund_pending"
+	case distributiondomain.QualificationUnavailable:
+		if qualification.Reason == "payment_confirmation_missing" {
+			return "qualification_payment_confirmation_missing"
+		}
+		return "qualification_check_unavailable"
+	default:
+		return "qualification_check_unavailable"
+	}
+}
+
+// preferredPromotionEmptyReason returns only a server-derived state. It is
+// used when every policy-enabled saleable product was filtered by eligibility;
+// no product card is emitted for any of these states. Confirmation evidence
+// has priority because buying again cannot repair an already-paid order.
+func preferredPromotionEmptyReason(current, candidate string) string {
+	priority := map[string]int{
+		"no_saleable_policy_products":                0,
+		"qualification_purchase_required":            1,
+		"qualification_refund_pending":               2,
+		"qualification_check_unavailable":            3,
+		"qualification_payment_confirmation_missing": 4,
+	}
+	if priority[candidate] > priority[current] {
+		return candidate
+	}
+	return current
 }
 
 // ApplicationTarget resolves a shared application link with current Product

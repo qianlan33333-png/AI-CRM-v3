@@ -109,6 +109,7 @@ for migration_contract in \
   '0160_external_effect_system_control_actor.sql:External Effects system control actor' \
   '0161_payment_paid_confirmation_time.sql:Payment paid confirmation time' \
   '0162_payment_h5_distribution_return_path.sql:Payment H5 Distribution return path' \
+  '0163_payment_profit_sharing_receiver_recovery.sql:Payment profit-sharing receiver recovery' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

@@ -23,8 +23,8 @@ func (r *Repository) ReadAdminDistributorDetail(ctx context.Context, id int64) (
 		return distributionport.AdminDistributorDetail{}, distributionport.ErrNotFound
 	}
 	var value distributionport.AdminDistributorDetail
-	err = tx.QueryRow(ctx, `SELECT id,public_no,'customer-'||customer_id,agreement_version,enabled,receiver_ready,receiver_reason,registered_at,version FROM distribution_distributors WHERE id=$1`, id).
-		Scan(&value.Distributor.ID, &value.Distributor.PublicNo, &value.Distributor.CustomerReference, &value.Distributor.AgreementVersion, &value.Distributor.Enabled, &value.Distributor.ReceiverReady, &value.Distributor.ReceiverReason, &value.Distributor.RegisteredAt, &value.Distributor.Version)
+	err = tx.QueryRow(ctx, `SELECT id,customer_id,public_no,agreement_version,enabled,receiver_ready,receiver_reason,registered_at,version FROM distribution_distributors WHERE id=$1`, id).
+		Scan(&value.Distributor.ID, &value.Distributor.CustomerID, &value.Distributor.PublicNo, &value.Distributor.AgreementVersion, &value.Distributor.Enabled, &value.Distributor.ReceiverReady, &value.Distributor.ReceiverReason, &value.Distributor.RegisteredAt, &value.Distributor.Version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return value, distributionport.ErrNotFound
 	}
@@ -55,7 +55,7 @@ func (r *Repository) ListAdminOrdersByDistributor(ctx context.Context, distribut
 	} else if err != nil {
 		return distributionport.AdminPage[distributionport.AdminOrder]{}, mapError(err)
 	}
-	rows, err := tx.Query(ctx, `SELECT a.id,'order-'||a.order_id,a.order_item_line,p.product_id,p.product_type,a.product_name,d.public_no,a.qualification_state,a.qualification_evidence_reference,a.policy_version,a.commission_rate_basis_points,a.wait_days,COALESCE(c.original_item_paid_minor,0),'CNY',a.attributed_at FROM distribution_order_attributions a JOIN distribution_product_policies p ON p.id=a.policy_id JOIN distribution_distributors d ON d.id=a.distributor_id LEFT JOIN distribution_commissions c ON c.attribution_id=a.id WHERE a.distributor_id=$1 AND a.id>$2 ORDER BY a.id LIMIT $3`, distributorID, after, adminLimit(limit))
+	rows, err := tx.Query(ctx, `SELECT a.id,'order-'||a.order_id,a.order_item_line,p.product_id,p.product_type,a.product_name,d.public_no,d.customer_id,a.qualification_state,a.qualification_evidence_reference,a.policy_version,a.commission_rate_basis_points,a.wait_days,COALESCE(c.original_item_paid_minor,0),'CNY',a.attributed_at FROM distribution_order_attributions a JOIN distribution_product_policies p ON p.id=a.policy_id JOIN distribution_distributors d ON d.id=a.distributor_id LEFT JOIN distribution_commissions c ON c.attribution_id=a.id WHERE a.distributor_id=$1 AND a.id>$2 ORDER BY a.id LIMIT $3`, distributorID, after, adminLimit(limit))
 	if err != nil {
 		return distributionport.AdminPage[distributionport.AdminOrder]{}, mapError(err)
 	}
@@ -63,7 +63,7 @@ func (r *Repository) ListAdminOrdersByDistributor(ctx context.Context, distribut
 	page := distributionport.AdminPage[distributionport.AdminOrder]{}
 	for rows.Next() {
 		var item distributionport.AdminOrder
-		if err = rows.Scan(&item.AttributionID, &item.OrderReference, &item.ItemLine, &item.ProductID, &item.ProductType, &item.ProductName, &item.DistributorPublicNo, &item.QualificationState, &item.QualificationEvidenceReference, &item.PolicyVersion, &item.RateBasisPoints, &item.WaitDays, &item.PaidMinor, &item.Currency, &item.AttributedAt); err != nil {
+		if err = rows.Scan(&item.AttributionID, &item.OrderReference, &item.ItemLine, &item.ProductID, &item.ProductType, &item.ProductName, &item.DistributorPublicNo, &item.DistributorCustomerID, &item.QualificationState, &item.QualificationEvidenceReference, &item.PolicyVersion, &item.RateBasisPoints, &item.WaitDays, &item.PaidMinor, &item.Currency, &item.AttributedAt); err != nil {
 			return page, mapError(err)
 		}
 		page.Items = append(page.Items, item)
@@ -83,8 +83,8 @@ func (r *Repository) ReadAdminOrderDetail(ctx context.Context, attributionID int
 		return distributionport.AdminOrderDetail{}, distributionport.ErrNotFound
 	}
 	var value distributionport.AdminOrderDetail
-	err = tx.QueryRow(ctx, `SELECT a.id,'order-'||a.order_id,a.order_item_line,p.product_id,p.product_type,a.product_name,d.public_no,a.qualification_state,a.qualification_evidence_reference,a.policy_version,a.commission_rate_basis_points,a.wait_days,COALESCE(c.original_item_paid_minor,0),'CNY',a.attributed_at FROM distribution_order_attributions a JOIN distribution_product_policies p ON p.id=a.policy_id JOIN distribution_distributors d ON d.id=a.distributor_id LEFT JOIN distribution_commissions c ON c.attribution_id=a.id WHERE a.id=$1`, attributionID).
-		Scan(&value.Order.AttributionID, &value.Order.OrderReference, &value.Order.ItemLine, &value.Order.ProductID, &value.Order.ProductType, &value.Order.ProductName, &value.Order.DistributorPublicNo, &value.Order.QualificationState, &value.Order.QualificationEvidenceReference, &value.Order.PolicyVersion, &value.Order.RateBasisPoints, &value.Order.WaitDays, &value.Order.PaidMinor, &value.Order.Currency, &value.Order.AttributedAt)
+	err = tx.QueryRow(ctx, `SELECT a.id,'order-'||a.order_id,a.order_item_line,p.product_id,p.product_type,a.product_name,d.public_no,d.customer_id,a.qualification_state,a.qualification_evidence_reference,a.policy_version,a.commission_rate_basis_points,a.wait_days,COALESCE(c.original_item_paid_minor,0),'CNY',a.attributed_at FROM distribution_order_attributions a JOIN distribution_product_policies p ON p.id=a.policy_id JOIN distribution_distributors d ON d.id=a.distributor_id LEFT JOIN distribution_commissions c ON c.attribution_id=a.id WHERE a.id=$1`, attributionID).
+		Scan(&value.Order.AttributionID, &value.Order.OrderReference, &value.Order.ItemLine, &value.Order.ProductID, &value.Order.ProductType, &value.Order.ProductName, &value.Order.DistributorPublicNo, &value.Order.DistributorCustomerID, &value.Order.QualificationState, &value.Order.QualificationEvidenceReference, &value.Order.PolicyVersion, &value.Order.RateBasisPoints, &value.Order.WaitDays, &value.Order.PaidMinor, &value.Order.Currency, &value.Order.AttributedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return value, distributionport.ErrNotFound
 	}
@@ -201,7 +201,7 @@ func (r *Repository) adminExceptionsForCommission(ctx context.Context, tx interf
 func (r *Repository) adminExceptionsWhere(ctx context.Context, tx interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, where string, value int64) ([]distributionport.AdminException, error) {
-	rows, err := tx.Query(ctx, `SELECT e.id,e.commission_id,d.public_no,'order-'||c.order_id,e.kind,e.status,e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,e.reason,COALESCE(s.payment_instruction_reference,''),e.evidence_reference,e.actor_scope,e.created_at,e.updated_at,e.version,CASE WHEN e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[0-9]+$' THEN 'unfreeze' WHEN COALESCE(s.payment_instruction_reference,'') ~ '^psinstr_[0-9]+$' THEN 'split' ELSE '' END,(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','querying') AND ((e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[0-9]+$') OR COALESCE(s.payment_instruction_reference,'') ~ '^psinstr_[0-9]+$')),(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','resolved')),(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','resolved')) FROM distribution_exceptions e JOIN distribution_commissions c ON c.id=e.commission_id JOIN distribution_distributors d ON d.id=c.distributor_id LEFT JOIN distribution_settlements s ON s.id=e.settlement_id WHERE `+where+` ORDER BY e.id`, value)
+	rows, err := tx.Query(ctx, `SELECT e.id,e.commission_id,d.public_no,d.customer_id,'order-'||c.order_id,e.kind,e.status,e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,e.reason,COALESCE(s.payment_instruction_reference,''),e.evidence_reference,e.actor_scope,e.created_at,e.updated_at,e.version,CASE WHEN e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[0-9]+$' THEN 'unfreeze' WHEN COALESCE(s.payment_instruction_reference,'') ~ '^psinstr_[0-9]+$' THEN 'split' ELSE '' END,(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','querying') AND ((e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[0-9]+$') OR COALESCE(s.payment_instruction_reference,'') ~ '^psinstr_[0-9]+$')),(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','resolved')),(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','resolved')) FROM distribution_exceptions e JOIN distribution_commissions c ON c.id=e.commission_id JOIN distribution_distributors d ON d.id=c.distributor_id LEFT JOIN distribution_settlements s ON s.id=e.settlement_id WHERE `+where+` ORDER BY e.id`, value)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -209,7 +209,7 @@ func (r *Repository) adminExceptionsWhere(ctx context.Context, tx interface {
 	items := []distributionport.AdminException{}
 	for rows.Next() {
 		var item distributionport.AdminException
-		if err = rows.Scan(&item.ExceptionID, &item.CommissionID, &item.DistributorPublicNo, &item.OrderReference, &item.Kind, &item.Status, &item.UnpaidDueMinor, &item.AlreadyPaidMinor, &item.AmountMinor, &item.Reason, &item.PaymentInstructionReference, &item.EvidenceReference, &item.ActorScope, &item.CreatedAt, &item.UpdatedAt, &item.Version, &item.ReconcileTarget, &item.CanReconcile, &item.CanRecordRecovery, &item.CanRecordMerchantLiability); err != nil {
+		if err = rows.Scan(&item.ExceptionID, &item.CommissionID, &item.DistributorPublicNo, &item.DistributorCustomerID, &item.OrderReference, &item.Kind, &item.Status, &item.UnpaidDueMinor, &item.AlreadyPaidMinor, &item.AmountMinor, &item.Reason, &item.PaymentInstructionReference, &item.EvidenceReference, &item.ActorScope, &item.CreatedAt, &item.UpdatedAt, &item.Version, &item.ReconcileTarget, &item.CanReconcile, &item.CanRecordRecovery, &item.CanRecordMerchantLiability); err != nil {
 			return nil, mapError(err)
 		}
 		items = append(items, item)

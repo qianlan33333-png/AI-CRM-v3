@@ -17,6 +17,7 @@ import (
 	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 type registrationStore interface {
@@ -67,13 +68,18 @@ func (s *RegistrationService) CurrentAgreement(ctx context.Context) (distributio
 }
 
 func (s *RegistrationService) Profile(ctx context.Context, actor distributionport.TrustedSessionActor) (distributionport.DistributorProfile, error) {
-	if s == nil || s.uow == nil || s.store == nil || !actor.Valid() {
+	if s == nil || s.uow == nil || s.store == nil || s.settlement == nil || !actor.Valid() {
 		return distributionport.DistributorProfile{}, distributionport.ErrUnauthorized
 	}
+	capability, err := s.settlement.SettlementCapability(ctx)
+	if err != nil {
+		return distributionport.DistributorProfile{}, err
+	}
+	settlement := distributionport.SettlementCapability{Enabled: capability.Enabled, Reason: safeSettlementCapabilityReason(capability)}
 	var agreement distributionstore.Agreement
 	var distributor distributiondomain.Distributor
 	var readiness distributionport.ReceiverReadiness
-	err := s.uow.Within(ctx, func(tx context.Context) error {
+	err = s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
 		agreement, err = s.store.ActiveAgreementWithin(tx)
 		if err != nil {
@@ -89,9 +95,46 @@ func (s *RegistrationService) Profile(ctx context.Context, actor distributionpor
 		return distributionport.DistributorProfile{}, err
 	}
 	if distributor.ID == 0 {
-		return distributionport.DistributorProfile{CurrentAgreementVersion: agreement.Version, RegistrationRequired: true}, nil
+		return distributionport.DistributorProfile{CurrentAgreementVersion: agreement.Version, RegistrationRequired: true, Settlement: settlement}, nil
 	}
-	return distributionport.DistributorProfile{Distributor: distributor, Receiver: readiness, CurrentAgreementVersion: agreement.Version}, nil
+	return distributionport.DistributorProfile{Distributor: distributor, Receiver: readiness, Settlement: settlement, CurrentAgreementVersion: agreement.Version}, nil
+}
+
+// SyncProfitSharingReceiverStatusWithin projects a Payment-owned transition
+// into Distribution's existing receiver snapshot. Payment invokes it in the
+// same PostgreSQL Unit of Work as the owned receiver update, so public/admin
+// Distribution reads never stay on a completed worker's stale state. The
+// update is skipped when the safe projection is unchanged and therefore does
+// not turn ordinary profile GETs into writes.
+func (s *RegistrationService) SyncProfitSharingReceiverStatusWithin(ctx context.Context, paymentReadiness paymentport.ReceiverReadiness) error {
+	if s == nil || s.store == nil || paymentReadiness.CustomerID < 1 || paymentReadiness.Reference == "" || paymentReadiness.AppID == "" || paymentReadiness.UpdatedAt.IsZero() {
+		return distributionport.ErrUnavailable
+	}
+	if _, err := platformpostgres.RequireTransaction(ctx); err != nil {
+		return err
+	}
+	distributor, current, err := s.store.ReadDistributorByCustomerWithin(ctx, paymentReadiness.CustomerID, true)
+	if errors.Is(err, distributionport.ErrNotFound) {
+		// Payment receivers are normally prepared from a Distributor. A missing
+		// legacy projection has no Distribution row to update and must not make a
+		// Payment completion retry or manufacture a distributor.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	next := distributionport.ReceiverReadiness{Reference: paymentReadiness.Reference, AppID: paymentReadiness.AppID, Ready: paymentReadiness.Ready, CheckedAt: paymentReadiness.UpdatedAt.UTC()}
+	if !next.Ready {
+		next.Reason = "receiver_" + safeReceiverState(paymentReadiness.State)
+	}
+	if current.Reference == next.Reference && current.AppID == next.AppID && current.Ready == next.Ready && current.Reason == next.Reason {
+		return nil
+	}
+	updated, persisted, err := s.store.UpdateReceiverReadinessWithin(ctx, distributor.ID, distributor.Version, next, next.CheckedAt)
+	if err != nil {
+		return err
+	}
+	return s.store.AppendAuditWithin(ctx, "distribution.receiver_status_synchronized.v1", "distributor", updated.ID, "payment:external-effect", map[string]any{"receiver_state": paymentReadiness.State, "ready": persisted.Ready, "receiver_reference": persisted.Reference}, next.CheckedAt)
 }
 
 func (s *RegistrationService) Register(ctx context.Context, command distributionport.RegisterCommand) (distributionport.DistributorProfile, error) {
@@ -260,11 +303,23 @@ func (s *RegistrationService) PrepareReceiver(ctx context.Context, actor distrib
 	if s == nil || s.uow == nil || s.store == nil || s.settlement == nil || !actor.Valid() {
 		return distributionport.ReceiverPreparationResult{}, distributionport.ErrUnauthorized
 	}
+	capability, err := s.settlement.SettlementCapability(ctx)
+	if err != nil {
+		return distributionport.ReceiverPreparationResult{}, err
+	}
 	var result distributionport.ReceiverPreparationResult
-	err := s.uow.Within(ctx, func(tx context.Context) error {
-		distributor, _, err := s.store.ReadDistributorByCustomerWithin(tx, actor.CustomerID, true)
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		// Establish that this trusted customer is already a distributor without
+		// taking Distribution's row lock. The payment receiver write below may
+		// later project back into this row from the EER worker, and both paths
+		// must therefore take locks in the same Payment -> Distribution order.
+		distributor, current, err := s.store.ReadDistributorByCustomerWithin(tx, actor.CustomerID, false)
 		if err != nil {
 			return err
+		}
+		if !capability.Enabled {
+			result = distributionport.ReceiverPreparationResult{Receiver: current, State: "merchant_settlement_disabled"}
+			return nil
 		}
 		channel := paymentdomain.ChannelMiniProgram
 		if actor.Channel == "h5_official_account" {
@@ -272,6 +327,14 @@ func (s *RegistrationService) PrepareReceiver(ctx context.Context, actor distrib
 		}
 		key := "distribution.receiver:" + decimal(distributor.ID) + ":" + actor.AppID
 		prepared, err := s.settlement.PrepareProfitSharingReceiverWithin(tx, paymentport.ReceiverPreparation{CustomerID: actor.CustomerID, IdentityID: actor.IdentityID, AppID: actor.AppID, AppScope: actor.AppScope, Channel: channel, IdempotencyKey: key, SourceDigest: effectport.Hash("distribution.receiver.v1", decimal(distributor.ID), actor.AppID), PayloadDigest: effectport.Hash("distribution.receiver.payload.v1", decimal(distributor.ID), actor.AppID, actor.Channel)})
+		if err != nil {
+			return err
+		}
+		// Re-read under lock only after Payment's owned receiver transition.
+		// Registration rows are never implicitly created here; this is a fresh
+		// version for the Distribution snapshot CAS, not a second identity
+		// resolution or a separate transaction.
+		distributor, current, err = s.store.ReadDistributorByCustomerWithin(tx, actor.CustomerID, true)
 		if err != nil {
 			return err
 		}
@@ -302,6 +365,16 @@ func (s *RegistrationService) PrepareReceiver(ctx context.Context, actor distrib
 		return distributionport.ReceiverPreparationResult{}, err
 	}
 	return result, nil
+}
+
+func safeSettlementCapabilityReason(value paymentport.SettlementCapability) string {
+	if value.Enabled {
+		return ""
+	}
+	if value.Reason == "merchant_settlement_disabled" {
+		return value.Reason
+	}
+	return "merchant_settlement_unavailable"
 }
 
 func newPublicNumber() (string, error) {

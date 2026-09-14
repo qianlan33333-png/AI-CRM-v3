@@ -30,7 +30,7 @@ func (s *adminHTTPSecurity) AuthorizeCSRF(context.Context, *http.Request) (acces
 type adminHTTPReader struct{}
 
 func (adminHTTPReader) ListAdminDistributors(context.Context, string, int32) (distributionport.AdminPage[distributionport.AdminDistributor], error) {
-	return distributionport.AdminPage[distributionport.AdminDistributor]{Items: []distributionport.AdminDistributor{{ID: 9, PublicNo: "D-9", CustomerReference: "customer:masked", AgreementVersion: "v1", Enabled: true, Version: 3}}}, nil
+	return distributionport.AdminPage[distributionport.AdminDistributor]{Items: []distributionport.AdminDistributor{{ID: 9, PublicNo: "D-9", DisplayName: "管理员可见昵称", AgreementVersion: "v1", Enabled: true, Version: 3}}}, nil
 }
 func (adminHTTPReader) ListAdminOrders(context.Context, string, int32) (distributionport.AdminPage[distributionport.AdminOrder], error) {
 	return distributionport.AdminPage[distributionport.AdminOrder]{}, nil
@@ -44,19 +44,19 @@ type adminWarningReader struct{ adminHTTPReader }
 type adminHTTPDetailReader struct{ adminHTTPReader }
 
 func (adminHTTPDetailReader) ReadAdminDistributorDetail(context.Context, int64) (distributionport.AdminDistributorDetail, error) {
-	return distributionport.AdminDistributorDetail{Distributor: distributionport.AdminDistributor{ID: 9, PublicNo: "D-9", Enabled: true, ReceiverReady: true}, Earnings: distributionport.Earnings{GrossPaidSalesMinor: 19900, UnsettledPayableMinor: 1200, Currency: "CNY"}}, nil
+	return distributionport.AdminDistributorDetail{Distributor: distributionport.AdminDistributor{ID: 9, PublicNo: "D-9", DisplayName: "管理员可见昵称", Enabled: true, ReceiverReady: true}, Earnings: distributionport.Earnings{GrossPaidSalesMinor: 19900, UnsettledPayableMinor: 1200, Currency: "CNY"}}, nil
 }
 func (adminHTTPDetailReader) ListAdminOrdersByDistributor(context.Context, int64, string, int32) (distributionport.AdminPage[distributionport.AdminOrder], error) {
-	return distributionport.AdminPage[distributionport.AdminOrder]{Items: []distributionport.AdminOrder{{AttributionID: 11, OrderReference: "order-8", ProductName: "增长课", DistributorPublicNo: "D-9", QualificationState: "eligible", QualificationEvidenceReference: "order:8:item:1", PolicyVersion: 2, RateBasisPoints: 3000, WaitDays: 7, PaidMinor: 19900, Currency: "CNY"}}}, nil
+	return distributionport.AdminPage[distributionport.AdminOrder]{Items: []distributionport.AdminOrder{{AttributionID: 11, OrderReference: "order-8", ProductName: "增长课", DistributorPublicNo: "D-9", DistributorDisplayName: "管理员可见昵称", QualificationState: "eligible", QualificationEvidenceReference: "order:8:item:1", PolicyVersion: 2, RateBasisPoints: 3000, WaitDays: 7, PaidMinor: 19900, Currency: "CNY"}}}, nil
 }
 func (adminHTTPDetailReader) ReadAdminOrderDetail(context.Context, int64) (distributionport.AdminOrderDetail, error) {
 	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 	deadline := now.AddDate(0, 0, 7)
-	return distributionport.AdminOrderDetail{Order: distributionport.AdminOrder{AttributionID: 11, OrderReference: "order-8", ProductName: "增长课", DistributorPublicNo: "D-9", QualificationState: "eligible", QualificationEvidenceReference: "order:8:item:1", PolicyVersion: 2, RateBasisPoints: 3000, WaitDays: 7, PaidMinor: 19900, Currency: "CNY"}, Commission: &distributionport.AdminCommissionDetail{CommissionID: "22", OriginalItemPaidMinor: 19900, SuccessfulRefundMinor: 9900, InitialMinor: 5970, CurrentPayableMinor: 3000, PaidMinor: 0, Status: "held", PaidConfirmedAt: now, DueAt: deadline, Currency: "CNY"}, Adjustments: []distributionport.AdminCommissionAdjustment{{ID: 31, Kind: "buyer_refund", DeltaMinor: -2970, ResultingPayableMinor: 3000, Reason: "buyer_refund", SourceReference: "refund:8", OccurredAt: now}}, Settlements: []distributionport.AdminSettlement{{ID: 41, Reference: "settlement-41", AmountMinor: 3000, Currency: "CNY", State: "outcome_unknown", ProviderDeadlineAt: &deadline, CreatedAt: &now, UpdatedAt: &deadline}}}, nil
+	return distributionport.AdminOrderDetail{Order: distributionport.AdminOrder{AttributionID: 11, OrderReference: "order-8", ProductName: "增长课", DistributorPublicNo: "D-9", DistributorDisplayName: "管理员可见昵称", QualificationState: "eligible", QualificationEvidenceReference: "order:8:item:1", PolicyVersion: 2, RateBasisPoints: 3000, WaitDays: 7, PaidMinor: 19900, Currency: "CNY"}, Commission: &distributionport.AdminCommissionDetail{CommissionID: "22", OriginalItemPaidMinor: 19900, SuccessfulRefundMinor: 9900, InitialMinor: 5970, CurrentPayableMinor: 3000, PaidMinor: 0, Status: "held", PaidConfirmedAt: now, DueAt: deadline, Currency: "CNY"}, Adjustments: []distributionport.AdminCommissionAdjustment{{ID: 31, Kind: "buyer_refund", DeltaMinor: -2970, ResultingPayableMinor: 3000, Reason: "buyer_refund", SourceReference: "refund:8", OccurredAt: now}}, Settlements: []distributionport.AdminSettlement{{ID: 41, Reference: "settlement-41", AmountMinor: 3000, Currency: "CNY", State: "outcome_unknown", ProviderDeadlineAt: &deadline, CreatedAt: &now, UpdatedAt: &deadline}}}, nil
 }
 func (adminHTTPDetailReader) ReadAdminExceptionDetail(context.Context, int64) (distributionport.AdminException, error) {
 	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-	return distributionport.AdminException{ExceptionID: 51, CommissionID: 22, OrderReference: "order-8", Kind: "buyer_refund_after_paid", Status: "recovery_recorded", AmountMinor: 1200, Reason: "buyer_refund_after_paid", EvidenceReference: "receipt:51", ActorScope: "access:7", Audit: []distributionport.AdminExceptionAuditFact{{EventType: "distribution.recovery_recorded.v1", ActorScope: "access:7", AmountMinor: 1200, EvidenceReference: "receipt:51", OccurredAt: now}}}, nil
+	return distributionport.AdminException{ExceptionID: 51, CommissionID: 22, OrderReference: "order-8", DistributorPublicNo: "D-9", DistributorDisplayName: "管理员可见昵称", Kind: "buyer_refund_after_paid", Status: "recovery_recorded", AmountMinor: 1200, Reason: "buyer_refund_after_paid", EvidenceReference: "receipt:51", ActorScope: "access:7", Audit: []distributionport.AdminExceptionAuditFact{{EventType: "distribution.recovery_recorded.v1", ActorScope: "access:7", AmountMinor: 1200, EvidenceReference: "receipt:51", OccurredAt: now}}}, nil
 }
 
 func (adminWarningReader) ListAdminExceptions(context.Context, string, int32) (distributionport.AdminPage[distributionport.AdminException], error) {
@@ -95,7 +95,7 @@ func TestAdminHandlerUsesAccessCSRFAndNeverExposesManualPaidEndpoint(t *testing.
 	}
 	get := httptest.NewRecorder()
 	handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/admin/distribution/distributors", nil))
-	if get.Code != http.StatusOK || get.Header().Get("Cache-Control") != "no-store" || !strings.Contains(get.Body.String(), `"public_no":"D-9"`) || security.csrfCalls != 0 {
+	if get.Code != http.StatusOK || get.Header().Get("Cache-Control") != "no-store" || !strings.Contains(get.Body.String(), `"display_name":"管理员可见昵称"`) || !strings.Contains(get.Body.String(), `"receiver_status_label":"收款准备待支付侧核验"`) || strings.Contains(get.Body.String(), `"public_no"`) || strings.Contains(get.Body.String(), "customer-") || security.csrfCalls != 0 {
 		t.Fatalf("read=%d body=%s csrf=%d", get.Code, get.Body.String(), security.csrfCalls)
 	}
 	write := httptest.NewRequest(http.MethodPost, "/api/admin/distribution/distributors/9/disable", strings.NewReader(`{"version":3,"reason":"policy breach"}`))
@@ -179,6 +179,11 @@ func TestAdminHandlerDetailReadsRemainServerFilteredAndExposeFrozenFacts(t *test
 		}
 	}
 	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/distribution/distributors/9", nil))
+	if detailBody := response.Body.String(); !strings.Contains(detailBody, `"display_name":"管理员可见昵称"`) || !strings.Contains(detailBody, `"public_no":"D-9"`) || !strings.Contains(detailBody, `"receiver_status_label":"收款准备完成"`) || strings.Contains(detailBody, "customer-") {
+		t.Fatalf("distributor detail nickname/auxiliary number DTO=%s", detailBody)
+	}
+	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/distribution/orders/11", nil))
 	body := response.Body.String()
 	for _, want := range []string{`"resulting_payable_minor":3000`, `"provider_deadline_at":"2026-09-21T10:00:00Z"`, `"created_at":"2026-09-14T10:00:00Z"`} {
@@ -188,6 +193,14 @@ func TestAdminHandlerDetailReadsRemainServerFilteredAndExposeFrozenFacts(t *test
 	}
 	if strings.Contains(body, `"DeltaMinor"`) || strings.Contains(body, `"CreatedAt"`) {
 		t.Fatalf("detail DTO exposed Go field names: %s", body)
+	}
+	if !strings.Contains(body, `"distributor_display_name":"管理员可见昵称"`) || strings.Contains(body, `"distributor_public_no"`) || strings.Contains(body, "customer-") {
+		t.Fatalf("order detail did not expose only the distributor display name: %s", body)
+	}
+	exceptionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(exceptionResponse, httptest.NewRequest(http.MethodGet, "/api/admin/distribution/exceptions/51", nil))
+	if exceptionBody := exceptionResponse.Body.String(); !strings.Contains(exceptionBody, `"distributor_display_name":"管理员可见昵称"`) || strings.Contains(exceptionBody, `"distributor_public_no"`) || strings.Contains(exceptionBody, "customer-") {
+		t.Fatalf("exception detail did not expose only the distributor display name: %s", exceptionBody)
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/distribution/orders/11?cursor=1", nil))

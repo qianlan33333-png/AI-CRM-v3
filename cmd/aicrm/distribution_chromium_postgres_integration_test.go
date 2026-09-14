@@ -23,6 +23,7 @@ import (
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 // TestPostgreSQLDistributionChromiumJourney is the Distribution acceptance
@@ -34,7 +35,7 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
@@ -48,22 +49,29 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	key, cert := distributionFixturePaymentCredentials(t)
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
 	defer server.Close()
+	disabledServer := httptest.NewUnstartedServer(http.NotFoundHandler())
+	defer disabledServer.Close()
 	dataKey := base64.RawStdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	application, err := compose(ctx, platformconfig.Runtime{
-		Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: "https://" + server.Listener.Addr().String(), ReleaseSHA: "1111111111111111111111111111111111111111", WorkerOwner: "distribution-chromium", WorkerLimit: 1,
-		GroupOps: platformconfig.GroupOps{WebhookSecret: "distribution-chromium-webhook"},
-		Survey:   platformconfig.Survey{DataKey: dataKey, IdentityPhoneDataKey: dataKey, OAuthEnabled: true, OAuthAppID: "wx-distribution-h5", OAuthSecret: "fixture-h5-secret", OAuthOpenPlatformID: "distribution-open-platform", OAuthScope: "snsapi_userinfo"},
-		// This fixture enables the composed settlement gate only to verify that
-		// a qualified distributor can obtain an opaque credential. The journey
-		// neither registers a receiver nor sends a Payment provider command.
-		Effects:   platformconfig.Effects{ProviderEnabled: true},
-		WeChatPay: platformconfig.WeChatPay{Enabled: true, AppID: "wx-distribution-browser", AppSecret: "fixture-secret", AppScope: "wechat-app:distribution-browser", H5OAuthEnabled: true, H5AppID: "wx-distribution-h5", H5AppSecret: "fixture-h5-secret", H5AppScope: "wechat-app:wx-distribution-h5", OrderContactDataKey: dataKey, MerchantID: "fixture-mch", MerchantSerial: "fixture-merchant", PrivateKeyPath: key, PlatformCertPath: cert, APIV3Key: "0123456789abcdef0123456789abcdef", ProfitSharingEnabled: true, ProfitSharingPublicKeyID: "fixture-profit-sharing-public-key"},
-		Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "distribution-admin", Password: "distribution-admin-password", DisplayName: "Distribution Admin"},
-	})
+	runtimeFor := func(origin string, profitSharingEnabled bool) platformconfig.Runtime {
+		return platformconfig.Runtime{
+			Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: origin, ReleaseSHA: "1111111111111111111111111111111111111111", WorkerOwner: "distribution-chromium", WorkerLimit: 1,
+			GroupOps:  platformconfig.GroupOps{WebhookSecret: "distribution-chromium-webhook"},
+			Survey:    platformconfig.Survey{DataKey: dataKey, IdentityPhoneDataKey: dataKey, OAuthEnabled: true, OAuthAppID: "wx-distribution-h5", OAuthSecret: "fixture-h5-secret", OAuthOpenPlatformID: "distribution-open-platform", OAuthScope: "snsapi_userinfo"},
+			Effects:   platformconfig.Effects{ProviderEnabled: true},
+			WeChatPay: platformconfig.WeChatPay{Enabled: true, AppID: "wx-distribution-browser", AppSecret: "fixture-secret", AppScope: "wechat-app:distribution-browser", H5OAuthEnabled: true, H5AppID: "wx-distribution-h5", H5AppSecret: "fixture-h5-secret", H5AppScope: "wechat-app:wx-distribution-h5", OrderContactDataKey: dataKey, MerchantID: "fixture-mch", MerchantSerial: "fixture-merchant", PrivateKeyPath: key, PlatformCertPath: cert, APIV3Key: "0123456789abcdef0123456789abcdef", ProfitSharingEnabled: profitSharingEnabled, ProfitSharingAuthMode: "certificate"},
+			Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "distribution-admin", Password: "distribution-admin-password", DisplayName: "Distribution Admin"},
+		}
+	}
+	application, err := compose(ctx, runtimeFor("https://"+server.Listener.Addr().String(), true))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer application.Close()
+	disabledApplication, err := compose(ctx, runtimeFor("https://"+disabledServer.Listener.Addr().String(), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disabledApplication.Close()
 	assertDistributionH5OAuthStart(t, application.handler)
 	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "distribution-admin", Password: "distribution-admin-password", DisplayName: "Distribution Admin"}); err != nil {
 		t.Fatal(err)
@@ -72,23 +80,34 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	assertDistributionAdminDetailFacts(t, ctx, application, seed)
 	assertDistributionAdminDeadlineWarningReadModel(t, ctx, application, seed.commissionID)
 	server.Config.Handler = application.handler
+	disabledServer.Config.Handler = disabledApplication.handler
 	server.StartTLS()
+	disabledServer.StartTLS()
 	journey := filepath.Join(repository, "cmd", "aicrm", "distribution_chromium_journey.mjs")
-	command := exec.CommandContext(ctx, "node", journey)
-	command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
-	output, err := command.CombinedOutput()
-	if err != nil || !strings.Contains(string(output), "distribution_chromium: PASS") {
-		t.Fatalf("Distribution Chromium journey err=%v output=%s", err, strings.TrimSpace(string(output)))
+	runJourney := func(phase, want string) {
+		t.Helper()
+		command := exec.CommandContext(ctx, "node", journey)
+		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
+		output, runErr := command.CombinedOutput()
+		if runErr != nil || !strings.Contains(string(output), want) {
+			t.Fatalf("Distribution Chromium %s phase err=%v output=%s", phase, runErr, strings.TrimSpace(string(output)))
+		}
 	}
+	runJourney("registration", "distribution_chromium: REGISTERED")
+	assertDistributionReceiverWorkerProjection(t, ctx, application, seed)
+	runJourney("ready", "distribution_chromium: PASS")
 	assertDistributionRegistrationAndCredentialFacts(t, ctx, application, seed)
+	assertDistributionPromotionProductsStrictlyFilter(t, ctx, application, seed)
 }
 
 type distributionChromiumSeed struct {
 	session, promotion, productCode, csrf   string
+	adminDisplayName                        string
 	registrationCustomerID                  int64
-	productID                               int64
+	productID, applicationTargetID          int64
 	commissionID, detailAttributionID       int64
 	detailExceptionID                       int64
+	receiverEffectID                        int64
 	detailCreatedAt                         time.Time
 	receiverCount, effectCount, intentCount int64
 }
@@ -111,27 +130,40 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 	const code = "distribution-browser-product"
 	const token = "dpc_" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	session := "dist_" + "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
-	var registrationCustomer, detailCustomer, identityID, product, distributor, policy, credential, attribution int64
+	var registrationCustomer, detailCustomer, identityID, product, applicationTarget, distributor, policy, credential, attribution, receiverEffectID int64
 	if err := pool.QueryRow(ctx, "INSERT INTO customers DEFAULT VALUES RETURNING id").Scan(&registrationCustomer); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, "INSERT INTO customers DEFAULT VALUES RETURNING id").Scan(&detailCustomer); err != nil {
 		t.Fatal(err)
 	}
+	const adminDisplayName = "浏览器分销员昵称"
+	if _, err := pool.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,source,updated_at) VALUES($1,'active','注册分销员昵称','distribution-chromium',$2),($3,'active',$4,'distribution-chromium',$2)`, registrationCustomer, now, detailCustomer, adminDisplayName); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,'mp_openid','wechat-app:distribution-browser','distribution-browser-openid','verified','distribution-browser-fixture',1,$2) RETURNING id`, registrationCustomer, now).Scan(&identityID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,version,created_at,updated_at) VALUES($1,$2,'wx-distribution-browser','wechat-app:distribution-browser','mini_program',$3,'ready',1,$4,$4)`, registrationCustomer, identityID, string(effectport.Hash("payment.profit-sharing.receiver.account.v1", "wx-distribution-browser", "wechat-app:distribution-browser", "distribution-browser-openid")), now); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES('payment',$1,$2,$3,$4,$5,$6,'queued') RETURNING id`, effectport.KindWeChatPayReceiverAdd, effectport.Hash("distribution-chromium-receiver-source"), effectport.Hash("distribution-chromium-receiver-target"), effectport.Hash("distribution-chromium-receiver-payload"), effectport.Hash("distribution-chromium-receiver-policy"), effectport.Hash("distribution-chromium-receiver-envelope")).Scan(&receiverEffectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,external_effect_id,version,created_at,updated_at) VALUES($1,$2,'wx-distribution-browser','wechat-app:distribution-browser','mini_program',$3,'accepted',$4,1,$5,$5)`, registrationCustomer, identityID, string(effectport.Hash("payment.profit-sharing.receiver.account.v1", "wx-distribution-browser", "wechat-app:distribution-browser", "distribution-browser-openid")), receiverEffectID, now); err != nil {
 		t.Fatal(err)
 	}
 	projection := `{"schema_version":1,"status":"enabled","enabled":true,"buy_button_text":"立即购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`
 	if err := pool.QueryRow(ctx, "INSERT INTO products(product_code,name,description,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES($1,'分销浏览器商品','真实分销浏览器夹具',9900,'CNY',10,1,$2::jsonb) RETURNING id", code, projection).Scan(&product); err != nil {
 		t.Fatal(err)
 	}
+	if err := pool.QueryRow(ctx, "INSERT INTO products(product_code,name,description,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('distribution-browser-application-target','申请未购商品','仅用于申请上下文夹具',9900,'CNY',10,1,$1::jsonb) RETURNING id", projection).Scan(&applicationTarget); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, "INSERT INTO distribution_distributors(customer_id,public_no,agreement_version,enabled,receiver_reference,receiver_app_id,receiver_ready,receiver_reason,receiver_checked_at,registered_at,version,created_at,updated_at) VALUES($1,'DISTBROWSER01','v1',TRUE,'receiver-browser','wx-distribution-browser',TRUE,'',$2,$2,1,$2,$2) RETURNING id", detailCustomer, now).Scan(&distributor); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, "INSERT INTO distribution_product_policies(product_id,product_type,enabled,commission_rate_basis_points,wait_days,version,created_at,updated_at) VALUES($1,'standard_product',TRUE,1000,7,1,$2,$2) RETURNING id", product, now).Scan(&policy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO distribution_product_policies(product_id,product_type,enabled,commission_rate_basis_points,wait_days,version,created_at,updated_at) VALUES($1,'standard_product',TRUE,1000,7,1,$2,$2)", applicationTarget, now); err != nil {
 		t.Fatal(err)
 	}
 	var qualificationOrder int64
@@ -209,7 +241,7 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_provider_intents`).Scan(&intentCount); err != nil {
 		t.Fatal(err)
 	}
-	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", registrationCustomerID: registrationCustomer, productID: product, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, detailCreatedAt: detailCreatedAt, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
+	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", adminDisplayName: adminDisplayName, registrationCustomerID: registrationCustomer, productID: product, applicationTargetID: applicationTarget, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, receiverEffectID: receiverEffectID, detailCreatedAt: detailCreatedAt, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
 }
 
 func assertDistributionRegistrationAndCredentialFacts(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
@@ -251,6 +283,151 @@ func assertDistributionRegistrationAndCredentialFacts(t *testing.T, ctx context.
 	}
 	if distributors != 1 || registerReceipts != 1 || registerAudits != 1 || registerOutbox != 1 || credentials != 1 || receipts != 1 || audits != 1 || outbox != 1 || receivers != seed.receiverCount || effects != seed.effectCount || intents != seed.intentCount {
 		t.Fatalf("registration/credential facts distributors=%d registration_receipts=%d registration_audits=%d registration_outbox=%d credentials=%d credential_receipts=%d credential_audits=%d credential_outbox=%d receivers=%d/%d effects=%d/%d intents=%d/%d", distributors, registerReceipts, registerAudits, registerOutbox, credentials, receipts, audits, outbox, receivers, seed.receiverCount, effects, seed.effectCount, intents, seed.intentCount)
+	}
+}
+
+// assertDistributionReceiverWorkerProjection completes a seeded Payment
+// receiver-add effect through Composition's actual completion sink. The
+// terminal Payment fact and the Distribution snapshot share the same UoW;
+// public and admin reads therefore become ready without a second H5 prepare
+// action or any Provider call.
+func assertDistributionReceiverWorkerProjection(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
+	t.Helper()
+	pool := application.pool.Native()
+	var distributorID, version, synchronizedAudits, preparedAudits int64
+	var ready bool
+	if err := pool.QueryRow(ctx, `SELECT id,version,receiver_ready,(SELECT count(*) FROM distribution_audit_events WHERE aggregate_type='distributor' AND aggregate_id=d.id AND event_type='distribution.receiver_status_synchronized.v1'),(SELECT count(*) FROM distribution_audit_events WHERE aggregate_type='distributor' AND aggregate_id=d.id AND event_type='distribution.receiver_prepared.v1') FROM distribution_distributors d WHERE customer_id=$1`, seed.registrationCustomerID).Scan(&distributorID, &version, &ready, &synchronizedAudits, &preparedAudits); err != nil {
+		t.Fatal(err)
+	}
+	if ready || version != 1 || synchronizedAudits != 0 || preparedAudits != 0 {
+		t.Fatalf("registered worker-projection baseline distributor=%d ready=%v version=%d synchronized=%d prepared=%d", distributorID, ready, version, synchronizedAudits, preparedAudits)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(application.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete := func() {
+		t.Helper()
+		if err := uow.Within(ctx, func(tx context.Context) error {
+			return application.paymentDistribution.CompleteEffect(tx, "eer_"+strconv.FormatInt(seed.receiverEffectID, 10), effectport.Envelope{Owner: effectport.OwnerPayment, Kind: effectport.KindWeChatPayReceiverAdd}, effectport.Attempt{EffectID: "eer_" + strconv.FormatInt(seed.receiverEffectID, 10), Number: 1, Generation: 1, Fence: 1}, effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("distribution-chromium-receiver-ready")})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete()
+	if err := pool.QueryRow(ctx, `SELECT version,receiver_ready,(SELECT count(*) FROM distribution_audit_events WHERE aggregate_type='distributor' AND aggregate_id=d.id AND event_type='distribution.receiver_status_synchronized.v1'),(SELECT count(*) FROM distribution_audit_events WHERE aggregate_type='distributor' AND aggregate_id=d.id AND event_type='distribution.receiver_prepared.v1') FROM distribution_distributors d WHERE id=$1`, distributorID).Scan(&version, &ready, &synchronizedAudits, &preparedAudits); err != nil {
+		t.Fatal(err)
+	}
+	if !ready || version != 2 || synchronizedAudits != 1 || preparedAudits != 0 {
+		t.Fatalf("worker projection readiness=%v version=%d synchronized=%d prepared=%d", ready, version, synchronizedAudits, preparedAudits)
+	}
+	publicRead := func(path string) string {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: "aicrm_distribution_session", Value: seed.session})
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("public worker projection %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	if body := publicRead("/api/v1/distribution/me"); !strings.Contains(body, `"ready":true`) || strings.Contains(body, `"receiver_not_ready"`) {
+		t.Fatalf("public profile did not read worker-ready receiver: %s", body)
+	}
+	if body := publicRead("/api/v1/distribution/products?limit=20"); !strings.Contains(body, `"product_id":`+strconv.FormatInt(seed.productID, 10)) || !strings.Contains(body, `"promotion_ready":true`) {
+		t.Fatalf("promotion products did not read worker-ready receiver: %s", body)
+	}
+	adminSession, _ := adminAccessLogin(t, application.handler, "distribution-admin", "distribution-admin-password")
+	adminRead := func(path string) string {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: adminSession})
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("admin worker projection %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	if body := adminRead("/api/admin/distribution/distributors?limit=50"); !strings.Contains(body, `"display_name":"注册分销员昵称"`) || !strings.Contains(body, `"receiver_ready":true`) {
+		t.Fatalf("admin distributor list did not read worker-ready projection: %s", body)
+	}
+	if body := adminRead("/api/admin/distribution/distributors/" + strconv.FormatInt(distributorID, 10)); !strings.Contains(body, `"public_no"`) || !strings.Contains(body, `"receiver_ready":true`) {
+		t.Fatalf("admin distributor detail did not read worker-ready projection: %s", body)
+	}
+	complete()
+	if err := pool.QueryRow(ctx, `SELECT version,(SELECT count(*) FROM distribution_audit_events WHERE aggregate_type='distributor' AND aggregate_id=d.id AND event_type='distribution.receiver_status_synchronized.v1') FROM distribution_distributors d WHERE id=$1`, distributorID).Scan(&version, &synchronizedAudits); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 || synchronizedAudits != 1 {
+		t.Fatalf("replayed worker ready changed distribution projection version=%d synchronized=%d", version, synchronizedAudits)
+	}
+}
+
+// assertDistributionPromotionProductsStrictlyFilter uses the composed public
+// HTTP handler and PostgreSQL facts after the browser has completed actual
+// registration.  It proves unpurchased and paid-but-unconfirmed products are
+// never serialized as promotion cards; the latter becomes an empty-state fact
+// only after the one eligible policy is disabled.
+func assertDistributionPromotionProductsStrictlyFilter(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
+	t.Helper()
+	pool := application.pool.Native()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	projection := `{"schema_version":1,"status":"enabled","enabled":true,"buy_button_text":"立即购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`
+	var unpurchasedID, missingConfirmationID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO products(product_code,name,description,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('distribution-unpurchased-filter','未购买商品','严格过滤夹具',9900,'CNY',10,1,$1::jsonb) RETURNING id`, projection).Scan(&unpurchasedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO products(product_code,name,description,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('distribution-confirmation-gap-filter','待核验商品','严格过滤夹具',9900,'CNY',10,1,$1::jsonb) RETURNING id`, projection).Scan(&missingConfirmationID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{unpurchasedID, missingConfirmationID} {
+		if _, err := pool.Exec(ctx, `INSERT INTO distribution_product_policies(product_id,product_type,enabled,commission_rate_basis_points,wait_days,version,created_at,updated_at) VALUES($1,'standard_product',true,1000,7,1,$2,$2)`, id, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var identityID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM customer_identities WHERE customer_id=$1 AND kind='mp_openid'`, seed.registrationCustomerID).Scan(&identityID); err != nil {
+		t.Fatal(err)
+	}
+	var orderID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','distribution-confirmation-gap','promotion-filter-gap','M-distribution-confirmation-gap',$1,$1,9900,'CNY','paid','native',true,2,$2,$2) RETURNING id`, seed.registrationCustomerID, now).Scan(&orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_version,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,1,$2,1,'distribution-confirmation-gap-filter','待核验商品',9900,1,9900)`, orderID, missingConfirmationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO order_checkout_snapshots(order_id,product_type,product_id,product_code,product_name,product_version,service_period_duration_days,gross_amount_minor,discount_amount_minor,payable_amount_minor,currency,coupon_applied,coupon_reservation_ref,reserved_at,created_at) VALUES($1,'standard_product',$2,'distribution-confirmation-gap-filter','待核验商品',1,0,9900,0,9900,'CNY',false,'',$3,$3)`, orderID, missingConfirmationID, now); err != nil {
+		t.Fatal(err)
+	}
+	paidDigest := sha256.Sum256([]byte("distribution-confirmation-gap-paid"))
+	if _, err := pool.Exec(ctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at) VALUES($1,2,$2,$3)`, orderID, paidDigest[:], now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,profit_sharing_marked,version,paid_confirmed_at,created_at,updated_at) VALUES($1,'wechat_pay','mini_program','M-distribution-confirmation-gap',$2,$3,$3,9900,'CNY','paid',false,1,NULL,$4,$4)`, orderID, identityID, seed.registrationCustomerID, now); err != nil {
+		t.Fatal(err)
+	}
+	read := func() string {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/distribution/products?limit=20", nil)
+		request.AddCookie(&http.Cookie{Name: "aicrm_distribution_session", Value: seed.session})
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("promotion products status=%d body=%s", response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	body := read()
+	if !strings.Contains(body, `"product_id":`+strconv.FormatInt(seed.productID, 10)) || strings.Contains(body, "distribution-unpurchased-filter") || strings.Contains(body, "distribution-confirmation-gap-filter") {
+		t.Fatalf("strict promotion list leaked unqualified product: %s", body)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE distribution_product_policies SET enabled=false,version=version+1,updated_at=$2 WHERE product_id=$1 AND product_type='standard_product'`, seed.productID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	body = read()
+	if !strings.Contains(body, `"items":[]`) || !strings.Contains(body, `"empty_reason":"qualification_payment_confirmation_missing"`) || strings.Contains(body, "distribution-confirmation-gap-filter") {
+		t.Fatalf("strict promotion empty state=%s", body)
 	}
 }
 

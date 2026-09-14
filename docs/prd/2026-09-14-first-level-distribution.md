@@ -59,7 +59,7 @@ Distribution 拥有自身业务记录、审计和 outbox；不访问 Product、O
 
 Distribution 的专用购买证据接口只返回可解释的通过、拒绝、暂缓、读取失败或身份冲突；它绝不调用既有 `Owned` 或直接访问其他领域表。通过须存在至少一笔订单，其商品 ID 和类型精确匹配，付款人与受益人都可信对应该分销员，支付已确认成功，商品实付大于零，且该笔订单没有成功退款、处理中退款或未知结果退款。
 
-部署时，普通微信支付与分销分账是两项独立能力。`AICRM_WECHAT_PAY_PROFIT_SHARING_ENABLED` 默认 `false`；开启它还必须同时启用微信支付和 External Effects，并提供经部署验证的 `AICRM_WECHAT_PAY_PROFIT_SHARING_PUBLIC_KEY_ID`。Composition 使用现有平台验签公钥和该 key ID 创建官方分账 SDK，不启动证书下载器。能力关闭时，商品策略和分销中心可读，但结账不创建返佣归因、不标记分账也不冻结资金；收款准备保持未就绪，不能伪造可推广或可结算状态。
+部署时，普通微信支付与分销分账是两项独立能力。`AICRM_WECHAT_PAY_PROFIT_SHARING_ENABLED` 默认 `false`；开启它还必须同时启用微信支付和 External Effects，并明确选择 `AICRM_WECHAT_PAY_PROFIT_SHARING_AUTH_MODE=certificate|public_key`：前者提供完整、有效的平台 X.509 证书，以静态 CertificateVisitor 构造；后者提供经部署验证的真实 `AICRM_WECHAT_PAY_PROFIT_SHARING_PUBLIC_KEY_ID` 和对应公钥。平台证书 serial 绝不作为 public-key ID，Composition 不下载证书、不启用 AutoAuth、也不静默切换认证模式。能力关闭时，商品策略和分销中心可读，但结账不创建返佣归因、不标记分账也不冻结资金；收款准备保持未就绪，不能伪造可推广或可结算状态。
 
 | 场景 | 结果 |
 | --- | --- |

@@ -127,6 +127,101 @@ func (r *Repository) BindProfitSharingReceiverEffect(ctx context.Context, value 
 	return value, nil
 }
 
+// FindProfitSharingReceiverRecoveryWithin replays an immutable administrator
+// recovery receipt.  It deliberately loads the receiver from Payment storage
+// instead of trusting a caller-supplied result ID.
+func (r *Repository) FindProfitSharingReceiverRecoveryWithin(ctx context.Context, actorScope string, key, payload [32]byte) (domain.ProfitSharingReceiver, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.ProfitSharingReceiver{}, false, err
+	}
+	var (
+		resultID   int64
+		oldPayload []byte
+		resultKind string
+	)
+	err = t.QueryRow(ctx, `SELECT result_id,payload_digest,result_kind FROM payment_operation_receipts WHERE operation='receiver_recovery' AND actor_scope=$1 AND key_digest=$2 FOR UPDATE`, actorScope, key[:]).Scan(&resultID, &oldPayload, &resultKind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ProfitSharingReceiver{}, false, nil
+	}
+	if err != nil {
+		return domain.ProfitSharingReceiver{}, false, mapError(err)
+	}
+	if len(oldPayload) != len(payload) || string(oldPayload) != string(payload[:]) || resultKind != "receiver" || resultID < 1 {
+		return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
+	}
+	value, err := r.GetProfitSharingReceiver(ctx, resultID, false)
+	if err != nil {
+		return domain.ProfitSharingReceiver{}, false, err
+	}
+	return value, true, nil
+}
+
+// RecoverProfitSharingReceiverEffectWithin records a reviewed replacement
+// receiver-add intent.  The old final-failed effect is only used as a CAS
+// precondition and remains immutable.  The caller proves its full attempt
+// history and accepts the new EER intent in this same Unit of Work first.
+func (r *Repository) RecoverProfitSharingReceiverEffectWithin(ctx context.Context, value domain.ProfitSharingReceiver, oldEffect string, intent effectport.PaymentV1Intent, actorScope, evidenceReference string, key, payload [32]byte) (domain.ProfitSharingReceiver, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.ProfitSharingReceiver{}, false, err
+	}
+	if value.ID < 1 || value.State != domain.ProfitSharingReceiverAccepted || actorScope == "" || evidenceReference == "" {
+		return domain.ProfitSharingReceiver{}, false, paymentport.ErrInvalid
+	}
+	oldEffectID, err := effectNumeric(oldEffect)
+	if err != nil {
+		return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
+	}
+	newEffectID, err := effectNumeric(value.EffectID)
+	if err != nil || newEffectID == oldEffectID {
+		return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
+	}
+
+	// The payment receipt is inserted before changing the receiver.  An
+	// identical concurrent command cannot create a second effect because the
+	// app uses the same actor/key-derived EER receipt key; a cross-receiver key
+	// reuse reaches this conflict before this UoW can commit.
+	var receiptResultID int64
+	err = t.QueryRow(ctx, `INSERT INTO payment_operation_receipts(operation,actor_scope,key_digest,payload_digest,result_kind,result_id,created_at) VALUES('receiver_recovery',$1,$2,$3,'receiver',$4,$5) ON CONFLICT(operation,actor_scope,key_digest) DO NOTHING RETURNING result_id`, actorScope, key[:], payload[:], value.ID, value.UpdatedAt).Scan(&receiptResultID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return domain.ProfitSharingReceiver{}, false, mapError(err)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		replay, found, inner := r.FindProfitSharingReceiverRecoveryWithin(ctx, actorScope, key, payload)
+		if inner != nil {
+			return domain.ProfitSharingReceiver{}, false, inner
+		}
+		if !found || replay.ID != value.ID {
+			return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
+		}
+		return replay, true, nil
+	}
+	if receiptResultID != value.ID {
+		return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
+	}
+
+	updated, err := t.Exec(ctx, `UPDATE payment_profit_sharing_receivers SET state=$2,external_effect_id=$3,version=$4,updated_at=$5 WHERE id=$1 AND state='final_failed' AND external_effect_id=$6 AND version=$7`, value.ID, value.State, newEffectID, value.Version, value.UpdatedAt, oldEffectID, value.Version-1)
+	if err != nil {
+		return domain.ProfitSharingReceiver{}, false, mapError(err)
+	}
+	if updated.RowsAffected() != 1 {
+		return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
+	}
+	if err = insertProfitSharingIntent(ctx, t, value.ID, 0, 0, intent, value.UpdatedAt); err != nil {
+		return domain.ProfitSharingReceiver{}, false, err
+	}
+	if err = profitSharingAudit(ctx, t, "receiver", value.ID, "payment.profit_sharing.receiver_recovery_accepted", actorScope, value.UpdatedAt, map[string]any{
+		"old_effect_id":      oldEffect,
+		"new_effect_id":      value.EffectID,
+		"evidence_reference": evidenceReference,
+		"review":             "controlled_review_all_attempts_unexecuted_current_configuration_verified",
+	}); err != nil {
+		return domain.ProfitSharingReceiver{}, false, err
+	}
+	return value, false, nil
+}
+
 func (r *Repository) PaymentForDistributionOrder(ctx context.Context, orderID int64, lock bool) (domain.Payment, error) {
 	t, err := tx(ctx)
 	if err != nil {
