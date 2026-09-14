@@ -10,7 +10,10 @@
 | 独立工作树 | `/root/template_packaging` | 已完成 | `9ef314a5` | `git worktree` 创建成功，工作树从 `origin/main` 建立 |
 | PRD 与前端 Skill | `/root/template_packaging` | 已完成 | `9ef314a5` | `PRD.md`、`SKILL.md` 已落盘；main 现有 `references/component-map.md` 保留 |
 | Product Design PNG 模板 | `/root/template_packaging` | 已完成 | 不适用（个人技能） | `artifact-template-crm`；`/Users/qianlan/.codex/skills/artifact-template-crm/artifact-template.json`；reference/preview SHA-256=`84f24c0c9d43b624db1a652599d27d42b18b9b046c74cdac4ff77f059b4bfce4` |
-| UI 实现 | terra | ready，可开始 | `9ef314a5` | PRD 基础 commit 完成后通知开发，不等待模板脚本 |
-| 审计与验收 | luna | 待排期 | 待定 | 由 luna 维护后续 fast/compile/browser 与真实 readback 证据 |
+| Enter／输入法搜索（第一批） | terra | 已实现，Draft PR 待审 | `3ddc1fe5`、`479b7bb5`、`c7b2b553`；[PR #287](https://github.com/qianlan33333-png/AI-CRM-v3/pull/287) | 已接入渠道码中心、优惠券、问卷、标签及标签／群聊／客服／素材选择器；已通过定向 Node 测试、`typecheck`、`build`、`ui:shell:contract` 与相关 Go 包测试。真实 Host Chromium 输入法 Journey 仍待完成，未称全局搜索完成。 |
+| V3 标准组件合同与统一视觉 | terra | 进行中 | 待定 | 标签、群聊、客服、素材、话术／内容与公共反馈的共享扩展正在实现；冻结 donor 不修改，须完成真实 Host 接入与状态验收。 |
+| 交易订单分销展示 | 待分发 | 待排期 | 待定 | 已纳入 PRD：订单级快照比例、归因分销员、佣金、退款复核期、预计／实际结算与异常证据。需先核实现有 distribution Stable Read Port 的字段缺口，禁止用商品当前配置代替订单快照。 |
+| 经营首页、导航与其余页面 | root／各模块 owner | 待排期 | 待定 | overview 只读聚合、导航接入与页面改造尚未完成；不因搜索 PR 已创建而标记 UI ready。 |
+| 审计与验收 | luna | 待排期 | 待定 | 由 luna 维护后续 fast/compile/browser 与真实 readback 证据。 |
 
 截图位于 `references/` 仅作本地视觉参考，含用户数据的 PNG 不进入 Git 提交。
