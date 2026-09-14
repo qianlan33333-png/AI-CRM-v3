@@ -253,7 +253,7 @@ func adjustmentJSONs(xs []distributionport.AdminCommissionAdjustment) []any {
 	return result
 }
 func settlementJSON(x distributionport.AdminSettlement) map[string]any {
-	return map[string]any{"id": x.ID, "reference": x.Reference, "amount_minor": x.AmountMinor, "currency": x.Currency, "state": x.State, "provider_deadline_at": x.ProviderDeadlineAt, "created_at": x.CreatedAt, "updated_at": x.UpdatedAt}
+	return map[string]any{"id": x.ID, "reference": x.Reference, "amount_minor": x.AmountMinor, "currency": x.Currency, "state": x.State, "provider_deadline_at": x.ProviderDeadlineAt, "settlement_confirmed_at": x.SettlementConfirmedAt, "created_at": x.CreatedAt, "updated_at": x.UpdatedAt}
 }
 func settlementJSONs(xs []distributionport.AdminSettlement) []any {
 	result := make([]any, 0, len(xs))

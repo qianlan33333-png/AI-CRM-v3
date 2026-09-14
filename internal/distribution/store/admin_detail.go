@@ -120,13 +120,19 @@ func (r *Repository) ReadAdminOrderDetail(ctx context.Context, attributionID int
 		return value, mapError(err)
 	}
 	rows.Close()
-	rows, err = tx.Query(ctx, `SELECT id,settlement_reference,amount_minor,currency,state,provider_deadline_at,created_at,updated_at FROM distribution_settlements WHERE commission_id=$1 ORDER BY id`, commissionID)
+	rows, err = tx.Query(ctx, `SELECT s.id,s.settlement_reference,s.amount_minor,s.currency,s.state,s.provider_deadline_at,
+		(SELECT MAX(ae.occurred_at) FROM distribution_audit_events ae
+		 WHERE ae.aggregate_type='commission' AND ae.aggregate_id=s.commission_id
+		   AND ae.event_type='distribution.settlement_paid.v1'
+		   AND ae.payload->>'settlement_reference'=s.settlement_reference),
+		s.created_at,s.updated_at
+		FROM distribution_settlements s WHERE s.commission_id=$1 ORDER BY s.id`, commissionID)
 	if err != nil {
 		return value, mapError(err)
 	}
 	for rows.Next() {
 		var item distributionport.AdminSettlement
-		if err = rows.Scan(&item.ID, &item.Reference, &item.AmountMinor, &item.Currency, &item.State, &item.ProviderDeadlineAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err = rows.Scan(&item.ID, &item.Reference, &item.AmountMinor, &item.Currency, &item.State, &item.ProviderDeadlineAt, &item.SettlementConfirmedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			rows.Close()
 			return value, mapError(err)
 		}
