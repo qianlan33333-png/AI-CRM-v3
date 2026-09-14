@@ -41,6 +41,13 @@
   let nextCursor = "";
   let pageIndex = 0;
   let pageCursors = [""];
+  let listRequestID = 0;
+  let listAbortController = null;
+  let listBusy = false;
+  let committedQuery = "";
+  // A failed read must retry the same submitted filter/cursor pair even when
+  // an administrator has edited the form again without submitting it.
+  let listRetry = { query: "", cursor: "", navigation: "reset" };
   let detailID = "";
   let clearPhoneTimer = 0;
   const selectedCustomers = new Set();
@@ -212,6 +219,14 @@
     el.state.className = "admin-state admin-state--inline" + (error ? " admin-state--error" : "");
     el.state.hidden = false;
     el.wrap.hidden = true;
+  }
+
+  function setListBusy(busy) {
+    listBusy = busy;
+    root.setAttribute("aria-busy", busy ? "true" : "false");
+    if (el.refresh) el.refresh.disabled = busy;
+    const pageStateUnavailable = activeQuery !== committedQuery;
+    for (const control of [el.previous, el.next]) if (control) control.disabled = busy || pageStateUnavailable;
   }
 
   function tagIDs(values) {
@@ -402,27 +417,41 @@
     return row;
   }
 
-  async function loadList(cursor, navigation) {
+  async function loadList(cursor, navigation, retryQuery) {
+    let params;
+    let filterQuery;
+    if (navigation === "reset") {
+      params = retryQuery === undefined ? queryFromForm() : new URLSearchParams(retryQuery);
+      filterQuery = params.toString();
+      if (filterQuery !== activeQuery) selectedCustomers.clear();
+      activeQuery = filterQuery;
+    } else {
+      filterQuery = retryQuery === undefined ? activeQuery : retryQuery;
+      params = new URLSearchParams(filterQuery);
+    }
+    const requestCursor = String(cursor || "");
+    if (requestCursor) params.set("cursor", requestCursor);
+    const requestID = ++listRequestID;
+    const pageSnapshot = { index: pageIndex, cursors: pageCursors.slice() };
+    listRetry = { query: filterQuery, cursor: requestCursor, navigation };
+    if (listAbortController) listAbortController.abort();
+    const controller = new AbortController();
+    listAbortController = controller;
+    setListBusy(true);
     listState("正在加载客户", "按当前筛选读取客户目录。", false);
     try {
-      let params;
-      if (navigation === "reset") {
-        params = queryFromForm();
-        activeQuery = params.toString();
-      } else {
-        params = new URLSearchParams(activeQuery);
-      }
-      if (cursor) params.set("cursor", cursor);
-      const data = await request(api.customers + "?" + params.toString());
+      const data = await request(api.customers + "?" + params.toString(), { signal: controller.signal });
+      if (requestID !== listRequestID) return;
       if (navigation === "reset") {
         pageIndex = 0;
         pageCursors = [""];
       } else if (navigation === "next") {
-        pageIndex += 1;
-        pageCursors = pageCursors.slice(0, pageIndex);
-        pageCursors[pageIndex] = cursor;
+        pageIndex = pageSnapshot.index + 1;
+        pageCursors = pageSnapshot.cursors.slice(0, pageIndex);
+        pageCursors[pageIndex] = requestCursor;
       } else if (navigation === "previous") {
-        pageIndex -= 1;
+        pageIndex = Math.max(0, pageSnapshot.index - 1);
+        pageCursors = pageSnapshot.cursors;
       }
       el.body.replaceChildren();
       for (const item of data.items || []) el.body.append(listRow(item));
@@ -434,10 +463,17 @@
       nextCursor = data.next_cursor || "";
       el.previous.hidden = pageIndex === 0;
       el.next.hidden = !nextCursor;
+      committedQuery = filterQuery;
+      listRetry = { query: filterQuery, cursor: requestCursor, navigation: "refresh" };
     } catch (error) {
+      if (requestID !== listRequestID || controller.signal.aborted) return;
       if (error.status === 401) listState("登录已失效", "请重新登录后查询。", true);
       else if (error.status === 400 && error.message === "invalid_request") listState("手机号格式不正确", "请输入11位中国大陆手机号。", true);
       else listState("客户列表暂时不可用", "请稍后重试。", true);
+    } finally {
+      if (requestID !== listRequestID) return;
+      listAbortController = null;
+      setListBusy(false);
     }
   }
 
@@ -612,11 +648,11 @@
   if (el.singleTags) el.singleTags.addEventListener("submit", function (event) { event.preventDefault(); if (detailID) void previewAndConfirm([Number(detailID)], el.singleTags, el.singleTagResult, el.singleTagRefresh); });
   if (el.batchTagRefresh) el.batchTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.batchTagResult, el.batchTagRefresh); });
   if (el.singleTagRefresh) el.singleTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.singleTagResult, el.singleTagRefresh); });
-  if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); loadList("", "reset"); });
-  if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); loadList("", "reset"); });
-  if (el.refresh) el.refresh.addEventListener("click", function () { loadList(pageCursors[pageIndex], "refresh"); });
-  if (el.previous) el.previous.addEventListener("click", function () { if (pageIndex > 0) loadList(pageCursors[pageIndex - 1], "previous"); });
-  if (el.next) el.next.addEventListener("click", function () { if (nextCursor) loadList(nextCursor, "next"); });
+  if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); void loadList("", "reset"); });
+  if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); void loadList("", "reset"); });
+  if (el.refresh) el.refresh.addEventListener("click", function () { if (!listBusy) void loadList(listRetry.cursor, listRetry.navigation, listRetry.query); });
+  if (el.previous) el.previous.addEventListener("click", function () { if (!listBusy && activeQuery === committedQuery && pageIndex > 0) void loadList(pageCursors[pageIndex - 1], "previous"); });
+  if (el.next) el.next.addEventListener("click", function () { if (!listBusy && activeQuery === committedQuery && nextCursor) void loadList(nextCursor, "next"); });
   if (el.syncStart) el.syncStart.addEventListener("click", startSync);
   const startInitialLoads = function () {
     void loadTagSelectors();
@@ -624,7 +660,7 @@
     if (match) loadDetail(match[1]);
     else {
       loadSync();
-      loadList("", "reset");
+      void loadList("", "reset");
     }
   };
   if (window.AdminFmt && typeof window.AdminFmt.whenAdminDateTimeReady === "function") {
