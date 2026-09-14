@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -15,9 +19,9 @@ import (
 )
 
 func TestPostgreSQLCaptureFrozenFactsAndReadOnlyEnforcement(t *testing.T) {
-	base, configErr := platformconfig.NamedDatabaseURL("AICRM_AUDIENCE_TEST_ADMIN_URL")
+	base, configErr := platformconfig.NamedDatabaseURL("AICRM_DATABASE_URL")
 	if configErr != nil {
-		t.Skip("isolated PostgreSQL test admin URL not configured")
+		t.Skip("isolated PostgreSQL database URL not configured")
 	}
 	ctx := context.Background()
 	admin, e := pgx.Connect(ctx, base)
@@ -87,6 +91,22 @@ func TestPostgreSQLCaptureFrozenFactsAndReadOnlyEnforcement(t *testing.T) {
 	}
 	if s.Tables["ai_audience_member_current"].Count != 2 || s.Tables["ai_audience_package_version"].Count != 1 {
 		t.Fatal("count loss")
+	}
+	// Exercise the command's default named audience source role rather than
+	// only calling extract directly.
+	t.Setenv("AICRM_AUDIENCE_SOURCE_DATABASE_URL", u.String())
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "snapshot.key")
+	key := bytes.Repeat([]byte{9}, 32)
+	if e = os.WriteFile(keyPath, []byte(base64.RawStdEncoding.EncodeToString(key)), 0600); e != nil {
+		t.Fatal(e)
+	}
+	snapshotPath := filepath.Join(dir, "snapshot.enc")
+	if e = run([]string{"extract", "--source-system", "test-source", "--snapshot", snapshotPath, "--snapshot-key-file", keyPath}); e != nil {
+		t.Fatalf("default extract path: %v", e)
+	}
+	if _, e = readPrivate(snapshotPath, 512<<20); e != nil {
+		t.Fatalf("default extract did not write protected snapshot: %v", e)
 	}
 	// A hostile source view cannot exploit capture to execute writes. The stored
 	// package SQL above remains plain historical data throughout the happy path.

@@ -900,13 +900,13 @@ func AccessGovernanceScreenshotDirectory() string {
 	return os.Getenv("AICRM_ACCESS_UI_SCREENSHOT_DIR")
 }
 
-// NamedDatabaseURL is restricted to the two database roles used by the
-// controlled Automation Operations migration. Keeping this allowlist in the
+// NamedDatabaseURL is restricted to explicit target and read-only source roles
+// used by controlled offline migrations. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment
 // values as credentials.
 func NamedDatabaseURL(name string) (string, error) {
 	switch name {
-	case "AICRM_DATABASE_URL", "AICRM_V2_AUTOMATION_DATABASE_URL":
+	case "AICRM_DATABASE_URL", "AICRM_V2_AUTOMATION_DATABASE_URL", "AICRM_AUDIENCE_SOURCE_DATABASE_URL":
 	default:
 		return "", errors.New("unsupported database URL environment")
 	}

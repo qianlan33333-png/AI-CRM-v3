@@ -19,3 +19,33 @@ Cover G02/G03, G05/G06, and G08-G14 with each route's actual method and path: su
 OneID: not involved — these routes operate tag configuration, acquisition-link commands, and operation-cycle records, and the test fakes never accept an external identity.
 
 Persistence: stateless test harness — fakes stand in for local transactions and durable-effect acceptance; no state is persisted and no external effect is emitted.
+
+
+## Audience source configuration repair
+
+The release audit found that the default `migrate-audience-history extract` source
+role, `AICRM_AUDIENCE_SOURCE_DATABASE_URL`, was rejected by the closed
+`NamedDatabaseURL` allowlist. The integration test also used a non-existent
+`AICRM_AUDIENCE_TEST_ADMIN_URL` role, so CI skipped its PostgreSQL read-only
+contract even when the canonical CI database was present.
+
+Business decision: the audience source remains an explicit, named offline
+read-only migration role. The repair adds only that production source role to
+the allowlist; it does not accept arbitrary environment names or expose URL
+values in errors. The PostgreSQL test now uses the existing
+`AICRM_DATABASE_URL` CI admin connection and invokes the command's default
+extract path, with the audience source role set to its isolated test database.
+
+OneID: involved only at the existing downstream historical-import boundary;
+this repair does not resolve, provision, link, or merge identities.
+
+Persistence: isolated PostgreSQL read-only source snapshot plus local test
+database. No durable job, Provider read/write, production database, or external
+effect is added. The existing extract transaction remains read-only, historical
+packages remain paused, and identity/key protections remain unchanged.
+
+Reference check: the existing GitHub repository tests use `t.Setenv` for
+configuration contracts and `NamedDatabaseURL` as the common closed allowlist.
+The new cases retain that pattern: named-role success, empty role rejection,
+unknown-role rejection without URL disclosure, and a default command-path
+PostgreSQL contract.

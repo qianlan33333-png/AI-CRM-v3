@@ -542,13 +542,28 @@ func TestAccessGovernanceScreenshotDirectoryUsesConfigurationBoundary(t *testing
 }
 
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
-	t.Setenv("AICRM_V2_AUTOMATION_DATABASE_URL", "postgres://readonly@source/aicrm")
-	value, err := NamedDatabaseURL("AICRM_V2_AUTOMATION_DATABASE_URL")
-	if err != nil || value != "postgres://readonly@source/aicrm" {
-		t.Fatalf("value=%q err=%v", value, err)
+	allowed := map[string]string{
+		"AICRM_DATABASE_URL":                 "postgres://target@localhost/aicrm",
+		"AICRM_V2_AUTOMATION_DATABASE_URL":   "postgres://readonly@source/automation",
+		"AICRM_AUDIENCE_SOURCE_DATABASE_URL": "postgres://readonly@source/audience",
 	}
-	if _, err = NamedDatabaseURL("ARBITRARY_SECRET"); err == nil {
+	for name, want := range allowed {
+		t.Setenv(name, want)
+		got, err := NamedDatabaseURL(name)
+		if err != nil || got != want {
+			t.Fatalf("name=%s value=%q err=%v", name, got, err)
+		}
+	}
+	t.Setenv("AICRM_AUDIENCE_SOURCE_DATABASE_URL", "")
+	if _, err := NamedDatabaseURL("AICRM_AUDIENCE_SOURCE_DATABASE_URL"); err == nil {
+		t.Fatal("expected empty audience source URL rejection")
+	}
+	const secret = "postgres://secret-user:secret-password@source/audience"
+	t.Setenv("ARBITRARY_SECRET", secret)
+	if _, err := NamedDatabaseURL("ARBITRARY_SECRET"); err == nil {
 		t.Fatal("expected unsupported environment name")
+	} else if strings.Contains(err.Error(), secret) {
+		t.Fatal("unsupported environment error exposed value")
 	}
 }
 
