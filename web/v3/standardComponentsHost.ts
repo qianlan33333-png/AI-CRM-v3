@@ -7,12 +7,22 @@ export {};
 // It supplies the V3 envelope for the shared directory refresh command and
 // guarantees dependency order and one evaluation per page.
 declare global {
-  type OperationMemberPickerOptions = Record<string, unknown>;
   interface Window {
     AICRMStandardComponents?: { ready(): Promise<void> };
     AICRMWeComTagPicker?: unknown;
-    OperationMemberPicker?: { open(options: OperationMemberPickerOptions): unknown };
   }
+}
+
+// This Host observes a byte-frozen global after its script is loaded.  Keep
+// that runtime-only shape local: other Hosts declare their own precise picker
+// option contracts, and widening Window here would erase their contextual
+// typing during the combined source-view build.
+type OperationMemberPickerOptions = Record<string, unknown>;
+type OperationMemberPicker = { open(options: OperationMemberPickerOptions): unknown };
+type OperationMemberPickerWindow = { OperationMemberPicker?: OperationMemberPicker };
+
+function operationMemberPicker(): OperationMemberPicker | undefined {
+  return (window as unknown as OperationMemberPickerWindow).OperationMemberPicker;
 }
 
 // The frozen picker refreshes the common saved staff-profile projection.
@@ -95,8 +105,8 @@ let tagPickerLocked = false;
 const operationMemberSearchLifecycleInstalled = new WeakSet<object>();
 
 function installOperationMemberSearchLifecycle(): void {
-  if (!window.OperationMemberPicker || operationMemberSearchLifecycleInstalled.has(window.OperationMemberPicker)) return;
-  const picker = window.OperationMemberPicker;
+  const picker = operationMemberPicker();
+  if (!picker || operationMemberSearchLifecycleInstalled.has(picker)) return;
   operationMemberSearchLifecycleInstalled.add(picker);
   const open = picker.open.bind(picker);
   picker.open = (options: OperationMemberPickerOptions) => {
@@ -117,7 +127,7 @@ function observeOperationMemberPicker(): void {
     installOperationMemberSearchLifecycle();
     return;
   }
-  let current = window.OperationMemberPicker;
+  let current = operationMemberPicker();
   Object.defineProperty(window, 'OperationMemberPicker', {
     configurable: true,
     get: () => current,
