@@ -3596,8 +3596,26 @@ paths:
     put: {operationId: replaceAIAudiencePackageSenders, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsSendersPut"}}}}, responses: {"200": {description: Sender references replaced, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectPage"}}}}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
   /api/admin/ai-audience/packages/{package_id}/members:
     get: {operationId: listAIAudiencePackageMembers, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/AutomationOpsSnapshotQuery"}, {$ref: "#/components/parameters/Cursor"}, {$ref: "#/components/parameters/Limit"}], responses: {"200": {description: Canonical OneID members from one published snapshot, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsMemberPage"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
-  /api/ai/audience/packages/{package_key}/webhook:
-    post: {operationId: receiveAIAudienceInboundWebhook, tags: [AutomationOperations], security: [{automationOpsWebhook: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageKey"}, {$ref: "#/components/parameters/AutomationOpsWebhookTimestamp"}, {$ref: "#/components/parameters/AutomationOpsWebhookEventID"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsWebhookFact"}}}}, responses: {"202": {description: Identity disposition recorded, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsWebhookReceipt"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}}}
+  /api/integrations/ai-audience/{package_key}/membership-facts:
+    post:
+      operationId: receiveAIAudienceInboundWebhook
+      tags: [AutomationOperations]
+      security: [{automationOpsWebhook: []}]
+      description: >
+        Accepts one signed, provider-verified identity fact for an existing audience package. The lowercase hexadecimal HMAC-SHA256 input is the exact UTF-8 bytes of X-AICRM-Timestamp, newline, X-AICRM-Event-Id, newline, package_key, newline, and the unmodified request body. This endpoint records a local receipt and may request an existing durable refresh; it does not prove a Provider write or delivery.
+      parameters:
+        - {$ref: "#/components/parameters/AutomationOpsPackageKey"}
+        - {$ref: "#/components/parameters/AutomationOpsWebhookTimestamp"}
+        - {$ref: "#/components/parameters/AutomationOpsWebhookEventID"}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsWebhookFact"}}}}
+      responses:
+        "202": {description: Identity disposition and local receipt recorded, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsWebhookReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "413": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/admin/automations:
     get: {operationId: listAutomationPolicies, tags: [AutomationOperations], security: [{adminSession: []}], responses: {"200": {description: Automation policies, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectPage"}}}}, "403": {$ref: "#/components/responses/Error"}}}
     post: {operationId: createAutomationPolicy, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPolicyMutation"}}}}, responses: {"201": {description: Draft policy created, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}

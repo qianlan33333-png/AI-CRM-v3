@@ -33,10 +33,10 @@ func webhookRequest(secret string, at time.Time, body string) *http.Request {
 	timestamp = strconv.FormatInt(at.Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(timestamp + "\n" + event + "\n" + key + "\n" + body))
-	r := httptest.NewRequest(http.MethodPost, "/api/integrations/ai-audience/"+key+"/membership-facts", strings.NewReader(body))
-	r.Header.Set("X-AICRM-Timestamp", timestamp)
-	r.Header.Set("X-AICRM-Event-Id", event)
-	r.Header.Set("X-AICRM-Signature", hex.EncodeToString(mac.Sum(nil)))
+	r := httptest.NewRequest(http.MethodPost, webhookPathPrefix+key+webhookPathSuffix, strings.NewReader(body))
+	r.Header.Set(webhookTimestampHeader, timestamp)
+	r.Header.Set(webhookEventIDHeader, event)
+	r.Header.Set(webhookSignatureHeader, hex.EncodeToString(mac.Sum(nil)))
 	return r
 }
 func TestAudienceWebhookVerifiesBeforeMintingFact(t *testing.T) {
