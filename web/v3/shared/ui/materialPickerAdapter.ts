@@ -32,6 +32,8 @@ export type MaterialPickerAdapterOptions = {
   /** The caller-authorised read scope; this component never widens it. */
   scope: string;
   loadPage(request: MaterialPickerLoadRequest): Promise<MaterialPickerLoadPage>;
+  /** Caller classifies an authenticated directory failure without making the shared UI infer a scope. */
+  accessLossMessage?(error: unknown): string | undefined;
 };
 
 type Material = Required<Pick<MaterialPickerRecord, 'type' | 'library_id' | 'title' | 'subtitle' | 'thumbnail_url' | 'enabled' | 'selectable' | 'mime_type' | 'metadata'>> & Json & { unavailable_reason?: string };
@@ -180,7 +182,13 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
   let restoreRemovedFocus: string | undefined;
 
   const loader: SelectionLoader<Material> = async ({ query, cursor, signal }) => {
-    const page = await config.loadPage({ source: config.source, scope: config.scope, type, query, cursor, signal });
+    let page: MaterialPickerLoadPage;
+    try { page = await config.loadPage({ source: config.source, scope: config.scope, type, query, cursor, signal }); }
+    catch (error) {
+      const reason = config.accessLossMessage?.(error);
+      if (reason) session.setReadonly(reason);
+      throw error;
+    }
     if (signal.aborted) throw new DOMException('素材目录读取已替换', 'AbortError');
     return { items: (page.items || []).flatMap((raw) => {
       if (raw.type && raw.type !== type) throw new Error('素材目录返回了不匹配的素材类型，请刷新后重试。');
