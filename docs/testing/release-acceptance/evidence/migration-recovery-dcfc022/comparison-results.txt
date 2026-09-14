@@ -1,0 +1,6 @@
+source structure SHA-256: 3c87506442c6d894eec2b97f174f07332a09b9c54e4f44e52e87d52f55d6036a
+restore structure SHA-256: f0a161dd98b6df667b9872b27f448b6fd3e6a0f44cafd2e0307a0c1f6a8e039d
+source-vs-restore structure cmp exit: 1
+ledger cmp exit: 0
+catalog cmp exit: 0
+fixture cmp exit: 0

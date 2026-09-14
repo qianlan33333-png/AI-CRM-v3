@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 from typing import Any
@@ -70,7 +71,8 @@ def lane_outcome(execute: bool, lane_exit_code: int, violations: list[str]) -> t
 def isolated_env(database_url: str, candidate_sha: str, dedup_base_sha: str, run_dir: Path, v2_donor_dir: Path | None, sidebar_donor_dir: Path | None) -> dict[str, str]:
     env = {key: os.environ[key] for key in TOOLCHAIN_ALLOWLIST if key in os.environ}
     task_config = run_dir / "tool-config"; task_config.mkdir(parents=True, exist_ok=True)
-    env.update({"PGPASSFILE": os.devnull, "PGSERVICEFILE": os.devnull, "PGSYSCONFDIR": str(task_config / "pg"), "NPM_CONFIG_USERCONFIG": os.devnull, "NPM_CONFIG_GLOBALCONFIG": os.devnull, "PIP_CONFIG_FILE": os.devnull, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "XDG_CONFIG_HOME": str(task_config / "xdg"), "GOCACHE": str(run_dir / "go-build-cache"), "GOMODCACHE": str(run_dir / "go-mod-cache"), "AICRM_DATABASE_URL": database_url, "AICRM_PUBLIC_ORIGIN": "https://release-acceptance.invalid", "AICRM_RELEASE_SHA": candidate_sha, "AICRM_DEDUP_HEAD_SHA": candidate_sha, "AICRM_DEDUP_BASE_SHA": dedup_base_sha, "PYTHONDONTWRITEBYTECODE": "1", **DISABLED_PROVIDER_ENV})
+    artifacts = run_dir / "artifacts"
+    env.update({"PGPASSFILE": os.devnull, "PGSERVICEFILE": os.devnull, "PGSYSCONFDIR": str(task_config / "pg"), "NPM_CONFIG_USERCONFIG": os.devnull, "NPM_CONFIG_GLOBALCONFIG": os.devnull, "PIP_CONFIG_FILE": os.devnull, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "XDG_CONFIG_HOME": str(task_config / "xdg"), "GOCACHE": str(run_dir / "go-build-cache"), "GOMODCACHE": str(run_dir / "go-mod-cache"), "AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR": str((artifacts / "admin-shell-layout").resolve()), "AICRM_SIDEBAR_SCREENSHOT_DIR": str((artifacts / "sidebar-standard").resolve()), "AICRM_DATABASE_URL": database_url, "AICRM_PUBLIC_ORIGIN": "https://release-acceptance.invalid", "AICRM_RELEASE_SHA": candidate_sha, "AICRM_DEDUP_HEAD_SHA": candidate_sha, "AICRM_DEDUP_BASE_SHA": dedup_base_sha, "PYTHONDONTWRITEBYTECODE": "1", **DISABLED_PROVIDER_ENV})
     v2, sidebar = (str(v2_donor_dir.resolve()) if v2_donor_dir else ""), (str(sidebar_donor_dir.resolve()) if sidebar_donor_dir else "")
     env.update({key: v2 for key in V2_DONOR_ALIASES}); env.update({key: sidebar for key in SIDEBAR_DONOR_ALIASES})
     return env
@@ -87,37 +89,92 @@ def write_receipt(run_dir: Path, payload: dict[str, Any]) -> None:
 def write_logs(run_dir: Path, stdout: str, stderr: str) -> None:
     (run_dir / "stdout.log").write_text(redact(stdout)); (run_dir / "stderr.log").write_text(redact(stderr))
 
+class InterruptedRun(RuntimeError):
+    """A receipt-safe interruption from SIGTERM or an interactive interrupt."""
+
+def run_command(command: list[str], *, cwd: Path, env: dict[str, str], timeout_seconds: int) -> tuple[int, str, str, bool]:
+    """Run a lane in its own process group and return partial output on timeout."""
+    process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        return process.returncode, stdout, stderr, False
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr = error.stdout or "", error.stderr or ""
+        if isinstance(stdout, bytes): stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes): stderr = stderr.decode(errors="replace")
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            more_stdout, more_stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            more_stdout, more_stderr = process.communicate()
+        return 124, stdout + (more_stdout or ""), stderr + (more_stderr or ""), True
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
-    value.add_argument("lane", choices=LANES); value.add_argument("--test-database-url", default=os.environ.get("AICRM_TEST_DATABASE_URL")); value.add_argument("--report-dir", required=True, type=Path); value.add_argument("--run-id", default=uuid.uuid4().hex); value.add_argument("--source-root", type=Path, default=HARNESS_ROOT); value.add_argument("--v2-donor-dir", type=Path); value.add_argument("--sidebar-donor-dir", type=Path); value.add_argument("--candidate-sha", required=True); value.add_argument("--execute", action="store_true")
+    value.add_argument("lane", choices=LANES); value.add_argument("--test-database-url", default=os.environ.get("AICRM_TEST_DATABASE_URL")); value.add_argument("--report-dir", required=True, type=Path); value.add_argument("--run-id", default=uuid.uuid4().hex); value.add_argument("--source-root", type=Path, default=HARNESS_ROOT); value.add_argument("--v2-donor-dir", type=Path); value.add_argument("--sidebar-donor-dir", type=Path); value.add_argument("--candidate-sha", required=True); value.add_argument("--execute", action="store_true"); value.add_argument("--timeout-seconds", type=int)
     return value
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if not args.test_database_url: parser().error("--test-database-url or AICRM_TEST_DATABASE_URL is required")
     if not RUN_ID.fullmatch(args.run_id): parser().error("--run-id must contain only lowercase letters, digits, _ or -")
+    if args.timeout_seconds is not None and args.timeout_seconds <= 0: parser().error("--timeout-seconds must be positive")
+    timeout_seconds = args.timeout_seconds if args.timeout_seconds is not None else (1800 if args.execute else 120)
     source_root = args.source_root.resolve()
     if not (source_root / ".git").exists(): parser().error("--source-root must be a Git worktree")
     if len(args.candidate_sha) != 40 or any(char not in "0123456789abcdef" for char in args.candidate_sha): parser().error("--candidate-sha must be a lowercase 40-character SHA")
     run_dir = outside_source(args.report_dir, source_root) / args.run_id
     if run_dir.exists(): parser().error("run-id already exists; completed evidence is immutable")
     run_dir.mkdir(parents=True)
-    receipt: dict[str, Any] = {"schema": 2, "status": "running", "run_id": args.run_id, "started_at_utc": utc_now(), "lane": args.lane, "mode": "execute" if args.execute else "prerequisites_only"}; stdout = stderr = ""
+    receipt: dict[str, Any] = {"schema": 3, "status": "running", "run_id": args.run_id, "started_at_utc": utc_now(), "lane": args.lane, "mode": "execute" if args.execute else "prerequisites_only", "timeout_seconds": timeout_seconds}
+    stdout = stderr = ""
+    harness_before: dict[str, Any] | None = None
+    source_before: dict[str, Any] | None = None
+    old_sigterm = None
+    def interrupted_by_signal(signum: int, _frame: Any) -> None:
+        raise InterruptedRun(f"received signal {signum}")
     try:
+        old_sigterm = signal.signal(signal.SIGTERM, interrupted_by_signal)
         harness_before, source_before = git_state(HARNESS_ROOT), git_state(source_root)
-        receipt.update({"harness_before": harness_before, "source_before": source_before, "candidate_sha": source_before["head"], "harness_sha": harness_before["head"]}); require_clean("harness", harness_before); require_clean("source", source_before)
+        receipt.update({"harness_before": harness_before, "source_before": source_before, "candidate_sha": source_before["head"], "harness_sha": harness_before["head"]})
+        require_clean("harness", harness_before); require_clean("source", source_before)
         if source_before["head"] != args.candidate_sha: raise RuntimeError("candidate SHA does not match the checked-out source")
         database_url, database = validated_database(args.test_database_url); dedup_base = git(source_root, "rev-parse", "HEAD^")
         command = [sys.executable, str(source_root / "scripts/ci/quality_lanes.py"), args.lane, "--report-dir", str(run_dir / "lane")]
         if not args.execute: command.append("--check-prerequisites")
-        receipt.update({"database": database, "providers": "disabled", "provider_keys_forced_disabled": sorted(DISABLED_PROVIDER_ENV), "v2_donor_dir": str(args.v2_donor_dir.resolve()) if args.v2_donor_dir else None, "sidebar_donor_dir": str(args.sidebar_donor_dir.resolve()) if args.sidebar_donor_dir else None, "command": command}); write_receipt(run_dir, receipt)
-        result = subprocess.run(command, cwd=source_root, env=isolated_env(database_url, source_before["head"], dedup_base, run_dir, args.v2_donor_dir, args.sidebar_donor_dir), capture_output=True, text=True, check=False); stdout, stderr = result.stdout, result.stderr; receipt["lane_exit_code"] = result.returncode
-        harness_after, source_after = git_state(HARNESS_ROOT), git_state(source_root); receipt.update({"harness_after": harness_after, "source_after": source_after}); violations = integrity_violations(harness_before, harness_after, "harness") + integrity_violations(source_before, source_after, "source"); receipt["integrity_violations"] = violations
-        status, exit_code = lane_outcome(args.execute, result.returncode, violations); receipt.update({"status": status, "exit_code": exit_code})
+        receipt.update({"database": database, "providers": "disabled", "provider_keys_forced_disabled": sorted(DISABLED_PROVIDER_ENV), "v2_donor_dir": str(args.v2_donor_dir.resolve()) if args.v2_donor_dir else None, "sidebar_donor_dir": str(args.sidebar_donor_dir.resolve()) if args.sidebar_donor_dir else None, "command": command})
+        write_receipt(run_dir, receipt)
+        lane_exit_code, stdout, stderr, timed_out = run_command(command, cwd=source_root, env=isolated_env(database_url, source_before["head"], dedup_base, run_dir, args.v2_donor_dir, args.sidebar_donor_dir), timeout_seconds=timeout_seconds)
+        receipt["lane_exit_code"] = lane_exit_code
+        if timed_out:
+            receipt.update({"status": "timeout", "exit_code": 124, "timeout_termination": "SIGTERM process group; SIGKILL only if grace period elapsed"})
+        else:
+            status, exit_code = lane_outcome(args.execute, lane_exit_code, [])
+            receipt.update({"status": status, "exit_code": exit_code})
+    except (KeyboardInterrupt, InterruptedRun) as error:
+        receipt.update({"status": "interrupted", "exit_code": 130, "error": redact(str(error)), "error_type": type(error).__name__})
     except Exception as error:
         receipt.update({"status": "failure", "exit_code": 2, "error": redact(str(error)), "error_type": type(error).__name__})
     finally:
-        write_logs(run_dir, stdout, stderr); receipt["ended_at_utc"] = utc_now(); write_receipt(run_dir, receipt)
+        if old_sigterm is not None:
+            signal.signal(signal.SIGTERM, old_sigterm)
+        # Ignored build caches are outside Git's porcelain result; tracked, staged, and untracked source changes remain blocking.
+        try:
+            if harness_before is not None:
+                harness_after = git_state(HARNESS_ROOT); receipt["harness_after"] = harness_after
+                receipt.setdefault("integrity_violations", []).extend(integrity_violations(harness_before, harness_after, "harness"))
+            if source_before is not None:
+                source_after = git_state(source_root); receipt["source_after"] = source_after
+                receipt.setdefault("integrity_violations", []).extend(integrity_violations(source_before, source_after, "source"))
+            if receipt.get("integrity_violations") and receipt["status"] not in {"timeout", "interrupted"}:
+                receipt.update({"status": "failure", "exit_code": 3})
+        except Exception as error:
+            receipt["integrity_capture_error"] = redact(str(error))
+            if receipt["status"] not in {"timeout", "interrupted"}: receipt.update({"status": "failure", "exit_code": 3})
+        write_logs(run_dir, stdout, stderr)
+        receipt["ended_at_utc"] = utc_now()
+        write_receipt(run_dir, receipt)
     if stdout: print(redact(stdout), end="")
     if stderr: print(redact(stderr), end="", file=sys.stderr)
     return int(receipt["exit_code"])

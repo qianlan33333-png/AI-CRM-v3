@@ -3,6 +3,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -49,6 +51,8 @@ class ReleaseAcceptanceHarnessTests(unittest.TestCase):
             self.assertEqual(env["PR08_DONOR_DIR"], str((root / "v2").resolve()))
             self.assertEqual(env["PR09_DONOR_ROOT"], str((root / "v2").resolve()))
             self.assertEqual(env["AICRM_SIDEBAR_DONOR_DIR"], str((root / "sidebar").resolve()))
+            self.assertEqual(env["AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR"], str((root / "run" / "artifacts" / "admin-shell-layout").resolve()))
+            self.assertEqual(env["AICRM_SIDEBAR_SCREENSHOT_DIR"], str((root / "run" / "artifacts" / "sidebar-standard").resolve()))
             self.assertEqual(env["AICRM_WECOM_ENABLED"], "false")
 
     def test_integrity_detects_source_head_change_and_dirty_harness(self):
@@ -70,7 +74,7 @@ class ReleaseAcceptanceHarnessTests(unittest.TestCase):
                 directory.mkdir(); (directory / ".git").write_text("gitdir: test\n")
             state = {"head": "a" * 40, "tree": "b" * 40, "dirty": False}
             args = ["preflight", "--test-database-url", "postgresql://aicrm_test@127.0.0.1:5432/aicrm_test_ok?sslmode=disable", "--report-dir", str(reports), "--run-id", "failure01", "--source-root", str(source), "--candidate-sha", "a" * 40]
-            with patch.object(runner, "HARNESS_ROOT", harness), patch.object(runner, "git_state", side_effect=[state, state]), patch.object(runner, "git", return_value="b" * 40), patch.object(runner.subprocess, "run", side_effect=RuntimeError("token=top-secret")):
+            with patch.object(runner, "HARNESS_ROOT", harness), patch.object(runner, "git_state", side_effect=[state, state, state, state]), patch.object(runner, "git", return_value="b" * 40), patch.object(runner, "run_command", side_effect=RuntimeError("token=top-secret")):
                 self.assertEqual(runner.main(args), 2)
             receipt = json.loads((reports / "failure01" / "environment-receipt.json").read_text())
             self.assertEqual(receipt["status"], "failure")
@@ -79,6 +83,31 @@ class ReleaseAcceptanceHarnessTests(unittest.TestCase):
             self.assertNotIn("top-secret", receipt["error"])
             with self.assertRaisesRegex(RuntimeError, "completed receipt"):
                 runner.write_receipt(reports / "failure01", receipt)
+
+    def test_real_short_process_timeout_returns_partial_output(self):
+        command = [sys.executable, "-c", "import sys,time; print('partial', flush=True); time.sleep(5)"]
+        code, stdout, stderr, timed_out = runner.run_command(command, cwd=Path.cwd(), env=os.environ.copy(), timeout_seconds=1)
+        self.assertEqual(code, 124)
+        self.assertTrue(timed_out)
+        self.assertIn("partial", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_exception_still_captures_post_run_git_states(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            harness, source, reports = root / "harness", root / "source", root / "reports"
+            for directory in (harness, source):
+                directory.mkdir(); (directory / ".git").write_text("gitdir: test\n")
+            before = {"head": "a" * 40, "tree": "b" * 40, "dirty": False}
+            after = {"head": "a" * 40, "tree": "b" * 40, "dirty": True}
+            args = ["preflight", "--test-database-url", "postgresql://aicrm_test@127.0.0.1:5432/aicrm_test_ok?sslmode=disable", "--report-dir", str(reports), "--run-id", "capture01", "--source-root", str(source), "--candidate-sha", "a" * 40]
+            with patch.object(runner, "HARNESS_ROOT", harness), patch.object(runner, "git_state", side_effect=[before, before, after, after]), patch.object(runner, "git", return_value="b" * 40), patch.object(runner, "run_command", side_effect=RuntimeError("unexpected failure")):
+                self.assertEqual(runner.main(args), 3)
+            receipt = json.loads((reports / "capture01" / "environment-receipt.json").read_text())
+            self.assertEqual(receipt["status"], "failure")
+            self.assertIn("harness_after", receipt)
+            self.assertIn("source_after", receipt)
+            self.assertIn("harness_dirty_after_run", receipt["integrity_violations"])
 
 
 if __name__ == "__main__":

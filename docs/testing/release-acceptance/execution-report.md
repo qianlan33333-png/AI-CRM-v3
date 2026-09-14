@@ -17,7 +17,7 @@ CI 的成功是技术层证据，不能替代白名单业务验收、Provider re
 
 ## 隔离入口与本地 preflight
 
-隔离入口的当前代码提交为 `1790494d8498506bac9fd473a161683ca8a9cec2`。入口只允许本地 `aicrm_test_*` 数据库，拒绝 `host`、`hostaddr`、`service`、`dbname` 等 URL 覆盖，构造最小子进程环境并强制 Provider disabled。其 5 项单元测试通过，覆盖 URL 绕过、环境泄漏、测试源变更、脏 harness、异常 receipt 与环境阻断分类。
+隔离入口的当前代码提交为 `1790494d8498506bac9fd473a161683ca8a9cec2`。入口只允许本地 `aicrm_test_*` 数据库，拒绝 `host`、`hostaddr`、`service`、`dbname` 等 URL 覆盖，构造最小子进程环境并强制 Provider disabled。其单元测试覆盖 URL 绕过、环境泄漏、测试源变更、脏 harness、异常 receipt、超时子进程和异常后的状态捕获。当前入口对 execute 默认限时 1800 秒、preflight 默认限时 120 秒；超时会终止整个子进程组、保留已捕获的脱敏日志，并写入 `timeout`/exit `124` receipt。SIGTERM 或交互中断会写入 `interrupted` receipt；不可捕获的 SIGKILL 可能留下 `running` receipt，不能作为通过证据。Git porcelain 仍严格阻止 tracked、staged 和 untracked 源码变化；Git 已忽略的构建缓存不在该检查范围。
 
 coverage inventory 提交后的干净 harness 为 `aa03ab97cfe0d5cf073df8d4e27628c3311b0a47`。它对候选运行 preflight 成功，原始 receipt 为 `/private/tmp/aicrm-release-reports/dcfc022/preflight_aa03ab97/environment-receipt.json`：`run_id=preflight_aa03ab97`、exit code `0`、候选和 harness 均在执行后干净，`integrity_violations=[]`。此前 `fbacac7e` receipt 保留为历史记录，不再作为最终本地 preflight 证据。
 
@@ -31,11 +31,15 @@ coverage inventory 提交后的干净 harness 为 `aa03ab97cfe0d5cf073df8d4e2762
 4. 使用 `pg_restore --exit-on-error --no-owner --no-privileges` 恢复到全新 `aicrm_test_release_restore_dcfc022`。恢复库 migration ledger signature 相同；fixture 两行逐字一致。
 5. 比较两库 public table/column/type/null/default、constraint identity/type/key/FK/deferrability/validation 与 index identity/key/operator/collation/predicate 的稳定 catalog signature，均为 `8596:d2c3a7c68276fafc6d3f03a907e92d78`。
 
-原始 schema-only `pg_dump` 文本不逐字相同：PostgreSQL 为每次 dump 生成不同的 `\\restrict` token，并在 restore 后重写部分逻辑表达式的括号/位置。该文本差异未作为结构一致性通过依据；上表的 catalog 结构签名、migration ledger 与合成数据恢复共同构成此次演练证据。
+原始可复核材料在 [migration-recovery-dcfc022](evidence/migration-recovery-dcfc022/)：执行命令和当时 exit 在 [execution-commands-and-results.md](evidence/migration-recovery-dcfc022/execution-commands-and-results.md)，dump SHA-256/大小/TOC 摘要在 [dump.sha256](evidence/migration-recovery-dcfc022/dump.sha256)、[dump-size.txt](evidence/migration-recovery-dcfc022/dump-size.txt) 与 [dump-list.txt](evidence/migration-recovery-dcfc022/dump-list.txt)，catalog、ledger 和 fixture 的 SQL 与两库输出在同目录的 `*.sql`、`aicrm_test_release_acceptance.*.txt`、`aicrm_test_release_restore_dcfc022.*.txt`，逐项 `cmp` 结果在 [comparison-results.txt](evidence/migration-recovery-dcfc022/comparison-results.txt)。这些 SQL 输出是对保留测试库的只读复核；它们使用独立的确定性 hash 格式，不能与本节最初记录的摘要数字混用。
+
+原始 schema-only `pg_dump` 文本不逐字相同：PostgreSQL 为每次 dump 生成不同的 `\\restrict` token，并在 restore 后重写部分逻辑表达式的括号/位置。该文本差异未作为结构一致性通过依据；catalog 结构签名、migration ledger 与合成数据恢复共同构成此次演练证据。
 
 ## 覆盖状态与未关闭门禁
 
 coverage inventory 已提交，但它是静态盘点，不是执行通过证据。
+
+CI browser lane 的历史 artifact 显示 14 个 journey 均通过，但 `eligible_for_delivery=false`。这是 phase 设计的结果，不能作为严格干净的 release proof；其 `source.unchanged_during_execution=false` 来自运行时把 admin-shell-layout 与 sidebar-standard 截图写进冻结 donor/worktree 的未跟踪路径，HEAD 与 tree 未变。历史 receipt 保持原样。隔离入口现已把 `AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR` 和 `AICRM_SIDEBAR_SCREENSHOT_DIR` 显式指向本次 run 的外部 artifacts 目录，未来 browser lane 不会因这两类截图污染测试源；其余未跟踪变化仍严格阻断。
 
 以下任何一项未关闭前，结论保持禁止上线：
 
