@@ -10,40 +10,43 @@ const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 let keySequence = 0;
 
 class SharedStorage {
-  constructor(fails = false) {
-    this.fails = fails;
+  constructor({ readFails = false, writeFails = false } = {}) {
+    this.readFails = readFails;
+    this.writeFails = writeFails;
     this.values = new Map();
+    this.writeAttempts = 0;
   }
 
   getItem(key) {
-    if (this.fails) throw new Error("storage unavailable");
+    if (this.readFails) throw new Error("storage read unavailable");
     return this.values.has(key) ? this.values.get(key) : null;
   }
 
   setItem(key, value) {
-    if (this.fails) throw new Error("storage unavailable");
+    this.writeAttempts += 1;
+    if (this.writeFails) throw new Error("storage write unavailable");
     this.values.set(String(key), String(value));
   }
 
   removeItem(key) {
-    if (this.fails) throw new Error("storage unavailable");
+    if (this.writeFails) throw new Error("storage write unavailable");
     this.values.delete(String(key));
   }
 }
 
-async function getPage(cookie) {
-  const response = await fetch(new URL("/pay/course-7", baseURL), { headers: { Cookie: cookie } });
-  assert.equal(response.status, 200, "payment page status");
+async function getPage(cookie, path = "/pay/course-7") {
+  const response = await fetch(new URL(path, baseURL), { headers: { Cookie: cookie } });
+  assert.equal(response.status, 200, `payment page status ${path}`);
   return response.text();
 }
 
-async function runPage(storage, cookie, bridge) {
-  const html = await getPage(cookie);
+async function runPage(storage, cookie, bridge, path = "/pay/course-7") {
+  const html = await getPage(cookie, path);
   const errors = [];
   const console = new VirtualConsole();
   console.on("jsdomError", (error) => errors.push(error));
   const dom = new JSDOM(html, {
-    url: new URL("/pay/course-7", baseURL).toString(),
+    url: new URL(path, baseURL).toString(),
     pretendToBeVisual: true,
     runScripts: "dangerously",
     virtualConsole: console,
@@ -119,30 +122,38 @@ function requirePaidCheckpoint(storage, label) {
 // The payment mutation succeeds but its first HTTP response is lost. The
 // reloaded page must replay the saved key with the original coupon/mobile,
 // rather than use the changed form values.
+const promotionA = `dpc_${"A".repeat(43)}`;
+const promotionB = `dpc_${"B".repeat(43)}`;
 const replayStorage = new SharedStorage();
-const lostResponse = await runPage(replayStorage, firstSession, normalBridge);
+const lostResponse = await runPage(replayStorage, firstSession, normalBridge, `/pay/course-7?promotion_context=${promotionA}`);
 setPurchase(lostResponse, 11, "13800138000");
 lostResponse.window.document.getElementById("buy").click();
 await waitFor(lostResponse.window.document, "请求失败", "lost response");
 assert.equal(replayStorage.values.size, 1, "response loss must retain a recovery checkpoint");
 closePage(lostResponse);
 
-const replayed = await runPage(replayStorage, firstSession, normalBridge);
+// Opening a different sharing link for the same product must recover the
+// frozen first checkpoint. It cannot replace its opaque promotion context.
+const replayed = await runPage(replayStorage, firstSession, normalBridge, `/pay/course-7?promotion_context=${promotionB}`);
 setPurchase(replayed, 99, "13900139000");
 replayed.window.document.getElementById("buy").click();
 await waitFor(replayed.window.document, paidWithoutCompletionAction, "replayed checkout");
 const replayedPaid = requirePaidCheckpoint(replayStorage, "replayed checkout");
+assert.equal(replayedPaid.payload.promotion_context, promotionA, "replayed checkout keeps the original promotion context");
 closePage(replayed);
 
 // A terminal checkpoint is a read-only recovery record. Reloading the same
-// page may read that exact paid order, but must not call the SDK or create a
-// replacement order; ordinary products have no renewal button.
+// promotion checkpoint from an ordinary page may read that exact paid order,
+// but must not call the SDK or create a replacement order; ordinary products
+// have no renewal button.
 const replayedReload = await runPage(replayStorage, firstSession, normalBridge);
 await waitFor(replayedReload.window.document, paidWithoutCompletionAction, "replayed terminal reload");
 assert.equal(replayedReload.window.document.getElementById("buy").disabled, true, "terminal reload cannot initiate a new checkout");
 assert.equal(replayedReload.window.document.getElementById("renew"), null, "ordinary product cannot be repurchased");
 assert.equal(replayedReload.window.document.getElementById("buy").textContent, "已购买");
-assert.equal(requirePaidCheckpoint(replayStorage, "replayed terminal reload").merchant_order_no, replayedPaid.merchant_order_no, "terminal reload reads the same merchant order");
+const regularReloadCheckpoint = requirePaidCheckpoint(replayStorage, "replayed terminal reload");
+assert.equal(regularReloadCheckpoint.merchant_order_no, replayedPaid.merchant_order_no, "terminal reload reads the same merchant order");
+assert.equal(regularReloadCheckpoint.payload.promotion_context, promotionA, "ordinary page keeps the frozen promotion context");
 closePage(replayedReload);
 
 // A cancelled WeChat sheet leaves the same merchant order recoverable. A
@@ -171,6 +182,39 @@ await waitFor(unknown.window.document, "支付结果确认超时，请稍后刷�
 assert.equal(unknownStorage.values.size, 1, "unknown result keeps checkpoint for later status recovery");
 closePage(unknown);
 
+// A normal checkout remains normal when later opened through a sharing link.
+// Its original key is restored instead of being replaced by the new page's
+// promotion context before Payment can perform its authoritative read.
+const ordinaryCheckpoint = JSON.parse([...unknownStorage.values.values()][0]);
+const ordinaryThenPromotion = await runPage(unknownStorage, firstSession, normalBridge, `/pay/course-7?promotion_context=${promotionA}`);
+await waitFor(ordinaryThenPromotion.window.document, "已恢复原订单，请继续确认支付。", "ordinary checkpoint restoration before a new click");
+assert.equal(ordinaryThenPromotion.window.document.getElementById("buy").disabled, false, "restored checkpoint enables only the original-order continuation");
+ordinaryThenPromotion.window.document.getElementById("buy").click();
+await waitFor(ordinaryThenPromotion.window.document, "支付结果确认超时，请稍后刷新查看", "ordinary checkpoint from promotion page");
+const recoveredOrdinaryCheckpoint = JSON.parse([...unknownStorage.values.values()][0]);
+assert.equal(recoveredOrdinaryCheckpoint.key, ordinaryCheckpoint.key, "promotion page keeps original ordinary idempotency key");
+assert.equal(recoveredOrdinaryCheckpoint.merchant_order_no, ordinaryCheckpoint.merchant_order_no, "promotion page keeps original ordinary merchant order");
+assert.equal(recoveredOrdinaryCheckpoint.payload.promotion_context, undefined, "promotion page cannot attach attribution to an existing ordinary checkout");
+closePage(ordinaryThenPromotion);
+
+// A malformed persisted promotion context is neither replaced by the current
+// URL nor sent to Payment. The original recovery record stays available for
+// support rather than becoming a second checkout.
+const malformedPromotionStorage = new SharedStorage();
+const malformedPromotionCheckpoint = JSON.stringify({
+  key: "malformed-promotion-checkpoint-0001",
+  merchant_order_no: "",
+  session_binding: "b".repeat(43),
+  payload: { product_id: 7, product_kind: "standard", beneficiary_selection: "payer_self", coupon_claim_id: 17, mobile: "+8613800138000", promotion_context: "dpc_malformed" },
+});
+malformedPromotionStorage.setItem("aicrm.checkout.tab.v2:7:standard", malformedPromotionCheckpoint);
+const malformedPromotion = await runPage(malformedPromotionStorage, firstSession, normalBridge, `/pay/course-7?promotion_context=${promotionA}`);
+setPurchase(malformedPromotion, 17, "13800138000");
+malformedPromotion.window.document.getElementById("buy").click();
+await waitFor(malformedPromotion.window.document, "原订单恢复信息异常，已保留，请联系管理员核对", "malformed promotion checkpoint");
+assert.equal(malformedPromotionStorage.values.get("aicrm.checkout.tab.v2:7:standard"), malformedPromotionCheckpoint, "malformed checkpoint remains unchanged");
+closePage(malformedPromotion);
+
 // A known merchant order may be read after OAuth renews the same trusted
 // payer. The Host does not compare a stale browser binding or issue Create; the
 // Payment HTTP owner authorizes the original persisted order and returns its
@@ -190,12 +234,24 @@ closePage(switchedSession);
 
 // Failing browser storage blocks the very first payment request, so an
 // unknown effect is never created without a recovery identifier.
-const unavailableStorage = new SharedStorage(true);
+const unavailableStorage = new SharedStorage({ writeFails: true });
 const unavailable = await runPage(unavailableStorage, firstSession, normalBridge);
 setPurchase(unavailable, 15, "13800138000");
 unavailable.window.document.getElementById("buy").click();
-await waitFor(unavailable.window.document, "无法保存本次订单恢复信息，请检查浏览器存储后重试", "storage unavailable");
+await waitFor(unavailable.window.document, "无法保存本次订单恢复信息，请检查浏览器存储后重试", "storage write unavailable");
+assert.equal(unavailableStorage.writeAttempts, 1, "write failure attempts only the local checkpoint");
 closePage(unavailable);
+
+// A read failure is more dangerous than a write failure: the page cannot know
+// whether a recoverable order exists. It must not mint a key or overwrite
+// storage even when a later setItem would succeed.
+const readUnavailableStorage = new SharedStorage({ readFails: true });
+const readUnavailable = await runPage(readUnavailableStorage, firstSession, normalBridge);
+setPurchase(readUnavailable, 18, "13800138000");
+readUnavailable.window.document.getElementById("buy").click();
+await waitFor(readUnavailable.window.document, "无法保存本次订单恢复信息，请检查浏览器存储后重试", "storage read unavailable");
+assert.equal(readUnavailableStorage.writeAttempts, 0, "read failure cannot overwrite an unknown checkpoint");
+closePage(readUnavailable);
 
 // A checkpoint written by the immediately preceding Host version has no
 // session binding. If its create response was lost, it must remain visible but

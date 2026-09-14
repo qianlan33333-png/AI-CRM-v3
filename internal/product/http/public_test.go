@@ -70,8 +70,8 @@ func TestPromotionContextPublicChainRetainsCheckoutContext(t *testing.T) {
 	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "promotionContext='"+context+"'") || !strings.Contains(payment.Body.String(), "location.pathname+(location.search||'')") {
 		t.Fatalf("payment continuation status=%d body=%s", payment.Code, payment.Body.String())
 	}
-	if !strings.Contains(payment.Body.String(), "normalized.promotion_context=promotionContext") {
-		t.Fatalf("checkout body does not retain controlled context: %s", payment.Body.String())
+	if !strings.Contains(payment.Body.String(), "checkoutRecord(){let raw") || !strings.Contains(payment.Body.String(), "if(record.state==='invalid')throw requestFailure('checkout_checkpoint_invalid'") || !strings.Contains(payment.Body.String(), "if(record.state==='unavailable')return null") || !strings.Contains(payment.Body.String(), "if(promotionContext)payload.promotion_context=promotionContext") {
+		t.Fatalf("checkout body does not freeze and create controlled context: %s", payment.Body.String())
 	}
 }
 
@@ -91,6 +91,9 @@ func TestServicePeriodPromotionContextReachesPaymentAndOAuth(t *testing.T) {
 	handler.ServeHTTP(payment, publicRequest(http.MethodGet, "/s/term-31/pay?promotion_context="+context, nil))
 	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "promotionContext='"+context+"'") || !strings.Contains(payment.Body.String(), "location.pathname+(location.search||'')") {
 		t.Fatalf("service promotion payment status=%d body=%s", payment.Code, payment.Body.String())
+	}
+	if !strings.Contains(payment.Body.String(), "checkoutRecord(){let raw") || !strings.Contains(payment.Body.String(), "if(record.state==='invalid')throw requestFailure('checkout_checkpoint_invalid'") || !strings.Contains(payment.Body.String(), "if(record.state==='unavailable')return null") || !strings.Contains(payment.Body.String(), "if(promotionContext)payload.promotion_context=promotionContext") {
+		t.Fatalf("service payment body does not share the controlled checkpoint runtime: %s", payment.Body.String())
 	}
 }
 
