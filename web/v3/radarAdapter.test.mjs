@@ -49,7 +49,8 @@ assert.ok(legacyMask, 'the frozen picker was created only after its delayed scop
 assert.equal(legacyMask.style.getPropertyValue('display'), 'none', 'the Host suppresses the frozen popup even though it has inline display styling');
 assert.equal(legacyMask.style.getPropertyPriority('display'), 'important', 'the frozen popup cannot override the Host suppression');
 await waitFor(() => document.querySelector('[data-v3-material-key$=":1"]'), 'the scoped V3 picker rendered only its first server page');
-const search = document.querySelector('[data-v3-search-managed="true"]');
+const search = document.querySelector('[data-v3-picker-search-input]');
+assert.equal(search.matches('[data-picker-search]'), false, 'the V3 dialog query is outside the frozen picker selector');
 search.focus(); search.value = '中文草稿'; search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 assert.equal(document.activeElement, search, 'a native V3 search draft does not redraw or steal focus');
 assert.equal(document.querySelectorAll('[data-v3-material-key]').length, 1, 'typing alone does not load another catalogue page');
