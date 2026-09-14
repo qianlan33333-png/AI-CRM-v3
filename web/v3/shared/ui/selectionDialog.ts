@@ -14,9 +14,24 @@ export type SelectionDialogController = {
 };
 
 export function focusableElements(root: HTMLElement): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),[href],[tabindex]:not([tabindex="-1"])'))
+  return Array.from(root.querySelectorAll<HTMLElement>([
+    'button:not([disabled])',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[contenteditable]:not([contenteditable="false"])',
+    '[href]',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(',')))
     .filter((node) => {
-      if (node.tabIndex < 0) return false;
+      // Content-editable controls are keyboard targets even where an embedded
+      // DOM implementation reports a synthetic -1 tab index. The explicit
+      // selector above has already excluded contenteditable="false".
+      const contentEditable = node.getAttribute('contenteditable');
+      const editable = contentEditable === '' || contentEditable === 'true' || contentEditable === 'plaintext-only' || (contentEditable === null && node.isContentEditable);
+      const explicitTabIndex = node.getAttribute('tabindex');
+      if (node.matches(':disabled') || (explicitTabIndex !== null && Number(explicitTabIndex) < 0)) return false;
+      if (node.tabIndex < 0 && !editable) return false;
       for (let current: HTMLElement | null = node; current && root.contains(current); current = current.parentElement) {
         const style = window.getComputedStyle(current);
         if (current.hidden || style.display === 'none' || style.visibility === 'hidden') return false;
@@ -63,6 +78,10 @@ export function installSelectionDialog(options: SelectionDialogOptions): Selecti
         return;
       }
       event.preventDefault();
+      // A selector can be opened from another dialog. Its Escape must close
+      // only this topmost surface rather than also reaching the parent
+      // composer's Escape handler.
+      event.stopPropagation();
       options.close();
       return;
     }
