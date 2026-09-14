@@ -163,7 +163,7 @@ func (s *AdminService) ReconcileException(ctx context.Context, command distribut
 		if err != nil {
 			return err
 		}
-		result := map[string]any{"exception_id": updated.ID, "status": updated.Status, "reconcile_target": current.ReconcileTarget, "payment_state": observation.state, "outcome_known": observation.outcomeKnown, "succeeded": observation.succeeded, "version": updated.Version}
+		result := map[string]any{"exception_id": updated.ID, "status": updated.Status, "reconcile_target": current.ReconcileTarget, "payment_state": observation.state, "payment_failure_class": observation.failureClass, "outcome_known": observation.outcomeKnown, "succeeded": observation.succeeded, "version": updated.Version}
 		if err = s.store.AppendOperationReceiptWithin(tx, "exception_reconcile", command.ActorScope, command.IdempotencyKey, digest, "exception", updated.ID, now); err != nil {
 			return err
 		}
@@ -175,8 +175,8 @@ func (s *AdminService) ReconcileException(ctx context.Context, command distribut
 }
 
 type adminPaymentObservation struct {
-	state, reason, evidenceReference string
-	outcomeKnown, succeeded          bool
+	state, reason, evidenceReference, failureClass string
+	outcomeKnown, succeeded                        bool
 }
 
 func validAdminReconcileTarget(value distributionstore.AdminExceptionDetail) bool {
@@ -200,7 +200,7 @@ func (s *AdminService) reconcilePayment(ctx context.Context, exception distribut
 		if instruction.Reference != exception.InstructionReference {
 			return adminPaymentObservation{}, distributionport.ErrConflict
 		}
-		return adminPaymentObservation{state: instruction.State, reason: paymentObservationReason(instruction), evidenceReference: paymentObservationReference(instruction), outcomeKnown: instruction.OutcomeKnown, succeeded: instruction.ReceiverConfirmedSuccess}, nil
+		return adminPaymentObservation{state: instruction.State, reason: paymentObservationReason(instruction), evidenceReference: paymentObservationReference(instruction), failureClass: paymentObservationFailureClass(instruction), outcomeKnown: instruction.OutcomeKnown, succeeded: instruction.ReceiverConfirmedSuccess}, nil
 	case distributionport.AdminReconcileTargetUnfreeze:
 		unfreeze, err := s.payment.ReconcileProfitSharingUnfreeze(ctx, exception.EvidenceReference)
 		if err != nil {
@@ -289,7 +289,7 @@ func canRecordException(status string) bool { return status == "open" || status 
 // book recovery/merchant liability money.
 func adminActionableException(value distributionstore.AdminExceptionDetail) bool {
 	switch value.Kind {
-	case "settlement_unknown", "settlement_deadline", "receiver_unavailable", "qualification_revoked_after_paid", "buyer_refund_after_paid", "unfreeze_final_failed":
+	case "settlement_unknown", "settlement_not_paid", "settlement_deadline", "receiver_unavailable", "qualification_revoked_after_paid", "buyer_refund_after_paid", "unfreeze_final_failed":
 		return true
 	default:
 		return false
@@ -315,6 +315,9 @@ func adminReplay(store adminStore, ctx context.Context, operation, actor, key st
 var errAdminReplay = errors.New("distribution admin command replay")
 
 func paymentObservationReason(v paymentport.ProfitSharingInstruction) string {
+	if failureClass := paymentObservationFailureClass(v); failureClass != "" {
+		return "payment_" + failureClass
+	}
 	state := strings.ToLower(strings.TrimSpace(v.State))
 	if state == "" {
 		state = "unknown"
@@ -323,6 +326,18 @@ func paymentObservationReason(v paymentport.ProfitSharingInstruction) string {
 		state = "unknown"
 	}
 	return "payment_" + state
+}
+
+// paymentObservationFailureClass accepts only the bounded vocabulary carried
+// by Payment's stable port. Distribution never persists an arbitrary provider
+// response as an operator-visible reason.
+func paymentObservationFailureClass(v paymentport.ProfitSharingInstruction) string {
+	switch v.FailureClass {
+	case "receiver_account_abnormal", "receiver_relation_removed", "receiver_high_risk", "receiver_real_name_unverified", "merchant_permission_revoked", "receiver_receipt_limit", "payer_account_abnormal", "invalid_split_request":
+		return v.FailureClass
+	default:
+		return ""
+	}
 }
 func paymentObservationReference(v paymentport.ProfitSharingInstruction) string {
 	return fmt.Sprintf("payment_instruction:%s:v%d", v.Reference, v.Version)

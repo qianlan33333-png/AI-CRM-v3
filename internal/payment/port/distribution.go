@@ -71,10 +71,13 @@ func (v ReceiverPreparation) Valid() bool {
 // opaque; OpenID and Provider request/response data are deliberately absent.
 type ReceiverReadiness struct {
 	Reference, AppID, State, EffectRef string
-	CustomerID                         int64
-	Ready, OutcomeKnown                bool
-	Version                            int64
-	UpdatedAt                          time.Time
+	// FailureClass is a bounded Payment-owned terminal receiver rejection. It
+	// is never a Provider response code or text.
+	FailureClass        string
+	CustomerID          int64
+	Ready, OutcomeKnown bool
+	Version             int64
+	UpdatedAt           time.Time
 }
 
 // ProfitSharingReceiverStatusObserver is an optional same-UoW projection
@@ -140,12 +143,15 @@ func (v ProfitSharingRequest) Valid() bool {
 type ProfitSharingInstruction struct {
 	Reference, SettlementRef, OriginalPaymentRef string
 	State, EffectRef                             string
-	AmountMinor                                  int64
-	Currency                                     string
-	ReceiverConfirmedSuccess, OutcomeKnown       bool
-	DeadlineAt                                   time.Time
-	Version                                      int64
-	UpdatedAt                                    time.Time
+	// FailureClass is Payment's bounded exact-receiver CLOSED diagnostic. It
+	// never carries a Provider response, account, or transaction identifier.
+	FailureClass                           string
+	AmountMinor                            int64
+	Currency                               string
+	ReceiverConfirmedSuccess, OutcomeKnown bool
+	DeadlineAt                             time.Time
+	Version                                int64
+	UpdatedAt                              time.Time
 }
 
 // ProfitSharingCancellationActor preserves who caused a queued split to be
@@ -207,6 +213,9 @@ type ProfitSharingUnfreeze struct {
 type ProfitSharingProviderResult struct {
 	State                                              string
 	ReceiverConfirmedSuccess, ReceiverConfirmedFailure bool
+	// FailureClass is set only for an exact receiver/amount/type CLOSED detail
+	// whose official fail_reason maps to Payment's finite safe vocabulary.
+	FailureClass string
 	// OutcomeKnown is true only when the exact instructed receiver and amount
 	// have a verified terminal result. An aggregate FINISHED order with a
 	// missing/mismatched receiver remains an exceptional, queryable unknown.

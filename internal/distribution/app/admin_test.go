@@ -133,6 +133,17 @@ func TestAdminReconcileQueriesOriginalPaymentOutsideDistributionWriteAndNeverMar
 	}
 }
 
+func TestPaymentObservationReasonAcceptsOnlyPaymentSafeClasses(t *testing.T) {
+	known := paymentport.ProfitSharingInstruction{State: "exception", FailureClass: "merchant_permission_revoked"}
+	if got := paymentObservationReason(known); got != "payment_merchant_permission_revoked" {
+		t.Fatalf("known observation reason=%q", got)
+	}
+	unknown := paymentport.ProfitSharingInstruction{State: "exception", FailureClass: "provider raw response"}
+	if got := paymentObservationReason(unknown); got != "payment_exception" {
+		t.Fatalf("unknown observation reason=%q", got)
+	}
+}
+
 func TestAdminRecoveryRequiresEvidenceAndCannotExceedHandleableAmount(t *testing.T) {
 	service, store, _ := adminServiceFixture(t)
 	tooLarge := distributionport.AdminExceptionCommand{ExceptionID: 8, ExpectedVersion: 4, AmountMinor: 13, ActorScope: "access:9", Reason: "manual_recovery", EvidenceReference: "receipt:1", IdempotencyKey: "admin-recovery-too-large"}

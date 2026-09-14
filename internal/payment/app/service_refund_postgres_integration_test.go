@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	distributionapp "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/app"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
+	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
@@ -200,6 +204,73 @@ func TestPostgreSQLProfitSharingCompletionUpdatesOnlyMatchingEffect(t *testing.T
 	}
 }
 
+func TestPostgreSQLReceiverProviderPermissionDenialProjectsOnlySafeFailureClass(t *testing.T) {
+	pool, cleanup := paymentAppIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	distributionRepository, err := distributionstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paymentRepository := paymentstore.NewPostgreSQL()
+	paymentService := NewService(uow, paymentRepository, orderStub{}, sessionStub{}, postgresRefundEffects{})
+	now := time.Date(2026, 9, 14, 19, 30, 0, 0, time.UTC)
+	paymentService.now = func() time.Time { return now.Add(time.Minute) }
+	registration, err := distributionapp.NewRegistrationService(uow, distributionRepository, paymentService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = paymentService.SetProfitSharingReceiverStatusObserver(registration); err != nil {
+		t.Fatal(err)
+	}
+	var effectID, receiverID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES('payment',$1,$2,$3,$4,$5,$6,'queued') RETURNING id`, effectport.KindWeChatPayReceiverAdd, effectport.Hash("receiver-denied-source"), effectport.Hash("receiver-denied-target"), effectport.Hash("receiver-denied-payload"), effectport.Hash("receiver-denied-policy"), effectport.Hash("receiver-denied-envelope")).Scan(&effectID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,external_effect_id,version,created_at,updated_at) VALUES(701,702,'wx-receiver-denied','wechat-app:wx-receiver-denied','h5_official_account',$1,'accepted',$2,1,$3,$3) RETURNING id`, effectport.Hash("receiver-denied-account"), effectID, now).Scan(&receiverID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO distribution_distributors(customer_id,public_no,agreement_version,enabled,receiver_reference,receiver_app_id,receiver_ready,receiver_reason,receiver_checked_at,registered_at,version,created_at,updated_at) VALUES(701,'DRECEIVERDENIED','v1',TRUE,'psrecv_`+strconv.FormatInt(receiverID, 10)+`','wx-receiver-denied',FALSE,'receiver_accepted',$1,$1,1,$1,$1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		return paymentService.CompleteEffect(tx, fmt.Sprintf("eer_%d", effectID), effectport.Envelope{Owner: effectport.OwnerPayment, Kind: effectport.KindWeChatPayReceiverAdd}, effectport.Attempt{Number: 1}, effectport.AdapterResult{Completion: effectport.StateFinalFailed, FailureCode: domain.ProfitSharingReceiverFailureProviderPermissionDenied, CallAttempted: true, RealExternalCallExecuted: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var paymentClass, state, receiverReason, paymentAuditClass, distributionAuditClass string
+	if err = pool.QueryRow(ctx, `SELECT r.failure_class,r.state,d.receiver_reason,(SELECT payload->>'failure_class' FROM payment_profit_sharing_audit_events WHERE aggregate_kind='receiver' AND aggregate_id=r.id ORDER BY id DESC LIMIT 1),(SELECT payload->>'failure_class' FROM distribution_audit_events WHERE event_type='distribution.receiver_status_synchronized.v1' ORDER BY id DESC LIMIT 1) FROM payment_profit_sharing_receivers r JOIN distribution_distributors d ON d.customer_id=r.customer_id WHERE r.id=$1`, receiverID).Scan(&paymentClass, &state, &receiverReason, &paymentAuditClass, &distributionAuditClass); err != nil {
+		t.Fatal(err)
+	}
+	if paymentClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied || state != string(domain.ProfitSharingReceiverFinalFailed) || receiverReason != "receiver_provider_permission_denied" || paymentAuditClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied || distributionAuditClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied {
+		t.Fatalf("class=%q state=%q receiver_reason=%q payment_audit=%q distribution_audit=%q", paymentClass, state, receiverReason, paymentAuditClass, distributionAuditClass)
+	}
+	profile, err := registration.Profile(ctx, distributionport.TrustedSessionActor{CustomerID: 701, IdentityID: 702, AppID: "wx-receiver-denied", AppScope: "wechat-app:wx-receiver-denied", Channel: "h5_official_account", OccurredAt: now})
+	if err != nil || profile.Receiver.Reason != "receiver_provider_permission_denied" || profile.Receiver.Ready {
+		t.Fatalf("public profile=%+v err=%v", profile, err)
+	}
+	var adminReason string
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		page, readErr := distributionRepository.ListAdminDistributors(tx, "", 50)
+		if readErr != nil || len(page.Items) != 1 {
+			return fmt.Errorf("admin page=%+v err=%w", page, readErr)
+		}
+		adminReason = page.Items[0].ReceiverReason
+		return nil
+	}); err != nil || adminReason != "receiver_provider_permission_denied" {
+		t.Fatalf("admin reason=%q err=%v", adminReason, err)
+	}
+}
+
 func TestPostgreSQLProfitSharingUnknownQueryKeepsReceiverMismatchReserveForReconciliation(t *testing.T) {
 	pool, cleanup := paymentAppIntegrationPool(t)
 	defer cleanup()
@@ -236,7 +307,7 @@ func TestPostgreSQLProfitSharingUnknownQueryKeepsReceiverMismatchReserveForRecon
 		{State: "FINISHED", ReceiverConfirmedSuccess: false, OutcomeKnown: true, OccurredAt: now.Add(2 * time.Minute), EvidenceDigest: effectport.Hash("query", "receiver-mismatch")},
 		// A later exact CLOSED result is finally proof this receiver/amount
 		// was unpaid, so only this observation can release the reserve.
-		{State: "FINISHED", ReceiverConfirmedFailure: true, OutcomeKnown: true, OccurredAt: now.Add(3 * time.Minute), EvidenceDigest: effectport.Hash("query", "receiver-closed")},
+		{State: "FINISHED", ReceiverConfirmedFailure: true, FailureClass: domain.ProfitSharingInstructionFailureReceiverReceiptLimit, OutcomeKnown: true, OccurredAt: now.Add(3 * time.Minute), EvidenceDigest: effectport.Hash("query", "receiver-closed")},
 	}}
 	service := NewService(uow, paymentstore.NewPostgreSQL(), orderStub{}, sessionStub{}, postgresRefundEffects{})
 	if err = service.SetProfitSharingReconciler(sequence); err != nil {
@@ -257,6 +328,13 @@ func TestPostgreSQLProfitSharingUnknownQueryKeepsReceiverMismatchReserveForRecon
 	third, err := service.ReconcileProfitSharing(ctx, second.Reference)
 	if err != nil || third.State != string(domain.ProfitSharingException) || !third.OutcomeKnown || third.ReceiverConfirmedSuccess {
 		t.Fatalf("exact receiver closed result=%+v err=%v", third, err)
+	}
+	if third.FailureClass != domain.ProfitSharingInstructionFailureReceiverReceiptLimit {
+		t.Fatalf("exact receiver closed class=%q", third.FailureClass)
+	}
+	var persistedFailureClass string
+	if err = pool.QueryRow(ctx, `SELECT failure_class FROM payment_profit_sharing_instructions WHERE id=$1`, instructionID).Scan(&persistedFailureClass); err != nil || persistedFailureClass != domain.ProfitSharingInstructionFailureReceiverReceiptLimit {
+		t.Fatalf("persisted exact receiver failure class=%q err=%v", persistedFailureClass, err)
 	}
 	if err = pool.QueryRow(ctx, `SELECT state FROM payment_profit_sharing_reserves WHERE instruction_id=$1`, instructionID).Scan(&reserveState); err != nil || reserveState != "released" {
 		t.Fatalf("exact receiver closed must release reserve=%q err=%v", reserveState, err)
@@ -342,7 +420,7 @@ func paymentAppIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql", "0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql", "0144_payment_checkout_restart_permissions.sql", "0156_distribution_profit_sharing_payment.sql", "0157_distribution_core.sql", "0161_payment_paid_confirmation_time.sql", "0163_payment_profit_sharing_receiver_recovery.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql", "0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql", "0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql", "0144_payment_checkout_restart_permissions.sql", "0156_distribution_profit_sharing_payment.sql", "0157_distribution_core.sql", "0161_payment_paid_confirmation_time.sql", "0163_payment_profit_sharing_receiver_recovery.sql", "0165_payment_profit_sharing_receiver_failure_class.sql", "0166_payment_profit_sharing_instruction_failure_class.sql", "0167_distribution_settlement_not_paid_exception.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			pool.Close()

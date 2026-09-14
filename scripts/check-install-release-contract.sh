@@ -111,6 +111,9 @@ for migration_contract in \
   '0164_channel_welcome_provider_rejections.sql:Channel welcome Provider rejection disposition' \
   '0162_payment_h5_distribution_return_path.sql:Payment H5 Distribution return path' \
   '0163_payment_profit_sharing_receiver_recovery.sql:Payment profit-sharing receiver recovery' \
+  '0165_payment_profit_sharing_receiver_failure_class.sql:Payment profit-sharing receiver failure class' \
+  '0166_payment_profit_sharing_instruction_failure_class.sql:Payment profit-sharing instruction failure class' \
+  '0167_distribution_settlement_not_paid_exception.sql:Distribution settlement not-paid exception' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

@@ -87,7 +87,7 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	runJourney := func(phase, want string) {
 		t.Helper()
 		command := exec.CommandContext(ctx, "node", journey)
-		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
+		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_PRODUCT="+seed.earningsProduct, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_ORDER="+seed.earningsOrderReference, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_GROSS_MINOR="+strconv.FormatInt(seed.earningsGrossMinor, 10), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_COMMISSION_MINOR="+strconv.FormatInt(seed.earningsCommissionMinor, 10), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
 		output, runErr := command.CombinedOutput()
 		if runErr != nil || !strings.Contains(string(output), want) {
 			t.Fatalf("Distribution Chromium %s phase err=%v output=%s", phase, runErr, strings.TrimSpace(string(output)))
@@ -95,21 +95,26 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	}
 	runJourney("registration", "distribution_chromium: REGISTERED")
 	assertDistributionReceiverWorkerProjection(t, ctx, application, seed)
+	seed = seedDistributionChromiumRegisteredEarnings(t, ctx, application, seed)
+	assertDistributionRegisteredEarningsReadModel(t, ctx, application, seed)
 	runJourney("ready", "distribution_chromium: PASS")
 	assertDistributionRegistrationAndCredentialFacts(t, ctx, application, seed)
 	assertDistributionPromotionProductsStrictlyFilter(t, ctx, application, seed)
 }
 
 type distributionChromiumSeed struct {
-	session, promotion, productCode, csrf   string
-	adminDisplayName                        string
-	registrationCustomerID                  int64
-	productID, applicationTargetID          int64
-	commissionID, detailAttributionID       int64
-	detailExceptionID                       int64
-	receiverEffectID                        int64
-	detailCreatedAt                         time.Time
-	receiverCount, effectCount, intentCount int64
+	session, promotion, productCode, csrf       string
+	adminDisplayName                            string
+	registrationCustomerID                      int64
+	productID, applicationTargetID              int64
+	commissionID, detailAttributionID           int64
+	detailExceptionID                           int64
+	receiverEffectID                            int64
+	detailCreatedAt                             time.Time
+	earningsProduct                             string
+	earningsOrderReference                      string
+	earningsGrossMinor, earningsCommissionMinor int64
+	receiverCount, effectCount, intentCount     int64
 }
 
 func assertDistributionH5OAuthStart(t *testing.T, handler http.Handler) {
@@ -241,13 +246,98 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_provider_intents`).Scan(&intentCount); err != nil {
 		t.Fatal(err)
 	}
-	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", adminDisplayName: adminDisplayName, registrationCustomerID: registrationCustomer, productID: product, applicationTargetID: applicationTarget, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, receiverEffectID: receiverEffectID, detailCreatedAt: detailCreatedAt, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
+	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", adminDisplayName: adminDisplayName, registrationCustomerID: registrationCustomer, productID: product, applicationTargetID: applicationTarget, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, receiverEffectID: receiverEffectID, detailCreatedAt: detailCreatedAt, earningsProduct: "分销浏览器商品", earningsGrossMinor: 9900000, earningsCommissionMinor: 990000, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
+}
+
+// seedDistributionChromiumRegisteredEarnings appends one complete, non-self
+// referral fact after the public journey registers its distributor and Payment
+// projects the receiver ready.  The fixture uses a real PostgreSQL UoW and
+// durable Order/Payment/Distribution records; it invokes neither a Provider
+// nor a split effect.
+func seedDistributionChromiumRegisteredEarnings(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) distributionChromiumSeed {
+	t.Helper()
+	uow, err := platformpostgres.NewUnitOfWork(application.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const quantity int64 = 1000
+	const grossMinor int64 = 9900000
+	const commissionMinor int64 = 990000
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var orderID int64
+	err = uow.Within(ctx, func(txctx context.Context) error {
+		tx, txErr := platformpostgres.RequireTransaction(txctx)
+		if txErr != nil {
+			return txErr
+		}
+		var distributorID, policyID, buyerID, buyerIdentityID, credentialID, attributionID int64
+		if txErr = tx.QueryRow(txctx, `SELECT id FROM distribution_distributors WHERE customer_id=$1`, seed.registrationCustomerID).Scan(&distributorID); txErr != nil {
+			return txErr
+		}
+		if txErr = tx.QueryRow(txctx, `SELECT id FROM distribution_product_policies WHERE product_id=$1 AND product_type='standard_product' AND enabled`, seed.productID).Scan(&policyID); txErr != nil {
+			return txErr
+		}
+		if txErr = tx.QueryRow(txctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&buyerID); txErr != nil {
+			return txErr
+		}
+		if txErr = tx.QueryRow(txctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,'mp_openid','wechat-app:distribution-browser','distribution-browser-earned-buyer','verified','distribution-browser-fixture',1,$2) RETURNING id`, buyerID, now).Scan(&buyerIdentityID); txErr != nil {
+			return txErr
+		}
+		if txErr = tx.QueryRow(txctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','distribution-browser','registered-earned-order','M-distribution-browser-earned',$1,$1,$2,'CNY','paid','native',true,2,$3,$3) RETURNING id`, buyerID, grossMinor, now).Scan(&orderID); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.Exec(txctx, `INSERT INTO order_items(order_id,line_no,product_id,product_version,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,1,$2,1,$3,$4,9900,$5,$6)`, orderID, seed.productID, seed.productCode, seed.earningsProduct, quantity, grossMinor); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.Exec(txctx, `INSERT INTO order_checkout_snapshots(order_id,product_type,product_id,product_code,product_name,product_version,service_period_duration_days,gross_amount_minor,discount_amount_minor,payable_amount_minor,currency,coupon_applied,coupon_reservation_ref,profit_sharing_required,reserved_at,created_at) VALUES($1,'standard_product',$2,$3,$4,1,0,$5,0,$5,'CNY',false,'',true,$6,$6)`, orderID, seed.productID, seed.productCode, seed.earningsProduct, grossMinor, now); txErr != nil {
+			return txErr
+		}
+		paidDigest := sha256.Sum256([]byte("distribution-browser-registered-earned-paid"))
+		if _, txErr = tx.Exec(txctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at) VALUES($1,2,$2,$3)`, orderID, paidDigest[:], now); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.Exec(txctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,profit_sharing_marked,version,paid_confirmed_at,created_at,updated_at) VALUES($1,'wechat_pay','mini_program','M-distribution-browser-earned',$2,$3,$3,$4,'CNY','paid',false,1,$5,$5,$5)`, orderID, buyerIdentityID, buyerID, grossMinor, now); txErr != nil {
+			return txErr
+		}
+		credentialDigest := sha256.Sum256([]byte("distribution-browser-registered-earned-credential"))
+		if txErr = tx.QueryRow(txctx, `INSERT INTO distribution_promotion_credentials(distributor_id,product_id,product_type,token_digest,status,created_at,expires_at) VALUES($1,$2,'standard_product',$3,'active',$4,$5) RETURNING id`, distributorID, seed.productID, credentialDigest[:], now, now.Add(24*time.Hour)).Scan(&credentialID); txErr != nil {
+			return txErr
+		}
+		if txErr = tx.QueryRow(txctx, `INSERT INTO distribution_order_attributions(order_id,order_item_line,product_code,product_name,distributor_id,promotion_credential_id,qualification_evidence_reference,qualification_state,policy_id,policy_version,commission_rate_basis_points,wait_days,attributed_at) VALUES($1,1,$2,$3,$4,$5,$6,'eligible',$7,1,1000,7,$8) RETURNING id`, orderID, seed.productCode, seed.earningsProduct, distributorID, credentialID, "order:"+strconv.FormatInt(orderID, 10)+":line:1", policyID, now).Scan(&attributionID); txErr != nil {
+			return txErr
+		}
+		_, txErr = tx.Exec(txctx, `INSERT INTO distribution_commissions(attribution_id,order_id,order_item_line,distributor_id,original_item_paid_minor,successful_refund_minor,initial_minor,current_payable_minor,paid_minor,commission_rate_basis_points,paid_confirmed_at,due_at,status,hold_reason,cancel_reason,exception_reason,version,created_at,updated_at) VALUES($1,$2,1,$3,$4,0,$5,$5,0,1000,$6,$7,'pending','','','',1,$6,$6)`, attributionID, orderID, distributorID, grossMinor, commissionMinor, now, now.Add(7*24*time.Hour))
+		return txErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed.earningsOrderReference = "order-" + strconv.FormatInt(orderID, 10)
+	return seed
+}
+
+func assertDistributionRegisteredEarningsReadModel(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/distribution/earnings", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_distribution_session", Value: seed.session})
+	response := httptest.NewRecorder()
+	application.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"gross_paid_sales_minor":9900000`) || !strings.Contains(response.Body.String(), `"initial_commission_minor":990000`) {
+		t.Fatalf("registered earnings status=%d body=%s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/distribution/commissions?limit=50", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_distribution_session", Value: seed.session})
+	response = httptest.NewRecorder()
+	application.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"order_reference":"`+seed.earningsOrderReference+`"`) || !strings.Contains(response.Body.String(), `"product_name":"`+seed.earningsProduct+`"`) || !strings.Contains(response.Body.String(), `"initial_minor":990000`) {
+		t.Fatalf("registered commissions status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func assertDistributionRegistrationAndCredentialFacts(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
 	t.Helper()
 	pool := application.pool.Native()
-	var distributors, registerReceipts, registerAudits, registerOutbox, credentials, receipts, audits, outbox, receivers, effects, intents int64
+	var distributors, registerReceipts, registerAudits, registerOutbox, credentials, browserCredentials, receipts, audits, outbox, receivers, effects, intents int64
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_distributors WHERE customer_id=$1`, seed.registrationCustomerID).Scan(&distributors); err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +351,13 @@ func assertDistributionRegistrationAndCredentialFacts(t *testing.T, ctx context.
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_promotion_credentials c JOIN distribution_distributors d ON d.id=c.distributor_id WHERE d.customer_id=$1`, seed.registrationCustomerID).Scan(&credentials); err != nil {
+		t.Fatal(err)
+	}
+	// The earnings fixture creates one credential solely to establish a real
+	// historical referral. The browser journey must contribute exactly one
+	// separately receipted credential, rather than treating that fixture fact
+	// as a second browser issuance.
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_operation_receipts r JOIN distribution_promotion_credentials c ON c.id=r.result_id JOIN distribution_distributors d ON d.id=c.distributor_id WHERE r.operation='credential' AND r.actor_scope=$1 AND r.result_kind='credential' AND d.customer_id=$2`, "customer:"+strconv.FormatInt(seed.registrationCustomerID, 10), seed.registrationCustomerID).Scan(&browserCredentials); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_operation_receipts WHERE operation='credential' AND actor_scope=$1 AND result_kind='credential'`, "customer:"+strconv.FormatInt(seed.registrationCustomerID, 10)).Scan(&receipts); err != nil {
@@ -281,8 +378,8 @@ func assertDistributionRegistrationAndCredentialFacts(t *testing.T, ctx context.
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_provider_intents`).Scan(&intents); err != nil {
 		t.Fatal(err)
 	}
-	if distributors != 1 || registerReceipts != 1 || registerAudits != 1 || registerOutbox != 1 || credentials != 1 || receipts != 1 || audits != 1 || outbox != 1 || receivers != seed.receiverCount || effects != seed.effectCount || intents != seed.intentCount {
-		t.Fatalf("registration/credential facts distributors=%d registration_receipts=%d registration_audits=%d registration_outbox=%d credentials=%d credential_receipts=%d credential_audits=%d credential_outbox=%d receivers=%d/%d effects=%d/%d intents=%d/%d", distributors, registerReceipts, registerAudits, registerOutbox, credentials, receipts, audits, outbox, receivers, seed.receiverCount, effects, seed.effectCount, intents, seed.intentCount)
+	if distributors != 1 || registerReceipts != 1 || registerAudits != 1 || registerOutbox != 1 || credentials != 2 || browserCredentials != 1 || receipts != 1 || audits != 1 || outbox != 1 || receivers != seed.receiverCount || effects != seed.effectCount || intents != seed.intentCount {
+		t.Fatalf("registration/credential facts distributors=%d registration_receipts=%d registration_audits=%d registration_outbox=%d credentials=%d browser_credentials=%d credential_receipts=%d credential_audits=%d credential_outbox=%d receivers=%d/%d effects=%d/%d intents=%d/%d", distributors, registerReceipts, registerAudits, registerOutbox, credentials, browserCredentials, receipts, audits, outbox, receivers, seed.receiverCount, effects, seed.effectCount, intents, seed.intentCount)
 	}
 }
 

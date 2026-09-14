@@ -4,12 +4,16 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
+	"errors"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/wechatpay-apiv3/wechatpay-go/core"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/profitsharing"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 )
 
@@ -56,13 +60,49 @@ type ProfitSharingSDK interface {
 type ProfitSharingQuery struct {
 	State                                              string
 	ReceiverConfirmedSuccess, ReceiverConfirmedFailure bool
-	OutcomeKnown                                       bool
-	OccurredAt                                         time.Time
+	// FailureClass is a bounded projection of an exact PERSONAL_OPENID CLOSED
+	// detail. Raw Provider response text and identifiers never leave this SDK
+	// adapter.
+	FailureClass string
+	OutcomeKnown bool
+	OccurredAt   time.Time
 }
 
 type OfficialProfitSharingSDK struct {
 	receivers profitsharing.ReceiversApiService
 	orders    profitsharing.OrdersApiService
+}
+
+// ProfitSharingProviderRejection intentionally preserves only a bounded,
+// documented provider class. It must not wrap the SDK APIError because that
+// object contains raw response data and headers.
+type ProfitSharingProviderRejection struct{ class string }
+
+func (value *ProfitSharingProviderRejection) Error() string {
+	return "profit sharing provider rejected request"
+}
+
+func (value *ProfitSharingProviderRejection) FailureClass() string {
+	if value == nil {
+		return ""
+	}
+	return value.class
+}
+
+func profitSharingProviderRejectionClass(err error) string {
+	var value *ProfitSharingProviderRejection
+	if errors.As(err, &value) {
+		return value.FailureClass()
+	}
+	return ""
+}
+
+func classifyOfficialProfitSharingError(err error) error {
+	var api *core.APIError
+	if errors.As(err, &api) && api.StatusCode == http.StatusForbidden && api.Code == "NO_AUTH" {
+		return &ProfitSharingProviderRejection{class: paymentdomain.ProfitSharingReceiverFailureProviderPermissionDenied}
+	}
+	return ErrInvalidResponse
 }
 
 // NewOfficialProfitSharingSDK builds the official WeChat Pay Go SDK client.
@@ -95,7 +135,10 @@ func (sdk *OfficialProfitSharingSDK) AddReceiver(ctx context.Context, value Prof
 	relation := profitsharing.RECEIVERRELATIONTYPE_DISTRIBUTOR
 	kind := profitsharing.RECEIVERTYPE_PERSONAL_OPENID
 	response, _, err := sdk.receivers.AddReceiver(ctx, profitsharing.AddReceiverRequest{Account: &value.ReceiverAccount, Appid: &value.AppID, RelationType: &relation, Type: &kind})
-	if err != nil || response == nil || response.Account == nil || *response.Account != value.ReceiverAccount || response.Type == nil || *response.Type != kind {
+	if err != nil {
+		return classifyOfficialProfitSharingError(err)
+	}
+	if response == nil || response.Account == nil || *response.Account != value.ReceiverAccount || response.Type == nil || *response.Type != kind {
 		return ErrInvalidResponse
 	}
 	return nil
@@ -125,7 +168,7 @@ func (sdk *OfficialProfitSharingSDK) QueryOrder(ctx context.Context, value Profi
 	}
 	query := ProfitSharingQuery{State: string(*response.State), OccurredAt: time.Now().UTC()}
 	for _, detail := range response.Receivers {
-		if detail.Account != nil && detail.Amount != nil && detail.Result != nil && *detail.Account == value.ReceiverAccount && *detail.Amount == value.AmountMinor {
+		if profitSharingReceiverDetailMatches(detail, value) {
 			if *detail.Result == profitsharing.DETAILSTATUS_SUCCESS {
 				query.ReceiverConfirmedSuccess, query.OutcomeKnown = true, true
 				if detail.FinishTime != nil {
@@ -135,6 +178,7 @@ func (sdk *OfficialProfitSharingSDK) QueryOrder(ctx context.Context, value Profi
 			}
 			if *detail.Result == profitsharing.DETAILSTATUS_CLOSED {
 				query.ReceiverConfirmedFailure, query.OutcomeKnown = true, true
+				query.FailureClass = profitSharingClosedDetailFailureClass(detail.FailReason)
 				if detail.FinishTime != nil {
 					query.OccurredAt = detail.FinishTime.UTC()
 				}
@@ -146,6 +190,44 @@ func (sdk *OfficialProfitSharingSDK) QueryOrder(ctx context.Context, value Profi
 	// is absent, money may have reached another detail: preserve the reserve and
 	// reconcile it as an exceptional unknown rather than infer non-payment.
 	return query, nil
+}
+
+// profitSharingReceiverDetailMatches is intentionally shared by SUCCESS and
+// CLOSED handling. An order-level result, a matching account/amount with a
+// different receiver type, or any incomplete detail is never proof of this
+// instruction's outcome.
+func profitSharingReceiverDetailMatches(detail profitsharing.OrderReceiverDetail, value ProfitSharingMaterial) bool {
+	return detail.Account != nil && detail.Amount != nil && detail.Type != nil && detail.Result != nil && *detail.Account == value.ReceiverAccount && *detail.Amount == value.AmountMinor && *detail.Type == profitsharing.RECEIVERTYPE_PERSONAL_OPENID
+}
+
+// profitSharingClosedDetailFailureClass maps only the official, finite CLOSED
+// detail reasons that Payment has approved for durable diagnostics. The SDK's
+// older typed enum deliberately cannot constrain newer documented strings;
+// anything absent or outside this list remains unknown.
+func profitSharingClosedDetailFailureClass(value *profitsharing.DetailFailReason) string {
+	if value == nil {
+		return ""
+	}
+	switch string(*value) {
+	case "ACCOUNT_ABNORMAL":
+		return paymentdomain.ProfitSharingInstructionFailureReceiverAccountAbnormal
+	case "NO_RELATION":
+		return paymentdomain.ProfitSharingInstructionFailureReceiverRelationRemoved
+	case "RECEIVER_HIGH_RISK":
+		return paymentdomain.ProfitSharingInstructionFailureReceiverHighRisk
+	case "RECEIVER_REAL_NAME_NOT_VERIFIED":
+		return paymentdomain.ProfitSharingInstructionFailureReceiverRealNameMissing
+	case "NO_AUTH":
+		return paymentdomain.ProfitSharingInstructionFailureMerchantPermissionLost
+	case "RECEIVER_RECEIPT_LIMIT":
+		return paymentdomain.ProfitSharingInstructionFailureReceiverReceiptLimit
+	case "PAYER_ACCOUNT_ABNORMAL":
+		return paymentdomain.ProfitSharingInstructionFailurePayerAccountAbnormal
+	case "INVALID_REQUEST":
+		return paymentdomain.ProfitSharingInstructionFailureInvalidRequest
+	default:
+		return ""
+	}
 }
 
 func (sdk *OfficialProfitSharingSDK) UnfreezeOrder(ctx context.Context, value ProfitSharingMaterial) error {

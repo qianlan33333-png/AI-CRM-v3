@@ -277,7 +277,7 @@ func refundWorkerPool(t *testing.T) (*pgxpool.Pool, func()) {
 		"0076_order_checkout_snapshots.sql", "0088_order_service_entitlement_alliance.sql", "0095_product_external_push.sql",
 		"0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql",
 		"0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql", "0144_payment_checkout_restart_permissions.sql",
-		"0156_distribution_profit_sharing_payment.sql", "0157_distribution_core.sql", "0158_order_distribution_qualification_evidence.sql", "0161_payment_paid_confirmation_time.sql",
+		"0156_distribution_profit_sharing_payment.sql", "0157_distribution_core.sql", "0158_order_distribution_qualification_evidence.sql", "0161_payment_paid_confirmation_time.sql", "0165_payment_profit_sharing_receiver_failure_class.sql", "0166_payment_profit_sharing_instruction_failure_class.sql", "0167_distribution_settlement_not_paid_exception.sql",
 	} {
 		body, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
@@ -416,6 +416,101 @@ func TestPostgreSQLSettlementWorkerAcceptsOneInstructionAndReplaysAfterRestart(t
 	}
 }
 
+func TestPostgreSQLSettlementWorkerClosedInstructionRetainsCommissionObligation(t *testing.T) {
+	pool, cleanup := refundWorkerPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	wrapped, err := platformpostgres.Wrap(pool, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	distributionRepository, err := distributionstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orderRepository, err := orderstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := orderapp.NewService(uow, orderRepository)
+	provider := &settlementWorkerProvider{now: now, splitResult: paymentport.ProfitSharingProviderResult{State: "FINISHED", ReceiverConfirmedFailure: true, FailureClass: "receiver_receipt_limit", OutcomeKnown: true, EvidenceDigest: effectport.Hash("settlement-worker-closed"), OccurredAt: now.Add(time.Minute)}}
+	payments := paymentapp.NewService(uow, paymentstore.NewPostgreSQL(), nil, nil, settlementWorkerEffects{})
+	if err = payments.SetPaymentChannelAppIDs("wx-settlement-worker", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = payments.SetProfitSharingReconciler(provider); err != nil {
+		t.Fatal(err)
+	}
+	qualification, err := distributionapp.NewQualificationService(identityquery.NewPostgreSQL(), orders, payments)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	promoter := refundWorkerCustomer(t, ctx, pool)
+	buyer := refundWorkerCustomer(t, ctx, pool)
+	_ = refundWorkerPaidOrder(t, ctx, pool, promoter, 703, "closed-settlement-qualification", now.Add(-2*time.Hour))
+	buyerOrder := refundWorkerPaidOrder(t, ctx, pool, buyer, 703, "closed-settlement-buyer", now.Add(-time.Hour))
+	if _, err = pool.Exec(ctx, `UPDATE payments SET profit_sharing_marked=true,provider_transaction_reference='4200000000000002',provider_transaction_digest=$2 WHERE id=$1`, buyerOrder.paymentID, effectport.Hash("closed-settlement-transaction")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,version,created_at,updated_at) VALUES($1,1,'wx-settlement-worker','wechat-app:wx-settlement-worker','mini_program',$2,'ready',1,$3,$3)`, promoter, effectport.Hash("closed-settlement-receiver"), now); err != nil {
+		t.Fatal(err)
+	}
+	commissionID := refundWorkerCommission(t, ctx, pool, promoter, buyerOrder.orderID, 703, now)
+	if _, err = pool.Exec(ctx, `UPDATE distribution_distributors SET receiver_reference='psrecv_1',receiver_app_id='wx-settlement-worker',receiver_ready=true,receiver_reason='',receiver_checked_at=$2 WHERE customer_id=$1`, promoter, now); err != nil {
+		t.Fatal(err)
+	}
+	paidAt := now.Add(-8 * 24 * time.Hour)
+	if _, err = pool.Exec(ctx, `UPDATE distribution_commissions SET paid_confirmed_at=$2,due_at=$3,created_at=$2,updated_at=$2 WHERE id=$1`, commissionID, paidAt, paidAt.Add(7*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := distributionapp.NewSettlementService(uow, distributionRepository, qualification, payments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err == nil {
+		t.Fatal("accepted split must retain a durable reconciliation job")
+	} else {
+		var snooze *river.JobSnoozeError
+		if !errors.As(err, &snooze) {
+			t.Fatalf("first due execution=%v, want durable snooze", err)
+		}
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("closed instruction plus unfreeze=%v", err)
+	}
+	// Model an administrator completing the operational exception before a
+	// delayed due-check delivery repeats the same immutable provider result.
+	if _, err = pool.Exec(ctx, `UPDATE distribution_exceptions SET status='resolved',version=version+1,updated_at=clock_timestamp() WHERE commission_id=$1 AND kind='settlement_not_paid'`, commissionID); err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("closed instruction replay after resolution=%v", err)
+	}
+
+	var status, exceptionStatus, exceptionReason, settlementState, failureClass string
+	var payable, paid, unpaid, exceptionAmount, instructions, exceptions, negativeAdjustments, unfreezes, effects int64
+	if err = pool.QueryRow(ctx, `SELECT c.status,c.current_payable_minor,c.paid_minor,s.state,e.status,e.reason,e.unpaid_due_minor,e.amount_minor,(SELECT failure_class FROM payment_profit_sharing_instructions LIMIT 1),(SELECT count(*) FROM payment_profit_sharing_instructions),(SELECT count(*) FROM distribution_exceptions WHERE commission_id=c.id AND kind='settlement_not_paid'),(SELECT count(*) FROM distribution_commission_adjustments WHERE commission_id=c.id AND kind='settlement_not_paid'),(SELECT count(*) FROM payment_profit_sharing_unfreezes),(SELECT count(*) FROM external_effects WHERE owner='payment' AND kind IN ('wechat_pay_profit_sharing_order_v1','wechat_pay_profit_sharing_unfreeze_v1')) FROM distribution_commissions c JOIN distribution_settlements s ON s.commission_id=c.id JOIN distribution_exceptions e ON e.commission_id=c.id AND e.kind='settlement_not_paid' WHERE c.id=$1`, commissionID).Scan(&status, &payable, &paid, &settlementState, &exceptionStatus, &exceptionReason, &unpaid, &exceptionAmount, &failureClass, &instructions, &exceptions, &negativeAdjustments, &unfreezes, &effects); err != nil {
+		t.Fatal(err)
+	}
+	if status != "exception" || payable != 200 || paid != 0 || settlementState != "exception" || exceptionStatus != "resolved" || exceptionReason != "payment_receiver_receipt_limit" || unpaid != 200 || exceptionAmount != 200 || failureClass != "receiver_receipt_limit" || instructions != 1 || exceptions != 1 || negativeAdjustments != 0 || unfreezes != 1 || effects != 2 {
+		t.Fatalf("closed commission status=%q payable=%d paid=%d settlement=%q exception_status=%q reason=%q unpaid=%d amount=%d failure=%q instructions=%d exceptions=%d negative_adjustments=%d unfreezes=%d effects=%d", status, payable, paid, settlementState, exceptionStatus, exceptionReason, unpaid, exceptionAmount, failureClass, instructions, exceptions, negativeAdjustments, unfreezes, effects)
+	}
+	// A manual replay reads the immutable provider instruction again, but it
+	// must not accept another split, exception, reserve, or unfreeze intent.
+	// The durable counts above prove that no money-changing effect was replayed.
+	if splits, unfreezeCalls := provider.calls(); splits != 2 || unfreezeCalls != 1 {
+		t.Fatalf("terminal closed reconciliation reads=%d unfreeze_reads=%d", splits, unfreezeCalls)
+	}
+}
+
 type settlementWorkerEffects struct{}
 
 func (settlementWorkerEffects) AcceptAndQueueWithin(ctx context.Context, command effectport.AcceptCommand) (effectport.Projection, effectport.Receipt, error) {
@@ -436,6 +531,7 @@ func (settlementWorkerEffects) AcceptAndQueueWithin(ctx context.Context, command
 type settlementWorkerProvider struct {
 	mu                        sync.Mutex
 	now                       time.Time
+	splitResult               paymentport.ProfitSharingProviderResult
 	splitCalls, unfreezeCalls int
 }
 
@@ -443,6 +539,9 @@ func (p *settlementWorkerProvider) QueryProfitSharing(context.Context, string) (
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.splitCalls++
+	if p.splitResult.State != "" {
+		return p.splitResult, nil
+	}
 	return paymentport.ProfitSharingProviderResult{State: "FINISHED", ReceiverConfirmedSuccess: true, OutcomeKnown: true, EvidenceDigest: effectport.Hash("settlement-worker-split", fmt.Sprint(p.splitCalls)), OccurredAt: p.now.Add(time.Minute)}, nil
 }
 
