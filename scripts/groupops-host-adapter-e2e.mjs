@@ -589,8 +589,8 @@ fullWindow.fetch = async (input, init = {}) => {
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "PUT") {
     if (saveFailure === "network") throw new Error("网络连接中断");
-    if (saveFailure) return response({ code: saveFailure === "409" ? "revision_conflict" : "service_unavailable" }, Number(saveFailure));
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
+    if (saveFailure) return response({ code: saveFailure === "409" ? "operations_conflict" : "service_unavailable" }, Number(saveFailure));
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
     state.plan.name = body.name;
     state.plan.plan_type = body.plan_type;
     if (body.owner_staff_id) state.members = [{ staff_id: Number(body.owner_staff_id) }];
@@ -607,7 +607,7 @@ fullWindow.fetch = async (input, init = {}) => {
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/enable" && method === "POST") {
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
     state.revision += 1;
     state.plan.status = "active";
     state.plan.revision = state.revision;
@@ -615,7 +615,7 @@ fullWindow.fetch = async (input, init = {}) => {
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/groups" && method === "POST") {
     groupSelectionCommands.push({ reference: body.asset_reference, body: clone(body), idempotencyKey: init.headers?.get?.("Idempotency-Key") || "" });
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
     if (!state.group_assets.some((item) => item.asset_reference === body.asset_reference)) state.group_assets.push({ asset_reference: body.asset_reference });
     state.revision += 1;
     state.plan.revision = state.revision;
@@ -639,7 +639,7 @@ fullWindow.fetch = async (input, init = {}) => {
     return response({ plan: clone(state.plan) });
   }
   if (/\/api\/admin\/automation-conversion\/group-ops\/plans\/41\/groups\/.+$/.test(url.pathname) && method === "DELETE") {
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
     const reference = decodeURIComponent(url.pathname.split("/").pop() || "");
     state.group_assets = state.group_assets.filter((item) => item.asset_reference !== reference);
     state.revision += 1;
@@ -651,7 +651,7 @@ fullWindow.fetch = async (input, init = {}) => {
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/nodes" && method === "POST") {
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
     state.nodes.push({ node_id: 101, ...body });
     state.revision += 1;
     state.plan.revision = state.revision;
@@ -886,7 +886,12 @@ try {
   failGroupReadback = false;
   fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
   await waitFor(() => fullWindow.document.querySelector('.group-ops__group-name')?.textContent.includes("同步群名3"), "retry must update the bound projection");
+  // A bound-group command increments the server revision before its detail
+  // readback settles. A stale control must never write through that command;
+  // its CAS conflict is explicit, and the delayed read cannot erase the
+  // authoritative in-memory projection after the newer action generation.
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();
+  const planNameBeforeStaleControl = fullWindow.document.querySelector('[name="plan_name"]').value;
   fullWindow.document.querySelector('[name="plan_name"]').value = "新保存不会被旧读覆盖";
   const deferredSave = fullWindow.document.querySelector('[data-action="save-plan"]');
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
@@ -897,15 +902,97 @@ try {
   staleInput.name = 'plan_name'; staleInput.value = '新保存不会被旧读覆盖';
   fullWindow.document.getElementById('group-ops-app').append(staleInput);
   deferredSave.click();
-  await waitFor(() => state.plan.name === '新保存不会被旧读覆盖', "new save/readback did not complete before stale detail resumed");
+  await waitFor(
+    () => fullWindow.document.body.textContent.includes('计划状态、版本或配置不满足要求，请刷新后检查'),
+    () => `stale basic save must surface the authoritative revision conflict; text=${fullWindow.document.body.textContent} recent=${JSON.stringify(calls.slice(-8))}`,
+  );
+  assert.equal(state.plan.name, planNameBeforeStaleControl, "a stale basic save must not claim a later plan write succeeded");
   releaseDelayedPlanRead();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(state.plan.name, '新保存不会被旧读覆盖', "a delayed old detail response must not overwrite the newer authoritative save/readback");
-  assert.equal(fullWindow.document.body.textContent.includes('新保存不会被旧读覆盖'), true, "render after a stale response must retain the newer plan state");
+  assert.equal(state.plan.name, planNameBeforeStaleControl, "a delayed older detail response must not overwrite a later action generation");
+  assert.equal(fullWindow.document.body.textContent.includes('新保存不会被旧读覆盖'), false, "the stale draft must not appear as an authoritative plan value");
   if (fullJourneyErrors.length) throw new Error(`Group Ops standard DOM errors: ${JSON.stringify(fullJourneyErrors)}`);
   console.log("groupops-standard-dom: PASS");
 } finally {
   fullJourney.window.close();
+}
+
+// A pre-existing detail read can legitimately become stale without any
+// intervening command. The newer plan save must win once its authoritative
+// readback completes; releasing the old response must not repaint its snapshot.
+const saveRaceJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="61"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/61",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const saveRaceWindow = saveRaceJourney.window;
+saveRaceWindow.Headers = Headers;
+saveRaceWindow.Response = Response;
+Object.defineProperty(saveRaceWindow, "crypto", { configurable: true, value: crypto });
+saveRaceWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
+let saveRacePlan = { plan_id: 61, name: "旧详情名称", revision: 5, status: "draft", plan_type: "standard" };
+let delaySaveRaceRead = false;
+let releaseSaveRaceRead = null;
+const saveRaceDetail = () => ({
+  plan: clone(saveRacePlan),
+  members: [{ staff_id: 7 }],
+  group_assets: [],
+  nodes: [],
+});
+saveRaceWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), saveRaceWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  const body = init.body ? JSON.parse(String(init.body)) : null;
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") {
+    return response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/61" && method === "GET") {
+    if (delaySaveRaceRead) {
+      delaySaveRaceRead = false;
+      const captured = response(saveRaceDetail());
+      return new Promise((resolve) => { releaseSaveRaceRead = () => resolve(captured); });
+    }
+    return response(saveRaceDetail());
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/61" && method === "PUT") {
+    assert.equal(body.expected_revision, 5, "a valid save must use the current Owner revision");
+    assert.equal(body.name, "较新合法保存", "the saved form value must reach the Owner command");
+    saveRacePlan = { ...saveRacePlan, name: body.name, revision: 6 };
+    return response({ plan: clone(saveRacePlan) });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/61/groups" && method === "GET") {
+    return response({ items: [], summary: { bound_group_count: 0 } });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") {
+    return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/61/nodes" && method === "GET") {
+    return response({ items: [] });
+  }
+  throw new Error(`unexpected save-race request ${method} ${url.pathname}`);
+};
+try {
+  saveRaceWindow.eval(pickerSource);
+  saveRaceWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => saveRaceWindow.document.querySelector('[data-action="save-plan"]'), "save race fixture did not render the basic form");
+  saveRaceWindow.document.querySelector('[name="plan_name"]').value = "较新合法保存";
+  const deferredSave = saveRaceWindow.document.querySelector('[data-action="save-plan"]');
+  delaySaveRaceRead = true;
+  saveRaceWindow.dispatchEvent(new saveRaceWindow.CustomEvent("aicrm:groupops-detail-refresh", { detail: { planId: 61 } }));
+  await waitFor(() => releaseSaveRaceRead && saveRaceWindow.document.body.textContent.includes("加载中"), "older detail request did not begin before the valid save");
+  const deferredDraft = saveRaceWindow.document.createElement("input");
+  deferredDraft.name = "plan_name";
+  deferredDraft.value = "较新合法保存";
+  saveRaceWindow.document.getElementById("group-ops-app").append(deferredDraft);
+  deferredSave.click();
+  await waitFor(() => saveRacePlan.name === "较新合法保存", "the newer valid save did not complete before the old detail response resumed");
+  releaseSaveRaceRead();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(saveRacePlan.name, "较新合法保存", "the delayed old detail response must not overwrite a completed valid save");
+  assert.equal(saveRaceWindow.document.body.textContent.includes("较新合法保存"), true, "the rendered detail must retain the newer authoritative plan name");
+  console.log("groupops-save-race-dom: PASS");
+} finally {
+  saveRaceJourney.window.close();
 }
 
 // Webhook presentation is rendered by the same standard Host: it must expose
