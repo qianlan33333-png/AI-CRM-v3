@@ -142,7 +142,7 @@ const waitFor = async (condition, message) => {
     if (condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(message);
+  throw new Error(typeof message === "function" ? message() : message);
 };
 const fullJourneyErrors = [];
 const fullJourneyConsole = new VirtualConsole();
@@ -152,6 +152,12 @@ let memberRefreshAttempts = 0;
 let ownerDirectoryFailures = 0;
 let groupSyncAttempts = 0;
 let failGroupReadback = false;
+let failPlanReadback = false;
+let failNextPlanReadbackAfterWrite = false;
+let wrongPlanIDOnce = false;
+let returnWrongPlanIDAfterWrite = false;
+let delayNextPlanRead = false;
+let releaseDelayedPlanRead = null;
 let saveFailure = "";
 const state = {
   revision: 4,
@@ -211,7 +217,19 @@ fullWindow.fetch = async (input, init = {}) => {
     if (memberRefreshAttempts === 1) return response({ error: { code: "provider_read_unavailable" } }, 503);
     return response({ items: [], page_size: 100 });
   }
-  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "GET") return response(detailPayload());
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "GET") {
+    if (failPlanReadback) throw new Error("详情读取中断");
+    if (wrongPlanIDOnce) {
+      wrongPlanIDOnce = false;
+      return response({ ...detailPayload(), plan: { ...clone(state.plan), plan_id: 99 } });
+    }
+    if (delayNextPlanRead) {
+      delayNextPlanRead = false;
+      const captured = response(detailPayload());
+      return new Promise((resolve) => { releaseDelayedPlanRead = () => resolve(captured); });
+    }
+    return response(detailPayload());
+  }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "PUT") {
     if (saveFailure === "network") throw new Error("网络连接中断");
     if (saveFailure) return response({ code: saveFailure === "409" ? "revision_conflict" : "service_unavailable" }, Number(saveFailure));
@@ -221,6 +239,14 @@ fullWindow.fetch = async (input, init = {}) => {
     if (body.owner_staff_id) state.members = [{ staff_id: Number(body.owner_staff_id) }];
     state.revision += 1;
     state.plan.revision = state.revision;
+    if (failNextPlanReadbackAfterWrite) {
+      failNextPlanReadbackAfterWrite = false;
+      failPlanReadback = true;
+    }
+    if (returnWrongPlanIDAfterWrite) {
+      returnWrongPlanIDAfterWrite = false;
+      wrongPlanIDOnce = true;
+    }
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/enable" && method === "POST") {
@@ -235,6 +261,10 @@ fullWindow.fetch = async (input, init = {}) => {
     state.group_assets.push({ asset_reference: body.asset_reference });
     state.revision += 1;
     state.plan.revision = state.revision;
+    return response({ plan: clone(state.plan) });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/groups/group-9" && method === "DELETE") {
+    state.group_assets = state.group_assets.filter((item) => item.asset_reference !== "group-9");
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/nodes" && method === "POST") {
@@ -292,21 +322,33 @@ try {
   await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "9", "owner picker did not retain the selected local staff id");
   await waitFor(() => fullWindow.document.body.textContent.includes("群目录读取失败，请重试"), "owner directory failure must remain explicit rather than appear as an empty group list");
   const draftName = fullWindow.document.querySelector('[name="plan_name"]');
-  draftName.value = "失败重试保留草稿";
-  for (const failure of ["409", "503", "network"]) {
+  const writesBeforeBlankName = calls.filter((call) => call.method === "PUT").length;
+  draftName.value = "   ";
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => fullWindow.document.body.textContent.includes("请输入计划名称后再保存"), "blank plan name must be rejected locally");
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeBlankName, "blank plan name must not issue a PUT");
+  assert.equal(fullWindow.document.querySelector('[name="plan_name"]')?.value, "", "blank name must remain blank after local rejection");
+  assert.equal(fullWindow.document.querySelector('[name="owner_userid"]')?.value, "9", "blank name rejection must preserve the other drafted fields");
+  const doubleClickName = fullWindow.document.querySelector('[name="plan_name"]');
+  doubleClickName.value = "一次提交";
+  const writesBeforeDoubleClick = calls.filter((call) => call.method === "PUT").length;
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  fullWindow.document.querySelector('[data-action="save-active-detail-panel"]').click();
+  await waitFor(() => state.plan.name === "一次提交", "single save did not persist before the shared-lock assertion");
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeDoubleClick + 1, "two save controls must share one in-flight PUT");
+  assert.equal(fullWindow.document.querySelector('[data-action="save-plan"]')?.disabled, false, "both save controls unlock only after authoritative readback");
+  fullWindow.document.querySelector('[name="plan_name"]').value = "失败重试保留草稿";
+  for (const failure of ["409", "500", "network"]) {
     saveFailure = failure;
     const writesBefore = calls.filter((call) => call.method === "PUT").length;
-    const action = failure === "503" ? "save-active-detail-panel" : "save-plan";
+    const action = failure === "500" ? "save-active-detail-panel" : "save-plan";
     fullWindow.document.querySelector(`[data-action="${action}"]`).click();
-    await waitFor(() => calls.filter((call) => call.method === "PUT").length > writesBefore && fullWindow.document.querySelector('[data-groupops-save-error]'), "real save rejection must be visible");
-    assert.equal(fullWindow.document.querySelectorAll('[data-groupops-save-error][role="alert"]').length, 1, "repeated failures reuse one alert");
-    const saveAlert = fullWindow.document.querySelector('[data-groupops-save-error]');
-    assert.match(saveAlert.textContent, /^保存失败：/);
-    assert.equal(saveAlert.style.color, "rgb(180, 35, 24)", "failure feedback must not inherit the green standard notice color");
-    assert.equal(fullWindow.document.querySelector('[name="plan_name"]'), draftName, "failure must not rerender the draft form");
-    assert.equal(draftName.value, "失败重试保留草稿");
+    await waitFor(() => calls.filter((call) => call.method === "PUT").length > writesBefore && fullWindow.document.querySelector('.group-ops__notice--error'), "real save rejection must be visible");
+    const retainedName = fullWindow.document.querySelector('[name="plan_name"]');
+    assert.equal(retainedName.value, "失败重试保留草稿", "failure must retain the draft after the standard page rerenders");
+    assert.equal(fullWindow.document.querySelector('.group-ops__notice--error')?.getAttribute('role'), 'alert', "save failure must remain an accessible alert");
     assert.equal(fullWindow.document.querySelector('[name="owner_userid"]').value, "9");
-    assert.equal(state.plan.name, "标准群运营计划", "failed save must not pretend the server changed");
+    assert.equal(state.plan.name, "一次提交", "failed save must not pretend the server changed");
     assert.equal(fullWindow.document.body.textContent.includes("已保存"), false);
   }
   saveFailure = "";
@@ -316,13 +358,37 @@ try {
   assert.equal(state.plan.status, "paused", "saving paused configuration must not activate the plan");
   assert.deepEqual(state.members, [{ staff_id: 9 }], "paused save must persist the chosen owner");
   assert.equal(calls.some((call) => call.method === "POST" && /\/(enable|disable)$/.test(call.path)), false, "paused save must not trigger a lifecycle command");
-  assert.equal(fullWindow.document.querySelector('[data-groupops-save-error]'), null);
+  assert.equal(fullWindow.document.querySelector('.group-ops__notice--error'), null);
+  fullWindow.document.querySelector('[name="plan_name"]').value = "已写待回读";
+  const writesBeforeReadbackFailure = calls.filter((call) => call.method === "PUT").length;
+  failNextPlanReadbackAfterWrite = true;
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => calls.filter((call) => call.method === "PUT").length === writesBeforeReadbackFailure + 1 && fullWindow.document.querySelector('[data-action="reload-plan-detail"]'), "a successful PUT followed by failed detail readback must lock for an explicit retry");
+  assert.match(fullWindow.document.body.textContent, /已保存，但读取最新配置失败/, "a successful PUT followed by failed detail readback must be explicit");
+  assert.equal(fullWindow.document.querySelector('.group-ops__notice--error')?.getAttribute('role'), 'alert', "readback failure must remain an accessible alert");
+  assert.equal(fullWindow.document.querySelector('[data-action="save-plan"]')?.disabled, true, "readback-pending state must keep basic save locked");
+  assert.equal(fullWindow.document.querySelector('[data-action="save-active-detail-panel"]')?.disabled, true, "readback-pending state must keep shared save locked");
+  fullWindow.document.querySelector('[data-action="save-active-detail-panel"]').click();
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeReadbackFailure + 1, "readback-pending state must not issue a replacement PUT");
+  failPlanReadback = false;
+  fullWindow.document.querySelector('[data-action="reload-plan-detail"]').click();
+  await waitFor(() => state.plan.name === "已写待回读" && !fullWindow.document.querySelector('[data-action="save-plan"]')?.disabled, "retrying detail readback must restore the authoritative editable plan");
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeReadbackFailure + 1, "readback retry must not submit a second PUT");
+  fullWindow.document.querySelector('[name="plan_name"]').value = "错误详情 ID 只读恢复";
+  const writesBeforeWrongID = calls.filter((call) => call.method === "PUT").length;
+  returnWrongPlanIDAfterWrite = true;
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => calls.filter((call) => call.method === "PUT").length === writesBeforeWrongID + 1 && fullWindow.document.querySelector('[data-action="reload-plan-detail"]'), "a mismatched 200 detail ID must enter readback-only recovery");
+  assert.match(fullWindow.document.body.textContent, /与当前页面不一致/, "a mismatched 200 detail ID must be visible instead of silently leaving the save locked");
+  fullWindow.document.querySelector('[data-action="reload-plan-detail"]').click();
+  await waitFor(() => state.plan.name === "错误详情 ID 只读恢复" && !fullWindow.document.querySelector('[data-action="save-plan"]')?.disabled, "mismatched detail recovery must read the authoritative plan without a second write");
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeWrongID + 1, "mismatched detail recovery must stay read-only");
   fullWindow.document.querySelector('[name="status"]').value = "active";
   fullWindow.document.querySelector('[data-action="save-plan"]').click();
   await waitFor(() => state.plan.status === "active", "saving the selected owner did not enable the existing plan");
   assert.deepEqual(state.members, [{ staff_id: 9 }], "Host must write the selected staff id as owner_staff_id");
-  assert.equal(state.plan.name, "失败重试保留草稿", "successful retry must submit the retained draft");
-  assert.equal(fullWindow.document.querySelector('[data-groupops-save-error]'), null, "successful retry clears the prior failure");
+  assert.equal(state.plan.name, "错误详情 ID 只读恢复", "successful retry must submit the retained authoritative draft");
+  assert.equal(fullWindow.document.querySelector('.group-ops__notice--error'), null, "successful retry clears the prior failure");
 
   await waitFor(() => fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]'), "detail did not reload after owner save");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
@@ -371,6 +437,22 @@ try {
   failGroupReadback = false;
   fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
   await waitFor(() => fullWindow.document.querySelector('.group-ops__group-name')?.textContent.includes("同步群名3"), "retry must update the bound projection");
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();
+  fullWindow.document.querySelector('[name="plan_name"]').value = "新保存不会被旧读覆盖";
+  const deferredSave = fullWindow.document.querySelector('[data-action="save-plan"]');
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  delayNextPlanRead = true;
+  fullWindow.document.querySelector('[data-action="remove-group"]').click();
+  await waitFor(() => releaseDelayedPlanRead && fullWindow.document.body.textContent.includes("加载中"), "old detail load did not pause for the stale-response assertion");
+  const staleInput = fullWindow.document.createElement('input');
+  staleInput.name = 'plan_name'; staleInput.value = '新保存不会被旧读覆盖';
+  fullWindow.document.getElementById('group-ops-app').append(staleInput);
+  deferredSave.click();
+  await waitFor(() => state.plan.name === '新保存不会被旧读覆盖', "new save/readback did not complete before stale detail resumed");
+  releaseDelayedPlanRead();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(state.plan.name, '新保存不会被旧读覆盖', "a delayed old detail response must not overwrite the newer authoritative save/readback");
+  assert.equal(fullWindow.document.body.textContent.includes('新保存不会被旧读覆盖'), true, "render after a stale response must retain the newer plan state");
   if (fullJourneyErrors.length) throw new Error(`Group Ops standard DOM errors: ${JSON.stringify(fullJourneyErrors)}`);
   console.log("groupops-standard-dom: PASS");
 } finally {
