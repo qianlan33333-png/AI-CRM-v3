@@ -249,6 +249,9 @@
       if (form.querySelector("[data-customer-tag-picker-load-error]")) continue;
       const notice = document.createElement("span");
       notice.dataset.customerTagPickerLoadError = "1";
+      // Keep the on-demand loader's historical hooks while the V3 adapter
+      // owns the actual selection interaction.
+      notice.dataset.customerTagLoaderError = "1";
       notice.className = "customer-tag-picker-error";
       notice.setAttribute("role", "alert");
       notice.append(message, " ");
@@ -256,6 +259,7 @@
       retry.type = "button";
       retry.className = "admin-button admin-button--ghost";
       retry.dataset.customerTagPickerRetry = "1";
+      retry.dataset.customerTagLoaderRetry = "1";
       retry.textContent = "重试加载标签";
       retry.addEventListener("click", () => { void loadTagSelectors(); });
       notice.append(retry);

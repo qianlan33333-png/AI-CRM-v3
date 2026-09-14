@@ -39,15 +39,32 @@ try {
   const socket = new WebSocket(created.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
   cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
-  const exceptions = []; const resources = new Map();
+  const exceptions = []; const resources = new Map(); let customerListResponses = 0;
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
-  cdp.on("Network.responseReceived", (params) => { try { const pathname = new URL(String(params.response?.url || "")).pathname; if (["/static/admin_console/admin_customers.js", "/api/admin/customers", "/api/admin/wecom/tags", "/api/v1/customer-tag-commands/preview", "/api/v1/customer-tag-commands"].includes(pathname)) resources.set(pathname, Number(params.response?.status) || 0); } catch (_) {} });
+  const requiredResources = ["/static/admin_console/admin_customers.js", "/assets/standard-components/standard_components_host.js", "/assets/standard-components/wecom_tag_picker.js", "/api/admin/customers", "/api/admin/wecom/tags"];
+  cdp.on("Network.responseReceived", (params) => { try { const pathname = new URL(String(params.response?.url || "")).pathname; if (pathname === "/api/admin/customers") customerListResponses += 1; if ([...requiredResources, "/api/v1/customer-tag-commands/preview", "/api/v1/customer-tag-commands"].includes(pathname)) resources.set(pathname, Number(params.response?.status) || 0); } catch (_) {} });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin%2Fcustomers` });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
   await waitFor(cdp, "location.pathname === '/admin/customers' && Boolean(document.querySelector('[data-customer-directory-root]'))", "login did not load the customer Host route");
   const diagnostic = async () => JSON.stringify({ path: await evaluate(cdp, "location.pathname"), rows: await evaluate(cdp, "document.querySelectorAll('#customer-list-body input[type=checkbox]').length"), resources: Object.fromEntries(resources), exceptions });
-  try { await waitFor(cdp, "document.querySelectorAll('#customer-list-body input[type=checkbox]').length >= 2 && document.querySelectorAll('#customer-tag-batch option').length >= 2 && document.querySelectorAll('#customer-tag-batch button').length >= 2", "customer list or V3 tag catalog did not load"); } catch (_) { throw new Error(`customer Host did not load: ${await diagnostic()}`); }
+  try { await waitFor(cdp, "document.querySelectorAll('#customer-list-body input[type=checkbox]').length >= 2 && document.querySelectorAll('#customer-tag-batch option').length >= 2 && typeof window.AICRMWeComTagPicker?.open === 'function' && typeof window.AICRMTagPicker?.open === 'function'", "customer list, tag catalog, or V3 picker did not load"); } catch (_) { throw new Error(`customer Host did not load: ${await diagnostic()}`); }
+  if (requiredResources.some((pathname) => resources.get(pathname) !== 200)) throw new Error(`customer Host release assets did not load: ${await diagnostic()}`);
+  // The customer query remains this Host's native form-submit interaction.
+  // A Chinese IME candidate Enter must commit composition only; the next plain
+  // Enter is the explicit query and may replace the list.
+  const requestsBeforeComposition = customerListResponses;
+  await evaluate(cdp, "document.querySelector('#customer-list-filters [name=keyword]').focus(); true");
+  await cdp.call("Input.imeSetComposition", { text: "候选客户", selectionStart: 4, selectionEnd: 4, replacementStart: 0, replacementEnd: 0 });
+  await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await delay(150);
+  if (customerListResponses !== requestsBeforeComposition) throw new Error(`IME candidate Enter submitted the customer search: ${await diagnostic()}`);
+  await cdp.call("Input.insertText", { text: "候选客户" });
+  await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  for (let attempt = 0; attempt < 20 && customerListResponses <= requestsBeforeComposition; attempt += 1) await delay(100);
+  if (customerListResponses <= requestsBeforeComposition) throw new Error(`plain Enter did not request the customer search: ${await diagnostic()}`);
   // Exercise the same V3 dialog that the rendered customer form exposes, then
   // submit through the original preview-and-confirm command. The picker edits
   // only the two form drafts; it must not replace the durable command path.

@@ -28,6 +28,8 @@ const template = source
   .replace('{{define "admin_customers"}}', '')
   .replace(/{{if eq \.RequestPath "\/admin\/customers"}}([\s\S]*?){{else}}([\s\S]*?){{end}}\s*<\/div>\s*{{end}}\s*$/, '$1\n</div>');
 const calls = [];
+const standardReadyForCalls = [];
+const pickerOpenCalls = [];
 const dom = new JSDOM(`<!doctype html><html><body>${template}<script>${tagPickerBundle}</script><script>${script}</script></body></html>`, {
   url: `${origin}/admin/customers`, runScripts: 'dangerously', pretendToBeVisual: true,
   beforeParse(window) {
@@ -35,6 +37,16 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}<script>${tagPicker
     window.AdminDateTime = {};
     window.AdminFmt = { localTime: (value) => value === '2026-09-06T00:00:00Z' ? '2026-09-06 08:00:00' : '时间暂不可用', whenAdminDateTimeReady: (ready) => ready(window.AdminDateTime) };
     window.confirm = () => true;
+    // This composition fixture executes the customer script without the release
+    // asset renderer. Supply only the standard-component Port that script needs;
+    // the real tag catalog, preview, command, and receipt routes remain HTTP-backed.
+    window.AICRMStandardComponents = {
+      readyFor: async (capabilities) => {
+        if (!Array.isArray(capabilities) || capabilities.length !== 1 || capabilities[0] !== 'tags') throw new Error(`unexpected standard component request: ${JSON.stringify(capabilities)}`);
+        standardReadyForCalls.push([...capabilities]);
+      },
+    };
+    window.AICRMWeComTagPicker = { open: (options) => { pickerOpenCalls.push(options); } };
     window.fetch = async (input, options = {}) => {
       const url = new URL(String(input), window.location.origin);
       if (url.pathname === '/api/admin/customers') {
@@ -65,7 +77,9 @@ try {
   checkbox.checked = true;
   checkbox.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   const form = dom.window.document.querySelector('#customer-tag-batch');
-  if (!form || form.querySelector('[name="add_tag_ids"] option')?.textContent !== '运行时分组 / 运行时标签') throw new Error(`actual catalog route did not render the local tag name; picker=${typeof dom.window.AICRMTagPicker} form=${form?.innerHTML || ''}`);
+  if (!form || form.querySelector('[name="add_tag_ids"] option')?.textContent !== '运行时分组 / 运行时标签') throw new Error('actual catalog route did not render the local tag name');
+  if (standardReadyForCalls.length !== 1 || standardReadyForCalls[0].join(',') !== 'tags') throw new Error(`customer tag selectors did not request the tags capability: ${JSON.stringify(standardReadyForCalls)}`);
+  if (pickerOpenCalls.length !== 0) throw new Error('runtime command fixture unexpectedly opened the picker UI');
   const tagOptions = [...form.querySelector('[name="add_tag_ids"]').options];
   if (tagOptions.length !== 1 || tagOptions[0].textContent !== '运行时分组 / 运行时标签') throw new Error('actual catalog route did not render the local tag name');
   const addDraft = form.querySelector('[name="add_tag_ids"]');

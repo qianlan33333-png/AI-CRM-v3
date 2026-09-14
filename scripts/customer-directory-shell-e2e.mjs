@@ -97,6 +97,8 @@ async function load(url, requests, sections) {
       window.Headers = Headers;
       window.AdminDateTime = {};
       window.AdminFmt = { localTime: (value) => value === '2026-09-03T02:52:14Z' ? '2026-09-03 10:52:14' : '时间暂不可用', whenAdminDateTimeReady: (ready) => ready(window.AdminDateTime) };
+      window.AICRMStandardComponents = { ready: async () => undefined, readyFor: async (capabilities) => { if (capabilities.join(',') !== 'tags') throw new Error('unexpected standard component'); } };
+      window.AICRMWeComTagPicker = { open() {} };
       window.confirm = () => true;
       window.fetch = async (input, options = {}) => {
         const requestURL = new URL(String(input), window.location.origin);

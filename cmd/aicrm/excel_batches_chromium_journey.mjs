@@ -133,6 +133,13 @@ async function waitFor(cdp, expression, message) {
       ),
   );
 }
+async function waitForNetwork(check, message) {
+  for (let i = 0; i < 180; i += 1) {
+    if (check()) return;
+    await delay(50);
+  }
+  throw new Error(message);
+}
 async function setViewport(cdp, width, height = 900) {
   await cdp.call("Emulation.setDeviceMetricsOverride", {
     width,
@@ -296,7 +303,19 @@ try {
   await setViewport(cdp, 1280);
 
   const errors = [];
+  const requests = { content: 0, preview: 0, approve: 0 };
+  let currentBatchID = 0;
   cdp.on("Runtime.exceptionThrown", () => errors.push("page_exception"));
+  cdp.on("Network.requestWillBeSent", (params) => {
+    try {
+      const request = params.request || {};
+      const pathname = new URL(String(request.url || "")).pathname;
+      const method = String(request.method || "GET").toUpperCase();
+      if (currentBatchID > 0 && method === "GET" && pathname === `/api/admin/operation-batches/${currentBatchID}`) requests.content += 1;
+      if (currentBatchID > 0 && method === "POST" && pathname === `/api/admin/operation-batches/${currentBatchID}/preview-approval`) requests.preview += 1;
+      if (currentBatchID > 0 && method === "POST" && pathname === `/api/admin/operation-batches/${currentBatchID}/approve`) requests.approve += 1;
+    } catch {}
+  });
   await cdp.call("Page.navigate", {
     url: `${baseURL}/login?next=%2Fadmin%2Foperation-cycles`,
   });
@@ -347,6 +366,12 @@ try {
     `!document.querySelector('dialog[open]')&&document.querySelector('.xeb-detail-main')?.textContent.includes('当前批次 #2')&&document.querySelector('.xeb-detail-main')?.textContent.includes('第一条待审核话术')`,
     "controlled Excel upload did not open the selected batch",
   );
+  currentBatchID = await evaluate(
+    cdp,
+    `(()=>{const match=document.querySelector('.xeb-detail-main')?.textContent.match(/当前批次 #(\\d+)/);return match?Number(match[1]):0})()`,
+  );
+  if (!Number.isSafeInteger(currentBatchID) || currentBatchID < 1)
+    throw new Error("current batch id was not a positive integer");
   if (
     !(await evaluate(
       cdp,
@@ -360,7 +385,7 @@ try {
   );
   await waitFor(
     cdp,
-    `document.querySelector('[role=status]')?.textContent.includes('统一封面已更新')`,
+    `document.querySelector('[data-excel-feedback][role=status]')?.textContent.includes('统一封面已更新')`,
     "cover upload failed",
   );
   await evaluate(
@@ -378,17 +403,49 @@ try {
   );
   await waitFor(
     cdp,
-    `!document.querySelector('dialog[open]')&&document.querySelector('.xeb-detail-main')?.textContent.includes('人工修改后的话术')`,
-    "edited wording did not persist",
+    `(()=>{const exclude=[...document.querySelectorAll('.xeb-detail-main button')].filter(b=>b.textContent==='排除')[1];return !document.querySelector('dialog[open]')&&document.querySelector('.xeb-detail-main')?.textContent.includes('人工修改后的话术')&&exclude?.disabled===false})()`,
+    "edited wording did not persist as an interactive row",
   );
+  const contentReadsBeforeExclude = requests.content;
+  const previewsBeforeExclude = requests.preview;
+  const approvalsBeforeExclude = requests.approve;
+  if (
+    !(await evaluate(
+      cdp,
+      `fetch('/__fixture__/excel-arm-content-read?batch_id=${currentBatchID}',{method:'POST'}).then(response=>response.status===204)`,
+    ))
+  )
+    throw new Error("content-read fixture gate did not arm");
   await evaluate(
     cdp,
     `[...document.querySelectorAll('.xeb-detail-main button')].filter(b=>b.textContent==='排除')[1].click();true`,
   );
   await waitFor(
     cdp,
-    `document.querySelector('.xeb-detail-main')?.textContent.includes('已排除1')`,
-    "excluded row stayed eligible",
+    `(()=>{const approve=[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='审核通过并创建企微群发任务');return document.querySelector('.xeb-detail-main')?.textContent.includes('已排除1')&&approve?.disabled===true})()`,
+    "approval did not remain disabled during the controlled content readback",
+  );
+  await waitForNetwork(
+    () => requests.content === contentReadsBeforeExclude + 1,
+    "excluded row did not begin the controlled content readback",
+  );
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='审核通过并创建企微群发任务').click();true`,
+  );
+  if (requests.preview !== previewsBeforeExclude || requests.approve !== approvalsBeforeExclude)
+    throw new Error(`disabled approval issued a mutation preview=${requests.preview - previewsBeforeExclude} approve=${requests.approve - approvalsBeforeExclude}`);
+  if (
+    !(await evaluate(
+      cdp,
+      `fetch('/__fixture__/excel-release-content-read',{method:'POST'}).then(response=>response.status===204)`,
+    ))
+  )
+    throw new Error("content-read fixture gate did not release");
+  await waitFor(
+    cdp,
+    `(()=>{const approve=[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='审核通过并创建企微群发任务');return approve?.disabled===false&&document.querySelector('.xeb-detail-main')?.textContent.includes('人工修改后的话术')})()`,
+    "approval did not become interactive after content readback",
   );
   await evaluate(
     cdp,
@@ -396,9 +453,11 @@ try {
   );
   await waitFor(
     cdp,
-    `document.querySelector('[role=status]')?.textContent.includes('企微任务意图已创建')&&!([...document.querySelectorAll('.xeb-detail-main button')].some(b=>b.textContent==='审核通过并创建企微群发任务'))`,
+    `document.querySelector('[data-excel-feedback][role=status]')?.textContent.includes('企微任务意图已创建')&&!([...document.querySelectorAll('.xeb-detail-main button')].some(b=>b.textContent==='审核通过并创建企微群发任务'))`,
     "single approval did not queue one target",
   );
+  if (requests.preview !== previewsBeforeExclude + 1 || requests.approve !== approvalsBeforeExclude + 1)
+    throw new Error(`interactive approval request counts preview=${requests.preview - previewsBeforeExclude} approve=${requests.approve - approvalsBeforeExclude}`);
   await evaluate(
     cdp,
     `document.querySelector('.xeb-detail-nav button[data-tab="effects"]').click();true`,

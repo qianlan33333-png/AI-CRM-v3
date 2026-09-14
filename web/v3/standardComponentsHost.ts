@@ -153,6 +153,8 @@ function load(component: { capability: StandardComponentCapability; source: stri
     else if (script.dataset.aicrmStandardComponentState === 'loaded') queueMicrotask(succeed);
   });
   componentLoads.set(component.capability, request);
+  // Register the source-level single-flight before a loader can dispatch an
+  // immediate load/error event.
   startRequest?.();
   return request;
 }
@@ -183,6 +185,6 @@ installTagPickerAdapter();
 const autoStart = document.querySelector('[data-customer-directory-root]')
   ? window.AICRMStandardComponents.readyFor(['tags'])
   : window.AICRMStandardComponents.ready();
-// Customer forms surface an explicit retry at their own scope.  Other pages
-// retain their existing preload behavior without an unhandled rejection.
+// The automatic preload has no page-level error surface. Explicit callers keep
+// the original rejected promise so their local UI can explain and retry it.
 void autoStart.catch(() => undefined);

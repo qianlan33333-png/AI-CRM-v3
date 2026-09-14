@@ -38,16 +38,11 @@ func TestPostgreSQLCustomerTagCommandChromiumJourney(t *testing.T) {
 	}
 	_, source, _, ok := goruntime.Caller(0)
 	if !ok {
-		t.Fatal("locate customer tag Chromium script")
+		t.Fatal("locate customer tag Chromium repository")
 	}
 	repository := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	// The actual customer Host now waits for the manifest-built V3 standard
-	// component before it reads the tag directory. Compose must therefore use
-	// the repository root, just as the dedicated picker journey does; a raw
-	// cmd/aicrm working directory leaves Runtime assets empty and makes the
-	// real page fail closed.
 	t.Chdir(repository)
-	prepareTagPickerChromiumArtifacts(t, repository)
+	prepareProductExternalPushChromiumArtifacts(t, repository)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
