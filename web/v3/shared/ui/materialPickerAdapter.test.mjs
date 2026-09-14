@@ -16,6 +16,7 @@ const mod = await import(`data:text/javascript;base64,${Buffer.from(bundle.outpu
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const calls = [];
 const donorCalls = [];
+let delayedMaterial403;
 window.AICRMMaterialPicker = { open: (options) => donorCalls.push(options) };
 mod.installMaterialPickerAdapter({
   source: 'radar-content', scope: 'radar-editor',
@@ -24,6 +25,8 @@ mod.installMaterialPickerAdapter({
     calls.push({ type, query, cursor, aborted: signal.aborted });
     if (query === '故障') throw new Error('目录暂不可用');
     if (query === '权限') { const error = new Error('forbidden'); error.status = 403; throw error; }
+    if (query === '旧权限') return new Promise((_resolve, reject) => { delayedMaterial403 = reject; });
+    if (query === '新结果') return { items: [{ type, library_id: 22, title: '新结果素材', selectable: true }] };
     if (query === '异类') return { items: [{ type: 'attachment', library_id: 8, title: '错误类型' }] };
     if (cursor === 'next') return { items: [{ type, library_id: 3, title: '第三项', selectable: true }] };
     return { items: [
@@ -120,6 +123,7 @@ window.AICRMMaterialPicker.open({ type: 'image', limit: 1, onCancel: () => { can
 await flush();
 const second = document.querySelector('[data-v3-selection-session="material"]');
 second.querySelector('[data-v3-material-key$="2"]').click();
+assert.equal(second.querySelector('[data-v3-material-key$="2"]').getAttribute('aria-pressed'), 'true', 'selected material exposes its toggle state');
 second.querySelector('[data-v3-picker-cancel]').click();
 assert.equal(cancelled, 1, 'cancel never calls a material commit callback');
 assert.equal(document.querySelector('[data-v3-selection-session="material"]'), null);
@@ -151,6 +155,27 @@ assert.match(access.textContent, /可选素材/, '403 preserves committed select
 assert.equal(access.querySelector('[data-v3-picker-confirm]').disabled, true, 'lost directory access cannot commit old or new material selections');
 access.querySelector('[data-v3-picker-cancel]').click();
 assert.equal(accessCommit, 0);
+
+window.AICRMMaterialPicker.open({ type: 'image', selectedIds: [22], onCommit: () => {} });
+await flush();
+const delayedMaterial = document.querySelector('[data-v3-selection-session="material"]');
+const delayedMaterialSearch = delayedMaterial.querySelector('[data-v3-picker-search-input]');
+delayedMaterialSearch.value = '旧权限'; delayedMaterialSearch.dispatchEvent(new Event('input', { bubbles: true })); delayedMaterialSearch.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+delayedMaterialSearch.value = '新结果'; delayedMaterialSearch.dispatchEvent(new Event('input', { bubbles: true })); delayedMaterialSearch.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+await flush();
+delayedMaterial403(Object.assign(new Error('forbidden'), { status: 403 }));
+await flush(); await flush();
+assert.equal(delayedMaterial.querySelector('[data-v3-picker-confirm]').disabled, false, 'a late old 403 must not lock the newer material result');
+assert.doesNotMatch(delayedMaterial.textContent, /权限已失效/, 'late old 403 has no visible effect after newer success');
+delayedMaterialSearch.value = '旧权限'; delayedMaterialSearch.dispatchEvent(new Event('input', { bubbles: true })); delayedMaterialSearch.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+delayedMaterial.querySelector('[data-v3-picker-cancel]').click();
+window.AICRMMaterialPicker.open({ type: 'image', onCommit: () => {} });
+await flush();
+const reopenedMaterial = document.querySelector('[data-v3-selection-session="material"]');
+delayedMaterial403(Object.assign(new Error('forbidden'), { status: 403 }));
+await flush(); await flush();
+assert.equal(reopenedMaterial.querySelector('[data-v3-picker-confirm]').disabled, false, 'a delayed closed material loader must not lock a reopened session');
+reopenedMaterial.querySelector('[data-v3-picker-cancel]').click();
 
 window.AICRMMaterialPicker.open({ type: 'group_invite', selectedIds: [9] });
 assert.equal(donorCalls.length, 1, 'group invitation command remains on its caller-owned frozen route');

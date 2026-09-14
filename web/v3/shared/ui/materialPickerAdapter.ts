@@ -1,4 +1,5 @@
 import { SelectionSession, selectionKey, type SelectionItem, type SelectionLoader } from './selectionSession';
+import { focusedSelectionKey, installSelectionDialog, restoreSelectionFocus, type SelectionDialogController } from './selectionDialog';
 
 type MaterialType = 'image' | 'miniprogram' | 'attachment';
 type Json = Record<string, unknown>;
@@ -110,8 +111,6 @@ function placeholder(type: MaterialType, id: number): Material {
 }
 
 function allowed(material: Material, mimeTypes: Set<string>): boolean { return !mimeTypes.size || mimeTypes.has(material.mime_type); }
-function focusable(root: HTMLElement): HTMLElement[] { return Array.from(root.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),[href]')).filter((node) => !node.hidden && node.tabIndex >= 0); }
-
 /**
  * Installs a scoped V3 material presentation over the frozen public picker
  * shape. The caller supplies all authorised reads; this adapter owns only
@@ -153,8 +152,16 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     return id ? [itemFor(selectedRecords.get(id) || placeholder(type, id), config.source)] : [];
   });
   const numericLimit = Number(options.limit);
-  const session = new SelectionSession(initial, { mode: numericLimit === 1 ? 'single' : 'multiple', limit: Number.isSafeInteger(numericLimit) && numericLimit > 0 ? numericLimit : undefined, readonlyReason: options.readonly ? '当前内容为只读，不能修改素材。' : undefined });
-  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  let session!: SelectionSession<Material>;
+  session = new SelectionSession(initial, {
+    mode: numericLimit === 1 ? 'single' : 'multiple',
+    limit: Number.isSafeInteger(numericLimit) && numericLimit > 0 ? numericLimit : undefined,
+    readonlyReason: options.readonly ? '当前内容为只读，不能修改素材。' : undefined,
+    onCurrentLoadFailure: (error) => {
+      const reason = config.accessLossMessage?.(error);
+      if (reason) session.lockReadonly(reason);
+    },
+  });
   const mask = document.createElement('div');
   mask.className = 'aicrm-material-picker-mask is-open';
   mask.dataset.v3SelectionSession = 'material';
@@ -177,18 +184,11 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
   const more = mask.querySelector<HTMLButtonElement>('[data-v3-picker-more]')!;
   const confirm = mask.querySelector<HTMLButtonElement>('[data-v3-picker-confirm]')!;
   let closed = false;
-  let composing = false;
-  let compositionJustEnded = false;
   let restoreRemovedFocus: string | undefined;
+  let dialogControl!: SelectionDialogController;
 
   const loader: SelectionLoader<Material> = async ({ query, cursor, signal }) => {
-    let page: MaterialPickerLoadPage;
-    try { page = await config.loadPage({ source: config.source, scope: config.scope, type, query, cursor, signal }); }
-    catch (error) {
-      const reason = config.accessLossMessage?.(error);
-      if (reason) session.setReadonly(reason);
-      throw error;
-    }
+    const page = await config.loadPage({ source: config.source, scope: config.scope, type, query, cursor, signal });
     if (signal.aborted) throw new DOMException('素材目录读取已替换', 'AbortError');
     return { items: (page.items || []).flatMap((raw) => {
       if (raw.type && raw.type !== type) throw new Error('素材目录返回了不匹配的素材类型，请刷新后重试。');
@@ -203,9 +203,9 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     unsubscribe();
     session.cancel();
     session.dispose();
+    dialogControl.dispose();
     mask.remove();
     if (cancelled) options.onCancel?.();
-    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
   };
   const render = () => {
     if (closed) return;
@@ -220,20 +220,19 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     const rows = snapshot.items;
     empty.hidden = snapshot.loading || rows.length > 0;
     empty.textContent = snapshot.loading ? `正在加载${labels[type]}…` : snapshot.error ? '已保留上次可用结果；可重试或修改关键词。' : '没有可选素材';
-    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusKey = focused?.closest<HTMLElement>('[data-v3-material-key]')?.dataset.v3MaterialKey;
+    const focusKey = focusedSelectionKey(grid, '[data-v3-material-key]', 'v3MaterialKey');
     grid.innerHTML = rows.map((item) => {
       const key = selectionKey(item.kind, item.source, item.value.library_id);
       const selected = session.isDraftSelected(key);
       const unavailable = Boolean(item.disabledReason);
       const disabled = Boolean(snapshot.readonlyReason || (!selected && unavailable));
       const thumbnail = item.value.thumbnail_url ? `<img src="${escape(item.value.thumbnail_url)}" alt="">` : `<span>${labels[type]}</span>`;
-      return `<button class="aicrm-material-picker__item${selected ? ' is-selected' : ''}${unavailable ? ' is-disabled' : ''}" type="button" data-v3-material-key="${escape(key)}"${disabled ? ' disabled' : ''}><span class="aicrm-material-picker__thumb">${thumbnail}</span><span class="aicrm-material-picker__title">${escape(item.value.title)}</span><span class="aicrm-material-picker__subtitle">${escape(item.value.subtitle || '')}</span>${item.disabledReason ? `<span class="aicrm-material-picker__subtitle">${escape(item.disabledReason)}</span>` : ''}</button>`;
+      return `<button class="aicrm-material-picker__item${selected ? ' is-selected' : ''}${unavailable ? ' is-disabled' : ''}" type="button" data-v3-material-key="${escape(key)}" aria-pressed="${selected ? 'true' : 'false'}"${disabled ? ' disabled' : ''}><span class="aicrm-material-picker__thumb">${thumbnail}</span><span class="aicrm-material-picker__title">${escape(item.value.title)}</span><span class="aicrm-material-picker__subtitle">${escape(item.value.subtitle || '')}</span>${item.disabledReason ? `<span class="aicrm-material-picker__subtitle">${escape(item.disabledReason)}</span>` : ''}</button>`;
     }).join('');
     more.hidden = !snapshot.nextCursor;
     more.disabled = snapshot.loading;
     confirm.disabled = Boolean(snapshot.readonlyReason || snapshot.loading || snapshot.overLimit);
-    if (focusKey) Array.from(grid.querySelectorAll<HTMLElement>('[data-v3-material-key]')).find((row) => row.dataset.v3MaterialKey === focusKey)?.focus({ preventScroll: true });
+    restoreSelectionFocus(grid, '[data-v3-material-key]', 'v3MaterialKey', focusKey);
     if (restoreRemovedFocus !== undefined) {
       const next = Array.from(selectedRoot.querySelectorAll<HTMLElement>('[data-v3-material-remove]')).find((button) => button.dataset.v3MaterialRemove === restoreRemovedFocus);
       restoreRemovedFocus = undefined;
@@ -276,20 +275,7 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     if (row) session.toggle(String(row.dataset.v3MaterialKey || ''));
   });
   search.addEventListener('input', () => session.setDraftQuery(search.value, { silent: true }));
-  search.addEventListener('compositionstart', () => { composing = true; });
-  search.addEventListener('compositionupdate', () => { composing = true; });
-  search.addEventListener('compositionend', () => { composing = false; compositionJustEnded = true; window.setTimeout(() => { compositionJustEnded = false; }, 0); });
-  dialog.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { event.preventDefault(); close(true); return; }
-    if (event.key === 'Tab') {
-      const items = focusable(dialog); const first = items[0]; const last = items.length ? items[items.length - 1] : undefined;
-      if (first && last && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
-      return;
-    }
-    if (event.target === search && event.key === 'Enter') {
-      if (event.isComposing || event.keyCode === 229 || composing || compositionJustEnded) { event.stopPropagation(); return; }
-      event.preventDefault(); submit();
-    }
+  dialogControl = installSelectionDialog({ dialog, search, close: () => close(true), submit, onKeyDown: (event) => {
     const row = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-v3-material-key]') : null;
     if (!row) return;
     const key = row.dataset.v3MaterialKey || '';
@@ -306,7 +292,6 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
       const next = rows[(index + delta + rows.length) % rows.length];
       if (next) next.focus({ preventScroll: true });
     }
-  });
-  window.setTimeout(() => { if (!closed) search.focus({ preventScroll: true }); }, 0);
+  } });
   void session.submitSearch(loader);
 }

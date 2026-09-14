@@ -1,0 +1,34 @@
+/* V3-owned sizing only. Frozen picker paint and business controls remain intact. */
+[data-v3-selection-session="material"] .aicrm-material-picker {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+}
+
+[data-v3-selection-session="material"] .aicrm-material-picker__body {
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-v3-selection-session="material"] .aicrm-material-picker__body:has([data-v3-picker-selected]) {
+  max-height: min(180px, 24vh);
+}
+
+[data-v3-selection-session="material"] .aicrm-material-picker__tools,
+[data-v3-selection-session="material"] .aicrm-material-picker__header {
+  flex-shrink: 0;
+}
+
+@media (max-width: 420px) {
+  [data-v3-selection-session="material"] .aicrm-material-picker {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+  }
+
+  [data-v3-selection-session="material"] .aicrm-material-picker__body:has([data-v3-picker-selected]) {
+    max-height: min(132px, 20vh);
+  }
+}

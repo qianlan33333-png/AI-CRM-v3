@@ -1887,7 +1887,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	})
 	radarUI := radarModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page string, assets radarmodule.UIAssets) error {
 		titles := map[string]string{"radar": "内容雷达", "radarDetail": "雷达详情", "radarForm": "雷达配置"}
-		return renderer.RenderRadar(writer, webshell.AdminPageForRequest(request, titles[page], "UnionID 经 OneID 解析后形成可审计访问归因。", "api.admin_radar_links"), page, webshell.RadarAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS})
+		return renderer.RenderRadar(writer, webshell.AdminPageForRequest(request, titles[page], "UnionID 经 OneID 解析后形成可审计访问归因。", "api.admin_radar_links"), page, webshell.RadarAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS, SelectionDialogCSS: assets.SelectionDialogCSS})
 	})
 	groupOpsUI := groupOpsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets groupops.GroupOpsAssets) error {
 		endpoint := "api.admin_group_ops_ui"
