@@ -155,6 +155,7 @@ type h5OAuthStub struct {
 	completeError error
 	enabled       bool
 	starts        int
+	completes     int
 	returnPath    string
 	issued        paymentsession.Issued
 }
@@ -168,7 +169,8 @@ func (stub *h5OAuthStub) Start(_ context.Context, returnPath string) (string, er
 	}
 	return "https://open.weixin.qq.com/oauth", nil
 }
-func (stub *h5OAuthStub) Complete(context.Context, string, string) (paymentsession.Issued, string, error) {
+func (stub *h5OAuthStub) Complete(_ context.Context, state, code string) (paymentsession.Issued, string, error) {
+	stub.completes++
 	return stub.issued, "/pay/course-7", stub.completeError
 }
 
@@ -576,6 +578,54 @@ func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "https://open.weixin.qq.com/oauth" || enabled.returnPath != "/s/term-31/pay?promotion_context="+promotion {
 		t.Fatalf("promotion oauth=%d location=%q return=%q", response.Code, response.Header().Get("Location"), enabled.returnPath)
 	}
+}
+
+func TestH5OAuthRejectsDuplicateAndUnknownQueryBeforeApplication(t *testing.T) {
+	t.Run("start", func(t *testing.T) {
+		for _, rawQuery := range []string{
+			"return_url=%2Fpay%2Fcourse-7&return_url=%2Fpay%2Fcourse-7",
+			"return_url=%2Fpay%2Fcourse-7&return_url=%2Fdistribution%3Fproduct_id%3D7%26product_type%3Dstandard_product",
+			"return_url=%2Fpay%2Fcourse-7&unexpected=1",
+		} {
+			t.Run(rawQuery, func(t *testing.T) {
+				handler, _ := NewHandler(&appStub{}, nil, securityStub{}, true)
+				oauth := &h5OAuthStub{enabled: true}
+				if err := handler.SetH5OAuth(oauth); err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?"+rawQuery, nil)
+				request.Header.Set("User-Agent", "MicroMessenger")
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				if response.Code != http.StatusBadRequest || oauth.starts != 0 || oauth.completes != 0 {
+					t.Fatalf("code=%d starts=%d completes=%d", response.Code, oauth.starts, oauth.completes)
+				}
+			})
+		}
+	})
+
+	t.Run("callback", func(t *testing.T) {
+		for _, rawQuery := range []string{
+			"state=opaque&state=opaque&code=opaque",
+			"state=opaque&state=other&code=opaque",
+			"state=opaque&code=opaque&code=opaque",
+			"state=opaque&code=other&code=opaque",
+			"state=opaque&code=opaque&unexpected=1",
+		} {
+			t.Run(rawQuery, func(t *testing.T) {
+				handler, _ := NewHandler(&appStub{}, nil, securityStub{}, true)
+				oauth := &h5OAuthStub{enabled: true}
+				if err := handler.SetH5OAuth(oauth); err != nil {
+					t.Fatal(err)
+				}
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/callback?"+rawQuery, nil))
+				if response.Code != http.StatusBadRequest || oauth.starts != 0 || oauth.completes != 0 {
+					t.Fatalf("code=%d starts=%d completes=%d", response.Code, oauth.starts, oauth.completes)
+				}
+			})
+		}
+	})
 }
 
 func TestTrustedCookieSecurityAttributes(t *testing.T) {
