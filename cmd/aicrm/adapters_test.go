@@ -15,6 +15,8 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
+	paymenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/http"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
@@ -47,6 +49,35 @@ type directUnitOfWork struct{}
 
 func (directUnitOfWork) Within(ctx context.Context, callback func(context.Context) error) error {
 	return callback(ctx)
+}
+
+type paymentRecoveryRouteApplication struct {
+	paymenthttp.Application
+	commands []paymentport.ProfitSharingReceiverRecoveryCommand
+}
+
+func (stub *paymentRecoveryRouteApplication) RecoverProfitSharingReceiver(_ context.Context, command paymentport.ProfitSharingReceiverRecoveryCommand) (paymentport.ReceiverReadiness, error) {
+	stub.commands = append(stub.commands, command)
+	return paymentport.ReceiverReadiness{Reference: command.ReceiverReference, State: "accepted", UpdatedAt: time.Date(2026, time.September, 14, 0, 0, 0, 0, time.UTC)}, nil
+}
+
+type paymentRecoveryRouteSecurity struct {
+	principal   accessdomain.Principal
+	err         error
+	requireCSRF bool
+	csrfCalls   int
+}
+
+func (stub *paymentRecoveryRouteSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return stub.principal, stub.err
+}
+
+func (stub *paymentRecoveryRouteSecurity) AuthorizeCSRF(_ context.Context, request *http.Request) (accessdomain.Principal, error) {
+	stub.csrfCalls++
+	if stub.requireCSRF && request.Header.Get("X-CSRF-Token") == "" {
+		return accessdomain.Principal{}, accessdomain.ErrAuthentication
+	}
+	return stub.principal, stub.err
 }
 
 func TestMountOpenPlatformUIUsesAuthenticatedV3Host(t *testing.T) {
@@ -562,12 +593,91 @@ func TestApplicationRouterMountsWeChatShopCallbackAndReconciliation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/public/wechat-shop/callbacks/refund", "/api/admin/wechat-shop/refunds/9/reconcile"} {
+	for _, path := range []string{
+		"/api/public/wechat-shop/callbacks/refund",
+		"/api/admin/wechat-shop/refunds/9/reconcile",
+		"/api/admin/wechat-pay/refunds/9/reconcile",
+		"/api/admin/wechat-pay/profit-sharing/receivers/psrecv_9/recover",
+	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
 		if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "identity" {
 			t.Fatalf("%s status=%d owner=%q", path, response.Code, response.Header().Get("X-Owner"))
 		}
+	}
+}
+
+func TestApplicationRouterAndAdminAPIsMountRecoveryAndWeChatPayRefundPrefixesExactly(t *testing.T) {
+	marker := func(name string) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("X-Owner", name)
+			writer.WriteHeader(http.StatusNoContent)
+		})
+	}
+	adminAPIs := http.NewServeMux()
+	mountPaymentAdminAPIs(adminAPIs, marker("orders"), marker("payment"))
+	handler, err := routeApplication(marker("health"), marker("access"), adminAPIs, marker("wecom"), marker("shell"), &fakeAccessAuthentication{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/api/admin/wechat-pay/profit-sharing/receivers/psrecv_9/recover",
+		"/api/admin/wechat-pay/refunds/9/reconcile",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "payment" {
+			t.Fatalf("path=%s status=%d owner=%q", path, response.Code, response.Header().Get("X-Owner"))
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/profit-sharing/recover", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unexpected broad payment route status=%d", response.Code)
+	}
+}
+
+func TestApplicationRouterAndAdminAPIsEnforceRecoveryAuthenticationBeforeAcceptance(t *testing.T) {
+	post := func(handler http.Handler) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/profit-sharing/receivers/psrecv_9/recover", strings.NewReader(`{"evidence_reference":"route-regression"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "receiver-route-regression-0001")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
+	for _, test := range []struct {
+		name       string
+		security   paymentRecoveryRouteSecurity
+		wantStatus int
+		wantCalls  int
+	}{
+		{name: "anonymous", security: paymentRecoveryRouteSecurity{err: accessdomain.ErrAuthentication}, wantStatus: http.StatusForbidden},
+		{name: "ordinary admin", security: paymentRecoveryRouteSecurity{principal: accessdomain.Principal{InternalID: 4, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}, wantStatus: http.StatusForbidden},
+		{name: "csrf rejected", security: paymentRecoveryRouteSecurity{principal: accessdomain.Principal{InternalID: 5, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, requireCSRF: true}, wantStatus: http.StatusForbidden},
+		{name: "super admin", security: paymentRecoveryRouteSecurity{principal: accessdomain.Principal{InternalID: 6, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}}, wantStatus: http.StatusAccepted, wantCalls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			application := &paymentRecoveryRouteApplication{}
+			paymentHandler, err := paymenthttp.NewHandler(application, nil, &test.security, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adminAPIs := http.NewServeMux()
+			mountPaymentAdminAPIs(adminAPIs, marker, paymentHandler)
+			handler, err := routeApplication(marker, marker, adminAPIs, marker, marker, &fakeAccessAuthentication{}, "https://crm.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := post(handler)
+			if response.Code != test.wantStatus || len(application.commands) != test.wantCalls || test.security.csrfCalls != 1 {
+				t.Fatalf("status=%d calls=%d csrf_calls=%d body=%s", response.Code, len(application.commands), test.security.csrfCalls, response.Body.String())
+			}
+			if test.wantCalls == 1 && application.commands[0].ActorAdminUserID != 6 {
+				t.Fatalf("accepted command=%+v", application.commands[0])
+			}
+		})
 	}
 }
 
