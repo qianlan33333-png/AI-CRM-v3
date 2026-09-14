@@ -115,6 +115,17 @@ type PromotionPage struct {
 	NextCursor string
 }
 
+// ApplicationTarget is the server-confirmed public product fact retained by a
+// distributor application link. It deliberately has no customer, commission,
+// receiver, agreement, or promotion-credential fields.
+type ApplicationTarget struct {
+	ProductID     int64
+	ProductType   domain.ProductType
+	PolicyEnabled bool
+	ProductName   string
+	PurchaseURL   string
+}
+
 type IssuePromotionCommand struct {
 	Actor       TrustedSessionActor
 	ProductID   int64
@@ -156,6 +167,7 @@ type PublicApplication interface {
 	Register(context.Context, RegisterCommand) (DistributorProfile, error)
 	PrepareReceiver(context.Context, TrustedSessionActor) (ReceiverPreparationResult, error)
 	ListPromotionProducts(context.Context, TrustedSessionActor, string, int32) (PromotionPage, error)
+	ApplicationTarget(context.Context, int64, domain.ProductType) (ApplicationTarget, error)
 	IssuePromotionLink(context.Context, IssuePromotionCommand) (PromotionLink, error)
 	Earnings(context.Context, TrustedSessionActor) (Earnings, error)
 	ListCommissions(context.Context, TrustedSessionActor, domain.CommissionStatus, string, int32) (CommissionPage, error)

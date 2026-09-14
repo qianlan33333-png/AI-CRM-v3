@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"strconv"
 
@@ -85,31 +86,41 @@ func servicePeriodCardCover(item productport.ServicePeriodProduct) string {
 // must not be shared.
 func (reader *TargetReader) ReadSidebarShareProduct(ctx context.Context, kind productport.ProductOptionType, id productport.ID) (productport.SidebarShareProduct, error) {
 	if reader == nil || id < 1 {
-		return productport.SidebarShareProduct{}, ErrNotFound
+		return productport.SidebarShareProduct{}, productport.ErrSaleableProductNotFound
 	}
 	switch kind {
 	case productport.ProductOptionStandard:
 		item, err := reader.ordinary.Get(ctx, id)
 		if err != nil {
-			return productport.SidebarShareProduct{}, err
+			return productport.SidebarShareProduct{}, saleableProductReadError(err)
 		}
 		projected, projectionErr := projectLocalProduct(item)
 		if projectionErr != nil || !projected.Enabled || projected.Lifecycle != productport.LocalProductEnabled {
-			return productport.SidebarShareProduct{}, ErrNotFound
+			if projectionErr != nil {
+				return productport.SidebarShareProduct{}, productport.ErrSaleableProductUnavailable
+			}
+			return productport.SidebarShareProduct{}, productport.ErrSaleableProductNotFound
 		}
 		return productport.SidebarShareProduct{ID: item.ID, Code: item.ProductCode, ProductType: kind, Name: item.Name, CoverURL: publicProductCardCover(item)}, nil
 	case productport.ProductOptionServicePeriod:
 		item, err := reader.period.GetServicePeriodProduct(ctx, id)
 		if err != nil {
-			return productport.SidebarShareProduct{}, err
+			return productport.SidebarShareProduct{}, saleableProductReadError(err)
 		}
 		if !item.Enabled || item.Archived || item.Lifecycle != productport.ServicePeriodEnabled {
-			return productport.SidebarShareProduct{}, ErrNotFound
+			return productport.SidebarShareProduct{}, productport.ErrSaleableProductNotFound
 		}
 		return productport.SidebarShareProduct{ID: item.ServiceProductID, Code: item.ProductCode, ProductType: kind, Name: item.Name, CoverURL: servicePeriodCardCover(item)}, nil
 	default:
-		return productport.SidebarShareProduct{}, ErrInvalidProduct
+		return productport.SidebarShareProduct{}, productport.ErrSaleableProductNotFound
 	}
+}
+
+func saleableProductReadError(err error) error {
+	if errors.Is(err, ErrNotFound) {
+		return productport.ErrSaleableProductNotFound
+	}
+	return productport.ErrSaleableProductUnavailable
 }
 
 func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind productport.ProductOptionType, id productport.ID) (productport.CheckoutProduct, error) {

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ var ErrIdentityConflict = errors.New("payment H5 OAuth identities require review
 // is the fixed first-level distributor center, needed only to bridge a trusted
 // short Payment session into Distribution's separate browser session.
 var returnPathPattern = regexp.MustCompile(`^/(?:p/[^/?#]+|pay/[^/?#]+|s/[^/?#]+(?:/pay)?|c/[a-z][a-z0-9-]{5,119})$`)
+var distributionApplicationReturnPathPattern = regexp.MustCompile(`^/distribution\?product_id=([1-9][0-9]*)&product_type=(standard_product|service_period)$`)
 
 type Provider interface {
 	Enabled() bool
@@ -145,6 +147,13 @@ func safe(value string, maximum int) bool {
 func validReturnPath(value string) bool {
 	if value == "/distribution" {
 		return true
+	}
+	// A distributor application can carry only the immutable public product
+	// reference. Keep the raw canonical form closed: it rejects duplicate or
+	// unknown keys, alternative encodings, fragments and every other next URL.
+	if matches := distributionApplicationReturnPathPattern.FindStringSubmatch(value); matches != nil {
+		productID, err := strconv.ParseInt(matches[1], 10, 64)
+		return err == nil && productID > 0
 	}
 	if !returnPathPattern.MatchString(value) {
 		return false

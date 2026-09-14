@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
@@ -39,6 +40,23 @@ func (adminHTTPReader) ListAdminExceptions(context.Context, string, int32) (dist
 }
 
 type adminWarningReader struct{ adminHTTPReader }
+
+type adminHTTPDetailReader struct{ adminHTTPReader }
+
+func (adminHTTPDetailReader) ReadAdminDistributorDetail(context.Context, int64) (distributionport.AdminDistributorDetail, error) {
+	return distributionport.AdminDistributorDetail{Distributor: distributionport.AdminDistributor{ID: 9, PublicNo: "D-9", Enabled: true, ReceiverReady: true}, Earnings: distributionport.Earnings{GrossPaidSalesMinor: 19900, UnsettledPayableMinor: 1200, Currency: "CNY"}}, nil
+}
+func (adminHTTPDetailReader) ListAdminOrdersByDistributor(context.Context, int64, string, int32) (distributionport.AdminPage[distributionport.AdminOrder], error) {
+	return distributionport.AdminPage[distributionport.AdminOrder]{Items: []distributionport.AdminOrder{{AttributionID: 11, OrderReference: "order-8", ProductName: "增长课", DistributorPublicNo: "D-9", QualificationState: "eligible", QualificationEvidenceReference: "order:8:item:1", PolicyVersion: 2, RateBasisPoints: 3000, WaitDays: 7, PaidMinor: 19900, Currency: "CNY"}}}, nil
+}
+func (adminHTTPDetailReader) ReadAdminOrderDetail(context.Context, int64) (distributionport.AdminOrderDetail, error) {
+	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
+	return distributionport.AdminOrderDetail{Order: distributionport.AdminOrder{AttributionID: 11, OrderReference: "order-8", ProductName: "增长课", DistributorPublicNo: "D-9", QualificationState: "eligible", QualificationEvidenceReference: "order:8:item:1", PolicyVersion: 2, RateBasisPoints: 3000, WaitDays: 7, PaidMinor: 19900, Currency: "CNY"}, Commission: &distributionport.AdminCommissionDetail{CommissionID: "22", OriginalItemPaidMinor: 19900, SuccessfulRefundMinor: 9900, InitialMinor: 5970, CurrentPayableMinor: 3000, PaidMinor: 0, Status: "held", PaidConfirmedAt: now, DueAt: now.AddDate(0, 0, 7), Currency: "CNY"}, Adjustments: []distributionport.AdminCommissionAdjustment{{ID: 31, Kind: "buyer_refund", DeltaMinor: -2970, ResultingPayableMinor: 3000, Reason: "buyer_refund", SourceReference: "refund:8", OccurredAt: now}}, Settlements: []distributionport.AdminSettlement{{ID: 41, Reference: "settlement-41", AmountMinor: 3000, Currency: "CNY", State: "outcome_unknown"}}}, nil
+}
+func (adminHTTPDetailReader) ReadAdminExceptionDetail(context.Context, int64) (distributionport.AdminException, error) {
+	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
+	return distributionport.AdminException{ExceptionID: 51, CommissionID: 22, OrderReference: "order-8", Kind: "buyer_refund_after_paid", Status: "recovery_recorded", AmountMinor: 1200, Reason: "buyer_refund_after_paid", EvidenceReference: "receipt:51", ActorScope: "access:7", Audit: []distributionport.AdminExceptionAuditFact{{EventType: "distribution.recovery_recorded.v1", ActorScope: "access:7", AmountMinor: 1200, EvidenceReference: "receipt:51", OccurredAt: now}}}, nil
+}
 
 func (adminWarningReader) ListAdminExceptions(context.Context, string, int32) (distributionport.AdminPage[distributionport.AdminException], error) {
 	return distributionport.AdminPage[distributionport.AdminException]{Items: []distributionport.AdminException{{ExceptionID: 17, CommissionID: 9, Kind: "settlement_deadline_imminent", Status: "open", AmountMinor: 0, Reason: "split_deadline_within_24h", Version: 1, CanReconcile: false, CanRecordRecovery: false, CanRecordMerchantLiability: false}}}, nil
@@ -138,5 +156,30 @@ func TestAdminHandlerRejectsMalformedCursorWithNoStoreRead(t *testing.T) {
 		if response.Code != http.StatusBadRequest || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("cursor=%q status=%d cache=%q", cursor, response.Code, response.Header().Get("Cache-Control"))
 		}
+	}
+}
+
+func TestAdminHandlerDetailReadsRemainServerFilteredAndExposeFrozenFacts(t *testing.T) {
+	security := &adminHTTPSecurity{principal: accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	handler, err := NewAdminHandler(AdminConfig{Reader: adminHTTPDetailReader{}, Commands: &adminHTTPCommands{}, Security: security})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{
+		"/api/admin/distribution/distributors/9":                 `"unsettled_payable_minor":1200`,
+		"/api/admin/distribution/distributors/9/orders?limit=10": `"attribution_id":11`,
+		"/api/admin/distribution/orders/11":                      `"successful_refund_minor":9900`,
+		"/api/admin/distribution/exceptions/51":                  `"evidence_reference":"receipt:51"`,
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("detail %s status=%d cache=%q body=%s", path, response.Code, response.Header().Get("Cache-Control"), response.Body.String())
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/distribution/orders/11?cursor=1", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("detail must reject unowned cursor query, got %d", response.Code)
 	}
 }

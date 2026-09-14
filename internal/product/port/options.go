@@ -5,7 +5,11 @@ import (
 	"errors"
 )
 
-var ErrInvalidProductOptionQuery = errors.New("invalid product option query")
+var (
+	ErrInvalidProductOptionQuery  = errors.New("invalid product option query")
+	ErrSaleableProductNotFound    = errors.New("saleable product not found")
+	ErrSaleableProductUnavailable = errors.New("saleable product unavailable")
+)
 
 // ProductOptionType is the only product classification exposed to another
 // domain for selecting a Product target. It is deliberately narrower than

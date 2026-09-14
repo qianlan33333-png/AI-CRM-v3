@@ -32,6 +32,12 @@ type distributionHTTPPromotionStub struct{}
 func (distributionHTTPPromotionStub) ListPromotionProducts(context.Context, distributionport.TrustedSessionActor, string, int32) (distributionport.PromotionPage, error) {
 	return distributionport.PromotionPage{}, nil
 }
+func (distributionHTTPPromotionStub) ApplicationTarget(_ context.Context, id int64, kind distributiondomain.ProductType) (distributionport.ApplicationTarget, error) {
+	if id != 7 || kind != distributiondomain.ProductTypeStandard {
+		return distributionport.ApplicationTarget{}, distributionport.ErrNotFound
+	}
+	return distributionport.ApplicationTarget{ProductID: id, ProductType: kind, PolicyEnabled: true, ProductName: "申请商品", PurchaseURL: "/p/application-product"}, nil
+}
 func (distributionHTTPPromotionStub) IssuePromotionLink(context.Context, distributionport.IssuePromotionCommand) (distributionport.PromotionLink, error) {
 	return distributionport.PromotionLink{}, nil
 }
@@ -81,5 +87,31 @@ func TestCommissionsResponseMapsFrozenReadModelToPublicContract(t *testing.T) {
 	}
 	if w.Code != http.StatusOK || strings.Contains(body, `"Items"`) || strings.Contains(body, `"NextCursor"`) {
 		t.Fatalf("response=%d body=%s", w.Code, body)
+	}
+}
+
+func TestApplicationContextIsStrictPublicProductReadWithoutSession(t *testing.T) {
+	h, err := NewHandler(Config{Registration: distributionHTTPRegistrationStub{}, Promotion: distributionHTTPPromotionStub{}, Earnings: distributionHTTPEarningsStub{}, Sessions: distributionHTTPSessionStub{}, Bridge: distributionHTTPBridgeStub{}, AllowedOrigins: []string{"https://crm.example.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := httptest.NewRequest(http.MethodGet, "/api/v1/distribution/application-context?product_id=7&product_type=standard_product", nil)
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, valid)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"purchase_url":"/p/application-product"`) || strings.Contains(response.Body.String(), "customer") {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, path := range []string{
+		"/api/v1/distribution/application-context?product_id=07&product_type=standard_product",
+		"/api/v1/distribution/application-context?product_id=7&product_type=standard_product&next=/pay/x",
+		"/api/v1/distribution/application-context?product_id=7&product_id=8&product_type=standard_product",
+		"/api/v1/distribution/application-context?product_id=7&product_type=unknown",
+	} {
+		bad := httptest.NewRequest(http.MethodGet, path, nil)
+		out := httptest.NewRecorder()
+		h.ServeHTTP(out, bad)
+		if out.Code != http.StatusBadRequest {
+			t.Fatalf("path=%s code=%d body=%s", path, out.Code, out.Body.String())
+		}
 	}
 }

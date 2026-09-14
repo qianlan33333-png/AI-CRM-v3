@@ -49,7 +49,7 @@ func TestPostgreSQLDistributionProductPolicyChromiumJourney(t *testing.T) {
 		var rate, waitDays int
 		var version int64
 		err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT enabled,commission_rate_basis_points,wait_days,version FROM distribution_product_policies WHERE product_id=$1 AND product_type=$2`, expected.id, expected.kind).Scan(&enabled, &rate, &waitDays, &version)
-		if err != nil || enabled != expected.enabled || rate != expected.rate || waitDays != expected.waitDays || version != 1 {
+		if err != nil || enabled != expected.enabled || rate != expected.rate || waitDays != expected.waitDays || version != 3 {
 			t.Fatalf("persisted browser policy product=%d kind=%s enabled=%t rate=%d wait_days=%d version=%d err=%v", expected.id, expected.kind, enabled, rate, waitDays, version, err)
 		}
 	}

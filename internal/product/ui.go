@@ -20,8 +20,8 @@ import (
 type ProductPageRenderer func(http.ResponseWriter, *http.Request, string, string, ProductAssets) error
 
 type ProductAssets struct {
-	TokensCSS, LabsCSS, HostJS, StandardHostJS string
-	StandardCSS                                []string
+	TokensCSS, LabsCSS, ProductCSS, HostJS, StandardHostJS string
+	StandardCSS                                            []string
 }
 
 type productUI struct {
@@ -205,6 +205,10 @@ func (h *productUI) assets() (ProductAssets, error) {
 	if err != nil {
 		return ProductAssets{}, err
 	}
+	productCSS, err := get("productDistributionStyles")
+	if err != nil {
+		return ProductAssets{}, err
+	}
 	host, err := get("productHost")
 	if err != nil {
 		return ProductAssets{}, err
@@ -224,7 +228,7 @@ func (h *productUI) assets() (ProductAssets, error) {
 		}
 		standardCSS = append(standardCSS, "/product-assets/standard-components/"+name)
 	}
-	return ProductAssets{TokensCSS: tokens, LabsCSS: labs, HostJS: host, StandardHostJS: standardHost, StandardCSS: standardCSS}, nil
+	return ProductAssets{TokensCSS: tokens, LabsCSS: labs, ProductCSS: productCSS, HostJS: host, StandardHostJS: standardHost, StandardCSS: standardCSS}, nil
 }
 
 func (h *productUI) asset(w http.ResponseWriter, r *http.Request) {

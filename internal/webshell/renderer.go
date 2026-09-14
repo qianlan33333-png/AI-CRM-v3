@@ -112,6 +112,8 @@ type AdminShellView struct {
 	OwnerHandoff         bool
 	MessageArchive       bool
 	AIAssistantAssets    AIAssistantAssets
+	Distribution         bool
+	DistributionAssets   DistributionAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -137,8 +139,8 @@ type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 // ProductAssets are manifest-derived URLs for the frozen donor Product
 // bundle. They are passed by the Product UI adapter and contain no markup.
 type ProductAssets struct {
-	TokensCSS, LabsCSS, HostJS, StandardHostJS string
-	StandardCSS                                []string
+	TokensCSS, LabsCSS, ProductCSS, HostJS, StandardHostJS string
+	StandardCSS                                            []string
 }
 
 // OrderAssets are release-manifest URLs for the frozen transaction UI.
@@ -183,6 +185,10 @@ type ChannelAssets struct {
 	StandardCSS                                 []string
 }
 type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS string }
+
+// DistributionAssets is the small manifest-derived closure mounted inside the
+// admin shell. It never contains a donor document or business data.
+type DistributionAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -256,6 +262,22 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		return err
 	}
 	return writeHTML(writer, status, body)
+}
+
+// RenderDistribution mounts the staff-only Distribution root in the one V3
+// admin shell. The browser then reads the separately authorized API; Webshell
+// does not receive or resolve any distribution facts.
+func (renderer *Renderer) RenderDistribution(writer http.ResponseWriter, data AdminPageData, assets DistributionAssets) error {
+	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.AdminJS == "" {
+		return errors.New("distribution shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	content := template.HTML(`<section id="distribution-admin-root" aria-live="polite"></section>`)
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: content, Distribution: true, DistributionAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
 }
 
 // RenderExternalEffects mounts the immutable donor runtime inside the one v3
@@ -355,7 +377,7 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 // PR10 shell. The donor template is the release-built template#tpl fragment;
 // this method never renders the donor document or a second sidebar.
 func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 3 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 3 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)

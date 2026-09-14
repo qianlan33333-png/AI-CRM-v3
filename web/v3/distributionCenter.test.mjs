@@ -63,3 +63,55 @@ assert.match(preparationRequest.idempotencyKey || '', /^[0-9a-f-]{16,}$/i, 'rece
 await waitFor(() => preparation.window.document.body.textContent.includes('30 秒后'), 'receiver preparation processing state did not render');
 preparation.window.close();
 console.log('distribution receiver preparation contract: PASS');
+
+const applicationCalls = [];
+const application = new JSDOM('<!doctype html><main id="distribution-root"></main>', { url: 'https://crm.example/distribution?product_id=7&product_type=standard_product', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
+  window.Response = Response; window.Headers = Headers; window.URL = URL;
+  window.fetch = async (input, init = {}) => { const url = new URL(String(input), window.location.href); applicationCalls.push({ path: url.pathname, query: url.search, method: init.method || 'GET' });
+    if (url.pathname === '/api/v1/distribution/application-context') return json({ product_id: 7, product_type: 'standard_product', policy_enabled: true, product_name: '申请商品', purchase_url: '/p/application-product' });
+    if (url.pathname === '/api/v1/distribution/me') return json({ error: 'distribution_session_required' }, 401);
+    if (url.pathname === '/api/v1/distribution/session/bridge') return json({ error: 'payment_session_required' }, 401);
+    return json({ error: 'not_found' }, 404);
+  };
+} });
+application.window.eval(bundle);
+await waitFor(() => application.window.document.body.textContent.includes('申请推广：申请商品'), 'application link must display the server-confirmed product before login');
+const login = application.window.document.querySelector('a.distribution-button');
+assert.equal(login?.getAttribute('href'), '/auth/wechat/start?next=%2Fdistribution%3Fproduct_id%3D7%26product_type%3Dstandard_product', 'OAuth login must preserve only the canonical application context');
+assert.ok(applicationCalls.some((call) => call.path === '/api/v1/distribution/application-context' && call.query === '?product_id=7&product_type=standard_product'), 'application context must be read from the controlled server API');
+application.window.close();
+console.log('distribution application context contract: PASS');
+
+async function applicationProductsView(targetResponse) {
+  const view = new JSDOM('<!doctype html><main id="distribution-root"></main>', { url: 'https://crm.example/distribution?product_id=7&product_type=standard_product', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
+    window.Response = Response; window.Headers = Headers; window.URL = URL;
+    window.fetch = async (input) => {
+      const url = new URL(String(input), window.location.href);
+      if (url.pathname === '/api/v1/distribution/application-context') return targetResponse;
+      if (url.pathname === '/api/v1/distribution/me') return json(me);
+      if (url.pathname === '/api/v1/distribution/products') return json({ items: [{ product_id: 8, product_type: 'standard_product', cover_url: '', purchase_url: '/p/other-product', name: '其他可推广商品', price_minor: 100, currency: 'CNY', commission_rate_basis_points: 100, estimated_commission_minor: 1, wait_days: 1, promotion_ready: true, promotion_block_reason: '' }], next_cursor: '' });
+      if (url.pathname === '/api/v1/distribution/earnings') return json({ gross_paid_sales_minor: 0, successful_refunds_minor: 0, initial_commission_minor: 0, commission_adjustments_minor: 0, unsettled_payable_minor: 0, paid_commission_minor: 0, recovered_minor: 0, currency: 'CNY' });
+      if (url.pathname === '/api/v1/distribution/commissions') return json({ items: [], next_cursor: '' });
+      return json({ error: 'not_found' }, 404);
+    };
+  } });
+  view.window.eval(bundle);
+  return view;
+}
+
+const eligibleElsewhere = await applicationProductsView(json({ product_id: 7, product_type: 'standard_product', policy_enabled: true, product_name: '申请商品', purchase_url: '/p/application-product' }));
+await waitFor(() => eligibleElsewhere.window.document.body.textContent.includes('其他可推广商品'), 'application products did not render');
+assert.match(eligibleElsewhere.window.document.body.textContent, /申请商品/, 'requested product remains visible when another product is eligible');
+assert.equal(eligibleElsewhere.window.document.querySelector('a[href="/p/application-product"]')?.textContent, '查看商品并购买', 'requested product keeps its verified purchase entry');
+eligibleElsewhere.window.close();
+
+const unavailableTarget = await applicationProductsView(json({ error: 'not_found' }, 404));
+await waitFor(() => unavailableTarget.window.document.body.textContent.includes('当前不可用'), 'unavailable application target did not render a distinct state');
+assert.doesNotMatch(unavailableTarget.window.document.body.textContent, /暂时无法读取商品/, 'a missing or disabled product must not be presented as a read failure');
+unavailableTarget.window.close();
+
+const failedTarget = await applicationProductsView(json({ error: 'unavailable' }, 503));
+await waitFor(() => failedTarget.window.document.body.textContent.includes('暂时无法读取商品'), 'application target read failure did not render a retryable state');
+assert.doesNotMatch(failedTarget.window.document.body.textContent, /当前不可用/, 'a read failure must not be presented as an unavailable product');
+failedTarget.window.close();
+console.log('distribution application product states: PASS');

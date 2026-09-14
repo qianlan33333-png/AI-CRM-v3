@@ -197,6 +197,46 @@ func (s *PromotionService) ListPromotionProducts(ctx context.Context, actor dist
 	return page, nil
 }
 
+// ApplicationTarget resolves a shared application link with current Product
+// lifecycle facts. It is intentionally independent of a distributor session:
+// being able to view a saleable, enabled policy is not evidence of identity,
+// registration, qualification, receiver readiness, settlement availability or
+// a right to issue a promotion credential.
+func (s *PromotionService) ApplicationTarget(ctx context.Context, productID int64, productType distributiondomain.ProductType) (distributionport.ApplicationTarget, error) {
+	if s == nil || s.uow == nil || s.store == nil || s.saleableProduct == nil || productID < 1 || !productType.Valid() {
+		return distributionport.ApplicationTarget{}, distributionport.ErrConflict
+	}
+	var product productport.SidebarShareProduct
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		policy, err := s.store.ReadProductPolicyWithin(tx, productID, productType)
+		if err != nil {
+			return err
+		}
+		if !policy.Enabled {
+			return distributionport.ErrNotFound
+		}
+		product, err = s.saleableProduct.ReadSidebarShareProduct(tx, optionType(productType), productport.ID(productID))
+		if err != nil {
+			if errors.Is(err, productport.ErrSaleableProductNotFound) {
+				return distributionport.ErrNotFound
+			}
+			return distributionport.ErrUnavailable
+		}
+		if product.ID != productport.ID(productID) || product.ProductType != optionType(productType) || strings.TrimSpace(product.Code) == "" || strings.TrimSpace(product.Name) == "" {
+			return distributionport.ErrUnavailable
+		}
+		return nil
+	})
+	if err != nil {
+		return distributionport.ApplicationTarget{}, err
+	}
+	purchaseURL := "/p/" + product.Code
+	if productType == distributiondomain.ProductTypeServicePeriod {
+		purchaseURL = "/s/" + product.Code
+	}
+	return distributionport.ApplicationTarget{ProductID: productID, ProductType: productType, PolicyEnabled: true, ProductName: product.Name, PurchaseURL: purchaseURL}, nil
+}
+
 func promotionProductOffset(cursor string) (int32, error) {
 	if cursor == "" {
 		return 0, nil

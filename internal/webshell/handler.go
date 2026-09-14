@@ -155,6 +155,25 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 			return
 		}
 	}
+	// Distribution has employee-only facts but used to be served as a separate
+	// built document. Capture both old and canonical paths before the generic
+	// dist document fallback so it always retains the single admin_base shell.
+	if request.URL.Path == "/admin/distribution.html" {
+		http.Redirect(writer, request, "/admin/distribution", http.StatusSeeOther)
+		return
+	}
+	if request.URL.Path == "/admin/distribution" {
+		assets, ok := DistDistributionAdminAssets(handler.distDir)
+		if !ok {
+			http.NotFound(writer, request)
+			return
+		}
+		spec := adminSpecForPath(request.URL.Path)
+		if err := handler.renderer.RenderDistribution(writer, AdminPageForRequest(request, spec.title, spec.summary, spec.activeEndpoint), assets); err != nil {
+			http.Error(writer, "unable to render distribution shell", http.StatusInternalServerError)
+		}
+		return
+	}
 	// Built documents reference their runtime assets and sibling pages with
 	// root-relative depth-1 URLs ("../assets/…", "customers.html").  Vanity
 	// aliases nested deeper than /admin/<name>.html would resolve those

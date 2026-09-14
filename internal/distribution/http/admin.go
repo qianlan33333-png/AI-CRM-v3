@@ -58,6 +58,14 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	actorScope := "access:" + strconv.FormatInt(principal.InternalID, 10)
 	switch {
+	case r.Method == http.MethodGet && len(parts) == 5 && parts[3] == "distributors":
+		h.distributorDetail(w, r, parts[4])
+	case r.Method == http.MethodGet && len(parts) == 6 && parts[3] == "distributors" && parts[5] == "orders":
+		h.distributorOrders(w, r, parts[4])
+	case r.Method == http.MethodGet && len(parts) == 5 && parts[3] == "orders":
+		h.orderDetail(w, r, parts[4])
+	case r.Method == http.MethodGet && len(parts) == 5 && parts[3] == "exceptions":
+		h.exceptionDetail(w, r, parts[4])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "distributors":
 		h.listDistributors(w, r)
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "orders":
@@ -77,6 +85,147 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *AdminHandler) detailReader(w http.ResponseWriter) (distributionport.AdminDistributionDetailReadModel, bool) {
+	reader, ok := h.reader.(distributionport.AdminDistributionDetailReadModel)
+	if !ok {
+		adminWriteError(w, http.StatusServiceUnavailable, "unavailable")
+		return nil, false
+	}
+	return reader, true
+}
+func (h *AdminHandler) distributorDetail(w http.ResponseWriter, r *http.Request, rawID string) {
+	if r.URL.RawQuery != "" {
+		adminWriteError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	id, ok := adminID(rawID)
+	if !ok {
+		adminWriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	reader, ok := h.detailReader(w)
+	if !ok {
+		return
+	}
+	value, err := reader.ReadAdminDistributorDetail(r.Context(), id)
+	if err != nil {
+		adminResultError(w, err)
+		return
+	}
+	d := value.Distributor
+	e := value.Earnings
+	adminWriteJSON(w, http.StatusOK, map[string]any{"distributor": distributorJSON(d), "earnings": earningsJSON(e)})
+}
+func (h *AdminHandler) distributorOrders(w http.ResponseWriter, r *http.Request, rawID string) {
+	id, ok := adminID(rawID)
+	if !ok {
+		adminWriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	cursor, limit, ok := adminPage(r)
+	if !ok {
+		adminWriteError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	reader, ok := h.detailReader(w)
+	if !ok {
+		return
+	}
+	page, err := reader.ListAdminOrdersByDistributor(r.Context(), id, cursor, limit)
+	if err != nil {
+		adminResultError(w, err)
+		return
+	}
+	items := make([]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, orderJSON(item))
+	}
+	adminWriteJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
+}
+func (h *AdminHandler) orderDetail(w http.ResponseWriter, r *http.Request, rawID string) {
+	if r.URL.RawQuery != "" {
+		adminWriteError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	id, ok := adminID(rawID)
+	if !ok {
+		adminWriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	reader, ok := h.detailReader(w)
+	if !ok {
+		return
+	}
+	value, err := reader.ReadAdminOrderDetail(r.Context(), id)
+	if err != nil {
+		adminResultError(w, err)
+		return
+	}
+	response := map[string]any{"order": orderJSON(value.Order), "adjustments": value.Adjustments, "settlements": value.Settlements, "exceptions": exceptionJSONs(value.Exceptions)}
+	if value.Commission != nil {
+		response["commission"] = commissionDetailJSON(*value.Commission)
+	}
+	adminWriteJSON(w, http.StatusOK, response)
+}
+func (h *AdminHandler) exceptionDetail(w http.ResponseWriter, r *http.Request, rawID string) {
+	if r.URL.RawQuery != "" {
+		adminWriteError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	id, ok := adminID(rawID)
+	if !ok {
+		adminWriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	reader, ok := h.detailReader(w)
+	if !ok {
+		return
+	}
+	value, err := reader.ReadAdminExceptionDetail(r.Context(), id)
+	if err != nil {
+		adminResultError(w, err)
+		return
+	}
+	adminWriteJSON(w, http.StatusOK, exceptionDetailJSON(value))
+}
+
+func distributorJSON(x distributionport.AdminDistributor) map[string]any {
+	return map[string]any{"id": x.ID, "public_no": x.PublicNo, "customer_reference": x.CustomerReference, "agreement_version": x.AgreementVersion, "enabled": x.Enabled, "receiver_ready": x.ReceiverReady, "receiver_reason": x.ReceiverReason, "registered_at": x.RegisteredAt.UTC(), "version": x.Version}
+}
+func orderJSON(x distributionport.AdminOrder) map[string]any {
+	return map[string]any{"attribution_id": x.AttributionID, "order_reference": x.OrderReference, "item_line": x.ItemLine, "product_id": x.ProductID, "product_type": x.ProductType, "product_name": x.ProductName, "distributor_public_no": x.DistributorPublicNo, "qualification_state": x.QualificationState, "qualification_evidence_reference": x.QualificationEvidenceReference, "policy_version": x.PolicyVersion, "rate_basis_points": x.RateBasisPoints, "wait_days": x.WaitDays, "paid_minor": x.PaidMinor, "currency": x.Currency, "attributed_at": x.AttributedAt.UTC()}
+}
+func earningsJSON(x distributionport.Earnings) map[string]any {
+	return map[string]any{"gross_paid_sales_minor": x.GrossPaidSalesMinor, "successful_refunds_minor": x.SuccessfulRefundsMinor, "initial_commission_minor": x.InitialCommissionMinor, "commission_adjustments_minor": x.CommissionAdjustmentsMinor, "unsettled_payable_minor": x.UnsettledPayableMinor, "paid_commission_minor": x.PaidCommissionMinor, "recovered_minor": x.RecoveredMinor, "currency": x.Currency}
+}
+func commissionJSON(x distributionport.CommissionListItem) map[string]any {
+	return map[string]any{"commission_id": x.CommissionID, "order_reference": x.OrderReference, "product_name": x.ProductName, "initial_minor": x.InitialMinor, "current_payable_minor": x.CurrentPayableMinor, "paid_minor": x.PaidMinor, "status": x.Status, "hold_reason": x.HoldReason, "cancel_reason": x.CancelReason, "exception_reason": x.ExceptionReason, "paid_confirmed_at": x.PaidConfirmedAt.UTC(), "due_at": x.DueAt.UTC(), "created_at": x.CreatedAt.UTC(), "currency": x.Currency}
+}
+func commissionDetailJSON(x distributionport.AdminCommissionDetail) map[string]any {
+	return map[string]any{"commission_id": x.CommissionID, "order_reference": x.OrderReference, "product_name": x.ProductName, "original_item_paid_minor": x.OriginalItemPaidMinor, "successful_refund_minor": x.SuccessfulRefundMinor, "initial_minor": x.InitialMinor, "current_payable_minor": x.CurrentPayableMinor, "paid_minor": x.PaidMinor, "status": x.Status, "hold_reason": x.HoldReason, "cancel_reason": x.CancelReason, "exception_reason": x.ExceptionReason, "paid_confirmed_at": x.PaidConfirmedAt.UTC(), "due_at": x.DueAt.UTC(), "created_at": x.CreatedAt.UTC(), "currency": x.Currency}
+}
+func exceptionJSON(x distributionport.AdminException) map[string]any {
+	return map[string]any{"exception_id": x.ExceptionID, "commission_id": x.CommissionID, "distributor_public_no": x.DistributorPublicNo, "order_reference": x.OrderReference, "kind": x.Kind, "status": x.Status, "unpaid_due_minor": x.UnpaidDueMinor, "already_paid_minor": x.AlreadyPaidMinor, "amount_minor": x.AmountMinor, "reason": x.Reason, "payment_instruction_reference": x.PaymentInstructionReference, "reconcile_target": x.ReconcileTarget, "created_at": x.CreatedAt.UTC(), "updated_at": x.UpdatedAt.UTC(), "version": x.Version, "can_reconcile": x.CanReconcile, "can_record_recovery": x.CanRecordRecovery, "can_record_merchant_liability": x.CanRecordMerchantLiability}
+}
+func exceptionDetailJSON(x distributionport.AdminException) map[string]any {
+	value := exceptionJSON(x)
+	value["evidence_reference"] = x.EvidenceReference
+	value["actor_scope"] = x.ActorScope
+	facts := make([]any, 0, len(x.Audit))
+	for _, fact := range x.Audit {
+		facts = append(facts, map[string]any{"event_type": fact.EventType, "actor_scope": fact.ActorScope, "reason": fact.Reason, "evidence_reference": fact.EvidenceReference, "amount_minor": fact.AmountMinor, "occurred_at": fact.OccurredAt.UTC()})
+	}
+	value["audit"] = facts
+	return value
+}
+func exceptionJSONs(xs []distributionport.AdminException) []any {
+	result := make([]any, 0, len(xs))
+	for _, x := range xs {
+		result = append(result, exceptionJSON(x))
+	}
+	return result
+}
+
 func (h *AdminHandler) listDistributors(w http.ResponseWriter, r *http.Request) {
 	cursor, limit, ok := adminPage(r)
 	if !ok {
@@ -90,7 +239,7 @@ func (h *AdminHandler) listDistributors(w http.ResponseWriter, r *http.Request) 
 	}
 	items := make([]any, 0, len(page.Items))
 	for _, x := range page.Items {
-		items = append(items, map[string]any{"id": x.ID, "public_no": x.PublicNo, "customer_reference": x.CustomerReference, "agreement_version": x.AgreementVersion, "enabled": x.Enabled, "receiver_ready": x.ReceiverReady, "receiver_reason": x.ReceiverReason, "registered_at": x.RegisteredAt.UTC(), "version": x.Version})
+		items = append(items, distributorJSON(x))
 	}
 	adminWriteJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
 }
@@ -107,7 +256,7 @@ func (h *AdminHandler) listOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]any, 0, len(page.Items))
 	for _, x := range page.Items {
-		items = append(items, map[string]any{"attribution_id": x.AttributionID, "order_reference": x.OrderReference, "item_line": x.ItemLine, "product_id": x.ProductID, "product_type": x.ProductType, "product_name": x.ProductName, "distributor_public_no": x.DistributorPublicNo, "qualification_state": x.QualificationState, "qualification_evidence_reference": x.QualificationEvidenceReference, "policy_version": x.PolicyVersion, "rate_basis_points": x.RateBasisPoints, "wait_days": x.WaitDays, "paid_minor": x.PaidMinor, "currency": x.Currency, "attributed_at": x.AttributedAt.UTC()})
+		items = append(items, orderJSON(x))
 	}
 	adminWriteJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
 }
@@ -124,7 +273,7 @@ func (h *AdminHandler) listExceptions(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]any, 0, len(page.Items))
 	for _, x := range page.Items {
-		items = append(items, map[string]any{"exception_id": x.ExceptionID, "commission_id": x.CommissionID, "distributor_public_no": x.DistributorPublicNo, "order_reference": x.OrderReference, "kind": x.Kind, "status": x.Status, "unpaid_due_minor": x.UnpaidDueMinor, "already_paid_minor": x.AlreadyPaidMinor, "amount_minor": x.AmountMinor, "reason": x.Reason, "payment_instruction_reference": x.PaymentInstructionReference, "reconcile_target": x.ReconcileTarget, "created_at": x.CreatedAt.UTC(), "updated_at": x.UpdatedAt.UTC(), "version": x.Version, "can_reconcile": x.CanReconcile, "can_record_recovery": x.CanRecordRecovery, "can_record_merchant_liability": x.CanRecordMerchantLiability})
+		items = append(items, exceptionJSON(x))
 	}
 	adminWriteJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
 }

@@ -1853,7 +1853,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品", "spProductData": "周期商品 · 会员数据"}
 		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page", "spProductData": "api.admin_service_period_member_grid"}
-		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS, StandardCSS: assets.StandardCSS})
+		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, ProductCSS: assets.ProductCSS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS, StandardCSS: assets.StandardCSS})
 	})
 	orderUI := orderui.NewUIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets orderui.PageAssets) error {
 		title := map[string]string{"orders": "交易管理", "orderDetail": "订单详情"}[page]

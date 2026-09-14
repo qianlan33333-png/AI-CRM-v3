@@ -14,6 +14,10 @@ type readModelStore interface {
 	ListAdminDistributors(context.Context, string, int32) (distributionport.AdminPage[distributionport.AdminDistributor], error)
 	ListAdminOrders(context.Context, string, int32) (distributionport.AdminPage[distributionport.AdminOrder], error)
 	ListAdminExceptions(context.Context, string, int32) (distributionport.AdminPage[distributionport.AdminException], error)
+	ReadAdminDistributorDetail(context.Context, int64) (distributionport.AdminDistributorDetail, error)
+	ListAdminOrdersByDistributor(context.Context, int64, string, int32) (distributionport.AdminPage[distributionport.AdminOrder], error)
+	ReadAdminOrderDetail(context.Context, int64) (distributionport.AdminOrderDetail, error)
+	ReadAdminExceptionDetail(context.Context, int64) (distributionport.AdminException, error)
 }
 type ReadModelService struct {
 	uow   platformport.UnitOfWork
@@ -53,5 +57,33 @@ func (s *ReadModelService) ListAdminOrders(c context.Context, x string, l int32)
 }
 func (s *ReadModelService) ListAdminExceptions(c context.Context, x string, l int32) (v distributionport.AdminPage[distributionport.AdminException], e error) {
 	e = s.uow.Within(c, func(t context.Context) error { v, e = s.store.ListAdminExceptions(t, x, l); return e })
+	return
+}
+func (s *ReadModelService) ReadAdminDistributorDetail(c context.Context, id int64) (v distributionport.AdminDistributorDetail, e error) {
+	if id < 1 {
+		return v, distributionport.ErrNotFound
+	}
+	e = s.uow.Within(c, func(t context.Context) error { v, e = s.store.ReadAdminDistributorDetail(t, id); return e })
+	return
+}
+func (s *ReadModelService) ListAdminOrdersByDistributor(c context.Context, id int64, x string, l int32) (v distributionport.AdminPage[distributionport.AdminOrder], e error) {
+	if id < 1 {
+		return v, distributionport.ErrNotFound
+	}
+	e = s.uow.Within(c, func(t context.Context) error { v, e = s.store.ListAdminOrdersByDistributor(t, id, x, l); return e })
+	return
+}
+func (s *ReadModelService) ReadAdminOrderDetail(c context.Context, id int64) (v distributionport.AdminOrderDetail, e error) {
+	if id < 1 {
+		return v, distributionport.ErrNotFound
+	}
+	e = s.uow.Within(c, func(t context.Context) error { v, e = s.store.ReadAdminOrderDetail(t, id); return e })
+	return
+}
+func (s *ReadModelService) ReadAdminExceptionDetail(c context.Context, id int64) (v distributionport.AdminException, e error) {
+	if id < 1 {
+		return v, distributionport.ErrNotFound
+	}
+	e = s.uow.Within(c, func(t context.Context) error { v, e = s.store.ReadAdminExceptionDetail(t, id); return e })
 	return
 }

@@ -69,6 +69,7 @@
   {{if .Product}}
   <link rel="stylesheet" href="{{.ProductAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.ProductAssets.LabsCSS}}">
+  <link rel="stylesheet" href="{{.ProductAssets.ProductCSS}}">
   {{range .ProductAssets.StandardCSS}}<link rel="stylesheet" href="{{.}}">{{end}}
   <script type="module" src="{{.ProductAssets.StandardHostJS}}"></script>
   <script type="module" src="{{.ProductAssets.HostJS}}"></script>
@@ -162,6 +163,11 @@
   <link rel="stylesheet" href="{{.AIAssistantAssets.TokensCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.LabsCSS}}">
   <link rel="stylesheet" href="{{.AIAssistantAssets.GroupCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.MaterialCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.ComposerCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.ReadonlyCSS}}">
   <script type="module" src="{{.AIAssistantAssets.HostJS}}"></script>
+  {{end}}
+  {{if .Distribution}}
+  <link rel="stylesheet" href="{{.DistributionAssets.CSS}}">
+	<link rel="stylesheet" href="{{.DistributionAssets.DetailDrawerCSS}}">
+  <script type="module" src="{{.DistributionAssets.AdminJS}}"></script>
   {{end}}
   {{with presentationAssets}}{{range .Styles}}<link rel="stylesheet" href="{{.}}">{{end}}{{end}}
 </head>
