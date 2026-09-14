@@ -8,6 +8,7 @@ const username = process.env.AICRM_GROUPOPS_TEST_USERNAME;
 const password = process.env.AICRM_GROUPOPS_TEST_PASSWORD;
 const planID = process.env.AICRM_GROUPOPS_TEST_PLAN_ID;
 const replacementStaffID = process.env.AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID;
+const screenshotDir = process.env.AICRM_GROUPOPS_SCREENSHOT_DIR;
 if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(planID || "")) throw new Error("Group Ops Chromium journey requires HTTPS URL, credentials, and plan ID");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const browserBinary = () => {
@@ -89,6 +90,17 @@ try {
     const invalidResponsive = !responsive || responsive.viewport !== width || responsive.documentWidth > width + 1 || !Number.isFinite(responsive.rootWidth) || responsive.rootWidth > width + 1 || !Number.isFinite(responsive.detailWidth) || responsive.detailWidth > width + 1 || !Number.isFinite(responsive.workspaceWidth) || responsive.workspaceWidth > width + 1 || responsive.wrapOverflowX !== "auto" || !Number.isFinite(responsive.wrapClientWidth) || !Number.isFinite(responsive.wrapScrollWidth) || responsive.wrapScrollWidth <= responsive.wrapClientWidth || !Number.isFinite(responsive.tableWidth) || responsive.tableWidth < 720;
     if (invalidResponsive) throw new Error(`Group Ops ${width}px detail overflow escaped its table container: ${JSON.stringify(responsive)}`);
   }
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: 1280, screenHeight: 900 });
+  await evaluate(cdp, "document.querySelector('[data-action=\"switch-detail-panel\"][data-panel=\"groups\"]').click(); document.querySelector('[data-action=\"open-group-picker\"]').click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-key]'))", "V3 group selection session did not open");
+  for (const width of [1280, 420, 360]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+    await delay(80);
+    const picker = await evaluate(cdp, "(() => { const mask=document.querySelector('[data-v3-selection-session=\"group\"]'), dialog=mask?.querySelector('.group-ops__modal--groups'), selected=mask?.querySelector('[data-v3-group-selected]'), list=mask?.querySelector('[data-v3-group-list]'), confirm=mask?.querySelector('[data-v3-group-confirm]'); const box=node=>node&&node.getBoundingClientRect(); return {documentWidth:document.documentElement.scrollWidth, dialog:box(dialog), selected:box(selected), list:box(list), confirm:box(confirm), selectedOverflow:selected&&getComputedStyle(selected).overflowY, listOverflow:list&&getComputedStyle(list).overflowY}; })()");
+    if (!picker || picker.documentWidth > width + 1 || !picker.dialog || picker.dialog.width > width || picker.dialog.bottom > 900 || !picker.selected || !picker.list || picker.selectedOverflow !== 'auto' || picker.listOverflow !== 'auto' || !picker.confirm || picker.confirm.bottom > picker.dialog.bottom + 1) throw new Error(`group picker ${width}px layout is not operable: ${JSON.stringify(picker)}`);
+    if (screenshotDir) { await fs.mkdir(screenshotDir, { recursive: true }); const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, `group-picker-${width}.png`); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
+  }
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-cancel]').click(); true");
   await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
   await evaluate(cdp, "document.querySelector('[data-action=\"open-node-modal\"]').click(); true");
   await waitFor(cdp, "Boolean(document.querySelector('[name=\"node_day_index\"]'))", "standard node editor did not open");
