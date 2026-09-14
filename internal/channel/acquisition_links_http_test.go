@@ -46,6 +46,35 @@ func TestAcquisitionLinkHTTPFrozenContractAndRoles(t *testing.T) {
 	}
 }
 
+func TestAcquisitionLinkPatchAndDeleteHTTPContracts(t *testing.T) {
+	app := &acquisitionLinkHTTPApplication{link: wecomport.CustomerAcquisitionLink{LinkID: "link-1", LinkName: "Campaign", URL: "https://work.weixin.qq.com/link", UserIDs: []string{"staff-1"}, DepartmentIDs: []int64{3}, SkipVerify: true}}
+	security := &catalogHTTPSecurity{principal: accessdomain.Principal{InternalID: 8, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	handler, err := NewAcquisitionLinkHTTPHandler(app, security)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	patchBody := `{"link_name":"Updated Campaign","user_ids":["staff-2"],"department_ids":[9],"skip_verify":false}`
+	response := catalogHTTPRequest(handler, http.MethodPatch, acquisitionLinksPath+"/link-1", patchBody, map[string][]string{"Content-Type": {"application/json"}, "Idempotency-Key": {"channel-link-update-route-0001"}, "X-CSRF-Token": {"valid"}})
+	if response.Code != http.StatusAccepted || app.command.Operation != "update" || app.command.LinkID != "link-1" || app.command.ActorID != 8 || app.command.IdempotencyKey != "channel-link-update-route-0001" || app.command.Input.LinkName != "Updated Campaign" || len(app.command.Input.UserIDs) != 1 || app.command.Input.UserIDs[0] != "staff-2" || app.command.Input.SkipVerify {
+		t.Fatalf("patch status=%d command=%+v body=%s", response.Code, app.command, response.Body.String())
+	}
+
+	response = catalogHTTPRequest(handler, http.MethodDelete, acquisitionLinksPath+"/link-1", "", map[string][]string{"Idempotency-Key": {"channel-link-delete-route-0001"}, "X-CSRF-Token": {"valid"}})
+	if response.Code != http.StatusAccepted || app.command.Operation != "delete" || app.command.LinkID != "link-1" || app.command.IdempotencyKey != "channel-link-delete-route-0001" || app.command.Input.LinkName != "" {
+		t.Fatalf("delete status=%d command=%+v body=%s", response.Code, app.command, response.Body.String())
+	}
+
+	response = catalogHTTPRequest(handler, http.MethodDelete, acquisitionLinksPath+"/link-1", "", map[string][]string{"Idempotency-Key": {"key-a", "key-b"}, "X-CSRF-Token": {"valid"}})
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"MALFORMED_REQUEST"`) {
+		t.Fatalf("duplicate key status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = catalogHTTPRequest(handler, http.MethodDelete, acquisitionLinksPath+"/link-1", "", map[string][]string{"Idempotency-Key": {"channel-link-delete-route-0002"}})
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("csrf status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 type acquisitionLinkHTTPApplication struct {
 	link      wecomport.CustomerAcquisitionLink
 	command   AcquisitionLinkCommand
