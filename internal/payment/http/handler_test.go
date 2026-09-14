@@ -33,6 +33,8 @@ type appStub struct {
 	handoff                                      paymentport.Handoff
 	refundCalls                                  int
 	refund                                       paymentport.RefundCommand
+	wechatPayRefundReconcileCalls                int
+	wechatPayRefundReconcileID                   int64
 	payment                                      domain.Payment
 	refundRows                                   []paymentport.RefundProjection
 	refundTotal                                  int64
@@ -97,8 +99,10 @@ func (*appStub) ReconcileShopRefund(context.Context, int64) (domain.Refund, erro
 func (*appStub) ReconcileWeChatPayPayment(context.Context, int64) (domain.Payment, error) {
 	return domain.Payment{}, nil
 }
-func (*appStub) ReconcileWeChatPayRefund(context.Context, int64) (domain.Refund, error) {
-	return domain.Refund{}, nil
+func (stub *appStub) ReconcileWeChatPayRefund(_ context.Context, refundID int64) (domain.Refund, error) {
+	stub.wechatPayRefundReconcileCalls++
+	stub.wechatPayRefundReconcileID = refundID
+	return domain.Refund{ID: refundID, RefundNo: "RF-" + strconv.FormatInt(refundID, 10), Provider: domain.ProviderWeChatPay, Status: domain.RefundCompleted}, nil
 }
 func (stub *appStub) FindPayment(context.Context, domain.Provider, string) (domain.Payment, error) {
 	if stub.payment.ID != 0 {
@@ -207,6 +211,44 @@ func TestTrustedSessionEndpointVerifiesCodeAndSetsOpaqueCookie(t *testing.T) {
 }
 func (securityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
 	return accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
+}
+
+func TestWeChatPayRefundReconciliationForwardsRefundIDWithoutProvider(t *testing.T) {
+	application := &appStub{}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/refunds/987/reconcile", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "refund-reconcile-987")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || application.wechatPayRefundReconcileCalls != 1 || application.wechatPayRefundReconcileID != 987 {
+		t.Fatalf("status=%d calls=%d refund_id=%d body=%s", response.Code, application.wechatPayRefundReconcileCalls, application.wechatPayRefundReconcileID, response.Body.String())
+	}
+
+	methodRequest := httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/refunds/987/reconcile", nil)
+	methodResponse := httptest.NewRecorder()
+	handler.ServeHTTP(methodResponse, methodRequest)
+	if methodResponse.Code != http.StatusMethodNotAllowed || methodResponse.Header().Get("Allow") != http.MethodPost || application.wechatPayRefundReconcileCalls != 1 {
+		t.Fatalf("method status=%d allow=%q calls=%d", methodResponse.Code, methodResponse.Header().Get("Allow"), application.wechatPayRefundReconcileCalls)
+	}
+
+	blockedHandler, err := NewHandler(application, nil, recoverySecurityStub{principal: accessdomain.Principal{InternalID: 2, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedRequest := httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/refunds/987/reconcile", strings.NewReader(`{}`))
+	blockedRequest.Header.Set("Content-Type", "application/json")
+	blockedRequest.Header.Set("Idempotency-Key", "refund-reconcile-987-blocked")
+	blockedResponse := httptest.NewRecorder()
+	blockedHandler.ServeHTTP(blockedResponse, blockedRequest)
+	if blockedResponse.Code != http.StatusForbidden || application.wechatPayRefundReconcileCalls != 1 {
+		t.Fatalf("blocked status=%d calls=%d body=%s", blockedResponse.Code, application.wechatPayRefundReconcileCalls, blockedResponse.Body.String())
+	}
 }
 
 type recoverySecurityStub struct{ principal accessdomain.Principal }

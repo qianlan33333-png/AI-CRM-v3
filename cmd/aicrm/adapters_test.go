@@ -562,7 +562,11 @@ func TestApplicationRouterMountsWeChatShopCallbackAndReconciliation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/public/wechat-shop/callbacks/refund", "/api/admin/wechat-shop/refunds/9/reconcile"} {
+	for _, path := range []string{
+		"/api/public/wechat-shop/callbacks/refund",
+		"/api/admin/wechat-shop/refunds/9/reconcile",
+		"/api/admin/wechat-pay/refunds/9/reconcile",
+	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
 		if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "identity" {
