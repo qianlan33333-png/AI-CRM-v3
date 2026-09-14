@@ -101,5 +101,11 @@ silentDraft.subscribe(() => { silentEmits += 1; });
 silentDraft.setDraftQuery('仅草稿', { silent: true });
 assert.equal(silentEmits, 1, 'native search drafts can update without rerendering a picker');
 assert.equal(silentDraft.snapshot().query.draft, '仅草稿');
+const overLimit = new mod.SelectionSession([item(1), item(2)], { limit: 1 });
+assert.equal(overLimit.snapshot().overLimit, true, 'initial selected records are never silently truncated');
+assert.throws(() => overLimit.commit(), /超过单选限制/);
+overLimit.toggle(key2);
+assert.equal(overLimit.snapshot().overLimit, false, 'operator can reduce initial selections before confirmation');
+
 dom.window.close();
 console.log('selection session: query, draft, disabled, paging, readonly, single mode, race, and failure retention PASS');

@@ -29,6 +29,7 @@ export type SelectionSnapshot<T> = {
   nextCursor?: string;
   loading: boolean;
   readonlyReason?: string;
+  overLimit: boolean;
   notice?: string;
   error?: string;
 };
@@ -209,6 +210,8 @@ export class SelectionSession<T> {
     this.listeners.clear();
   }
 
+  isOverLimit(): boolean { return this.draft.size > this.limit; }
+
   /** Inspect a pending change before a caller accepts its business contract. */
   previewCommit(): SelectionCommit<T> {
     if (this.readonlyReason) {
@@ -221,6 +224,7 @@ export class SelectionSession<T> {
   }
 
   commit(): SelectionCommit<T> {
+    if (this.isOverLimit()) throw new Error(this.limit === 1 ? '初始选择超过单选限制，请先保留一项。' : `初始选择超过 ${this.limit} 项，请先移除多余选择。`);
     if (this.readonlyReason) {
       this.restoreCommitted();
       const preview = this.previewCommit();
@@ -270,6 +274,7 @@ export class SelectionSession<T> {
       nextCursor: this.nextCursor,
       loading: this.loading,
       readonlyReason: this.readonlyReason,
+      overLimit: this.isOverLimit(),
       notice: this.notice,
       error: this.error,
     };

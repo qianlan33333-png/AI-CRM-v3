@@ -211,7 +211,7 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     if (closed) return;
     const snapshot = session.snapshot();
     if (document.activeElement !== search && search.value !== snapshot.query.draft) search.value = snapshot.query.draft;
-    status.textContent = snapshot.readonlyReason || snapshot.error || snapshot.notice || (snapshot.loading ? `正在加载${labels[type]}…` : `已暂选 ${snapshot.draft.length} 项`);
+    status.textContent = snapshot.readonlyReason || (snapshot.overLimit ? (options.limit === 1 ? '初始选择超过单选限制，请先保留一项。' : `初始选择超过 ${options.limit} 项，请先移除多余选择。`) : undefined) || snapshot.error || snapshot.notice || (snapshot.loading ? `正在加载${labels[type]}…` : `已暂选 ${snapshot.draft.length} 项`);
     selectedRoot.innerHTML = snapshot.draft.map((item) => {
       const key = selectionKey(item.kind, item.source, item.value.library_id);
       const unavailable = item.disabledReason ? `<span class="aicrm-material-picker__subtitle">${escape(item.disabledReason)}</span>` : '';
@@ -232,7 +232,7 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     }).join('');
     more.hidden = !snapshot.nextCursor;
     more.disabled = snapshot.loading;
-    confirm.disabled = Boolean(snapshot.readonlyReason || snapshot.loading);
+    confirm.disabled = Boolean(snapshot.readonlyReason || snapshot.loading || snapshot.overLimit);
     if (focusKey) Array.from(grid.querySelectorAll<HTMLElement>('[data-v3-material-key]')).find((row) => row.dataset.v3MaterialKey === focusKey)?.focus({ preventScroll: true });
     if (restoreRemovedFocus !== undefined) {
       const next = Array.from(selectedRoot.querySelectorAll<HTMLElement>('[data-v3-material-remove]')).find((button) => button.dataset.v3MaterialRemove === restoreRemovedFocus);
@@ -251,6 +251,7 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     if (target.closest('[data-v3-picker-reload]')) { void session.reload(loader); return; }
     if (target.closest('[data-v3-picker-more]')) { void session.loadNextPage(loader); return; }
     if (target.closest('[data-v3-picker-confirm]')) {
+      if (session.isOverLimit()) { status.textContent = options.limit === 1 ? '初始选择超过单选限制，请先保留一项。' : `初始选择超过 ${options.limit} 项，请先移除多余选择。`; return; }
       const preview = session.previewCommit();
       if (preview.removed.length && !options.onCommit) {
         status.textContent = '该页面尚未支持移除已选素材；请取消后保持原选择。';
