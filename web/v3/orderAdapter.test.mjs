@@ -119,6 +119,36 @@ try {
   collisionDom.window.close();
 }
 
+const mixedDistributionDom = new JSDOM(`<!doctype html><body>
+  <table><thead><tr><th>创建时间</th><th>微信 / 平台单号</th><th>付款人 / 客户身份</th><th>商品</th><th>金额</th><th>状态</th><th>支付来源</th><th>操作</th></tr></thead><tbody>
+    <tr><td>2026-09-15T00:02:00Z</td><td><div>merchant-mixed-distribution</div></td><td><div>买家丙</div><div>customer:3</div></td><td>混合归因商品</td><td>3.00</td><td><span>paid</span></td><td>微信支付</td><td><a>查看详情</a></td></tr>
+  </tbody></table>
+</body>`, {
+  url: 'https://test.invalid/admin/orders', runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async () => new Response(JSON.stringify({ items: [{
+      id: 703, merchant_order_no: 'merchant-mixed-distribution', detail_url: '/admin/orderDetail.html?id=merchant-mixed-distribution&provider=wechat', provider: 'wechat', provider_label: '微信支付', currency: 'CNY', distribution_read_state: 'available', distribution: [
+        { distributor_display_name: '分销员成功', has_commission: true, current_payable_minor: 100, currency: 'CNY' },
+        { distributor_display_name: '分销员待形成', has_commission: false, current_payable_minor: null, currency: 'CNY' },
+        { distributor_display_name: '分销员金额待确认', has_commission: true, current_payable_minor: null, currency: 'CNY' },
+      ],
+    }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  },
+});
+try {
+  mixedDistributionDom.window.eval(host);
+  await mixedDistributionDom.window.fetch('/api/admin/orders');
+  await pause();
+  const summary = mixedDistributionDom.window.document.querySelector('tbody tr').textContent;
+  assert.match(summary, /2项已形成 \/ 1项待形成/, 'a partially formed order must preserve both formed and pending attribution lines');
+  assert.match(summary, /当前应付 ¥1\.00（另有金额待确认）/, 'unknown payable data must not be rendered as a real zero amount');
+  assert.doesNotMatch(summary, /已归因 · 未形成佣金/, 'a pending line must not hide the formed commission summary for the same order');
+} finally {
+  mixedDistributionDom.window.close();
+}
+
 let resolveEarlierList;
 const listRaceDom = new JSDOM(`<!doctype html><body>
   <div id="stage"></div><table><thead><tr><th>创建时间</th><th>微信 / 平台单号</th><th>付款人 / 客户身份</th><th>商品</th><th>金额</th><th>状态</th><th>支付来源</th><th>操作</th></tr></thead><tbody>

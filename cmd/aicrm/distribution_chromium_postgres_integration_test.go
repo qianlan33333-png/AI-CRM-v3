@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -262,14 +263,22 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 func seedDistributionChromiumProviderCollision(t *testing.T, ctx context.Context, pool *pgxpool.Pool, productID int64, productCode string, distributorID, credentialID, policyID, customerID int64, now time.Time) (string, time.Time) {
 	t.Helper()
 	const reference = "M-distribution-browser-provider-collision"
-	settledAt := now.Add(3 * time.Minute)
+	const grossMinor int64 = 1000
+	const rateBasisPoints int32 = 1000
+	const waitDays int32 = 7
+	paidAt := now.Add(-8 * 24 * time.Hour)
+	settledAt := paidAt.Add(time.Duration(waitDays)*24*time.Hour + time.Hour)
+	expectedCommission, err := distributiondomain.CalculateCommission(grossMinor, rateBasisPoints)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wechatOrderID, alipayOrderID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
-		VALUES('wechat_pay','distribution-browser-collision','provider-wechat',$1,$2,$2,100,'CNY','paid','native',true,2,$3,$3) RETURNING id`, reference, customerID, now).Scan(&wechatOrderID); err != nil {
+		VALUES('wechat_pay','distribution-browser-collision','provider-wechat',$1,$2,$2,$3,'CNY','paid','native',true,2,$4,$4) RETURNING id`, reference, customerID, grossMinor, paidAt).Scan(&wechatOrderID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
-		VALUES('alipay','distribution-browser-collision','provider-alipay',$1,100,'CNY','paid','history',false,1,$2,$2) RETURNING id`, reference, now.Add(time.Second)).Scan(&alipayOrderID); err != nil {
+		VALUES('alipay','distribution-browser-collision','provider-alipay',$1,$2,'CNY','paid','history',false,1,$3,$3) RETURNING id`, reference, grossMinor, paidAt.Add(time.Second)).Scan(&alipayOrderID); err != nil {
 		t.Fatal(err)
 	}
 	for _, order := range []struct {
@@ -277,7 +286,7 @@ func seedDistributionChromiumProviderCollision(t *testing.T, ctx context.Context
 		name            string
 	}{{wechatOrderID, 1, "分账成功商品"}, {alipayOrderID, 1, "分账待核验商品"}} {
 		if _, err := pool.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_version,product_code,product_name,unit_amount_minor,quantity,line_amount_minor)
-			VALUES($1,$2,$3,1,$4,$5,100,1,100)`, order.id, order.productLine, productID, productCode, order.name); err != nil {
+			VALUES($1,$2,$3,1,$4,$5,$6,1,$6)`, order.id, order.productLine, productID, productCode, order.name, grossMinor); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -287,39 +296,55 @@ func seedDistributionChromiumProviderCollision(t *testing.T, ctx context.Context
 		productName  string
 		commissionID *int64
 		attribution  *int64
-		status       string
-		paidMinor    int64
-		exception    string
 		attributedAt time.Time
+		settlementAt time.Time
+		succeeded    bool
+		reference    string
 	}{
-		{wechatOrderID, "分账成功商品", &wechatCommission, &wechatAttribution, "paid", 100, "", now},
-		{alipayOrderID, "分账待核验商品", &alipayCommission, &alipayAttribution, "exception", 0, "settlement_outcome_unknown", now.Add(time.Second)},
+		{wechatOrderID, "分账成功商品", &wechatCommission, &wechatAttribution, paidAt, settledAt, true, "dstl_browser_succeeded"},
+		{alipayOrderID, "分账待核验商品", &alipayCommission, &alipayAttribution, paidAt.Add(time.Second), settledAt.Add(time.Minute), false, "dstl_browser_outcome_unknown"},
 	} {
 		if err := pool.QueryRow(ctx, `INSERT INTO distribution_order_attributions(order_id,order_item_line,product_code,product_name,distributor_id,promotion_credential_id,qualification_evidence_reference,qualification_state,policy_id,policy_version,commission_rate_basis_points,wait_days,attributed_at)
-			VALUES($1,1,$2,$3,$4,$5,$6,'eligible',$7,1,1000,7,$8) RETURNING id`, fact.orderID, productCode, fact.productName, distributorID, credentialID, "order:"+strconv.FormatInt(fact.orderID, 10)+":line:1", policyID, fact.attributedAt).Scan(fact.attribution); err != nil {
+			VALUES($1,1,$2,$3,$4,$5,$6,'eligible',$7,1,$8,$9,$10) RETURNING id`, fact.orderID, productCode, fact.productName, distributorID, credentialID, "order:"+strconv.FormatInt(fact.orderID, 10)+":line:1", policyID, rateBasisPoints, waitDays, fact.attributedAt).Scan(fact.attribution); err != nil {
 			t.Fatal(err)
+		}
+		attribution := distributiondomain.Attribution{ID: *fact.attribution, OrderID: fact.orderID, OrderItemLine: 1, ProductCode: productCode, ProductName: fact.productName, DistributorID: distributorID, PromotionCredentialID: credentialID, QualificationEvidenceRef: "order:" + strconv.FormatInt(fact.orderID, 10) + ":line:1", QualificationState: distributiondomain.QualificationEligible, PolicyVersion: 1, CommissionRateBasisPoints: rateBasisPoints, WaitDays: waitDays, AttributedAt: fact.attributedAt}
+		commission, err := distributiondomain.NewCommission(attribution, grossMinor, fact.attributedAt)
+		if err != nil || commission.InitialMinor != expectedCommission || commission.CurrentPayableMinor != expectedCommission {
+			t.Fatalf("construct consistent collision commission err=%v commission=%+v expected=%d", err, commission, expectedCommission)
+		}
+		settling, err := commission.BeginSettlement(commission.Version, fact.settlementAt)
+		if err != nil {
+			t.Fatalf("begin collision settlement: %v", err)
+		}
+		if fact.succeeded {
+			commission, err = settling.ConfirmReceiverPaid(settling.Version, expectedCommission, fact.settlementAt.Add(time.Minute))
+		} else {
+			commission, err = settling.MarkException(settling.Version, "settlement_outcome_unknown", fact.settlementAt)
+		}
+		if err != nil {
+			t.Fatalf("transition collision settlement: %v", err)
 		}
 		if err := pool.QueryRow(ctx, `INSERT INTO distribution_commissions(attribution_id,order_id,order_item_line,distributor_id,original_item_paid_minor,successful_refund_minor,initial_minor,current_payable_minor,paid_minor,commission_rate_basis_points,paid_confirmed_at,due_at,status,hold_reason,cancel_reason,exception_reason,version,created_at,updated_at)
-			VALUES($1,$2,1,$3,100,0,100,$4,$5,1000,$6,$7,$8,'','',$9,1,$6,$6) RETURNING id`, *fact.attribution, fact.orderID, distributorID, func() int64 {
-			if fact.status == "paid" {
-				return 0
-			}
-			return 100
-		}(), fact.paidMinor, fact.attributedAt, fact.attributedAt.Add(7*24*time.Hour), fact.status, fact.exception).Scan(fact.commissionID); err != nil {
+			VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`, *fact.attribution, fact.orderID, distributorID, commission.OriginalItemPaidMinor, commission.SuccessfulRefundMinor, commission.InitialMinor, commission.CurrentPayableMinor, commission.PaidMinor, commission.CommissionRateBasisPoints, commission.PaidConfirmedAt, commission.DueAt, string(commission.Status), commission.HoldReason, commission.CancelReason, commission.ExceptionReason, commission.Version, commission.CreatedAt, commission.UpdatedAt).Scan(fact.commissionID); err != nil {
+			t.Fatal(err)
+		}
+		settlementState := "outcome_unknown"
+		if fact.succeeded {
+			settlementState = "receiver_succeeded"
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,state,provider_deadline_at,version,created_at,updated_at)
+			VALUES($1,$2,$3,'CNY',$4,$5,$6,1,$7,$7)`, *fact.commissionID, fact.reference, expectedCommission, "payment:browser:"+fact.reference, settlementState, fact.settlementAt.Add(24*time.Hour), commission.UpdatedAt); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,state,provider_deadline_at,version,created_at,updated_at)
-		VALUES($1,'dstl_browser_succeeded',100,'CNY','payment:browser:provider-wechat','receiver_succeeded',$2,1,$3,$3),
-		($4,'dstl_browser_outcome_unknown',100,'CNY','payment:browser:provider-alipay','outcome_unknown',$2,1,$3,$3)`, wechatCommission, settledAt.Add(24*time.Hour), settledAt, alipayCommission); err != nil {
-		t.Fatal(err)
-	}
+	settledAt = settledAt.Add(time.Minute)
 	if _, err := pool.Exec(ctx, `INSERT INTO distribution_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,payload,occurred_at)
 		VALUES('distribution.settlement_paid.v1','commission',$1,'fixture:distribution-browser',$2::jsonb,$3)`, wechatCommission, `{"settlement_reference":"dstl_browser_succeeded"}`, settledAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO distribution_exceptions(commission_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at)
-		VALUES($1,'settlement_unknown','open',100,0,100,'settlement_outcome_unknown','reconcile:browser-provider-alipay','fixture:distribution-browser',1,$2,$2)`, alipayCommission, settledAt); err != nil {
+		VALUES($1,'settlement_unknown','open',$2,0,$2,'settlement_outcome_unknown','reconcile:browser-provider-alipay','fixture:distribution-browser',1,$3,$3)`, alipayCommission, expectedCommission, settledAt); err != nil {
 		t.Fatal(err)
 	}
 	return reference, settledAt
@@ -343,6 +368,15 @@ func assertDistributionOrderProviderCollisionReadModel(t *testing.T, ctx context
 		}
 		if !confirmed && strings.Contains(body, `"settlement_confirmed_at":"`) {
 			t.Fatalf("outcome-unknown split borrowed a confirmation time: %s", body)
+		}
+		if !strings.Contains(body, `"initial_minor":100`) || !strings.Contains(body, `"current_payable_minor":100`) {
+			t.Fatalf("provider-scoped fixture must retain the calculated ten-percent commission: %s", body)
+		}
+		if confirmed && !strings.Contains(body, `"paid_minor":100`) {
+			t.Fatalf("successful split must retain its confirmed split amount: %s", body)
+		}
+		if !confirmed && !strings.Contains(body, `"paid_minor":0`) {
+			t.Fatalf("outcome-unknown split must retain its unpaid commission amount: %s", body)
 		}
 	}
 	read("wechat_pay", "wechat", "分账成功商品", "dstl_browser_succeeded", true)

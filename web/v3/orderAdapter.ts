@@ -1184,13 +1184,28 @@ function distributionListSummary(order: DetailRecord | undefined): string | unde
   const lines = arrayField(order, 'distribution').map(asRecord).filter((line): line is DetailRecord => Boolean(line));
   if (lines.length === 0) return '非分销订单';
   const names = Array.from(new Set(lines.map((line) => text(line.distributor_display_name, '未设置昵称'))));
-  if (lines.some((line) => line.has_commission !== true)) return `分销：${names.join('、')} · 已归因 · 未形成佣金`;
+  const commissionLines = lines.filter((line) => line.has_commission === true);
+  const unformedCount = lines.length - commissionLines.length;
+  if (commissionLines.length === 0) return `分销：${names.join('、')} · 已归因 · 未形成佣金`;
   const totals = new Map<string, number>();
-  for (const line of lines) {
+  let hasUnknownPayable = false;
+  for (const line of commissionLines) {
     const currency = text(line.currency, 'CNY');
-    totals.set(currency, (totals.get(currency) || 0) + (signedMinorAmount(line.current_payable_minor) || 0));
+    const payable = signedMinorAmount(line.current_payable_minor);
+    if (payable == null) {
+      hasUnknownPayable = true;
+      continue;
+    }
+    totals.set(currency, (totals.get(currency) ?? 0) + payable);
   }
-  return `分销：${names.join('、')} · 当前应付 ${Array.from(totals, ([currency, amount]) => moneyFromMinorCurrency(amount, currency)).join(' / ')}`;
+  const formation = unformedCount > 0
+    ? `${commissionLines.length}项已形成 / ${unformedCount}项待形成 · `
+    : '';
+  const payableAmounts = Array.from(totals, ([currency, amount]) => moneyFromMinorCurrency(amount, currency));
+  const payable = payableAmounts.length > 0
+    ? `当前应付 ${payableAmounts.join(' / ')}${hasUnknownPayable ? '（另有金额待确认）' : ''}`
+    : '当前应付 金额待确认';
+  return `分销：${names.join('、')} · ${formation}${payable}`;
 }
 function appendDistributionDetailSections(card: HTMLElement, order: DetailRecord): void {
   if (!Object.prototype.hasOwnProperty.call(order, 'distribution_read_state') || text(order.distribution_read_state, '') !== 'available') {
