@@ -117,6 +117,7 @@ await flush();
 assert.match(mask.textContent, /不匹配的素材类型/, 'a scoped loader cannot render a different material type under this picker');
 assert.match(mask.textContent, /可选素材/, 'type mismatch preserves the prior usable page');
 mask.querySelector('[data-v3-picker-confirm]').click();
+await flush();
 assert.deepEqual(committed.added.map((item) => item.library_id), [2]);
 assert.deepEqual(committed.removed.map((item) => item.library_id), [1]);
 assert.deepEqual(legacyAdded, [], 'a migrated onCommit caller is never double-applied through legacy onConfirm');
@@ -132,6 +133,73 @@ assert.equal(second.querySelector('[data-v3-material-key$="2"]').getAttribute('a
 second.querySelector('[data-v3-picker-cancel]').click();
 assert.equal(cancelled, 1, 'cancel never calls a material commit callback');
 assert.equal(document.querySelector('[data-v3-selection-session="material"]'), null);
+
+let resolveAtomicCommit;
+let atomicCommitCalls = 0;
+window.AICRMMaterialPicker.open({ type: 'image', onCommit: () => {
+  atomicCommitCalls += 1;
+  return new Promise((resolve) => { resolveAtomicCommit = resolve; });
+} });
+await flush();
+const atomic = document.querySelector('[data-v3-selection-session="material"]');
+atomic.querySelector('[data-v3-material-key$="2"]').click();
+const atomicConfirm = atomic.querySelector('[data-v3-picker-confirm]');
+atomicConfirm.click(); atomicConfirm.click();
+await flush();
+assert.equal(atomicCommitCalls, 1, 'a pending caller commit cannot be invoked twice by repeated confirmation');
+assert.equal(atomicConfirm.disabled, true, 'confirmation locks while the caller applies the result');
+assert.equal(atomic.querySelector('[data-v3-picker-reload]').disabled, true, 'refresh cannot redraw an in-flight caller commit');
+atomic.querySelector('[data-v3-picker-cancel]').click();
+assert.ok(document.querySelector('[data-v3-selection-session="material"]'), 'cancel cannot close a dialog while its caller commit is in flight');
+resolveAtomicCommit();
+await flush(); await flush();
+assert.equal(document.querySelector('[data-v3-selection-session="material"]'), null, 'the session commits and closes only after the caller accepts it');
+
+let failedAtomicCalls = 0;
+window.AICRMMaterialPicker.open({ type: 'image', onCommit: () => {
+  failedAtomicCalls += 1;
+  if (failedAtomicCalls === 1) throw new Error('调用方拒绝保存');
+} });
+await flush();
+const failedAtomic = document.querySelector('[data-v3-selection-session="material"]');
+failedAtomic.querySelector('[data-v3-material-key$="2"]').click();
+failedAtomic.querySelector('[data-v3-picker-confirm]').click();
+await flush(); await flush();
+assert.match(failedAtomic.textContent, /调用方拒绝保存/, 'a synchronous caller failure is presented without closing the dialog');
+assert.equal(failedAtomic.querySelector('[data-v3-material-key$="2"]').getAttribute('aria-pressed'), 'true', 'a caller failure preserves the temporary selection');
+failedAtomic.querySelector('[data-v3-picker-confirm]').click();
+await flush(); await flush();
+assert.equal(failedAtomicCalls, 2, 'a later explicit retry recomputes the original diff instead of an already-committed empty diff');
+assert.equal(document.querySelector('[data-v3-selection-session="material"]'), null);
+
+let rejectedLegacyCalls = 0;
+window.AICRMMaterialPicker.open({ type: 'image', onConfirm: async () => {
+  rejectedLegacyCalls += 1;
+  throw new Error('旧调用方结果未确认');
+} });
+await flush();
+const rejectedLegacy = document.querySelector('[data-v3-selection-session="material"]');
+rejectedLegacy.querySelector('[data-v3-material-key$="2"]').click();
+rejectedLegacy.querySelector('[data-v3-picker-confirm]').click();
+await flush(); await flush();
+assert.equal(rejectedLegacyCalls, 1, 'a rejected legacy callback is caught once without an automatic replay');
+assert.match(rejectedLegacy.textContent, /旧调用方结果未确认/, 'a rejected legacy callback keeps its explicit failure visible');
+assert.equal(rejectedLegacy.querySelector('[data-v3-material-key$="2"]').getAttribute('aria-pressed'), 'true', 'a rejected legacy callback does not advance the session committed value');
+rejectedLegacy.querySelector('[data-v3-picker-cancel]').click();
+
+let multiLegacyCalls = 0;
+window.AICRMMaterialPicker.open({ type: 'image', limit: 3, onConfirm: () => { multiLegacyCalls += 1; } });
+await flush();
+const multiLegacy = document.querySelector('[data-v3-selection-session="material"]');
+multiLegacy.querySelector('[data-v3-material-key$="2"]').click();
+multiLegacy.querySelector('[data-v3-picker-more]').click();
+await flush();
+multiLegacy.querySelector('[data-v3-material-key$="3"]').click();
+multiLegacy.querySelector('[data-v3-picker-confirm]').click();
+assert.equal(multiLegacyCalls, 0, 'legacy onConfirm never receives an unsafe partial multi-select sequence');
+assert.match(multiLegacy.textContent, /多选素材需要调用方提供 onCommit/, 'multi-select requires an atomic caller commit');
+assert.equal(multiLegacy.querySelectorAll('[data-v3-material-remove]').length, 2, 'the rejected legacy multi-select remains a visible draft');
+multiLegacy.querySelector('[data-v3-picker-cancel]').click();
 
 let unsupportedRemovalCommits = 0;
 window.AICRMMaterialPicker.open({ type: 'image', selectedIds: [9], limit: 2, onConfirm: () => { unsupportedRemovalCommits += 1; } });
