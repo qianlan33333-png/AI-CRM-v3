@@ -35,6 +35,72 @@ func DistDistributionAdminAssets(distRoot string) (DistributionAssets, bool) {
 	return DistributionAssets{CSS: "/" + css, DetailDrawerCSS: "/" + drawerCSS, AdminJS: "/" + js}, true
 }
 
+// DistComponentStatesAssets resolves the complete V3-owned style and Host
+// closure for the authenticated state-demo route. Frozen group/material paint
+// is referenced only by its staged manifest paths; this function never reads
+// a donor checkout or a business module.
+func DistComponentStatesAssets(distRoot string) (ComponentStatesAssets, bool) {
+	if distRoot == "" {
+		return ComponentStatesAssets{}, false
+	}
+	var manifest struct {
+		Entries map[string]string          `json:"entries"`
+		Files   map[string]json.RawMessage `json:"files"`
+	}
+	raw, err := os.ReadFile(filepath.Join(distRoot, "asset-manifest.json"))
+	if err != nil || json.Unmarshal(raw, &manifest) != nil {
+		return ComponentStatesAssets{}, false
+	}
+	asset := func(name, suffix string) (string, bool) {
+		entry := manifest.Entries[name]
+		if !strings.HasPrefix(entry, "assets/") || path.Clean(entry) != entry || !strings.HasSuffix(entry, suffix) || manifest.Files[entry] == nil {
+			return "", false
+		}
+		if info, statErr := os.Stat(filepath.Join(distRoot, filepath.FromSlash(entry))); statErr != nil || info.IsDir() {
+			return "", false
+		}
+		return "/" + entry, true
+	}
+	staticAsset := func(entry, suffix string) (string, bool) {
+		if !strings.HasPrefix(entry, "assets/") || path.Clean(entry) != entry || !strings.HasSuffix(entry, suffix) || manifest.Files[entry] == nil {
+			return "", false
+		}
+		if info, statErr := os.Stat(filepath.Join(distRoot, filepath.FromSlash(entry))); statErr != nil || info.IsDir() {
+			return "", false
+		}
+		return "/" + entry, true
+	}
+	visualTokens, ok := asset("sharedVisualTokens", ".css")
+	if !ok {
+		return ComponentStatesAssets{}, false
+	}
+	styles, ok := asset("componentStatesStyles", ".css")
+	if !ok {
+		return ComponentStatesAssets{}, false
+	}
+	dialog, ok := asset("selectionDialogStyles", ".css")
+	if !ok {
+		return ComponentStatesAssets{}, false
+	}
+	groupOps, ok := asset("groupopsStyles", ".css")
+	if !ok {
+		return ComponentStatesAssets{}, false
+	}
+	host, ok := asset("componentStatesHost", ".js")
+	if !ok {
+		return ComponentStatesAssets{}, false
+	}
+	groupPicker, ok := staticAsset("assets/standard-components/group_chat_picker.css", ".css")
+	if !ok {
+		return ComponentStatesAssets{}, false
+	}
+	materialPicker, ok := staticAsset("assets/standard-components/material_picker.css", ".css")
+	if !ok {
+		return ComponentStatesAssets{}, false
+	}
+	return ComponentStatesAssets{VisualTokensCSS: visualTokens, StylesCSS: styles, SelectionDialogCSS: dialog, GroupOpsCSS: groupOps, GroupPickerCSS: groupPicker, MaterialPickerCSS: materialPicker, HostJS: host}, true
+}
+
 // The new-shell frontend builds every admin screen as a standalone document
 // under web/dist/admin.  When the composition root supplies a dist directory,
 // the shell serves those built documents directly instead of the neutral

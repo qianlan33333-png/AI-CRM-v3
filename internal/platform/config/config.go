@@ -917,6 +917,13 @@ func AccessGovernanceScreenshotDirectory() string {
 	return os.Getenv("AICRM_ACCESS_UI_SCREENSHOT_DIR")
 }
 
+// ComponentStatesScreenshotDirectory returns the optional evidence directory
+// for the authenticated component-state Chromium journey. The test validates
+// that a supplied path is absolute before it writes its local screenshots.
+func ComponentStatesScreenshotDirectory() string {
+	return os.Getenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR")
+}
+
 // NamedDatabaseURL is restricted to explicit target and read-only source roles
 // used by controlled offline migrations. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment
