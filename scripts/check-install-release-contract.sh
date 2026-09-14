@@ -102,6 +102,13 @@ for migration_contract in \
   '0152_access_login_grants.sql:Access login grants' \
   '0153_wecom_customer_detail_projection.sql:WeCom customer detail projection' \
   '0155_group_ops_webhook_dynamic_executions.sql:Group Ops dynamic webhook executions' \
+  '0156_distribution_profit_sharing_payment.sql:Payment profit sharing' \
+  '0157_distribution_core.sql:Distribution core' \
+  '0158_order_distribution_qualification_evidence.sql:Order distribution qualification evidence' \
+  '0159_distribution_admin_receipts.sql:Distribution administrative receipts' \
+  '0160_external_effect_system_control_actor.sql:External Effects system control actor' \
+  '0161_payment_paid_confirmation_time.sql:Payment paid confirmation time' \
+  '0162_payment_h5_distribution_return_path.sql:Payment H5 Distribution return path' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

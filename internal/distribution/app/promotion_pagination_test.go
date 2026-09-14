@@ -10,6 +10,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
+	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -38,11 +39,23 @@ func (promotionPaginationStore) InsertPromotionCredentialWithin(context.Context,
 func (promotionPaginationStore) ReadPromotionCredentialByDigestWithin(context.Context, [32]byte, bool) (distributiondomain.PromotionCredential, error) {
 	return distributiondomain.PromotionCredential{}, distributionport.ErrNotFound
 }
+func (promotionPaginationStore) ReadPromotionCredentialWithin(context.Context, int64, bool) (distributiondomain.PromotionCredential, error) {
+	return distributiondomain.PromotionCredential{}, distributionport.ErrNotFound
+}
 func (promotionPaginationStore) ExpirePromotionCredentialWithin(context.Context, distributiondomain.PromotionCredential, time.Time) error {
 	return nil
 }
 func (promotionPaginationStore) InsertAttributionWithin(context.Context, distributiondomain.Attribution, int64) (distributiondomain.Attribution, bool, error) {
 	return distributiondomain.Attribution{}, false, nil
+}
+func (promotionPaginationStore) LockOperationReceiptWithin(context.Context, string, string, string) error {
+	return nil
+}
+func (promotionPaginationStore) ReadOperationReceiptWithin(context.Context, string, string, string) (distributionstore.OperationReceipt, bool, error) {
+	return distributionstore.OperationReceipt{}, false, nil
+}
+func (promotionPaginationStore) AppendOperationReceiptWithin(context.Context, string, string, string, [32]byte, string, int64, time.Time) error {
+	return nil
 }
 func (promotionPaginationStore) AppendAuditWithin(context.Context, string, string, int64, string, any, time.Time) error {
 	return nil
@@ -77,6 +90,12 @@ func (promotionPaginationSaleable) ReadSidebarShareProduct(_ context.Context, ki
 	return productport.SidebarShareProduct{ID: id, ProductType: kind, Code: "p" + strconv.FormatInt(int64(id), 10), Name: "商品" + strconv.FormatInt(int64(id), 10), CoverURL: "https://cdn.example.test/cover.png"}, nil
 }
 
+type promotionApplicationSaleableError struct{ err error }
+
+func (s promotionApplicationSaleableError) ReadSidebarShareProduct(context.Context, productport.ProductOptionType, productport.ID) (productport.SidebarShareProduct, error) {
+	return productport.SidebarShareProduct{}, s.err
+}
+
 type promotionPaginationOrders struct{ now time.Time }
 
 func (s promotionPaginationOrders) ListQualificationPurchaseEvidenceWithin(_ context.Context, query orderport.QualificationPurchaseQuery) ([]orderport.QualificationPurchaseEvidence, error) {
@@ -102,7 +121,7 @@ func promotionPaginationFixture(t *testing.T, productCount int) (*PromotionServi
 		t.Fatal(err)
 	}
 	qualification.now = func() time.Time { return now }
-	service, err := NewPromotionService(settlementUOWStub{}, promotionPaginationStore{now: now}, qualification, products, promotionPaginationSaleable{}, lineageStub{roots: []customerdomain.CustomerID{11}}, "https://crm.example.test")
+	service, err := NewPromotionService(settlementUOWStub{}, promotionPaginationStore{now: now}, qualification, products, promotionPaginationSaleable{}, lineageStub{roots: []customerdomain.CustomerID{11}}, "https://crm.example.test", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,5 +187,27 @@ func TestListPromotionProductsScanLimitReturnsCursor(t *testing.T) {
 	page, err := service.ListPromotionProducts(context.Background(), actor, "", 1)
 	if err != nil || len(page.Items) != 0 || page.NextCursor != strconv.Itoa(int(promotionProductScanMaximum)) {
 		t.Fatalf("bounded filtered page=%+v err=%v", page, err)
+	}
+}
+
+func TestApplicationTargetIsPublicProductFactWithoutQualificationOrCredential(t *testing.T) {
+	service, _, _ := promotionPaginationFixture(t, 8)
+	standard, err := service.ApplicationTarget(context.Background(), 7, distributiondomain.ProductTypeStandard)
+	if err != nil || standard.ProductID != 7 || standard.ProductType != distributiondomain.ProductTypeStandard || !standard.PolicyEnabled || standard.ProductName != "商品7" || standard.PurchaseURL != "/p/p7" {
+		t.Fatalf("standard application target=%+v err=%v", standard, err)
+	}
+	period, err := service.ApplicationTarget(context.Background(), 8, distributiondomain.ProductTypeServicePeriod)
+	if err != nil || period.PurchaseURL != "/s/p8" || period.ProductName != "商品8" {
+		t.Fatalf("period application target=%+v err=%v", period, err)
+	}
+	// This public lookup must never turn a missing Product-owned saleable fact
+	// into an eligibility or promotion-credential result.
+	service.saleableProduct = promotionApplicationSaleableError{err: productport.ErrSaleableProductNotFound}
+	if _, err = service.ApplicationTarget(context.Background(), 7, distributiondomain.ProductTypeStandard); !errors.Is(err, distributionport.ErrNotFound) {
+		t.Fatalf("missing saleable product err=%v", err)
+	}
+	service.saleableProduct = promotionApplicationSaleableError{err: errors.New("product read down")}
+	if _, err = service.ApplicationTarget(context.Background(), 7, distributiondomain.ProductTypeStandard); !errors.Is(err, distributionport.ErrUnavailable) {
+		t.Fatalf("unavailable product read err=%v", err)
 	}
 }

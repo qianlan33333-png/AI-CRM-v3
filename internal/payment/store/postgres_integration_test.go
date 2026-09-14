@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -573,6 +574,65 @@ func TestPostgreSQLProductOAuthReturnMigrationPreservesRedirectBoundary(t *testi
 		digest := sha256.Sum256([]byte(path))
 		if _, err = pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err == nil {
 			t.Fatalf("unsafe redirect accepted: %q", path)
+		}
+	}
+}
+
+func TestPostgreSQLDistributionOAuthReturnMigrationKeepsApplicationContextClosed(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	_, file, _, _ := runtime.Caller(0)
+	for _, name := range []string{"0142_payment_h5_product_return_path.sql", "0162_payment_h5_distribution_return_path.sql"} {
+		body, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(ctx, string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+	promotion := "dpc_" + strings.Repeat("A", 43)
+	for _, path := range []string{
+		"/p/subscription_trial_month",
+		"/pay/7",
+		"/s/course/pay",
+		"/c/coupon-2026",
+		"/distribution",
+		"/distribution?product_id=7&product_type=standard_product",
+		"/distribution?product_id=8&product_type=service_period",
+		"/distribution?product_id=9223372036854775807&product_type=standard_product",
+		"/p/course-7?promotion_context=" + promotion,
+		"/pay/course-7?promotion_context=" + promotion,
+		"/s/term-31?promotion_context=" + promotion,
+		"/s/term-31/pay?promotion_context=" + promotion,
+	} {
+		digest := sha256.Sum256([]byte("distribution-valid-return-path:" + path))
+		if _, err := pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err != nil {
+			t.Fatalf("valid Distribution return path %q: %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		"/distribution?product_id=0&product_type=standard_product",
+		"/distribution?product_id=7&product_type=unknown",
+		"/distribution?product_type=standard_product&product_id=7",
+		"/distribution?product_id=7&product_type=standard_product&commission_rate=100",
+		"/distribution?product_id=7&product_type=standard_product%26receiver=x",
+		"/distribution?product_id=7&product_type=standard_product#fragment",
+		"/distribution?product_id=7&product_type=standard_product&product_type=service_period",
+		"/distribution?product_id=9223372036854775808&product_type=standard_product",
+		"/p/course-7?promotion_context=dpc_short",
+		"/p/course-7?promotion_context=" + promotion + "&next=/pay/course-7",
+		"/p/course-7?next=/pay/course-7&promotion_context=" + promotion,
+		"/p/course-7?promotion_context=" + promotion + "&promotion_context=" + promotion,
+		"/p/course%2d7?promotion_context=" + promotion,
+		"/p/course-7?promotion_context=dpc_" + strings.Repeat("A", 42),
+		"/p/course-7?promotion_context=" + promotion + "#fragment",
+		"/c/coupon-2026?promotion_context=" + promotion,
+	} {
+		digest := sha256.Sum256([]byte("distribution-invalid-return-path:" + path))
+		if _, err := pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err == nil {
+			t.Fatalf("unsafe Distribution return path accepted: %q", path)
 		}
 	}
 }

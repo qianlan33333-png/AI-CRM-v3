@@ -62,7 +62,7 @@ func (r *Repository) InsertAttributionWithin(ctx context.Context, attribution di
 	if err != nil {
 		return distributiondomain.Attribution{}, false, err
 	}
-	if !attribution.Valid() || policyID < 1 {
+	if !attribution.ValidForInsert() || policyID < 1 {
 		return distributiondomain.Attribution{}, false, ErrInvalid
 	}
 	var id int64

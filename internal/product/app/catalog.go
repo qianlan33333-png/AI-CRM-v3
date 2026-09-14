@@ -20,6 +20,7 @@ import (
 	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
@@ -189,24 +190,27 @@ func (s *Service) ListLegacy(ctx context.Context, limit, offset int32) (productp
 	}
 	return result, nil
 }
+
+// Get reuses an existing composition transaction when a downstream domain
+// performs its final lifecycle check before recording its own fact.  Opening a
+// second transaction here would fail closed and make that current-product
+// check impossible; the Product store remains the sole owner of its rows.
 func (s *Service) Get(ctx context.Context, id productport.ID) (productport.Product, error) {
 	if !ready(s) || id < 1 {
 		return productport.Product{}, ErrNotFound
 	}
-	var p productport.Product
-	err := s.uow.Within(ctx, func(tx context.Context) error {
-		var e error
-		p, e = s.store.Get(tx, id)
-		if e != nil {
-			return e
-		}
-		values := []productport.Product{p}
-		if e = s.attachSales(tx, values); e != nil {
-			return e
-		}
-		p = values[0]
-		return nil
-	})
+	var (
+		p   productport.Product
+		err error
+	)
+	if _, transactionErr := platformpostgres.RequireTransaction(ctx); transactionErr == nil {
+		p, err = s.getWithin(ctx, id)
+	} else {
+		err = s.uow.Within(ctx, func(tx context.Context) error {
+			p, err = s.getWithin(tx, id)
+			return err
+		})
+	}
 	if err != nil {
 		return productport.Product{}, classify(err)
 	}
@@ -217,6 +221,18 @@ func (s *Service) Get(ctx context.Context, id productport.ID) (productport.Produ
 		return productport.Product{}, ErrUnavailable
 	}
 	return p, nil
+}
+
+func (s *Service) getWithin(ctx context.Context, id productport.ID) (productport.Product, error) {
+	p, err := s.store.Get(ctx, id)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	values := []productport.Product{p}
+	if err = s.attachSales(ctx, values); err != nil {
+		return productport.Product{}, err
+	}
+	return values[0], nil
 }
 
 // GetByCode resolves the stable public product identifier. Callers must still

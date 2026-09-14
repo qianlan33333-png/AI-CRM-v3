@@ -32,10 +32,34 @@ type distributionHTTPPromotionStub struct{}
 func (distributionHTTPPromotionStub) ListPromotionProducts(context.Context, distributionport.TrustedSessionActor, string, int32) (distributionport.PromotionPage, error) {
 	return distributionport.PromotionPage{}, nil
 }
+func (distributionHTTPPromotionStub) ApplicationTarget(_ context.Context, id int64, kind distributiondomain.ProductType) (distributionport.ApplicationTarget, error) {
+	if id != 7 || kind != distributiondomain.ProductTypeStandard {
+		return distributionport.ApplicationTarget{}, distributionport.ErrNotFound
+	}
+	return distributionport.ApplicationTarget{ProductID: id, ProductType: kind, PolicyEnabled: true, ProductName: "申请商品", PurchaseURL: "/p/application-product"}, nil
+}
 func (distributionHTTPPromotionStub) IssuePromotionLink(context.Context, distributionport.IssuePromotionCommand) (distributionport.PromotionLink, error) {
 	return distributionport.PromotionLink{}, nil
 }
 func (distributionHTTPPromotionStub) ResolvePromotionTarget(context.Context, string) (string, error) {
+	return "", distributionport.ErrNotFound
+}
+
+type distributionHTTPCredentialPromotionStub struct {
+	issued distributionport.IssuePromotionCommand
+}
+
+func (stub *distributionHTTPCredentialPromotionStub) ListPromotionProducts(context.Context, distributionport.TrustedSessionActor, string, int32) (distributionport.PromotionPage, error) {
+	return distributionport.PromotionPage{Items: []distributionport.PromotionProduct{{ProductID: 7, ProductType: distributiondomain.ProductTypeStandard}}}, nil
+}
+func (*distributionHTTPCredentialPromotionStub) ApplicationTarget(context.Context, int64, distributiondomain.ProductType) (distributionport.ApplicationTarget, error) {
+	return distributionport.ApplicationTarget{}, distributionport.ErrNotFound
+}
+func (stub *distributionHTTPCredentialPromotionStub) IssuePromotionLink(_ context.Context, command distributionport.IssuePromotionCommand) (distributionport.PromotionLink, error) {
+	stub.issued = command
+	return distributionport.PromotionLink{URL: "https://crm.example.test/d/dpc_12345678901234567890", ExpiresAt: time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)}, nil
+}
+func (*distributionHTTPCredentialPromotionStub) ResolvePromotionTarget(context.Context, string) (string, error) {
 	return "", distributionport.ErrNotFound
 }
 
@@ -81,5 +105,61 @@ func TestCommissionsResponseMapsFrozenReadModelToPublicContract(t *testing.T) {
 	}
 	if w.Code != http.StatusOK || strings.Contains(body, `"Items"`) || strings.Contains(body, `"NextCursor"`) {
 		t.Fatalf("response=%d body=%s", w.Code, body)
+	}
+}
+
+func TestApplicationContextIsStrictPublicProductReadWithoutSession(t *testing.T) {
+	h, err := NewHandler(Config{Registration: distributionHTTPRegistrationStub{}, Promotion: distributionHTTPPromotionStub{}, Earnings: distributionHTTPEarningsStub{}, Sessions: distributionHTTPSessionStub{}, Bridge: distributionHTTPBridgeStub{}, AllowedOrigins: []string{"https://crm.example.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := httptest.NewRequest(http.MethodGet, "/api/v1/distribution/application-context?product_id=7&product_type=standard_product", nil)
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, valid)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"purchase_url":"/p/application-product"`) || strings.Contains(response.Body.String(), "customer") {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, path := range []string{
+		"/api/v1/distribution/application-context?product_id=07&product_type=standard_product",
+		"/api/v1/distribution/application-context?product_id=7&product_type=standard_product&next=/pay/x",
+		"/api/v1/distribution/application-context?product_id=7&product_id=8&product_type=standard_product",
+		"/api/v1/distribution/application-context?product_id=7&product_type=unknown",
+	} {
+		bad := httptest.NewRequest(http.MethodGet, path, nil)
+		out := httptest.NewRecorder()
+		h.ServeHTTP(out, bad)
+		if out.Code != http.StatusBadRequest {
+			t.Fatalf("path=%s code=%d body=%s", path, out.Code, out.Body.String())
+		}
+	}
+}
+
+func TestIssueCredentialUsesServerCandidateAndExactPublicContract(t *testing.T) {
+	promotion := &distributionHTTPCredentialPromotionStub{}
+	h, err := NewHandler(Config{Registration: distributionHTTPRegistrationStub{}, Promotion: promotion, Earnings: distributionHTTPEarningsStub{}, Sessions: distributionHTTPSessionStub{}, Bridge: distributionHTTPBridgeStub{}, AllowedOrigins: []string{"https://crm.example.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/distribution/products/7/promotion-credentials", nil)
+	request.Header.Set("Origin", "https://crm.example.test")
+	request.Header.Set("Idempotency-Key", "distribution-credential-7")
+	request.Header.Set(DistributionCSRFHeader, "csrf-proof")
+	request.AddCookie(&http.Cookie{Name: DistributionSessionCookieName, Value: "trusted"})
+	request.AddCookie(&http.Cookie{Name: DistributionCSRFCookieName, Value: "csrf-proof"})
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || promotion.issued.ProductID != 7 || promotion.issued.ProductType != distributiondomain.ProductTypeStandard || promotion.issued.IdempotencyKey != "distribution-credential-7" || !strings.Contains(response.Body.String(), `"url":"https://crm.example.test/d/dpc_12345678901234567890"`) || !strings.Contains(response.Body.String(), `"expires_at":"2026-09-15T00:00:00Z"`) || strings.Contains(response.Body.String(), "product_type") {
+		t.Fatalf("response=%d issued=%+v body=%s", response.Code, promotion.issued, response.Body.String())
+	}
+	bad := httptest.NewRequest(http.MethodPost, "/api/v1/distribution/products/7/promotion-credentials", strings.NewReader(`{"product_type":"service_period"}`))
+	bad.Header.Set("Origin", "https://crm.example.test")
+	bad.Header.Set("Idempotency-Key", "distribution-credential-invalid")
+	bad.Header.Set(DistributionCSRFHeader, "csrf-proof")
+	bad.AddCookie(&http.Cookie{Name: DistributionSessionCookieName, Value: "trusted"})
+	bad.AddCookie(&http.Cookie{Name: DistributionCSRFCookieName, Value: "csrf-proof"})
+	out := httptest.NewRecorder()
+	h.ServeHTTP(out, bad)
+	if out.Code != http.StatusMethodNotAllowed || promotion.issued.ProductType != distributiondomain.ProductTypeStandard {
+		t.Fatalf("body must be rejected code=%d issued=%+v", out.Code, promotion.issued)
 	}
 }

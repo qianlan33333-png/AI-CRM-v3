@@ -2,6 +2,7 @@ package webshell
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"mime"
 	"net/http"
@@ -11,6 +12,28 @@ import (
 	"strings"
 	"time"
 )
+
+// DistDistributionAdminAssets returns only the two named runtime files that
+// the V3 build declares for the embedded admin root. It deliberately does not
+// trust a whole standalone document as the page shell.
+func DistDistributionAdminAssets(distRoot string) (DistributionAssets, bool) {
+	if distRoot == "" {
+		return DistributionAssets{}, false
+	}
+	var manifest struct {
+		Entries map[string]string          `json:"entries"`
+		Files   map[string]json.RawMessage `json:"files"`
+	}
+	raw, err := os.ReadFile(filepath.Join(distRoot, "asset-manifest.json"))
+	if err != nil || json.Unmarshal(raw, &manifest) != nil {
+		return DistributionAssets{}, false
+	}
+	css, drawerCSS, js := manifest.Entries["distributionStyles"], manifest.Entries["sharedDetailDrawerStyles"], manifest.Entries["distributionAdmin"]
+	if !strings.HasPrefix(css, "assets/") || !strings.HasSuffix(css, ".css") || !strings.HasPrefix(drawerCSS, "assets/") || !strings.HasSuffix(drawerCSS, ".css") || !strings.HasPrefix(js, "assets/") || !strings.HasSuffix(js, ".js") || manifest.Files[css] == nil || manifest.Files[drawerCSS] == nil || manifest.Files[js] == nil {
+		return DistributionAssets{}, false
+	}
+	return DistributionAssets{CSS: "/" + css, DetailDrawerCSS: "/" + drawerCSS, AdminJS: "/" + js}, true
+}
 
 // The new-shell frontend builds every admin screen as a standalone document
 // under web/dist/admin.  When the composition root supplies a dist directory,

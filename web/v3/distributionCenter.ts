@@ -10,6 +10,9 @@ type Me = { distributor?: Distributor; readiness: Readiness; registrationRequire
 type ReceiverPreparation = { readiness: Readiness; state: 'ready' | 'processing' | 'requires_wechat_session' | 'unavailable'; retryAfterSeconds: number };
 type Agreement = { version: string; content: string };
 type PromotionProduct = { id: number; type: string; coverURL: string; purchaseURL: string; name: string; priceMinor: number; currency: string; rate: number; estimatedMinor: number; waitDays: number; ready: boolean; blockReason: string };
+type ApplicationContext = { productID: number; productType: 'standard_product' | 'service_period' };
+type ApplicationTarget = ApplicationContext & { name: string; purchaseURL: string };
+type ApplicationTargetState = 'none' | 'available' | 'unavailable' | 'failed';
 type Earnings = { gross: number; refunds: number; initial: number; adjustments: number; unsettled: number; paid: number; recovered: number; currency: string };
 type Commission = { id: string; order: string; product: string; initial: number; payable: number; paid: number; status: string; holdReason: string; cancelReason: string; exceptionReason: string; paidConfirmedAt: string; dueAt: string; paidAt: string; createdAt: string; currency: string };
 
@@ -39,6 +42,18 @@ function errorText(status: number, payload: unknown): string {
     qualification_unavailable: '推广资格暂时无法确认，未生成推广入口。', receiver_unavailable: '收款准备未完成，暂不能生成推广入口。', conflict: '数据已变化，请刷新后重试。', forbidden: '当前会话无权执行此操作。', unavailable: '服务暂时不可用，请稍后重试。', not_found: '请求的分销记录不存在。', invalid_request: '提交内容无效，未执行操作。',
   };
   return typeof code === 'string' && known[code] ? known[code] : `请求失败（HTTP ${status}）`;
+}
+function readinessReason(value: string): string {
+  const known: Record<string, string> = {
+    profit_sharing_provider_disabled: '商户暂未开通分佣结算，已注册信息会保留。',
+    receiver_not_ready: '微信收款准备未完成。',
+    receiver_unavailable: '微信收款准备暂不可用，请稍后刷新。',
+    receiver_accepted: '微信收款准备正在提交，请稍后刷新。',
+    receiver_outcome_unknown: '微信收款准备结果待核验，请稍后刷新。',
+    receiver_final_failed: '微信收款准备未完成，请稍后重试。',
+    requires_wechat_session: '请重新完成微信登录后继续收款准备。',
+  };
+  return known[value] || (value ? '微信收款状态待确认，请稍后刷新。' : '');
 }
 function distributionCSRF(): string {
   for (const part of document.cookie.split(';')) {
@@ -91,11 +106,35 @@ function parseReceiverPreparation(raw: unknown): ReceiverPreparation {
   if (!['ready', 'processing', 'requires_wechat_session', 'unavailable'].includes(state)) throw new Error('收款准备状态无效');
   return { readiness: { ready: bool(readiness.ready, 'receiver_readiness.ready'), reason: string(readiness.reason, 'receiver_readiness.reason', true), appID: string(readiness.app_id, 'receiver_readiness.app_id', true) }, state: state as ReceiverPreparation['state'], retryAfterSeconds: integer(setup.retry_after_seconds, 'setup.retry_after_seconds') };
 }
+function applicationContextFromLocation(): ApplicationContext | undefined {
+  const current = new URL(location.href);
+  // The public product identifier is only an application hint. Do not retain
+  // arbitrary query fields through OAuth, and never treat it as a credential.
+  if (current.pathname !== '/distribution' || current.searchParams.size !== 2) return undefined;
+  const ids = current.searchParams.getAll('product_id');
+  const types = current.searchParams.getAll('product_type');
+  if (ids.length !== 1 || types.length !== 1 || !/^[1-9][0-9]*$/.test(ids[0])) return undefined;
+  const productID = Number(ids[0]);
+  if (!Number.isSafeInteger(productID)) return undefined;
+  if (types[0] !== 'standard_product' && types[0] !== 'service_period') return undefined;
+  return { productID, productType: types[0] };
+}
+const applicationContext = applicationContextFromLocation();
+function applicationReturnPath(): string {
+  if (!applicationContext) return '/distribution';
+  return `/distribution?product_id=${applicationContext.productID}&product_type=${applicationContext.productType}`;
+}
+function wechatLoginURL(): string { return `/api/h5/wechat-pay/oauth/start?return_url=${encodeURIComponent(applicationReturnPath())}`; }
 function serverPurchaseURL(value: unknown): string {
   const raw = string(value, 'purchase_url');
   const url = new URL(raw, location.origin);
   if (url.origin !== location.origin || !/^\/(p|s)\//.test(url.pathname)) throw new Error('购买入口地址无效');
   return url.pathname + url.search + url.hash;
+}
+function parseApplicationTarget(raw: unknown): ApplicationTarget {
+  const row = obj(raw);
+  if (!applicationContext || bool(row.policy_enabled, 'policy_enabled') !== true || integer(row.product_id, 'product_id', 1) !== applicationContext.productID || string(row.product_type, 'product_type') !== applicationContext.productType) throw new Error('申请商品响应无效');
+  return { ...applicationContext, name: string(row.product_name, 'product_name'), purchaseURL: serverPurchaseURL(row.purchase_url) };
 }
 function parseProducts(raw: unknown): PromotionProduct[] {
   const value = obj(raw); if (!Array.isArray(value.items)) throw new Error('推广商品响应无效');
@@ -109,11 +148,24 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string): HTMLE
 function action(label: string, handler: () => void | Promise<void>, className = 'distribution-button'): HTMLButtonElement { const button = el('button', label); button.type = 'button'; button.className = className; button.addEventListener('click', () => void handler()); return button; }
 function status(value: string): HTMLSpanElement { const node = el('span', value); node.className = `distribution-status distribution-status-${value}`; return node; }
 
-let me: Me | undefined; let agreement: Agreement | undefined; let bridgeAttempted = false; let products: PromotionProduct[] = []; let productCursor = ''; let earnings: Earnings | undefined; let commissions: Commission[] = []; let commissionCursor = ''; let tab: 'products' | 'earnings' = 'products'; let commissionStatus = '';
+let me: Me | undefined; let agreement: Agreement | undefined; let bridgeAttempted = false; let products: PromotionProduct[] = []; let productCursor = ''; let applicationTarget: ApplicationTarget | undefined; let applicationTargetState: ApplicationTargetState = applicationContext ? 'failed' : 'none'; let earnings: Earnings | undefined; let commissions: Commission[] = []; let commissionCursor = ''; let tab: 'products' | 'earnings' = 'products'; let commissionStatus = '';
 function message(text: string, isError = false): void { const node = document.querySelector<HTMLElement>('[data-distribution-message]'); if (node) { node.textContent = text; node.dataset.error = String(isError); } }
+async function loadApplicationTarget(): Promise<void> {
+  applicationTarget = undefined;
+  if (!applicationContext) { applicationTargetState = 'none'; return; }
+  try {
+    applicationTarget = parseApplicationTarget(await request(`/api/v1/distribution/application-context?product_id=${applicationContext.productID}&product_type=${applicationContext.productType}`));
+    applicationTargetState = 'available';
+  } catch (error) {
+    // A link can outlive a policy or product. Keep it unactionable, but retain
+    // the distinct user-facing state instead of inventing product data.
+    applicationTargetState = (error as Error & { status?: number }).status === 404 ? 'unavailable' : 'failed';
+  }
+}
 async function reload(): Promise<void> {
   message('正在读取服务端分销状态…');
   try {
+    await loadApplicationTarget();
     const meRaw = await request('/api/v1/distribution/me'); me = parseMe(meRaw);
     if (me.registrationRequired) {
       agreement = parseAgreement(await request('/api/v1/distribution/agreement'));
@@ -128,8 +180,9 @@ async function reload(): Promise<void> {
     root.replaceChildren(el('section', error instanceof Error ? error.message : '分销状态读取失败')); root.firstElementChild?.classList.add('distribution-error');
   }
 }
-function renderLogin(): void { root.replaceChildren(); const card = el('section'); card.className = 'distribution-card distribution-login'; card.append(el('h1', '分销中心'), el('p', '请先使用微信登录，再查看推广资格和收益。')); const link = el('a', '使用微信登录'); link.href = '/auth/wechat/start?next=%2Fdistribution'; link.className = 'distribution-button'; card.append(link); root.append(card); }
-function renderRegistration(): void { root.replaceChildren(); const card = el('section'); card.className = 'distribution-card distribution-login'; card.append(el('h1', '申请成为分销员'), el('p', '注册成功后，可查看推广商品和我的收益；微信收款准备完成后才能生成推广入口。'));
+function applicationContextMessage(): string { if (applicationTargetState === 'unavailable') return '该申请链接对应的商品当前不可用，请返回商品页面重新获取申请入口。'; if (applicationTargetState === 'failed') return '暂时无法读取商品，请稍后重试。'; return ''; }
+function renderLogin(): void { root.replaceChildren(); const card = el('section'); card.className = 'distribution-card distribution-login'; const introduction = applicationTarget ? `申请推广：${applicationTarget.name}。请先使用微信登录，查看本商品的申请条件。` : applicationContextMessage() || '请先使用微信登录，再查看推广资格和收益。'; const detail = applicationTarget ? '登录后阅读协议并完成注册；请先购买本商品，购买成功后可参与推广。' : '微信登录后可查看当前协议、注册状态和收款准备。'; card.append(el('h1', '分销中心'), el('p', introduction), el('p', detail)); const link = el('a', '使用微信登录'); link.href = wechatLoginURL(); link.className = 'distribution-button'; card.append(link); root.append(card); }
+function renderRegistration(): void { root.replaceChildren(); const card = el('section'); card.className = 'distribution-card distribution-login'; const introduction = applicationTarget ? `你正在申请推广${applicationTarget.name}。注册后，请先购买本商品；购买成功后可参与推广。` : applicationContextMessage() || '注册成功后，可查看推广商品和我的收益；微信收款准备完成后才能生成推广入口。'; card.append(el('h1', '申请成为分销员'), el('p', introduction));
   if (!me?.currentAgreementVersion || !agreement || agreement.version !== me.currentAgreementVersion) { card.append(el('p', '当前分销协议版本读取失败，未提交注册。')); root.append(card); return; }
   const agree = el('label'); const check = document.createElement('input'); check.type = 'checkbox'; agree.append(check, document.createTextNode(` 我已阅读并同意当前分销协议（${me.currentAgreementVersion}）`));
   const agreementDetails = el('details'); agreementDetails.append(el('summary', `查看分销协议（${agreement.version}）`), el('p', agreement.content));
@@ -138,21 +191,33 @@ function renderRegistration(): void { root.replaceChildren(); const card = el('s
 function render(): void {
   if (!me) return; if (me.registrationRequired) { renderRegistration(); return; }
   root.replaceChildren(); const head = el('header'); head.className = 'distribution-head'; const identity = el('div'); identity.append(el('h1', '分销中心'), el('p', `分销员编号：${me.distributor?.publicNo || '待确认'} · 协议：${me.distributor?.agreementVersion || '—'}`)); head.append(identity, status(me.distributor?.enabled ? '已启用' : '已停用'));
-  const readiness = el('div'); readiness.className = 'distribution-readiness'; readiness.append(el('strong', me.readiness.ready ? '微信收款准备完成' : '微信收款准备未完成'), el('span', me.readiness.reason || (me.readiness.ready ? '可生成有效推广入口' : '请完成微信收款准备'))); if (!me.readiness.ready) readiness.append(action('完成收款准备', prepareReceiver)); head.append(readiness); root.append(head);
+  const readiness = el('div'); readiness.className = 'distribution-readiness'; readiness.append(el('strong', me.readiness.ready ? '微信收款准备完成' : '微信收款准备未完成'), el('span', readinessReason(me.readiness.reason) || (me.readiness.ready ? '可生成有效推广入口' : '请完成微信收款准备'))); if (!me.readiness.ready) readiness.append(action('完成收款准备', prepareReceiver)); head.append(readiness); root.append(head);
   const tabs = el('nav'); tabs.className = 'distribution-tabs'; for (const [key, label] of [['products', '推广商品'], ['earnings', '我的收益']] as const) { const button = action(label, () => { tab = key; render(); }, `distribution-tab${tab === key ? ' active' : ''}`); button.setAttribute('aria-current', tab === key ? 'page' : 'false'); tabs.append(button); } root.append(tabs);
   root.append(tab === 'products' ? productView() : earningsView()); const notice = el('p'); notice.dataset.distributionMessage = ''; notice.className = 'distribution-message'; root.append(notice);
 }
-function productView(): HTMLElement { const section = el('section'); section.className = 'distribution-grid'; if (!products.length) { section.append(el('p', '当前没有符合资格的可推广商品。完成同一商品的有效购买后，可从商品页进入购买。')); return section; } for (const item of products) { const card = el('article'); card.className = 'distribution-card distribution-product'; if (item.coverURL) { const image = document.createElement('img'); image.src = item.coverURL; image.alt = ''; card.append(image); } const body = el('div'); body.append(el('h2', item.name), el('p', `${money(item.priceMinor, item.currency)} · 佣金 ${(item.rate / 100).toFixed(2)}% · 预计 ${money(item.estimatedMinor, item.currency)}`), el('p', `支付确认后等待 ${item.waitDays} 天复核退款状态。`)); const reason = item.ready ? '' : item.blockReason || '微信收款准备未完成'; if (!item.ready) body.append(el('p', `暂不能推广：${reason}`)); const purchase = el('a', '查看商品并购买'); purchase.href = item.purchaseURL; purchase.className = 'distribution-button'; body.append(purchase, action(item.ready ? '生成推广入口' : '完善收款准备', async () => { if (!item.ready) { await prepareReceiver(); return; } await createCredential(item); }, item.ready ? 'distribution-button primary' : 'distribution-button')); card.append(body); section.append(card); } if (productCursor) { const more = action('加载更多商品', async () => { try { const raw = await request(`/api/v1/distribution/products?limit=50&cursor=${encodeURIComponent(productCursor)}`); products.push(...parseProducts(raw)); productCursor = string(obj(raw).next_cursor, 'next_cursor', true); render(); } catch (error) { message(error instanceof Error ? error.message : '推广商品读取失败', true); } }); section.append(more); } return section; }
+function applicationTargetCard(): HTMLElement | undefined {
+  if (!applicationContext) return undefined;
+  const card = el('article');
+  card.className = 'distribution-card';
+  if (applicationTargetState === 'available' && applicationTarget) {
+    card.append(el('h2', applicationTarget.name), el('p', '请先购买本商品，购买成功后可参与推广。'));
+    const purchase = el('a', '查看商品并购买'); purchase.href = applicationTarget.purchaseURL; purchase.className = 'distribution-button'; card.append(purchase);
+    return card;
+  }
+  card.append(el('h2', '申请商品'), el('p', applicationContextMessage()));
+  return card;
+}
+function productView(): HTMLElement { const section = el('section'); section.className = 'distribution-grid'; const requestedProductListed = Boolean(applicationTarget && products.some((item) => item.id === applicationTarget!.productID && item.type === applicationTarget!.productType)); const requestedCard = requestedProductListed ? undefined : applicationTargetCard(); if (requestedCard) section.append(requestedCard); if (!products.length) { if (!requestedCard) { const card = el('article'); card.className = 'distribution-card'; card.append(el('h2', '暂无可推广商品'), el('p', '当前没有可推广商品，请稍后再来查看。')); section.append(card); } return section; } for (const item of products) { const card = el('article'); card.className = 'distribution-card distribution-product'; if (item.coverURL) { const image = document.createElement('img'); image.src = item.coverURL; image.alt = ''; card.append(image); } const body = el('div'); body.append(el('h2', item.name), el('p', `${money(item.priceMinor, item.currency)} · 佣金 ${(item.rate / 100).toFixed(2)}% · 预计 ${money(item.estimatedMinor, item.currency)}`), el('p', `支付确认后等待 ${item.waitDays} 天复核退款状态。`)); const reason = item.ready ? '' : readinessReason(item.blockReason) || '微信收款准备未完成'; if (!item.ready) body.append(el('p', `暂不能推广：${reason}`)); const purchase = el('a', '查看商品并购买'); purchase.href = item.purchaseURL; purchase.className = 'distribution-button'; body.append(purchase, action(item.ready ? '生成推广入口' : '完善收款准备', async () => { if (!item.ready) { await prepareReceiver(); return; } await createCredential(item); }, item.ready ? 'distribution-button primary' : 'distribution-button')); card.append(body); section.append(card); } if (productCursor) { const more = action('加载更多商品', async () => { try { const raw = await request(`/api/v1/distribution/products?limit=50&cursor=${encodeURIComponent(productCursor)}`); products.push(...parseProducts(raw)); productCursor = string(obj(raw).next_cursor, 'next_cursor', true); render(); } catch (error) { message(error instanceof Error ? error.message : '推广商品读取失败', true); } }); section.append(more); } return section; }
 async function prepareReceiver(): Promise<void> {
   try {
     const prepared = parseReceiverPreparation(await request('/api/v1/distribution/receiver-preparation', { method: 'POST', headers: mutationHeaders('receiver-preparation') }));
-    if (prepared.state === 'requires_wechat_session') { location.assign('/auth/wechat/start?next=%2Fdistribution'); return; }
+    if (prepared.state === 'requires_wechat_session') { location.assign(wechatLoginURL()); return; }
     if (prepared.state === 'processing') { message(`收款准备处理中，请在 ${prepared.retryAfterSeconds} 秒后刷新状态。`); return; }
-    if (prepared.state === 'unavailable') { message(prepared.readiness.reason || '收款准备暂不可用，请稍后重试。', true); return; }
+    if (prepared.state === 'unavailable') { message(readinessReason(prepared.readiness.reason) || '收款准备暂不可用，请稍后重试。', true); return; }
     await reload();
   } catch (error) { message(error instanceof Error ? error.message : '收款准备失败', true); }
 }
-async function createCredential(item: PromotionProduct): Promise<void> { try { const result = obj(await request(`/api/v1/distribution/products/${item.id}/promotion-credentials`, { method: 'POST', headers: mutationHeaders(`promotion-credential:${item.id}`), body: JSON.stringify({ product_type: item.type }) })); const url = string(result.promotion_url, 'promotion_url'); const parsed = new URL(url, location.origin); if (parsed.origin !== location.origin || !/^\/d\/[A-Za-z0-9_-]{16,200}$/.test(parsed.pathname) || parsed.search || parsed.hash) throw new Error('推广入口不是当前站点的受控路径'); await showPromotion(parsed.toString(), string(result.credential_expires_at, 'credential_expires_at')); } catch (error) { await reload(); message(error instanceof Error ? error.message : '推广入口生成失败', true); } }
+async function createCredential(item: PromotionProduct): Promise<void> { try { const result = obj(await request(`/api/v1/distribution/products/${item.id}/promotion-credentials`, { method: 'POST', headers: mutationHeaders(`promotion-credential:${item.id}`) })); const url = string(result.url, 'url'); const parsed = new URL(url, location.origin); if (parsed.origin !== location.origin || !/^\/d\/[A-Za-z0-9_-]{16,200}$/.test(parsed.pathname) || parsed.search || parsed.hash) throw new Error('推广入口不是当前站点的受控路径'); await showPromotion(parsed.toString(), string(result.expires_at, 'expires_at')); } catch (error) { await reload(); message(error instanceof Error ? error.message : '推广入口生成失败', true); } }
 async function showPromotion(url: string, expiresAt: string): Promise<void> { const dialog = document.createElement('dialog'); dialog.className = 'distribution-dialog'; const card = el('section'); card.className = 'distribution-card'; card.append(el('h2', '专属推广入口'), el('p', `有效期至：${time(expiresAt)}`)); const qr = el('div'); qr.className = 'distribution-qr'; const { renderQr } = await import('../src/admin/sections/qr'); renderQr(qr, url, '推广入口'); const link = el('input') as HTMLInputElement; link.value = url; link.readOnly = true; card.append(qr, link, action('复制链接', async () => { if (!navigator.clipboard?.writeText) { link.focus(); link.select(); message('当前环境不支持自动复制，请复制页面中的推广链接。', true); return; } try { await navigator.clipboard.writeText(url); message('推广链接已复制。'); dialog.close(); } catch { link.focus(); link.select(); message('未能自动复制，请复制页面中的推广链接。', true); } }), action('关闭', () => dialog.close())); dialog.append(card); dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal(); }
 function earningsView(): HTMLElement { const section = el('section'); if (!earnings) { section.append(el('p', '收益汇总读取失败。')); return section; } const cards = el('div'); cards.className = 'distribution-metrics'; const entries: Array<[string, string, string]> = [['累计推广成交额', money(earnings.gross, earnings.currency), `退款另列 ${money(earnings.refunds, earnings.currency)}`], ['累计产生佣金', money(earnings.initial, earnings.currency), `调整另列 ${money(earnings.adjustments, earnings.currency)}`], ['未结算佣金', money(earnings.unsettled, earnings.currency), '含暂缓及异常待付'], ['已到账佣金', money(earnings.paid, earnings.currency), `追回另列 ${money(earnings.recovered, earnings.currency)}`]]; for (const [label, value, note] of entries) { const card = el('article'); card.className = 'distribution-card'; card.append(el('span', label), el('strong', value), el('small', note)); cards.append(card); } section.append(cards);
   const filters = el('div'); filters.className = 'distribution-filters'; for (const [value, label] of [['', '全部'], ['pending', '待结算'], ['held', '暂缓'], ['settling', '结算中'], ['paid', '已到账'], ['cancelled', '已取消'], ['exception', '异常']] as const) filters.append(action(label, async () => { try { commissionStatus = value; const query = value ? `?status=${encodeURIComponent(value)}&limit=50` : '?limit=50'; const raw = await request(`/api/v1/distribution/commissions${query}`); commissions = parseCommissions(raw); commissionCursor = string(obj(raw).next_cursor, 'next_cursor', true); render(); } catch (error) { message(error instanceof Error ? error.message : '佣金明细读取失败', true); } }, `distribution-tab${commissionStatus === value ? ' active' : ''}`)); section.append(filters);

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ type AdminExceptionDetail struct {
 
 type OperationReceipt struct {
 	PayloadDigest [sha256.Size]byte
+	ResultKind    string
 	ResultID      int64
 }
 
@@ -139,7 +141,7 @@ func (r *Repository) ReadOperationReceiptWithin(ctx context.Context, operation, 
 		return OperationReceipt{}, false, ErrInvalid
 	}
 	keyDigest := sha256.Sum256([]byte(idempotencyKey))
-	result, err := scanOperationReceipt(tx.QueryRow(ctx, `SELECT payload_digest,result_id FROM distribution_operation_receipts WHERE operation=$1 AND actor_scope=$2 AND key_digest=$3`, operation, actorScope, keyDigest[:]))
+	result, err := scanOperationReceipt(tx.QueryRow(ctx, `SELECT payload_digest,result_kind,result_id FROM distribution_operation_receipts WHERE operation=$1 AND actor_scope=$2 AND key_digest=$3`, operation, actorScope, keyDigest[:]))
 	if errors.Is(err, distributionport.ErrNotFound) {
 		return OperationReceipt{}, false, nil
 	}
@@ -149,18 +151,36 @@ func (r *Repository) ReadOperationReceiptWithin(ctx context.Context, operation, 
 	return result, true, nil
 }
 
+// LockOperationReceiptWithin serializes competing commands for one immutable
+// receipt key. It holds only a PostgreSQL transaction advisory lock and never
+// stores the raw browser idempotency key.
+func (r *Repository) LockOperationReceiptWithin(ctx context.Context, operation, actorScope, idempotencyKey string) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if operation == "" || actorScope == "" || !validAdminIdempotencyKey(idempotencyKey) {
+		return ErrInvalid
+	}
+	keyDigest := sha256.Sum256([]byte(idempotencyKey))
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "distribution.receipt:"+operation+":"+actorScope+":"+hex.EncodeToString(keyDigest[:]))
+	return mapError(err)
+}
+
 func scanOperationReceipt(row rowScanner) (OperationReceipt, error) {
 	var result OperationReceipt
-	err := row.Scan(&result.PayloadDigest, &result.ResultID)
+	var raw []byte
+	err := row.Scan(&raw, &result.ResultKind, &result.ResultID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OperationReceipt{}, distributionport.ErrNotFound
 	}
 	if err != nil {
 		return OperationReceipt{}, mapError(err)
 	}
-	if result.ResultID < 1 {
+	if len(raw) != sha256.Size || result.ResultID < 1 || !validOperationReceiptResultKind(result.ResultKind) {
 		return OperationReceipt{}, distributionport.ErrUnavailable
 	}
+	copy(result.PayloadDigest[:], raw)
 	return result, nil
 }
 
@@ -169,18 +189,26 @@ func (r *Repository) AppendOperationReceiptWithin(ctx context.Context, operation
 	if err != nil {
 		return err
 	}
-	if operation == "" || actorScope == "" || !validAdminIdempotencyKey(idempotencyKey) || resultID < 1 || !validAdminResultKind(resultKind) || at.IsZero() {
+	if operation == "" || actorScope == "" || !validAdminIdempotencyKey(idempotencyKey) || resultID < 1 || !validOperationReceiptResultKind(resultKind) || at.IsZero() {
 		return ErrInvalid
 	}
 	keyDigest := sha256.Sum256([]byte(idempotencyKey))
-	_, err = tx.Exec(ctx, `INSERT INTO distribution_operation_receipts(operation,actor_scope,key_digest,payload_digest,result_kind,result_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, operation, actorScope, keyDigest[:], payloadDigest[:], resultKind, resultID, at.UTC())
-	return mapError(err)
+	result, err := tx.Exec(ctx, `INSERT INTO distribution_operation_receipts(operation,actor_scope,key_digest,payload_digest,result_kind,result_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(operation,actor_scope,key_digest) DO NOTHING`, operation, actorScope, keyDigest[:], payloadDigest[:], resultKind, resultID, at.UTC())
+	if err != nil {
+		return mapError(err)
+	}
+	if result.RowsAffected() != 1 {
+		return distributionport.ErrConflict
+	}
+	return nil
 }
 
 func validAdminIdempotencyKey(value string) bool {
 	return value == strings.TrimSpace(value) && len(value) >= 16 && len(value) <= 200
 }
-func validAdminResultKind(value string) bool { return value == "distributor" || value == "exception" }
+func validOperationReceiptResultKind(value string) bool {
+	return value == "distributor" || value == "credential" || value == "exception"
+}
 func validExceptionStatus(value string) bool {
 	switch value {
 	case "open", "querying", "resolved", "merchant_liability_recorded", "recovery_recorded":

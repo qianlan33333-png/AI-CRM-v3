@@ -244,26 +244,86 @@ function editorDistributionPolicy(): DistributionPolicy {
 }
 
 function mountDistributionPolicyControls(): void {
-  const prefix = productPrefix();
-  if (!prefix || document.querySelector('[data-distribution-policy]')) return;
+  const route = productEditorRoute();
+  if (!route || document.querySelector('[data-distribution-policy]')) return;
+  const prefix = route.prefix;
+  const snapshot = prefix === 'pf' ? openedProductPayloads.get(route.id) : periodicSnapshots.get(route.id);
+  // The observer can fire while a frozen donor form is still loading. Wait for
+  // its authoritative snapshot hook instead of mutating the DOM with an error,
+  // which would trigger the observer again and fabricate a draft policy.
+  if (!snapshot) return;
   const anchor = document.getElementById(prefix === 'pf' ? 'product-action' : 'sp-action');
   if (!anchor) return;
   let policy: DistributionPolicy;
-  try { policy = editorDistributionPolicy(); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
+  try { policy = distributionPolicy(snapshot.distribution_policy); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
   const host = document.createElement('section');
+  host.className = 'product-distribution-policy';
   host.dataset.distributionPolicy = '';
   host.dataset.distributionPolicyVersion = String(policy.version);
-  host.style.cssText = 'display:grid;gap:12px;margin:0 0 14px;padding:16px 18px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
-  host.innerHTML = `<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><h3 style="margin:0;font-size:15px;font-weight:600">分销设置</h3><p style="margin:5px 0 0;color:#667085;font-size:12px;line-height:19px">仅本人有效购买过本商品，才可参与推广。</p></div><label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#344054"><input type="checkbox" data-distribution-policy-enabled> 启用分销</label></div><div data-distribution-policy-fields style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px"><label style="display:grid;gap:6px;font-size:12px;color:#646A73">佣金比例（%）<input data-distribution-policy-rate type="number" min="0" max="30" step="0.01" inputmode="decimal" style="min-height:36px;border:1px solid #DEE0E3;border-radius:6px;padding:0 10px;font-size:13px"></label><label style="display:grid;gap:6px;font-size:12px;color:#646A73">退款复核等待（天）<input data-distribution-policy-wait-days type="number" min="0" max="29" step="1" inputmode="numeric" style="min-height:36px;border:1px solid #DEE0E3;border-radius:6px;padding:0 10px;font-size:13px"></label></div>`;
-  const enabled = host.querySelector<HTMLInputElement>('[data-distribution-policy-enabled]')!;
-  const rate = host.querySelector<HTMLInputElement>('[data-distribution-policy-rate]')!;
-  const days = host.querySelector<HTMLInputElement>('[data-distribution-policy-wait-days]')!;
+  const head = document.createElement('div'); head.className = 'product-distribution-policy__head';
+  const intro = document.createElement('div');
+  const heading = document.createElement('h3'); heading.className = 'product-distribution-policy__title'; heading.textContent = '分销设置';
+  const hint = document.createElement('p'); hint.className = 'product-distribution-policy__hint'; hint.textContent = '仅本人有效购买过本商品，才可参与推广。';
+  intro.append(heading, hint);
+  const toggle = document.createElement('label'); toggle.className = 'product-distribution-policy__toggle';
+  const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.dataset.distributionPolicyEnabled = '';
+  toggle.append(enabled, document.createTextNode('启用分销'));
+  head.append(intro, toggle);
+  const fields = document.createElement('div'); fields.className = 'product-distribution-policy__fields'; fields.dataset.distributionPolicyFields = '';
+  const policyField = (label: string, name: string, max: string, step: string, inputmode: 'decimal' | 'numeric'): HTMLInputElement => {
+    const field = document.createElement('label'); field.className = 'product-distribution-policy__field'; field.append(document.createTextNode(label));
+    const input = document.createElement('input'); input.name = name; input.type = 'number'; input.min = '0'; input.max = max; input.step = step; input.inputMode = inputmode; field.append(input); fields.append(field); return input;
+  };
+  const rate = policyField('佣金比例（%）', 'distribution-policy-rate', '30', '0.01', 'decimal'); rate.dataset.distributionPolicyRate = '';
+  const days = policyField('退款复核等待（天）', 'distribution-policy-wait-days', '29', '1', 'numeric'); days.dataset.distributionPolicyWaitDays = '';
+  host.append(head, fields);
   enabled.checked = policy.enabled;
   rate.value = (policy.commissionRateBasisPoints / 100).toFixed(2);
   days.value = String(policy.waitDays);
-  const fields = host.querySelector<HTMLElement>('[data-distribution-policy-fields]')!;
-  const update = () => { fields.style.opacity = enabled.checked ? '1' : '.62'; };
+  const policyFields = host.querySelector<HTMLElement>('[data-distribution-policy-fields]')!;
+  const update = () => { policyFields.classList.toggle('is-disabled', !enabled.checked); };
   enabled.addEventListener('change', update); update();
+  // This is a public application entry, not a promotion credential. It is
+  // intentionally derived only from the already persisted policy snapshot:
+  // ticking the checkbox must never claim that an unsaved policy is live.
+  if (policy.enabled) {
+    const application = document.createElement('div');
+    application.dataset.distributionApplicationEntry = '';
+    application.className = 'product-distribution-policy__application';
+    const title = document.createElement('strong');
+    title.className = 'product-distribution-policy__application-title';
+    title.textContent = '分销员申请入口';
+    const note = document.createElement('p');
+    note.className = 'product-distribution-policy__application-hint';
+    note.textContent = '分享给想申请推广的人。申请、购买资格和微信收款准备均以分销中心的服务端状态为准。';
+    const url = new URL('/distribution', location.origin);
+    url.searchParams.set('product_id', String(route.id));
+    url.searchParams.set('product_type', route.prefix === 'pf' ? 'standard_product' : 'service_period');
+    const link = document.createElement('input');
+    link.readOnly = true;
+    link.value = url.toString();
+    link.dataset.distributionApplicationLink = '';
+    link.className = 'product-distribution-policy__application-link';
+    const qr = document.createElement('div');
+    qr.dataset.distributionApplicationQR = '';
+    qr.className = 'product-distribution-policy__qr';
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'product-distribution-policy__copy'; copy.textContent = '复制申请链接';
+    copy.addEventListener('click', async () => {
+      if (!navigator.clipboard?.writeText) { link.focus(); link.select(); showMessage('当前环境不支持自动复制，请复制申请链接。'); return; }
+      try { await navigator.clipboard.writeText(url.toString()); showMessage('分销员申请链接已复制。', true); }
+      catch { link.focus(); link.select(); showMessage('未能自动复制，请复制申请链接。'); }
+    });
+    const linkRow = document.createElement('div'); linkRow.className = 'product-distribution-policy__application-row'; linkRow.append(link, copy);
+    application.append(title, note, linkRow, qr);
+    renderQr(qr, url.toString(), '分销员申请入口');
+    host.append(application);
+  } else {
+    const note = document.createElement('p');
+    note.dataset.distributionApplicationPending = '';
+    note.className = 'product-distribution-policy__pending';
+    note.textContent = '保存并启用分销后，才会生成可分享的分销员申请入口。';
+    host.append(note);
+  }
   anchor.parentElement?.insertBefore(host, anchor);
 }
 
@@ -273,6 +333,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   const method = (init?.method || request?.method || 'GET').toUpperCase();
   const context = productSaveContext;
   const periodicMatch = url.origin === location.origin && url.pathname.match(/^\/api\/admin\/service-period-products\/([1-9][0-9]*)$/);
+  const periodicCollection = url.origin === location.origin && url.pathname === '/api/admin/service-period-products';
 
   // The donor save helper re-reads immediately before PUT and would otherwise
   // silently replace the version observed when this editor opened.  Replay
@@ -305,16 +366,24 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (isProductSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
   if (isDistributionProductSubjectWrite(url, method)) nextInit = adaptDistributionPolicyWrite(nextInit);
   const response = await donorFetch(input, nextInit);
-  if (periodicMatch && (method === 'GET' || method === 'PUT') && response.ok) {
-    const value = object(await response.clone().json());
-    const product = object(value.product || value);
-    const id = Number(product.service_product_id || product.id);
-    if (method === 'PUT' || !periodicSnapshots.has(id)) periodicSnapshots.set(id, product);
-    const action = object(product.admin_projection);
-    if (Number.isSafeInteger(id) && id > 0) purchaseActionByProduct.set(id, {
-      enabled: action.purchase_action_enabled === true,
-      mode: action.purchase_action_mode === 'qr' || action.purchase_action_mode === 'redirect' ? action.purchase_action_mode : '',
-    });
+  if ((periodicMatch && (method === 'GET' || method === 'PUT')) || (periodicCollection && method === 'POST')) {
+    if (response.ok) {
+      const value = object(await response.clone().json());
+      const product = object(value.product || value);
+      const id = Number(product.service_product_id || product.id);
+      if (Number.isSafeInteger(id) && id > 0) {
+        // POST, GET, and PUT all return an authoritative service-period
+        // snapshot. Keep it for the next saved dimension; never synthesize it
+        // from the still-editable donor form.
+        if (method === 'POST' || method === 'PUT' || !periodicSnapshots.has(id)) periodicSnapshots.set(id, product);
+        mountDistributionPolicyControls();
+        const action = object(product.admin_projection);
+        purchaseActionByProduct.set(id, {
+          enabled: action.purchase_action_enabled === true,
+          mode: action.purchase_action_mode === 'qr' || action.purchase_action_mode === 'redirect' ? action.purchase_action_mode : '',
+        });
+      }
+    }
   }
 
   if (url.origin === location.origin && method === 'PUT' && /^\/api\/v1\/products\/[1-9][0-9]*$/.test(url.pathname) && response.ok) {
@@ -444,6 +513,10 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
       mode: rawAction.purchase_action_mode === 'qr' || rawAction.purchase_action_mode === 'redirect' ? rawAction.purchase_action_mode : '',
     });
     openedProductPayloads.set(productID, object(rawProduct));
+    // The donor can render #product-action before this authoritative Product
+    // payload is saved locally. Mount explicitly after the snapshot write so
+    // a revisit cannot miss the policy controls or application link.
+    mountDistributionPolicyControls();
     product.externalPush = externalPushProjection(rawExternalPush, productID);
     loadedProducts = [product];
     db.rows.products = loadedProducts;
@@ -621,14 +694,18 @@ type ExternalPushTimelineItem = {
 };
 
 function productEditorRoute(): { id: number; prefix: 'pf' | 'spf' } | undefined {
-  const canonical = location.pathname.match(/^\/admin\/(wechat-pay\/products|service-period-products)\/([1-9][0-9]*)\/edit$/);
+  let pathname: string; let search: string;
+  // Mutation observers can be flushed by JSDOM after its Window is closed.
+  // Browser routes remain unchanged; a disposed document simply has no editor.
+  try { pathname = location.pathname; search = location.search; } catch { return undefined; }
+  const canonical = pathname.match(/^\/admin\/(wechat-pay\/products|service-period-products)\/([1-9][0-9]*)\/edit$/);
   const prefix = canonical ? canonical[1] === 'wechat-pay/products' ? 'pf' : 'spf'
-    : /^\/admin\/(?:wechat-pay\/)?productForm\.html$/.test(location.pathname) ? 'pf'
-    : /^\/admin\/(?:wechat-pay\/)?spProductForm\.html$/.test(location.pathname) ? 'spf' : undefined;
-  const raw = canonical?.[2] || new URLSearchParams(location.search).get('id') || '';
+    : /^\/admin\/(?:wechat-pay\/)?productForm\.html$/.test(pathname) ? 'pf'
+    : /^\/admin\/(?:wechat-pay\/)?spProductForm\.html$/.test(pathname) ? 'spf' : undefined;
+  const raw = canonical?.[2] || new URLSearchParams(search).get('id') || '';
   const id = Number(raw);
   if (!prefix || !/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(id)) return undefined;
-  return {id, prefix};
+  return { id, prefix };
 }
 
 function externalPushPage(): ExternalPushPage | undefined {

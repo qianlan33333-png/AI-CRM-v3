@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -20,8 +22,12 @@ import (
 type registrationStore interface {
 	ActiveAgreementWithin(context.Context) (distributionstore.Agreement, error)
 	ReadDistributorByCustomerWithin(context.Context, int64, bool) (distributiondomain.Distributor, distributionport.ReceiverReadiness, error)
+	ReadDistributorWithin(context.Context, int64, bool) (distributiondomain.Distributor, distributionport.ReceiverReadiness, error)
 	InsertDistributorWithin(context.Context, int64, string, string, time.Time) (distributiondomain.Distributor, distributionport.ReceiverReadiness, error)
 	UpdateReceiverReadinessWithin(context.Context, int64, int64, distributionport.ReceiverReadiness, time.Time) (distributiondomain.Distributor, distributionport.ReceiverReadiness, error)
+	LockOperationReceiptWithin(context.Context, string, string, string) error
+	ReadOperationReceiptWithin(context.Context, string, string, string) (distributionstore.OperationReceipt, bool, error)
+	AppendOperationReceiptWithin(context.Context, string, string, string, [sha256.Size]byte, string, int64, time.Time) error
 	AppendAuditWithin(context.Context, string, string, int64, string, any, time.Time) error
 	AppendOutboxWithin(context.Context, string, string, int64, any, time.Time) error
 }
@@ -92,18 +98,42 @@ func (s *RegistrationService) Register(ctx context.Context, command distribution
 	if s == nil || s.uow == nil || s.store == nil || !command.Actor.Valid() || command.AgreementVersion != strings.TrimSpace(command.AgreementVersion) || command.AgreementVersion == "" || len(command.AgreementVersion) > 100 || command.IdempotencyKey != strings.TrimSpace(command.IdempotencyKey) || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 200 {
 		return distributionport.DistributorProfile{}, distributionport.ErrConflict
 	}
+	actorScope := registrationActorScope(command.Actor)
+	payloadDigest := registrationPayloadDigest(command.AgreementVersion)
 	var profile distributionport.DistributorProfile
 	err := s.uow.Within(ctx, func(tx context.Context) error {
+		if err := s.store.LockOperationReceiptWithin(tx, "register", actorScope, command.IdempotencyKey); err != nil {
+			return err
+		}
 		agreement, err := s.store.ActiveAgreementWithin(tx)
 		if err != nil {
 			return err
+		}
+		if replay, found, replayErr := s.registrationReplay(tx, command, actorScope, payloadDigest, agreement.Version); replayErr != nil {
+			return replayErr
+		} else if found {
+			profile = replay
+			return nil
 		}
 		if agreement.Version != command.AgreementVersion {
 			return distributionport.ErrConflict
 		}
 		existing, readiness, err := s.store.ReadDistributorByCustomerWithin(tx, command.Actor.CustomerID, true)
 		if err == nil {
-			profile = distributionport.DistributorProfile{Distributor: existing, Receiver: readiness, CurrentAgreementVersion: agreement.Version}
+			profile, err = s.registrationRecordExisting(tx, command, actorScope, payloadDigest, agreement.Version, existing, readiness)
+			if errors.Is(err, distributionport.ErrConflict) {
+				var found bool
+				profile, found, err = s.registrationReplay(tx, command, actorScope, payloadDigest, agreement.Version)
+				if err == nil && found {
+					return nil
+				}
+				if err == nil {
+					err = distributionport.ErrConflict
+				}
+			}
+			if err != nil {
+				return err
+			}
 			return nil
 		}
 		if !errors.Is(err, distributionport.ErrNotFound) {
@@ -123,15 +153,50 @@ func (s *RegistrationService) Register(ctx context.Context, command distribution
 			if !errors.Is(err, distributionport.ErrConflict) {
 				return err
 			}
+			if replay, found, replayErr := s.registrationReplay(tx, command, actorScope, payloadDigest, agreement.Version); replayErr != nil {
+				return replayErr
+			} else if found {
+				profile = replay
+				return nil
+			}
+			existing, readiness, err = s.store.ReadDistributorByCustomerWithin(tx, command.Actor.CustomerID, true)
+			if err == nil {
+				profile, err = s.registrationRecordExisting(tx, command, actorScope, payloadDigest, agreement.Version, existing, readiness)
+				if errors.Is(err, distributionport.ErrConflict) {
+					var found bool
+					profile, found, err = s.registrationReplay(tx, command, actorScope, payloadDigest, agreement.Version)
+					if err == nil && found {
+						return nil
+					}
+					if err == nil {
+						err = distributionport.ErrConflict
+					}
+				}
+				return err
+			}
+			if !errors.Is(err, distributionport.ErrNotFound) {
+				return err
+			}
 		}
 		if saved.ID < 1 {
 			return distributionport.ErrUnavailable
 		}
 		payload := map[string]any{"distributor_id": saved.ID, "agreement_version": agreement.Version}
-		if err = s.store.AppendAuditWithin(tx, "distribution.distributor_registered.v1", "distributor", saved.ID, "customer:"+decimal(command.Actor.CustomerID), payload, now); err != nil {
+		if err = s.store.AppendOperationReceiptWithin(tx, "register", actorScope, command.IdempotencyKey, payloadDigest, "distributor", saved.ID, now); err != nil {
+			if errors.Is(err, distributionport.ErrConflict) {
+				if replay, found, replayErr := s.registrationReplay(tx, command, actorScope, payloadDigest, agreement.Version); replayErr != nil {
+					return replayErr
+				} else if found {
+					profile = replay
+					return nil
+				}
+			}
 			return err
 		}
-		if err = s.store.AppendOutboxWithin(tx, "distribution.distributor_registered.v1", "distribution.register:"+command.IdempotencyKey, saved.ID, payload, now); err != nil {
+		if err = s.store.AppendAuditWithin(tx, "distribution.distributor_registered.v1", "distributor", saved.ID, actorScope, payload, now); err != nil {
+			return err
+		}
+		if err = s.store.AppendOutboxWithin(tx, "distribution.distributor_registered.v1", registrationOutboxKey(actorScope, command.IdempotencyKey), saved.ID, payload, now); err != nil {
 			return err
 		}
 		profile = distributionport.DistributorProfile{Distributor: saved, Receiver: readiness, CurrentAgreementVersion: agreement.Version}
@@ -141,6 +206,54 @@ func (s *RegistrationService) Register(ctx context.Context, command distribution
 		return distributionport.DistributorProfile{}, err
 	}
 	return profile, nil
+}
+
+func (s *RegistrationService) registrationReplay(ctx context.Context, command distributionport.RegisterCommand, actorScope string, digest [sha256.Size]byte, currentAgreement string) (distributionport.DistributorProfile, bool, error) {
+	receipt, found, err := s.store.ReadOperationReceiptWithin(ctx, "register", actorScope, command.IdempotencyKey)
+	if err != nil || !found {
+		return distributionport.DistributorProfile{}, found, err
+	}
+	if receipt.PayloadDigest != digest {
+		return distributionport.DistributorProfile{}, true, distributionport.ErrConflict
+	}
+	if receipt.ResultKind != "distributor" {
+		return distributionport.DistributorProfile{}, true, distributionport.ErrConflict
+	}
+	distributor, readiness, err := s.store.ReadDistributorWithin(ctx, receipt.ResultID, false)
+	if err != nil {
+		return distributionport.DistributorProfile{}, true, err
+	}
+	if distributor.CustomerID != command.Actor.CustomerID {
+		return distributionport.DistributorProfile{}, true, distributionport.ErrConflict
+	}
+	return distributionport.DistributorProfile{Distributor: distributor, Receiver: readiness, CurrentAgreementVersion: currentAgreement}, true, nil
+}
+
+// registrationRecordExisting provides an idempotency receipt for a valid
+// registration made before receipts existed. It intentionally does not append
+// a second registered audit or outbox event, because no new registration fact
+// occurred in this command.
+func (s *RegistrationService) registrationRecordExisting(ctx context.Context, command distributionport.RegisterCommand, actorScope string, digest [sha256.Size]byte, currentAgreement string, distributor distributiondomain.Distributor, readiness distributionport.ReceiverReadiness) (distributionport.DistributorProfile, error) {
+	if distributor.CustomerID != command.Actor.CustomerID {
+		return distributionport.DistributorProfile{}, distributionport.ErrConflict
+	}
+	if err := s.store.AppendOperationReceiptWithin(ctx, "register", actorScope, command.IdempotencyKey, digest, "distributor", distributor.ID, s.now().UTC()); err != nil {
+		return distributionport.DistributorProfile{}, err
+	}
+	return distributionport.DistributorProfile{Distributor: distributor, Receiver: readiness, CurrentAgreementVersion: currentAgreement}, nil
+}
+
+func registrationActorScope(actor distributionport.TrustedSessionActor) string {
+	return "customer:" + decimal(actor.CustomerID)
+}
+
+func registrationPayloadDigest(agreementVersion string) [sha256.Size]byte {
+	return sha256.Sum256([]byte("distribution.register.v1:agreement_version=" + agreementVersion))
+}
+
+func registrationOutboxKey(actorScope, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(actorScope + "\x00" + idempotencyKey))
+	return "distribution.register:" + hex.EncodeToString(digest[:])
 }
 
 func (s *RegistrationService) PrepareReceiver(ctx context.Context, actor distributionport.TrustedSessionActor) (distributionport.ReceiverPreparationResult, error) {

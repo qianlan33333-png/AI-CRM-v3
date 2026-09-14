@@ -1,39 +1,64 @@
-:root { color: #1d2939; background: #f7f8fa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-* { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; }
-.distribution-shell { width: min(1120px, 100%); margin: 0 auto; padding: 32px 20px 48px; }
-.distribution-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
-.distribution-head h1 { margin: 0; font-size: 24px; line-height: 32px; }
-.distribution-head p { margin: 5px 0 0; color: #667085; line-height: 22px; }
-.distribution-readiness { display: grid; gap: 4px; min-width: 220px; padding: 12px 14px; border-radius: 9px; background: #eef4ff; color: #1849a9; font-size: 13px; line-height: 20px; }
-.distribution-tabs, .distribution-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
-.distribution-tab, .distribution-button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 12px; border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; color: #344054; cursor: pointer; font: inherit; font-size: 14px; text-decoration: none; }
-.distribution-tab.active, .distribution-button.primary { border-color: #3370ff; background: #3370ff; color: #fff; }
-.distribution-card { display: grid; gap: 8px; padding: 18px; border: 1px solid #eaecf0; border-radius: 10px; background: #fff; box-shadow: 0 1px 2px rgb(16 24 40 / 4%); }
-.distribution-card h2, .distribution-card h3, .distribution-card p { margin: 0; }
-.distribution-card p, .distribution-card small { color: #667085; line-height: 20px; }
-.distribution-card strong { font-size: 22px; line-height: 30px; font-variant-numeric: tabular-nums; }
-.distribution-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
-.distribution-product { grid-template-columns: 96px minmax(0, 1fr); }
-.distribution-product img { width: 96px; height: 96px; border-radius: 8px; object-fit: cover; background: #f2f4f7; }
-.distribution-product > div { display: grid; align-content: start; gap: 8px; min-width: 0; }
-.distribution-login { width: min(520px, 100%); margin: 11vh auto; }
-.distribution-login label { color: #344054; font-size: 14px; line-height: 22px; }
-.distribution-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
-.distribution-list { display: grid; gap: 10px; }
-.distribution-status { display: inline-flex; padding: 5px 9px; border-radius: 999px; background: #ecfdf3; color: #027a48; font-size: 12px; line-height: 18px; }
-.distribution-status-已停用 { background: #fef3f2; color: #b42318; }
-.distribution-message { min-height: 20px; margin: 14px 0 0; color: #027a48; font-size: 13px; line-height: 20px; }
-.distribution-message[data-error="true"], .distribution-error { color: #b42318; }
-.distribution-dialog { width: min(440px, calc(100vw - 32px)); border: 0; background: transparent; padding: 0; }
-.distribution-dialog::backdrop { background: rgb(16 24 40 / 45%); }
-.distribution-qr { width: 220px; height: 220px; margin: 4px auto; }
-.distribution-qr svg { display: block; width: 100%; height: 100%; }
-.distribution-dialog input { width: 100%; min-height: 36px; border: 1px solid #d0d5dd; border-radius: 7px; padding: 7px 9px; color: #344054; }
-.distribution-table-scroll { overflow-x: auto; border: 1px solid #eaecf0; border-radius: 10px; background: #fff; }
-.distribution-table-scroll table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 13px; line-height: 20px; }
-.distribution-table-scroll th, .distribution-table-scroll td { padding: 11px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid #eaecf0; overflow-wrap: anywhere; }
-.distribution-table-scroll th { color: #667085; font-weight: 600; background: #f9fafb; }
-.distribution-table-scroll td > span[data-distributor-actions], .distribution-table-scroll td > span[data-exception-actions] { display: flex; gap: 6px; flex-wrap: wrap; }
-.distribution-pagination { display: flex; justify-content: flex-end; margin-top: 12px; }
-@media (max-width: 760px) { .distribution-shell { padding: 20px 14px max(28px, env(safe-area-inset-bottom)); } .distribution-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .distribution-product { grid-template-columns: 72px minmax(0, 1fr); } .distribution-product img { width: 72px; height: 72px; } }
+/* The public center owns this surface. Every public baseline is deliberately
+ * scoped so mounting the admin read model in admin_base cannot reset the
+ * administration shell's color, font, or page geometry. */
+body[data-ui-surface="distribution"] { margin: 0; min-width: 320px; color: #1d2939; background: #f7f8fa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+body[data-ui-surface="distribution"] *, body[data-ui-surface="distribution"] *::before, body[data-ui-surface="distribution"] *::after { box-sizing: border-box; }
+body[data-ui-surface="distribution"] .distribution-shell { width: min(1120px, 100%); margin: 0 auto; padding: 32px 20px 48px; }
+body[data-ui-surface="distribution"] .distribution-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+body[data-ui-surface="distribution"] .distribution-head h1 { margin: 0; font-size: 24px; line-height: 32px; }
+body[data-ui-surface="distribution"] .distribution-head p { margin: 5px 0 0; color: #667085; line-height: 22px; }
+body[data-ui-surface="distribution"] .distribution-readiness { display: grid; gap: 4px; min-width: 220px; padding: 12px 14px; border-radius: 9px; background: #eef4ff; color: #1849a9; font-size: 13px; line-height: 20px; }
+body[data-ui-surface="distribution"] .distribution-tabs, body[data-ui-surface="distribution"] .distribution-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+body[data-ui-surface="distribution"] .distribution-tab, body[data-ui-surface="distribution"] .distribution-button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 12px; border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; color: #344054; cursor: pointer; font: inherit; font-size: 14px; text-decoration: none; }
+body[data-ui-surface="distribution"] .distribution-tab.active, body[data-ui-surface="distribution"] .distribution-button.primary { border-color: #3370ff; background: #3370ff; color: #fff; }
+body[data-ui-surface="distribution"] .distribution-card { display: grid; gap: 8px; padding: 18px; border: 1px solid #eaecf0; border-radius: 10px; background: #fff; box-shadow: 0 1px 2px rgb(16 24 40 / 4%); }
+body[data-ui-surface="distribution"] .distribution-card h2, body[data-ui-surface="distribution"] .distribution-card h3, body[data-ui-surface="distribution"] .distribution-card p { margin: 0; }
+body[data-ui-surface="distribution"] .distribution-card p, body[data-ui-surface="distribution"] .distribution-card small { color: #667085; line-height: 20px; }
+body[data-ui-surface="distribution"] .distribution-card strong { font-size: 22px; line-height: 30px; font-variant-numeric: tabular-nums; }
+body[data-ui-surface="distribution"] .distribution-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+body[data-ui-surface="distribution"] .distribution-product { grid-template-columns: 96px minmax(0, 1fr); }
+body[data-ui-surface="distribution"] .distribution-product img { width: 96px; height: 96px; border-radius: 8px; object-fit: cover; background: #f2f4f7; }
+body[data-ui-surface="distribution"] .distribution-product > div { display: grid; align-content: start; gap: 8px; min-width: 0; }
+body[data-ui-surface="distribution"] .distribution-login { width: min(520px, 100%); margin: 11vh auto; }
+body[data-ui-surface="distribution"] .distribution-login label { color: #344054; font-size: 14px; line-height: 22px; }
+body[data-ui-surface="distribution"] .distribution-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+body[data-ui-surface="distribution"] .distribution-list { display: grid; gap: 10px; }
+body[data-ui-surface="distribution"] .distribution-status { display: inline-flex; padding: 5px 9px; border-radius: 999px; background: #ecfdf3; color: #027a48; font-size: 12px; line-height: 18px; }
+body[data-ui-surface="distribution"] .distribution-status-已停用 { background: #fef3f2; color: #b42318; }
+body[data-ui-surface="distribution"] .distribution-message { min-height: 20px; margin: 14px 0 0; color: #027a48; font-size: 13px; line-height: 20px; }
+body[data-ui-surface="distribution"] .distribution-message[data-error="true"], body[data-ui-surface="distribution"] .distribution-error { color: #b42318; }
+body[data-ui-surface="distribution"] .distribution-dialog { width: min(440px, calc(100vw - 32px)); border: 0; background: transparent; padding: 0; }
+body[data-ui-surface="distribution"] .distribution-dialog::backdrop { background: rgb(16 24 40 / 45%); }
+body[data-ui-surface="distribution"] .distribution-qr { width: 220px; height: 220px; margin: 4px auto; }
+body[data-ui-surface="distribution"] .distribution-qr svg { display: block; width: 100%; height: 100%; }
+body[data-ui-surface="distribution"] .distribution-dialog input { width: 100%; min-height: 36px; border: 1px solid #d0d5dd; border-radius: 7px; padding: 7px 9px; color: #344054; }
+
+/* Admin keeps its established shell tokens and component primitives. */
+#distribution-admin-root { display: grid; gap: 18px; }
+#distribution-admin-root .distribution-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0; }
+#distribution-admin-root .distribution-head h1 { margin: 0; color: var(--text); font-size: 22px; line-height: 30px; }
+#distribution-admin-root .distribution-head p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 20px; }
+#distribution-admin-root .distribution-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+#distribution-admin-root .distribution-table-scroll { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+#distribution-admin-root .distribution-table-scroll .admin-table { min-width: 980px; font-size: 13px; line-height: 20px; }
+#distribution-admin-root .distribution-table-scroll .admin-table th, #distribution-admin-root .distribution-table-scroll .admin-table td { overflow-wrap: anywhere; }
+#distribution-admin-root .distribution-table-scroll td > span[data-actions], #distribution-admin-root .distribution-table-scroll td > span[data-exception] { display: flex; gap: 6px; flex-wrap: wrap; }
+#distribution-admin-root .distribution-pagination { display: flex; justify-content: flex-end; }
+#distribution-admin-root .distribution-message { min-height: 20px; margin: 0; color: var(--brand-strong); font-size: 13px; line-height: 20px; }
+#distribution-admin-root .distribution-message[data-error="true"], #distribution-admin-root .distribution-error { color: var(--danger); }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-body { display: grid; gap: 16px; min-height: 72px; color: var(--text); line-height: 20px; }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-fact { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-strong); }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-fact span { color: var(--muted); font-size: 12px; }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-fact strong { overflow-wrap: anywhere; font-size: 14px; line-height: 20px; }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-list { display: grid; gap: 8px; }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-list h3 { margin: 0; color: var(--text); }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-list p { margin: 0; color: var(--muted); }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-record { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: inherit; text-align: left; }
+body[data-ui-surface="admin"] .shared-detail-drawer button.distribution-detail-record { cursor: pointer; font: inherit; }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-record:hover { border-color: var(--brand); }
+body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-record .distribution-detail-fact { padding: 0; border: 0; background: transparent; }
+#distribution-admin-root .distribution-application-link { width: 100%; min-height: 36px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel); color: var(--text); font: inherit; }
+#distribution-admin-root .distribution-application-qr { width: 176px; height: 176px; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+#distribution-admin-root .distribution-application-qr svg { display: block; width: 100%; height: 100%; }
+@media (max-width: 760px) { body[data-ui-surface="distribution"] .distribution-shell { padding: 20px 14px max(28px, env(safe-area-inset-bottom)); } body[data-ui-surface="distribution"] .distribution-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } body[data-ui-surface="distribution"] .distribution-product { grid-template-columns: 72px minmax(0, 1fr); } body[data-ui-surface="distribution"] .distribution-product img { width: 72px; height: 72px; } body[data-ui-surface="admin"] .shared-detail-drawer .distribution-detail-record { grid-template-columns: 1fr; } }

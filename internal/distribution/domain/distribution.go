@@ -142,6 +142,13 @@ func (c PromotionCredential) Valid() bool {
 	return c.ID > 0 && c.DistributorID > 0 && c.ProductID > 0 && c.ProductType.Valid() && (c.Status == CredentialActive || c.Status == CredentialRevoked || c.Status == CredentialExpired) && !c.CreatedAt.IsZero() && c.ExpiresAt.After(c.CreatedAt) && (c.Status != CredentialRevoked || c.RevokedAt != nil)
 }
 
+// ValidForInsert checks the active, not-yet-persisted form of a promotion
+// credential. IDs are assigned by PostgreSQL, so applying Valid before an
+// INSERT would make every new credential invalid.
+func (c PromotionCredential) ValidForInsert() bool {
+	return c.ID == 0 && c.DistributorID > 0 && c.ProductID > 0 && c.ProductType.Valid() && c.Status == CredentialActive && !c.CreatedAt.IsZero() && c.ExpiresAt.After(c.CreatedAt) && c.RevokedAt == nil
+}
+
 type Attribution struct {
 	ID                        int64
 	OrderID                   int64
@@ -159,6 +166,13 @@ type Attribution struct {
 
 func (a Attribution) Valid() bool {
 	return a.ID > 0 && a.OrderID > 0 && a.OrderItemLine > 0 && a.ProductCode == strings.TrimSpace(a.ProductCode) && len(a.ProductCode) >= 1 && len(a.ProductCode) <= 200 && a.ProductName == strings.TrimSpace(a.ProductName) && len(a.ProductName) >= 1 && len(a.ProductName) <= 500 && a.DistributorID > 0 && a.PromotionCredentialID > 0 && a.QualificationEvidenceRef == strings.TrimSpace(a.QualificationEvidenceRef) && a.QualificationEvidenceRef != "" && len(a.QualificationEvidenceRef) <= 200 && a.QualificationState == QualificationEligible && a.PolicyVersion > 0 && a.CommissionRateBasisPoints >= 0 && a.CommissionRateBasisPoints <= MaximumCommissionRateBasisPoints && a.WaitDays >= 0 && a.WaitDays <= MaximumWaitDays && !a.AttributedAt.IsZero()
+}
+
+// ValidForInsert checks an attribution before PostgreSQL assigns its identity.
+// Checkout attribution is written inside Order's transaction, so requiring an
+// ID here would reject every legitimate first write before the order can commit.
+func (a Attribution) ValidForInsert() bool {
+	return a.ID == 0 && a.OrderID > 0 && a.OrderItemLine > 0 && a.ProductCode == strings.TrimSpace(a.ProductCode) && len(a.ProductCode) >= 1 && len(a.ProductCode) <= 200 && a.ProductName == strings.TrimSpace(a.ProductName) && len(a.ProductName) >= 1 && len(a.ProductName) <= 500 && a.DistributorID > 0 && a.PromotionCredentialID > 0 && a.QualificationEvidenceRef == strings.TrimSpace(a.QualificationEvidenceRef) && a.QualificationEvidenceRef != "" && len(a.QualificationEvidenceRef) <= 200 && a.QualificationState == QualificationEligible && a.PolicyVersion > 0 && a.CommissionRateBasisPoints >= 0 && a.CommissionRateBasisPoints <= MaximumCommissionRateBasisPoints && a.WaitDays >= 0 && a.WaitDays <= MaximumWaitDays && !a.AttributedAt.IsZero()
 }
 
 type CommissionStatus string

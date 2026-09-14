@@ -10,6 +10,7 @@ const username = process.env.AICRM_DISTRIBUTION_POLICY_BROWSER_USERNAME;
 const password = process.env.AICRM_DISTRIBUTION_POLICY_BROWSER_PASSWORD;
 const productID = process.env.AICRM_DISTRIBUTION_POLICY_BROWSER_PRODUCT_ID;
 const serviceProductID = process.env.AICRM_DISTRIBUTION_POLICY_BROWSER_SERVICE_PRODUCT_ID;
+const screenshotDir = process.env.AICRM_DISTRIBUTION_POLICY_BROWSER_SCREENSHOT_DIR;
 if (!/^https:\/\//.test(base || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "")) throw new Error("Distribution policy Chromium journey environment is incomplete");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function browser() { for (const item of [process.env.AICRM_CHROMIUM_BINARY, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "google-chrome", "chromium"].filter(Boolean)) if ((item.includes("/") ? spawnSync(item,["--version"],{stdio:"ignore"}) : spawnSync("which",[item],{stdio:"ignore"})).status === 0) return item; throw new Error("Chromium is unavailable"); }
@@ -18,25 +19,64 @@ async function endpoint(profile) { for(let i=0;i<160;i++){try { const port=(awai
 async function value(cdp,expression) { const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails)throw new Error("page evaluation failed"); return result.result?.value; }
 async function wait(cdp,expression,message) { for(let i=0;i<180;i++){if(await value(cdp,expression))return;await sleep(50);} throw new Error(message); }
 async function addCookie(cdp,name,value) { await cdp.call("Network.setCookie",{url:base,name,value,secure:true}); }
+async function capturePolicyForm(cdp, label) { if (!screenshotDir) return; await fs.mkdir(screenshotDir,{recursive:true}); await cdp.call("Emulation.setDeviceMetricsOverride",{width:1440,height:1000,deviceScaleFactor:1,mobile:false}); const image=await cdp.call("Page.captureScreenshot",{format:"png",captureBeyondViewport:true}); await fs.writeFile(path.join(screenshotDir,`distribution-policy-${label}.png`),Buffer.from(image.data,"base64")); }
 async function login(cdp) { const page=await fetch(`${base}/login`,{redirect:"manual"}); const html=await page.text(), csrf=/name="login_csrf_token" value="([^"]+)"/.exec(html)?.[1]; if(!csrf)throw new Error("login CSRF unavailable"); const cookies=(typeof page.headers.getSetCookie==="function"?page.headers.getSetCookie():[]).map(value=>value.split(";",1)[0]).join("; "); const response=await fetch(`${base}/login`,{method:"POST",redirect:"manual",headers:{"Content-Type":"application/x-www-form-urlencoded",Cookie:cookies},body:new URLSearchParams({username,password,login_csrf_token:csrf})}); if(response.status!==303)throw new Error(`admin login status=${response.status}`); for(const raw of response.headers.getSetCookie?.()||[]){const pair=raw.split(";",1)[0],index=pair.indexOf("=");if(index>0)await addCookie(cdp,pair.slice(0,index),pair.slice(index+1));} }
+async function policySnapshot(cdp) {
+  return value(cdp, `(() => { const host=document.querySelector('[data-distribution-policy]'); const link=host?.querySelector('[data-distribution-application-link]')?.value || ''; return {version:host?.dataset.distributionPolicyVersion,enabled:host?.querySelector('[data-distribution-policy-enabled]')?.checked,rate:host?.querySelector('[data-distribution-policy-rate]')?.value,wait_days:host?.querySelector('[data-distribution-policy-wait-days]')?.value,application_link:link,has_qr:Boolean(host?.querySelector('.product-distribution-policy__qr svg')),has_pending:Boolean(host?.querySelector('[data-distribution-application-pending]'))}; })()`);
+}
+async function reloadEditor(cdp, page) {
+  await cdp.call("Page.reload", {ignoreCache:true});
+  await wait(cdp,"document.readyState === 'complete'",`editor reload did not complete ${page}`);
+}
+async function waitForPolicy(cdp, expected, page) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    const actual = await policySnapshot(cdp);
+    if (actual?.version === String(expected.version) && actual.enabled === expected.enabled && Number(actual.rate) === Number(expected.rate) && actual.wait_days === String(expected.waitDays) && actual.application_link === expected.link && actual.has_qr === expected.hasQR && actual.has_pending === expected.hasPending) return actual;
+    await sleep(50);
+  }
+  throw new Error(`policy readback mismatch ${page} expected=${JSON.stringify(expected)} actual=${JSON.stringify(await policySnapshot(cdp))}`);
+}
+async function savePolicy(cdp, enabledState, rate, waitDays, page) {
+  await value(cdp, `(() => {
+    const enabled=document.querySelector('[data-distribution-policy-enabled]');
+    const commission=document.querySelector('[data-distribution-policy-rate]');
+    const days=document.querySelector('[data-distribution-policy-wait-days]');
+    if (!enabled || !commission || !days) throw new Error('distribution policy controls missing');
+    const toast=document.querySelector('#product-v3-toast'); if (toast) toast.textContent='';
+    enabled.checked=${enabledState}; enabled.dispatchEvent(new Event('change',{bubbles:true}));
+    commission.value=${JSON.stringify(rate)}; commission.dispatchEvent(new Event('input',{bubbles:true}));
+    days.value=${JSON.stringify(String(waitDays))}; days.dispatchEvent(new Event('input',{bubbles:true}));
+    const save=[...document.querySelectorAll('button')].find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push'));
+    if(!save) throw new Error('product save control missing'); save.click(); return true;
+  })()`);
+  await wait(cdp,"document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')",`product save did not finish ${page}`);
+}
 async function saveAndReload(cdp, page, rate, waitDays) {
   await cdp.call("Page.navigate",{url:base+page});
   await wait(cdp,"Boolean(document.querySelector('[data-distribution-policy]'))",`policy controls did not load ${page}`);
   await value(cdp,"(() => { const prior=window.fetch; window.__distributionPolicyWrites=[]; window.fetch=(input,init) => { const request=input instanceof Request ? input : undefined; window.__distributionPolicyWrites.push({url:String(request?.url || input),method:String(init?.method || request?.method || 'GET'),body:String(init?.body || '')}); return prior(input,init); }; return true; })()");
   const before=await value(cdp,"document.querySelector('[data-distribution-policy]')?.dataset.distributionPolicyVersion");
   assert.equal(before,"0",`fresh fixture must load a revision-zero policy on ${page}`);
-  await value(cdp,`(() => { const enabled=document.querySelector('[data-distribution-policy-enabled]'); const commission=document.querySelector('[data-distribution-policy-rate]'); const days=document.querySelector('[data-distribution-policy-wait-days]'); enabled.checked=true; enabled.dispatchEvent(new Event('change',{bubbles:true})); commission.value=${JSON.stringify(rate)}; commission.dispatchEvent(new Event('input',{bubbles:true})); days.value=${JSON.stringify(String(waitDays))}; days.dispatchEvent(new Event('input',{bubbles:true})); const save=[...document.querySelectorAll('button')].find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push')); if(!save) throw new Error('normal product save control missing'); save.click(); return true; })()`);
-  await wait(cdp,"document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')",`normal product save did not finish ${page}`);
+  const expectedID=page.includes('spProductForm')?serviceProductID:productID;
+  const expectedType=page.includes('spProductForm')?'service_period':'standard_product';
+  const applicationLink=`${base}/distribution?product_id=${expectedID}&product_type=${expectedType}`;
+
+  await savePolicy(cdp, true, rate, waitDays, page);
+  await reloadEditor(cdp, page);
+  await waitForPolicy(cdp,{version:1,enabled:true,rate,waitDays,link:applicationLink,hasQR:true,hasPending:false},page);
+
+  await savePolicy(cdp, false, rate, waitDays, page);
+  await reloadEditor(cdp, page);
+  await waitForPolicy(cdp,{version:2,enabled:false,rate,waitDays,link:'',hasQR:false,hasPending:true},page);
+
+  await savePolicy(cdp, true, rate, waitDays, page);
   const writes = await value(cdp, "window.__distributionPolicyWrites");
   const serverPolicy = await value(cdp, "fetch(location.pathname.includes('spProductForm') ? '/api/admin/service-period-products/" + serviceProductID + "' : '/api/v1/products/" + productID + "').then(response => response.text())");
-  await cdp.call("Page.navigate",{url:base+page});
-  const readback = `(() => { const host=document.querySelector('[data-distribution-policy]'); return {version:host?.dataset.distributionPolicyVersion,enabled:host?.querySelector('[data-distribution-policy-enabled]')?.checked,rate:host?.querySelector('[data-distribution-policy-rate]')?.value,wait_days:host?.querySelector('[data-distribution-policy-wait-days]')?.value}; })()`;
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    const actual = await value(cdp, readback);
-    if (actual?.version === "1" && actual.enabled === true && Number(actual.rate) === Number(rate) && actual.wait_days === String(waitDays)) return;
-    await sleep(50);
-  }
-  throw new Error(`policy save/readback mismatch ${page} actual=${JSON.stringify(await value(cdp, readback))} writes=${JSON.stringify(writes)} server=${serverPolicy}`);
+  await reloadEditor(cdp, page);
+  await waitForPolicy(cdp,{version:3,enabled:true,rate,waitDays,link:applicationLink,hasQR:true,hasPending:false},page);
+  await capturePolicyForm(cdp,expectedType);
+  if (!String(serverPolicy).includes('"version":3') || !String(serverPolicy).includes('"enabled":true')) throw new Error(`policy save/readback mismatch ${page} writes=${JSON.stringify(writes)} server=${serverPolicy}`);
 }
+
 const profile=await fs.mkdtemp(path.join(os.tmpdir(),"aicrm-distribution-policy-chromium-")); let child,cdp;
 try { child=spawn(browser(),["--headless=new","--no-sandbox","--remote-debugging-port=0",`--user-data-dir=${profile}`,"--ignore-certificate-errors","--allow-insecure-localhost","about:blank"],{stdio:"ignore"}); const page=await (await fetch(`${await endpoint(profile)}/json/new?about:blank`,{method:"PUT"})).json(); const socket=new WebSocket(page.webSocketDebuggerUrl); await new Promise((resolve,reject)=>{socket.addEventListener("open",resolve,{once:true});socket.addEventListener("error",()=>reject(new Error("CDP connection failed")),{once:true});}); cdp=new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable"); await login(cdp); await saveAndReload(cdp,`/admin/wechat-pay/productForm.html?id=${productID}`,"12.34",8); await saveAndReload(cdp,`/admin/wechat-pay/spProductForm.html?id=${serviceProductID}`,"30.00",0); console.log("distribution_product_policy_chromium: PASS"); } finally { if(cdp)cdp.socket.close(); if(child&&child.exitCode===null){child.kill("SIGTERM");await Promise.race([new Promise(resolve=>child.once("exit",resolve)),sleep(3000)]);if(child.exitCode===null)child.kill("SIGKILL");} await fs.rm(profile,{recursive:true,force:true}).catch(()=>{}); }

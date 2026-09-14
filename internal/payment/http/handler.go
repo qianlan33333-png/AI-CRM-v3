@@ -237,11 +237,12 @@ func (handler *Handler) startH5OAuth(writer http.ResponseWriter, request *http.R
 		writeError(writer, http.StatusServiceUnavailable, "payment_h5_oauth_disabled")
 		return
 	}
-	if !strings.Contains(strings.ToLower(request.UserAgent()), "micromessenger") || len(request.URL.Query()) != 1 {
+	query, ok := exactH5OAuthQuery(request, "return_url")
+	if !strings.Contains(strings.ToLower(request.UserAgent()), "micromessenger") || !ok {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	location, err := handler.h5OAuth.Start(request.Context(), request.URL.Query().Get("return_url"))
+	location, err := handler.h5OAuth.Start(request.Context(), query["return_url"])
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
@@ -250,11 +251,12 @@ func (handler *Handler) startH5OAuth(writer http.ResponseWriter, request *http.R
 }
 
 func (handler *Handler) completeH5OAuth(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet || handler.h5OAuth == nil || !handler.h5OAuth.Enabled() || len(request.URL.Query()) != 2 {
+	query, ok := exactH5OAuthQuery(request, "state", "code")
+	if request.Method != http.MethodGet || handler.h5OAuth == nil || !handler.h5OAuth.Enabled() || !ok {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	issued, returnPath, err := handler.h5OAuth.Complete(request.Context(), request.URL.Query().Get("state"), request.URL.Query().Get("code"))
+	issued, returnPath, err := handler.h5OAuth.Complete(request.Context(), query["state"], query["code"])
 	if err != nil {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		writer.Header().Set("Cache-Control", "no-store")
@@ -271,6 +273,28 @@ func (handler *Handler) completeH5OAuth(writer http.ResponseWriter, request *htt
 		return
 	}
 	http.Redirect(writer, request, returnPath, http.StatusFound)
+}
+
+// exactH5OAuthQuery rejects duplicate values and unknown parameter names at
+// the HTTP boundary, before the OAuth application can persist or consume
+// state, or call its Provider adapter.
+func exactH5OAuthQuery(request *http.Request, names ...string) (map[string]string, bool) {
+	if request == nil || request.URL == nil {
+		return nil, false
+	}
+	values := request.URL.Query()
+	if len(values) != len(names) {
+		return nil, false
+	}
+	result := make(map[string]string, len(names))
+	for _, name := range names {
+		items, found := values[name]
+		if !found || len(items) != 1 {
+			return nil, false
+		}
+		result[name] = items[0]
+	}
+	return result, true
 }
 
 func (handler *Handler) issueSession(writer http.ResponseWriter, request *http.Request) {

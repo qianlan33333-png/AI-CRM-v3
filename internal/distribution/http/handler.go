@@ -42,6 +42,7 @@ type RegistrationApplication interface {
 
 type PromotionApplication interface {
 	ListPromotionProducts(context.Context, distributionport.TrustedSessionActor, string, int32) (distributionport.PromotionPage, error)
+	ApplicationTarget(context.Context, int64, distributiondomain.ProductType) (distributionport.ApplicationTarget, error)
 	IssuePromotionLink(context.Context, distributionport.IssuePromotionCommand) (distributionport.PromotionLink, error)
 	ResolvePromotionTarget(context.Context, string) (string, error)
 }
@@ -123,6 +124,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.prepareReceiver(w, r)
 	case path == "/api/v1/distribution/products":
 		h.products(w, r)
+	case path == "/api/v1/distribution/application-context":
+		h.applicationContext(w, r)
 	case strings.HasPrefix(path, "/api/v1/distribution/products/") && strings.HasSuffix(path, "/promotion-credentials"):
 		h.issueCredential(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/distribution/products/"), "/promotion-credentials"))
 	case path == "/api/v1/distribution/earnings":
@@ -132,6 +135,34 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) applicationContext(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, http.MethodGet)
+		return
+	}
+	if !onlyQuery(r, "product_id", "product_type") {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	rawID := r.URL.Query().Get("product_id")
+	productID, err := strconv.ParseInt(rawID, 10, 64)
+	productType := distributiondomain.ProductType(r.URL.Query().Get("product_type"))
+	if err != nil || productID < 1 || rawID != strconv.FormatInt(productID, 10) || !productType.Valid() {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	target, err := h.promotion.ApplicationTarget(r.Context(), productID, productType)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	if target.ProductID != productID || target.ProductType != productType || !target.PolicyEnabled || strings.TrimSpace(target.ProductName) == "" || strings.TrimSpace(target.PurchaseURL) == "" {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"product_id": target.ProductID, "product_type": target.ProductType, "policy_enabled": target.PolicyEnabled, "product_name": target.ProductName, "purchase_url": target.PurchaseURL})
 }
 
 func (h *Handler) agreement(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +322,7 @@ func (h *Handler) issueCredential(w http.ResponseWriter, r *http.Request, rawID 
 		if item.ProductID != id {
 			continue
 		}
-		link, issueErr := h.promotion.IssuePromotionLink(r.Context(), distributionport.IssuePromotionCommand{Actor: actor, ProductID: item.ProductID, ProductType: item.ProductType})
+		link, issueErr := h.promotion.IssuePromotionLink(r.Context(), distributionport.IssuePromotionCommand{Actor: actor, ProductID: item.ProductID, ProductType: item.ProductType, IdempotencyKey: r.Header.Get("Idempotency-Key")})
 		if issueErr != nil {
 			resultError(w, issueErr)
 			return
