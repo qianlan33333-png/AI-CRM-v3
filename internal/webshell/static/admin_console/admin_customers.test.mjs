@@ -8,7 +8,13 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(here, "../../../..");
 const script = fs.readFileSync(path.join(here, "admin_customers.js"), "utf8");
 const standardHost = await buildTestBrowserBundle(path.join(repository, "web", "v3", "standardComponentsHost.ts"));
-const standardTagPicker = fs.readFileSync(path.join(repository, "web", "donors", "standard-components-production", "static", "wecom_tag_picker.js"), "utf8");
+const standardTagPickerArtifact = path.join(repository, 'web', 'dist', 'assets', 'standard-components', 'wecom_tag_picker.js');
+let standardTagPicker;
+try {
+  standardTagPicker = fs.readFileSync(standardTagPickerArtifact, 'utf8');
+} catch (error) {
+  throw new Error(`missing manifest-verified standard tag-picker release artifact at ${standardTagPickerArtifact}; run npm run build and node scripts/build-v3-host-adapters.mjs before this suite`, { cause: error });
+}
 const html = `<!doctype html>
 <div data-customer-directory-root data-customers-url="/api/admin/customers" data-sync-url="/api/admin/customer-sync-runs" data-tag-preview-url="/api/v1/customer-tag-commands/preview" data-tag-command-url="/api/v1/customer-tag-commands" data-tags-url="/api/admin/wecom/tags">
   <form id="customer-list-filters"><input name="keyword"><input name="phone"><select name="status"><option value=""></option></select></form>

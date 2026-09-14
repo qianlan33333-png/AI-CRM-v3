@@ -33,7 +33,13 @@ console.log('shared staff refresh envelopes on channel and customer Hosts: PASS'
 // intercepts refresh once and leaves rows intact when the Provider read fails.
 const fs = await import('node:fs/promises');
 const picker = await fs.readFile(path.join(root,'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js'),'utf8');
-const tagPicker = await fs.readFile(path.join(root,'web/donors/standard-components-production/static/wecom_tag_picker.js'),'utf8');
+const tagPickerArtifact = path.join(root, 'web/dist/assets/standard-components/wecom_tag_picker.js');
+let tagPicker;
+try {
+  tagPicker = await fs.readFile(tagPickerArtifact, 'utf8');
+} catch (error) {
+  throw new Error(`missing manifest-verified standard tag-picker release artifact at ${tagPickerArtifact}; run npm run build and node scripts/build-v3-host-adapters.mjs before this suite`, { cause: error });
+}
 const pause = (ms) => new Promise(resolve=>setTimeout(resolve,ms));
 for (const syncStatus of [200,503]) {
  let posts=0;let reads=0;let selected;

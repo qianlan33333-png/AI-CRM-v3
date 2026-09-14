@@ -69,8 +69,7 @@ Persistence: stateless — 不改变数据库、内部持久任务、标签命�
 
 ### 必经质量链
 
-- `node web/v3/standardComponentsRefresh.test.mjs`
-- `node internal/webshell/static/admin_console/admin_customers.test.mjs`
+- `node web/v3/standardComponentsRefresh.test.mjs` and `node internal/webshell/static/admin_console/admin_customers.test.mjs` read the manifest-verified release artifact `web/dist/assets/standard-components/wecom_tag_picker.js`, never the frozen donor. They require the canonical local preparation `npm run build` then `node scripts/build-v3-host-adapters.mjs`; a missing artifact is an explicit test-precondition failure, not a donor fallback or a passing assertion.
 - `node scripts/customer-directory-shell-e2e.mjs`
 - `bash scripts/run-donor-view-consumers.sh check`（其中包含 `standardComponentsRefresh.test.mjs`）
 - quality lane `frontend`，其中 `customer-directory-shell-e2e.mjs` 是直跑项。
