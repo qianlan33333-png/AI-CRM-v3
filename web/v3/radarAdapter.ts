@@ -37,7 +37,11 @@ async function loadRadarMaterialPage(request: MaterialPickerLoadRequest): Promis
   source.searchParams.set('enabled_only', 'true');
   const response = await originalFetch(source, { credentials: 'same-origin', headers: { Accept: 'application/json' }, signal: request.signal });
   const payload = record(await response.json().catch(() => ({})));
-  if (!response.ok) throw new Error('素材目录暂时无法加载，请稍后重试。');
+  if (!response.ok) {
+    const error = new Error(response.status === 401 || response.status === 403 ? '素材目录权限已失效，请重新登录后重试。' : '素材目录暂时无法加载，请稍后重试。') as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
   const next = Number(payload.next_offset);
   return {
     items: list(payload.items).map(record).flatMap((item): MaterialItem[] => {
@@ -50,7 +54,7 @@ async function loadRadarMaterialPage(request: MaterialPickerLoadRequest): Promis
 
 void (async () => {
   await (window as StandardWindow).AICRMStandardComponents?.ready();
-  installMaterialPickerAdapter({ source: 'radar-content', scope: 'radar-content-editor', loadPage: loadRadarMaterialPage });
+  installMaterialPickerAdapter({ source: 'radar-content', scope: 'radar-content-editor', loadPage: loadRadarMaterialPage, accessLossMessage: (error) => { const status = (error as { status?: unknown }).status; return status === 401 || status === 403 ? '素材目录权限已失效；已选素材仍可查看，请取消后重新登录。' : undefined; } });
   // @ts-ignore frozen side-effect entry has no module declaration.
   await import('../src/admin/main');
 })();

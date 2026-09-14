@@ -19,9 +19,11 @@ const donorCalls = [];
 window.AICRMMaterialPicker = { open: (options) => donorCalls.push(options) };
 mod.installMaterialPickerAdapter({
   source: 'radar-content', scope: 'radar-editor',
+  accessLossMessage: (error) => error?.status === 403 ? '素材目录权限已失效；已选素材仍可查看，请取消后重新登录。' : undefined,
   async loadPage({ type, query, cursor, signal }) {
     calls.push({ type, query, cursor, aborted: signal.aborted });
     if (query === '故障') throw new Error('目录暂不可用');
+    if (query === '权限') { const error = new Error('forbidden'); error.status = 403; throw error; }
     if (query === '异类') return { items: [{ type: 'attachment', library_id: 8, title: '错误类型' }] };
     if (cursor === 'next') return { items: [{ type, library_id: 3, title: '第三项', selectable: true }] };
     return { items: [
@@ -135,6 +137,20 @@ unsupported.querySelector('[data-v3-picker-confirm]').click();
 assert.ok(document.querySelector('[data-v3-selection-session="material"]'), 'a second confirmation cannot bypass the removal capability check');
 assert.equal(unsupportedRemovalCommits, 0, 'rejected removal never mutates the caller on repeated confirmation');
 unsupported.querySelector('[data-v3-picker-cancel]').click();
+
+
+let accessCommit = 0;
+window.AICRMMaterialPicker.open({ type: 'image', selectedIds: [2], onCommit: () => { accessCommit += 1; } });
+await flush();
+const access = document.querySelector('[data-v3-selection-session="material"]');
+const accessSearch = access.querySelector('[data-v3-picker-search-input]');
+accessSearch.value = '权限'; accessSearch.dispatchEvent(new Event('input', { bubbles: true })); accessSearch.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+await flush();
+assert.match(access.textContent, /权限已失效/, 'caller-classified 403 keeps the access reason explicit');
+assert.match(access.textContent, /可选素材/, '403 preserves committed selected records for inspection');
+assert.equal(access.querySelector('[data-v3-picker-confirm]').disabled, true, 'lost directory access cannot commit old or new material selections');
+access.querySelector('[data-v3-picker-cancel]').click();
+assert.equal(accessCommit, 0);
 
 window.AICRMMaterialPicker.open({ type: 'group_invite', selectedIds: [9] });
 assert.equal(donorCalls.length, 1, 'group invitation command remains on its caller-owned frozen route');
