@@ -261,7 +261,7 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
   dialog.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') { event.preventDefault(); close(true); return; }
     if (event.key === 'Tab') {
-      const items = focusable(dialog); const first = items[0]; const last = items.at(-1);
+      const items = focusable(dialog); const first = items[0]; const last = items.length ? items[items.length - 1] : undefined;
       if (first && last && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
       return;
     }
@@ -282,7 +282,8 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
     const delta = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
     if (index >= 0 && delta) {
       event.preventDefault();
-      rows.at((index + delta + rows.length) % rows.length)?.focus({ preventScroll: true });
+      const next = rows[(index + delta + rows.length) % rows.length];
+      if (next) next.focus({ preventScroll: true });
     }
   });
   window.setTimeout(() => { if (!closed) search.focus({ preventScroll: true }); }, 0);

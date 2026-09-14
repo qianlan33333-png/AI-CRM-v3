@@ -26,7 +26,8 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 // dialog. The dialog never reaches into AdminApi or chooses a catalogue scope.
 async function loadRadarMaterialPage(request: MaterialPickerLoadRequest): Promise<{ items: MaterialItem[]; nextCursor?: string }> {
   if (request.type !== 'image' && request.type !== 'attachment') throw new Error('当前雷达内容不支持该素材类型。');
-  const endpoint = request.type === 'image' ? '/api/admin/image-library' : '/api/admin/attachment-library';
+  const type: 'image' | 'attachment' = request.type;
+  const endpoint = type === 'image' ? '/api/admin/image-library' : '/api/admin/attachment-library';
   const offset = Number(request.cursor || '0');
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('素材目录分页标记无效，请重新搜索。');
   const source = new URL(endpoint, location.origin);
@@ -41,7 +42,7 @@ async function loadRadarMaterialPage(request: MaterialPickerLoadRequest): Promis
   return {
     items: list(payload.items).map(record).flatMap((item): MaterialItem[] => {
       const id = Number(item.id ?? item.library_id);
-      return Number.isSafeInteger(id) && id > 0 ? [{ type: request.type, library_id: id, title: String(item.name ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.variant_url ?? ''), metadata: item, selectable: item.enabled !== false, unavailable_reason: item.enabled === false ? '素材已停用' : undefined }] : [];
+      return Number.isSafeInteger(id) && id > 0 ? [{ type, library_id: id, title: String(item.name ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.variant_url ?? ''), metadata: item, selectable: item.enabled !== false, unavailable_reason: item.enabled === false ? '素材已停用' : undefined }] : [];
     }),
     nextCursor: payload.has_more === true && Number.isSafeInteger(next) && next > offset ? String(next) : undefined,
   };
