@@ -156,7 +156,7 @@ export function openContentComposer(options: ContentComposerOptions): void {
     <div class="aicrm-content-composer__body">
       <section data-v3-composer-editor></section><aside data-v3-composer-preview></aside>
     </div>
-    <p data-v3-composer-status role="status"></p>
+    <p class="aicrm-content-composer__status" data-v3-composer-status role="status"></p>
     <footer><button type="button" data-v3-composer-cancel>取消</button><button type="button" data-v3-composer-confirm>确认内容</button></footer>
   </section>`;
   document.body.append(mask);
