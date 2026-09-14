@@ -404,7 +404,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (isDistributionProductSubjectWrite(url, method) && typeof nextInit?.body === 'string') {
     try {
       const body = object(JSON.parse(nextInit.body));
-      if (Object.hasOwn(body, 'distribution_policy')) submittedDistributionPolicy = distributionPolicy(body.distribution_policy);
+      if (Object.prototype.hasOwnProperty.call(body, 'distribution_policy')) submittedDistributionPolicy = distributionPolicy(body.distribution_policy);
     } catch { /* the Product API validates malformed JSON */ }
   }
   const response = await donorFetch(input, nextInit);
