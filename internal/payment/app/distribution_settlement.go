@@ -28,6 +28,8 @@ type DistributionSettlementStore interface {
 	UpdateProfitSharingReceiver(context.Context, domain.ProfitSharingReceiver, string) (domain.ProfitSharingReceiver, error)
 	CreateProfitSharingReceiver(context.Context, domain.ProfitSharingReceiver) (domain.ProfitSharingReceiver, bool, error)
 	BindProfitSharingReceiverEffect(context.Context, domain.ProfitSharingReceiver, effectport.PaymentV1Intent) (domain.ProfitSharingReceiver, error)
+	FindProfitSharingReceiverRecoveryWithin(context.Context, string, [32]byte, [32]byte) (domain.ProfitSharingReceiver, bool, error)
+	RecoverProfitSharingReceiverEffectWithin(context.Context, domain.ProfitSharingReceiver, string, effectport.PaymentV1Intent, string, string, [32]byte, [32]byte) (domain.ProfitSharingReceiver, bool, error)
 	PaymentForDistributionOrder(context.Context, int64, bool) (domain.Payment, error)
 	ProfitSharingFunding(context.Context, int64) (domain.ProfitSharingFunding, error)
 	FindProfitSharingBySettlement(context.Context, string, bool) (domain.ProfitSharingInstruction, bool, error)
@@ -57,8 +59,28 @@ func (s *Service) distributionStore() (DistributionSettlementStore, error) {
 	return store, nil
 }
 
+// SettlementCapability gives Distribution a safe explanation for the
+// merchant-level split gate. It intentionally carries no configuration,
+// receiver account, or Provider detail, so a public distributor page cannot
+// turn it into a financial configuration surface.
+func (s *Service) SettlementCapability(context.Context) (paymentport.SettlementCapability, error) {
+	if s == nil {
+		return paymentport.SettlementCapability{}, paymentport.ErrUnavailable
+	}
+	if !s.profitSharingEnabled {
+		return paymentport.SettlementCapability{Reason: "merchant_settlement_disabled"}, nil
+	}
+	return paymentport.SettlementCapability{Enabled: true}, nil
+}
+
 func (s *Service) PrepareProfitSharingReceiverWithin(ctx context.Context, request paymentport.ReceiverPreparation) (paymentport.ReceiverReadiness, error) {
-	if !request.Valid() || s == nil || s.receiverIDs == nil || s.lineage == nil || s.effects == nil {
+	if !request.Valid() || s == nil {
+		return paymentport.ReceiverReadiness{}, paymentport.ErrInvalid
+	}
+	if !s.profitSharingEnabled {
+		return paymentport.ReceiverReadiness{}, paymentport.ErrSettlementCapabilityDisabled
+	}
+	if s.receiverIDs == nil || s.lineage == nil || s.effects == nil {
 		return paymentport.ReceiverReadiness{}, paymentport.ErrInvalid
 	}
 	expectedAppID := s.miniAppID
@@ -138,6 +160,98 @@ func (s *Service) PrepareProfitSharingReceiverWithin(ctx context.Context, reques
 		return paymentport.ReceiverReadiness{}, err
 	}
 	return receiverReadiness(receiver), nil
+}
+
+// RecoverProfitSharingReceiver accepts one reviewed replacement AddReceiver
+// effect for a receiver whose complete old effect history proves no Provider
+// call was made.  It never retries, rewrites, or explains the old effect.
+// The administrator must deliberately invoke this path after current merchant
+// capability and the receiver's trusted identity can both be checked again.
+func (s *Service) RecoverProfitSharingReceiver(ctx context.Context, command paymentport.ProfitSharingReceiverRecoveryCommand) (paymentport.ReceiverReadiness, error) {
+	if !command.Valid() || s == nil || s.uow == nil || s.effects == nil || s.effectReader == nil || s.receiverIDs == nil || s.lineage == nil || !s.profitSharingEnabled || s.profitSharingReconciler == nil {
+		return paymentport.ReceiverReadiness{}, paymentport.ErrUnavailable
+	}
+	receiverID, ok := profitSharingReceiverID(command.ReceiverReference)
+	if !ok {
+		return paymentport.ReceiverReadiness{}, paymentport.ErrInvalid
+	}
+	store, err := s.distributionStore()
+	if err != nil {
+		return paymentport.ReceiverReadiness{}, err
+	}
+	prover, ok := s.effectReader.(effectport.FinalFailureWithoutExternalCallReader)
+	if !ok {
+		return paymentport.ReceiverReadiness{}, paymentport.ErrUnavailable
+	}
+	actorScope := "admin:" + strconv.FormatInt(command.ActorAdminUserID, 10)
+	key := sha256.Sum256([]byte("payment.profit-sharing.receiver.recovery.key.v1\x00" + actorScope + "\x00" + command.IdempotencyKey))
+	payload := sha256.Sum256([]byte("payment.profit-sharing.receiver.recovery.payload.v1\x00" + command.ReceiverReference + "\x00" + command.EvidenceReference))
+	var recovered domain.ProfitSharingReceiver
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		var (
+			inner error
+			found bool
+		)
+		recovered, found, inner = store.FindProfitSharingReceiverRecoveryWithin(tx, actorScope, key, payload)
+		if inner != nil {
+			return inner
+		}
+		if found {
+			if recovered.ID != receiverID {
+				return paymentport.ErrConflict
+			}
+			return nil
+		}
+		receiver, inner := store.GetProfitSharingReceiver(tx, receiverID, true)
+		if inner != nil {
+			return inner
+		}
+		if receiver.State != domain.ProfitSharingReceiverFinalFailed || receiver.EffectID == "" {
+			return paymentport.ErrConflict
+		}
+		oldEffect := receiver.EffectID
+		materialDigest := effectport.Hash("payment.profit-sharing.receiver.recovery.material.v1", command.ReceiverReference, command.EvidenceReference)
+		if _, inner = s.profitSharingReceiverMaterial(tx, receiver, materialDigest); inner != nil {
+			return inner
+		}
+		if _, inner = prover.FinalFailureWithoutExternalCallWithin(tx, oldEffect, effectport.OwnerPayment, effectport.KindWeChatPayReceiverAdd); inner != nil {
+			return inner
+		}
+		// EER uses the same actor/key receipt across all receivers.  It serializes
+		// a mistaken same-key command for another receiver before either command
+		// can leave a separate queued effect behind.
+		intent := effectport.PaymentV1Intent{
+			Kind:              effectport.KindWeChatPayReceiverAdd,
+			ReceiptKey:        effectport.Hash("payment.profit-sharing.receiver.recovery.accept.v1", actorScope, command.IdempotencyKey),
+			SourceRefDigest:   effectport.Hash("payment.profit-sharing.receiver.recovery.source.v1", oldEffect, actorScope, command.EvidenceReference),
+			TargetRefDigest:   effectport.Hash("payment.profit-sharing.receiver.recovery.target.v1", command.ReceiverReference),
+			PayloadDigest:     materialDigest,
+			PolicyVersionHash: effectport.Hash("payment.profit-sharing.receiver.recovery.policy.v1", receiver.AppID, receiver.AppScope, string(receiver.Channel)),
+		}
+		accept, valid := intent.AcceptCommand()
+		if !valid {
+			return paymentport.ErrInvalid
+		}
+		projection, _, inner := s.effects.AcceptAndQueueWithin(tx, accept)
+		if inner != nil {
+			return inner
+		}
+		now := s.now().UTC()
+		receiver.State = domain.ProfitSharingReceiverAccepted
+		receiver.EffectID = projection.ID
+		receiver.Version++
+		receiver.UpdatedAt = now
+		var changed bool
+		recovered, changed, inner = store.RecoverProfitSharingReceiverEffectWithin(tx, receiver, oldEffect, intent, actorScope, command.EvidenceReference, key, payload)
+		if inner != nil || !changed || s.receiverStatusObserver == nil {
+			return inner
+		}
+		return s.receiverStatusObserver.SyncProfitSharingReceiverStatusWithin(tx, receiverReadiness(recovered))
+	})
+	if err != nil {
+		return paymentport.ReceiverReadiness{}, classify(err)
+	}
+	return receiverReadiness(recovered), nil
 }
 
 func (s *Service) ReceiverReadiness(ctx context.Context, customerID int64, appID string) (paymentport.ReceiverReadiness, error) {
@@ -230,8 +344,11 @@ func (s *Service) CompleteEffect(ctx context.Context, effectRef string, envelope
 		}
 		receiver.Version++
 		receiver.UpdatedAt = now
-		_, err = store.UpdateProfitSharingReceiver(ctx, receiver, "effect:"+string(result.Completion))
-		return err
+		receiver, err = store.UpdateProfitSharingReceiver(ctx, receiver, "effect:"+string(result.Completion))
+		if err != nil || s.receiverStatusObserver == nil {
+			return err
+		}
+		return s.receiverStatusObserver.SyncProfitSharingReceiverStatusWithin(ctx, receiverReadiness(receiver))
 	case effectport.KindWeChatPayProfitSharing:
 		instruction, err := store.GetProfitSharingInstructionByEffect(ctx, effectRef, true)
 		if err != nil {
@@ -372,6 +489,16 @@ func (s *Service) profitSharingInstructionMaterial(ctx context.Context, store Di
 }
 
 func (s *Service) profitSharingReceiverMaterial(ctx context.Context, receiver domain.ProfitSharingReceiver, digest effectport.Digest) (paymentport.ProfitSharingProviderMaterial, error) {
+	expectedAppID := s.miniAppID
+	if receiver.Channel == domain.ChannelH5Official {
+		expectedAppID = s.h5AppID
+	}
+	// A receiver is scoped to the configured payment application.  A merchant
+	// changing that application must not let an old OpenID/account digest be
+	// reused for a new AddReceiver intent.
+	if expectedAppID == "" || receiver.AppID != expectedAppID {
+		return paymentport.ProfitSharingProviderMaterial{}, paymentport.ErrConflict
+	}
 	kind := identitydomain.KindMPOpenID
 	if receiver.Channel == domain.ChannelH5Official {
 		kind = identitydomain.KindOAOpenID
@@ -797,6 +924,14 @@ func (s *Service) ReconcileProfitSharingUnfreeze(ctx context.Context, reference 
 
 func receiverReadiness(receiver domain.ProfitSharingReceiver) paymentport.ReceiverReadiness {
 	return paymentport.ReceiverReadiness{Reference: "psrecv_" + strconv.FormatInt(receiver.ID, 10), CustomerID: receiver.CustomerID, AppID: receiver.AppID, State: string(receiver.State), EffectRef: receiver.EffectID, Ready: receiver.State == domain.ProfitSharingReceiverReady, OutcomeKnown: receiver.State == domain.ProfitSharingReceiverReady || receiver.State == domain.ProfitSharingReceiverFinalFailed, Version: receiver.Version, UpdatedAt: receiver.UpdatedAt.UTC()}
+}
+
+func profitSharingReceiverID(reference string) (int64, bool) {
+	if !(paymentport.ProfitSharingReceiverRecoveryCommand{ReceiverReference: reference, ActorAdminUserID: 1, IdempotencyKey: "123456789012", EvidenceReference: "evidence"}.Valid()) {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(reference, "psrecv_"), 10, 64)
+	return id, err == nil && id > 0
 }
 
 func distributionPaymentState(payment domain.Payment, funding domain.ProfitSharingFunding, now time.Time) paymentport.DistributionPaymentState {

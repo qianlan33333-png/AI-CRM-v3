@@ -280,6 +280,23 @@ type PaymentSettlementCommand struct {
 	ReceiptKey            string
 }
 
+// PaymentConfirmationEvidence is supplied only after Payment has verified an
+// authenticated Provider query. It lets Order prove that its immutable native
+// paid event is the same fact before Payment repairs a missing confirmation
+// timestamp. It never creates a paid event or changes an order state.
+type PaymentConfirmationEvidence struct {
+	OrderID               int64
+	ProviderTransactionNo string
+	OccurredAt            time.Time
+}
+
+// PaymentConfirmationEvidenceVerifier is an optional narrow extension of the
+// Payment-to-Order write seam. It validates an existing immutable paid event;
+// it does not mint one for an already-paid order.
+type PaymentConfirmationEvidenceVerifier interface {
+	VerifyPaymentConfirmationEvidenceWithin(context.Context, PaymentConfirmationEvidence) (domain.Snapshot, error)
+}
+
 type PaymentOrderCommand struct {
 	Provider                        domain.Provider
 	MerchantOrderNo                 string

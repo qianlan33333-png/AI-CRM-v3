@@ -24,6 +24,7 @@ func (settlementUOWStub) Within(ctx context.Context, fn func(context.Context) er
 }
 
 type settlementPaymentStub struct {
+	capability  paymentport.SettlementCapability
 	state       paymentport.DistributionPaymentState
 	instruction paymentport.ProfitSharingInstruction
 	accepted    paymentport.ProfitSharingRequest
@@ -32,6 +33,13 @@ type settlementPaymentStub struct {
 	unfreezes   int
 	unfreezeReq []paymentport.ProfitSharingUnfreezeRequest
 	readiness   paymentport.ReceiverReadiness
+}
+
+func (s *settlementPaymentStub) SettlementCapability(context.Context) (paymentport.SettlementCapability, error) {
+	if s.capability.Enabled || s.capability.Reason != "" {
+		return s.capability, nil
+	}
+	return paymentport.SettlementCapability{Enabled: true}, nil
 }
 
 func (s *settlementPaymentStub) PrepareProfitSharingReceiverWithin(context.Context, paymentport.ReceiverPreparation) (paymentport.ReceiverReadiness, error) {

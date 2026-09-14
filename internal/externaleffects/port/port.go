@@ -15,6 +15,10 @@ import (
 var (
 	ErrReconciliationNotFound = errors.New("external effect reconciliation target not found")
 	ErrReconciliationConflict = errors.New("external effect reconciliation conflict")
+	// ErrPayloadMismatch is returned when an existing immutable receipt key is
+	// presented with a different command.  Domains may map it to their own
+	// idempotency conflict without importing the EER implementation package.
+	ErrPayloadMismatch = errors.New("external effect payload mismatch")
 )
 
 type Digest string
@@ -325,4 +329,18 @@ type StoppedAttemptEvidence struct {
 }
 type StoppedAttemptReader interface {
 	StoppedAttemptWithin(context.Context, string) (StoppedAttemptEvidence, error)
+}
+
+// FinalFailureWithoutExternalCallEvidence is deliberately a proof, not a
+// retry command. The owning domain may use it only while holding its business
+// record in the same transaction before accepting a distinct, reviewed intent.
+// It proves every persisted attempt completed locally without a Provider call;
+// it never identifies a Provider failure reason or changes the old effect.
+type FinalFailureWithoutExternalCallEvidence struct {
+	Projection
+	CompletedAt time.Time
+}
+
+type FinalFailureWithoutExternalCallReader interface {
+	FinalFailureWithoutExternalCallWithin(context.Context, string, Owner, Kind) (FinalFailureWithoutExternalCallEvidence, error)
 }

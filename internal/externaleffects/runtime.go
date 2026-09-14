@@ -13,7 +13,7 @@ import (
 var (
 	ErrInvalid           = errors.New("invalid external effect command")
 	ErrNotFound          = errors.New("external effect not found")
-	ErrPayloadMismatch   = errors.New("external effect payload mismatch")
+	ErrPayloadMismatch   = port.ErrPayloadMismatch
 	ErrTransition        = errors.New("external effect transition forbidden")
 	ErrReconcileRequired = errors.New("external effect reconciliation required")
 )

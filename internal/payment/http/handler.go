@@ -61,6 +61,13 @@ type RefundRecoveryApplication interface {
 	FindRefundRecoveryReceipt(context.Context, domain.Provider, string, string, string) (domain.Refund, bool, error)
 }
 
+// PaymentReconciliationPreviewApplication is a narrow administrator-only
+// read seam. It lets the existing reconcile endpoint prove the specific
+// paid-confirmation repair before an operator chooses the real mutation.
+type PaymentReconciliationPreviewApplication interface {
+	PreviewReconcileWeChatPayPayment(context.Context, int64) (paymentport.PaymentReconciliationPreview, error)
+}
+
 type SessionIdentityVerifier interface {
 	VerifyCode(context.Context, string) (identitydomain.VerifiedFact, error)
 }
@@ -181,6 +188,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.callback(writer, request)
 	case path == "/api/public/wechat-shop/callbacks/refund":
 		handler.shopCallback(writer, request)
+	case strings.HasPrefix(path, "/api/admin/wechat-pay/profit-sharing/receivers/") && strings.HasSuffix(path, "/recover"):
+		handler.recoverProfitSharingReceiver(writer, request, strings.TrimSuffix(strings.TrimPrefix(path, "/api/admin/wechat-pay/profit-sharing/receivers/"), "/recover"))
 	case strings.HasPrefix(path, "/api/admin/wechat-shop/refunds/") && strings.HasSuffix(path, "/reconcile"):
 		handler.reconcileShopRefund(writer, request, strings.TrimSuffix(strings.TrimPrefix(path, "/api/admin/wechat-shop/refunds/"), "/reconcile"))
 	case strings.HasPrefix(path, "/api/admin/wechat-pay/payments/") && strings.HasSuffix(path, "/reconcile"):
@@ -1036,14 +1045,20 @@ func (handler *Handler) reconcileWeChatPay(writer http.ResponseWriter, request *
 		return
 	}
 	id, err := strconv.ParseInt(rawID, 10, 64)
-	var empty struct{}
-	if err != nil || id < 1 || strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" || !decodeJSON(writer, request, &empty) {
+	var body struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if err != nil || id < 1 || strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" || !decodeJSON(writer, request, &body) {
 		if err != nil || id < 1 || strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
 			writeError(writer, http.StatusBadRequest, "invalid_request")
 		}
 		return
 	}
 	if refund {
+		if body.DryRun {
+			writeError(writer, http.StatusBadRequest, "invalid_request")
+			return
+		}
 		value, callErr := handler.app.ReconcileWeChatPayRefund(request.Context(), id)
 		if callErr != nil {
 			resultError(writer, callErr)
@@ -1052,12 +1067,26 @@ func (handler *Handler) reconcileWeChatPay(writer http.ResponseWriter, request *
 		writeJSON(writer, http.StatusOK, map[string]any{"id": value.ID, "refund_id": value.RefundNo, "provider": "wechat", "status": compatRefundStatus(value.Status), "state": compatRefundStatus(value.Status), "delivery_proven": value.Status == domain.RefundCompleted, "real_external_call_executed": true, "updated_at": value.UpdatedAt})
 		return
 	}
+	if body.DryRun {
+		previewApplication, ok := handler.app.(PaymentReconciliationPreviewApplication)
+		if !ok {
+			writeError(writer, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		preview, callErr := previewApplication.PreviewReconcileWeChatPayPayment(request.Context(), id)
+		if callErr != nil {
+			resultError(writer, callErr)
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"id": preview.PaymentID, "dry_run": true, "would_restore_paid_confirmation": preview.WouldRestorePaidConfirmation, "reason": preview.Reason})
+		return
+	}
 	value, callErr := handler.app.ReconcileWeChatPayPayment(request.Context(), id)
 	if callErr != nil {
 		resultError(writer, callErr)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"id": value.ID, "merchant_order_no": value.MerchantOrderNo, "provider": "wechat", "status": value.Status, "delivery_proven": value.Status == domain.StatusPaid, "real_external_call_executed": true, "updated_at": value.UpdatedAt})
+	writeJSON(writer, http.StatusOK, map[string]any{"id": value.ID, "merchant_order_no": value.MerchantOrderNo, "provider": "wechat", "status": value.Status, "delivery_proven": value.Status == domain.StatusPaid, "provider_query_performed": true, "real_external_call_executed": false, "updated_at": value.UpdatedAt})
 }
 
 func exactShopCallbackQuery(request *http.Request) (map[string]string, error) {
@@ -1171,6 +1200,13 @@ func hasRole(roles []accessdomain.Role, expected accessdomain.Role) bool {
 func paymentBusinessWriteRole(principal accessdomain.Principal) bool {
 	return principal.Kind == accessdomain.KindAdmin &&
 		(hasRole(principal.Roles, accessdomain.RoleAdmin) || hasRole(principal.Roles, accessdomain.RoleSuperAdmin))
+}
+
+// paymentSuperAdminWriteRole is reserved for payment-configuration exception
+// handling. It intentionally does not broaden the existing payment business
+// write surface used by ordinary reconciliation and checkout operations.
+func paymentSuperAdminWriteRole(principal accessdomain.Principal) bool {
+	return principal.IsSuperAdmin()
 }
 
 var _ Application = (*paymentapp.Service)(nil)

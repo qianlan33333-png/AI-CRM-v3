@@ -265,7 +265,13 @@ func (h *Handler) prepareReceiver(w http.ResponseWriter, r *http.Request) {
 		resultError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"receiver": receiverResponse(result.Receiver), "setup": map[string]any{"state": result.State, "action_url": result.ActionURL, "retry_after_seconds": result.RetryAfterSec}})
+	status := http.StatusAccepted
+	if result.State == "merchant_settlement_disabled" {
+		// This is a truthful, side-effect-free merchant capability result, not
+		// an asynchronously accepted receiver request.
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{"receiver": receiverResponse(result.Receiver), "setup": map[string]any{"state": result.State, "action_url": result.ActionURL, "retry_after_seconds": result.RetryAfterSec}})
 }
 
 func (h *Handler) products(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +297,7 @@ func (h *Handler) products(w http.ResponseWriter, r *http.Request) {
 	for _, item := range page.Items {
 		items = append(items, promotionProductResponse(item))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor, "empty_reason": page.EmptyReason})
 }
 
 func (h *Handler) issueCredential(w http.ResponseWriter, r *http.Request, rawID string) {
@@ -507,7 +513,7 @@ func randomToken() (string, error) {
 }
 
 func profileResponse(profile distributionport.DistributorProfile) map[string]any {
-	response := map[string]any{"current_agreement_version": profile.CurrentAgreementVersion, "registration_required": profile.RegistrationRequired, "receiver": receiverResponse(profile.Receiver)}
+	response := map[string]any{"current_agreement_version": profile.CurrentAgreementVersion, "registration_required": profile.RegistrationRequired, "receiver": receiverResponse(profile.Receiver), "settlement": map[string]any{"enabled": profile.Settlement.Enabled, "reason": profile.Settlement.Reason}}
 	if profile.Distributor.ID > 0 {
 		response["distributor"] = map[string]any{"id": profile.Distributor.ID, "public_no": profile.Distributor.PublicNo, "agreement_version": profile.Distributor.AgreementVersion, "enabled": profile.Distributor.Enabled, "registered_at": profile.Distributor.RegisteredAt.UTC(), "version": profile.Distributor.Version}
 	}

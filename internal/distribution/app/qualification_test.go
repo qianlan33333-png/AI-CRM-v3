@@ -128,7 +128,7 @@ func TestQualificationRejectsHistoricalPaymentWithoutImmutableConfirmation(t *te
 	}
 	service.now = func() time.Time { return now }
 	got, err := service.CheckWithin(qualificationContext(), 11, 9, distributiondomain.ProductTypeStandard)
-	if err != nil || got.State != distributiondomain.QualificationUnavailable || got.Reason != "payment_evidence_unavailable" {
+	if err != nil || got.State != distributiondomain.QualificationUnavailable || got.Reason != "payment_confirmation_missing" {
 		t.Fatalf("qualification=%+v err=%v", got, err)
 	}
 }

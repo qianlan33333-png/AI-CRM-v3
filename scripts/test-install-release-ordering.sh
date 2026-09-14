@@ -43,6 +43,7 @@ sha_missing_0152=c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2
 sha_missing_0153=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3
 sha_missing_0155=c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5
 sha_missing_0162=c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6
+sha_missing_0163=c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -193,6 +194,7 @@ make_release() {
     0160_external_effect_system_control_actor.sql \
     0161_payment_paid_confirmation_time.sql \
     0162_payment_h5_distribution_return_path.sql \
+    0163_payment_profit_sharing_receiver_recovery.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -357,6 +359,7 @@ for missing_release in \
   "$sha_missing_0153:migrations/0153_wecom_customer_detail_projection.sql" \
   "$sha_missing_0155:migrations/0155_group_ops_webhook_dynamic_executions.sql" \
   "$sha_missing_0162:migrations/0162_payment_h5_distribution_return_path.sql" \
+  "$sha_missing_0163:migrations/0163_payment_profit_sharing_receiver_recovery.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \

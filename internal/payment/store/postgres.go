@@ -998,6 +998,36 @@ func (r *Repository) UpdatePaymentSettlement(ctx context.Context, p domain.Payme
 	}
 	return p, nil
 }
+
+// RestorePaidConfirmation applies a signed Provider query only to a native
+// payment that was already paid but lacked its immutable confirmation time.
+// It retains the original payment state and records a reconciliation-specific
+// receipt and audit fact; callers cannot use it to overwrite an existing
+// confirmation or infer time from bookkeeping updates.
+func (r *Repository) RestorePaidConfirmation(ctx context.Context, p domain.Payment, providerDigest, receipt string) (domain.Payment, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Payment{}, e
+	}
+	if p.Historical || p.Status != domain.StatusPaid || p.PaidConfirmedAt == nil || p.PaidConfirmedAt.IsZero() || p.Provider != domain.ProviderWeChatPay || !effectport.ValidDigest(effectport.Digest(providerDigest)) || receipt == "" {
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	result, e := t.Exec(ctx, `UPDATE payments SET paid_confirmed_at=$2,provider_transaction_reference=NULLIF($3,''),provider_transaction_digest=NULLIF($4,''),version=$5,updated_at=$6 WHERE id=$1 AND status='paid' AND paid_confirmed_at IS NULL AND version=$7`, p.ID, p.PaidConfirmedAt.UTC(), p.ProviderTransactionReference, providerDigest, p.Version, p.UpdatedAt, p.Version-1)
+	if e != nil || result.RowsAffected() != 1 {
+		if e != nil {
+			return domain.Payment{}, mapError(e)
+		}
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	if e = recordSettlement(ctx, t, "reconcile", "payment", p.ID, receipt, providerDigest, p.UpdatedAt); e != nil {
+		return domain.Payment{}, e
+	}
+	payload, _ := json.Marshal(map[string]any{"aggregate_id": p.ID, "confirmed_at": p.PaidConfirmedAt.UTC(), "source": "verified_provider_query"})
+	if _, e = t.Exec(ctx, `INSERT INTO payment_audit_events(event_type,aggregate_id,actor_scope,payload,occurred_at)VALUES('payment.confirmation_reconciled',$1,'provider',$2,$3)`, p.ID, payload, p.UpdatedAt); e != nil {
+		return domain.Payment{}, mapError(e)
+	}
+	return p, nil
+}
 func (r *Repository) UpdateRefundSettlement(ctx context.Context, v domain.Refund, providerDigest, receipt string) (domain.Refund, error) {
 	t, e := tx(ctx)
 	if e != nil {

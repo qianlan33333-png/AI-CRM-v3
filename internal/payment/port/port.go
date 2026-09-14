@@ -18,6 +18,11 @@ var ErrConflict = errors.New("payment conflict")
 var ErrNotFound = errors.New("payment not found")
 var ErrUnavailable = errors.New("payment unavailable")
 
+// ErrSettlementCapabilityDisabled is returned before a distribution receiver
+// effect is accepted when the merchant has not enabled the separate
+// profit-sharing settlement capability.
+var ErrSettlementCapabilityDisabled = errors.New("payment settlement capability disabled")
+
 // ErrNothingToUnfreeze is the explicit terminal result for a transaction that
 // was never marked for profit sharing.  It is intentionally distinct from a
 // funding conflict, which can mean a refund or split reserve is still active
@@ -25,6 +30,15 @@ var ErrUnavailable = errors.New("payment unavailable")
 var ErrNothingToUnfreeze = errors.New("payment has no profit sharing balance to unfreeze")
 var ErrSessionRequired = errors.New("trusted payment session required")
 var ErrSessionMismatch = errors.New("payment checkout session mismatch")
+
+// PaymentReconciliationPreview is an administrator-only, read-only result for
+// the narrow native-payment confirmation repair.  It intentionally reveals no
+// Provider transaction, merchant configuration, or customer identity.
+type PaymentReconciliationPreview struct {
+	PaymentID                    int64
+	WouldRestorePaidConfirmation bool
+	Reason                       string
+}
 
 // TrustedSessionCookieName is shared by public Host adapters. Its opaque
 // value is resolved only by Payment's SessionReader inside a PostgreSQL UoW;

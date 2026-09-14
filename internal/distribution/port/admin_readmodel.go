@@ -3,31 +3,36 @@ package port
 import (
 	"context"
 	"time"
+
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
 
 type AdminDistributor struct {
-	ID                                            int64
-	PublicNo, CustomerReference, AgreementVersion string
-	Enabled, ReceiverReady                        bool
-	ReceiverReason                                string
-	RegisteredAt                                  time.Time
-	Version                                       int64
+	ID                                      int64
+	CustomerID                              customerdomain.CustomerID
+	PublicNo, DisplayName, AgreementVersion string
+	Enabled, ReceiverReady                  bool
+	ReceiverReason                          string
+	RegisteredAt                            time.Time
+	Version                                 int64
 }
 type AdminOrder struct {
-	AttributionID                                                                                     int64
-	OrderReference                                                                                    string
-	ItemLine                                                                                          int32
-	ProductID                                                                                         int64
-	ProductType, ProductName, DistributorPublicNo, QualificationState, QualificationEvidenceReference string
-	PolicyVersion                                                                                     int64
-	RateBasisPoints, WaitDays                                                                         int32
-	PaidMinor                                                                                         int64
-	Currency                                                                                          string
-	AttributedAt                                                                                      time.Time
+	AttributionID                                                                                                             int64
+	DistributorCustomerID                                                                                                     customerdomain.CustomerID
+	OrderReference                                                                                                            string
+	ItemLine                                                                                                                  int32
+	ProductID                                                                                                                 int64
+	ProductType, ProductName, DistributorPublicNo, DistributorDisplayName, QualificationState, QualificationEvidenceReference string
+	PolicyVersion                                                                                                             int64
+	RateBasisPoints, WaitDays                                                                                                 int32
+	PaidMinor                                                                                                                 int64
+	Currency                                                                                                                  string
+	AttributedAt                                                                                                              time.Time
 }
 
-// AdminDistributorDetail is a staff-only projection. CustomerReference stays
-// opaque: Distribution never resolves identities for this page.
+// AdminDistributorDetail is a staff-only projection. Distribution retains the
+// canonical CustomerID only for a post-transaction, presentation-safe Customer
+// directory lookup; it never resolves identities for this page.
 type AdminDistributorDetail struct {
 	Distributor AdminDistributor
 	Earnings    Earnings
@@ -83,16 +88,17 @@ const (
 )
 
 type AdminException struct {
-	ExceptionID, CommissionID                                   int64
-	DistributorPublicNo, OrderReference, Kind, Status           string
-	UnpaidDueMinor, AlreadyPaidMinor, AmountMinor               int64
-	Reason, PaymentInstructionReference, EvidenceReference      string
-	ActorScope                                                  string
-	ReconcileTarget                                             AdminReconcileTarget
-	CreatedAt, UpdatedAt                                        time.Time
-	Version                                                     int64
-	CanReconcile, CanRecordRecovery, CanRecordMerchantLiability bool
-	Audit                                                       []AdminExceptionAuditFact
+	ExceptionID, CommissionID                                                 int64
+	DistributorCustomerID                                                     customerdomain.CustomerID
+	DistributorPublicNo, DistributorDisplayName, OrderReference, Kind, Status string
+	UnpaidDueMinor, AlreadyPaidMinor, AmountMinor                             int64
+	Reason, PaymentInstructionReference, EvidenceReference                    string
+	ActorScope                                                                string
+	ReconcileTarget                                                           AdminReconcileTarget
+	CreatedAt, UpdatedAt                                                      time.Time
+	Version                                                                   int64
+	CanReconcile, CanRecordRecovery, CanRecordMerchantLiability               bool
+	Audit                                                                     []AdminExceptionAuditFact
 }
 type AdminPage[T any] struct {
 	Items      []T

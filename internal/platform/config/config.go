@@ -323,7 +323,11 @@ type WeChatPay struct {
 	// ProfitSharingEnabled is a separate money-moving capability. It defaults
 	// closed even when ordinary WeChat Pay is enabled, so a payment deployment
 	// cannot begin receiver registration, frozen funds, or split instructions.
-	ProfitSharingEnabled     bool
+	ProfitSharingEnabled bool
+	// ProfitSharingAuthMode is explicit whenever the money-moving capability is
+	// enabled. It is never inferred from a certificate serial or an optional
+	// public-key id: Composition must select the matching SDK trust material.
+	ProfitSharingAuthMode    string
 	ProfitSharingPublicKeyID string
 }
 
@@ -449,6 +453,7 @@ func Load() (Runtime, error) {
 	cfg.WeChatPay.PrivateKeyPath = os.Getenv("AICRM_WECHAT_PAY_PRIVATE_KEY_PATH")
 	cfg.WeChatPay.PlatformCertPath = os.Getenv("AICRM_WECHAT_PAY_PLATFORM_CERT_PATH")
 	cfg.WeChatPay.APIV3Key = os.Getenv("AICRM_WECHAT_PAY_API_V3_KEY")
+	cfg.WeChatPay.ProfitSharingAuthMode = os.Getenv("AICRM_WECHAT_PAY_PROFIT_SHARING_AUTH_MODE")
 	cfg.WeChatPay.ProfitSharingPublicKeyID = os.Getenv("AICRM_WECHAT_PAY_PROFIT_SHARING_PUBLIC_KEY_ID")
 	if cfg.WeChatShop.Enabled, err = strictBool("AICRM_WECHAT_SHOP_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -716,8 +721,20 @@ func Load() (Runtime, error) {
 		}
 	}
 	if cfg.WeChatPay.ProfitSharingEnabled {
-		if !cfg.WeChatPay.Enabled || !cfg.Effects.ProviderEnabled || strings.TrimSpace(cfg.WeChatPay.ProfitSharingPublicKeyID) != cfg.WeChatPay.ProfitSharingPublicKeyID || cfg.WeChatPay.ProfitSharingPublicKeyID == "" {
-			return Runtime{}, errors.New("enabled WeChat Pay profit sharing requires payment, External Effects, and an explicit verified public-key id")
+		if !cfg.WeChatPay.Enabled || !cfg.Effects.ProviderEnabled {
+			return Runtime{}, errors.New("enabled WeChat Pay profit sharing requires payment and External Effects")
+		}
+		switch cfg.WeChatPay.ProfitSharingAuthMode {
+		case "certificate":
+			if cfg.WeChatPay.ProfitSharingPublicKeyID != "" {
+				return Runtime{}, errors.New("certificate profit sharing authentication must not include a public-key id")
+			}
+		case "public_key":
+			if strings.TrimSpace(cfg.WeChatPay.ProfitSharingPublicKeyID) != cfg.WeChatPay.ProfitSharingPublicKeyID || cfg.WeChatPay.ProfitSharingPublicKeyID == "" {
+				return Runtime{}, errors.New("public-key profit sharing authentication requires an explicit verified public-key id")
+			}
+		default:
+			return Runtime{}, errors.New("enabled WeChat Pay profit sharing requires explicit authentication mode")
 		}
 	}
 	if cfg.WeChatShop.Enabled {

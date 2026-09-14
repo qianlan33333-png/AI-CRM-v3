@@ -685,6 +685,27 @@ WHERE event_type='order.paid.v1' AND idempotency_key=$1 AND aggregate_id=$2 FOR 
 	return event, created, nil
 }
 
+// PaymentConfirmationOccurredAtWithin exposes only the immutable timestamp
+// of an existing native paid event to Order app. It is intentionally not an
+// insert/update path for Payment reconciliation.
+func (r *Repository) PaymentConfirmationOccurredAtWithin(ctx context.Context, orderID int64) (time.Time, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if orderID < 1 {
+		return time.Time{}, ErrInvalid
+	}
+	var occurredAt time.Time
+	if err = tx.QueryRow(ctx, `SELECT occurred_at FROM order_paid_events WHERE order_id=$1 FOR KEY SHARE`, orderID).Scan(&occurredAt); err != nil {
+		return time.Time{}, mapError(err)
+	}
+	if occurredAt.IsZero() {
+		return time.Time{}, ErrInvalid
+	}
+	return occurredAt.UTC(), nil
+}
+
 func (r *Repository) UpdateSettlement(ctx context.Context, order domain.Order, event domain.StatusEvent, actorScope string) (domain.Order, error) {
 	tx, err := transaction(ctx)
 	if err != nil {

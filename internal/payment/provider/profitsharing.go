@@ -3,11 +3,10 @@ package provider
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/x509"
 	"strings"
 	"time"
 
-	"github.com/wechatpay-apiv3/wechatpay-go/core"
-	"github.com/wechatpay-apiv3/wechatpay-go/core/option"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/profitsharing"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
@@ -71,14 +70,7 @@ type OfficialProfitSharingSDK struct {
 // this client and a Payment-only material loader, split effects fail closed and
 // make no provider call.
 func NewOfficialProfitSharingSDK(ctx context.Context, merchantID, serial, apiV3Key string, signer *rsa.PrivateKey) (*OfficialProfitSharingSDK, error) {
-	if strings.TrimSpace(merchantID) != merchantID || merchantID == "" || strings.TrimSpace(serial) != serial || serial == "" || strings.TrimSpace(apiV3Key) != apiV3Key || len(apiV3Key) != 32 || signer == nil || signer.N == nil || signer.N.BitLen() < 2048 {
-		return nil, ErrInvalidConfig
-	}
-	client, err := core.NewClient(ctx, option.WithWechatPayAutoAuthCipher(merchantID, serial, signer, apiV3Key))
-	if err != nil {
-		return nil, ErrInvalidConfig
-	}
-	return &OfficialProfitSharingSDK{receivers: profitsharing.ReceiversApiService{Client: client}, orders: profitsharing.OrdersApiService{Client: client}}, nil
+	return newOfficialProfitSharingSDKWithAutoCertificate(ctx, merchantID, serial, apiV3Key, signer, newProfitSharingAutoClient)
 }
 
 // NewOfficialProfitSharingSDKWithPublicKey preserves deployments that already
@@ -87,14 +79,13 @@ func NewOfficialProfitSharingSDK(ctx context.Context, merchantID, serial, apiV3K
 // publicKeyID must be the configured WeChat Pay public-key id, never an
 // unscoped key guessed from a response.
 func NewOfficialProfitSharingSDKWithPublicKey(ctx context.Context, merchantID, serial, publicKeyID string, signer *rsa.PrivateKey, publicKey *rsa.PublicKey) (*OfficialProfitSharingSDK, error) {
-	if strings.TrimSpace(merchantID) != merchantID || merchantID == "" || strings.TrimSpace(serial) != serial || serial == "" || strings.TrimSpace(publicKeyID) != publicKeyID || publicKeyID == "" || signer == nil || signer.N == nil || signer.N.BitLen() < 2048 || publicKey == nil || publicKey.N == nil || publicKey.N.BitLen() < 2048 {
-		return nil, ErrInvalidConfig
-	}
-	client, err := core.NewClient(ctx, option.WithWechatPayPublicKeyAuthCipher(merchantID, serial, signer, publicKeyID, publicKey))
-	if err != nil {
-		return nil, ErrInvalidConfig
-	}
-	return &OfficialProfitSharingSDK{receivers: profitsharing.ReceiversApiService{Client: client}, orders: profitsharing.OrdersApiService{Client: client}}, nil
+	return NewOfficialProfitSharingSDKWithAuthentication(ctx, merchantID, serial, signer, ProfitSharingAuthentication{Mode: ProfitSharingAuthenticationPublicKey, PlatformPublicKeyID: publicKeyID, PlatformPublicKey: publicKey})
+}
+
+// NewOfficialProfitSharingSDKWithCertificate uses a configured, trusted
+// platform certificate and performs no certificate download at construction.
+func NewOfficialProfitSharingSDKWithCertificate(ctx context.Context, merchantID, serial string, signer *rsa.PrivateKey, certificate *x509.Certificate) (*OfficialProfitSharingSDK, error) {
+	return NewOfficialProfitSharingSDKWithAuthentication(ctx, merchantID, serial, signer, ProfitSharingAuthentication{Mode: ProfitSharingAuthenticationCertificate, PlatformCertificate: certificate})
 }
 
 func (sdk *OfficialProfitSharingSDK) AddReceiver(ctx context.Context, value ProfitSharingMaterial) error {

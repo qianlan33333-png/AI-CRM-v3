@@ -78,9 +78,18 @@ type ReceiverReadiness struct {
 	CheckedAt time.Time
 }
 
+// SettlementCapability is a safe merchant-level projection. It is separate
+// from a distributor receiver because registration remains valid while the
+// merchant has not enabled money-moving settlement.
+type SettlementCapability struct {
+	Enabled bool
+	Reason  string
+}
+
 type DistributorProfile struct {
 	Distributor             domain.Distributor
 	Receiver                ReceiverReadiness
+	Settlement              SettlementCapability
 	CurrentAgreementVersion string
 	RegistrationRequired    bool
 }
@@ -113,6 +122,10 @@ type PromotionProduct struct {
 type PromotionPage struct {
 	Items      []PromotionProduct
 	NextCursor string
+	// EmptyReason is populated only when this cursor has reached the end with
+	// no safe, saleable, policy-enabled candidate. It never describes a
+	// disabled policy or an unavailable product.
+	EmptyReason string
 }
 
 // ApplicationTarget is the server-confirmed public product fact retained by a
