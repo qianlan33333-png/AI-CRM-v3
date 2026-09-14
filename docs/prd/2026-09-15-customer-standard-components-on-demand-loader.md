@@ -76,6 +76,14 @@ Persistence: stateless — 不改变数据库、内部持久任务、标签命�
 
 浏览器复核只记录自然导航的同源 resource metadata：客户列表/详情不应请求四个无关 picker JS；仍需单独观察标签选择、失败重试与既有客户 API 读回。它是发布后验收门，不取代上述提交绑定测试，也不包含部署。
 
+### Chromium 夹具闭环
+
+本 PR 的新浏览器前置修复只作用于测试夹具。Composition 与运行时静态资源都以相对路径 `web/dist` 读取已构建的发布闭包；Go 包测试默认从 `cmd/aicrm` 目录启动，而旧的客户标签 Chromium 测试既没有切换到仓库根，也没有执行现有的 release build/stage helper。因此此前页面只获得旧的 `admin_customers.js`、客户列表和标签目录响应，标准 Host 及其动态 `wecom_tag_picker.js` 不在夹具资源闭包内。这个结论来自源码与失败资源记录，不是生产页面的性能或可用性复现。
+
+夹具现与其他 composition Chromium journeys 保持一致：先 `t.Chdir` 到仓库根，再复用 `prepareProductExternalPushChromiumArtifacts` 构造 manifest 校验后的 `web/dist`。Journey 还要求 `standard_components_host.js` 与动态 `wecom_tag_picker.js` 各返回 HTTP 200，并等待 `AICRMWeComTagPicker.open`、两条客户行、两条标签选项后才继续已有的提交和 durable Provider 回读。它不模拟点击 picker UI；picker 的交互细节仍由已有的 JSDOM Host 合同测试覆盖。
+
+本地执行证据与 GitHub 分开记录：本次在新建 PostgreSQL 16 数据目录与空数据库上，以显式 `127.0.0.1:59424` DSN 运行 `TestPostgreSQLCustomerTagCommandChromiumJourney`，exit 0（日志 `/tmp/aicrm-306-customer-tag-browser.log`）；测试结束后已 drop 该数据库并停止、删除数据目录。该 Provider-enabled fixture 只验证既有标签命令/收据读回，不表示本 PR 新增 Provider 写入、持久任务或外部效果。
+
 ## 参考页面与审查记录
 
 | 项目 | 结论 |
