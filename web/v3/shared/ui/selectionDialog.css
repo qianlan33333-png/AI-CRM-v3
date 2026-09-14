@@ -22,6 +22,18 @@
   flex-shrink: 0;
 }
 
+[data-v3-selection-session="material"] .aicrm-material-picker__preview-unavailable {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+
 @media (max-width: 420px) {
   [data-v3-selection-session="material"] .aicrm-material-picker {
     width: calc(100vw - 16px);
