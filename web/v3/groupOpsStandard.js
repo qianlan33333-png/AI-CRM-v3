@@ -1382,6 +1382,23 @@
     `);
   }
 
+  // The V3 transport Host never writes donor state directly. A completed
+  // scoped selection asks this existing renderer to reread its own detail
+  // projection, so newly rendered action controls retain their native events.
+  window.addEventListener("aicrm:groupops-detail-refresh", (event) => {
+    const planId = Number(event && event.detail && event.detail.planId);
+    if (state.mode === "detail" && state.plan && Number(state.plan.id) === planId) void loadDetailPage(planId);
+  });
+  window.addEventListener("aicrm:groupops-directory-decoration", (event) => {
+    const detail = event && event.detail;
+    const planId = Number(detail && detail.planId);
+    if (state.mode !== "detail" || !state.plan || Number(state.plan.id) !== planId || !Array.isArray(detail && detail.rows)) return;
+    // The existing refresh flow renders immediately afterwards and rebinds its
+    // native action controls, while retaining the unsaved owner/name draft.
+    state.planGroups = detail.rows;
+    state.groupSummary = detail.summary || state.groupSummary;
+  });
+
   if (state.mode === "detail" && state.planId) {
     loadDetailPage(state.planId);
   } else if (state.mode === "groups") {
