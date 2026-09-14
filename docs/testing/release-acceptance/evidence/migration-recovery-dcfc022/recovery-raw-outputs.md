@@ -8,7 +8,9 @@ that two-database evidence without adding six duplicate paths to the source
 tree.
 
 The archive and every member are pinned in
-`recovery-raw-outputs.manifest.json`. To inspect or extract them from this
+`recovery-raw-outputs.manifest.json`. It contains exactly the six listed regular
+files, written with normalized tar metadata (mtime, uid, and gid are zero); no
+AppleDouble or extended-attribute members are included. To inspect or extract them from this
 directory:
 
 ```sh

@@ -2,8 +2,8 @@
   "schema_version": 1,
   "archive": {
     "path": "recovery-raw-outputs.tar",
-    "bytes": 19456,
-    "sha256": "8c0524590f91f1792719159e129de3bc0c991d4dc6e2ed95e1a3f71d54f644d4"
+    "bytes": 10240,
+    "sha256": "4e26a4ee6d1e403f533a9c4c99e7c9bac8a7fd339dcc5864b2a1506e11dcf239"
   },
   "entries": [
     {
