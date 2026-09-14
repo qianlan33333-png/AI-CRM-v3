@@ -90,6 +90,7 @@ run_frontend_and_stage_checks() {
   node web/v3/surfaceFeedbackHost.test.mjs
   node web/v3/memberGridFeedbackHost.test.mjs
   node web/v3/radarAdapter.test.mjs
+  node web/v3/radarAdapter.exact_id.test.mjs
   node web/v3/radarAdapter.presentation.test.mjs
   TZ=UTC node web/v3/radarAdapter.visitors.test.mjs
   TZ=America/Los_Angeles node web/v3/radarAdapter.visitors.test.mjs
