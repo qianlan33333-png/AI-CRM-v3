@@ -569,10 +569,24 @@ func (r *Repository) FindProfitSharingProviderIntent(ctx context.Context, kind e
 	if err != nil {
 		return domain.ProfitSharingProviderIntent{}, mapError(err)
 	}
-	if (value.ReceiverID > 0) == (value.InstructionID > 0) || (value.ReceiverID > 0) == (value.UnfreezeID > 0) || (value.InstructionID > 0) == (value.UnfreezeID > 0) {
+	if !hasExactlyOneProfitSharingIntentOwner(value.ReceiverID, value.InstructionID, value.UnfreezeID) {
 		return domain.ProfitSharingProviderIntent{}, paymentport.ErrConflict
 	}
 	return value, nil
+}
+
+// hasExactlyOneProfitSharingIntentOwner enforces the table's polymorphic
+// owner invariant. A recovered receiver effect legitimately leaves both other
+// owner columns NULL, so this must count populated columns rather than compare
+// each pair for equality.
+func hasExactlyOneProfitSharingIntentOwner(receiverID, instructionID, unfreezeID int64) bool {
+	owners := 0
+	for _, id := range []int64{receiverID, instructionID, unfreezeID} {
+		if id > 0 {
+			owners++
+		}
+	}
+	return owners == 1
 }
 
 func insertProfitSharingIntent(ctx context.Context, t pgx.Tx, receiverID, instructionID, unfreezeID int64, intent effectport.PaymentV1Intent, now time.Time) error {
