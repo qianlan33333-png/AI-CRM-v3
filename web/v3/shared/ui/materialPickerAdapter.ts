@@ -160,14 +160,14 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
   mask.dataset.selectionScope = config.scope;
   mask.innerHTML = `<div class="aicrm-material-picker" role="dialog" aria-modal="true" aria-labelledby="aicrm-v3-material-picker-title">
     <header class="aicrm-material-picker__head"><div><h3 id="aicrm-v3-material-picker-title">${escape(options.title || `选择${labels[type]}`)}</h3><p>选择仅在确认后应用。</p></div><button class="aicrm-material-picker__button" type="button" data-v3-picker-close>取消</button></header>
-    <div class="aicrm-material-picker__tools"><input class="aicrm-material-picker__search" data-picker-search data-v3-search-managed="true" placeholder="搜索${labels[type]}" aria-label="搜索${labels[type]}"><button class="aicrm-material-picker__button is-primary" type="button" data-v3-picker-search>搜索</button><button class="aicrm-material-picker__button" type="button" data-v3-picker-reload>刷新当前结果</button></div>
+    <div class="aicrm-material-picker__tools"><input class="aicrm-material-picker__search" data-v3-picker-search-input placeholder="搜索${labels[type]}" aria-label="搜索${labels[type]}"><button class="aicrm-material-picker__button is-primary" type="button" data-v3-picker-search>搜索</button><button class="aicrm-material-picker__button" type="button" data-v3-picker-reload>刷新当前结果</button></div>
     <section class="aicrm-material-picker__body" aria-label="已选素材"><div class="aicrm-material-picker__grid" data-v3-picker-selected></div></section>
     <p class="aicrm-v3-picker-status" data-v3-picker-status role="status"></p><div class="aicrm-material-picker__body"><div class="aicrm-material-picker__empty" data-picker-empty></div><div class="aicrm-material-picker__grid" data-picker-grid></div></div>
     <footer class="aicrm-material-picker__tools"><button class="aicrm-material-picker__button" type="button" data-v3-picker-more hidden>加载更多</button><button class="aicrm-material-picker__button" type="button" data-v3-picker-cancel>取消</button><button class="aicrm-material-picker__button is-primary" type="button" data-v3-picker-confirm>确认选择</button></footer>
   </div>`;
   document.body.append(mask);
   const dialog = mask.querySelector<HTMLElement>('.aicrm-material-picker')!;
-  const search = mask.querySelector<HTMLInputElement>('[data-picker-search]')!;
+  const search = mask.querySelector<HTMLInputElement>('[data-v3-picker-search-input]')!;
   const selectedRoot = mask.querySelector<HTMLElement>('[data-v3-picker-selected]')!;
   const grid = mask.querySelector<HTMLElement>('[data-picker-grid]')!;
   const empty = mask.querySelector<HTMLElement>('[data-picker-empty]')!;

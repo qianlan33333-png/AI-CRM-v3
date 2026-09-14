@@ -42,8 +42,13 @@ const mask = document.querySelector('[data-v3-selection-session="material"]');
 assert.ok(mask, 'V3 dialog mounts instead of the frozen one');
 assert.equal(mask.dataset.selectionSource, 'radar-content');
 assert.equal(mask.dataset.selectionScope, 'radar-editor');
-const search = mask.querySelector('[data-picker-search]');
-assert.equal(search.dataset.v3SearchManaged, 'true', 'V3 dialog opts out of frozen search capture');
+const search = mask.querySelector('[data-v3-picker-search-input]');
+assert.equal(search.matches('[data-picker-search]'), false, 'V3 dialog has a separate query marker from the frozen picker');
+let legacyPickerInputCalls = 0;
+document.addEventListener('input', (event) => {
+  const input = event.target instanceof dom.window.HTMLInputElement ? event.target : null;
+  if (input?.matches('.aicrm-material-picker-mask [data-picker-search]')) legacyPickerInputCalls += 1;
+}, true);
 const callsBeforeCandidate = calls.length;
 search.value = '中文候选';
 search.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true }));
@@ -58,6 +63,7 @@ assert.equal(calls.length, callsBeforeCandidate, 'composition completion and can
 search.value = '草稿';
 search.dispatchEvent(new Event('input', { bubbles: true }));
 assert.equal(calls.length, callsBeforeCandidate, 'typing only maintains a native draft');
+assert.equal(legacyPickerInputCalls, 0, 'a legacy picker capture selector cannot receive V3 draft input');
 search.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
 await flush();
 assert.deepEqual(calls.at(-1), { type: 'image', query: '草稿', cursor: undefined, aborted: false }, 'native Enter submits exactly the V3 draft');
