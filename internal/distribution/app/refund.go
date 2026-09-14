@@ -268,11 +268,7 @@ func (s *RefundService) recordPostSubmissionBuyerRefundWithin(ctx context.Contex
 	if settlementErr != nil && !errors.Is(settlementErr, distributionport.ErrNotFound) {
 		return settlementErr
 	}
-	settledMinor := settlement.AmountMinor
-	if settledMinor == 0 {
-		settledMinor = next.PaidMinor
-	}
-	amount := absoluteMinor(settledMinor - next.CurrentPayableMinor)
+	amount := afterSalesHandlingMinor(next, "buyer_refund_after_paid")
 	exception, err := s.store.InsertExceptionWithin(ctx, distributionstore.Exception{
 		CommissionID: commission.ID, SettlementID: settlement.ID, Kind: "buyer_refund_after_paid", Status: "open",
 		UnpaidDueMinor: maxInt64(next.CurrentPayableMinor-next.PaidMinor, 0), AlreadyPaidMinor: next.PaidMinor,
@@ -382,7 +378,7 @@ func (s *RefundService) markQualificationExceptionWithin(ctx context.Context, va
 	exception, err := s.store.InsertExceptionWithin(ctx, distributionstore.Exception{
 		CommissionID: commission.ID, SettlementID: settlement.ID, Kind: "qualification_revoked_after_paid", Status: "open",
 		UnpaidDueMinor: maxInt64(next.CurrentPayableMinor-next.PaidMinor, 0), AlreadyPaidMinor: next.PaidMinor,
-		AmountMinor: maxInt64(next.CurrentPayableMinor-next.PaidMinor, 0), Reason: reason, EvidenceReference: source,
+		AmountMinor: afterSalesHandlingMinor(next, reason), Reason: reason, EvidenceReference: source,
 		ActorScope: "order-refund:" + strconv.FormatInt(commission.OrderID, 10), Version: 1, CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
@@ -392,6 +388,21 @@ func (s *RefundService) markQualificationExceptionWithin(ctx context.Context, va
 		return err
 	}
 	return s.dueTasks.EnqueueCommissionDueWithin(ctx, commission.ID, now)
+}
+
+// afterSalesHandlingMinor is the amount already paid to a distributor that a
+// later refund or durable qualification revocation leaves without a lawful
+// commission basis. Unpaid instructions are deliberately zero here: they
+// remain settlement exceptions rather than being misrepresented as recovered
+// or merchant-absorbed money.
+func afterSalesHandlingMinor(commission distributiondomain.Commission, reason string) int64 {
+	if commission.PaidMinor < 1 {
+		return 0
+	}
+	if reason == "qualification_revoked_after_paid" {
+		return commission.PaidMinor
+	}
+	return maxInt64(commission.PaidMinor-commission.CurrentPayableMinor, 0)
 }
 
 func (s *RefundService) recordWithin(ctx context.Context, eventType string, aggregateID int64, receiptKey string, payload any, now time.Time) error {

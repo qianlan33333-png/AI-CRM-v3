@@ -88,6 +88,7 @@ type settlementStoreStub struct {
 	receiver    distributionport.ReceiverReadiness
 	settlement  distributionstore.Settlement
 	exceptions  []distributionstore.Exception
+	adjustments []distributionstore.CommissionAdjustment
 	audits      []string
 }
 
@@ -123,7 +124,9 @@ func (s *settlementStoreStub) UpdateCommissionWithin(_ context.Context, value di
 	s.context.Commission = value
 	return value, nil
 }
-func (s *settlementStoreStub) AppendCommissionAdjustmentWithin(context.Context, distributionstore.CommissionAdjustment) error {
+
+func (s *settlementStoreStub) AppendCommissionAdjustmentWithin(_ context.Context, value distributionstore.CommissionAdjustment) error {
+	s.adjustments = append(s.adjustments, value)
 	return nil
 }
 func (s *settlementStoreStub) InsertExceptionWithin(_ context.Context, value distributionstore.Exception) (distributionstore.Exception, error) {
@@ -138,6 +141,34 @@ func (s *settlementStoreStub) FindOpenExceptionWithin(_ context.Context, commiss
 		}
 	}
 	return distributionstore.Exception{}, distributionport.ErrNotFound
+}
+func (s *settlementStoreStub) FindExceptionByEvidenceWithin(_ context.Context, commissionID int64, kind, evidence string) (distributionstore.Exception, error) {
+	for _, value := range s.exceptions {
+		if value.CommissionID == commissionID && value.Kind == kind && value.EvidenceReference == evidence {
+			return value, nil
+		}
+	}
+	return distributionstore.Exception{}, distributionport.ErrNotFound
+}
+func (s *settlementStoreStub) HasExceptionWithReasonWithin(_ context.Context, commissionID int64, kind, reason string) (bool, error) {
+	for _, value := range s.exceptions {
+		if value.CommissionID == commissionID && value.Kind == kind && value.Reason == reason {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func (s *settlementStoreStub) ResolveOpenBusinessExceptionsWithin(_ context.Context, commissionID int64, at time.Time) ([]distributionstore.Exception, error) {
+	resolved := []distributionstore.Exception{}
+	for index := range s.exceptions {
+		value := &s.exceptions[index]
+		if value.CommissionID != commissionID || value.Status != "open" || (value.Kind != "buyer_refund_after_paid" && value.Kind != "qualification_revoked_after_paid") {
+			continue
+		}
+		value.Status, value.Version, value.UpdatedAt = "resolved", value.Version+1, at.UTC()
+		resolved = append(resolved, *value)
+	}
+	return resolved, nil
 }
 func (s *settlementStoreStub) AppendAuditWithin(_ context.Context, event string, _ string, _ int64, _ string, _ any, _ time.Time) error {
 	s.audits = append(s.audits, event)
@@ -189,16 +220,124 @@ func TestCommissionDueUnknownStaysQueryableAndCanRecoverToPaid(t *testing.T) {
 	}
 }
 
-func TestCommissionDueConfirmedNotPaidCancelsOnlyAfterOriginalInstructionQuery(t *testing.T) {
+func TestCommissionDueClosedInstructionPreservesCommissionObligationAndRecordsException(t *testing.T) {
 	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
 	store, payment, service := settlementFixture(t, now)
 	_ = service.RunCommissionDueCheck(context.Background(), 41)
-	payment.reconciled = paymentport.ProfitSharingInstruction{Reference: "psinst_1", AmountMinor: 100, Currency: "CNY", OutcomeKnown: true, UpdatedAt: now.Add(time.Minute)}
+	payment.reconciled = paymentport.ProfitSharingInstruction{Reference: "psinst_1", AmountMinor: 100, Currency: "CNY", FailureClass: "receiver_receipt_limit", OutcomeKnown: true, UpdatedAt: now.Add(time.Minute)}
 	if err := service.RunCommissionDueCheck(context.Background(), 41); err != nil {
 		t.Fatalf("confirmed not-paid settlement=%v", err)
 	}
-	if got := store.context.Commission; got.Status != distributiondomain.CommissionCancelled || got.PaidMinor != 0 || got.CurrentPayableMinor != 0 || got.CancelReason != "settlement_not_paid" || payment.unfreezes != 1 {
-		t.Fatalf("confirmed not-paid instruction must close only after reconcile: %+v unfreezes=%d", got, payment.unfreezes)
+	if got := store.context.Commission; got.Status != distributiondomain.CommissionException || got.PaidMinor != 0 || got.CurrentPayableMinor != 100 || got.ExceptionReason != "payment_receiver_receipt_limit" || payment.unfreezes != 1 {
+		t.Fatalf("closed instruction must preserve payable obligation and unfreeze reserve: %+v unfreezes=%d", got, payment.unfreezes)
+	}
+	if len(store.exceptions) != 1 || store.exceptions[0].Kind != "settlement_not_paid" || store.exceptions[0].Reason != "payment_receiver_receipt_limit" || store.exceptions[0].AmountMinor != 100 {
+		t.Fatalf("closed instruction exception=%+v", store.exceptions)
+	}
+	if len(store.adjustments) != 0 {
+		t.Fatalf("provider CLOSED cannot create a negative commission adjustment: %+v", store.adjustments)
+	}
+}
+
+func TestCommissionDueClosedInstructionReplayDoesNotReopenResolvedSameEvidence(t *testing.T) {
+	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
+	store, payment, service := settlementFixture(t, now)
+	_ = service.RunCommissionDueCheck(context.Background(), 41)
+	payment.reconciled = paymentport.ProfitSharingInstruction{Reference: "psinst_1", AmountMinor: 100, Currency: "CNY", FailureClass: "receiver_receipt_limit", OutcomeKnown: true, UpdatedAt: now.Add(time.Minute)}
+	if err := service.RunCommissionDueCheck(context.Background(), 41); err != nil {
+		t.Fatalf("first confirmed not-paid settlement=%v", err)
+	}
+	store.exceptions[0].Status = "resolved"
+	if err := service.RunCommissionDueCheck(context.Background(), 41); err != nil {
+		t.Fatalf("replayed confirmed not-paid settlement=%v", err)
+	}
+	if len(store.exceptions) != 1 || store.exceptions[0].Status != "resolved" || store.exceptions[0].EvidenceReference != "psinst_1" {
+		t.Fatalf("same terminal evidence must not reopen a resolved exception: %+v", store.exceptions)
+	}
+}
+
+func TestCommissionDueClosedInstructionCancelsOnlyForExistingFullRefundFact(t *testing.T) {
+	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
+	store, payment, service := settlementFixture(t, now)
+	_ = service.RunCommissionDueCheck(context.Background(), 41)
+	refunded, err := store.context.Commission.RecordRefundAfterSubmission(store.context.Commission.Version, store.context.Commission.OriginalItemPaidMinor, "buyer_refund_after_paid", now.Add(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.context.Commission = refunded
+	store.exceptions = append(store.exceptions, distributionstore.Exception{ID: 41, CommissionID: store.context.Commission.ID, SettlementID: store.settlement.ID, Kind: "buyer_refund_after_paid", Status: "open", Reason: "buyer_refund_after_paid", EvidenceReference: "refund:buyer", ActorScope: "order-refund:17", Version: 1, CreatedAt: now, UpdatedAt: now})
+	service.now = func() time.Time { return now.Add(time.Minute) }
+	payment.reconciled = paymentport.ProfitSharingInstruction{Reference: "psinst_1", AmountMinor: 100, Currency: "CNY", FailureClass: "receiver_account_abnormal", OutcomeKnown: true, UpdatedAt: now.Add(time.Minute)}
+	if err = service.RunCommissionDueCheck(context.Background(), 41); err != nil {
+		t.Fatalf("full-refund closed result=%v", err)
+	}
+	if got := store.context.Commission; got.Status != distributiondomain.CommissionCancelled || got.CurrentPayableMinor != 0 || got.CancelReason != "buyer_refund" {
+		t.Fatalf("existing full refund must be the only cancellation proof: %+v", got)
+	}
+	if got := store.context.Commission; got.ExceptionReason != "" {
+		t.Fatalf("cancellation must not retain a stale exception reason: %+v", got)
+	}
+	if len(store.exceptions) != 1 || store.exceptions[0].Status != "resolved" || store.exceptions[0].Kind != "buyer_refund_after_paid" || len(store.adjustments) != 0 || payment.unfreezes != 1 {
+		t.Fatalf("full-refund cancellation must resolve the business exception without a provider-loss adjustment: exceptions=%+v adjustments=%+v unfreezes=%d", store.exceptions, store.adjustments, payment.unfreezes)
+	}
+}
+
+func TestCommissionDueClosedInstructionCancelsForPersistentQualificationRevocation(t *testing.T) {
+	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
+	store, payment, service := settlementFixture(t, now)
+	_ = service.RunCommissionDueCheck(context.Background(), 41)
+	store.exceptions = append(store.exceptions, distributionstore.Exception{ID: 41, CommissionID: store.context.Commission.ID, SettlementID: store.settlement.ID, Kind: "qualification_revoked_after_paid", Status: "open", Reason: "qualification_revoked_after_paid", EvidenceReference: "refund:qualification", ActorScope: "order-refund:17", Version: 1, CreatedAt: now, UpdatedAt: now})
+	payment.reconciled = paymentport.ProfitSharingInstruction{Reference: "psinst_1", AmountMinor: 100, Currency: "CNY", FailureClass: "receiver_account_abnormal", OutcomeKnown: true, UpdatedAt: now.Add(time.Minute)}
+	if err := service.RunCommissionDueCheck(context.Background(), 41); err != nil {
+		t.Fatalf("qualification-revoked closed result=%v", err)
+	}
+	if got := store.context.Commission; got.Status != distributiondomain.CommissionCancelled || got.CurrentPayableMinor != 0 || got.CancelReason != "qualification_revoked" {
+		t.Fatalf("current qualification revocation must cancel independently of provider failure class: %+v", got)
+	}
+	if len(store.adjustments) != 1 || store.adjustments[0].Kind != "qualification_revoke" || store.adjustments[0].Reason != "qualification_revoked" || store.adjustments[0].DeltaMinor != -100 {
+		t.Fatalf("qualification cancellation adjustment=%+v", store.adjustments)
+	}
+	if len(store.exceptions) != 1 || store.exceptions[0].Status != "resolved" || store.exceptions[0].Reason != "qualification_revoked_after_paid" {
+		t.Fatalf("qualification cancellation must retain but close its durable evidence: %+v", store.exceptions)
+	}
+}
+
+func TestCommissionDueClosedInstructionDoesNotTreatUnavailableQualificationEvidenceAsRevocation(t *testing.T) {
+	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
+	store, payment, service := settlementFixture(t, now)
+	_ = service.RunCommissionDueCheck(context.Background(), 41)
+	// The refund worker records this same kind when qualification evidence
+	// cannot be read. It is not the affirmative revocation fact required to
+	// cancel an already-submitted split, even after it is resolved.
+	store.exceptions = append(store.exceptions, distributionstore.Exception{ID: 41, CommissionID: store.context.Commission.ID, SettlementID: store.settlement.ID, Kind: "qualification_revoked_after_paid", Status: "resolved", Reason: "qualification_evidence_unavailable_after_submission", EvidenceReference: "refund:qualification", ActorScope: "order-refund:17", Version: 1, CreatedAt: now, UpdatedAt: now})
+	payment.reconciled = paymentport.ProfitSharingInstruction{Reference: "psinst_1", AmountMinor: 100, Currency: "CNY", FailureClass: "receiver_account_abnormal", OutcomeKnown: true, UpdatedAt: now.Add(time.Minute)}
+	if err := service.RunCommissionDueCheck(context.Background(), 41); err != nil {
+		t.Fatalf("unavailable-qualification closed result=%v", err)
+	}
+	if got := store.context.Commission; got.Status != distributiondomain.CommissionException || got.CurrentPayableMinor != 100 || got.CancelReason != "" || got.ExceptionReason != "payment_receiver_account_abnormal" {
+		t.Fatalf("unavailable qualification evidence must retain obligation: %+v", got)
+	}
+	if len(store.adjustments) != 0 || len(store.exceptions) != 2 || store.exceptions[1].Kind != "settlement_not_paid" {
+		t.Fatalf("unavailable qualification evidence cannot cancel or adjust: adjustments=%+v exceptions=%+v", store.adjustments, store.exceptions)
+	}
+}
+
+func TestPaymentSettlementFailureReasonAcceptsOnlyPaymentSafeClasses(t *testing.T) {
+	for _, value := range []struct{ input, want string }{
+		{"receiver_account_abnormal", "payment_receiver_account_abnormal"},
+		{"receiver_relation_removed", "payment_receiver_relation_removed"},
+		{"receiver_high_risk", "payment_receiver_high_risk"},
+		{"receiver_real_name_unverified", "payment_receiver_real_name_unverified"},
+		{"merchant_permission_revoked", "payment_merchant_permission_revoked"},
+		{"receiver_receipt_limit", "payment_receiver_receipt_limit"},
+		{"payer_account_abnormal", "payment_payer_account_abnormal"},
+		{"invalid_split_request", "payment_invalid_split_request"},
+		{"", "settlement_not_paid"},
+		{"provider raw message", "settlement_not_paid"},
+	} {
+		if got := paymentSettlementFailureReason(value.input); got != value.want {
+			t.Fatalf("payment failure=%q reason=%q want=%q", value.input, got, value.want)
+		}
 	}
 }
 
@@ -211,7 +350,7 @@ func TestCommissionDueUnfreezeFailureRemainsExceptionInsteadOfCompletion(t *test
 	if err := service.RunCommissionDueCheck(context.Background(), 41); err != nil {
 		t.Fatalf("unfreeze final failure=%v", err)
 	}
-	if got := store.context.Commission; got.Status != distributiondomain.CommissionException || got.PaidMinor != 100 || len(store.exceptions) != 1 || store.exceptions[0].Kind != "unfreeze_final_failed" {
+	if got := store.context.Commission; got.Status != distributiondomain.CommissionException || got.PaidMinor != 100 || len(store.exceptions) != 1 || store.exceptions[0].Kind != "unfreeze_final_failed" || store.exceptions[0].UnpaidDueMinor != 0 || store.exceptions[0].AmountMinor != 0 || store.exceptions[0].AlreadyPaidMinor != 100 {
 		t.Fatalf("unfreeze failure must retain paid fact and exception: commission=%+v exceptions=%+v", got, store.exceptions)
 	}
 	// The retry keeps its original logical Payment instruction even though the
@@ -228,10 +367,14 @@ func TestCommissionDueUnfreezeFailureRemainsExceptionInsteadOfCompletion(t *test
 func TestCommissionDueCancelledUnfreezeFailureKeepsZeroPayableAndReplays(t *testing.T) {
 	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
 	store, payment, service := settlementFixture(t, now)
-	_ = service.RunCommissionDueCheck(context.Background(), 41)
-	payment.reconciled = paymentport.ProfitSharingInstruction{Reference: "psinst_1", AmountMinor: 100, Currency: "CNY", OutcomeKnown: true, UpdatedAt: now.Add(time.Minute)}
+	cancelled, err := store.context.Commission.CancelUnsettled(store.context.Commission.Version, "qualification_revoked", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.context.Commission = cancelled
+	store.settlement = distributionstore.Settlement{ID: 71, CommissionID: cancelled.ID, Reference: "dstl_commission_41", AmountMinor: 100, Currency: "CNY", OriginalPaymentReference: "payref_17", State: "cancelled", Version: 1, CreatedAt: now, UpdatedAt: now}
 	payment.unfreeze = paymentport.ProfitSharingUnfreeze{Reference: "psunfreeze_1", State: "exception", OutcomeKnown: true, UpdatedAt: now.Add(time.Minute)}
-	if err := service.RunCommissionDueCheck(context.Background(), 41); err != nil {
+	if err = service.RunCommissionDueCheck(context.Background(), 41); err != nil {
 		t.Fatalf("cancelled unfreeze final failure=%v", err)
 	}
 	if got := store.context.Commission; got.Status != distributiondomain.CommissionCancelled || got.CurrentPayableMinor != 0 || got.PaidMinor != 0 {

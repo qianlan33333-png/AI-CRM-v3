@@ -55,6 +55,15 @@ function readinessReason(value: string): string {
     receiver_accepted: '微信收款准备正在提交，请稍后刷新。',
     receiver_outcome_unknown: '微信收款准备结果待核验，请稍后刷新。',
     receiver_final_failed: '微信收款准备未完成，请联系商家核验。',
+    receiver_provider_permission_denied: '支付侧拒绝了收款准备，请联系商家核验分佣权限。',
+    payment_receiver_account_abnormal: '收款账户状态异常，请联系商家核验。',
+    payment_receiver_relation_removed: '收款关系已失效，请联系商家核验。',
+    payment_receiver_high_risk: '支付侧暂不支持该收款账户，请联系商家核验。',
+    payment_receiver_real_name_unverified: '收款账户尚未完成实名核验，请联系商家核验。',
+    payment_merchant_permission_revoked: '商户分佣权限暂不可用，请联系商家核验。',
+    payment_receiver_receipt_limit: '收款账户已达到接收限制，请联系商家核验。',
+    payment_payer_account_abnormal: '付款账户状态异常，请联系商家核验。',
+    payment_invalid_split_request: '该笔分佣请求暂不可处理，请联系商家核验。',
     requires_wechat_session: '请重新完成微信登录后继续收款准备。',
   };
   return known[value] || (value ? '微信收款状态待确认，请稍后刷新。' : '');
@@ -190,8 +199,8 @@ async function reload(): Promise<void> {
   }
 }
 function applicationContextMessage(): string { if (applicationTargetState === 'unavailable') return '该申请链接对应的商品当前不可用，请返回商品页面重新获取申请入口。'; if (applicationTargetState === 'failed') return '暂时无法读取商品，请稍后重试。'; return ''; }
-function renderLogin(): void { root.replaceChildren(); const card = el('section'); card.className = 'distribution-card distribution-login'; const introduction = applicationTarget ? `申请推广：${applicationTarget.name}。请先使用微信登录，查看本商品的申请条件。` : applicationContextMessage() || '请先使用微信登录，再查看推广资格和收益。'; const detail = applicationTarget ? '登录后阅读协议并完成注册，再查看本商品的购买和推广资格。' : '微信登录后可查看当前协议、注册状态和收款准备。'; card.append(el('h1', '分销中心'), el('p', introduction), el('p', detail)); const link = el('a', '使用微信登录'); link.href = wechatLoginURL(); link.className = 'distribution-button'; card.append(link); root.append(card); }
-function renderRegistration(): void { root.replaceChildren(); const card = el('section'); card.className = 'distribution-card distribution-login'; const introduction = applicationTarget ? `你正在申请推广${applicationTarget.name}。注册后可查看本商品的购买和推广资格。` : applicationContextMessage() || '注册成功后，可查看推广商品和我的收益；微信收款准备完成后才能生成推广入口。'; card.append(el('h1', '申请成为分销员'), el('p', introduction));
+function renderLogin(): void { root.replaceChildren(); const card = el('section'); card.className = 'distribution-card distribution-login'; const introduction = applicationTarget ? `申请推广：${applicationTarget.name}。请先使用微信登录，查看本商品的申请条件。` : applicationContextMessage() || '请先使用微信登录，再查看推广资格和收益。'; const detail = applicationTarget ? '登录后阅读协议并完成注册，再查看本商品的推广资格。' : '微信登录后可查看当前协议、注册状态和收款准备。'; card.append(el('h1', '分销中心'), el('p', introduction), el('p', detail)); const link = el('a', '使用微信登录'); link.href = wechatLoginURL(); link.className = 'distribution-button'; card.append(link); root.append(card); }
+function renderRegistration(): void { root.replaceChildren(); const card = el('section'); card.className = 'distribution-card distribution-login'; const introduction = applicationTarget ? `你正在申请推广${applicationTarget.name}。注册后可查看本商品的推广资格。` : applicationContextMessage() || '注册成功后，可查看推广商品和我的收益；微信收款准备完成后才能生成推广入口。'; card.append(el('h1', '申请成为分销员'), el('p', introduction));
   if (!me?.currentAgreementVersion || !agreement || agreement.version !== me.currentAgreementVersion) { card.append(el('p', '当前分销协议版本读取失败，未提交注册。')); root.append(card); return; }
   const agree = el('label'); const check = document.createElement('input'); check.type = 'checkbox'; agree.append(check, document.createTextNode(` 我已阅读并同意当前分销协议（${me.currentAgreementVersion}）`));
   const agreementDetails = el('details'); agreementDetails.append(el('summary', `查看分销协议（${agreement.version}）`), el('p', agreement.content));
@@ -199,17 +208,17 @@ function renderRegistration(): void { root.replaceChildren(); const card = el('s
   card.append(agreementDetails, agree, action('同意并注册', async () => { if (!check.checked) { message('请先同意当前分销协议。', true); return; } try { const result = await request('/api/v1/distribution/registration', { method: 'POST', headers: mutationHeaders('registration'), body: JSON.stringify({ agreement_version: me!.currentAgreementVersion }) }); me = parseMe(result); await reload(); } catch (error) { message(error instanceof Error ? error.message : '注册失败', true); } }), feedback); root.append(card); }
 function render(): void {
   if (!me) return; if (me.registrationRequired) { renderRegistration(); return; }
-  root.replaceChildren(); const head = el('header'); head.className = 'distribution-head'; const identity = el('div'); identity.append(el('h1', '分销中心'), el('p', `分销员编号：${me.distributor?.publicNo || '待确认'} · 协议：${me.distributor?.agreementVersion || '—'}`)); head.append(identity, status(me.distributor?.enabled ? '已启用' : '已停用'));
-  const readiness = el('div'); readiness.className = 'distribution-readiness';
+  root.replaceChildren(); const head = el('header'); head.className = 'distribution-head'; head.append(el('h1', '分销中心'));
+  const readiness = el('div'); readiness.className = 'distribution-readiness'; let showReadiness = false;
   if (!me.settlement.enabled && me.settlement.reason === 'merchant_settlement_disabled') {
-    readiness.append(el('strong', '分佣结算暂未启用'), el('span', readinessReason(me.settlement.reason)));
+    showReadiness = true; readiness.append(el('strong', '分佣结算暂未启用'), el('span', readinessReason(me.settlement.reason)));
   } else if (!me.settlement.enabled) {
-    readiness.append(el('strong', '分佣结算状态待确认'), el('span', readinessReason(me.settlement.reason) || '商户分佣结算状态暂时无法确认，请稍后刷新。'), action('刷新状态', reload));
-  } else {
-    readiness.append(el('strong', me.readiness.ready ? '微信收款准备完成' : '微信收款准备未完成'), el('span', readinessReason(me.readiness.reason) || (me.readiness.ready ? '可生成有效推广入口' : '请完成微信收款准备')));
+    showReadiness = true; readiness.append(el('strong', '分佣结算状态待确认'), el('span', readinessReason(me.settlement.reason) || '商户分佣结算状态暂时无法确认，请稍后刷新。'), action('刷新状态', reload));
+  } else if (!me.readiness.ready) {
+    showReadiness = true; readiness.append(el('strong', '微信收款准备未完成'), el('span', readinessReason(me.readiness.reason) || '请完成微信收款准备'));
     const receiverAction = readinessAction(); if (receiverAction) readiness.append(action(...receiverAction));
   }
-  head.append(readiness); root.append(head);
+  if (showReadiness) head.append(readiness); root.append(head);
   const tabs = el('nav'); tabs.className = 'distribution-tabs'; for (const [key, label] of [['products', '推广商品'], ['earnings', '我的收益']] as const) { const button = action(label, () => { tab = key; render(); }, `distribution-tab${tab === key ? ' active' : ''}`); button.setAttribute('aria-current', tab === key ? 'page' : 'false'); tabs.append(button); } root.append(tabs);
   root.append(tab === 'products' ? productView() : earningsView()); const notice = el('p'); notice.dataset.distributionMessage = ''; notice.className = 'distribution-message'; root.append(notice);
 }
@@ -221,7 +230,16 @@ function readinessAction(): [string, () => void | Promise<void>, string?] | unde
     case 'receiver_accepted':
     case 'receiver_outcome_unknown':
     case 'receiver_unavailable': return ['刷新状态', reload];
-    case 'receiver_final_failed': return undefined;
+    case 'receiver_final_failed':
+    case 'receiver_provider_permission_denied':
+    case 'payment_receiver_account_abnormal':
+    case 'payment_receiver_relation_removed':
+    case 'payment_receiver_high_risk':
+    case 'payment_receiver_real_name_unverified':
+    case 'payment_merchant_permission_revoked':
+    case 'payment_receiver_receipt_limit':
+    case 'payment_payer_account_abnormal':
+    case 'payment_invalid_split_request': return undefined;
     default: return ['刷新状态', reload];
   }
 }
@@ -231,7 +249,7 @@ function promotionGuidance(item: PromotionProduct): { reason: string; action?: [
     const reason = readinessReason(me.settlement.reason) || '商户分佣结算状态暂时无法确认，请稍后刷新。';
     return { reason, action: me.settlement.reason === 'merchant_settlement_unavailable' ? ['刷新状态', reload] : undefined };
   }
-  if (item.ready) return { reason: '', action: ['获取分销链接', () => createCredential(item), 'distribution-button primary'] };
+  if (item.ready) return { reason: '', action: ['复制分销链接', () => createCredential(item), 'distribution-button primary'] };
   switch (item.blockReason) {
     case 'qualification_purchase_required': return { reason: '尚未完成本商品有效购买，暂不能获取分销链接。' };
     case 'qualification_refund_pending': return { reason: '本商品购买记录正在核验退款状态，请稍后刷新。', action: ['刷新状态', reload] };
@@ -239,7 +257,16 @@ function promotionGuidance(item: PromotionProduct): { reason: string; action?: [
     case 'qualification_check_unavailable': return { reason: '购买资格暂时无法核验，请联系商家；请勿重复购买或完善收款。', action: ['刷新状态', reload] };
     case 'merchant_settlement_disabled': return { reason: '商户尚未启用分佣结算，分销员资格会保留。' };
     case 'receiver_not_ready': return { reason: readinessReason(item.blockReason), action: ['完成收款准备', prepareReceiver] };
-    case 'receiver_final_failed': return { reason: readinessReason(item.blockReason) };
+    case 'receiver_final_failed':
+    case 'receiver_provider_permission_denied':
+    case 'payment_receiver_account_abnormal':
+    case 'payment_receiver_relation_removed':
+    case 'payment_receiver_high_risk':
+    case 'payment_receiver_real_name_unverified':
+    case 'payment_merchant_permission_revoked':
+    case 'payment_receiver_receipt_limit':
+    case 'payment_payer_account_abnormal':
+    case 'payment_invalid_split_request': return { reason: readinessReason(item.blockReason) };
     case 'requires_wechat_session': return { reason: readinessReason(item.blockReason), action: ['重新完成微信登录', () => { location.assign(wechatLoginURL()); }] };
     case 'receiver_accepted':
     case 'receiver_outcome_unknown':
@@ -263,8 +290,7 @@ function productView(): HTMLElement {
   } else {
     for (const item of products) {
       const card = el('article'); card.className = 'distribution-card distribution-product';
-      if (item.coverURL) { const image = document.createElement('img'); image.src = item.coverURL; image.alt = ''; card.append(image); }
-      const body = el('div'); body.append(el('h2', item.name), el('p', `${money(item.priceMinor, item.currency)} · 佣金 ${(item.rate / 100).toFixed(2)}% · 预计 ${money(item.estimatedMinor, item.currency)}`), el('p', `支付确认后等待 ${item.waitDays} 天复核退款状态。`));
+      const body = el('div'); body.className = 'distribution-product-body'; body.append(el('h2', item.name), el('p', `售价 ${money(item.priceMinor, item.currency)}`), el('p', `预计佣金 ${money(item.estimatedMinor, item.currency)}（${(item.rate / 100).toFixed(2)}%）`));
       const guidance = promotionGuidance(item); if (guidance.reason) body.append(el('p', `暂不能推广：${guidance.reason}`));
       if (guidance.action) body.append(action(...guidance.action));
       card.append(body); section.append(card);
@@ -286,10 +312,11 @@ async function prepareReceiver(): Promise<void> {
   await reload();
   if (feedback) message(feedback, isError);
 }
-async function createCredential(item: PromotionProduct): Promise<void> { try { const result = obj(await request(`/api/v1/distribution/products/${item.id}/promotion-credentials`, { method: 'POST', headers: mutationHeaders(`promotion-credential:${item.id}`) })); const url = string(result.url, 'url'); const parsed = new URL(url, location.origin); if (parsed.origin !== location.origin || !/^\/d\/[A-Za-z0-9_-]{16,200}$/.test(parsed.pathname) || parsed.search || parsed.hash) throw new Error('推广入口不是当前站点的受控路径'); await showPromotion(parsed.toString(), string(result.expires_at, 'expires_at')); } catch (error) { await reload(); message(error instanceof Error ? error.message : '推广入口生成失败', true); } }
-async function showPromotion(url: string, expiresAt: string): Promise<void> { const dialog = document.createElement('dialog'); dialog.className = 'distribution-dialog'; const card = el('section'); card.className = 'distribution-card'; card.append(el('h2', '专属推广入口'), el('p', `有效期至：${time(expiresAt)}`)); const qr = el('div'); qr.className = 'distribution-qr'; const { renderQr } = await import('../src/admin/sections/qr'); renderQr(qr, url, '推广入口'); const link = el('input') as HTMLInputElement; link.value = url; link.readOnly = true; card.append(qr, link, action('复制链接', async () => { if (!navigator.clipboard?.writeText) { link.focus(); link.select(); message('当前环境不支持自动复制，请复制页面中的推广链接。', true); return; } try { await navigator.clipboard.writeText(url); message('推广链接已复制。'); dialog.close(); } catch { link.focus(); link.select(); message('未能自动复制，请复制页面中的推广链接。', true); } }), action('关闭', () => dialog.close())); dialog.append(card); dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal(); }
+async function copyPromotionURL(url: string): Promise<boolean> { if (!navigator.clipboard?.writeText) return false; try { await navigator.clipboard.writeText(url); return true; } catch { return false; } }
+async function createCredential(item: PromotionProduct): Promise<void> { try { const result = obj(await request(`/api/v1/distribution/products/${item.id}/promotion-credentials`, { method: 'POST', headers: mutationHeaders(`promotion-credential:${item.id}`) })); const url = string(result.url, 'url'); const parsed = new URL(url, location.origin); if (parsed.origin !== location.origin || !/^\/d\/dpc_[A-Za-z0-9_-]{16,}$/.test(parsed.pathname) || parsed.search || parsed.hash) throw new Error('请从系统正式页面重新打开后生成链接。'); const trustedURL = parsed.toString(); if (await copyPromotionURL(trustedURL)) { message('分销链接已复制。'); return; } await showPromotion(trustedURL, string(result.expires_at, 'expires_at')); } catch (error) { await reload(); message(error instanceof Error ? error.message : '分销链接生成失败', true); } }
+async function showPromotion(url: string, expiresAt: string): Promise<void> { const dialog = document.createElement('dialog'); dialog.className = 'distribution-dialog'; const card = el('section'); card.className = 'distribution-card'; card.append(el('h2', '复制分销链接'), el('p', `有效期至：${time(expiresAt)}`)); const qr = el('div'); qr.className = 'distribution-qr'; const { renderQr } = await import('../src/admin/sections/qr'); renderQr(qr, url, '推广入口'); const link = el('input') as HTMLInputElement; link.value = url; link.readOnly = true; const selectLink = (): void => { link.focus(); link.select(); }; card.append(qr, link, action('复制分销链接', async () => { if (await copyPromotionURL(url)) { message('分销链接已复制。'); dialog.close(); return; } selectLink(); message('未能自动复制，请复制页面中的分销链接。', true); }), action('关闭', () => dialog.close())); dialog.append(card); dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal(); selectLink(); message('当前环境无法自动复制，请复制页面中的分销链接。', true); }
 function earningsView(): HTMLElement { const section = el('section'); if (!earnings) { section.append(el('p', '收益汇总读取失败。')); return section; } const cards = el('div'); cards.className = 'distribution-metrics'; const entries: Array<[string, string, string]> = [['累计推广成交额', money(earnings.gross, earnings.currency), `退款另列 ${money(earnings.refunds, earnings.currency)}`], ['累计产生佣金', money(earnings.initial, earnings.currency), `调整另列 ${money(earnings.adjustments, earnings.currency)}`], ['未结算佣金', money(earnings.unsettled, earnings.currency), '含暂缓及异常待付'], ['已到账佣金', money(earnings.paid, earnings.currency), `追回另列 ${money(earnings.recovered, earnings.currency)}`]]; for (const [label, value, note] of entries) { const card = el('article'); card.className = 'distribution-card'; card.append(el('span', label), el('strong', value), el('small', note)); cards.append(card); } section.append(cards);
-  const filters = el('div'); filters.className = 'distribution-filters'; for (const [value, label] of [['', '全部'], ['pending', '待结算'], ['held', '暂缓'], ['settling', '结算中'], ['paid', '已到账'], ['cancelled', '已取消'], ['exception', '异常']] as const) filters.append(action(label, async () => { try { commissionStatus = value; const query = value ? `?status=${encodeURIComponent(value)}&limit=50` : '?limit=50'; const raw = await request(`/api/v1/distribution/commissions${query}`); commissions = parseCommissions(raw); commissionCursor = string(obj(raw).next_cursor, 'next_cursor', true); render(); } catch (error) { message(error instanceof Error ? error.message : '佣金明细读取失败', true); } }, `distribution-tab${commissionStatus === value ? ' active' : ''}`)); section.append(filters);
+  const filters = el('label'); filters.className = 'distribution-filters'; const filterLabel = el('span', '佣金状态'); const filter = document.createElement('select'); filter.name = 'commission-status'; filter.setAttribute('aria-label', '筛选佣金状态'); for (const [value, label] of [['', '全部'], ['pending', '待结算'], ['held', '暂缓'], ['settling', '结算中'], ['paid', '已到账'], ['cancelled', '已取消'], ['exception', '异常']] as const) { const option = document.createElement('option'); option.value = value; option.textContent = label; filter.append(option); } filter.value = commissionStatus; filter.addEventListener('change', () => { void (async () => { try { commissionStatus = filter.value; const query = commissionStatus ? `?status=${encodeURIComponent(commissionStatus)}&limit=50` : '?limit=50'; const raw = await request(`/api/v1/distribution/commissions${query}`); commissions = parseCommissions(raw); commissionCursor = string(obj(raw).next_cursor, 'next_cursor', true); render(); } catch (error) { message(error instanceof Error ? error.message : '佣金明细读取失败', true); } })(); }); filters.append(filterLabel, filter); section.append(filters);
   const list = el('div'); list.className = 'distribution-list'; for (const row of commissions.filter((item) => !commissionStatus || item.status === commissionStatus)) { const item = el('article'); item.className = 'distribution-card'; item.append(el('h3', row.product), el('p', `订单 ${row.order} · ${commissionStatusLabel(row.status)}`), el('p', `初始 ${money(row.initial, row.currency)} · 当前应付 ${money(row.payable, row.currency)} · 已到账 ${money(row.paid, row.currency)}`), el('small', `支付时间 ${time(row.paidConfirmedAt)} · 预计结算 ${time(row.dueAt)}${row.paidAt ? ` · 到账时间 ${time(row.paidAt)}` : ''}`), el('small', row.holdReason || row.cancelReason || row.exceptionReason || '暂无补充说明')); list.append(item); } if (!list.childElementCount) list.append(el('p', '暂无该状态的佣金记录。')); section.append(list); if (commissionCursor) section.append(action('加载更多明细', async () => { try { const params = new URLSearchParams({ limit: '50', cursor: commissionCursor }); if (commissionStatus) params.set('status', commissionStatus); const raw = await request(`/api/v1/distribution/commissions?${params}`); commissions.push(...parseCommissions(raw)); commissionCursor = string(obj(raw).next_cursor, 'next_cursor', true); render(); } catch (error) { message(error instanceof Error ? error.message : '佣金明细读取失败', true); } })); return section; }
 function commissionStatusLabel(value: string): string { return ({ pending: '待结算', held: '暂缓', settling: '结算中', paid: '已到账', cancelled: '已取消', exception: '异常', zero_commission: '零佣金成交' } as Record<string, string>)[value] || '状态待确认'; }
 

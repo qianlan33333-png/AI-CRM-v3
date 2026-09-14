@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +60,10 @@ func (r *Repository) ReadAdminExceptionWithin(ctx context.Context, exceptionID i
 	}
 	query := `SELECT e.id,e.commission_id,COALESCE(e.settlement_id,0),e.kind,e.status,e.reason,e.evidence_reference,COALESCE(s.payment_instruction_reference,''),e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,e.version FROM distribution_exceptions e LEFT JOIN distribution_settlements s ON s.id=e.settlement_id WHERE e.id=$1`
 	if lock {
-		query += " FOR UPDATE"
+		// The optional settlement join must not be locked: PostgreSQL rejects a
+		// bare FOR UPDATE over its nullable side, and the caller has already
+		// locked the owning commission before taking this exception lock.
+		query += " FOR UPDATE OF e"
 	}
 	return scanAdminException(tx.QueryRow(ctx, query, exceptionID))
 }
@@ -103,15 +107,11 @@ func validUnfreezeReference(value string) bool {
 }
 
 func validInstructionReference(value string) bool {
-	if !strings.HasPrefix(value, "psinstr_") {
+	if !strings.HasPrefix(value, "psinst_") {
 		return false
 	}
-	for _, character := range value[len("psinstr_"):] {
-		if character < '0' || character > '9' {
-			return false
-		}
-	}
-	return len(value) > len("psinstr_")
+	id, err := strconv.ParseInt(strings.TrimPrefix(value, "psinst_"), 10, 64)
+	return err == nil && id > 0 && value == "psinst_"+strconv.FormatInt(id, 10)
 }
 
 func (r *Repository) UpdateAdminExceptionWithin(ctx context.Context, value AdminExceptionDetail, expectedVersion int64, at time.Time) (AdminExceptionDetail, error) {
@@ -130,6 +130,29 @@ func (r *Repository) UpdateAdminExceptionWithin(ctx context.Context, value Admin
 		return AdminExceptionDetail{}, mapError(err)
 	}
 	return value, nil
+}
+
+// SumRecordedAfterSalesHandlingWithin is scoped to one locked commission. It
+// reads the append-only adjustment ledger rather than mutable exception
+// snapshots, so recovery and merchant-liability records cannot overwrite a
+// later business-cancellation proof or evade their shared paid delta cap.
+func (r *Repository) SumRecordedAfterSalesHandlingWithin(ctx context.Context, commissionID int64) (int64, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if commissionID < 1 {
+		return 0, ErrInvalid
+	}
+	var total int64
+	err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(delta_minor),0) FROM distribution_commission_adjustments WHERE commission_id=$1 AND kind IN ('manual_recovery','merchant_liability')`, commissionID).Scan(&total)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	if total < 0 {
+		return 0, distributionport.ErrUnavailable
+	}
+	return total, nil
 }
 
 func (r *Repository) ReadOperationReceiptWithin(ctx context.Context, operation, actorScope, idempotencyKey string) (OperationReceipt, bool, error) {

@@ -145,6 +145,12 @@ func TestAdminHandlerDeadlineWarningIsInformationalInDTO(t *testing.T) {
 	}
 }
 
+func TestAdminReceiverStatusLabelUsesSafeProviderPermissionExplanation(t *testing.T) {
+	if got := adminReceiverStatusLabel(false, "receiver_provider_permission_denied"); got != "收款准备被支付侧拒绝，需核验分佣权限" {
+		t.Fatalf("label=%q", got)
+	}
+}
+
 func TestAdminHandlerRejectsMalformedCursorWithNoStoreRead(t *testing.T) {
 	security := &adminHTTPSecurity{principal: accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
 	handler, err := NewAdminHandler(AdminConfig{Reader: adminHTTPReader{}, Commands: &adminHTTPCommands{}, Security: security})

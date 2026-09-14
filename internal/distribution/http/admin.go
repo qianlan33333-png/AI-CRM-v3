@@ -200,6 +200,8 @@ func adminReceiverStatusLabel(ready bool, reason string) string {
 		return "收款结果待支付侧核验"
 	case "receiver_final_failed":
 		return "收款准备失败，需管理员核验支付侧状态"
+	case "receiver_provider_permission_denied":
+		return "收款准备被支付侧拒绝，需核验分佣权限"
 	case "receiver_unavailable":
 		return "收款准备不可用，需管理员核验支付侧条件"
 	default:

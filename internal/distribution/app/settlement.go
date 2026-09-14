@@ -32,6 +32,9 @@ type settlementStore interface {
 	AppendCommissionAdjustmentWithin(context.Context, distributionstore.CommissionAdjustment) error
 	InsertExceptionWithin(context.Context, distributionstore.Exception) (distributionstore.Exception, error)
 	FindOpenExceptionWithin(context.Context, int64, string) (distributionstore.Exception, error)
+	FindExceptionByEvidenceWithin(context.Context, int64, string, string) (distributionstore.Exception, error)
+	HasExceptionWithReasonWithin(context.Context, int64, string, string) (bool, error)
+	ResolveOpenBusinessExceptionsWithin(context.Context, int64, time.Time) ([]distributionstore.Exception, error)
 	AppendAuditWithin(context.Context, string, string, int64, string, any, time.Time) error
 	AppendOutboxWithin(context.Context, string, string, int64, any, time.Time) error
 }
@@ -281,8 +284,17 @@ func (s *SettlementService) applyReconciliation(ctx context.Context, commissionI
 		}
 		state := "outcome_unknown"
 		reason := "settlement_outcome_unknown"
+		businessCancellation := false
 		if instruction.OutcomeKnown {
-			state, reason = "cancelled", "settlement_not_paid"
+			// A receiver-specific CLOSED detail proves that this Provider
+			// instruction did not pay. It does not erase the merchant's
+			// commission obligation: only a separately established refund or
+			// qualification revocation may make that amount non-payable.
+			if businessReason := s.closedInstructionBusinessCancellationWithin(tx, value); businessReason != "" {
+				state, reason, businessCancellation = "cancelled", businessReason, true
+			} else {
+				state, reason = "exception", paymentSettlementFailureReason(instruction.FailureClass)
+			}
 		} else {
 			unknown = true
 		}
@@ -291,17 +303,26 @@ func (s *SettlementService) applyReconciliation(ctx context.Context, commissionI
 			return err
 		}
 		if instruction.OutcomeKnown {
-			next, transitionErr := commission.ConfirmInstructionUnpaid(commission.Version, reason, now)
-			if transitionErr != nil {
-				return distributionport.ErrConflict
-			}
-			if _, err = s.store.UpdateCommissionWithin(tx, next, commission.Version); err != nil {
-				return err
-			}
-			if err = s.store.AppendCommissionAdjustmentWithin(tx, distributionstore.CommissionAdjustment{CommissionID: commission.ID, Kind: "settlement_not_paid", DeltaMinor: -commission.CurrentPayableMinor, ResultingPayableMinor: 0, Reason: reason, SourceRef: instruction.Reference, OccurredAt: now}); err != nil {
-				return err
-			}
-			if err = s.auditWithin(tx, "distribution.commission_cancelled.v1", "commission", commission.ID, "worker:distribution-due", map[string]any{"reason": reason, "instruction_reference": instruction.Reference}, now); err != nil {
+			if businessCancellation {
+				next, transitionErr := commission.ConfirmInstructionUnpaid(commission.Version, reason, now)
+				if transitionErr != nil {
+					return distributionport.ErrConflict
+				}
+				if _, err = s.store.UpdateCommissionWithin(tx, next, commission.Version); err != nil {
+					return err
+				}
+				if err = s.resolveBusinessExceptionsWithin(tx, commission.ID, reason, now); err != nil {
+					return err
+				}
+				if next.CurrentPayableMinor != commission.CurrentPayableMinor {
+					if err = s.store.AppendCommissionAdjustmentWithin(tx, distributionstore.CommissionAdjustment{CommissionID: commission.ID, Kind: "qualification_revoke", DeltaMinor: next.CurrentPayableMinor - commission.CurrentPayableMinor, ResultingPayableMinor: next.CurrentPayableMinor, Reason: reason, SourceRef: value.Attribution.QualificationEvidenceRef, OccurredAt: now}); err != nil {
+						return err
+					}
+				}
+				if err = s.auditWithin(tx, "distribution.commission_cancelled.v1", "commission", commission.ID, "worker:distribution-due", map[string]any{"reason": reason, "instruction_reference": instruction.Reference}, now); err != nil {
+					return err
+				}
+			} else if err = s.markExceptionWithin(tx, commission, settlement, "settlement_not_paid", reason, instruction.Reference, now); err != nil {
 				return err
 			}
 			finalized = true
@@ -332,6 +353,51 @@ func (s *SettlementService) applyReconciliation(ctx context.Context, commissionI
 		return s.releaseRemaining(ctx, value, settlement)
 	}
 	return nil
+}
+
+func (s *SettlementService) resolveBusinessExceptionsWithin(ctx context.Context, commissionID int64, cancellationReason string, now time.Time) error {
+	exceptions, err := s.store.ResolveOpenBusinessExceptionsWithin(ctx, commissionID, now)
+	if err != nil {
+		return err
+	}
+	for _, exception := range exceptions {
+		if err = s.auditWithin(ctx, "distribution.exception_resolved.v1", "exception", exception.ID, "worker:distribution-due", map[string]any{"commission_id": commissionID, "reason": cancellationReason, "exception_kind": exception.Kind, "resolution": "commission_cancelled"}, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// paymentSettlementFailureReason keeps a terminal provider diagnostic within
+// Payment's finite stable-port vocabulary. Empty and unknown classes retain
+// the existing generic fact rather than inventing a Provider explanation.
+func paymentSettlementFailureReason(value string) string {
+	switch value {
+	case "receiver_account_abnormal", "receiver_relation_removed", "receiver_high_risk", "receiver_real_name_unverified", "merchant_permission_revoked", "receiver_receipt_limit", "payer_account_abnormal", "invalid_split_request":
+		return "payment_" + value
+	default:
+		return "settlement_not_paid"
+	}
+}
+
+// closedInstructionBusinessCancellationWithin identifies the only existing
+// business facts that can end the distributor obligation after an exact
+// provider CLOSED result. Provider rejection alone never belongs here.
+func (s *SettlementService) closedInstructionBusinessCancellationWithin(ctx context.Context, value distributionstore.SettlementContext) string {
+	commission := value.Commission
+	if commission.CurrentPayableMinor == 0 && commission.SuccessfulRefundMinor == commission.OriginalItemPaidMinor {
+		return "buyer_refund"
+	}
+	// Qualification may later become eligible again after a new purchase. The
+	// commission is nevertheless tied to the earlier submitted instruction, so
+	// only the durable, affirmative revocation fact for this commission may
+	// cancel it. A same-kind unavailable or conflicted qualification check is
+	// deliberately not evidence of revocation.
+	hasRevocation, err := s.store.HasExceptionWithReasonWithin(ctx, commission.ID, "qualification_revoked_after_paid", "qualification_revoked_after_paid")
+	if err != nil || !hasRevocation {
+		return ""
+	}
+	return "qualification_revoked"
 }
 
 // releaseRemaining submits the Payment-owned unfreeze intent with a stable
@@ -441,17 +507,32 @@ func (s *SettlementService) markException(ctx context.Context, value distributio
 }
 
 func (s *SettlementService) markExceptionWithin(ctx context.Context, commission distributiondomain.Commission, settlement distributionstore.Settlement, kind, reason, evidence string, now time.Time) error {
-	if commission.Status == distributiondomain.CommissionException {
+	next := commission
+	if commission.Status != distributiondomain.CommissionException {
+		var err error
+		next, err = commission.MarkException(commission.Version, reason, now)
+		if err != nil {
+			return distributionport.ErrConflict
+		}
+		if _, err = s.store.UpdateCommissionWithin(ctx, next, commission.Version); err != nil {
+			return err
+		}
+	}
+	// Replaying the exact terminal instruction after a human has resolved its
+	// exception must not silently reopen the same fact. Different evidence may
+	// still be recorded once there is no open exception for this kind.
+	if _, err := s.store.FindExceptionByEvidenceWithin(ctx, commission.ID, kind, evidence); err == nil {
 		return nil
-	}
-	next, err := commission.MarkException(commission.Version, reason, now)
-	if err != nil {
-		return distributionport.ErrConflict
-	}
-	if _, err = s.store.UpdateCommissionWithin(ctx, next, commission.Version); err != nil {
+	} else if !errors.Is(err, distributionport.ErrNotFound) {
 		return err
 	}
-	exception, err := s.store.InsertExceptionWithin(ctx, distributionstore.Exception{CommissionID: commission.ID, SettlementID: settlement.ID, Kind: kind, Status: "open", UnpaidDueMinor: next.CurrentPayableMinor, AlreadyPaidMinor: next.PaidMinor, AmountMinor: next.CurrentPayableMinor, Reason: reason, EvidenceReference: evidence, ActorScope: "worker:distribution-due", Version: 1, CreatedAt: now, UpdatedAt: now})
+	if _, err := s.store.FindOpenExceptionWithin(ctx, commission.ID, kind); err == nil {
+		return nil
+	} else if !errors.Is(err, distributionport.ErrNotFound) {
+		return err
+	}
+	unpaid := maxInt64(next.CurrentPayableMinor-next.PaidMinor, 0)
+	exception, err := s.store.InsertExceptionWithin(ctx, distributionstore.Exception{CommissionID: commission.ID, SettlementID: settlement.ID, Kind: kind, Status: "open", UnpaidDueMinor: unpaid, AlreadyPaidMinor: next.PaidMinor, AmountMinor: unpaid, Reason: reason, EvidenceReference: evidence, ActorScope: "worker:distribution-due", Version: 1, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return err
 	}

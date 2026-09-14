@@ -111,6 +111,75 @@ func (r *Repository) FindOpenExceptionWithin(ctx context.Context, commissionID i
 	return scanException(tx.QueryRow(ctx, `SELECT id,commission_id,COALESCE(settlement_id,0),kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at FROM distribution_exceptions WHERE commission_id=$1 AND kind=$2 AND status='open' ORDER BY id DESC LIMIT 1 FOR UPDATE`, commissionID, kind))
 }
 
+// FindExceptionByEvidenceWithin finds the immutable source fact regardless of
+// its handling status. It lets a replay of the same Provider instruction stay
+// idempotent after an administrator has resolved the operational exception,
+// while a distinct evidence reference can still be recorded later.
+func (r *Repository) FindExceptionByEvidenceWithin(ctx context.Context, commissionID int64, kind, evidence string) (Exception, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return Exception{}, err
+	}
+	if commissionID < 1 || !validExceptionKind(kind) || evidence == "" || evidence != strings.TrimSpace(evidence) {
+		return Exception{}, ErrInvalid
+	}
+	return scanException(tx.QueryRow(ctx, `SELECT id,commission_id,COALESCE(settlement_id,0),kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at FROM distribution_exceptions WHERE commission_id=$1 AND kind=$2 AND evidence_reference=$3 ORDER BY id DESC LIMIT 1 FOR UPDATE`, commissionID, kind, evidence))
+}
+
+// HasExceptionWithReasonWithin is a history read for a narrowly scoped,
+// affirmative durable business fact. It deliberately does not depend on the
+// current exception status: a later qualifying purchase must not revive the
+// commission that was already revoked while its original split instruction was
+// outstanding. Callers must use a controlled reason; a same-kind unavailable
+// or conflicted check is not proof of revocation.
+func (r *Repository) HasExceptionWithReasonWithin(ctx context.Context, commissionID int64, kind, reason string) (bool, error) {
+	if commissionID < 1 || !validExceptionKind(kind) || reason == "" || reason != strings.TrimSpace(reason) {
+		return false, distributionport.ErrConflict
+	}
+	tx, err := transaction(ctx)
+	if err != nil {
+		return false, err
+	}
+	var found bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM distribution_exceptions WHERE commission_id=$1 AND kind=$2 AND reason=$3)`, commissionID, kind, reason).Scan(&found)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return found, nil
+}
+
+// ResolveOpenBusinessExceptionsWithin closes only the post-submission buyer
+// refund and qualification-revocation facts once the same commission has
+// reached its durable non-payable terminal state.  It deliberately leaves
+// provider, reserve, and unrelated operational exceptions untouched.
+func (r *Repository) ResolveOpenBusinessExceptionsWithin(ctx context.Context, commissionID int64, at time.Time) ([]Exception, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if commissionID < 1 || at.IsZero() {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `UPDATE distribution_exceptions
+		SET status='resolved',version=version+1,updated_at=$2
+		WHERE commission_id=$1 AND status='open'
+		  AND kind IN ('buyer_refund_after_paid','qualification_revoked_after_paid')
+		RETURNING id,commission_id,COALESCE(settlement_id,0),kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at`, commissionID, at.UTC())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := []Exception{}
+	for rows.Next() {
+		value, scanErr := scanException(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, value)
+	}
+	return values, mapError(rows.Err())
+}
+
 func scanException(row rowScanner) (Exception, error) {
 	var value Exception
 	err := row.Scan(&value.ID, &value.CommissionID, &value.SettlementID, &value.Kind, &value.Status, &value.UnpaidDueMinor, &value.AlreadyPaidMinor, &value.AmountMinor, &value.Reason, &value.EvidenceReference, &value.ActorScope, &value.Version, &value.CreatedAt, &value.UpdatedAt)
@@ -128,7 +197,7 @@ func scanException(row rowScanner) (Exception, error) {
 
 func validExceptionKind(value string) bool {
 	switch value {
-	case "settlement_unknown", "settlement_deadline", "settlement_deadline_imminent", "receiver_unavailable", "qualification_revoked_after_paid", "buyer_refund_after_paid", "unfreeze_final_failed", "merchant_liability", "recovery":
+	case "settlement_unknown", "settlement_not_paid", "settlement_deadline", "settlement_deadline_imminent", "receiver_unavailable", "qualification_revoked_after_paid", "buyer_refund_after_paid", "unfreeze_final_failed", "merchant_liability", "recovery":
 		return true
 	default:
 		return false

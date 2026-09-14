@@ -125,7 +125,7 @@ func (s *RegistrationService) SyncProfitSharingReceiverStatusWithin(ctx context.
 	}
 	next := distributionport.ReceiverReadiness{Reference: paymentReadiness.Reference, AppID: paymentReadiness.AppID, Ready: paymentReadiness.Ready, CheckedAt: paymentReadiness.UpdatedAt.UTC()}
 	if !next.Ready {
-		next.Reason = "receiver_" + safeReceiverState(paymentReadiness.State)
+		next.Reason = safeReceiverReason(paymentReadiness)
 	}
 	if current.Reference == next.Reference && current.AppID == next.AppID && current.Ready == next.Ready && current.Reason == next.Reason {
 		return nil
@@ -134,7 +134,7 @@ func (s *RegistrationService) SyncProfitSharingReceiverStatusWithin(ctx context.
 	if err != nil {
 		return err
 	}
-	return s.store.AppendAuditWithin(ctx, "distribution.receiver_status_synchronized.v1", "distributor", updated.ID, "payment:external-effect", map[string]any{"receiver_state": paymentReadiness.State, "ready": persisted.Ready, "receiver_reference": persisted.Reference}, next.CheckedAt)
+	return s.store.AppendAuditWithin(ctx, "distribution.receiver_status_synchronized.v1", "distributor", updated.ID, "payment:external-effect", map[string]any{"receiver_state": paymentReadiness.State, "failure_class": paymentReadiness.FailureClass, "ready": persisted.Ready, "receiver_reference": persisted.Reference}, next.CheckedAt)
 }
 
 func (s *RegistrationService) Register(ctx context.Context, command distributionport.RegisterCommand) (distributionport.DistributorProfile, error) {
@@ -341,7 +341,7 @@ func (s *RegistrationService) PrepareReceiver(ctx context.Context, actor distrib
 		now := s.now().UTC()
 		readiness := distributionport.ReceiverReadiness{Ready: prepared.Ready, Reference: prepared.Reference, AppID: actor.AppID, CheckedAt: now}
 		if !prepared.Ready {
-			readiness.Reason = "receiver_" + safeReceiverState(prepared.State)
+			readiness.Reason = safeReceiverReason(prepared)
 		}
 		updated, persisted, err := s.store.UpdateReceiverReadinessWithin(tx, distributor.ID, distributor.Version, readiness, now)
 		if err != nil {
@@ -396,6 +396,13 @@ func safeReceiverState(value string) string {
 		}
 	}
 	return value
+}
+
+func safeReceiverReason(value paymentport.ReceiverReadiness) string {
+	if value.FailureClass == paymentdomain.ProfitSharingReceiverFailureProviderPermissionDenied {
+		return "receiver_provider_permission_denied"
+	}
+	return "receiver_" + safeReceiverState(value.State)
 }
 
 func decimal(value int64) string {

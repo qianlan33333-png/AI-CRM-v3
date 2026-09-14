@@ -19,6 +19,7 @@ import (
 
 	distributionapp "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/app"
 	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
@@ -277,7 +278,7 @@ func refundWorkerPool(t *testing.T) (*pgxpool.Pool, func()) {
 		"0076_order_checkout_snapshots.sql", "0088_order_service_entitlement_alliance.sql", "0095_product_external_push.sql",
 		"0127_payment_historical_refund_states.sql", "0131_payment_historical_unassigned.sql", "0134_payment_history_source_delta.sql",
 		"0140_payment_h5_unionid_verified.sql", "0143_payment_checkout_abandonments.sql", "0144_payment_checkout_restart_permissions.sql",
-		"0156_distribution_profit_sharing_payment.sql", "0157_distribution_core.sql", "0158_order_distribution_qualification_evidence.sql", "0161_payment_paid_confirmation_time.sql",
+		"0156_distribution_profit_sharing_payment.sql", "0157_distribution_core.sql", "0158_order_distribution_qualification_evidence.sql", "0161_payment_paid_confirmation_time.sql", "0165_payment_profit_sharing_receiver_failure_class.sql", "0166_payment_profit_sharing_instruction_failure_class.sql", "0167_distribution_settlement_not_paid_exception.sql",
 	} {
 		body, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
@@ -416,6 +417,342 @@ func TestPostgreSQLSettlementWorkerAcceptsOneInstructionAndReplaysAfterRestart(t
 	}
 }
 
+func TestPostgreSQLSettlementWorkerClosedInstructionPreservesOrCancelsOnlyWithBusinessFacts(t *testing.T) {
+	pool, cleanup := refundWorkerPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	wrapped, err := platformpostgres.Wrap(pool, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	distributionRepository, err := distributionstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orderRepository, err := orderstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := orderapp.NewService(uow, orderRepository)
+	provider := &settlementWorkerProvider{now: now, splitResult: paymentport.ProfitSharingProviderResult{State: "FINISHED", ReceiverConfirmedFailure: true, FailureClass: "receiver_receipt_limit", OutcomeKnown: true, EvidenceDigest: effectport.Hash("settlement-worker-closed"), OccurredAt: now.Add(time.Minute)}}
+	payments := paymentapp.NewService(uow, paymentstore.NewPostgreSQL(), nil, nil, settlementWorkerEffects{})
+	if err = payments.SetPaymentChannelAppIDs("wx-settlement-worker", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = payments.SetProfitSharingReconciler(provider); err != nil {
+		t.Fatal(err)
+	}
+	qualification, err := distributionapp.NewQualificationService(identityquery.NewPostgreSQL(), orders, payments)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	promoter := refundWorkerCustomer(t, ctx, pool)
+	buyer := refundWorkerCustomer(t, ctx, pool)
+	_ = refundWorkerPaidOrder(t, ctx, pool, promoter, 703, "closed-settlement-qualification", now.Add(-2*time.Hour))
+	buyerOrder := refundWorkerPaidOrder(t, ctx, pool, buyer, 703, "closed-settlement-buyer", now.Add(-time.Hour))
+	if _, err = pool.Exec(ctx, `UPDATE payments SET profit_sharing_marked=true,provider_transaction_reference='4200000000000002',provider_transaction_digest=$2 WHERE id=$1`, buyerOrder.paymentID, effectport.Hash("closed-settlement-transaction")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,version,created_at,updated_at) VALUES($1,1,'wx-settlement-worker','wechat-app:wx-settlement-worker','mini_program',$2,'ready',1,$3,$3)`, promoter, effectport.Hash("closed-settlement-receiver"), now); err != nil {
+		t.Fatal(err)
+	}
+	commissionID := refundWorkerCommission(t, ctx, pool, promoter, buyerOrder.orderID, 703, now)
+	if _, err = pool.Exec(ctx, `UPDATE distribution_distributors SET receiver_reference='psrecv_1',receiver_app_id='wx-settlement-worker',receiver_ready=true,receiver_reason='',receiver_checked_at=$2 WHERE customer_id=$1`, promoter, now); err != nil {
+		t.Fatal(err)
+	}
+	paidAt := now.Add(-8 * 24 * time.Hour)
+	if _, err = pool.Exec(ctx, `UPDATE distribution_commissions SET paid_confirmed_at=$2,due_at=$3,created_at=$2,updated_at=$2 WHERE id=$1`, commissionID, paidAt, paidAt.Add(7*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := distributionapp.NewSettlementService(uow, distributionRepository, qualification, payments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err == nil {
+		t.Fatal("accepted split must retain a durable reconciliation job")
+	} else {
+		var snooze *river.JobSnoozeError
+		if !errors.As(err, &snooze) {
+			t.Fatalf("first due execution=%v, want durable snooze", err)
+		}
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("closed instruction plus unfreeze=%v", err)
+	}
+	// Model an administrator completing the operational exception before a
+	// delayed due-check delivery repeats the same immutable provider result.
+	if _, err = pool.Exec(ctx, `UPDATE distribution_exceptions SET status='resolved',version=version+1,updated_at=clock_timestamp() WHERE commission_id=$1 AND kind='settlement_not_paid'`, commissionID); err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("closed instruction replay after resolution=%v", err)
+	}
+
+	var status, exceptionStatus, exceptionReason, settlementState, failureClass string
+	var payable, paid, unpaid, exceptionAmount, instructions, exceptions, negativeAdjustments, unfreezes, effects int64
+	if err = pool.QueryRow(ctx, `SELECT c.status,c.current_payable_minor,c.paid_minor,s.state,e.status,e.reason,e.unpaid_due_minor,e.amount_minor,(SELECT failure_class FROM payment_profit_sharing_instructions LIMIT 1),(SELECT count(*) FROM payment_profit_sharing_instructions),(SELECT count(*) FROM distribution_exceptions WHERE commission_id=c.id AND kind='settlement_not_paid'),(SELECT count(*) FROM distribution_commission_adjustments WHERE commission_id=c.id AND kind='settlement_not_paid'),(SELECT count(*) FROM payment_profit_sharing_unfreezes),(SELECT count(*) FROM external_effects WHERE owner='payment' AND kind IN ('wechat_pay_profit_sharing_order_v1','wechat_pay_profit_sharing_unfreeze_v1')) FROM distribution_commissions c JOIN distribution_settlements s ON s.commission_id=c.id JOIN distribution_exceptions e ON e.commission_id=c.id AND e.kind='settlement_not_paid' WHERE c.id=$1`, commissionID).Scan(&status, &payable, &paid, &settlementState, &exceptionStatus, &exceptionReason, &unpaid, &exceptionAmount, &failureClass, &instructions, &exceptions, &negativeAdjustments, &unfreezes, &effects); err != nil {
+		t.Fatal(err)
+	}
+	if status != "exception" || payable != 200 || paid != 0 || settlementState != "exception" || exceptionStatus != "resolved" || exceptionReason != "payment_receiver_receipt_limit" || unpaid != 200 || exceptionAmount != 200 || failureClass != "receiver_receipt_limit" || instructions != 1 || exceptions != 1 || negativeAdjustments != 0 || unfreezes != 1 || effects != 2 {
+		t.Fatalf("closed commission status=%q payable=%d paid=%d settlement=%q exception_status=%q reason=%q unpaid=%d amount=%d failure=%q instructions=%d exceptions=%d negative_adjustments=%d unfreezes=%d effects=%d", status, payable, paid, settlementState, exceptionStatus, exceptionReason, unpaid, exceptionAmount, failureClass, instructions, exceptions, negativeAdjustments, unfreezes, effects)
+	}
+	// A manual replay reads the immutable provider instruction again, but it
+	// must not accept another split, exception, reserve, or unfreeze intent.
+	// The durable counts above prove that no money-changing effect was replayed.
+	if splits, unfreezeCalls := provider.calls(); splits != 2 || unfreezeCalls != 1 {
+		t.Fatalf("terminal closed reconciliation reads=%d unfreeze_reads=%d", splits, unfreezeCalls)
+	}
+
+	// A partial authoritative refund still leaves an unpaid balance. The same
+	// immutable CLOSED instruction can be queried again, but it must not erase
+	// the outstanding commission or create another settlement exception.
+	if _, err = pool.Exec(ctx, `UPDATE distribution_commissions SET successful_refund_minor=500,current_payable_minor=100,status='exception',exception_reason='buyer_refund_after_paid',version=version+1,updated_at=clock_timestamp() WHERE id=$1`, commissionID); err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("partial-refund closed replay=%v", err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT status,current_payable_minor,paid_minor FROM distribution_commissions WHERE id=$1`, commissionID).Scan(&status, &payable, &paid); err != nil || status != "exception" || payable != 100 || paid != 0 {
+		t.Fatalf("partial refund must retain unpaid obligation status=%q payable=%d paid=%d err=%v", status, payable, paid, err)
+	}
+
+	// Only a durable full buyer-refund fact can cancel an already-submitted
+	// instruction. The matching business exception remains history but is
+	// resolved in the same Distribution UoW, so it cannot advertise a recovery
+	// or merchant-liability action after cancellation.
+	if _, err = pool.Exec(ctx, `UPDATE distribution_commissions SET successful_refund_minor=1000,current_payable_minor=0,status='exception',exception_reason='buyer_refund_after_paid',version=version+1,updated_at=clock_timestamp() WHERE id=$1`, commissionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO distribution_exceptions(commission_id,settlement_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at) SELECT $1,id,'buyer_refund_after_paid','open',0,0,0,'buyer_refund_after_paid','refund:closed-worker','order-refund:fixture',1,clock_timestamp(),clock_timestamp() FROM distribution_settlements WHERE commission_id=$1`, commissionID); err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("full-refund closed replay=%v", err)
+	}
+	var buyerExceptionStatus string
+	if err = pool.QueryRow(ctx, `SELECT c.status,c.current_payable_minor,c.paid_minor,c.exception_reason,e.status FROM distribution_commissions c JOIN distribution_exceptions e ON e.commission_id=c.id AND e.kind='buyer_refund_after_paid' WHERE c.id=$1`, commissionID).Scan(&status, &payable, &paid, &exceptionReason, &buyerExceptionStatus); err != nil || status != "cancelled" || payable != 0 || paid != 0 || exceptionReason != "" || buyerExceptionStatus != "resolved" {
+		t.Fatalf("full refund must cancel and close its business exception status=%q payable=%d paid=%d commission_reason=%q exception_status=%q err=%v", status, payable, paid, exceptionReason, buyerExceptionStatus, err)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("cancelled closed replay=%v", err)
+	}
+	var buyerExceptionCount int64
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM distribution_exceptions WHERE commission_id=$1 AND kind='buyer_refund_after_paid'`, commissionID).Scan(&buyerExceptionCount); err != nil || buyerExceptionCount != 1 {
+		t.Fatalf("cancelled replay recreated business exception count=%d err=%v", buyerExceptionCount, err)
+	}
+}
+
+// TestPostgreSQLSettlementAdminObservationPreservesQualificationSourceForDueReplay
+// proves that an administrator's Payment query is an observation, not a rewrite
+// of the durable qualification-revocation source fact. The subsequent due job
+// must still cancel an unpaid CLOSED instruction exactly once.
+func TestPostgreSQLSettlementAdminObservationPreservesQualificationSourceForDueReplay(t *testing.T) {
+	pool, cleanup := refundWorkerPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	wrapped, err := platformpostgres.Wrap(pool, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	distributionRepository, err := distributionstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orderRepository, err := orderstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := orderapp.NewService(uow, orderRepository)
+	provider := &settlementWorkerProvider{now: now, splitResult: paymentport.ProfitSharingProviderResult{State: "CLOSED", ReceiverConfirmedFailure: true, FailureClass: "merchant_permission_revoked", OutcomeKnown: true, EvidenceDigest: effectport.Hash("admin-source-preservation"), OccurredAt: now.Add(time.Minute)}}
+	payments := paymentapp.NewService(uow, paymentstore.NewPostgreSQL(), nil, nil, settlementWorkerEffects{})
+	if err = payments.SetPaymentChannelAppIDs("wx-admin-source", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = payments.SetProfitSharingReconciler(provider); err != nil {
+		t.Fatal(err)
+	}
+	qualification, err := distributionapp.NewQualificationService(identityquery.NewPostgreSQL(), orders, payments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoter := refundWorkerCustomer(t, ctx, pool)
+	buyer := refundWorkerCustomer(t, ctx, pool)
+	_ = refundWorkerPaidOrder(t, ctx, pool, promoter, 704, "admin-source-qualification", now.Add(-2*time.Hour))
+	buyerOrder := refundWorkerPaidOrder(t, ctx, pool, buyer, 704, "admin-source-buyer", now.Add(-time.Hour))
+	if _, err = pool.Exec(ctx, `UPDATE payments SET profit_sharing_marked=true,provider_transaction_reference='4200000000000004',provider_transaction_digest=$2 WHERE id=$1`, buyerOrder.paymentID, effectport.Hash("admin-source-payment")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,version,created_at,updated_at) VALUES($1,1,'wx-admin-source','wechat-app:wx-admin-source','mini_program',$2,'ready',1,$3,$3)`, promoter, effectport.Hash("admin-source-receiver"), now); err != nil {
+		t.Fatal(err)
+	}
+	commissionID := refundWorkerCommission(t, ctx, pool, promoter, buyerOrder.orderID, 704, now)
+	if _, err = pool.Exec(ctx, `UPDATE distribution_distributors SET receiver_reference='psrecv_2',receiver_app_id='wx-admin-source',receiver_ready=true,receiver_reason='',receiver_checked_at=$2 WHERE customer_id=$1`, promoter, now); err != nil {
+		t.Fatal(err)
+	}
+	paidAt := now.Add(-8 * 24 * time.Hour)
+	if _, err = pool.Exec(ctx, `UPDATE distribution_commissions SET paid_confirmed_at=$2,due_at=$3,created_at=$2,updated_at=$2 WHERE id=$1`, commissionID, paidAt, paidAt.Add(7*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := distributionapp.NewSettlementService(uow, distributionRepository, qualification, payments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err == nil {
+		t.Fatal("accepted split must retain a durable reconciliation job")
+	} else {
+		var snooze *river.JobSnoozeError
+		if !errors.As(err, &snooze) {
+			t.Fatalf("first due execution=%v, want durable snooze", err)
+		}
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("closed instruction=%v", err)
+	}
+
+	var qualificationExceptionID, qualificationVersion int64
+	if err = pool.QueryRow(ctx, `INSERT INTO distribution_exceptions(commission_id,settlement_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at)
+		SELECT $1,id,'qualification_revoked_after_paid','open',200,0,0,'qualification_revoked_after_paid','qualification:admin-source','order-refund:fixture',1,$2,$2
+		FROM distribution_settlements WHERE commission_id=$1
+		RETURNING id,version`, commissionID, now).Scan(&qualificationExceptionID, &qualificationVersion); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := distributionapp.NewAdminService(uow, distributionRepository, payments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminCommand := distributionport.AdminExceptionCommand{ExceptionID: qualificationExceptionID, ExpectedVersion: qualificationVersion, ActorScope: "access:42", IdempotencyKey: "admin-source-query-key"}
+	if err = admin.ReconcileException(ctx, adminCommand); err != nil {
+		t.Fatalf("admin payment observation=%v", err)
+	}
+	var status, sourceReason, sourceEvidence string
+	var sourceAmount, sourceVersion, observations int64
+	if err = pool.QueryRow(ctx, `SELECT e.status,e.reason,e.evidence_reference,e.amount_minor,e.version,(SELECT count(*) FROM distribution_audit_events a WHERE a.aggregate_type='exception' AND a.aggregate_id=e.id AND a.event_type='distribution.exception_reconciled.v1') FROM distribution_exceptions e WHERE e.id=$1`, qualificationExceptionID).Scan(&status, &sourceReason, &sourceEvidence, &sourceAmount, &sourceVersion, &observations); err != nil {
+		t.Fatal(err)
+	}
+	if status != "open" || sourceReason != "qualification_revoked_after_paid" || sourceEvidence != "qualification:admin-source" || sourceAmount != 0 || sourceVersion != qualificationVersion+1 || observations != 1 {
+		t.Fatalf("admin observation rewrote source status=%q reason=%q evidence=%q amount=%d version=%d observations=%d", status, sourceReason, sourceEvidence, sourceAmount, sourceVersion, observations)
+	}
+
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("qualification cancellation after admin observation=%v", err)
+	}
+	var commissionStatus, commissionReason, qualificationStatus string
+	var payable, paid, qualificationCount, qualificationAdjustments int64
+	if err = pool.QueryRow(ctx, `SELECT c.status,c.cancel_reason,c.current_payable_minor,c.paid_minor,e.status,e.reason,e.evidence_reference,e.amount_minor,(SELECT count(*) FROM distribution_exceptions x WHERE x.commission_id=c.id AND x.kind='qualification_revoked_after_paid'),(SELECT count(*) FROM distribution_commission_adjustments a WHERE a.commission_id=c.id AND a.kind='qualification_revoke') FROM distribution_commissions c JOIN distribution_exceptions e ON e.id=$2 WHERE c.id=$1`, commissionID, qualificationExceptionID).Scan(&commissionStatus, &commissionReason, &payable, &paid, &qualificationStatus, &sourceReason, &sourceEvidence, &sourceAmount, &qualificationCount, &qualificationAdjustments); err != nil {
+		t.Fatal(err)
+	}
+	if commissionStatus != "cancelled" || commissionReason != "qualification_revoked" || payable != 0 || paid != 0 || qualificationStatus != "resolved" || sourceReason != "qualification_revoked_after_paid" || sourceEvidence != "qualification:admin-source" || sourceAmount != 0 || qualificationCount != 1 || qualificationAdjustments != 1 {
+		t.Fatalf("due replay lost qualification source commission=%q/%q payable=%d paid=%d exception=%q/%q/%q amount=%d count=%d adjustments=%d", commissionStatus, commissionReason, payable, paid, qualificationStatus, sourceReason, sourceEvidence, sourceAmount, qualificationCount, qualificationAdjustments)
+	}
+	if err = worker.RunCommissionDueCheck(ctx, commissionID); err != nil {
+		t.Fatalf("cancelled due replay=%v", err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM distribution_commission_adjustments WHERE commission_id=$1 AND kind='qualification_revoke'`, commissionID).Scan(&qualificationAdjustments); err != nil || qualificationAdjustments != 1 {
+		t.Fatalf("cancelled replay duplicated qualification adjustment=%d err=%v", qualificationAdjustments, err)
+	}
+}
+
+// TestPostgreSQLAdminAfterSalesLedgerUsesLivePaidDelta proves administrative
+// handling uses current confirmed commission facts, not an old exception
+// snapshot. Recovery and merchant liability share one append-only cap.
+func TestPostgreSQLAdminAfterSalesLedgerUsesLivePaidDelta(t *testing.T) {
+	pool, cleanup := refundWorkerPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	wrapped, err := platformpostgres.Wrap(pool, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := distributionstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payment := paymentapp.NewService(uow, paymentstore.NewPostgreSQL(), nil, nil, nil)
+	admin, err := distributionapp.NewAdminService(uow, repository, payment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoter := refundWorkerCustomer(t, ctx, pool)
+	buyer := refundWorkerCustomer(t, ctx, pool)
+	order := refundWorkerPaidOrder(t, ctx, pool, buyer, 705, "admin-after-sales", now)
+	commissionID := refundWorkerCommission(t, ctx, pool, promoter, order.orderID, 705, now)
+	if _, err = pool.Exec(ctx, `UPDATE distribution_commissions SET current_payable_minor=60,paid_minor=100,status='exception',exception_reason='buyer_refund_after_paid',version=version+1,updated_at=$2 WHERE id=$1`, commissionID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO distribution_commission_adjustments(commission_id,kind,delta_minor,resulting_payable_minor,reason,source_reference,occurred_at) VALUES($1,'manual_recovery',10,60,'manual_recovery','receipt:previous',$2)`, commissionID, now); err != nil {
+		t.Fatal(err)
+	}
+	var buyerExceptionID, qualificationExceptionID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO distribution_exceptions(commission_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at) VALUES($1,'buyer_refund_after_paid','open',0,100,0,'buyer_refund_after_paid','refund:source','order-refund:fixture',1,$2,$2) RETURNING id`, commissionID, now).Scan(&buyerExceptionID); err != nil {
+		t.Fatal(err)
+	}
+	tooLarge := distributionport.AdminExceptionCommand{ExceptionID: buyerExceptionID, ExpectedVersion: 1, AmountMinor: 31, ActorScope: "access:9", Reason: "manual_recovery", EvidenceReference: "receipt:new", IdempotencyKey: "admin-after-sales-too-large"}
+	if err = admin.RecordRecovery(ctx, tooLarge); !errors.Is(err, distributionport.ErrConflict) {
+		t.Fatalf("combined cap recovery=%v", err)
+	}
+	recovery := tooLarge
+	recovery.AmountMinor, recovery.IdempotencyKey = 30, "admin-after-sales-recovery"
+	if err = admin.RecordRecovery(ctx, recovery); err != nil {
+		t.Fatalf("recovery from current paid delta=%v", err)
+	}
+	if err = admin.RecordRecovery(ctx, recovery); err != nil {
+		t.Fatalf("recovery exact replay=%v", err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO distribution_exceptions(commission_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at) VALUES($1,'qualification_revoked_after_paid','open',0,100,0,'qualification_revoked_after_paid','qualification:source','order-refund:fixture',1,$2,$2) RETURNING id`, commissionID, now).Scan(&qualificationExceptionID); err != nil {
+		t.Fatal(err)
+	}
+	tooMuchLiability := distributionport.AdminExceptionCommand{ExceptionID: qualificationExceptionID, ExpectedVersion: 1, AmountMinor: 61, ActorScope: "access:9", Reason: "merchant accepts reversal", IdempotencyKey: "admin-after-sales-liability-large"}
+	if err = admin.RecordMerchantLiability(ctx, tooMuchLiability); !errors.Is(err, distributionport.ErrConflict) {
+		t.Fatalf("combined cap liability=%v", err)
+	}
+	liability := tooMuchLiability
+	liability.AmountMinor, liability.IdempotencyKey = 60, "admin-after-sales-liability"
+	if err = admin.RecordMerchantLiability(ctx, liability); err != nil {
+		t.Fatalf("liability from current paid amount=%v", err)
+	}
+	var buyerReason, buyerEvidence, qualificationReason, qualificationEvidence, buyerStatus, qualificationStatus string
+	var buyerAmount, qualificationAmount, handled, adjustmentCount, recoveryReceipts, liabilityReceipts int64
+	if err = pool.QueryRow(ctx, `SELECT
+		(SELECT reason FROM distribution_exceptions WHERE id=$2),
+		(SELECT evidence_reference FROM distribution_exceptions WHERE id=$2),
+		(SELECT amount_minor FROM distribution_exceptions WHERE id=$2),
+		(SELECT status FROM distribution_exceptions WHERE id=$2),
+		(SELECT reason FROM distribution_exceptions WHERE id=$3),
+		(SELECT evidence_reference FROM distribution_exceptions WHERE id=$3),
+		(SELECT amount_minor FROM distribution_exceptions WHERE id=$3),
+		(SELECT status FROM distribution_exceptions WHERE id=$3),
+		(SELECT COALESCE(SUM(delta_minor),0) FROM distribution_commission_adjustments WHERE commission_id=$1 AND kind IN ('manual_recovery','merchant_liability')),
+		(SELECT count(*) FROM distribution_commission_adjustments WHERE commission_id=$1 AND kind IN ('manual_recovery','merchant_liability')),
+		(SELECT count(*) FROM distribution_operation_receipts WHERE operation='recovery'),
+		(SELECT count(*) FROM distribution_operation_receipts WHERE operation='merchant_liability')`, commissionID, buyerExceptionID, qualificationExceptionID).Scan(&buyerReason, &buyerEvidence, &buyerAmount, &buyerStatus, &qualificationReason, &qualificationEvidence, &qualificationAmount, &qualificationStatus, &handled, &adjustmentCount, &recoveryReceipts, &liabilityReceipts); err != nil {
+		t.Fatal(err)
+	}
+	if buyerReason != "buyer_refund_after_paid" || buyerEvidence != "refund:source" || buyerAmount != 0 || buyerStatus != "recovery_recorded" || qualificationReason != "qualification_revoked_after_paid" || qualificationEvidence != "qualification:source" || qualificationAmount != 0 || qualificationStatus != "merchant_liability_recorded" || handled != 100 || adjustmentCount != 3 || recoveryReceipts != 1 || liabilityReceipts != 1 {
+		t.Fatalf("immutable sources/ledger reason=%q evidence=%q amount=%d status=%q qualification=%q/%q/%d/%q handled=%d adjustments=%d receipts=%d/%d", buyerReason, buyerEvidence, buyerAmount, buyerStatus, qualificationReason, qualificationEvidence, qualificationAmount, qualificationStatus, handled, adjustmentCount, recoveryReceipts, liabilityReceipts)
+	}
+}
+
 type settlementWorkerEffects struct{}
 
 func (settlementWorkerEffects) AcceptAndQueueWithin(ctx context.Context, command effectport.AcceptCommand) (effectport.Projection, effectport.Receipt, error) {
@@ -436,6 +773,7 @@ func (settlementWorkerEffects) AcceptAndQueueWithin(ctx context.Context, command
 type settlementWorkerProvider struct {
 	mu                        sync.Mutex
 	now                       time.Time
+	splitResult               paymentport.ProfitSharingProviderResult
 	splitCalls, unfreezeCalls int
 }
 
@@ -443,6 +781,9 @@ func (p *settlementWorkerProvider) QueryProfitSharing(context.Context, string) (
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.splitCalls++
+	if p.splitResult.State != "" {
+		return p.splitResult, nil
+	}
 	return paymentport.ProfitSharingProviderResult{State: "FINISHED", ReceiverConfirmedSuccess: true, OutcomeKnown: true, EvidenceDigest: effectport.Hash("settlement-worker-split", fmt.Sprint(p.splitCalls)), OccurredAt: p.now.Add(time.Minute)}, nil
 }
 
