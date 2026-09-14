@@ -255,8 +255,8 @@ jobs:
         name: Run canonical browser verification lane
         env:
           AICRM_REQUIRE_CHROMIUM_JOURNEY: '1'
-          AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/admin-shell-layout
-          AICRM_SIDEBAR_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/sidebar-standard
+          AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR: ${{ runner.temp }}/browser-evidence/artifacts/admin-shell-layout
+          AICRM_SIDEBAR_SCREENSHOT_DIR: ${{ runner.temp }}/browser-evidence/artifacts/sidebar-standard
         run: python3 scripts/ci/quality_lanes.py browser --report-dir "$RUNNER_TEMP/browser-evidence"
       - id: receipt
         if: always()
@@ -275,8 +275,6 @@ jobs:
           name: required-browser-tests-${{ github.sha }}
           path: |
             ${{ runner.temp }}/browser-evidence
-            artifacts/admin-shell-layout
-            artifacts/sidebar-standard
             ${{ runner.temp }}/ci-receipts/browser.json
           retention-days: 14
 

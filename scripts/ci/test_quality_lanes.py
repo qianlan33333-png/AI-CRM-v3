@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,6 +15,20 @@ class QualityLaneTests(unittest.TestCase):
             commands = quality_lanes.commands(lane, Path("/tmp/evidence"))
             self.assertTrue(commands, lane)
             self.assertTrue(all(isinstance(command, list) and command for command in commands), lane)
+
+    def test_preflight_runs_release_acceptance_harness_unit_tests(self):
+        commands = quality_lanes.commands("preflight", Path("/tmp/evidence"))
+        self.assertIn(
+            [sys.executable, "-m", "unittest", "discover", "-s", "scripts/testing", "-p", "test_*.py"],
+            commands,
+        )
+
+    def test_backend_emits_per_go_test_events_without_changing_required_gates(self):
+        commands = quality_lanes.commands("backend", Path("/tmp/evidence"))
+        self.assertIn(
+            ["bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-json", "-p", "1", "-race", "-count=1", "./..."],
+            commands,
+        )
 
     def test_database_lanes_require_reachable_postgresql_16(self):
         with patch.object(quality_lanes, "command_available", return_value=True), patch.object(

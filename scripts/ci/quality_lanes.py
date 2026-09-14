@@ -148,6 +148,8 @@ def commands(lane: str, report_dir: Path | None) -> list[list[str]]:
             raise ValueError("preflight requires --report-dir")
         return [[sys.executable, "scripts/dev_preflight.py", "fast", "--report-dir", str(report_dir)], [
             sys.executable, "-m", "unittest", "discover", "-s", "scripts/ci", "-p", "test_*.py"
+        ], [
+            sys.executable, "-m", "unittest", "discover", "-s", "scripts/testing", "-p", "test_*.py"
         ], [sys.executable, "scripts/audit/test_scan_exact_duplicates.py"], [
             sys.executable, "scripts/audit/test_check_new_exact_duplicates.py"
         ], [sys.executable, "scripts/audit/test_check_source_authority_changes.py"], [
@@ -160,7 +162,7 @@ def commands(lane: str, report_dir: Path | None) -> list[list[str]]:
         ], [venv + "/bin/pip", "install", "-r", "components/excel-batches/requirements.txt"], [
             venv + "/bin/python", "-m", "unittest", "discover", "-s", "components/excel-batches", "-v"
         ], ["bash", "scripts/run-go-with-donor-views.sh", "go", "vet", "./..."], [
-            "bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-p", "1", "-race", "-count=1", "./..."
+            "bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-json", "-p", "1", "-race", "-count=1", "./..."
         ]]
     if lane == "frontend":
         return [["node", "scripts/excel-batches-dom-test.mjs"], ["node", "scripts/validate-openapi.mjs"], [
