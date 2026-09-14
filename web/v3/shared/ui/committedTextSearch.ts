@@ -116,6 +116,17 @@ export function installCommittedTextSearch(): void {
     if (input && registered(input)) state().composing.add(input);
   }, true);
 
+  document.addEventListener('focusin', (event) => {
+    const input = inputFrom(event);
+    // The frozen staff picker reuses its one DOM input. Opening a new picker
+    // session clears it and then focuses it after the initial directory read;
+    // that empty value is a new all-results query, never a continuation of a
+    // prior closed session.
+    if (input?.matches('[data-operation-member-picker] [data-operation-member-search]') && input.value === '') {
+      state().committedQueries.set(input, '');
+    }
+  }, true);
+
   document.addEventListener('compositionupdate', (event) => {
     const input = inputFrom(event);
     if (input && registered(input)) state().composing.add(input);
@@ -181,4 +192,11 @@ export function replayCommittedTextSearch(input: HTMLInputElement): void {
   dispatchLegacySearch(input, search);
   input.value = draft;
   if (selectionStart !== null && selectionEnd !== null) input.setSelectionRange(selectionStart, selectionEnd);
+}
+
+/** Mark a programmatic clear/open value as the new committed query. */
+export function resetCommittedTextSearch(input: HTMLInputElement): void {
+  const search = registered(input);
+  if (!search) return;
+  state().committedQueries.set(input, input.value);
 }

@@ -1,4 +1,4 @@
-import { installCommittedTextSearch, replayCommittedTextSearch } from './shared/ui/committedTextSearch';
+import { installCommittedTextSearch, replayCommittedTextSearch, resetCommittedTextSearch } from './shared/ui/committedTextSearch';
 
 export {};
 
@@ -36,6 +36,18 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response>
 // V3 Host handles only this command and uses the existing search reload on success.
 let directoryRefreshPending = false;
 document.addEventListener('click', (event) => {
+  const clear = (event.target as Element | null)?.closest<HTMLButtonElement>('[data-operation-member-clear]');
+  if (clear) {
+    const input = clear.closest<HTMLElement>('[data-operation-member-picker]')?.querySelector<HTMLInputElement>('[data-operation-member-search]');
+    if (input) {
+      // The frozen clear handler reloads immediately. Mark its empty value as
+      // committed first so a later directory refresh cannot resurrect a
+      // closed picker session's old query.
+      input.value = '';
+      resetCommittedTextSearch(input);
+    }
+    return;
+  }
   const button = (event.target as Element | null)?.closest<HTMLButtonElement>('[data-operation-member-refresh]');
   if (!button) return;
   event.preventDefault();
@@ -78,6 +90,20 @@ const scripts = [
 
 let loading: Promise<void> | undefined;
 let tagPickerLocked = false;
+let operationMemberSearchLifecycleInstalled = false;
+
+function installOperationMemberSearchLifecycle(): void {
+  if (operationMemberSearchLifecycleInstalled || !window.OperationMemberPicker) return;
+  operationMemberSearchLifecycleInstalled = true;
+  const picker = window.OperationMemberPicker;
+  const open = picker.open.bind(picker);
+  picker.open = (options) => {
+    const result = open(options);
+    const input = document.querySelector<HTMLInputElement>('[data-operation-member-picker] [data-operation-member-search]');
+    if (input) resetCommittedTextSearch(input);
+    return result;
+  };
+}
 
 function lockOriginalTagPicker(): void {
   if (tagPickerLocked || !window.AICRMWeComTagPicker) return;
@@ -110,7 +136,10 @@ window.AICRMStandardComponents = {
     loading ||= scripts.reduce(async (previous, source) => {
       await previous;
       await load(source);
-    }, Promise.resolve()).then(() => { lockOriginalTagPicker(); });
+    }, Promise.resolve()).then(() => {
+      lockOriginalTagPicker();
+      installOperationMemberSearchLifecycle();
+    });
     return loading;
   },
 };

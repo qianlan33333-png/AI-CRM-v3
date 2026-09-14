@@ -73,6 +73,46 @@ for (const syncStatus of [200,503]) {
 }
 console.log('frozen staff selector refresh success and failure retention: PASS');
 
+// A picker input is reused across sessions. Its last committed query belongs
+// only to the open session: a clear or a reopen must reload all rows rather
+// than reviving an earlier committed search.
+{
+ const queries=[];let posts=0;
+ const dom=new JSDOM('<!doctype html><body></body>',{url:'https://test.invalid/admin/channels/17/edit',runScripts:'dangerously',pretendToBeVisual:true,beforeParse(w){
+  w.Request=Request;w.Response=Response;w.Headers=Headers;
+  w.AdminApi={responseErrorMessage:(_r,_d,f)=>f,errorMessage:(e,f)=>e?.message||f};
+  w.fetch=async(input,init={})=>{
+   if(init.method==='POST'){posts++;return new Response(JSON.stringify({ok:true}),{status:200});}
+   const url=new URL(typeof input==='string'?input:input.url,w.location.href);queries.push(url.searchParams.get('q'));
+   return new Response(JSON.stringify({items:[{staff_id:12,user_id:'alice',display_name:'Alice'}]}),{status:200});
+  };
+ }});
+ try {
+  dom.window.eval(bundle);dom.window.eval(picker);
+  await dom.window.OperationMemberPicker.open({scope:'channel_code'});
+  const search=dom.window.document.querySelector('[data-operation-member-search]');
+  search.value='已提交';search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{bubbles:true,key:'Enter'}));
+  await pause(20);
+  search.value='未提交草稿';search.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+  await pause(300);
+  assert.deepEqual(queries,[null,'已提交'],'typing a new staff draft must not read the directory');
+  dom.window.document.querySelector('[data-operation-member-refresh]').click();
+  await pause(350);
+  assert.equal(posts,1);assert.equal(queries.at(-1),'已提交','refresh must repeat the session committed query');
+  dom.window.document.querySelector('[data-operation-member-clear]').click();
+  await pause(30);
+  assert.equal(queries.at(-1),null,'clear must commit the empty all-results query');
+  dom.window.document.querySelector('[data-operation-member-cancel]').click();
+  await dom.window.OperationMemberPicker.open({scope:'channel_code'});
+  await pause(20);
+  assert.equal(queries.at(-1),null,'reopening a picker begins from the all-results query');
+  dom.window.document.querySelector('[data-operation-member-refresh]').click();
+  await pause(350);
+  assert.equal(queries.at(-1),null,'refresh after reopen must not revive a prior session query');
+ } finally {dom.window.close();}
+}
+console.log('frozen staff selector committed-query lifecycle: PASS');
+
 // The shared picker accepts an explicit selection contract. A multi-select
 // limit must stay a finite, positive integer and the owner context is always
 // single-select, regardless of an accidental caller-supplied limit.
