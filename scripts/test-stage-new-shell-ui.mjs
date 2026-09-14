@@ -17,10 +17,12 @@ const surfaceFeedbackHost = sourceManifest.entries?.surfaceFeedbackHost;
 const surfaceFeedbackStyles = sourceManifest.entries?.surfaceFeedbackStyles;
 assert.equal(sourceManifest.files?.[surfaceFeedbackHost]?.entry_point, 'web/v3/surfaceFeedbackHost.ts', 'surface feedback Host must be V3-owned');
 assert.equal(sourceManifest.files?.[surfaceFeedbackStyles]?.entry_point, 'web/v3/surfaceFeedback.css', 'surface feedback styles must be V3-owned');
+const selectionDialogStyles = sourceManifest.entries?.selectionDialogStyles;
+assert.equal(sourceManifest.files?.[selectionDialogStyles]?.entry_point, 'web/v3/shared/ui/selectionDialog.css', 'selection dialog styles must be V3-owned');
 const entryKeys = [
   'admin', 'adminSessionHost', 'standardComponentsHost', 'adminDateTimeHost', 'standardComponentsStableHost', 'tokens', 'labs',
   'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'radarHost',
-  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'productDistributionStyles', 'memberGridFeedbackHost',
+  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'productDistributionStyles', 'memberGridFeedbackHost',
   'distributionCenter', 'distributionAdmin', 'distributionStyles',
 ];
 const standardComponentSupport = ['assets/standard-components/operation_member_picker.js', 'assets/standard-components/group_chat_picker.css', 'assets/standard-components/group_chat_picker.js', 'assets/standard-components/material_picker.css', 'assets/standard-components/material_picker.js', 'assets/standard-components/send_content_composer.css', 'assets/standard-components/send_content_composer.js', 'assets/standard-components/wecom_tag_picker.css', 'assets/standard-components/wecom_tag_picker.js', 'assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html', 'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js'];
@@ -139,7 +141,7 @@ try {
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-survey-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   const before = fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json'));
   const requiredAssets = [
-    ...[['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet']].map(([entryKey, label]) => ({ relative: sourceManifest.entries?.[entryKey], label, entry: true })),
+    ...[['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet'], ['selectionDialogStyles', 'selection dialog stylesheet']].map(([entryKey, label]) => ({ relative: sourceManifest.entries?.[entryKey], label, entry: true })),
     ...['assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html', 'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js'].map((relative) => ({ relative, label: `passive standard asset ${relative}`, entry: false })),
   ];
   for (const { relative: missing, label, entry } of requiredAssets) {

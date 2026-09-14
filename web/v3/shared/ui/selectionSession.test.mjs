@@ -76,6 +76,22 @@ session.setReadonly('无编辑权限');
 assert.deepEqual(session.snapshot().draft.map((value) => value.value.id).sort(), [2, 3], 'readonly restores committed selection');
 assert.deepEqual(session.commit().removed, [], 'readonly cannot commit a previously edited draft');
 
+let preserveAccessSession;
+const accessDraft = new mod.SelectionSession([item(1)], {
+  onCurrentLoadFailure: error => { if (error?.status === 403) preserveAccessSession.lockReadonly('目录权限已失效'); },
+});
+preserveAccessSession = accessDraft;
+await accessDraft.submitSearch(async () => ({ items: [item(2)] }));
+assert.equal(accessDraft.toggle(mod.selectionKey('material.image', 'image-library', 1)), true, 'operator may draft-remove before access loss');
+assert.equal(accessDraft.toggle(mod.selectionKey('material.image', 'image-library', 2)), true, 'operator may draft-add before access loss');
+const currentForbidden = Object.assign(new Error('forbidden'), { status: 403 });
+await accessDraft.submitSearch(async () => { throw currentForbidden; });
+assert.deepEqual(accessDraft.snapshot().draft.map((value) => value.value.id), [2], 'current 403 locks but preserves the visible draft');
+assert.deepEqual(accessDraft.snapshot().committed.map((value) => value.value.id), [1], 'current 403 leaves the original committed selection for cancel');
+assert.equal(accessDraft.snapshot().readonlyReason, '目录权限已失效');
+accessDraft.cancel();
+assert.deepEqual(accessDraft.snapshot().draft.map((value) => value.value.id), [1], 'cancel alone restores the original selection after an access lock');
+
 let closedResolve;
 const closed = session.reload(() => new Promise((resolve) => { closedResolve = resolve; }));
 session.cancel();
@@ -86,6 +102,23 @@ const failed = await session.reload(async () => { throw new Error('network unava
 assert.equal(failed.state, 'failed');
 assert.deepEqual(session.snapshot().items.map((value) => value.value.id), [2], 'failed reads retain the last successful first page');
 assert.equal(session.snapshot().error, 'network unavailable');
+
+let staleAccessFailures = 0;
+const accessRace = new mod.SelectionSession([], { onCurrentLoadFailure: () => { staleAccessFailures += 1; } });
+let rejectOldAccess;
+const oldAccess = accessRace.submitSearch(() => new Promise((_resolve, reject) => { rejectOldAccess = reject; }));
+const newerAccess = accessRace.submitSearch(async () => ({ items: [item(4, 'new authorized result')] }));
+assert.equal((await newerAccess).state, 'applied');
+const forbidden = Object.assign(new Error('forbidden'), { status: 403 });
+rejectOldAccess(forbidden);
+assert.equal((await oldAccess).state, 'stale');
+assert.equal(staleAccessFailures, 0, 'a delayed stale 403 must not alter the newer selection session');
+let rejectClosedAccess;
+const closedAccess = accessRace.reload(() => new Promise((_resolve, reject) => { rejectClosedAccess = reject; }));
+accessRace.cancel();
+rejectClosedAccess(forbidden);
+assert.equal((await closedAccess).state, 'stale');
+assert.equal(staleAccessFailures, 0, 'a delayed 403 after close must not alter a cancelled session');
 
 const single = new mod.SelectionSession([item(1)], { mode: 'single' });
 single.setDisabled(key1, '素材已停用');

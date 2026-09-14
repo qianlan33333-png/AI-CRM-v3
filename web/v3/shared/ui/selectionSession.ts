@@ -49,6 +49,11 @@ export type SelectionSessionOptions = {
   mode?: SelectionMode;
   limit?: number;
   readonlyReason?: string;
+  /**
+   * Runs only for the newest live request. Adapters use this to classify an
+   * access failure without letting an aborted/older request lock a new dialog.
+   */
+  onCurrentLoadFailure?: (failure: unknown) => void;
 };
 
 type ReadMode = 'replace' | 'append';
@@ -109,6 +114,7 @@ export class SelectionSession<T> {
   private nextCursor?: string;
   private readonly limit: number;
   private readonly mode: SelectionMode;
+  private readonly onCurrentLoadFailure?: (failure: unknown) => void;
 
   constructor(initial: SelectionItem<T>[] = [], options: SelectionSessionOptions = {}) {
     this.mode = options.mode || 'multiple';
@@ -120,6 +126,7 @@ export class SelectionSession<T> {
       this.committed.add(key);
     }
     this.readonlyReason = options.readonlyReason?.trim() || undefined;
+    this.onCurrentLoadFailure = options.onCurrentLoadFailure;
   }
 
   subscribe(listener: (snapshot: SelectionSnapshot<T>) => void): () => void {
@@ -136,6 +143,19 @@ export class SelectionSession<T> {
   setReadonly(reason?: string): void {
     const next = reason?.trim() || undefined;
     if (next) this.restoreCommitted();
+    this.readonlyReason = next;
+    this.notice = undefined;
+    this.emit();
+  }
+
+  /**
+   * Locks interaction after a current authorised read loses access without
+   * rewriting the operator's in-memory draft. Cancel still restores the
+   * original committed value; confirmation remains blocked while locked.
+   */
+  lockReadonly(reason: string): void {
+    const next = reason.trim();
+    if (!next) return;
     this.readonlyReason = next;
     this.notice = undefined;
     this.emit();
@@ -305,6 +325,10 @@ export class SelectionSession<T> {
       if (epoch !== this.requestEpoch) return { state: 'stale', snapshot: this.snapshot() };
       this.loading = false;
       this.activeRequest = undefined;
+      // Permission changes are observable session state. Apply them only after
+      // the epoch check above so an old rejected fetch cannot freeze a newer
+      // search, a reopened picker, or a picker that has already been closed.
+      try { this.onCurrentLoadFailure?.(failure); } catch { /* display the original directory failure */ }
       this.error = message(failure);
       this.emit();
       return { state: 'failed', snapshot: this.snapshot() };
