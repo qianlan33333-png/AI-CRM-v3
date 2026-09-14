@@ -1,3 +1,5 @@
+@import "./shared/ui/contentComposer.css";
+
 .group-ops {
   display: grid;
   gap: 14px;
@@ -685,6 +687,14 @@
   background: #fff;
 }
 
+/* The V3 scoped picker uses the existing group row surface. A selected search
+   result remains visible as selected even while it is also listed above. */
+[data-v3-selection-session="group"] .group-ops__group-item.is-selected {
+  border-color: var(--group-ops-primary, #2563eb);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  background: #eff6ff;
+}
+
 .group-ops__group-name,
 .group-ops__summary {
   overflow: hidden;
@@ -959,3 +969,11 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* V3 scoped selection session: preserves the frozen Group Ops page while the
+   shared group chooser controls its own narrow-screen layout. */
+[data-v3-selection-session="group"] .group-ops__modal--groups { display:grid; grid-template-rows:auto auto auto minmax(0,1fr) auto; width:min(680px,calc(100vw - 32px)); max-height:calc(100vh - 32px); overflow:hidden; }
+[data-v3-selection-session="group"] [data-v3-group-selected] { max-height:136px; overflow:auto; }
+[data-v3-selection-session="group"] [data-v3-group-list] { min-height:120px; overflow:auto; }
+[data-v3-selection-session="group"] .group-ops__modal-footer { flex-wrap:wrap; }
+@media (max-width:420px) { [data-v3-selection-session="group"] .group-ops__modal--groups { width:calc(100vw - 20px); max-height:calc(100vh - 20px); } [data-v3-selection-session="group"] [data-v3-group-selected] { max-height:104px; } }

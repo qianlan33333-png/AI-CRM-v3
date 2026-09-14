@@ -64,6 +64,11 @@ run_frontend_and_stage_checks() {
   node internal/webshell/owner_handoff_host.test.mjs
   node scripts/build-v3-host-adapters.mjs
   node scripts/groupops-host-adapter-e2e.mjs
+  node web/v3/shared/ui/selectionSession.test.mjs
+  node web/v3/shared/ui/materialPickerAdapter.test.mjs
+  node --test web/v3/shared/ui/contentPresentation.test.mjs
+  node --test web/v3/shared/ui/contentComposer.test.mjs
+  node web/v3/shared/ui/groupPickerAdapter.test.mjs
   node scripts/operation-cycles-shell-e2e.mjs
   node scripts/ai-assistant-shell-e2e.mjs
   TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs

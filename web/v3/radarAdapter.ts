@@ -3,6 +3,7 @@ import { api } from '../src/shared/api/client';
 import { rememberActionInputs, runAction } from './actionFeedback';
 import { request as authenticatedRequest } from '../src/api/transport';
 import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
+import { installMaterialPickerAdapter, type MaterialPickerLoadRequest } from './shared/ui/materialPickerAdapter';
 
 const takeRadarUploadInput = rememberActionInputs((input) =>
   document.body.dataset.page === 'radarForm' && Boolean(input.files?.length),
@@ -12,58 +13,48 @@ for (const method of ['uploadRadarImage', 'uploadRadarPdf'] as const) {
   api[method] = (file) => runAction(takeRadarUploadInput(), () => original(file), '上传中…');
 }
 
-type MaterialItem = { type: 'image' | 'attachment'; library_id: number; title?: string; subtitle?: string; thumbnail_url?: string; metadata?: Record<string, unknown> };
+type MaterialItem = { type: 'image' | 'attachment'; library_id: number; title?: string; subtitle?: string; thumbnail_url?: string; metadata?: Record<string, unknown>; selectable?: boolean; unavailable_reason?: string };
 type StandardWindow = Window & {
   AICRMStandardComponents?: { ready(): Promise<void> };
-  AdminApi?: { requestJson?: (path: string) => Promise<unknown> };
 };
 
 const originalFetch = window.fetch.bind(window);
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
-async function materialItems(path: string): Promise<unknown> {
-  const request = new URL(path, location.origin);
-  const type = request.searchParams.get('type') === 'attachment' ? 'attachment' : 'image';
+// Radar explicitly supplies this authorised, page-scoped read to the shared
+// dialog. The dialog never reaches into AdminApi or chooses a catalogue scope.
+async function loadRadarMaterialPage(request: MaterialPickerLoadRequest): Promise<{ items: MaterialItem[]; nextCursor?: string }> {
+  if (request.type !== 'image' && request.type !== 'attachment') throw new Error('当前雷达内容不支持该素材类型。');
+  const type: 'image' | 'attachment' = request.type;
   const endpoint = type === 'image' ? '/api/admin/image-library' : '/api/admin/attachment-library';
-  const query = request.searchParams.get('q') || '';
-  const values: Record<string, unknown>[] = [];
-  for (let offset = 0; ; ) {
-    const source = new URL(endpoint, location.origin);
-    source.searchParams.set('limit', '100');
-    source.searchParams.set('offset', String(offset));
-    source.searchParams.set('q', query);
-    source.searchParams.set('enabled_only', 'true');
-    const response = await originalFetch(source, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    const payload = record(await response.json().catch(() => ({})));
-    if (!response.ok) throw new Error(`素材目录读取失败（HTTP ${response.status}）`);
-    values.push(...list(payload.items).map(record));
-    const next = Number(payload.next_offset);
-    if (payload.has_more !== true || !Number.isSafeInteger(next) || next <= offset) break;
-    offset = next;
+  const offset = Number(request.cursor || '0');
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('素材目录分页标记无效，请重新搜索。');
+  const source = new URL(endpoint, location.origin);
+  source.searchParams.set('limit', '50');
+  source.searchParams.set('offset', String(offset));
+  source.searchParams.set('q', request.query);
+  source.searchParams.set('enabled_only', 'true');
+  const response = await originalFetch(source, { credentials: 'same-origin', headers: { Accept: 'application/json' }, signal: request.signal });
+  const payload = record(await response.json().catch(() => ({})));
+  if (!response.ok) {
+    const error = new Error(response.status === 401 || response.status === 403 ? '素材目录权限已失效，请重新登录后重试。' : '素材目录暂时无法加载，请稍后重试。') as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
-  return { items: values.map((item): MaterialItem => {
-    const id = Number(item.id ?? item.library_id);
-    return { type, library_id: id, title: String(item.name ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.variant_url ?? ''), metadata: item };
-  }) };
-}
-
-function installMaterialTransport(): void {
-  const target = window as StandardWindow;
-  const prior = target.AdminApi?.requestJson;
-  target.AdminApi ||= {};
-  target.AdminApi.requestJson = async (path: string): Promise<unknown> => {
-    if (new URL(path, location.origin).pathname === '/api/admin/material-picker/items') return materialItems(path);
-    if (prior) return prior(path);
-    const response = await originalFetch(path, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
-    return response.json();
+  const next = Number(payload.next_offset);
+  return {
+    items: list(payload.items).map(record).flatMap((item): MaterialItem[] => {
+      const id = Number(item.id ?? item.library_id);
+      return Number.isSafeInteger(id) && id > 0 ? [{ type, library_id: id, title: String(item.name ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.variant_url ?? ''), metadata: item, selectable: item.enabled !== false, unavailable_reason: item.enabled === false ? '素材已停用' : undefined }] : [];
+    }),
+    nextCursor: payload.has_more === true && Number.isSafeInteger(next) && next > offset ? String(next) : undefined,
   };
 }
 
-installMaterialTransport();
 void (async () => {
   await (window as StandardWindow).AICRMStandardComponents?.ready();
+  installMaterialPickerAdapter({ source: 'radar-content', scope: 'radar-content-editor', loadPage: loadRadarMaterialPage, accessLossMessage: (error) => { const status = (error as { status?: unknown }).status; return status === 401 || status === 403 ? '素材目录权限已失效；已选素材仍可查看，请取消后重新登录。' : undefined; } });
   // @ts-ignore frozen side-effect entry has no module declaration.
   await import('../src/admin/main');
 })();

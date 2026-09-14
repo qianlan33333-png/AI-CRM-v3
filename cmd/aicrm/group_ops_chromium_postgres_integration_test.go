@@ -4,8 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +38,7 @@ type groupOpsChromiumFixture struct {
 	planID             int64
 	ownerStaffID       int64
 	replacementStaffID int64
+	composerImageIDs   [2]int64
 }
 
 func TestPostgreSQLGroupOpsStandardHostCompositionPreflight(t *testing.T) {
@@ -75,7 +82,7 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	}
 	fixture := newGroupOpsChromiumFixture(t)
 	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
-	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10), "AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID="+strconv.FormatInt(fixture.replacementStaffID, 10))
+	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10), "AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID="+strconv.FormatInt(fixture.replacementStaffID, 10), "AICRM_GROUPOPS_TEST_COMPOSER_IMAGE_IDS="+strconv.FormatInt(fixture.composerImageIDs[0], 10)+","+strconv.FormatInt(fixture.composerImageIDs[1], 10))
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "group_ops_chromium: SKIP_DEVTOOLS") {
 		t.Fatalf("Group Ops Chromium DevTools unexpectedly unavailable: %s", strings.TrimSpace(string(output)))
@@ -86,6 +93,26 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	var matched int
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM group_ops_plan_nodes WHERE plan_id=$1 AND day_index=2 AND scheduled_time='09:30' AND trigger_time_label='09:30' AND action_title='Chromium 日程动作' AND node_status='active'`, fixture.planID).Scan(&matched); err != nil || matched != 1 {
 		t.Fatalf("browser node persistence count=%d err=%v", matched, err)
+	}
+	var materialPlanRaw []byte
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT material_plan FROM group_ops_plan_nodes WHERE plan_id=$1 AND day_index=2 AND scheduled_time='09:30' AND action_title='Chromium 日程动作'`, fixture.planID).Scan(&materialPlanRaw); err != nil {
+		t.Fatalf("read browser-persisted node material plan: %v", err)
+	}
+	var materialPlan struct {
+		References []struct {
+			Kind string `json:"kind"`
+			ID   int64  `json:"id"`
+		} `json:"references"`
+	}
+	if err = json.Unmarshal(materialPlanRaw, &materialPlan); err != nil {
+		t.Fatalf("decode browser-persisted node material plan: %v", err)
+	}
+	if len(materialPlan.References) != 2 || materialPlan.References[0].Kind != "image" || materialPlan.References[0].ID != fixture.composerImageIDs[0] || materialPlan.References[1].Kind != "image" || materialPlan.References[1].ID != fixture.composerImageIDs[1] {
+		t.Fatalf("browser composer did not persist its confirmed Media owner order: %+v", materialPlan.References)
+	}
+	var groupBindings int64
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM group_ops_plan_group_assets WHERE plan_id=$1 AND asset_reference IN ('chromium-group-1','chromium-group-2')`, fixture.planID).Scan(&groupBindings); err != nil || groupBindings != 2 {
+		t.Fatalf("browser group selection persistence count=%d err=%v", groupBindings, err)
 	}
 	var ownerCount, ownerID int64
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*),coalesce(min(staff_id),0) FROM group_ops_plan_members WHERE plan_id=$1`, fixture.planID).Scan(&ownerCount, &ownerID); err != nil || ownerCount != 1 || ownerID != fixture.replacementStaffID {
@@ -147,9 +174,55 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_plan_members(plan_id,staff_id) VALUES($1,$2)`, planID, actorID); err != nil {
 		t.Fatal(err)
 	}
+	// Keep the target outside the first picker page. The Chromium journey must
+	// prove a q-filtered Owner read can find it without preloading this directory.
+	for index := 1; index <= 50; index++ {
+		if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES($1,$2,$3,1,$4,$5,0)`, "chromium-a-"+strconv.Itoa(index), actorID, "Chromium 目录填充", "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES ('chromium-group-1',$1,'Chromium 群一',20,'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',$2,12),('chromium-group-2',$1,'Chromium 群二',18,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',$2,10),('chromium-group-3',$1,'Chromium 群三',16,'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',$2,8)`, actorID, now); err != nil {
+		t.Fatal(err)
+	}
+	composerImageIDs := seedGroupOpsChromiumImages(t, ctx, application)
 	server.Config.Handler = application.handler
 	server.StartTLS()
-	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID}
+	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID, composerImageIDs: composerImageIDs}
+}
+
+// seedGroupOpsChromiumImages uses the normal Media tables only. The browser
+// consumes authenticated, page-scoped image-library reads; it never uploads or
+// writes a Provider resource. The first two IDs are fixed fixture facts used
+// to assert the node's persisted material_plan order after the real composer
+// removes, reopens, and reorders its local draft.
+func seedGroupOpsChromiumImages(t *testing.T, ctx context.Context, application *composedApplication) [2]int64 {
+	t.Helper()
+	var composer [2]int64
+	// A complete, visibly colored PNG makes the page-scoped thumbnail endpoint
+	// part of the browser journey; a signature-only byte slice renders broken.
+	canvas := image.NewRGBA(image.Rect(0, 0, 160, 90))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{37, 99, 235, 255}), image.Point{}, draw.Src)
+	draw.Draw(canvas, image.Rect(0, 60, 160, 90), image.NewUniform(color.RGBA{15, 118, 110, 255}), image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canvas); err != nil {
+		t.Fatal(err)
+	}
+	content := encoded.Bytes()
+	digestValue := sha256.Sum256(content)
+	digest := "sha256:" + hex.EncodeToString(digestValue[:])
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, digest, len(content), content); err != nil {
+		t.Fatal(err)
+	}
+	for index, name := range []string{"Chromium 群运营素材一", "Chromium 群运营素材二", "Chromium 雷达素材一", "Chromium 雷达素材二", "Chromium 雷达素材三"} {
+		var imageID int64
+		if err := application.pool.Native().QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'真实素材选择验收','chromium,groupops','chromium-groupops','image/png',$4,160,90,true,1,1) RETURNING id`, digest, "chromium-groupops-"+strconv.Itoa(index+1)+".png", name, len(content)).Scan(&imageID); err != nil {
+			t.Fatal(err)
+		}
+		if index < len(composer) {
+			composer[index] = imageID
+		}
+	}
+	return composer
 }
 
 // Group Ops runs against the same already-staged release closure as CI. The

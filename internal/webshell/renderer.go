@@ -149,7 +149,7 @@ type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 // CouponAssets are verified manifest paths for the frozen coupon workspaces.
 type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 
-type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS string }
+type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS, SelectionDialogCSS string }
 
 // GroupOpsAssets are manifest-derived URLs for the immutable donor Group Ops
 // bundle. The v3 shell owns the sidebar; the donor supplies only its stage
