@@ -30,10 +30,14 @@
     groupPickerNotice: "",
     bindingGroups: false,
     changingPlanId: 0,
+    savingPlan: false,
+    planReadbackPending: 0,
+    planDraft: null,
     showNodeModal: false,
     editingNodeId: 0,
     activeDetailPanel: "basic",
   };
+  let detailReadGeneration = 0;
 
   const routes = {
     list: "/admin/automation-conversion/group-ops/ui",
@@ -278,6 +282,14 @@
   }
 
   function renderError(message) {
+    if (state.savingPlan || state.planReadbackPending) {
+      state.notice = state.planReadbackPending
+        ? "已保存，但读取最新配置失败。请重新读取后再继续保存。"
+        : "正在保存基础配置，请稍候";
+      state.noticeIsError = Boolean(state.planReadbackPending);
+      renderDetail();
+      return;
+    }
     renderShell(`<section class="group-ops__card"><div class="group-ops__empty">${escapeHtml(message || "加载失败")}</div></section>`);
   }
 
@@ -356,13 +368,13 @@
     return state.ownerOptions.find((member) => memberStaffId(member) === normalized || member.user_id === normalized) || { staff_id: normalized, user_id: normalized, display_name: normalized };
   }
 
-  function renderMemberField(name, currentUserId, action, label) {
+  function renderMemberField(name, currentUserId, action, label, disabled = false) {
     const selected = currentMemberFor(currentUserId);
     return `
       <div class="group-ops__member-field" data-member-field="${escapeHtml(name)}">
         <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(memberStaffId(selected))}">
         <div class="group-ops__member-current" data-member-current="${escapeHtml(name)}">${escapeHtml(selected ? memberLabel(selected) : "未选择")}</div>
-        ${actionButton(label || (selected ? "更换" : "选择"), action)}
+        ${actionButton(label || (selected ? "更换" : "选择"), action, "", disabled)}
       </div>
     `;
   }
@@ -414,6 +426,7 @@
     if (action === "cancel-create-plan") return cancelCreatePlan();
     if (action === "save-plan") return savePlan();
     if (action === "save-active-detail-panel") return saveActiveDetailPanel();
+    if (action === "reload-plan-detail") return reloadSavedPlanDetail();
     if (action === "switch-detail-panel") {
       state.activeDetailPanel = event.currentTarget.dataset.panel || "basic";
       return renderDetail();
@@ -561,20 +574,83 @@
     loadListPage();
   }
 
+  function planDraft() {
+    if (!state.plan) return null;
+    return {
+      plan_name: currentFormValue("plan_name").trim(),
+      plan_code: state.plan.plan_code,
+      plan_type: currentFormValue("plan_type") || state.plan.plan_type,
+      owner_userid: currentFormValue("owner_userid") || state.plan.owner_userid,
+      status: currentFormValue("status") || state.plan.status,
+    };
+  }
+
   async function savePlan() {
-    if (!state.plan || !state.plan.id) return;
-    await requestJson(routes.apiPlan(state.plan.id), {
-      method: "PUT",
-      body: {
-        plan_name: currentFormValue("plan_name") || state.plan.plan_name,
-        plan_code: state.plan.plan_code,
-        plan_type: currentFormValue("plan_type") || state.plan.plan_type,
-        owner_userid: currentFormValue("owner_userid") || state.plan.owner_userid,
-        status: currentFormValue("status") || state.plan.status,
-      },
-    });
-    state.notice = "已保存";
-    loadDetailPage(state.plan.id);
+    if (!state.plan || !state.plan.id || state.savingPlan || state.planReadbackPending) return;
+    const planID = state.plan.id;
+    const draft = planDraft();
+    state.planDraft = draft;
+    if (!draft || !draft.plan_name) {
+      state.notice = "请输入计划名称后再保存";
+      state.noticeIsError = true;
+      renderDetail();
+      return;
+    }
+    state.savingPlan = true;
+    const generation = ++detailReadGeneration;
+    state.notice = "保存中";
+    state.noticeIsError = false;
+    renderDetail();
+    try {
+      await requestJson(routes.apiPlan(planID), { method: "PUT", body: draft });
+    } catch (error) {
+      state.savingPlan = false;
+      state.notice = requestErrorMessage(error, "保存失败，请核对后重试");
+      state.noticeIsError = true;
+      renderDetail();
+      return;
+    }
+    try {
+      const detail = await readDetailPage(planID);
+      if (!applyDetailPage(detail, planID, generation)) return;
+      state.savingPlan = false;
+      state.planDraft = null;
+      state.notice = "已保存";
+      state.noticeIsError = false;
+      renderDetail();
+    } catch (error) {
+      if (generation !== detailReadGeneration || Number(state.plan?.id) !== Number(planID)) return;
+      state.savingPlan = false;
+      state.planReadbackPending = planID;
+      state.notice = `已保存，但读取最新配置失败：${requestErrorMessage(error, "请重新读取最新配置")}。请重新读取后再继续保存。`;
+      state.noticeIsError = true;
+      renderDetail();
+    }
+  }
+
+  async function reloadSavedPlanDetail() {
+    const planID = state.planReadbackPending;
+    if (!planID || state.savingPlan) return;
+    state.savingPlan = true;
+    const generation = ++detailReadGeneration;
+    state.notice = "正在读取最新配置";
+    state.noticeIsError = false;
+    renderDetail();
+    try {
+      const detail = await readDetailPage(planID);
+      if (!applyDetailPage(detail, planID, generation)) return;
+      state.savingPlan = false;
+      state.planReadbackPending = 0;
+      state.planDraft = null;
+      state.notice = "已读取最新配置";
+      renderDetail();
+    } catch (error) {
+      if (generation !== detailReadGeneration || Number(state.plan?.id) !== Number(planID)) return;
+      state.savingPlan = false;
+      state.notice = `已保存，但读取最新配置失败：${requestErrorMessage(error, "请稍后重新读取")}。请稍后重新读取。`;
+      state.noticeIsError = true;
+      renderDetail();
+    }
   }
 
   function saveCurrentDimensionDisabled() {
@@ -843,7 +919,7 @@
         ${pageButton("查看所有群", routes.groups)}
         ${actionButton("创建计划", "show-create-plan", "group-ops__button--primary")}
       </div>
-      <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}" ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}</div>
+      <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}"${state.noticeIsError ? ' role="alert"' : ""} ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}${state.planReadbackPending ? ` ${actionButton("重新读取最新配置", "reload-plan-detail", "", state.savingPlan)}` : ""}</div>
       <section class="group-ops__metric-grid">
         ${metricCard("运营计划", formatNumber(total))}
         ${metricCard("已绑定群", formatNumber(boundCount))}
@@ -867,33 +943,52 @@
     state.createNotice = "";
   }
 
-  async function loadDetailPage(planId) {
-    renderLoading();
-    try {
-      const [planPayload, groupPayload, ownersPayload] = await Promise.all([
+  async function readDetailPage(planId) {
+    const [planPayload, groupPayload, ownersPayload] = await Promise.all([
         requestJson(routes.apiPlan(planId)),
         requestJson(routes.apiPlanGroups(planId)),
         requestJson(routes.apiMembers),
-      ]);
-      state.plan = planPayload.item || planPayload.plan || planPayload;
-      const isWebhook = state.plan.plan_type === "webhook";
-      const [allGroupsPayload, typePayload] = await Promise.all([
-        requestJson(`${routes.apiGroups}?owner_userid=${encodeURIComponent(state.plan.owner_userid || "")}`),
+    ]);
+    const plan = planPayload.item || planPayload.plan || planPayload;
+    if (!plan || Number(plan.id) !== Number(planId)) throw new Error("读取到的计划与当前页面不一致，请重新读取最新配置。");
+    const isWebhook = plan.plan_type === "webhook";
+    const [allGroupsPayload, typePayload] = await Promise.all([
+        requestJson(`${routes.apiGroups}?owner_userid=${encodeURIComponent(plan.owner_userid || "")}`),
         requestJson(isWebhook ? routes.apiWebhook(planId) : routes.apiPlanNodes(planId)),
-      ]);
-      state.planGroups = normalizeItems(groupPayload);
-      state.groupSummary = groupPayload.summary || null;
-      state.groups = normalizeItems(allGroupsPayload);
-      state.ownerOptions = normalizeOwners(ownersPayload, state.plan);
-      if (isWebhook) {
-        state.nodes = [];
-        state.webhook = typePayload;
-      } else {
-        state.nodes = normalizeItems(typePayload);
-        state.webhook = null;
-      }
+    ]);
+    return {
+      plan,
+      planGroups: normalizeItems(groupPayload),
+      groupSummary: groupPayload.summary || null,
+      groups: normalizeItems(allGroupsPayload),
+      ownerOptions: normalizeOwners(ownersPayload, plan),
+      nodes: isWebhook ? [] : normalizeItems(typePayload),
+      webhook: isWebhook ? typePayload : null,
+    };
+  }
+
+  function applyDetailPage(detail, planID, generation) {
+    if (!detail || generation !== detailReadGeneration || Number(detail.plan?.id) !== Number(planID)) return false;
+    state.plan = detail.plan;
+    state.planGroups = detail.planGroups;
+    state.groupSummary = detail.groupSummary;
+    state.groups = detail.groups;
+    state.ownerOptions = detail.ownerOptions;
+    state.nodes = detail.nodes;
+    state.webhook = detail.webhook;
+    return true;
+  }
+
+  async function loadDetailPage(planId) {
+    if (state.savingPlan || state.planReadbackPending) return;
+    const generation = ++detailReadGeneration;
+    renderLoading();
+    try {
+      const detail = await readDetailPage(planId);
+      if (!applyDetailPage(detail, planId, generation)) return;
       renderDetail();
     } catch (error) {
+      if (generation !== detailReadGeneration) return;
       renderError(error.message);
     }
   }
@@ -1208,7 +1303,10 @@
 
   function renderBasicPanel() {
     const archived = planIsArchived(state.plan);
-    const owner = state.plan.owner_name || state.plan.owner_userid || "未配置负责人";
+    const draft = state.planDraft || {};
+    const ownerID = draft.owner_userid || state.plan.owner_userid;
+    const owner = state.plan.owner_name || ownerID || "未配置负责人";
+    const saving = state.savingPlan || state.planReadbackPending;
     return `
       <section class="group-ops__panel${state.activeDetailPanel === "basic" ? " is-active" : ""}" id="panel-basic">
         <div class="group-ops__panel-title-row">
@@ -1218,31 +1316,31 @@
         <div class="group-ops__form-grid">
           <div class="group-ops__field group-ops__field--full">
             <span>运营成员</span>
-            ${archived ? `<div class="group-ops__member-current">${escapeHtml(owner)}</div>` : renderMemberField("owner_userid", state.plan.owner_userid, "pick-plan-owner", "更换运营成员")}
+            ${archived ? `<div class="group-ops__member-current">${escapeHtml(owner)}</div>` : renderMemberField("owner_userid", ownerID, "pick-plan-owner", "更换运营成员", Boolean(saving))}
           </div>
           <label class="group-ops__field">
             <span>状态</span>
-            <select name="status"${archived ? " disabled" : ""}>
-              <option value="draft"${state.plan.status === "draft" ? " selected" : ""}>草稿</option>
-              <option value="active"${state.plan.status === "active" ? " selected" : ""}>启用</option>
-              <option value="disabled"${state.plan.status === "disabled" ? " selected" : ""}>停用</option>
+            <select name="status"${archived || saving ? " disabled" : ""}>
+              <option value="draft"${(draft.status || state.plan.status) === "draft" ? " selected" : ""}>草稿</option>
+              <option value="active"${(draft.status || state.plan.status) === "active" ? " selected" : ""}>启用</option>
+              <option value="disabled"${(draft.status || state.plan.status) === "disabled" ? " selected" : ""}>停用</option>
               ${archived ? '<option value="archived" selected>已归档（终态）</option>' : ""}
             </select>
           </label>
           <label class="group-ops__field">
             <span>计划名称</span>
-            <input name="plan_name" value="${escapeHtml(state.plan.plan_name || "")}"${archived ? " disabled" : ""}>
+            <input name="plan_name" value="${escapeHtml(draft.plan_name ?? (state.plan.plan_name || ""))}"${archived || saving ? " disabled" : ""}>
           </label>
           <label class="group-ops__field">
             <span>计划类型</span>
-            <select name="plan_type"${archived ? " disabled" : ""}>
-              <option value="standard"${state.plan.plan_type === "standard" ? " selected" : ""}>标准编排计划</option>
-              <option value="webhook"${state.plan.plan_type === "webhook" ? " selected" : ""}>Webhook 接收计划</option>
+            <select name="plan_type"${archived || saving ? " disabled" : ""}>
+              <option value="standard"${(draft.plan_type || state.plan.plan_type) === "standard" ? " selected" : ""}>标准编排计划</option>
+              <option value="webhook"${(draft.plan_type || state.plan.plan_type) === "webhook" ? " selected" : ""}>Webhook 接收计划</option>
             </select>
           </label>
         </div>
         <div class="group-ops__panel-actions">
-          ${archived ? '<div class="group-ops__notice">计划已归档，不能修改或重新启用。</div>' : `${renderRefreshOwnerGroupsButton()}${actionButton("保存基础配置", "save-plan", "group-ops__button--primary")}`}
+          ${archived ? '<div class="group-ops__notice">计划已归档，不能修改或重新启用。</div>' : `${renderRefreshOwnerGroupsButton()}${actionButton(state.savingPlan ? "保存中" : "保存基础配置", "save-plan", "group-ops__button--primary", saving)}`}
         </div>
       </section>
     `;
@@ -1276,7 +1374,7 @@
 
   function renderDetailShell(summary) {
     return `
-      <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}" ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}</div>
+      <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}"${state.noticeIsError ? ' role="alert"' : ""} ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}${state.planReadbackPending ? ` ${actionButton("重新读取最新配置", "reload-plan-detail", "", state.savingPlan)}` : ""}</div>
       <section class="group-ops__detail-shell">
         <section class="group-ops__summary-card">
           <div class="group-ops__summary-head">
@@ -1284,8 +1382,8 @@
             <div class="group-ops__summary-actions">
               ${pageButton("返回列表", routes.list)}
               <button class="group-ops__button group-ops__button--primary" type="button" data-action="save-active-detail-panel"${
-                saveCurrentDimensionDisabled() || planIsArchived(state.plan) ? " disabled" : ""
-              }>保存当前维度</button>
+                saveCurrentDimensionDisabled() || planIsArchived(state.plan) || state.savingPlan || state.planReadbackPending ? " disabled" : ""
+              }>${state.savingPlan ? "保存中" : "保存当前维度"}</button>
             </div>
           </div>
           <div class="group-ops__summary-grid">${renderStats(summary)}</div>
