@@ -47,7 +47,7 @@ func TestPostgreSQLDistributionPromotionCheckoutCreatesCommissionFromARealOrder(
 	token := promotionCheckoutToken(t, link)
 	created := fixture.createOrder(t, fixture.buyer, fixture.buyer, token, "promotion-checkout-order-key", "promotion-checkout-order")
 	fixture.assertOrderAttribution(t, created.ID, 1, true)
-	fixture.settle(t, created.ID, "promotion-checkout-paid-key")
+	fixture.settle(t, created, "promotion-checkout-paid-key")
 	fixture.assertCommission(t, created.ID, 1)
 }
 
@@ -58,12 +58,12 @@ func TestPostgreSQLDistributionPromotionCheckoutRejectsPromoterAsEitherBuyerPart
 	token := promotionCheckoutToken(t, link)
 
 	payerSelf := fixture.createOrder(t, fixture.promoter.CustomerID, fixture.buyer, token, "promotion-self-payer-key", "promotion-self-payer")
-	fixture.settle(t, payerSelf.ID, "promotion-self-payer-paid-key")
+	fixture.settle(t, payerSelf, "promotion-self-payer-paid-key")
 	fixture.assertOrderAttribution(t, payerSelf.ID, 0, false)
 	fixture.assertCommission(t, payerSelf.ID, 0)
 
 	beneficiarySelf := fixture.createOrder(t, fixture.buyer, fixture.promoter.CustomerID, token, "promotion-self-beneficiary-key", "promotion-self-beneficiary")
-	fixture.settle(t, beneficiarySelf.ID, "promotion-self-beneficiary-paid-key")
+	fixture.settle(t, beneficiarySelf, "promotion-self-beneficiary-paid-key")
 	fixture.assertOrderAttribution(t, beneficiarySelf.ID, 0, false)
 	fixture.assertCommission(t, beneficiarySelf.ID, 0)
 }
@@ -373,10 +373,12 @@ func (fixture *promotionCheckoutFixture) createOrder(t *testing.T, payer, benefi
 	return created
 }
 
-func (fixture *promotionCheckoutFixture) settle(t *testing.T, orderID int64, key string) {
+func (fixture *promotionCheckoutFixture) settle(t *testing.T, order orderdomain.Snapshot, key string) {
 	t.Helper()
+	// Creation uses the service clock. Derive the fixture event from the persisted
+	// order snapshot so it remains after that fact even when the test runs later.
 	if err := fixture.uow.Within(context.Background(), func(tx context.Context) error {
-		_, settleErr := fixture.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: orderID, ProviderTransactionNo: "tx-" + key, OccurredAt: fixture.now.Add(time.Minute), ReceiptKey: key})
+		_, settleErr := fixture.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: order.ID, ProviderTransactionNo: "tx-" + key, OccurredAt: order.UpdatedAt.Add(time.Minute), ReceiptKey: key})
 		return settleErr
 	}); err != nil {
 		t.Fatalf("checkout settlement: %v", err)
