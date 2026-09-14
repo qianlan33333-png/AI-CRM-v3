@@ -91,24 +91,44 @@ def write_logs(run_dir: Path, stdout: str, stderr: str) -> None:
 
 class InterruptedRun(RuntimeError):
     """A receipt-safe interruption from SIGTERM or an interactive interrupt."""
+    def __init__(self, message: str, stdout: str = "", stderr: str = "") -> None:
+        super().__init__(message)
+        self.stdout, self.stderr = stdout, stderr
+
+def _text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes): return value.decode(errors="replace")
+    return value or ""
+
+def terminate_process_group(process: subprocess.Popen[str]) -> tuple[str, str, str]:
+    """Stop an isolated lane process group and reap it before returning."""
+    termination = "SIGTERM process group"
+    if process.poll() is None:
+        try: os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError: pass
+    try:
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        termination += "; SIGKILL after grace period"
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        stdout, stderr = process.communicate()
+    return _text(stdout), _text(stderr), termination
 
 def run_command(command: list[str], *, cwd: Path, env: dict[str, str], timeout_seconds: int) -> tuple[int, str, str, bool]:
-    """Run a lane in its own process group and return partial output on timeout."""
+    """Run a lane in its own process group; reap it on timeout or interruption."""
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
         return process.returncode, stdout, stderr, False
     except subprocess.TimeoutExpired as error:
-        stdout, stderr = error.stdout or "", error.stderr or ""
-        if isinstance(stdout, bytes): stdout = stdout.decode(errors="replace")
-        if isinstance(stderr, bytes): stderr = stderr.decode(errors="replace")
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            more_stdout, more_stderr = process.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            more_stdout, more_stderr = process.communicate()
-        return 124, stdout + (more_stdout or ""), stderr + (more_stderr or ""), True
+        stdout, stderr, termination = terminate_process_group(process)
+        # communicate after reaping returns the complete buffer; only use TimeoutExpired data as fallback.
+        stdout = stdout or _text(error.stdout)
+        stderr = stderr or _text(error.stderr)
+        return 124, stdout, stderr, True
+    except (KeyboardInterrupt, InterruptedRun) as error:
+        stdout, stderr, _ = terminate_process_group(process)
+        raise InterruptedRun(str(error), stdout, stderr) from error
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
@@ -153,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             status, exit_code = lane_outcome(args.execute, lane_exit_code, [])
             receipt.update({"status": status, "exit_code": exit_code})
     except (KeyboardInterrupt, InterruptedRun) as error:
+        if isinstance(error, InterruptedRun): stdout, stderr = error.stdout, error.stderr
         receipt.update({"status": "interrupted", "exit_code": 130, "error": redact(str(error)), "error_type": type(error).__name__})
     except Exception as error:
         receipt.update({"status": "failure", "exit_code": 2, "error": redact(str(error)), "error_type": type(error).__name__})

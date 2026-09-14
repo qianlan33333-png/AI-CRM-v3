@@ -2,10 +2,12 @@
 import importlib.util
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -84,13 +86,51 @@ class ReleaseAcceptanceHarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "completed receipt"):
                 runner.write_receipt(reports / "failure01", receipt)
 
-    def test_real_short_process_timeout_returns_partial_output(self):
-        command = [sys.executable, "-c", "import sys,time; print('partial', flush=True); time.sleep(5)"]
+    def test_real_short_process_timeout_returns_single_complete_output(self):
+        command = [sys.executable, "-c", "import time; print('once', flush=True); time.sleep(5)"]
         code, stdout, stderr, timed_out = runner.run_command(command, cwd=Path.cwd(), env=os.environ.copy(), timeout_seconds=1)
         self.assertEqual(code, 124)
         self.assertTrue(timed_out)
-        self.assertIn("partial", stdout)
+        self.assertEqual(stdout.count("once"), 1)
         self.assertEqual(stderr, "")
+
+    def test_sigterm_reaps_child_and_writes_interrupted_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            harness, source, reports, pid_file = root / "harness", root / "source", root / "reports", root / "child.pid"
+            for directory in (harness, source):
+                directory.mkdir()
+                subprocess.run(["git", "init", "-q"], cwd=directory, check=True)
+                subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=directory, check=True)
+                subprocess.run(["git", "config", "user.name", "test"], cwd=directory, check=True)
+                (directory / "tracked").write_text("x\n")
+                subprocess.run(["git", "add", "tracked"], cwd=directory, check=True)
+                subprocess.run(["git", "commit", "-qm", "initial"], cwd=directory, check=True)
+            lane = source / "scripts" / "ci" / "quality_lanes.py"
+            lane.parent.mkdir(parents=True)
+            lane.write_text("import os, pathlib, time\npathlib.Path(" + repr(str(pid_file)) + ").write_text(str(os.getpid()))\ntime.sleep(30)\n")
+            subprocess.run(["git", "add", "scripts/ci/quality_lanes.py"], cwd=source, check=True)
+            subprocess.run(["git", "commit", "-qm", "lane"], cwd=source, check=True)
+            code = """import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('runner', sys.argv[1]); runner = importlib.util.module_from_spec(spec); spec.loader.exec_module(runner)
+runner.HARNESS_ROOT = Path(sys.argv[2])
+raise SystemExit(runner.main(['preflight', '--execute', '--test-database-url', 'postgresql://aicrm_test@127.0.0.1:5432/aicrm_test_ok?sslmode=disable', '--report-dir', sys.argv[3], '--run-id', 'interrupted01', '--source-root', sys.argv[4], '--candidate-sha', sys.argv[5], '--timeout-seconds', '120']))
+"""
+            source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+            process = subprocess.Popen([sys.executable, "-c", code, str(MODULE_PATH), str(harness), str(reports), str(source), source_sha])
+            deadline = time.monotonic() + 10
+            while not pid_file.exists() and time.monotonic() < deadline: time.sleep(0.05)
+            self.assertTrue(pid_file.exists(), "lane child did not start")
+            child_pid = int(pid_file.read_text())
+            os.kill(process.pid, signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=10), 130)
+            with self.assertRaises(ProcessLookupError): os.kill(child_pid, 0)
+            receipt = json.loads((reports / "interrupted01" / "environment-receipt.json").read_text())
+            self.assertEqual(receipt["status"], "interrupted")
+            self.assertEqual(receipt["exit_code"], 130)
+            self.assertTrue((reports / "interrupted01" / "stdout.log").exists())
+            self.assertTrue((reports / "interrupted01" / "stderr.log").exists())
 
     def test_exception_still_captures_post_run_git_states(self):
         with tempfile.TemporaryDirectory() as temporary:
