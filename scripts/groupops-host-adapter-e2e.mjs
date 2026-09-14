@@ -746,11 +746,17 @@ try {
 
   await waitFor(() => fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]'), "detail did not reload after owner save");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
-  fullWindow.document.querySelector('[data-action="open-group-picker"]').click();
-  await waitFor(() => fullWindow.document.querySelector('[data-group-choice][value="group-9"]'), "eligible directory group did not render for selected owner");
-  fullWindow.document.querySelector('[data-group-choice][value="group-9"]').checked = true;
-  fullWindow.document.querySelector('[data-action="confirm-group-picker"]').click();
-  await waitFor(() => state.group_assets.length === 1, "selected directory group was not bound through the Host command");
+  const groupOpen = fullWindow.document.querySelector('[data-action="open-group-picker"]');
+  groupOpen.focus();
+  groupOpen.click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key]'), "V3 scoped group picker did not render the authorised directory page");
+  const groupRow = fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key]');
+  assert.equal(groupRow.textContent.includes("group-9"), true, "picker displays the opaque GroupOps chat reference");
+  groupRow.click();
+  fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-confirm]').click();
+  await waitFor(() => state.group_assets.length === 1, "selected directory group was not bound through the existing GroupOps Owner command");
+  assert.equal(state.group_assets[0].asset_reference, "group-9");
+  assert.equal(fullWindow.document.querySelector('[data-v3-selection-session="group"]'), null, "successful commit closes the temporary selection session");
 
   await waitFor(() => fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="nodes"]'), "detail did not reload after group bind");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="nodes"]').click();
