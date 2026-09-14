@@ -1733,16 +1733,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/admin/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/orders/", orderHandler)
 	adminAPIs.Handle("/api/admin/order-imports/", orderImportHandler)
-	adminAPIs.Handle("/api/admin/refunds", paymentHandler)
+	mountPaymentAdminAPIs(adminAPIs, orderHandler, paymentHandler)
 	adminAPIs.Handle("/api/admin/exports", orderHandler)
 	adminAPIs.Handle("/api/admin/exports/", orderHandler)
 	adminAPIs.Handle("/api/admin/alipay/transactions", orderHandler)
-	adminAPIs.Handle("/api/admin/wechat-pay/orders", orderHandler)
-	adminAPIs.Handle("/api/admin/wechat-pay/orders/", paymentHandler)
-	adminAPIs.Handle("/api/admin/wechat-pay/payments/", paymentHandler)
-	adminAPIs.Handle("/api/admin/wechat-shop/refunds/", paymentHandler)
-	adminAPIs.Handle("/api/admin/wechat-pay/order-exports", orderHandler)
-	adminAPIs.Handle("/api/admin/payments/", paymentHandler)
 	adminAPIs.Handle("/api/v1/wechat-pay/", paymentHandler)
 	adminAPIs.Handle("/api/h5/wechat-pay/oauth/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-pay/", paymentHandler)
@@ -2228,6 +2222,21 @@ func mountOwnerHandoffUI(next, ui http.Handler) http.Handler {
 	})
 }
 
+// mountPaymentAdminAPIs keeps every Payment-owned admin prefix on the composed
+// admin mux. The outer application router intentionally mounts the same exact
+// prefixes to this mux; neither layer has a generic Payment fallback.
+func mountPaymentAdminAPIs(mux *http.ServeMux, orderHandler, paymentHandler http.Handler) {
+	mux.Handle("/api/admin/refunds", paymentHandler)
+	mux.Handle("/api/admin/wechat-pay/orders", orderHandler)
+	mux.Handle("/api/admin/wechat-pay/orders/", paymentHandler)
+	mux.Handle("/api/admin/wechat-pay/payments/", paymentHandler)
+	mux.Handle("/api/admin/wechat-pay/profit-sharing/receivers/", paymentHandler)
+	mux.Handle("/api/admin/wechat-pay/refunds/", paymentHandler)
+	mux.Handle("/api/admin/wechat-shop/refunds/", paymentHandler)
+	mux.Handle("/api/admin/wechat-pay/order-exports", orderHandler)
+	mux.Handle("/api/admin/payments/", paymentHandler)
+}
+
 // isOwnerHandoffUIPath identifies the canonical owner-handoff Host route and
 // the frozen new-shell navigation's ownerMig.html alias.
 func isOwnerHandoffUIPath(path string) bool {
@@ -2343,6 +2352,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/public/wechat-shop/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)
 	mux.Handle("/api/admin/wechat-pay/payments/", identity)
+	mux.Handle("/api/admin/wechat-pay/profit-sharing/receivers/", identity)
+	mux.Handle("/api/admin/wechat-pay/refunds/", identity)
 	mux.Handle("/api/admin/wechat-shop/refunds/", identity)
 	mux.Handle("/api/admin/wechat-pay/order-exports", identity)
 	mux.Handle("/api/admin/operation-cycles/", identity)
