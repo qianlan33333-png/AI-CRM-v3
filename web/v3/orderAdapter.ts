@@ -8,7 +8,7 @@ import { AdminController } from '../src/admin/controller';
 import { apiRequestOptions } from '../src/api/transport';
 import { commerceProviderLabel, commerceStatusLabel } from './commercePresentation';
 import { formatShanghaiDateTime } from './adminDateTime';
-import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionSettlementStatusLabel } from './distributionPresentation';
+import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionReasonLabel, distributionSettlementStatusLabel } from './distributionPresentation';
 
 type OrderController = { page: string; api: { mode: string }; state: { orderFilters: Record<string, string> } };
 type DetailRecord = Record<string, unknown>;
@@ -20,7 +20,8 @@ type RefundReceipt = { id: number; refundNo: string };
 type RefundIntent = { idempotencyKey: string; payloadDigest: string; state: RefundIntentState; actorBinding: string; receipt?: RefundReceipt };
 type DurableRefundIntent = { provider: RefundScope['provider']; order_no: string; idempotency_key: string; payload_digest: string; state: RefundIntentState; actor_binding: string; receipt_id?: number; receipt_refund_no?: string };
 type RefundRecovery = { actorBinding: string; receipt: RefundReceipt | null };
-type DetailContext = { order?: DetailRecord; items?: unknown[]; refunds?: unknown[]; effects?: unknown[]; refundsUnavailable?: boolean; orderRefreshUnavailable?: boolean; effectsUnavailable?: boolean };
+type DetailContext = { order?: DetailRecord; items?: unknown[]; refunds?: unknown[]; effects?: unknown[]; refundsUnavailable?: boolean; orderRefreshUnavailable?: boolean; effectsUnavailable?: boolean; invalidLocator?: boolean };
+type OrderListResponse = { tokens: string[] };
 
 const orderPrototype = AdminController.prototype as unknown as { renderVals(this: OrderController): Record<string, any> };
 const donorRenderOrders = orderPrototype.renderVals;
@@ -32,6 +33,19 @@ orderPrototype.renderVals = function () {
   this.state.orderFilters = { ...filters, transactionId: '', payer: '', product: '' };
   try {
     const values = donorRenderOrders.call(this);
+    const rows = values.rows?.orders;
+    if (Array.isArray(rows)) {
+      activateOrderListForRenderedRows(rows);
+      // Preserve the opaque token only in the controller's private DTO so a
+      // later frozen re-render can select the same response. The template
+      // receives a clone with the ordinary provider/channel label, ensuring
+      // the marker never reaches DOM text, clipboard, or accessibility APIs.
+      values.rows = { ...values.rows, orders: rows.map((row) => {
+        const item = asRecord(row);
+        if (!item || typeof item.pay !== 'string' || !item.pay.includes(orderRendererTokenPrefix)) return row;
+        return { ...item, pay: stripOrderRendererToken(item.pay) };
+      }) };
+    }
     if (values.orderPage) values.orderPage.filters = filters;
     return values;
   } finally { this.state.orderFilters = filters; }
@@ -39,7 +53,11 @@ orderPrototype.renderVals = function () {
 
 const originalFetch = globalThis.fetch.bind(globalThis);
 let detailContext: DetailContext = {};
-const listDistributionByOrderReference = new Map<string, DetailRecord>();
+const listDistributionByOrderID = new Map<string, DetailRecord>();
+let latestOrderList: DetailRecord[] = [];
+let latestOrderListRequest = 0;
+const orderListResponses = new Map<number, OrderListResponse>();
+const orderListRecordsByToken = new Map<string, DetailRecord>();
 const refundIntents = new Map<string, RefundIntent>();
 const pendingRefundIntentScopes = new Set<string>();
 const refundIntentStorageKey = 'aicrm.order-refund-intents.v1';
@@ -67,6 +85,41 @@ function asRecord(value: unknown): DetailRecord | undefined {
 
 function text(value: unknown, fallback = '未提供'): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+const orderRendererTokenPrefix = '\u2063aicrm-order-v3:';
+const orderRendererTokenPattern = /\u2063aicrm-order-v3:([a-z0-9-]+)\u2063$/i;
+
+function orderRendererToken(value: unknown): string | undefined {
+  const match = typeof value === 'string' ? value.match(orderRendererTokenPattern) : undefined;
+  return match?.[1];
+}
+
+function stripOrderRendererToken(value: string): string {
+  return value.replace(orderRendererTokenPattern, '');
+}
+
+function activateOrderList(records: DetailRecord[]): void {
+  latestOrderList = records;
+  listDistributionByOrderID.clear();
+  for (const item of records) {
+    const orderID = canonicalOrderID(item);
+    if (orderID) listDistributionByOrderID.set(orderID, item);
+  }
+}
+
+function activateOrderListForRenderedRows(rows: unknown[]): void {
+  const tokens = rows.map((row) => orderRendererToken(asRecord(row)?.pay));
+  if (tokens.some((token) => !token) || new Set(tokens).size !== tokens.length) {
+    activateOrderList([]);
+    return;
+  }
+  const records = tokens.map((token) => orderListRecordsByToken.get(token as string));
+  if (records.some((record) => !record)) {
+    activateOrderList([]);
+    return;
+  }
+  activateOrderList(records as DetailRecord[]);
 }
 
 function arrayField(value: unknown, ...keys: string[]): unknown[] {
@@ -110,6 +163,40 @@ function orderReference(row: HTMLTableRowElement): string | undefined {
   const cell = row.querySelectorAll('td')[1];
   const value = cell?.querySelector('div')?.textContent?.trim() || '';
   return value || undefined;
+}
+
+function canonicalOrderID(value: DetailRecord): string | undefined {
+  const raw = value.id;
+  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0) return String(raw);
+  if (typeof raw === 'string' && /^[1-9][0-9]*$/.test(raw)) return raw;
+  return undefined;
+}
+
+function serverDetailURL(value: DetailRecord): string | undefined {
+  const raw = text(value.detail_url, '');
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw, location.href);
+    if (url.origin !== location.origin || !/\/admin\/orderDetail\.html$/.test(url.pathname) || !url.searchParams.get('id') || !url.searchParams.get('provider')) return undefined;
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function detailProvider(): string | undefined | null {
+  const values = new URL(location.href).searchParams.getAll('provider');
+  if (values.length === 0) return undefined;
+  const value = values[0]?.trim() || '';
+  return values.length === 1 && ['wechat', 'wechat_pay', 'wechat_shop', 'alipay'].includes(value) ? value : null;
+}
+
+function currentDetailAPIURL(reference: string): URL | undefined {
+  const url = new URL(`/api/admin/orders/${encodeURIComponent(reference)}`, location.origin);
+  const provider = detailProvider();
+  if (provider === null) return undefined;
+  if (provider) url.searchParams.set('provider', provider);
+  return url;
 }
 
 function refundScope(order: DetailRecord | undefined): RefundScope | undefined {
@@ -333,12 +420,24 @@ async function primeOrderDetail(): Promise<void> {
   if (!isOrderDetailPage()) return;
   const ref = detailReference();
   if (!ref) { detailContext.refundsUnavailable = true; return; }
+	const detailURL = currentDetailAPIURL(ref);
+	if (!detailURL) {
+		detailContext.invalidLocator = true;
+		detailContext.refundsUnavailable = true;
+		schedulePresentation();
+		return;
+	}
   try {
-    const response = await originalFetch(`/api/admin/orders/${encodeURIComponent(ref)}`, { credentials: 'same-origin' });
+    const response = await originalFetch(detailURL, { credentials: 'same-origin' });
     if (!response.ok) { detailContext.refundsUnavailable = true; return; }
     const order = asRecord(await response.json());
-    if (!order || !refundScope(order)) { detailContext.refundsUnavailable = true; return; }
+    if (!order) { detailContext.refundsUnavailable = true; return; }
+    // Orders from a provider without the WeChat refund read endpoint still
+    // have a valid, provider-scoped detail record. Only their refund panel is
+    // unavailable; withholding the whole order would invite a merchant-only
+    // fallback to a different provider's row.
     detailContext.order = order;
+    if (!refundScope(order)) detailContext.refundsUnavailable = true;
   } catch {
     detailContext.refundsUnavailable = true;
   } finally {
@@ -365,16 +464,14 @@ document.addEventListener('click', (event) => {
   if (!link || link.textContent?.trim() !== '查看详情') return;
   const row = link.closest('tr');
   if (!(row instanceof HTMLTableRowElement)) return;
-  const reference = orderReference(row);
+  const detailURL = row.dataset.orderDetailUrl;
   event.preventDefault();
   event.stopImmediatePropagation();
-  if (!reference) { showOrderMessage('订单缺少服务端单号，无法打开详情。'); return; }
+  if (!detailURL) { showOrderMessage('订单详情定位信息暂不可读取，请刷新列表后重试。'); return; }
   link.textContent = '正在打开…';
   link.setAttribute('aria-disabled', 'true');
-  const next = new URL('orderDetail.html', location.href);
-  next.searchParams.set('id', reference);
-  link.href = next.toString();
-  location.assign(next.toString());
+  link.href = detailURL;
+  location.assign(detailURL);
 }, true);
 
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -383,7 +480,18 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (method !== 'GET') return originalFetch(input, init);
   const url = new URL(request?.url || String(input), location.origin);
   if (url.origin !== location.origin) return originalFetch(input, init);
+  const listRequest = url.pathname === '/api/admin/orders' ? ++latestOrderListRequest : 0;
   orderQuery(url);
+
+  if (isOrderDetailPage() && /^\/api\/admin\/orders\/[^/]+(?:\/items)?$/.test(url.pathname)) {
+    const provider = detailProvider();
+    if (provider === null) {
+      detailContext.invalidLocator = true;
+      schedulePresentation();
+      return new Response(JSON.stringify({ error: 'invalid_order_provider' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (provider) url.searchParams.set('provider', provider);
+  }
 
   if (isOrderDetailPage() && url.pathname === '/api/admin/refunds') {
     const scope = refundScope(detailContext.order);
@@ -420,15 +528,32 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   try {
     const payload = await response.clone().json() as { items?: unknown[] };
     if (!Array.isArray(payload.items)) return response;
+    const records: DetailRecord[] = [];
+    const tokens: string[] = [];
     const items = payload.items.map((value) => {
       const item = asRecord(value);
       if (!item) return value;
-      const reference = text(item.merchant_order_no, '');
-      if (reference) listDistributionByOrderReference.set(reference, item);
+      records.push(item);
+      const token = `${listRequest}-${records.length - 1}`;
+      tokens.push(token);
+      orderListRecordsByToken.set(token, item);
       const channel = typeof item.provider_label === 'string' && item.provider_label.trim()
         ? item.provider_label : typeof item.provider === 'string' ? item.provider : item.currency;
-      return { ...item, currency: channel };
+      // Frozen orderPageDto omits the canonical ID. Carry a V3-only opaque
+      // token through its existing `pay` field and remove it before painting;
+      // no displayed business field participates in identity matching.
+      return { ...item, currency: `${text(channel, '')}${orderRendererTokenPrefix}${token}\u2063` };
     });
+    orderListResponses.set(listRequest, { tokens });
+    while (orderListResponses.size > 6) {
+      const oldest = orderListResponses.keys().next().value as number;
+      const retired = orderListResponses.get(oldest);
+      if (retired) for (const token of retired.tokens) orderListRecordsByToken.delete(token);
+      orderListResponses.delete(oldest);
+    }
+    // Real pages activate only after the frozen renderer returns the matching
+    // DTO rows above. The no-stage path is the narrow test/static-host seam.
+    if (!document.getElementById('stage')) activateOrderList(records);
     schedulePresentation();
     const headers = new Headers(response.headers);
     headers.delete('content-length');
@@ -443,7 +568,9 @@ function applyOrderPresentation(): void {
   if (!table) return;
   const header = table.querySelectorAll('th')[2];
   if (header && header.textContent !== '付款人') header.textContent = '付款人';
-  table.querySelectorAll<HTMLTableRowElement>('tbody tr').forEach((row) => {
+  const renderedRows = Array.from(table.querySelectorAll<HTMLTableRowElement>('tbody tr')).filter((row) => row.querySelectorAll('td').length >= 8);
+  const recordsMatchRenderedRows = renderedRows.length === latestOrderList.length;
+  renderedRows.forEach((row, index) => {
     const cells = row.querySelectorAll<HTMLTableCellElement>('td');
     if (cells.length < 3) return;
     const created = cells[0];
@@ -455,6 +582,11 @@ function applyOrderPresentation(): void {
     }
     const internal = cells[2].querySelector<HTMLElement>('div:nth-child(2)');
     if (internal && !internal.hidden) internal.hidden = true;
+    const paymentSource = cells[6];
+    if (paymentSource && paymentSource.textContent?.includes(orderRendererTokenPrefix)) {
+      const visible = stripOrderRendererToken(paymentSource.textContent);
+      if (paymentSource.textContent !== visible) paymentSource.textContent = visible;
+    }
     const statusCell = cells[5];
     if (statusCell) {
       const label = statusCell.querySelector<HTMLElement>('span') || statusCell;
@@ -463,7 +595,20 @@ function applyOrderPresentation(): void {
       const localized = commerceStatusLabel('order', status);
       if (label.textContent !== localized) label.textContent = localized;
     }
-    const summary = distributionListSummary(listDistributionByOrderReference.get(orderReference(row) || ''));
+    const record = recordsMatchRenderedRows ? latestOrderList[index] : undefined;
+    const orderID = record && canonicalOrderID(record);
+    // The frozen renderer preserves the response order. Verify the visible
+    // merchant reference before attaching the corresponding canonical ID; a
+    // stale response can then only omit a summary, never borrow another row.
+    if (!record || !orderID || orderReference(row) !== text(record.merchant_order_no, '')) {
+      delete row.dataset.orderDetailUrl;
+      row.querySelector('[data-order-distribution-summary]')?.remove();
+      return;
+    }
+    const detailURL = serverDetailURL(record);
+    if (detailURL) row.dataset.orderDetailUrl = detailURL;
+    else delete row.dataset.orderDetailUrl;
+    const summary = distributionListSummary(listDistributionByOrderID.get(orderID));
     const host = cells[1];
     if (host && summary) {
       let node = host.querySelector<HTMLElement>('[data-order-distribution-summary]');
@@ -1039,7 +1184,7 @@ function distributionListSummary(order: DetailRecord | undefined): string | unde
   const lines = arrayField(order, 'distribution').map(asRecord).filter((line): line is DetailRecord => Boolean(line));
   if (lines.length === 0) return '非分销订单';
   const names = Array.from(new Set(lines.map((line) => text(line.distributor_display_name, '未设置昵称'))));
-  if (lines.some((line) => line.has_commission !== true)) return `分销：${names.join('、')} · 归因待付款`;
+  if (lines.some((line) => line.has_commission !== true)) return `分销：${names.join('、')} · 已归因 · 未形成佣金`;
   const totals = new Map<string, number>();
   for (const line of lines) {
     const currency = text(line.currency, 'CNY');
@@ -1066,7 +1211,7 @@ function appendDistributionDetailSections(card: HTMLElement, order: DetailRecord
       ['退款复核等待', `${String(line.wait_days)} 天`],
     ];
     if (line.has_commission !== true) {
-      entries.push(['佣金状态', '归因待付款／未形成佣金']);
+      entries.push(['佣金状态', '已归因 · 未形成佣金']);
       appendDetailSection(card, '分销信息', entries);
       continue;
     }
@@ -1078,16 +1223,16 @@ function appendDistributionDetailSections(card: HTMLElement, order: DetailRecord
       ['预计可结算时间', formatShanghaiDateTime(line.due_at)],
       ['分账成功确认时间', line.settlement_confirmed_at ? formatShanghaiDateTime(line.settlement_confirmed_at) : '未记录'],
     );
-    const reasons = [text(line.hold_reason, ''), text(line.cancel_reason, ''), text(line.exception_reason, '')].filter(Boolean);
+    const reasons = [line.hold_reason, line.cancel_reason, line.exception_reason].map(distributionReasonLabel).filter((reason) => reason !== '未说明');
     if (reasons.length) entries.push(['状态说明', reasons.join('；')]);
     for (const adjustment of arrayField(line, 'adjustments').map(asRecord).filter((item): item is DetailRecord => Boolean(item))) {
-      entries.push([distributionAdjustmentLabel(adjustment.kind), `${moneyFromMinorCurrency(adjustment.delta_minor, currency)} · ${text(adjustment.reason, '未说明')}`]);
+      entries.push([distributionAdjustmentLabel(adjustment.kind), `${moneyFromMinorCurrency(adjustment.delta_minor, currency)} · ${distributionReasonLabel(adjustment.reason)}`]);
     }
     for (const settlement of arrayField(line, 'settlements').map(asRecord).filter((item): item is DetailRecord => Boolean(item))) {
       entries.push([`分账记录 ${text(settlement.reference, '未记录')}`, `${moneyFromMinorCurrency(settlement.amount_minor, settlement.currency || currency)} · ${distributionSettlementStatusLabel(settlement.state)} · 分账成功确认时间 ${settlement.settlement_confirmed_at ? formatShanghaiDateTime(settlement.settlement_confirmed_at) : '未记录'}`]);
     }
     for (const exception of arrayField(line, 'exceptions').map(asRecord).filter((item): item is DetailRecord => Boolean(item))) {
-      entries.push([distributionExceptionLabel(exception.kind), text(exception.reason, '未说明')]);
+      entries.push([distributionExceptionLabel(exception.kind), distributionReasonLabel(exception.reason)]);
     }
     appendDetailSection(card, '分销信息', entries);
   }
@@ -1143,7 +1288,16 @@ function replaceExternalEffectsPanel(): void {
 }
 
 function applyOrderDetailPresentation(): void {
-  if (!isOrderDetailPage() || !detailContext.order) return;
+  if (!isOrderDetailPage()) return;
+  if (detailContext.invalidLocator) {
+    const card = document.querySelector<HTMLElement>('[data-order-detail-fingerprint]') || panelForHeading((heading) => heading === '订单详情');
+    if (!card) return;
+    if (card.dataset.orderDetailFingerprint === 'invalid-locator') return;
+    card.replaceChildren(element('h2', '订单详情'), element('p', '订单定位信息无效，请返回列表重新打开。'));
+    card.dataset.orderDetailFingerprint = 'invalid-locator';
+    return;
+  }
+  if (!detailContext.order) return;
   const order = detailContext.order;
   applyOrderDetailStatusBadge(order);
   const card = document.querySelector<HTMLElement>('[data-order-detail-fingerprint]') || panelForHeading((heading) => heading === '订单详情');

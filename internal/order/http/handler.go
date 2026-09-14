@@ -194,7 +194,22 @@ func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string)
 	if !h.read(w, r) {
 		return
 	}
-	order, err := h.app.GetByReference(r.Context(), ref)
+	provider, scoped, valid := detailProvider(r.URL.Query())
+	if !valid {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	var order domain.Snapshot
+	if scoped {
+		reader, ok := h.app.(orderport.ProviderScopedQuery)
+		if !ok {
+			writeError(w, http.StatusServiceUnavailable, "order_detail_unavailable")
+			return
+		}
+		order, err = reader.GetByReferenceForProvider(r.Context(), provider, ref)
+	} else {
+		order, err = h.app.GetByReference(r.Context(), ref)
+	}
 	if err != nil {
 		resultError(w, err)
 		return
@@ -217,6 +232,25 @@ func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string)
 		return
 	}
 	writeError(w, http.StatusNotFound, "not_found")
+}
+
+func detailProvider(values url.Values) (domain.Provider, bool, bool) {
+	if len(values) == 0 {
+		return "", false, true
+	}
+	if len(values) != 1 || len(values["provider"]) != 1 {
+		return "", false, false
+	}
+	switch values.Get("provider") {
+	case "wechat", "wechat_pay":
+		return domain.ProviderWeChatPay, true, true
+	case "wechat_shop":
+		return domain.ProviderWeChatShop, true, true
+	case "alipay":
+		return domain.ProviderAlipay, true, true
+	default:
+		return "", false, false
+	}
 }
 
 func (h *Handler) emptyRefunds(w http.ResponseWriter, r *http.Request) {
@@ -520,7 +554,7 @@ func responseFrom(order domain.Snapshot, customers map[customerdomain.CustomerID
 			payerPhoneMasked = display.PhoneMasked
 		}
 	}
-	return orderResponse{ID: order.ID, RecordOrigin: origin, CreatedAt: order.CreatedAt, MerchantOrderNo: order.MerchantOrderNo, OutTradeNo: order.MerchantOrderNo, OrderNo: order.SourceKey, PlatformTransactionNo: order.ProviderTransactionNo, TransactionID: order.ProviderTransactionNo, PayerName: payerName, PayerID: payer, PayerPhoneMasked: payerPhoneMasked, ProductCode: productCode, ProductName: productName, AmountYuan: fmt.Sprintf("%d.%02d", order.Amount.AmountMinor/100, order.Amount.AmountMinor%100), Currency: order.Amount.Currency, Status: order.Status, StatusLabel: string(order.Status), Provider: provider, ProviderLabel: label, DetailURL: "/admin/orderDetail.html?id=" + url.QueryEscape(order.MerchantOrderNo)}
+	return orderResponse{ID: order.ID, RecordOrigin: origin, CreatedAt: order.CreatedAt, MerchantOrderNo: order.MerchantOrderNo, OutTradeNo: order.MerchantOrderNo, OrderNo: order.SourceKey, PlatformTransactionNo: order.ProviderTransactionNo, TransactionID: order.ProviderTransactionNo, PayerName: payerName, PayerID: payer, PayerPhoneMasked: payerPhoneMasked, ProductCode: productCode, ProductName: productName, AmountYuan: fmt.Sprintf("%d.%02d", order.Amount.AmountMinor/100, order.Amount.AmountMinor%100), Currency: order.Amount.Currency, Status: order.Status, StatusLabel: string(order.Status), Provider: provider, ProviderLabel: label, DetailURL: "/admin/orderDetail.html?" + url.Values{"id": {order.MerchantOrderNo}, "provider": {provider}}.Encode()}
 }
 
 func (h *Handler) payerDisplays(ctx context.Context, orders []domain.Snapshot) map[customerdomain.CustomerID]customerport.DirectoryContactDisplay {

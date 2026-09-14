@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,6 +160,10 @@ func seedRefundRecheckCommission(t *testing.T, ctx context.Context, pool *pgxpoo
 }
 
 func settlementWarningPool(t *testing.T) (*pgxpool.Pool, func()) {
+	return settlementWarningPoolWithTracer(t, nil)
+}
+
+func settlementWarningPoolWithTracer(t *testing.T, tracer pgx.QueryTracer) (*pgxpool.Pool, func()) {
 	t.Helper()
 	databaseURL, err := platformconfig.DatabaseURL()
 	if err != nil {
@@ -186,6 +192,7 @@ func settlementWarningPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	config := adminConfig.Copy()
 	config.ConnConfig.RuntimeParams["search_path"] = schema
+	config.ConnConfig.Tracer = tracer
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
@@ -221,8 +228,24 @@ func settlementWarningPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 }
 
+type orderDistributionReadTracer struct{ statements atomic.Int32 }
+
+func (t *orderDistributionReadTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "FROM distribution_order_attributions a") {
+		t.statements.Add(1)
+	}
+	return ctx
+}
+
+func (t *orderDistributionReadTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+}
+
+func (t *orderDistributionReadTracer) Reset()       { t.statements.Store(0) }
+func (t *orderDistributionReadTracer) Count() int32 { return t.statements.Load() }
+
 func TestPostgreSQLCommissionListReadsPaidSystemConfirmationWithoutScanningMoneyAsTime(t *testing.T) {
-	pool, cleanup := settlementWarningPool(t)
+	readTracer := &orderDistributionReadTracer{}
+	pool, cleanup := settlementWarningPoolWithTracer(t, readTracer)
 	defer cleanup()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC)
@@ -278,6 +301,7 @@ func TestPostgreSQLCommissionListReadsPaidSystemConfirmationWithoutScanningMoney
 	if paidItem == nil || paidItem.PaidMinor != 100 || !paidItem.SettlementConfirmedAt.Equal(confirmed) || !paidItem.PaidAt.Equal(confirmed) {
 		t.Fatalf("paid list=%+v", page.Items)
 	}
+	readTracer.Reset()
 	var byOrder map[int64][]distributionport.OrderDistributionLine
 	if err = uow.Within(ctx, func(tx context.Context) error {
 		var readErr error
@@ -285,6 +309,9 @@ func TestPostgreSQLCommissionListReadsPaidSystemConfirmationWithoutScanningMoney
 		return readErr
 	}); err != nil {
 		t.Fatalf("order batch distribution: %v", err)
+	}
+	if statements := readTracer.Count(); statements != 1 {
+		t.Fatalf("order distribution read used %d fact statements; one statement is required so PostgreSQL supplies one MVCC snapshot", statements)
 	}
 	lines := byOrder[8301]
 	if len(lines) != 1 || !lines[0].HasCommission || lines[0].CommissionID != commissionID || lines[0].PaidMinor != 100 || !lines[0].SettlementConfirmedAt.Equal(confirmed) || lines[0].RateBasisPoints != 1000 || lines[0].WaitDays != 7 {

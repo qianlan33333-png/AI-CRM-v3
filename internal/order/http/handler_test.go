@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,11 +31,13 @@ func (s securityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomai
 }
 
 type appStub struct {
-	page    orderport.Page
-	detail  domain.Snapshot
-	getErr  error
-	query   orderport.ListQuery
-	exports int
+	page        orderport.Page
+	detail      domain.Snapshot
+	scoped      map[domain.Provider]domain.Snapshot
+	scopedCalls []domain.Provider
+	getErr      error
+	query       orderport.ListQuery
+	exports     int
 }
 
 type customerDisplaysStub map[customerdomain.CustomerID]customerport.DirectoryContactDisplay
@@ -57,6 +60,13 @@ func (stub *customerFilterStub) ResolveOrderCustomerFilter(_ context.Context, in
 func (a *appStub) Get(context.Context, int64) (domain.Snapshot, error) { return a.detail, a.getErr }
 func (a *appStub) GetByReference(context.Context, string) (domain.Snapshot, error) {
 	return a.detail, a.getErr
+}
+func (a *appStub) GetByReferenceForProvider(_ context.Context, provider domain.Provider, _ string) (domain.Snapshot, error) {
+	a.scopedCalls = append(a.scopedCalls, provider)
+	if order, ok := a.scoped[provider]; ok {
+		return order, a.getErr
+	}
+	return domain.Snapshot{}, orderport.ErrNotFound
 }
 
 func TestListUsesCanonicalCustomerDisplayName(t *testing.T) {
@@ -168,6 +178,41 @@ func TestAmbiguousReferenceReturnsConflict(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders/shared-ref", nil))
 	if response.Code != http.StatusConflict {
 		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestProviderScopedOrderDetailKeepsSameMerchantNumbersSeparate(t *testing.T) {
+	wechat := sampleOrder()
+	wechat.ID, wechat.MerchantOrderNo, wechat.Provider = 101, "shared-reference", domain.ProviderWeChatPay
+	alipay := sampleOrder()
+	alipay.ID, alipay.MerchantOrderNo, alipay.Provider = 202, wechat.MerchantOrderNo, domain.ProviderAlipay
+	application := &appStub{detail: wechat, scoped: map[domain.Provider]domain.Snapshot{domain.ProviderWeChatPay: wechat, domain.ProviderAlipay: alipay}}
+	handler, err := NewHandler(application, adminSecurity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		provider string
+		wantID   int64
+	}{{provider: "wechat", wantID: wechat.ID}, {provider: "alipay", wantID: alipay.ID}} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders/shared-reference?provider="+test.provider, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":`+strconv.FormatInt(test.wantID, 10)) {
+			t.Fatalf("provider=%s code=%d body=%s", test.provider, response.Code, response.Body.String())
+		}
+	}
+	if got := application.scopedCalls; len(got) != 2 || got[0] != domain.ProviderWeChatPay || got[1] != domain.ProviderAlipay {
+		t.Fatalf("scoped calls=%v", got)
+	}
+	legacy := httptest.NewRecorder()
+	handler.ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/api/admin/orders/shared-reference", nil))
+	if legacy.Code != http.StatusOK || !strings.Contains(legacy.Body.String(), `"id":101`) {
+		t.Fatalf("legacy detail code=%d body=%s", legacy.Code, legacy.Body.String())
+	}
+	invalid := httptest.NewRecorder()
+	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/admin/orders/shared-reference?provider=unknown", nil))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid provider code=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 }
 

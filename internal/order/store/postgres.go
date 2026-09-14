@@ -398,6 +398,20 @@ func (r *Repository) queryOrders(ctx context.Context, before *orderapp.Cursor, l
 }
 
 func (r *Repository) FindByReference(ctx context.Context, reference string) ([]domain.Order, error) {
+	return r.findByReference(ctx, "", reference)
+}
+
+// FindByReferenceForProvider is the exact read path for a list row that
+// carries both Payment identity components. Merchant order numbers alone are
+// not globally unique across providers.
+func (r *Repository) FindByReferenceForProvider(ctx context.Context, provider domain.Provider, reference string) ([]domain.Order, error) {
+	if provider == "" {
+		return nil, ErrInvalid
+	}
+	return r.findByReference(ctx, provider, reference)
+}
+
+func (r *Repository) findByReference(ctx context.Context, provider domain.Provider, reference string) ([]domain.Order, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
 		return nil, err
@@ -405,7 +419,14 @@ func (r *Repository) FindByReference(ctx context.Context, reference string) ([]d
 	if reference == "" || len(reference) > 200 {
 		return nil, ErrInvalid
 	}
-	rows, err := tx.Query(ctx, `SELECT `+orderColumns+` FROM orders WHERE merchant_order_no=$1 OR provider_transaction_no=$1 OR source_key=$1 ORDER BY id LIMIT 2`, reference)
+	query := `SELECT ` + orderColumns + ` FROM orders WHERE (merchant_order_no=$1 OR provider_transaction_no=$1 OR source_key=$1)`
+	args := []any{reference}
+	if provider != "" {
+		query += ` AND provider=$2`
+		args = append(args, provider)
+	}
+	query += ` ORDER BY id LIMIT 2`
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, mapError(err)
 	}

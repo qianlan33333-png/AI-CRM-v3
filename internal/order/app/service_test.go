@@ -184,6 +184,18 @@ func (s *memoryStore) FindByReference(_ context.Context, reference string) ([]do
 	return rows, nil
 }
 
+func (s *memoryStore) FindByReferenceForProvider(_ context.Context, provider domain.Provider, reference string) ([]domain.Order, error) {
+	rows := []domain.Order{}
+	for _, snapshot := range s.orders {
+		if snapshot.Provider != provider || (snapshot.MerchantOrderNo != reference && snapshot.ProviderTransactionNo != reference && snapshot.SourceKey != reference) {
+			continue
+		}
+		order, _ := domain.Restore(snapshot)
+		rows = append(rows, order)
+	}
+	return rows, nil
+}
+
 func (s *memoryStore) Export(_ context.Context, _ ListFilter, limit int32) ([]domain.Order, error) {
 	return s.List(context.Background(), nil, limit, ListFilter{})
 }
@@ -438,6 +450,44 @@ func TestGetByReferenceForCustomerUsesCustomerBoundStoreQuery(t *testing.T) {
 	}
 	if _, err = service.GetByReferenceForCustomer(context.Background(), first.MerchantOrderNo, 44); !errors.Is(err, orderport.ErrNotFound) || store.findByReferenceCalls != 0 {
 		t.Fatalf("out-of-scope err=%v broad_calls=%d", err, store.findByReferenceCalls)
+	}
+}
+
+func TestGetByReferenceForProviderKeepsSameMerchantNumbersSeparate(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	firstInput := orderInput("provider-wechat")
+	firstInput.MerchantOrderNo = "shared-merchant-reference"
+	first, err := service.Create(context.Background(), orderport.CreateCommand{Input: firstInput, Actor: 7, IdempotencyKey: "order-provider-wechat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The legacy unscoped command deliberately rejects a duplicate merchant
+	// reference. Stores that receive provider data can nevertheless contain the
+	// same provider-local reference, so inject that historical state directly.
+	second := first
+	second.ID = first.ID + 1
+	second.Provider = domain.ProviderAlipay
+	second.SourceKey = "provider-alipay"
+	second.ProviderTransactionNo = "provider-alipay-transaction"
+	second.RecordOrigin = domain.RecordOriginHistory
+	second.EffectEligible = false
+	second.PayerCustomerID = nil
+	second.BeneficiaryCustomerID = nil
+	second.CreatedAt = first.CreatedAt.Add(time.Second)
+	second.UpdatedAt = second.CreatedAt
+	store.orders[second.ID] = second
+	store.nextID = second.ID + 1
+	wechat, err := service.GetByReferenceForProvider(context.Background(), domain.ProviderWeChatPay, first.MerchantOrderNo)
+	if err != nil || wechat.ID != first.ID || wechat.Provider != domain.ProviderWeChatPay {
+		t.Fatalf("wechat=%+v err=%v", wechat, err)
+	}
+	alipay, err := service.GetByReferenceForProvider(context.Background(), domain.ProviderAlipay, first.MerchantOrderNo)
+	if err != nil || alipay.ID != second.ID || alipay.Provider != domain.ProviderAlipay {
+		t.Fatalf("alipay=%+v err=%v", alipay, err)
+	}
+	if _, err = service.GetByReference(context.Background(), first.MerchantOrderNo); !errors.Is(err, orderport.ErrConflict) {
+		t.Fatalf("legacy unscoped read err=%v", err)
 	}
 }
 
