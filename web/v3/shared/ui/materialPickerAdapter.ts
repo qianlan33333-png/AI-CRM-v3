@@ -177,6 +177,7 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
   let closed = false;
   let composing = false;
   let compositionJustEnded = false;
+  let restoreRemovedFocus: string | undefined;
 
   const loader: SelectionLoader<Material> = async ({ query, cursor, signal }) => {
     const page = await config.loadPage({ source: config.source, scope: config.scope, type, query, cursor, signal });
@@ -219,12 +220,17 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
       const unavailable = Boolean(item.disabledReason);
       const disabled = Boolean(snapshot.readonlyReason || (!selected && unavailable));
       const thumbnail = item.value.thumbnail_url ? `<img src="${escape(item.value.thumbnail_url)}" alt="">` : `<span>${labels[type]}</span>`;
-      return `<button class="aicrm-material-picker__item${selected ? ' is-selected' : ''}${unavailable ? ' is-disabled' : ''}" type="button" data-v3-material-key="${escape(key)}"${disabled ? ' disabled' : ''}><span class="aicrm-material-picker__thumb">${thumbnail}</span><span class="aicrm-material-picker__title">${escape(item.value.title)}</span><span class="aicrm-material-picker__subtitle">${escape(item.value.subtitle || item.disabledReason || '')}</span></button>`;
+      return `<button class="aicrm-material-picker__item${selected ? ' is-selected' : ''}${unavailable ? ' is-disabled' : ''}" type="button" data-v3-material-key="${escape(key)}"${disabled ? ' disabled' : ''}><span class="aicrm-material-picker__thumb">${thumbnail}</span><span class="aicrm-material-picker__title">${escape(item.value.title)}</span><span class="aicrm-material-picker__subtitle">${escape(item.value.subtitle || '')}</span>${item.disabledReason ? `<span class="aicrm-material-picker__subtitle">${escape(item.disabledReason)}</span>` : ''}</button>`;
     }).join('');
     more.hidden = !snapshot.nextCursor;
     more.disabled = snapshot.loading;
     confirm.disabled = Boolean(snapshot.readonlyReason || snapshot.loading);
     if (focusKey) Array.from(grid.querySelectorAll<HTMLElement>('[data-v3-material-key]')).find((row) => row.dataset.v3MaterialKey === focusKey)?.focus({ preventScroll: true });
+    if (restoreRemovedFocus !== undefined) {
+      const next = Array.from(selectedRoot.querySelectorAll<HTMLElement>('[data-v3-material-remove]')).find((button) => button.dataset.v3MaterialRemove === restoreRemovedFocus);
+      restoreRemovedFocus = undefined;
+      (next || search).focus({ preventScroll: true });
+    }
   };
   const unsubscribe = session.subscribe(render);
   const submit = () => { session.setDraftQuery(search.value); void session.submitSearch(loader); };
@@ -250,7 +256,13 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
       return;
     }
     const remove = target.closest<HTMLElement>('[data-v3-material-remove]');
-    if (remove) { session.toggle(String(remove.dataset.v3MaterialRemove || '')); return; }
+    if (remove) {
+      const buttons = Array.from(selectedRoot.querySelectorAll<HTMLElement>('[data-v3-material-remove]'));
+      const index = buttons.indexOf(remove);
+      restoreRemovedFocus = buttons[index + 1]?.dataset.v3MaterialRemove || buttons[index - 1]?.dataset.v3MaterialRemove || '';
+      session.toggle(String(remove.dataset.v3MaterialRemove || ''));
+      return;
+    }
     const row = target.closest<HTMLElement>('[data-v3-material-key]');
     if (row) session.toggle(String(row.dataset.v3MaterialKey || ''));
   });

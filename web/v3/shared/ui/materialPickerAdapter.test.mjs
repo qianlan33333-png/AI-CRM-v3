@@ -68,6 +68,7 @@ search.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter',
 await flush();
 assert.deepEqual(calls.at(-1), { type: 'image', query: '草稿', cursor: undefined, aborted: false }, 'native Enter submits exactly the V3 draft');
 assert.match(mask.textContent, /素材已下架/, 'unavailable initial item remains visible with its reason');
+assert.match(mask.querySelector('[data-v3-material-key$="1"]').textContent, /素材已下架/, 'unavailable reason remains visible when the item also has a subtitle');
 const selectable = mask.querySelector('[data-v3-material-key$="2"]');
 selectable.focus();
 const space = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: ' ' });
@@ -82,7 +83,11 @@ assert.equal(document.activeElement.matches('[data-v3-material-key]'), true, 'ar
 const tab = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Tab' });
 document.activeElement.dispatchEvent(tab);
 assert.equal(tab.defaultPrevented, false, 'Tab remains available to continue through dialog controls');
-mask.querySelector('[data-v3-material-remove]').click();
+const removeInitial = mask.querySelector('[data-v3-material-remove]');
+removeInitial.focus();
+removeInitial.click();
+await flush();
+assert.equal(document.activeElement.dataset.v3MaterialRemove.endsWith(':2'), true, 'removing a selected item retains focus within the dialog');
 mask.querySelector('[data-v3-picker-more]').click();
 await flush();
 assert.equal(calls.at(-1).cursor, 'next', 'paging preserves the committed query');
