@@ -31,7 +31,7 @@ mod.installMaterialPickerAdapter({
     if (cursor === 'next') return { items: [{ type, library_id: 3, title: '第三项', selectable: true }] };
     return { items: [
       { type, library_id: 1, title: '已失效素材', selectable: false, unavailable_reason: '素材已下架' },
-      { type, library_id: 2, title: '可选素材', selectable: true },
+      { type, library_id: 2, title: '可选素材', thumbnail_url: 'https://example.test/preview.png', selectable: true },
     ], nextCursor: 'next' };
   },
 });
@@ -75,6 +75,11 @@ assert.deepEqual(calls.at(-1), { type: 'image', query: '草稿', cursor: undefin
 assert.match(mask.textContent, /素材已下架/, 'unavailable initial item remains visible with its reason');
 assert.match(mask.querySelector('[data-v3-material-key$="1"]').textContent, /素材已下架/, 'unavailable reason remains visible when the item also has a subtitle');
 const selectable = mask.querySelector('[data-v3-material-key$="2"]');
+const selectablePreview = selectable.querySelector('[data-v3-material-preview]');
+selectablePreview.dispatchEvent(new Event('error'));
+assert.equal(selectablePreview.hidden, true, 'a failed thumbnail hides the browser broken-image affordance');
+assert.equal(selectable.querySelector('[data-v3-material-preview-unavailable]').hidden, false, 'a failed thumbnail gives the operator an explicit preview fallback');
+assert.equal(selectable.disabled, false, 'a thumbnail failure does not make an otherwise selectable material unavailable');
 selectable.focus();
 const space = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: ' ' });
 selectable.dispatchEvent(space);
