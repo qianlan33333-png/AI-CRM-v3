@@ -621,6 +621,50 @@
       ],
       "reason": "Record the Root-reviewed daily-lesson automatic cover and stored-miniprogram Webhook contract in the active V3 OpenAPI authority; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
       "review_reference": "Root review of the daily-lesson automatic cover Webhook contract and active V3 OpenAPI synchronization"
+    },
+    {
+      "base_commit": "04ee8fa0295607dc63d8078e25f39435bc685351",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "c644ea46e6a2b688cccc85f12a6e2d198169eff77813cc2a9711c87834685c84",
+          "head_sha256": "b7553012d12adfcb9b424d3980167b69e9e3515d9f8f7128b63f99e13cb279eb"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "403981f0dea0d72aa91a08b8f0a5955ee75a100ce2ed26a60673f46acd460cf1",
+          "head_sha256": "021866a04c93fe46f5e7ebb2ba8bcdd0e93a41c109012b798f891b11d9095e02"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "1f370b175c60be5bf72deccff011b3073af86d21d9f3d556d6dd4f17c0689901",
+          "head_sha256": "5d310bfb95ec614c28df656f147425355451ba2ae8680e2667d7e167416802f9"
+        }
+      ],
+      "reason": "Record the agent-reviewed audience membership-facts OpenAPI authority synchronization after independent acceptance_review confirmed the runtime path and HMAC contract on 2026-09-14; frozen donors remain unchanged. This declaration records agent review only and is not human review, merge approval, or release approval.",
+      "review_reference": "Root review of candidate a9c8aa74 audience membership-facts OpenAPI contract; independent acceptance_review confirmed runtime path and HMAC contract on 2026-09-14"
+    },
+    {
+      "base_commit": "dcfc02290daca3f4bb9509120698e9e976b5369b",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "c644ea46e6a2b688cccc85f12a6e2d198169eff77813cc2a9711c87834685c84",
+          "head_sha256": "b7553012d12adfcb9b424d3980167b69e9e3515d9f8f7128b63f99e13cb279eb"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "403981f0dea0d72aa91a08b8f0a5955ee75a100ce2ed26a60673f46acd460cf1",
+          "head_sha256": "021866a04c93fe46f5e7ebb2ba8bcdd0e93a41c109012b798f891b11d9095e02"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "1f370b175c60be5bf72deccff011b3073af86d21d9f3d556d6dd4f17c0689901",
+          "head_sha256": "5d310bfb95ec614c28df656f147425355451ba2ae8680e2667d7e167416802f9"
+        }
+      ],
+      "reason": "Record the agent-reviewed audience membership-facts OpenAPI authority synchronization against the frozen candidate baseline after independent acceptance_review confirmed the runtime path and HMAC contract on 2026-09-14; frozen donors remain unchanged. This declaration records agent review only and is not human review, merge approval, or release approval.",
+      "review_reference": "Root review of candidate a9c8aa74 audience membership-facts OpenAPI contract; independent acceptance_review confirmed runtime path and HMAC contract on 2026-09-14"
     }
   ]
 }
