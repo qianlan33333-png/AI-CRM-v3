@@ -37,11 +37,15 @@ class ReleaseAcceptanceHarnessTests(unittest.TestCase):
     def test_isolated_environment_has_no_postgres_or_donor_leaks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with patch.dict(os.environ, {"PATH": "/safe/path", "PGSERVICE": "production", "PGHOSTADDR": "10.0.0.2", "PGPASSFILE": "/secret", "PGOPTIONS": "-c role=admin", "DATABASE_URL": "postgres://production", "PR08_DONOR_DIR": "/production", "PR09_DONOR_ROOT": "/production", "AICRM_WECOM_ENABLED": "true"}, clear=True):
+            with patch.dict(os.environ, {"PATH": "/safe/path", "HOME": "/original/home", "PGSERVICE": "production", "PGHOSTADDR": "10.0.0.2", "PGPASSFILE": "/secret", "PGOPTIONS": "-c role=admin", "DATABASE_URL": "postgres://production", "PR08_DONOR_DIR": "/production", "PR09_DONOR_ROOT": "/production", "AICRM_WECOM_ENABLED": "true"}, clear=True):
                 env = runner.isolated_env("postgresql://aicrm_test@127.0.0.1:5432/aicrm_test_ok?sslmode=disable", "a" * 40, "b" * 40, root / "run", root / "v2", root / "sidebar")
             for key in ("PGSERVICE", "PGHOSTADDR", "PGOPTIONS", "DATABASE_URL"):
                 self.assertNotIn(key, env)
             self.assertEqual(env["PGPASSFILE"], os.devnull)
+            self.assertEqual(env["HOME"], "/original/home")
+            self.assertEqual(env["NPM_CONFIG_USERCONFIG"], os.devnull)
+            self.assertEqual(env["PIP_CONFIG_FILE"], os.devnull)
+            self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
             self.assertEqual(env["PR08_DONOR_DIR"], str((root / "v2").resolve()))
             self.assertEqual(env["PR09_DONOR_ROOT"], str((root / "v2").resolve()))
             self.assertEqual(env["AICRM_SIDEBAR_DONOR_DIR"], str((root / "sidebar").resolve()))
@@ -53,6 +57,10 @@ class ReleaseAcceptanceHarnessTests(unittest.TestCase):
         self.assertEqual(runner.integrity_violations(clean, changed, "source"), ["source_head_changed"])
         with self.assertRaisesRegex(RuntimeError, "harness is dirty"):
             runner.require_clean("harness", {"head": "a", "tree": "b", "dirty": True})
+
+    def test_prerequisite_only_and_environment_blocks_are_not_business_success(self):
+        self.assertEqual(runner.lane_outcome(False, 0, []), ("ready", 0))
+        self.assertEqual(runner.lane_outcome(True, 2, []), ("blocked_environment", 2))
 
     def test_exception_writes_immutable_failure_receipt(self):
         with tempfile.TemporaryDirectory() as temporary:

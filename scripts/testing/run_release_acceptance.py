@@ -23,7 +23,7 @@ SAFE_QUERY = {"sslmode": {"disable", "prefer", "require"}}
 V2_DONOR_ALIASES = ("AICRM_V2_FROZEN_DONOR_DIR", "AICRM_V2_DONOR_ROOT", "PR04_DONOR_ROOT", "PR05_DONOR_ROOT", "PR07_DONOR_DIR", "PR08_DONOR_DIR", "PR09_DONOR_ROOT", "AICRM_PR06_DONOR_DIR", "AICRM_SURVEY_DONOR_DIR", "AICRM_AUTOMATIONOPS_DONOR_DIR", "AICRM_TX01_DONOR_DIR", "AICRM_CHANNEL_DONOR_DIR")
 SIDEBAR_DONOR_ALIASES = ("AICRM_SIDEBAR_DONOR_DIR", "AICRM_SERVICE_PERIOD_MEMBER_GRID_DONOR_DIR")
 DISABLED_PROVIDER_ENV = {"AICRM_WECOM_ENABLED": "false", "AICRM_OUTBOUND_PROVIDER_ENABLED": "false", "AICRM_WECOM_CALLBACK_ENABLED": "false", "AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED": "false", "AICRM_WECOM_TAG_CATALOG_MUTATION_PROVIDER_ENABLED": "false", "AICRM_CHANNEL_PROVIDER_READ_ENABLED": "false", "AICRM_CHANNEL_QR_PROVIDER_ENABLED": "false", "AICRM_CHANNEL_MEDIA_PREP_PROVIDER_ENABLED": "false", "AICRM_CHANNEL_WELCOME_PROVIDER_ENABLED": "false", "AICRM_CHANNEL_TAG_PROVIDER_ENABLED": "false", "AICRM_CUSTOMER_TAG_PROVIDER_ENABLED": "false", "AICRM_GROUP_OPS_PROVIDER_ENABLED": "false", "AICRM_GROUP_OPS_PROVIDER_READ_ENABLED": "false", "AICRM_WECHAT_PAY_PROVIDER_ENABLED": "false", "AICRM_WECHAT_PAY_H5_OAUTH_ENABLED": "false", "AICRM_WECHAT_SHOP_PROVIDER_ENABLED": "false", "AICRM_SURVEY_COMPLETION_PROVIDER_ENABLED": "false", "AICRM_COMMERCE_PUSH_PROVIDER_ENABLED": "false", "AICRM_AUTOMATION_OPS_PROVIDER_MODE": "disabled", "AICRM_HXC_SYNC_ENABLED": "false", "AICRM_HXC_IDENTITY_WRITE_ENABLED": "false"}
-TOOLCHAIN_ALLOWLIST = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "GOCACHE", "GOMODCACHE", "GOPATH", "GOPROXY", "GOSUMDB", "GONOSUMDB", "GONOPROXY")
+TOOLCHAIN_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "GOPATH", "GOPROXY", "GOSUMDB", "GONOSUMDB", "GONOPROXY")
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -61,10 +61,16 @@ def integrity_violations(before: dict[str, Any], after: dict[str, Any], label: s
     checks = (("head_changed", before["head"] != after["head"]), ("tree_changed", before["tree"] != after["tree"]), ("dirty_after_run", after["dirty"]))
     return [label + "_" + name for name, changed in checks if changed]
 
+def lane_outcome(execute: bool, lane_exit_code: int, violations: list[str]) -> tuple[str, int]:
+    if violations: return "failure", 3
+    if lane_exit_code == 0: return ("success" if execute else "ready"), 0
+    if lane_exit_code == 2: return "blocked_environment", 2
+    return "failure", lane_exit_code
+
 def isolated_env(database_url: str, candidate_sha: str, dedup_base_sha: str, run_dir: Path, v2_donor_dir: Path | None, sidebar_donor_dir: Path | None) -> dict[str, str]:
     env = {key: os.environ[key] for key in TOOLCHAIN_ALLOWLIST if key in os.environ}
-    safe_home = run_dir / "home"; safe_home.mkdir(parents=True, exist_ok=True)
-    env.update({"HOME": str(safe_home), "PGPASSFILE": os.devnull, "PGSERVICEFILE": os.devnull, "PGSYSCONFDIR": str(safe_home / "pgconf"), "AICRM_DATABASE_URL": database_url, "AICRM_PUBLIC_ORIGIN": "https://release-acceptance.invalid", "AICRM_RELEASE_SHA": candidate_sha, "AICRM_DEDUP_HEAD_SHA": candidate_sha, "AICRM_DEDUP_BASE_SHA": dedup_base_sha, "PYTHONDONTWRITEBYTECODE": "1", **DISABLED_PROVIDER_ENV})
+    task_config = run_dir / "tool-config"; task_config.mkdir(parents=True, exist_ok=True)
+    env.update({"PGPASSFILE": os.devnull, "PGSERVICEFILE": os.devnull, "PGSYSCONFDIR": str(task_config / "pg"), "NPM_CONFIG_USERCONFIG": os.devnull, "NPM_CONFIG_GLOBALCONFIG": os.devnull, "PIP_CONFIG_FILE": os.devnull, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "XDG_CONFIG_HOME": str(task_config / "xdg"), "GOCACHE": str(run_dir / "go-build-cache"), "GOMODCACHE": str(run_dir / "go-mod-cache"), "AICRM_DATABASE_URL": database_url, "AICRM_PUBLIC_ORIGIN": "https://release-acceptance.invalid", "AICRM_RELEASE_SHA": candidate_sha, "AICRM_DEDUP_HEAD_SHA": candidate_sha, "AICRM_DEDUP_BASE_SHA": dedup_base_sha, "PYTHONDONTWRITEBYTECODE": "1", **DISABLED_PROVIDER_ENV})
     v2, sidebar = (str(v2_donor_dir.resolve()) if v2_donor_dir else ""), (str(sidebar_donor_dir.resolve()) if sidebar_donor_dir else "")
     env.update({key: v2 for key in V2_DONOR_ALIASES}); env.update({key: sidebar for key in SIDEBAR_DONOR_ALIASES})
     return env
@@ -106,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.execute: command.append("--check-prerequisites")
         receipt.update({"database": database, "providers": "disabled", "provider_keys_forced_disabled": sorted(DISABLED_PROVIDER_ENV), "v2_donor_dir": str(args.v2_donor_dir.resolve()) if args.v2_donor_dir else None, "sidebar_donor_dir": str(args.sidebar_donor_dir.resolve()) if args.sidebar_donor_dir else None, "command": command}); write_receipt(run_dir, receipt)
         result = subprocess.run(command, cwd=source_root, env=isolated_env(database_url, source_before["head"], dedup_base, run_dir, args.v2_donor_dir, args.sidebar_donor_dir), capture_output=True, text=True, check=False); stdout, stderr = result.stdout, result.stderr; receipt["lane_exit_code"] = result.returncode
-        harness_after, source_after = git_state(HARNESS_ROOT), git_state(source_root); receipt.update({"harness_after": harness_after, "source_after": source_after}); violations = integrity_violations(harness_before, harness_after, "harness") + integrity_violations(source_before, source_after, "source"); receipt["integrity_violations"] = violations; receipt["status"] = "success" if result.returncode == 0 and not violations else "failure"; receipt["exit_code"] = 3 if violations else result.returncode
+        harness_after, source_after = git_state(HARNESS_ROOT), git_state(source_root); receipt.update({"harness_after": harness_after, "source_after": source_after}); violations = integrity_violations(harness_before, harness_after, "harness") + integrity_violations(source_before, source_after, "source"); receipt["integrity_violations"] = violations
+        status, exit_code = lane_outcome(args.execute, result.returncode, violations); receipt.update({"status": status, "exit_code": exit_code})
     except Exception as error:
         receipt.update({"status": "failure", "exit_code": 2, "error": redact(str(error)), "error_type": type(error).__name__})
     finally:
