@@ -89,4 +89,6 @@ node scripts/excel-batches-pagination-dom-test.mjs
 npm run typecheck
 ```
 
+两套 Excel DOM fixture 均注册到 canonical `quality_lanes.py frontend`，因此 required frontend lane 会执行它们；分页用例直接以 `esbuild` 打包 V3 workspace，不读取未物化 donor view 或 `dist`。
+
 若环境没有 PostgreSQL，Go 测试结果只能说明编译/非数据库路径，不应表述为 PostgreSQL 执行通过。定向 DOM 的请求数和首个可见区渲染时点是源码级性能证据；合并、部署与真实浏览器网络回读分别记录，不能相互替代。
