@@ -35,15 +35,20 @@
 .overview-panel--wide { grid-column: span 2; }
 .overview-panel h2 { margin: 0; color: var(--text); font-size: 16px; line-height: 24px; }
 .overview-panel__head p { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 18px; }
-.overview-chart { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(20px, 1fr); align-items: end; gap: 5px; min-height: 164px; margin-top: 16px; overflow-x: auto; padding: 0 2px 20px; border-bottom: 1px solid var(--line); }
-.overview-chart__column { display: grid; grid-template-rows: auto 112px auto; align-items: end; gap: 5px; min-width: 24px; height: 100%; }
-.overview-chart__column i { display: block; width: 100%; min-height: 4px; border-radius: 5px 5px 1px 1px; background: #2f80ed; }
+.overview-chart { display: grid; grid-template-columns: repeat(var(--overview-trend-points), minmax(26px, 38px)); align-items: end; justify-content: space-around; gap: 7px; min-height: 164px; margin-top: 16px; overflow-x: auto; padding: 0 2px 20px; border-bottom: 1px solid var(--line); }
+.overview-chart__column { display: grid; grid-template-rows: auto 112px auto; align-items: end; gap: 5px; min-width: 26px; }
+.overview-chart__plot { display: flex; align-items: flex-end; justify-content: center; height: 112px; }
+.overview-chart__bar { display: block; width: 100%; height: 112px; flex: none; }
+.overview-chart__bar rect { fill: #2f80ed; }
 .overview-chart__column time { overflow: hidden; color: var(--muted); font-size: 11px; line-height: 16px; text-align: center; white-space: nowrap; }
 .overview-chart__value { overflow: hidden; color: var(--muted); font-size: 11px; line-height: 16px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .overview-trend-table-wrap { margin-top: 14px; overflow-x: auto; }
 .overview-trend-table { width: 100%; border-collapse: collapse; color: var(--text); font-size: 13px; }
 .overview-trend-table th, .overview-trend-table td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
 .overview-trend-table th { color: var(--muted); font-weight: 500; }
+.overview-trend-details { margin-top: 14px; }
+.overview-trend-details > summary { color: var(--brand-strong); cursor: pointer; font-size: 13px; line-height: 20px; }
+.overview-trend-details[open] > summary { margin-bottom: 2px; }
 .overview-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 14px 0 0; }
 .overview-facts div { min-width: 0; border-radius: 9px; padding: 10px; background: var(--panel-strong); }
 .overview-facts dt { color: var(--muted); font-size: 12px; line-height: 18px; }
@@ -58,7 +63,8 @@
 .overview-empty-state { margin: 0; }
 .overview-empty-state strong { color: var(--text); }
 .overview-empty-state p { margin: 6px 0 0; }
-.overview-snapshot { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; line-height: 18px; }
+.overview-snapshot { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px 18px; color: var(--muted); font-size: 12px; line-height: 18px; }
+.overview-snapshot__times { text-align: right; }
 @keyframes overview-spin { to { transform: rotate(360deg); } }
 @media (max-width: 1100px) { .overview-metrics--primary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 640px) { .overview-toolbar { align-items: flex-start; flex-direction: column; } .overview-range, .overview-range__custom { align-items: stretch; } .overview-range__custom { width: 100%; flex-wrap: wrap; } .overview-range__custom label { flex: 1 1 130px; } .overview-metrics--primary, .overview-metrics--secondary, .overview-panels, .overview-facts { grid-template-columns: 1fr; } .overview-panel--wide { grid-column: span 1; } .overview-metric strong { font-size: 22px; } .overview-snapshot { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 640px) { .overview-toolbar { align-items: flex-start; flex-direction: column; } .overview-range, .overview-range__custom { align-items: stretch; } .overview-range__custom { width: 100%; flex-wrap: wrap; } .overview-range__custom label { flex: 1 1 130px; } .overview-metrics--primary, .overview-metrics--secondary, .overview-panels, .overview-facts { grid-template-columns: 1fr; } .overview-panel--wide { grid-column: span 1; } .overview-metric strong { font-size: 22px; } .overview-snapshot { align-items: flex-start; flex-direction: column; } .overview-snapshot__times { text-align: left; } }

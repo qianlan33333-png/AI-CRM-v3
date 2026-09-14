@@ -9,10 +9,17 @@ async function waitFor(check, message) { for (let attempt = 0; attempt < 100; at
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 function overview(period, { amount = 12500, refund = 1200 } = {}) {
   const section = { status: 'ready', as_of: '2026-09-15T02:00:00Z', scope: 'admin_authorized_global' };
+  const days = period === '30d' ? 30 : period === '7d' ? 7 : 1;
+  const dailyAmount = days > 0 ? Math.floor(amount / days) : 0;
+  const trend = Array.from({ length: days }, (_, index) => {
+    const date = new Date(Date.UTC(2026, 8, 15 - (days - 1) + index)).toISOString().slice(0, 10);
+    const amountMinor = index === days - 1 ? amount - dailyAmount * (days - 1) : dailyAmount;
+    return { date, gross: [{ amount_minor: amountMinor, currency: 'CNY' }], order_count: amountMinor > 0 ? 1 : 0 };
+  });
   return {
     range: { period, timezone: 'Asia/Shanghai', start: '2026-09-14T16:00:00Z', end: '2026-09-15T16:00:00Z' },
     contract: { scope: 'admin_authorized_global' },
-    paid: { ...section, gross: [{ amount_minor: amount, currency: 'CNY' }], order_count: 2, distinct_canonical_payers: 1, missing_confirmation_evidence_count: 1, trend: [{ date: '2026-09-15', gross: [{ amount_minor: amount, currency: 'CNY' }], order_count: 2 }] },
+    paid: { ...section, gross: [{ amount_minor: amount, currency: 'CNY' }], order_count: 2, distinct_canonical_payers: 1, missing_confirmation_evidence_count: 1, trend },
     customers: { ...section, status: 'data_missing', reason_code: 'customer_creation_source_unknown', new_canonical_customers: 1, historical_excluded: 2, unknown_source_count: 3 },
     refunds: { ...section, completed_amount: refund ? [{ amount_minor: refund, currency: 'CNY' }] : [], completed_count: refund ? 1 : 0, net_amount: [{ amount_minor: amount - refund, currency: 'CNY' }] },
     distribution: { ...section, period_paid_sales_minor: amount, period_initial_commission_minor: 1600, period_commission_count: 1, current_unsettled_minor: 900, current_settled_minor: 700, currency: 'CNY' },
@@ -32,6 +39,7 @@ const dom = new JSDOM('<!doctype html><main id="overview-admin-root"></main>', {
       if (scenario === 'malformed') { const bad = overview('30d'); bad.paid.gross = [{ amount_minor: Number.MAX_SAFE_INTEGER + 1, currency: 'CNY' }]; return reply(bad); }
       if (scenario === 'negative') return reply(overview(url.searchParams.get('period'), { amount: 500, refund: 1200 }));
       if (scenario === 'refund-zero') return reply(overview(url.searchParams.get('period'), { refund: 0 }));
+      if (scenario === 'paid-zero') return reply(overview(url.searchParams.get('period'), { amount: 0 }));
       return reply(overview(url.searchParams.get('period'), { amount: scenario === 'seven' ? 20000 : 12500 }));
     };
   },
@@ -42,10 +50,13 @@ assert.equal(calls[0].pathname, '/api/admin/overview');
 assert.equal(calls[0].search, '?period=today', 'initial request must explicitly use today');
 assert.ok(dom.window.document.body.textContent.includes('来源待核实'), 'missing provenance must be visible');
 assert.ok(dom.window.document.body.textContent.includes('最近读取：'), 'a warning must retain its section observation time');
+assert.ok(dom.window.document.body.textContent.includes('数据读取：支付'), 'the unified observation summary must include normal section timestamps');
 assert.equal(dom.window.document.querySelector('a[href="/admin/distribution"]')?.textContent?.includes('分销异常待处理'), true, 'real todo route must stay usable');
 assert.equal(dom.window.document.body.textContent.includes('OneID'), false, 'internal identity terminology must not render');
 assert.equal(dom.window.document.body.textContent.toLowerCase().includes('contract'), false, 'API contract must not render');
 assert.equal(dom.window.document.querySelectorAll('.overview-metric a').length, 0, 'metric cards must not fabricate a date-filtered drill-down');
+assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 1, 'today must use a narrow single trend column');
+assert.equal(dom.window.document.querySelector('.overview-chart__bar')?.getAttribute('height'), '112', 'the maximum payment amount must use the defined SVG plot height');
 
 scenario = 'network';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 7 天').click();
@@ -56,7 +67,9 @@ assert.ok(dom.window.document.body.textContent.includes('当前显示：今日�
 scenario = 'seven';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '重试').click();
 await waitFor(() => dom.window.document.body.textContent.includes('¥200.00'), 'retry did not load the selected range');
-assert.equal(calls.at(-1).search, '?period=7d', 'retry must retain selected period');
+assert.equal(calls[calls.length - 1].search, '?period=7d', 'retry must retain selected period');
+assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 7, 'the seven-day trend must retain all daily columns');
+assert.ok([...dom.window.document.querySelectorAll('.overview-chart__bar')].some((bar) => bar.getAttribute('height') === '112'), 'the seven-day maximum must use a visible fixed-height bar');
 
 scenario = 'negative';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
@@ -81,6 +94,13 @@ scenario = 'forbidden';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
 await waitFor(() => dom.window.document.body.textContent.includes('暂无查看权限'), '403 must show a distinct permission state');
 assert.equal(dom.window.document.body.textContent.includes('¥200.00'), false, 'permission loss must hide cached operating metrics');
+
+scenario = 'paid-zero';
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 30 天').click();
+await waitFor(() => dom.window.document.body.textContent.includes('0.00'), 'a confirmed zero-payment period did not render its numeric zero');
+assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 30, 'the thirty-day trend must retain all daily columns');
+assert.equal(dom.window.document.querySelectorAll('.overview-chart__bar').length, 0, 'zero-value days must not paint a misleading non-zero bar');
+assert.equal(dom.window.document.querySelector('.overview-trend-details')?.open, false, 'the thirty-day trend table must stay collapsed until requested');
 
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '自定义').click();
 const custom = dom.window.document.querySelector('[data-overview-custom]');

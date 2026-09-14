@@ -78,7 +78,6 @@ function timestamp(value: string): string {
   const date = new Date(value); if (Number.isNaN(date.getTime())) return '—';
   return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
 }
-function normalStatus(section: Section): string { return section.status === 'zero' ? '已确认无记录' : '数据已更新'; }
 function statusBadge(section: Section): string {
   if (section.status === 'ready' || section.status === 'zero') return '';
   const label = section.status === 'data_missing' ? '来源待核实' : '暂时无法读取';
@@ -86,7 +85,7 @@ function statusBadge(section: Section): string {
 }
 function hint(section: Section): string {
   if (section.reason_code && reasonMessages[section.reason_code]) return `${reasonMessages[section.reason_code]} · 最近读取：${timestamp(section.as_of)}`;
-  return `${normalStatus(section)} · ${timestamp(section.as_of)}`;
+  return section.status === 'zero' ? `已确认无记录 · 最近读取：${timestamp(section.as_of)}` : `最近读取：${timestamp(section.as_of)}`;
 }
 function metric(title: string, value: string, section: Section, detail = ''): string {
   const summary = detail ? `${detail} · ${hint(section)}` : section.status === 'ready' ? '' : hint(section);
@@ -138,11 +137,17 @@ function renderTrend(points: TrendPoint[], section: Section): string {
   if (!points.length) return '<p class="overview-empty">该区间已确认无支付趋势记录。</p>';
   const currencies = [...new Set(points.flatMap((point) => point.gross.map((money) => money.currency)))];
   const chartCurrency = currencies.length === 1 ? currencies[0] : '';
-  const values = chartCurrency ? points.map((point) => point.gross.find((money) => money.currency === chartCurrency)?.amount_minor || 0) : [];
-  const max = Math.max(...values, 1);
-  const chart = chartCurrency ? `<div class="overview-chart" aria-label="${escapeHTML(chartCurrency)} 支付趋势图">${points.map((point, index) => `<div class="overview-chart__column"><span class="overview-chart__value">${escapeHTML(amount(point.gross.find((money) => money.currency === chartCurrency) || { amount_minor: 0, currency: chartCurrency }))}</span><i style="height:${Math.max(4, Math.round((values[index] / max) * 100))}%"></i><time>${escapeHTML(point.date.slice(5))}</time></div>`).join('')}</div>` : '<p class="overview-panel__hint">该区间存在多种币种，未合并换算趋势。</p>';
+  const values = chartCurrency ? points.map((point) => Math.max(0, point.gross.find((money) => money.currency === chartCurrency)?.amount_minor || 0)) : [];
+  const max = Math.max(...values, 0);
+  const plotHeight = 112;
+  const chart = chartCurrency ? `<div class="overview-chart" style="--overview-trend-points:${points.length}" aria-label="${escapeHTML(chartCurrency)} 支付趋势图">${points.map((point, index) => {
+    const money = point.gross.find((item) => item.currency === chartCurrency) || { amount_minor: 0, currency: chartCurrency };
+    const barHeight = values[index] > 0 && max > 0 ? Math.max(8, Math.round((values[index] / max) * plotHeight)) : 0;
+    return `<div class="overview-chart__column"><span class="overview-chart__value">${escapeHTML(amount(money))}</span><span class="overview-chart__plot">${barHeight ? `<svg class="overview-chart__bar" viewBox="0 0 100 ${plotHeight}" width="100" height="${plotHeight}" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="${plotHeight - barHeight}" width="100" height="${barHeight}" rx="5"></rect></svg>` : ''}</span><time>${escapeHTML(point.date.slice(5))}</time></div>`;
+  }).join('')}</div>` : '<p class="overview-panel__hint">该区间存在多种币种，未合并换算趋势。</p>';
   const rows = points.map((point) => `<tr><td>${escapeHTML(point.date)}</td><td>${escapeHTML(amounts(point.gross, section))}</td><td>${integer(point.order_count, section)}</td></tr>`).join('');
-  return `${chart}<div class="overview-trend-table-wrap"><table class="overview-trend-table"><thead><tr><th>日期</th><th>已确认支付</th><th>订单</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const table = `<div class="overview-trend-table-wrap"><table class="overview-trend-table"><thead><tr><th>日期</th><th>已确认支付</th><th>订单</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `${chart}${points.length > 7 ? `<details class="overview-trend-details"><summary>查看每日明细（${points.length} 天）</summary>${table}</details>` : table}`;
 }
 function safeTodoHref(raw: string): string | null {
   try { const target = new URL(raw, window.location.origin); return target.origin === window.location.origin && target.pathname.startsWith('/admin/') ? target.pathname + target.search + target.hash : null; } catch { return null; }
@@ -156,7 +161,8 @@ function renderData(data: Overview): string {
   const { paid, customers, refunds, distribution, todos } = data;
   const paidNote = paid.missing_confirmation_evidence_count ? `另有 ${integer(paid.missing_confirmation_evidence_count, paid)} 笔历史支付待核实` : '';
   const customerNote = customers.unknown_source_count ? `另有 ${integer(customers.unknown_source_count, customers)} 位客户来源待核实` : '';
-  return `<div class="overview-snapshot"><span>${escapeHTML(snapshotLabel(data))}</span><span>按北京时间统计</span></div><div class="overview-dashboard">
+  const observations = [['支付', paid], ['客户', customers], ['退款', refunds], ['分销', distribution], ['待处理', todos]] as const;
+  return `<div class="overview-snapshot"><span>${escapeHTML(snapshotLabel(data))}</span><span class="overview-snapshot__times">数据读取：${observations.map(([label, section]) => `${label} ${timestamp(section.as_of)}`).join(' · ')}</span></div><div class="overview-dashboard">
     <section class="overview-metrics overview-metrics--primary" aria-label="核心经营指标">${metric('已确认支付', amounts(paid.gross, paid), paid, paidNote)}${metric('支付订单', integer(paid.order_count, paid), paid)}${metric('支付客户', integer(paid.distinct_canonical_payers, paid), paid, paid.missing_payer_count ? `${integer(paid.missing_payer_count, paid)} 位付款客户待核实` : '')}${metric('新增客户', integer(customers.new_canonical_customers, customers), customers, customerNote)}</section>
     <section class="overview-metrics overview-metrics--secondary" aria-label="补充经营指标">${metric('完成退款', amounts(refunds.completed_amount, refunds, '0（本期无退款）'), refunds, refunds.missing_completion_evidence_count ? `${integer(refunds.missing_completion_evidence_count, refunds)} 笔退款完成时间待核实` : '')}${metric('净收款', amounts(refunds.net_amount, refunds), refunds)}</section>
     <section class="overview-panels"><article class="overview-panel overview-panel--wide"><div class="overview-panel__head"><div><h2>支付趋势</h2><p>按已确认支付时间统计</p></div>${statusBadge(paid)}</div>${renderTrend(paid.trend, paid)}<p class="overview-panel__hint">${escapeHTML(hint(paid))}</p></article>

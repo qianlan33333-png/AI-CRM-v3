@@ -70,6 +70,8 @@ run_frontend_and_stage_checks() {
   node scripts/order-host-adapter-e2e.mjs
   node web/v3/channelCenterAdapter.test.mjs
   node web/v3/customerAdapter.test.mjs
+  node web/v3/overviewAdmin.test.mjs
+  node web/v3/navigationHost.test.mjs
   node web/v3/adminSessionHost.test.mjs
   node web/v3/h5AuthAdapter.test.mjs
   node web/v3/h5ControllerTime.test.mjs

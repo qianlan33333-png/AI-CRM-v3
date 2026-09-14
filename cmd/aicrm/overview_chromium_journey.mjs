@@ -67,6 +67,11 @@ async function captureOverview(cdp, name, width) {
   await fs.mkdir(screenshotDirectory, { recursive: true });
   await fs.writeFile(path.join(screenshotDirectory, name), Buffer.from(image.data, "base64"));
 }
+async function selectOverviewPeriod(cdp, label, period) {
+  const encodedLabel = JSON.stringify(label);
+  await evaluate(cdp, `(() => { const button = [...document.querySelectorAll('[data-overview-period]')].find((node) => node.textContent.trim() === ${encodedLabel}); if (!button) return false; button.click(); return true; })()`);
+  await waitFor(cdp, `document.querySelector('[data-overview-period].is-active')?.textContent.trim() === ${encodedLabel} && performance.getEntriesByType('resource').some((entry) => String(entry.name).includes('/api/admin/overview?period=${period}'))`, `${label} did not load through the overview UI`);
+}
 
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-admin-overview-chromium-"));
 let browser; let cdp; let failed = false;
@@ -89,11 +94,25 @@ try {
   const overviewDOM = await evaluate(cdp, "JSON.stringify({primary:[...document.querySelectorAll('.overview-metrics--primary .overview-metric')].map((node)=>node.textContent),secondary:[...document.querySelectorAll('.overview-metrics--secondary .overview-metric')].map((node)=>node.textContent),today:performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/overview?period=today')),nav:[...document.querySelectorAll('.admin-nav-section-title')].map((node)=>node.textContent)})");
   const rendered = JSON.parse(overviewDOM || "{}");
   if (rendered.primary?.length !== 4 || !rendered.primary?.[0]?.includes("已确认支付") || !rendered.primary?.[1]?.includes("支付订单") || !rendered.primary?.[2]?.includes("支付客户") || !rendered.primary?.[3]?.includes("新增客户") || rendered.secondary?.length !== 2 || !rendered.secondary?.[0]?.includes("完成退款") || !rendered.secondary?.[1]?.includes("净收款") || !rendered.today || rendered.nav?.join("|") !== "总览|客户|运营|交易|分销|内容素材|系统设置") throw new Error("overview Host did not preserve its V3 metric and navigation contract");
-  await captureOverview(cdp, "overview-1280.png", 1280);
-  await captureOverview(cdp, "overview-1440.png", 1440);
+  const todayChartGeometry = JSON.parse(await evaluate(cdp, "(() => { const bar=document.querySelector('.overview-chart__bar'); const plot=document.querySelector('.overview-chart__plot'); return JSON.stringify({height:bar?.getBoundingClientRect().height||0,width:bar?.getBoundingClientRect().width||0,plotHeight:plot?.getBoundingClientRect().height||0}); })()") || "{}");
+  if (todayChartGeometry.height < 100 || todayChartGeometry.width < 20 || todayChartGeometry.plotHeight < 100) throw new Error(`today overview chart bar is not visibly rendered: ${JSON.stringify(todayChartGeometry)}`);
+  await captureOverview(cdp, "overview-today-1280.png", 1280);
+  await captureOverview(cdp, "overview-today-1440.png", 1440);
+  await selectOverviewPeriod(cdp, "近 7 天", "7d");
+  const sevenDayDOM = await evaluate(cdp, "JSON.stringify({columns:document.querySelectorAll('.overview-chart__column').length,bars:document.querySelectorAll('.overview-chart__bar').length,details:document.querySelector('.overview-trend-details')?.open})");
+  const sevenDay = JSON.parse(sevenDayDOM || "{}");
+  if (sevenDay.columns < 1 || sevenDay.bars !== 1) throw new Error("seven-day overview chart did not retain its real payment bar");
+  await captureOverview(cdp, "overview-7d-1280.png", 1280);
+  await captureOverview(cdp, "overview-7d-1440.png", 1440);
   const response = await evaluate(cdp, "fetch('/api/admin/overview?period=7d',{credentials:'same-origin'}).then(async (value)=>({status:value.status,body:await value.json()}))");
   const overview = response?.body;
   if (response?.status !== 200 || !overview || overview.range?.timezone !== "Asia/Shanghai" || overview.paid?.status !== "ready" || overview.paid?.order_count !== 1 || overview.paid?.gross?.[0]?.amount_minor !== 1200 || overview.customers?.new_canonical_customers !== 1 || overview.refunds?.completed_count !== 1 || overview.distribution?.current_unsettled_minor !== 120 || overview.todos?.items?.[0]?.href !== "/admin/distribution") throw new Error("browser overview response did not preserve owner facts");
+  await selectOverviewPeriod(cdp, "近 30 天", "30d");
+  const thirtyDayDOM = await evaluate(cdp, "JSON.stringify({columns:document.querySelectorAll('.overview-chart__column').length,bars:document.querySelectorAll('.overview-chart__bar').length,details:document.querySelector('.overview-trend-details')?.open})");
+  const thirtyDay = JSON.parse(thirtyDayDOM || "{}");
+  if (thirtyDay.columns < 1 || thirtyDay.bars !== 1 || thirtyDay.details === true) throw new Error("thirty-day overview chart did not retain its real payment bar or collapsed detail state");
+  await captureOverview(cdp, "overview-30d-1280.png", 1280);
+  await captureOverview(cdp, "overview-30d-1440.png", 1440);
   await cdp.call("Page.navigate", { url: `${baseURL}/admin/wechat-pay/products` });
   await waitFor(cdp, "Boolean(document.querySelector('.admin-nav a[href=\"/admin/wechat-pay/products\"].is-active'))", "server-rendered product shell did not retain the V3 navigation state");
   await cdp.call("Page.navigate", { url: `${baseURL}/admin/distribution` });
