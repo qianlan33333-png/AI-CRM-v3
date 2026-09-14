@@ -69,6 +69,7 @@ run_frontend_and_stage_checks() {
   TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs
   node scripts/order-host-adapter-e2e.mjs
   node web/v3/channelCenterAdapter.test.mjs
+  node web/v3/hxcPresentation.test.mjs
   node web/v3/customerAdapter.test.mjs
   node web/v3/adminSessionHost.test.mjs
   node web/v3/h5AuthAdapter.test.mjs

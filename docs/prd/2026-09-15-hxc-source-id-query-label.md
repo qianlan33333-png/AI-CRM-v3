@@ -50,4 +50,4 @@
 | 列表展示 | 现有 `HXC-` 安全用户引用仍出现；说明不把它描述为查询值。 |
 | 其它筛选、分页和加载 | 沿用现有请求形状与页面行为。 |
 
-定向验证运行 HXC presentation 和相关 domain/handler 合同测试。浏览器线上回读须在已认证环境单独记录，不能由 JSDOM 或源码推断替代。
+HXC presentation 用例注册到 canonical `run-donor-view-consumers.sh check` 的已物化 frontend consumer 段，因此 required frontend lane 会执行它；相关 domain/handler 合同测试继续单独运行。浏览器线上回读须在已认证环境单独记录，不能由 JSDOM 或源码推断替代。
