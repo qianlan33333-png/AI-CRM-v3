@@ -117,8 +117,20 @@ try {
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"group\"]')", "browser group selection did not finish its commit");
   const selectedGroupsPersisted = await evaluate(cdp, `fetch('/api/admin/automation-conversion/group-ops/plans/${planID}',{credentials:'same-origin'}).then((response)=>response.json()).then((body)=>['chromium-group-1','chromium-group-2'].every((reference)=>body.group_assets?.some((item)=>item.asset_reference===reference)))`);
   if (!selectedGroupsPersisted) throw new Error("Group Ops API did not return browser-persisted group bindings");
+  // The V3 Host asks the frozen renderer to reread its own detail projection
+  // after a group commit. Wait for that renderer's real, bound controls rather
+  // than merely waiting for the dialog to disappear: renderLoading temporarily
+  // replaces the action button while the projection request is in flight.
+  let refreshedDetail;
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    refreshedDetail = await evaluate(cdp, "(() => { const bound=Array.from(document.querySelectorAll('[data-action=\"remove-group\"]')).map((row)=>row.dataset.chatId); const node=document.querySelector('[data-action=\"open-node-modal\"]'); return {ready:Boolean(node) && ['chromium-group-1','chromium-group-2'].every((reference)=>bound.includes(reference)), bound, nodeAction:node?.dataset.action || '', mode:document.querySelector('#group-ops-app')?.dataset.groupOpsStandardHost || ''}; })()");
+    if (refreshedDetail.ready) break;
+    await delay(50);
+  }
+  if (!refreshedDetail?.ready) throw new Error(`Group Ops detail did not finish renderer refresh after group save: ${JSON.stringify(refreshedDetail)}`);
   await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
-  await evaluate(cdp, "document.querySelector('[data-action=\"open-node-modal\"]').click(); true");
+  const nodeModalOpened = await evaluate(cdp, "(() => { const node=document.querySelector('[data-action=\"open-node-modal\"]'); if (!node) return false; node.click(); return true; })()");
+  if (!nodeModalOpened) throw new Error(`Group Ops renderer lost the node action after its ready check: ${JSON.stringify(refreshedDetail)}`);
   await waitFor(cdp, "Boolean(document.querySelector('[name=\"node_day_index\"]'))", "standard node editor did not open");
   await evaluate(cdp, "(() => { const set=(name,value)=>{const input=document.querySelector(`[name=\"${name}\"]`); input.value=value; input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}));}; set('node_day_index','2'); set('node_scheduled_time','09:30'); set('node_action_title','Chromium 日程动作'); set('node_content_package_json',JSON.stringify({content_text:'浏览器真实后端节点',image_library_ids:[],miniprogram_library_ids:[],attachment_library_ids:[],group_invite_library_ids:[]})); document.querySelector('[data-action=\"save-node\"]').click(); return true; })()");
   await waitFor(cdp, "document.body.textContent.includes('Chromium 日程动作') && document.body.textContent.includes('第 2 天') && document.body.textContent.includes('09:30')", "browser node save did not return persisted schedule");
