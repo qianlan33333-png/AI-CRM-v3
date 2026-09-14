@@ -93,12 +93,13 @@ console.log('frozen staff selector refresh success and failure retention: PASS')
   const search=dom.window.document.querySelector('[data-operation-member-search]');
   search.value='已提交';search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{bubbles:true,key:'Enter'}));
   await pause(20);
-  search.value='未提交草稿';search.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+  search.value='';search.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+  search.blur();search.focus();
   await pause(300);
-  assert.deepEqual(queries,[null,'已提交'],'typing a new staff draft must not read the directory');
+  assert.deepEqual(queries,[null,'已提交'],'an uncommitted empty staff draft must not read the directory');
   dom.window.document.querySelector('[data-operation-member-refresh]').click();
   await pause(350);
-  assert.equal(posts,1);assert.equal(queries.at(-1),'已提交','refresh must repeat the session committed query');
+  assert.equal(posts,1);assert.equal(queries.at(-1),'已提交','blur/refocus of an uncommitted empty draft must retain the session committed query');
   dom.window.document.querySelector('[data-operation-member-clear]').click();
   await pause(30);
   assert.equal(queries.at(-1),null,'clear must commit the empty all-results query');

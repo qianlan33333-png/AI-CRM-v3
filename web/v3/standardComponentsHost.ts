@@ -90,12 +90,12 @@ const scripts = [
 
 let loading: Promise<void> | undefined;
 let tagPickerLocked = false;
-let operationMemberSearchLifecycleInstalled = false;
+const operationMemberSearchLifecycleInstalled = new WeakSet<object>();
 
 function installOperationMemberSearchLifecycle(): void {
-  if (operationMemberSearchLifecycleInstalled || !window.OperationMemberPicker) return;
-  operationMemberSearchLifecycleInstalled = true;
+  if (!window.OperationMemberPicker || operationMemberSearchLifecycleInstalled.has(window.OperationMemberPicker)) return;
   const picker = window.OperationMemberPicker;
+  operationMemberSearchLifecycleInstalled.add(picker);
   const open = picker.open.bind(picker);
   picker.open = (options) => {
     const result = open(options);
@@ -104,6 +104,30 @@ function installOperationMemberSearchLifecycle(): void {
     return result;
   };
 }
+
+// The staff picker is evaluated as an external frozen script after this Host.
+// Preserve its global API while wrapping each actual assignment exactly once;
+// no DOM focus heuristic is used to guess whether an operator committed a
+// draft query.
+function observeOperationMemberPicker(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(window, 'OperationMemberPicker');
+  if (descriptor && !descriptor.configurable) {
+    installOperationMemberSearchLifecycle();
+    return;
+  }
+  let current = window.OperationMemberPicker;
+  Object.defineProperty(window, 'OperationMemberPicker', {
+    configurable: true,
+    get: () => current,
+    set: (value) => {
+      current = value;
+      installOperationMemberSearchLifecycle();
+    },
+  });
+  installOperationMemberSearchLifecycle();
+}
+
+observeOperationMemberPicker();
 
 function lockOriginalTagPicker(): void {
   if (tagPickerLocked || !window.AICRMWeComTagPicker) return;
