@@ -147,6 +147,9 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_plan_members(plan_id,staff_id) VALUES($1,$2)`, planID, actorID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES ('chromium-group-1',$1,'Chromium 群一',20,'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',$2,12),('chromium-group-2',$1,'Chromium 群二',18,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',$2,10),('chromium-group-3',$1,'Chromium 群三',16,'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',$2,8)`, actorID, now); err != nil {
+		t.Fatal(err)
+	}
 	server.Config.Handler = application.handler
 	server.StartTLS()
 	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID}
