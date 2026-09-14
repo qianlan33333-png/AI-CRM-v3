@@ -159,6 +159,136 @@ const waitFor = async (condition, message) => {
   }
   throw new Error(typeof message === "function" ? message() : message);
 };
+// The Host lease is deliberately narrower than a plan-ID cache. These
+// controlled responses exercise same-kind reentry and A -> B -> A: late A
+// success/error/finally must not replace the current A view or its subsequent
+// write/readback.
+const pending = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+};
+const raceResponse = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+const raceReads = [];
+const raceWrites = [];
+let raceEnableAttempts = 0;
+const raceJourney = new JSDOM("<!doctype html><html><body></body></html>", {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/41",
+  runScripts: "outside-only",
+});
+const raceWindow = raceJourney.window;
+raceWindow.Headers = Headers;
+raceWindow.Response = Response;
+Object.defineProperty(raceWindow, "crypto", { configurable: true, value: crypto });
+raceWindow.fetch = (input, init = {}) => {
+  const url = new URL(String(input), raceWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  if (method === "GET" && /\/plans\/(41|42|88|90)$/.test(url.pathname)) {
+    const request = pending();
+    raceReads.push({ path: url.pathname + url.search, request });
+    return request.promise;
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups/sync" && method === "POST")
+    return Promise.resolve(raceResponse({ total: 1, items: [{ chat_reference: "current-group", display_name: "同步后的当前群", owner_staff_id: 7, member_count: 22, external_member_count: 13 }] }));
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/enable" && method === "POST") {
+    raceWrites.push(JSON.parse(String(init.body || "{}")));
+    raceEnableAttempts += 1;
+    if (raceEnableAttempts === 1) return Promise.resolve(raceResponse({ code: "operations_conflict" }, 409));
+    return Promise.resolve(raceResponse({ plan: { plan_id: 41, revision: 52 } }));
+  }
+  throw new Error(`unexpected race request ${method} ${url.pathname}${url.search}`);
+};
+raceWindow.eval(bundle.outputFiles[0].text);
+const raceHost = raceWindow.AdminApi;
+const nextRaceRead = (expectedPath) => {
+  const next = raceReads.shift();
+  assert.equal(next.path, expectedPath, "race fixture must preserve request order");
+  return next.request;
+};
+
+// Same-kind reentry and A -> B -> A: only the plan/groups pair created in one
+// donor synchronous turn shares an epoch. The scoped projection performs no
+// unfiltered directory crawl.
+const staleSuccessA = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+const staleErrorA = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+const interveningB = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/42");
+const currentA = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+const currentAGroups = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/41/groups");
+await waitFor(() => raceReads.length === 4, "same-kind reentry did not create four independent detail epochs");
+const staleSuccessPlan = nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41");
+const staleErrorPlan = nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41");
+const interveningBPlan = nextRaceRead("/api/admin/automation-conversion/group-ops/plans/42");
+const currentPlan = nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41");
+assert.equal(raceReads.length, 0, "initial hydration must not issue an unfiltered group-directory crawl");
+currentPlan.resolve(raceResponse({ plan: { plan_id: 41, name: "current", revision: 50 }, group_assets: [{ asset_reference: "current-group" }] }));
+const [currentPlanPayload, currentGroupPayload] = await Promise.all([currentA, currentAGroups]);
+assert.equal(currentPlanPayload.revision, 50, "the current A epoch must publish its own revision before old A completes");
+assert.equal(currentPlanPayload.groups_summary, currentGroupPayload.summary, "paired routes must retain one current summary view reference");
+staleSuccessPlan.resolve(raceResponse({ plan: { plan_id: 41, name: "stale", revision: 3 }, group_assets: [{ asset_reference: "stale-group" }] }));
+staleErrorPlan.resolve(raceResponse({ code: "operations_conflict" }, 409));
+interveningBPlan.resolve(raceResponse({ plan: { plan_id: 42, name: "B", revision: 4 }, group_assets: [] }));
+await staleSuccessA;
+await assert.rejects(staleErrorA, /计划状态、版本或配置不满足要求/);
+await interveningB;
+assert.equal(currentGroupPayload.items[0].chat_id, "current-group", "late A success cannot overwrite the published current group view");
+assert.equal(currentPlanPayload.groups_summary, currentGroupPayload.summary, "late A success/error/finally cannot replace the current summary view reference");
+
+// Old A completes while a newer A pair is pending. Its finally must not delete
+// the new epoch, which is still the only owner allowed to publish its summary.
+const oldPendingA = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/90");
+const newPendingA = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/90");
+const newPendingGroups = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/90/groups");
+await waitFor(() => raceReads.length === 2, "pending-order fixture did not create distinct old and new detail epochs");
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/90").resolve(raceResponse({ plan: { plan_id: 90, name: "old pending", revision: 1 }, group_assets: [] }));
+await oldPendingA;
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/90").resolve(raceResponse({ plan: { plan_id: 90, name: "new pending", revision: 2 }, group_assets: [] }));
+const [newPendingPlan, newPendingGroupPayload] = await Promise.all([newPendingA, newPendingGroups]);
+assert.equal(newPendingPlan.groups_summary, newPendingGroupPayload.summary, "old A finally must not delete the newer pending A epoch");
+
+// A failed epoch is not cached; retry starts a fresh detail and its paired
+// groups projection reuses that same response without a directory crawl.
+const failed88 = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/88");
+await waitFor(() => raceReads.length === 1, "failed detail did not start a new epoch");
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/88").resolve(raceResponse({ code: "service_unavailable" }, 503));
+await assert.rejects(failed88, /HTTP 503/);
+const retry88 = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/88");
+const retry88Groups = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/88/groups");
+await waitFor(() => raceReads.length === 1, "retry did not start one fresh paired detail epoch");
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/88").resolve(raceResponse({ plan: { plan_id: 88, name: "retry", revision: 6 }, group_assets: [] }));
+await Promise.all([retry88, retry88Groups]);
+
+// Sync reads one fresh Owner plan after the scoped directory response, updates
+// the current donor view, and cannot make a late A replace it.
+raceWindow.document.body.innerHTML = '<main id="group-ops-app" data-plan-id="41"></main>';
+const sync = raceHost.requestJson("/api/admin/automation-conversion/group-ops/groups/sync", { method: "POST", body: { owner_userid: 7 } });
+await waitFor(() => raceReads.length === 1, "sync readback did not force one fresh plan read");
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41").resolve(raceResponse({ plan: { plan_id: 41, name: "current", revision: 51 }, group_assets: [{ asset_reference: "current-group" }] }));
+await sync;
+assert.equal(currentGroupPayload.items[0].group_name, "同步后的当前群", "sync must update the current scoped group view");
+const conflictingEnable = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/41/enable", { method: "POST" });
+assert.equal(raceReads.length, 0, "a write must retain the operator-visible revision instead of silently rereading it");
+await assert.rejects(conflictingEnable, /计划状态、版本或配置不满足要求/);
+assert.equal(raceWrites[0].expected_revision, 50, "the first write must preserve revision 50 and let the server reject the unseen revision 51");
+const explicitReread = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
+await waitFor(() => raceReads.length === 1, "explicit reread did not request a fresh detail after the real conflict");
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41").resolve(raceResponse({ plan: { plan_id: 41, name: "current", revision: 51 }, group_assets: [{ asset_reference: "current-group" }] }));
+const refreshedPlan = await explicitReread;
+assert.equal(refreshedPlan.revision, 51, "the explicit reread publishes the new server revision");
+const retriedEnable = raceHost.requestJson("/api/admin/automation-conversion/group-ops/plans/41/enable", { method: "POST" });
+assert.equal(raceReads.length, 0, "the post-reread write must use the newly read revision directly");
+await retriedEnable;
+assert.equal(raceWrites[1].expected_revision, 51, "only an explicit reread may advance the next write to revision 51");
+console.log("groupops-hydration-epoch: PASS");
+raceJourney.window.close();
+
 const fullJourneyErrors = [];
 const fullJourneyConsole = new VirtualConsole();
 fullJourneyConsole.on("jsdomError", (error) => fullJourneyErrors.push(String(error?.message || error)));
@@ -761,6 +891,7 @@ try {
 // the configured, callable URL and give a truthful copy receipt. A missing
 // descriptor takes the explicit unavailable branch in the production code.
 const copiedWebhook = [];
+const webhookCalls = [];
 let webhookPlan = { plan_id: 52, name: "Webhook 计划", revision: 2, status: "draft", plan_type: "webhook" };
 let webhookDescriptor = { configured: false, reference: "", path: "", signature_algorithm: "HMAC-SHA256", signature_header: "X-Signature", timestamp_header: "X-Timestamp", nonce_header: "X-Nonce", client_id_header: "X-Client-ID" };
 const webhookJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="52"></main></body></html>`, {
@@ -777,6 +908,7 @@ webhookWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
 webhookWindow.fetch = async (input, init = {}) => {
   const url = new URL(String(input), webhookWindow.location.href);
   const method = String(init.method || "GET").toUpperCase();
+  webhookCalls.push({ path: url.pathname + url.search, method });
   if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52" && method === "GET") return response({ plan: clone(webhookPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
@@ -795,6 +927,10 @@ try {
   webhookWindow.eval(pickerSource);
   webhookWindow.eval(bundle.outputFiles[0].text);
   await waitFor(() => webhookWindow.document.querySelector('[data-action="save-webhook"]'), "unconfigured webhook did not render its configuration action");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/plans/52").length, 1, "Webhook detail hydration must issue one plan read");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0").length, 0, "Webhook detail hydration must not crawl an unfiltered group directory");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/groups?owner_userid=7").length, 1, "Webhook owner picker directory remains an independent read");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/plans/52/webhook-descriptor").length, 1, "Webhook descriptor remains an independent read");
   assert.equal(webhookWindow.document.querySelector('[name="webhook_reference"]'), null, "users must not enter technical webhook references");
   webhookWindow.document.querySelector('[data-action="save-webhook"]').click();
   await waitFor(() => webhookWindow.document.querySelector('[data-action="copy-webhook"]'), "saved webhook did not reread and render its copy action");

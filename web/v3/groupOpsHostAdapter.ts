@@ -12,6 +12,19 @@ const revisions = new Map<number, number>();
 const planGroupViews = new Map<number, Json[]>();
 const planGroupDirectoryViews = new Map<number, Map<string, GroupPickerRecord>>();
 const planSummaryViews = new Map<number, Json>();
+type InitialDetailReadKind = 'plan' | 'groups';
+type InitialDetailReadEpoch = {
+  id: number;
+  generation: number;
+  planClaimed: boolean;
+  groupsClaimed: boolean;
+  pairable: boolean;
+  claims: number;
+  detail: Promise<Json>;
+  groups: Promise<Json[]> | null;
+};
+const initialDetailReadEpochs = new Map<number, InitialDetailReadEpoch>();
+const detailReadGenerations = new Map<number, number>();
 type GroupSelectionStep = { planID: number; kind: "add" | "remove"; reference: string; idempotencyKey: string; body?: Json };
 type GroupSelectionOperation = { signature: string; steps: Map<string, GroupSelectionStep> };
 const groupSelectionOperations = new Map<number, GroupSelectionOperation>();
@@ -170,7 +183,7 @@ function planIDFromAPIURL(value: string): number | null {
   const id = Number(match[1]);
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
-async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
+async function nativeRequest(url: string, options: Json = {}, onOperationsConflict?: (planID: number) => void): Promise<Json> {
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
   if (options.body !== undefined)
@@ -199,7 +212,10 @@ async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
     // revision. The UI re-reads before an operator can choose another write.
     if (response.status === 409 && isOperationsConflict(data)) {
       const planID = planIDFromAPIURL(url);
-      if (planID !== null) revisions.delete(planID);
+      if (planID !== null) {
+        if (onOperationsConflict) onOperationsConflict(planID);
+        else revisions.delete(planID);
+      }
     }
     const error = new Error(responseMessage(data, `HTTP ${response.status}`)) as Error & { status?: number };
     error.status = response.status;
@@ -219,9 +235,9 @@ function planOwner(value: Json): Json {
     return { owner_userid: String(staffID), owner_name: "负责人目录不可用", owner_state: "directory_unavailable" };
   return { owner_userid: String(staffID), owner_name: "负责人目录未同步", owner_state: "directory_pending" };
 }
-function plan(value: Json): Json {
+function plan(value: Json, publishRevision = true): Json {
   const id = Number(value.plan_id);
-  revisions.set(id, Number(value.revision || 0));
+  if (publishRevision) revisions.set(id, Number(value.revision || 0));
   return {
     id,
     plan_name: value.name,
@@ -354,12 +370,10 @@ function materialPlan(input: Json): Json {
   const persisted = persistedMaterialOrder(input.content_material_order_json, references);
   return { references: (persisted || references).map((reference) => ({ kind: reference.kind, id: reference.id })) };
 }
-async function detail(id: number): Promise<Json> {
+async function detail(id: number, onOperationsConflict?: (planID: number) => void): Promise<Json> {
   // This path feeds the donor's full plan projection and also supplies
-  // revision checks before a node command.  Do not make either depend on one
-  // Media GET per historical reference: labels are resolved only when the
-  // operator opens that node's editor or readonly presenter below.
-  return nativeRequest(`${base}/plans/${id}`);
+  // revision checks before a node command. It never starts a Media lookup.
+  return nativeRequest(`${base}/plans/${id}`, {}, onOperationsConflict);
 }
 async function revision(id: number): Promise<number> {
   if (!revisions.has(id)) plan(await detail(id).then((v) => v.plan || v));
@@ -371,23 +385,89 @@ function groupView(asset: Json, directoryItem?: GroupPickerRecord): Json {
   const knownExternal = external !== null && external !== undefined && Number.isFinite(Number(external));
   const knownTotal = total !== null && total !== undefined && Number.isFinite(Number(total));
   return {
-    chat_id: String(asset.asset_reference || asset.chat_reference || ""),
-    group_name: String(directoryItem?.display_name || asset.display_name || "群名称待同步"),
-    owner_userid: directoryItem?.owner_staff_id ? String(directoryItem.owner_staff_id) : "",
+    chat_id: String(asset.asset_reference || asset.chat_reference || ''),
+    group_name: String(directoryItem?.display_name || asset.display_name || '群名称待同步'),
+    owner_userid: directoryItem?.owner_staff_id ? String(directoryItem.owner_staff_id) : '',
     internal_member_count_snapshot: knownTotal && knownExternal ? Number(total) - Number(external) : null,
     external_member_count_snapshot: knownExternal ? Number(external) : null,
   };
 }
-async function groupsForPlan(id: number): Promise<Json[]> {
-  const value = await detail(id);
+async function groupsForPlan(id: number, source?: Pick<InitialDetailReadEpoch, 'detail'>): Promise<Json[]> {
+  const value = await (source?.detail || detail(id));
   const known = planGroupDirectoryViews.get(id) || new Map<string, GroupPickerRecord>();
-  // A plan binding is the Owner fact. Loading the detail must never turn into a
-  // full directory crawl merely to decorate it; a previous scoped picker page
-  // can enrich matching rows, otherwise the binding remains explicitly pending.
-  return (value.group_assets || []).map((asset: Json) => groupView(asset, known.get(String(asset.asset_reference || ""))));
+  // Group bindings are Owner facts. This read only decorates them with a
+  // scoped picker page already authorised for this plan; it never starts a
+  // whole-directory crawl while the detail or node form is loading.
+  return (value.group_assets || []).map((asset: Json) => groupView(asset, known.get(String(asset.asset_reference || ''))));
+}
+function newInitialDetailReadEpoch(id: number): InitialDetailReadEpoch {
+  const generation = (detailReadGenerations.get(id) || 0) + 1;
+  detailReadGenerations.set(id, generation);
+  let epoch: InitialDetailReadEpoch;
+  const clearCurrentRevisionOnConflict = () => {
+    if (initialDetailReadEpochs.get(id) === epoch && detailReadGenerations.get(id) === generation)
+      revisions.delete(id);
+  };
+  epoch = {
+    id,
+    generation,
+    planClaimed: false,
+    groupsClaimed: false,
+    pairable: true,
+    claims: 0,
+    detail: detail(id, clearCurrentRevisionOnConflict),
+    groups: null,
+  };
+  // The donor starts its plan/groups pair synchronously. A later standalone
+  // read gets a fresh epoch even when this first request is still pending.
+  void epoch.detail.catch(() => undefined);
+  queueMicrotask(() => { epoch.pairable = false; });
+  return epoch;
+}
+function claimInitialDetailRead(id: number, kind: InitialDetailReadKind): { epoch: InitialDetailReadEpoch; release: () => void } {
+  let epoch = initialDetailReadEpochs.get(id);
+  const alreadyClaimed = epoch && (kind === 'plan' ? epoch.planClaimed : epoch.groupsClaimed);
+  if (!epoch || !epoch.pairable || alreadyClaimed) {
+    epoch = newInitialDetailReadEpoch(id);
+    initialDetailReadEpochs.set(id, epoch);
+  }
+  if (kind === 'plan') epoch.planClaimed = true;
+  else epoch.groupsClaimed = true;
+  epoch.claims += 1;
+  let released = false;
+  return {
+    epoch,
+    release: () => {
+      if (released) return;
+      released = true;
+      epoch.claims -= 1;
+      if (epoch.claims === 0 && initialDetailReadEpochs.get(id) === epoch)
+        initialDetailReadEpochs.delete(id);
+    },
+  };
+}
+function currentInitialDetailRead(epoch: InitialDetailReadEpoch): boolean {
+  return initialDetailReadEpochs.get(epoch.id) === epoch && detailReadGenerations.get(epoch.id) === epoch.generation;
+}
+function invalidateInitialDetailRead(id: number): void {
+  detailReadGenerations.set(id, (detailReadGenerations.get(id) || 0) + 1);
+  initialDetailReadEpochs.delete(id);
+}
+function groupsForInitialDetailRead(epoch: InitialDetailReadEpoch): Promise<Json[]> {
+  if (!epoch.groups) epoch.groups = groupsForPlan(epoch.id, epoch);
+  return epoch.groups;
 }
 async function summary(id: number): Promise<Json> {
   return summarizeGroups(await groupsForPlan(id));
+}
+function publishGroupViews(id: number, items: Json[], publish: boolean): Json {
+  const values = summarizeGroups(items);
+  if (!publish) return values;
+  planGroupViews.set(id, items);
+  const view = planSummaryViews.get(id) || {};
+  Object.assign(view, values);
+  planSummaryViews.set(id, view);
+  return view;
 }
 function summarizeGroups(rows: Json[]): Json {
   const known =
@@ -413,6 +493,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   const body = options.body || {};
   const match = url.match(/\/plans\/(\d+)/);
   const id = match ? Number(match[1]) : 0;
+  if (id && method !== 'GET') invalidateInitialDetailRead(id);
   if (url === `${base}/plans` && method === "GET") {
     const data = await nativeRequest(url);
     const items = await Promise.all(
@@ -464,13 +545,14 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
       method: "POST",
       body: { expected_revision: await revision(id) },
     });
-  if (id && /\/groups$/.test(url) && method === "GET") {
-    const items = await groupsForPlan(id);
-    planGroupViews.set(id, items);
-    const view = planSummaryViews.get(id) || {};
-    Object.assign(view, summarizeGroups(items));
-    planSummaryViews.set(id, view);
-    return { items, summary: view };
+  if (id && /\/groups$/.test(url) && method === 'GET') {
+    const claimed = claimInitialDetailRead(id, 'groups');
+    try {
+      const items = await groupsForInitialDetailRead(claimed.epoch);
+      return { items, summary: publishGroupViews(id, items, currentInitialDetailRead(claimed.epoch)) };
+    } finally {
+      claimed.release();
+    }
   }
   if (id && /\/groups$/.test(url) && method === "POST")
     return nativeRequest(`${base}/plans/${id}/groups`, {
@@ -554,21 +636,23 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     if (Number.isSafeInteger(Number(updated.revision))) revisions.set(id, Number(updated.revision));
     return value;
   }
-  if (id && url === `${base}/plans/${id}` && method === "GET") {
-    const value = await detail(id);
-    const rawPlan = value.plan || {};
-    // A short-lived compatibility fallback preserves the local staff key when
-    // a browser reads a server that predates the owner projection. It never
-    // makes a second directory request or invents a profile name.
-    const legacyOwner = (value.members || [])[0];
-    const projected = plan(rawPlan.owner || !legacyOwner?.staff_id
-      ? rawPlan
-      : { ...rawPlan, owner: { staff_id: legacyOwner.staff_id } });
-    const values = await summary(id);
-    const view = planSummaryViews.get(id) || {};
-    Object.assign(view, values);
-    planSummaryViews.set(id, view);
-    return { ...projected, groups_summary: view };
+  if (id && url === `${base}/plans/${id}` && method === 'GET') {
+    const claimed = claimInitialDetailRead(id, 'plan');
+    try {
+      const [value, items] = await Promise.all([claimed.epoch.detail, groupsForInitialDetailRead(claimed.epoch)]);
+      const rawPlan = value.plan || {};
+      // A short-lived compatibility fallback preserves the local staff key when
+      // a browser reads a server that predates the owner projection. It never
+      // makes a second directory request or invents a profile name.
+      const legacyOwner = (value.members || [])[0];
+      const publish = currentInitialDetailRead(claimed.epoch);
+      const projected = plan(rawPlan.owner || !legacyOwner?.staff_id
+        ? rawPlan
+        : { ...rawPlan, owner: { staff_id: legacyOwner.staff_id } }, publish);
+      return { ...projected, groups_summary: publishGroupViews(id, items, publish) };
+    } finally {
+      claimed.release();
+    }
   }
   if (id && url === `${base}/plans/${id}` && method === "DELETE")
     return nativeRequest(url, {
@@ -651,6 +735,10 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     const planID = Number(document.getElementById("group-ops-app")?.dataset.planId);
     if (planID > 0) {
       try {
+        // A scoped-directory refresh changes the projection a current detail
+        // load would decorate. Its authoritative plan read must therefore
+        // publish from a new generation, never an earlier hydration epoch.
+        invalidateInitialDetailRead(planID);
         // Refresh returns the current owner-scoped directory page. Merge only
         // matching decoration into the Host cache; plan bindings remain Owner
         // facts and an unsaved form still does not trigger a plan write.
