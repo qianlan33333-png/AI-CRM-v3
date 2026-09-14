@@ -108,6 +108,14 @@ func TestCommissionsResponseMapsFrozenReadModelToPublicContract(t *testing.T) {
 	}
 }
 
+func TestProfileResponseKeepsOnlySafeReceiverPermissionClass(t *testing.T) {
+	response := profileResponse(distributionport.DistributorProfile{Receiver: distributionport.ReceiverReadiness{Reason: "receiver_provider_permission_denied"}})
+	receiver := response["receiver"].(map[string]any)
+	if receiver["reason"] != "receiver_provider_permission_denied" {
+		t.Fatalf("receiver response=%+v", receiver)
+	}
+}
+
 func TestApplicationContextIsStrictPublicProductReadWithoutSession(t *testing.T) {
 	h, err := NewHandler(Config{Registration: distributionHTTPRegistrationStub{}, Promotion: distributionHTTPPromotionStub{}, Earnings: distributionHTTPEarningsStub{}, Sessions: distributionHTTPSessionStub{}, Bridge: distributionHTTPBridgeStub{}, AllowedOrigins: []string{"https://crm.example.test"}})
 	if err != nil {

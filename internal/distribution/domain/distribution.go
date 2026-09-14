@@ -329,21 +329,22 @@ func (c Commission) CancelUnsettled(expectedVersion int64, reason string, at tim
 	// distributor.  Keeping the old amount here would contradict the appended
 	// cancellation adjustment and leak a cancelled obligation into any future
 	// calculation that reads the frozen commission row.
-	next.Status, next.CancelReason, next.CurrentPayableMinor, next.Version, next.UpdatedAt = CommissionCancelled, strings.TrimSpace(reason), 0, c.Version+1, at.UTC()
+	next.Status, next.CancelReason, next.ExceptionReason, next.CurrentPayableMinor, next.Version, next.UpdatedAt = CommissionCancelled, strings.TrimSpace(reason), "", 0, c.Version+1, at.UTC()
 	return next, nil
 }
 
 // ConfirmInstructionUnpaid closes an already-submitted commission only after
 // the original, immutable profit-sharing instruction has been authoritatively
-// reconciled as not paid.  It is deliberately narrower than CancelUnsettled:
-// a submitted instruction may never be discarded merely because a retry timed
-// out or a refund is in flight.
+// reconciled as not paid and its caller has established a separate durable
+// business cancellation fact. It is deliberately narrower than
+// CancelUnsettled: a Provider refusal, retry timeout, or refund in flight does
+// not by itself erase the commission obligation.
 func (c Commission) ConfirmInstructionUnpaid(expectedVersion int64, reason string, at time.Time) (Commission, error) {
 	if expectedVersion != c.Version || (c.Status != CommissionSettling && !(c.Status == CommissionException && c.PaidMinor == 0)) || c.PaidMinor != 0 || strings.TrimSpace(reason) == "" || len(reason) > 200 || at.IsZero() || at.Before(c.UpdatedAt) {
 		return Commission{}, ErrTransition
 	}
 	next := c
-	next.Status, next.CancelReason, next.CurrentPayableMinor, next.Version, next.UpdatedAt = CommissionCancelled, strings.TrimSpace(reason), 0, c.Version+1, at.UTC()
+	next.Status, next.CancelReason, next.ExceptionReason, next.CurrentPayableMinor, next.Version, next.UpdatedAt = CommissionCancelled, strings.TrimSpace(reason), "", 0, c.Version+1, at.UTC()
 	return next, nil
 }
 

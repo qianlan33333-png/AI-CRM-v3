@@ -19,12 +19,12 @@ func (r *Repository) FindProfitSharingReceiver(ctx context.Context, customerID i
 	if err != nil {
 		return domain.ProfitSharingReceiver{}, false, err
 	}
-	query := `SELECT id,customer_id,identity_id,app_id,app_scope,channel,account_digest,state,COALESCE('eer_'||external_effect_id::text,''),version,created_at,updated_at FROM payment_profit_sharing_receivers WHERE customer_id=$1 AND app_id=$2`
+	query := `SELECT id,customer_id,identity_id,app_id,app_scope,channel,account_digest,failure_class,state,COALESCE('eer_'||external_effect_id::text,''),version,created_at,updated_at FROM payment_profit_sharing_receivers WHERE customer_id=$1 AND app_id=$2`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var value domain.ProfitSharingReceiver
-	err = t.QueryRow(ctx, query, customerID, appID).Scan(&value.ID, &value.CustomerID, &value.IdentityID, &value.AppID, &value.AppScope, &value.Channel, &value.AccountDigest, &value.State, &value.EffectID, &value.Version, &value.CreatedAt, &value.UpdatedAt)
+	err = t.QueryRow(ctx, query, customerID, appID).Scan(&value.ID, &value.CustomerID, &value.IdentityID, &value.AppID, &value.AppScope, &value.Channel, &value.AccountDigest, &value.FailureClass, &value.State, &value.EffectID, &value.Version, &value.CreatedAt, &value.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProfitSharingReceiver{}, false, nil
 	}
@@ -36,12 +36,12 @@ func (r *Repository) GetProfitSharingReceiver(ctx context.Context, id int64, loc
 	if err != nil {
 		return domain.ProfitSharingReceiver{}, err
 	}
-	query := `SELECT id,customer_id,identity_id,app_id,app_scope,channel,account_digest,state,COALESCE('eer_'||external_effect_id::text,''),version,created_at,updated_at FROM payment_profit_sharing_receivers WHERE id=$1`
+	query := `SELECT id,customer_id,identity_id,app_id,app_scope,channel,account_digest,failure_class,state,COALESCE('eer_'||external_effect_id::text,''),version,created_at,updated_at FROM payment_profit_sharing_receivers WHERE id=$1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var value domain.ProfitSharingReceiver
-	err = t.QueryRow(ctx, query, id).Scan(&value.ID, &value.CustomerID, &value.IdentityID, &value.AppID, &value.AppScope, &value.Channel, &value.AccountDigest, &value.State, &value.EffectID, &value.Version, &value.CreatedAt, &value.UpdatedAt)
+	err = t.QueryRow(ctx, query, id).Scan(&value.ID, &value.CustomerID, &value.IdentityID, &value.AppID, &value.AppScope, &value.Channel, &value.AccountDigest, &value.FailureClass, &value.State, &value.EffectID, &value.Version, &value.CreatedAt, &value.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProfitSharingReceiver{}, paymentport.ErrNotFound
 	}
@@ -57,12 +57,12 @@ func (r *Repository) GetProfitSharingReceiverByEffect(ctx context.Context, effec
 	if err != nil {
 		return domain.ProfitSharingReceiver{}, err
 	}
-	query := `SELECT id,customer_id,identity_id,app_id,app_scope,channel,account_digest,state,COALESCE('eer_'||external_effect_id::text,''),version,created_at,updated_at FROM payment_profit_sharing_receivers WHERE external_effect_id=$1`
+	query := `SELECT id,customer_id,identity_id,app_id,app_scope,channel,account_digest,failure_class,state,COALESCE('eer_'||external_effect_id::text,''),version,created_at,updated_at FROM payment_profit_sharing_receivers WHERE external_effect_id=$1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var value domain.ProfitSharingReceiver
-	err = t.QueryRow(ctx, query, effectID).Scan(&value.ID, &value.CustomerID, &value.IdentityID, &value.AppID, &value.AppScope, &value.Channel, &value.AccountDigest, &value.State, &value.EffectID, &value.Version, &value.CreatedAt, &value.UpdatedAt)
+	err = t.QueryRow(ctx, query, effectID).Scan(&value.ID, &value.CustomerID, &value.IdentityID, &value.AppID, &value.AppScope, &value.Channel, &value.AccountDigest, &value.FailureClass, &value.State, &value.EffectID, &value.Version, &value.CreatedAt, &value.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProfitSharingReceiver{}, paymentport.ErrNotFound
 	}
@@ -74,14 +74,17 @@ func (r *Repository) UpdateProfitSharingReceiver(ctx context.Context, value doma
 	if err != nil {
 		return domain.ProfitSharingReceiver{}, err
 	}
-	updated, err := t.Exec(ctx, `UPDATE payment_profit_sharing_receivers SET state=$2,version=$3,updated_at=$4 WHERE id=$1 AND version=$5`, value.ID, value.State, value.Version, value.UpdatedAt, value.Version-1)
+	if !domain.ValidProfitSharingReceiverFailureClass(value.FailureClass) || (value.State != domain.ProfitSharingReceiverFinalFailed && value.FailureClass != "") {
+		return domain.ProfitSharingReceiver{}, paymentport.ErrConflict
+	}
+	updated, err := t.Exec(ctx, `UPDATE payment_profit_sharing_receivers SET state=$2,failure_class=$3,version=$4,updated_at=$5 WHERE id=$1 AND version=$6`, value.ID, value.State, value.FailureClass, value.Version, value.UpdatedAt, value.Version-1)
 	if err != nil || updated.RowsAffected() != 1 {
 		if err != nil {
 			return domain.ProfitSharingReceiver{}, mapError(err)
 		}
 		return domain.ProfitSharingReceiver{}, paymentport.ErrConflict
 	}
-	if err = profitSharingAudit(ctx, t, "receiver", value.ID, "payment.profit_sharing.receiver_"+string(value.State), "payment", value.UpdatedAt, map[string]any{"receipt": receipt}); err != nil {
+	if err = profitSharingAudit(ctx, t, "receiver", value.ID, "payment.profit_sharing.receiver_"+string(value.State), "payment", value.UpdatedAt, map[string]any{"receipt": receipt, "failure_class": value.FailureClass}); err != nil {
 		return domain.ProfitSharingReceiver{}, err
 	}
 	return value, nil
@@ -92,7 +95,10 @@ func (r *Repository) CreateProfitSharingReceiver(ctx context.Context, value doma
 	if err != nil {
 		return domain.ProfitSharingReceiver{}, false, err
 	}
-	err = t.QueryRow(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, value.CustomerID, value.IdentityID, value.AppID, value.AppScope, value.Channel, value.AccountDigest, value.State, value.Version, value.CreatedAt, value.UpdatedAt).Scan(&value.ID)
+	if !domain.ValidProfitSharingReceiverFailureClass(value.FailureClass) || value.FailureClass != "" {
+		return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
+	}
+	err = t.QueryRow(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,failure_class,state,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, value.CustomerID, value.IdentityID, value.AppID, value.AppScope, value.Channel, value.AccountDigest, value.FailureClass, value.State, value.Version, value.CreatedAt, value.UpdatedAt).Scan(&value.ID)
 	if err != nil {
 		return domain.ProfitSharingReceiver{}, false, mapError(err)
 	}
@@ -177,6 +183,7 @@ func (r *Repository) RecoverProfitSharingReceiverEffectWithin(ctx context.Contex
 	if err != nil || newEffectID == oldEffectID {
 		return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
 	}
+	value.FailureClass = ""
 
 	// The payment receipt is inserted before changing the receiver.  An
 	// identical concurrent command cannot create a second effect because the
@@ -201,7 +208,7 @@ func (r *Repository) RecoverProfitSharingReceiverEffectWithin(ctx context.Contex
 		return domain.ProfitSharingReceiver{}, false, paymentport.ErrConflict
 	}
 
-	updated, err := t.Exec(ctx, `UPDATE payment_profit_sharing_receivers SET state=$2,external_effect_id=$3,version=$4,updated_at=$5 WHERE id=$1 AND state='final_failed' AND external_effect_id=$6 AND version=$7`, value.ID, value.State, newEffectID, value.Version, value.UpdatedAt, oldEffectID, value.Version-1)
+	updated, err := t.Exec(ctx, `UPDATE payment_profit_sharing_receivers SET state=$2,failure_class='',external_effect_id=$3,version=$4,updated_at=$5 WHERE id=$1 AND state='final_failed' AND external_effect_id=$6 AND version=$7`, value.ID, value.State, newEffectID, value.Version, value.UpdatedAt, oldEffectID, value.Version-1)
 	if err != nil {
 		return domain.ProfitSharingReceiver{}, false, mapError(err)
 	}
@@ -327,12 +334,12 @@ func (r *Repository) getProfitSharingInstructionByID(ctx context.Context, id int
 	if err != nil {
 		return domain.ProfitSharingInstruction{}, err
 	}
-	query := `SELECT id,payment_id,receiver_id,settlement_ref,provider_order_no,idempotency_key_digest,source_ref_digest,payload_digest,policy_version_hash,amount_minor,currency,state,COALESCE('eer_'||external_effect_id::text,''),deadline_at,receiver_confirmed_success,outcome_known,version,created_at,updated_at FROM payment_profit_sharing_instructions WHERE id=$1`
+	query := `SELECT id,payment_id,receiver_id,settlement_ref,provider_order_no,idempotency_key_digest,source_ref_digest,payload_digest,policy_version_hash,amount_minor,currency,state,failure_class,COALESCE('eer_'||external_effect_id::text,''),deadline_at,receiver_confirmed_success,outcome_known,version,created_at,updated_at FROM payment_profit_sharing_instructions WHERE id=$1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var value domain.ProfitSharingInstruction
-	err = t.QueryRow(ctx, query, id).Scan(&value.ID, &value.PaymentID, &value.ReceiverID, &value.SettlementRef, &value.ProviderOrderNo, &value.IdempotencyKeyDigest, &value.SourceRefDigest, &value.PayloadDigest, &value.PolicyVersionHash, &value.AmountMinor, &value.Currency, &value.State, &value.EffectID, &value.DeadlineAt, &value.ReceiverConfirmedSuccess, &value.OutcomeKnown, &value.Version, &value.CreatedAt, &value.UpdatedAt)
+	err = t.QueryRow(ctx, query, id).Scan(&value.ID, &value.PaymentID, &value.ReceiverID, &value.SettlementRef, &value.ProviderOrderNo, &value.IdempotencyKeyDigest, &value.SourceRefDigest, &value.PayloadDigest, &value.PolicyVersionHash, &value.AmountMinor, &value.Currency, &value.State, &value.FailureClass, &value.EffectID, &value.DeadlineAt, &value.ReceiverConfirmedSuccess, &value.OutcomeKnown, &value.Version, &value.CreatedAt, &value.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProfitSharingInstruction{}, paymentport.ErrNotFound
 	}
@@ -392,14 +399,17 @@ func (r *Repository) UpdateProfitSharingInstruction(ctx context.Context, value d
 	if err != nil {
 		return domain.ProfitSharingInstruction{}, err
 	}
-	updated, err := t.Exec(ctx, `UPDATE payment_profit_sharing_instructions SET state=$2,receiver_confirmed_success=$3,outcome_known=$4,version=$5,updated_at=$6 WHERE id=$1 AND version=$7`, value.ID, value.State, value.ReceiverConfirmedSuccess, value.OutcomeKnown, value.Version, value.UpdatedAt, value.Version-1)
+	if !domain.ValidProfitSharingInstructionFailureClass(value.FailureClass) || (value.State != domain.ProfitSharingException && value.FailureClass != "") {
+		return domain.ProfitSharingInstruction{}, paymentport.ErrConflict
+	}
+	updated, err := t.Exec(ctx, `UPDATE payment_profit_sharing_instructions SET state=$2,failure_class=$3,receiver_confirmed_success=$4,outcome_known=$5,version=$6,updated_at=$7 WHERE id=$1 AND version=$8`, value.ID, value.State, value.FailureClass, value.ReceiverConfirmedSuccess, value.OutcomeKnown, value.Version, value.UpdatedAt, value.Version-1)
 	if err != nil || updated.RowsAffected() != 1 {
 		if err != nil {
 			return domain.ProfitSharingInstruction{}, mapError(err)
 		}
 		return domain.ProfitSharingInstruction{}, paymentport.ErrConflict
 	}
-	if err = profitSharingAudit(ctx, t, "instruction", value.ID, "payment.profit_sharing.instruction_"+string(value.State), "payment", value.UpdatedAt, map[string]any{"receipt": receipt}); err != nil {
+	if err = profitSharingAudit(ctx, t, "instruction", value.ID, "payment.profit_sharing.instruction_"+string(value.State), "payment", value.UpdatedAt, map[string]any{"receipt": receipt, "failure_class": value.FailureClass}); err != nil {
 		return domain.ProfitSharingInstruction{}, err
 	}
 	return value, nil

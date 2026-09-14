@@ -30,10 +30,53 @@ type ProfitSharingReceiver struct {
 	AppID, AppScope            string
 	Channel                    Channel
 	AccountDigest              string
-	State                      ProfitSharingReceiverState
-	EffectID                   string
-	Version                    int64
-	CreatedAt, UpdatedAt       time.Time
+	// FailureClass is a bounded Payment-owned explanation for a terminal
+	// receiver-add rejection. It never contains a provider response, account,
+	// credential, or arbitrary error text.
+	FailureClass         string
+	State                ProfitSharingReceiverState
+	EffectID             string
+	Version              int64
+	CreatedAt, UpdatedAt time.Time
+}
+
+const ProfitSharingReceiverFailureProviderPermissionDenied = "provider_permission_denied"
+
+func ValidProfitSharingReceiverFailureClass(value string) bool {
+	return value == "" || value == ProfitSharingReceiverFailureProviderPermissionDenied
+}
+
+const (
+	// ProfitSharingInstructionFailureReceiverAccountAbnormal is a bounded
+	// projection of the official CLOSED detail reason. It is not an account
+	// identifier or Provider response body.
+	ProfitSharingInstructionFailureReceiverAccountAbnormal = "receiver_account_abnormal"
+	ProfitSharingInstructionFailureReceiverRelationRemoved = "receiver_relation_removed"
+	ProfitSharingInstructionFailureReceiverHighRisk        = "receiver_high_risk"
+	ProfitSharingInstructionFailureReceiverRealNameMissing = "receiver_real_name_unverified"
+	ProfitSharingInstructionFailureMerchantPermissionLost  = "merchant_permission_revoked"
+	ProfitSharingInstructionFailureReceiverReceiptLimit    = "receiver_receipt_limit"
+	ProfitSharingInstructionFailurePayerAccountAbnormal    = "payer_account_abnormal"
+	ProfitSharingInstructionFailureInvalidRequest          = "invalid_split_request"
+)
+
+// ValidProfitSharingInstructionFailureClass only accepts the finite, official
+// CLOSED-detail categories that Payment has reviewed for persistence. Empty
+// retains an unknown or absent Provider reason without inventing one.
+func ValidProfitSharingInstructionFailureClass(value string) bool {
+	switch value {
+	case "", ProfitSharingInstructionFailureReceiverAccountAbnormal,
+		ProfitSharingInstructionFailureReceiverRelationRemoved,
+		ProfitSharingInstructionFailureReceiverHighRisk,
+		ProfitSharingInstructionFailureReceiverRealNameMissing,
+		ProfitSharingInstructionFailureMerchantPermissionLost,
+		ProfitSharingInstructionFailureReceiverReceiptLimit,
+		ProfitSharingInstructionFailurePayerAccountAbnormal,
+		ProfitSharingInstructionFailureInvalidRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 const (
@@ -69,11 +112,14 @@ type ProfitSharingInstruction struct {
 	AmountMinor                                                             int64
 	Currency                                                                string
 	State                                                                   ProfitSharingState
-	EffectID                                                                string
-	DeadlineAt                                                              time.Time
-	ReceiverConfirmedSuccess, OutcomeKnown                                  bool
-	Version                                                                 int64
-	CreatedAt, UpdatedAt                                                    time.Time
+	// FailureClass is a bounded exact-receiver CLOSED diagnostic. It never
+	// stores the raw Provider response or any receiver/payment identifier.
+	FailureClass                           string
+	EffectID                               string
+	DeadlineAt                             time.Time
+	ReceiverConfirmedSuccess, OutcomeKnown bool
+	Version                                int64
+	CreatedAt, UpdatedAt                   time.Time
 }
 
 type ProfitSharingFunding struct {

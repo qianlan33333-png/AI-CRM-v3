@@ -336,11 +336,12 @@ func (s *Service) CompleteEffect(ctx context.Context, effectRef string, envelope
 		}
 		switch result.Completion {
 		case effectport.StateExecuted:
-			receiver.State = domain.ProfitSharingReceiverReady
+			receiver.State, receiver.FailureClass = domain.ProfitSharingReceiverReady, ""
 		case effectport.StateUnknown:
-			receiver.State = domain.ProfitSharingReceiverOutcomeUnknown
+			receiver.State, receiver.FailureClass = domain.ProfitSharingReceiverOutcomeUnknown, ""
 		case effectport.StateFinalFailed:
 			receiver.State = domain.ProfitSharingReceiverFinalFailed
+			receiver.FailureClass = receiverFailureClass(result.FailureCode)
 		}
 		receiver.Version++
 		receiver.UpdatedAt = now
@@ -838,12 +839,12 @@ func (s *Service) ReconcileProfitSharing(ctx context.Context, reference string) 
 			return nil
 		}
 		if query.ReceiverConfirmedSuccess {
-			locked.State, locked.ReceiverConfirmedSuccess, locked.OutcomeKnown = domain.ProfitSharingPaid, true, true
+			locked.State, locked.FailureClass, locked.ReceiverConfirmedSuccess, locked.OutcomeKnown = domain.ProfitSharingPaid, "", true, true
 			if inner = store.ReleaseProfitSharingReserve(tx, locked.ID, "receiver_success", query.OccurredAt.UTC()); inner != nil {
 				return inner
 			}
 		} else if query.ReceiverConfirmedFailure {
-			locked.State, locked.OutcomeKnown = domain.ProfitSharingException, true
+			locked.State, locked.FailureClass, locked.OutcomeKnown = domain.ProfitSharingException, instructionFailureClass(query.FailureClass), true
 			// Only an exact receiver/amount terminal failure proves this
 			// commission was not paid. An aggregate FINISHED mismatch is held
 			// below for manual/provider reconciliation.
@@ -923,7 +924,14 @@ func (s *Service) ReconcileProfitSharingUnfreeze(ctx context.Context, reference 
 }
 
 func receiverReadiness(receiver domain.ProfitSharingReceiver) paymentport.ReceiverReadiness {
-	return paymentport.ReceiverReadiness{Reference: "psrecv_" + strconv.FormatInt(receiver.ID, 10), CustomerID: receiver.CustomerID, AppID: receiver.AppID, State: string(receiver.State), EffectRef: receiver.EffectID, Ready: receiver.State == domain.ProfitSharingReceiverReady, OutcomeKnown: receiver.State == domain.ProfitSharingReceiverReady || receiver.State == domain.ProfitSharingReceiverFinalFailed, Version: receiver.Version, UpdatedAt: receiver.UpdatedAt.UTC()}
+	return paymentport.ReceiverReadiness{Reference: "psrecv_" + strconv.FormatInt(receiver.ID, 10), CustomerID: receiver.CustomerID, AppID: receiver.AppID, State: string(receiver.State), EffectRef: receiver.EffectID, FailureClass: receiver.FailureClass, Ready: receiver.State == domain.ProfitSharingReceiverReady, OutcomeKnown: receiver.State == domain.ProfitSharingReceiverReady || receiver.State == domain.ProfitSharingReceiverFinalFailed, Version: receiver.Version, UpdatedAt: receiver.UpdatedAt.UTC()}
+}
+
+func receiverFailureClass(value string) string {
+	if value == domain.ProfitSharingReceiverFailureProviderPermissionDenied {
+		return value
+	}
+	return ""
 }
 
 func profitSharingReceiverID(reference string) (int64, bool) {
@@ -957,7 +965,14 @@ func distributionPaymentState(payment domain.Payment, funding domain.ProfitShari
 }
 
 func instructionProjection(value domain.ProfitSharingInstruction) paymentport.ProfitSharingInstruction {
-	return paymentport.ProfitSharingInstruction{Reference: "psinst_" + strconv.FormatInt(value.ID, 10), SettlementRef: value.SettlementRef, OriginalPaymentRef: paymentport.PaymentReference(value.PaymentID), State: string(value.State), EffectRef: value.EffectID, AmountMinor: value.AmountMinor, Currency: value.Currency, ReceiverConfirmedSuccess: value.ReceiverConfirmedSuccess, OutcomeKnown: value.OutcomeKnown, DeadlineAt: value.DeadlineAt.UTC(), Version: value.Version, UpdatedAt: value.UpdatedAt.UTC()}
+	return paymentport.ProfitSharingInstruction{Reference: "psinst_" + strconv.FormatInt(value.ID, 10), SettlementRef: value.SettlementRef, OriginalPaymentRef: paymentport.PaymentReference(value.PaymentID), State: string(value.State), EffectRef: value.EffectID, FailureClass: value.FailureClass, AmountMinor: value.AmountMinor, Currency: value.Currency, ReceiverConfirmedSuccess: value.ReceiverConfirmedSuccess, OutcomeKnown: value.OutcomeKnown, DeadlineAt: value.DeadlineAt.UTC(), Version: value.Version, UpdatedAt: value.UpdatedAt.UTC()}
+}
+
+func instructionFailureClass(value string) string {
+	if domain.ValidProfitSharingInstructionFailureClass(value) {
+		return value
+	}
+	return ""
 }
 
 func unfreezeProjection(value domain.ProfitSharingUnfreeze) paymentport.ProfitSharingUnfreeze {

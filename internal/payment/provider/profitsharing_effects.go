@@ -7,6 +7,7 @@ import (
 	"time"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 )
 
@@ -34,6 +35,9 @@ func (provider *WeChatPay) executeProfitSharing(ctx context.Context, envelope ef
 		return final("wechatpay.profit-sharing.unsupported", envelope, attempt), nil
 	}
 	if callErr != nil {
+		if envelope.Kind == effectport.KindWeChatPayReceiverAdd && profitSharingProviderRejectionClass(callErr) == paymentdomain.ProfitSharingReceiverFailureProviderPermissionDenied {
+			return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: receipt("wechatpay.profit-sharing.receiver-rejected", envelope, attempt), FailureCode: paymentdomain.ProfitSharingReceiverFailureProviderPermissionDenied, CallAttempted: true, RealExternalCallExecuted: true}, nil
+		}
 		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: receipt("wechatpay.profit-sharing.outcome-unknown", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, callErr
 	}
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: receipt("wechatpay.profit-sharing.accepted", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, nil
@@ -53,7 +57,7 @@ func (provider *WeChatPay) QueryProfitSharing(ctx context.Context, reference str
 		return paymentport.ProfitSharingProviderResult{}, err
 	}
 	known := query.ReceiverConfirmedSuccess || query.ReceiverConfirmedFailure
-	return paymentport.ProfitSharingProviderResult{State: query.State, ReceiverConfirmedSuccess: query.ReceiverConfirmedSuccess, ReceiverConfirmedFailure: query.ReceiverConfirmedFailure, OutcomeKnown: known, OccurredAt: query.OccurredAt.UTC(), EvidenceDigest: effectport.Hash("wechatpay.profit-sharing.query", reference, query.State, strconv.FormatBool(query.ReceiverConfirmedSuccess), strconv.FormatBool(query.ReceiverConfirmedFailure), strconv.FormatBool(known), query.OccurredAt.UTC().Format(time.RFC3339Nano))}, nil
+	return paymentport.ProfitSharingProviderResult{State: query.State, ReceiverConfirmedSuccess: query.ReceiverConfirmedSuccess, ReceiverConfirmedFailure: query.ReceiverConfirmedFailure, FailureClass: query.FailureClass, OutcomeKnown: known, OccurredAt: query.OccurredAt.UTC(), EvidenceDigest: effectport.Hash("wechatpay.profit-sharing.query", reference, query.State, query.FailureClass, strconv.FormatBool(query.ReceiverConfirmedSuccess), strconv.FormatBool(query.ReceiverConfirmedFailure), strconv.FormatBool(known), query.OccurredAt.UTC().Format(time.RFC3339Nano))}, nil
 }
 
 func (provider *WeChatPay) QueryProfitSharingUnfreeze(ctx context.Context, reference string) (paymentport.ProfitSharingProviderResult, error) {
