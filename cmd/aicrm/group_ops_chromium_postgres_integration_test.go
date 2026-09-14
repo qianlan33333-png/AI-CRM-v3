@@ -8,6 +8,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -174,14 +178,23 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 // uploads or writes a Provider resource.
 func seedGroupOpsChromiumRadarImages(t *testing.T, ctx context.Context, application *composedApplication) {
 	t.Helper()
-	content := []byte{137, 80, 78, 71, 13, 10, 26, 10}
+	// A complete, visibly colored PNG makes the page-scoped thumbnail endpoint
+	// part of the browser journey; a signature-only byte slice renders broken.
+	canvas := image.NewRGBA(image.Rect(0, 0, 160, 90))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{37, 99, 235, 255}), image.Point{}, draw.Src)
+	draw.Draw(canvas, image.Rect(0, 60, 160, 90), image.NewUniform(color.RGBA{15, 118, 110, 255}), image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canvas); err != nil {
+		t.Fatal(err)
+	}
+	content := encoded.Bytes()
 	digestValue := sha256.Sum256(content)
 	digest := "sha256:" + hex.EncodeToString(digestValue[:])
 	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, digest, len(content), content); err != nil {
 		t.Fatal(err)
 	}
 	for index, name := range []string{"Chromium 雷达素材一", "Chromium 雷达素材二", "Chromium 雷达素材三"} {
-		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'真实雷达素材选择验收','chromium,radar','chromium-radar','image/png',$4,1,1,true,1,1)`, digest, "chromium-radar-"+strconv.Itoa(index+1)+".png", name, len(content)); err != nil {
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'真实雷达素材选择验收','chromium,radar','chromium-radar','image/png',$4,160,90,true,1,1)`, digest, "chromium-radar-"+strconv.Itoa(index+1)+".png", name, len(content)); err != nil {
 			t.Fatal(err)
 		}
 	}
