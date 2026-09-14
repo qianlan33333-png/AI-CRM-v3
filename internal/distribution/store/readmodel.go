@@ -144,7 +144,13 @@ func (r *Repository) ListCommissionsByCustomer(ctx context.Context, customerID i
 	if e != nil {
 		return distributionport.CommissionPage{}, e
 	}
-	q := `SELECT c.id,c.order_id,a.product_name,c.initial_minor,c.current_payable_minor,c.paid_minor,c.status,c.hold_reason,c.cancel_reason,c.exception_reason,c.paid_confirmed_at,c.due_at,NULLIF(c.paid_minor,0),c.created_at,'CNY'
+	q := `SELECT c.id,c.order_id,a.product_name,c.initial_minor,c.current_payable_minor,c.paid_minor,c.status,c.hold_reason,c.cancel_reason,c.exception_reason,c.paid_confirmed_at,c.due_at,
+		(SELECT MAX(ae.occurred_at)
+			FROM distribution_settlements s
+			JOIN distribution_audit_events ae ON ae.aggregate_type='commission' AND ae.aggregate_id=c.id
+				AND ae.event_type='distribution.settlement_paid.v1'
+				AND ae.payload->>'settlement_reference'=s.settlement_reference
+			WHERE s.commission_id=c.id AND c.paid_minor>0),c.created_at,'CNY'
 		FROM distribution_commissions c
 		JOIN distribution_order_attributions a ON a.id=c.attribution_id
 		JOIN distribution_distributors d ON d.id=c.distributor_id

@@ -166,8 +166,10 @@ type CommissionListItem struct {
 	CommissionID, OrderReference, ProductName         string
 	InitialMinor, CurrentPayableMinor, PaidMinor      int64
 	Status, HoldReason, CancelReason, ExceptionReason string
-	PaidConfirmedAt, DueAt, PaidAt, CreatedAt         time.Time
-	Currency                                          string
+	// PaidAt is the matching Distribution settlement-success audit time. It is
+	// never inferred from a monetary amount, update time, or bank arrival.
+	PaidConfirmedAt, DueAt, PaidAt, CreatedAt time.Time
+	Currency                                  string
 }
 
 type CommissionPage struct {

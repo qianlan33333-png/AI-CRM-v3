@@ -52,8 +52,15 @@ assert.equal(dom.window.document.querySelector('dialog'), null, 'a malformed ser
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '我的收益').click();
 await waitFor(() => dom.window.document.body.textContent.includes('累计推广成交额'), 'earnings tab did not render');
 assert.match(dom.window.document.body.textContent, /未结算佣金/, 'earnings must expose unsettled definition');
+assert.match(dom.window.document.body.textContent, /已分账佣金/, 'public earnings must identify a system confirmation instead of bank arrival');
+assert.match(dom.window.document.body.textContent, /以系统成功确认记录为准/, 'public earnings must explain the system confirmation boundary once');
+assert.match(dom.window.document.body.textContent, /最近分账确认时间 未记录/, 'missing confirmation evidence must remain explicit');
+assert.doesNotMatch(dom.window.document.body.textContent, /已到账|到账时间/, 'public earnings must not promise bank arrival');
+assert.match(dom.window.document.body.textContent, /当前佣金 ¥6\.62（含已分账 ¥0\.00）/, 'current commission must identify that the paid amount is already included');
+assert.doesNotMatch(dom.window.document.body.textContent, /当前应付/, 'current commission total must not be presented as unpaid');
 const statusFilter = dom.window.document.querySelector('select[name="commission-status"]');
 assert.deepEqual([...statusFilter.options].map((option) => option.value), ['', 'pending', 'held', 'settling', 'paid', 'cancelled', 'exception'], 'commission statuses must remain available through the compact native select');
+assert.equal([...statusFilter.options].find((option) => option.value === 'paid')?.textContent, '已分账', 'paid status must stay within the system confirmation boundary');
 statusFilter.value = 'paid'; statusFilter.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
 await waitFor(() => calls.some((call) => call.path === '/api/v1/distribution/commissions' && call.query === '?status=paid&limit=50'), 'commission status select did not preserve the real status query');
 await delay();

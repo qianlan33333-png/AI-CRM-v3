@@ -88,7 +88,7 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	runJourney := func(phase, want string) {
 		t.Helper()
 		command := exec.CommandContext(ctx, "node", journey)
-		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_PRODUCT="+seed.earningsProduct, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_ORDER="+seed.earningsOrderReference, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_GROSS_MINOR="+strconv.FormatInt(seed.earningsGrossMinor, 10), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_COMMISSION_MINOR="+strconv.FormatInt(seed.earningsCommissionMinor, 10), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
+		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_PRODUCT="+seed.earningsProduct, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_ORDER="+seed.earningsOrderReference, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_GROSS_MINOR="+strconv.FormatInt(seed.earningsGrossMinor, 10), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_COMMISSION_MINOR="+strconv.FormatInt(seed.earningsCommissionMinor, 10), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_CONFIRMED_AT="+seed.earningsConfirmedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
 		output, runErr := command.CombinedOutput()
 		if runErr != nil || !strings.Contains(string(output), want) {
 			t.Fatalf("Distribution Chromium %s phase err=%v output=%s", phase, runErr, strings.TrimSpace(string(output)))
@@ -111,7 +111,7 @@ type distributionChromiumSeed struct {
 	commissionID, detailAttributionID           int64
 	detailExceptionID                           int64
 	receiverEffectID                            int64
-	detailCreatedAt                             time.Time
+	detailCreatedAt, earningsConfirmedAt        time.Time
 	earningsProduct                             string
 	earningsOrderReference                      string
 	earningsGrossMinor, earningsCommissionMinor int64
@@ -307,13 +307,21 @@ func seedDistributionChromiumRegisteredEarnings(t *testing.T, ctx context.Contex
 		if txErr = tx.QueryRow(txctx, `INSERT INTO distribution_order_attributions(order_id,order_item_line,product_code,product_name,distributor_id,promotion_credential_id,qualification_evidence_reference,qualification_state,policy_id,policy_version,commission_rate_basis_points,wait_days,attributed_at) VALUES($1,1,$2,$3,$4,$5,$6,'eligible',$7,1,1000,7,$8) RETURNING id`, orderID, seed.productCode, seed.earningsProduct, distributorID, credentialID, "order:"+strconv.FormatInt(orderID, 10)+":line:1", policyID, now).Scan(&attributionID); txErr != nil {
 			return txErr
 		}
-		_, txErr = tx.Exec(txctx, `INSERT INTO distribution_commissions(attribution_id,order_id,order_item_line,distributor_id,original_item_paid_minor,successful_refund_minor,initial_minor,current_payable_minor,paid_minor,commission_rate_basis_points,paid_confirmed_at,due_at,status,hold_reason,cancel_reason,exception_reason,version,created_at,updated_at) VALUES($1,$2,1,$3,$4,0,$5,$5,0,1000,$6,$7,'pending','','','',1,$6,$6)`, attributionID, orderID, distributorID, grossMinor, commissionMinor, now, now.Add(7*24*time.Hour))
+		var commissionID int64
+		if txErr = tx.QueryRow(txctx, `INSERT INTO distribution_commissions(attribution_id,order_id,order_item_line,distributor_id,original_item_paid_minor,successful_refund_minor,initial_minor,current_payable_minor,paid_minor,commission_rate_basis_points,paid_confirmed_at,due_at,status,hold_reason,cancel_reason,exception_reason,version,created_at,updated_at) VALUES($1,$2,1,$3,$4,0,$5,$5,$5,1000,$6,$7,'paid','','','',1,$6,$6) RETURNING id`, attributionID, orderID, distributorID, grossMinor, commissionMinor, now, now.Add(7*24*time.Hour)).Scan(&commissionID); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.Exec(txctx, `INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'distribution-browser-earned-settlement',$2,'CNY','distribution-browser-earned-payment','receiver_succeeded',NULL,1,$3,$3)`, commissionID, commissionMinor, now); txErr != nil {
+			return txErr
+		}
+		_, txErr = tx.Exec(txctx, `INSERT INTO distribution_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,payload,occurred_at) VALUES('distribution.settlement_paid.v1','commission',$1,'worker:distribution-due',jsonb_build_object('settlement_reference','distribution-browser-earned-settlement'),$2)`, commissionID, now.Add(2*time.Minute))
 		return txErr
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	seed.earningsOrderReference = "order-" + strconv.FormatInt(orderID, 10)
+	seed.earningsConfirmedAt = now.Add(2 * time.Minute)
 	return seed
 }
 
@@ -330,7 +338,7 @@ func assertDistributionRegisteredEarningsReadModel(t *testing.T, ctx context.Con
 	request.AddCookie(&http.Cookie{Name: "aicrm_distribution_session", Value: seed.session})
 	response = httptest.NewRecorder()
 	application.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"order_reference":"`+seed.earningsOrderReference+`"`) || !strings.Contains(response.Body.String(), `"product_name":"`+seed.earningsProduct+`"`) || !strings.Contains(response.Body.String(), `"initial_minor":990000`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"order_reference":"`+seed.earningsOrderReference+`"`) || !strings.Contains(response.Body.String(), `"product_name":"`+seed.earningsProduct+`"`) || !strings.Contains(response.Body.String(), `"initial_minor":990000`) || !strings.Contains(response.Body.String(), `"paid_at":"`+seed.earningsConfirmedAt.Format(time.RFC3339Nano)+`"`) {
 		t.Fatalf("registered commissions status=%d body=%s", response.Code, response.Body.String())
 	}
 }
