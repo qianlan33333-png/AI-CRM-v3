@@ -47,7 +47,8 @@ func TestPostgreSQLDistributionPromotionCheckoutCreatesCommissionFromARealOrder(
 	token := promotionCheckoutToken(t, link)
 	created := fixture.createOrder(t, fixture.buyer, fixture.buyer, token, "promotion-checkout-order-key", "promotion-checkout-order")
 	fixture.assertOrderAttribution(t, created.ID, 1, true)
-	fixture.settle(t, created.ID, "promotion-checkout-paid-key")
+	fixture.assertSettlementBeforeCreatedAtRejected(t, created, "promotion-checkout-before-created-key")
+	fixture.settle(t, created, "promotion-checkout-paid-key")
 	fixture.assertCommission(t, created.ID, 1)
 }
 
@@ -58,12 +59,12 @@ func TestPostgreSQLDistributionPromotionCheckoutRejectsPromoterAsEitherBuyerPart
 	token := promotionCheckoutToken(t, link)
 
 	payerSelf := fixture.createOrder(t, fixture.promoter.CustomerID, fixture.buyer, token, "promotion-self-payer-key", "promotion-self-payer")
-	fixture.settle(t, payerSelf.ID, "promotion-self-payer-paid-key")
+	fixture.settle(t, payerSelf, "promotion-self-payer-paid-key")
 	fixture.assertOrderAttribution(t, payerSelf.ID, 0, false)
 	fixture.assertCommission(t, payerSelf.ID, 0)
 
 	beneficiarySelf := fixture.createOrder(t, fixture.buyer, fixture.promoter.CustomerID, token, "promotion-self-beneficiary-key", "promotion-self-beneficiary")
-	fixture.settle(t, beneficiarySelf.ID, "promotion-self-beneficiary-paid-key")
+	fixture.settle(t, beneficiarySelf, "promotion-self-beneficiary-paid-key")
 	fixture.assertOrderAttribution(t, beneficiarySelf.ID, 0, false)
 	fixture.assertCommission(t, beneficiarySelf.ID, 0)
 }
@@ -373,10 +374,26 @@ func (fixture *promotionCheckoutFixture) createOrder(t *testing.T, payer, benefi
 	return created
 }
 
-func (fixture *promotionCheckoutFixture) settle(t *testing.T, orderID int64, key string) {
+func (fixture *promotionCheckoutFixture) assertSettlementBeforeCreatedAtRejected(t *testing.T, created orderdomain.Snapshot, key string) {
+	t.Helper()
+	err := fixture.uow.Within(context.Background(), func(tx context.Context) error {
+		_, settleErr := fixture.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: created.ID, ProviderTransactionNo: "tx-" + key, OccurredAt: created.CreatedAt.Add(-time.Second), ReceiptKey: key})
+		return settleErr
+	})
+	if !errors.Is(err, orderport.ErrConflict) {
+		t.Fatalf("settlement before immutable order snapshot err=%v", err)
+	}
+	var status string
+	if err := fixture.pool.QueryRow(context.Background(), `SELECT status FROM orders WHERE id=$1`, created.ID).Scan(&status); err != nil || status != string(orderdomain.StatusPendingPayment) {
+		t.Fatalf("early settlement changed order=%d status=%q err=%v", created.ID, status, err)
+	}
+	fixture.assertCommission(t, created.ID, 0)
+}
+
+func (fixture *promotionCheckoutFixture) settle(t *testing.T, created orderdomain.Snapshot, key string) {
 	t.Helper()
 	if err := fixture.uow.Within(context.Background(), func(tx context.Context) error {
-		_, settleErr := fixture.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: orderID, ProviderTransactionNo: "tx-" + key, OccurredAt: fixture.now.Add(time.Minute), ReceiptKey: key})
+		_, settleErr := fixture.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: created.ID, ProviderTransactionNo: "tx-" + key, OccurredAt: created.CreatedAt.Add(time.Minute), ReceiptKey: key})
 		return settleErr
 	}); err != nil {
 		t.Fatalf("checkout settlement: %v", err)
