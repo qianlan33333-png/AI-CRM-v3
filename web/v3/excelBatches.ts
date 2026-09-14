@@ -184,6 +184,12 @@ function action(
   const node = el("button", text);
   node.type = "button";
   node.className = `admin-button admin-button--${kind}`;
+  const owned = node as HTMLButtonElement & { __dcBound?: boolean };
+  // Shared feedback listens during capture. Mark this V3-owned handler before
+  // the button is inserted so its real local/API action is never misclassified.
+  owned.__dcBound = true;
+  node.dataset.capabilityState = "real";
+  node.removeAttribute("aria-description");
   node.onclick = () => {
     void runAction(node, async () => {
       try {

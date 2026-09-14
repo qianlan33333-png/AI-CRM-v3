@@ -9,6 +9,13 @@ const bundle = await build({
   globalName: "ExcelTest",
   write: false,
 });
+const feedbackBundle = await build({
+  entryPoints: ["web/donor-sources/v2-6bfbe5816bb89913c70adaca87d6a486260e016e/web/src/shared/ui/feedback.ts"],
+  bundle: true,
+  format: "iife",
+  globalName: "ExcelFeedbackTest",
+  write: false,
+});
 const dom = new JSDOM("<!doctype html><main id=stage></main>", {
   url: "https://fixture.test/admin/operation-cycles",
   runScripts: "outside-only",
@@ -598,3 +605,95 @@ dom.window.close();
 console.log(
   "Excel operation workspace list/detail, review, receipts, and report: PASS",
 );
+
+const feedbackDom = new JSDOM(
+  '<!doctype html><button id="unowned-send">发送未接入操作</button><main id="stage"></main>',
+  { url: "https://fixture.test/admin/operation-cycles", runScripts: "outside-only" },
+);
+const feedbackWindow = feedbackDom.window;
+Object.defineProperty(feedbackWindow.crypto, "randomUUID", {
+  value: () => "00000000-0000-4000-8000-000000000001",
+});
+feedbackWindow.HTMLDialogElement.prototype.showModal = function () {
+  this.open = true;
+};
+feedbackWindow.HTMLDialogElement.prototype.close = function () {
+  this.open = false;
+};
+let detailReads = 0;
+let feedbackRequests = 0;
+feedbackWindow.fetch = async (input) => {
+  const url = new URL(String(input), feedbackWindow.location.href);
+  feedbackRequests += 1;
+  if (url.pathname === "/api/admin/operation-batches/strategy-summaries")
+    return json({
+      items: [{ strategy_key: "feedback.fixture", title: "反馈测试计划", status: "active", latest_batch_status: "ready", latest_batch: { id: 701, state: "pending_review", summary: { expected_tasks: 1 } } }],
+      total: 1,
+      limit: 20,
+      offset: 0,
+      has_more: false,
+      next_offset: null,
+    });
+  if (url.pathname === "/api/admin/operation-batches/legacy")
+    return json({ items: [] });
+  if (url.pathname === "/api/admin/operation-batches/strategies/feedback.fixture")
+    return json({ strategy: { strategy_key: "feedback.fixture", title: "反馈测试计划" }, items: [{ id: 701, state: "pending_review", version: 1, summary: { total_rows: 1, excluded_rows: 0, empty_title_rows: 0, expected_tasks: 1 } }] });
+  if (url.pathname === "/api/admin/operation-batches/701") {
+    detailReads += 1;
+    return json({ batch: { id: 701, state: "pending_review", version: 1, summary: { total_rows: 1, excluded_rows: 0, empty_title_rows: 0, expected_tasks: 1 } }, rows: [], next_cursor: "" });
+  }
+  if (url.pathname === "/api/admin/operation-batches/701/receipts")
+    return json({ items: [], next_cursor: "" });
+  if (url.pathname === "/api/admin/operation-batches/701/report")
+    return json({ segment_source: "excel", has_segments: true, overall: {}, windows: {} });
+  throw new Error(`unexpected feedback ownership request ${url.pathname}${url.search}`);
+};
+const waitForFeedback = async (check, message) => {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(message);
+};
+try {
+  feedbackWindow.eval(feedbackBundle.outputFiles[0].text + ";window.ExcelFeedbackTest=ExcelFeedbackTest;");
+  feedbackWindow.ExcelFeedbackTest.initFeedback();
+  feedbackWindow.eval(bundle.outputFiles[0].text + ";window.ExcelTest=ExcelTest;");
+  await feedbackWindow.ExcelTest.mountOperationExcelWorkspace(feedbackWindow.document.getElementById("stage"));
+  await waitForFeedback(
+    () => [...feedbackWindow.document.querySelectorAll("button")].some((node) => node.textContent === "查看详情"),
+    "feedback ownership fixture did not render its plan action",
+  );
+  const detail = [...feedbackWindow.document.querySelectorAll("button")].find((node) => node.textContent === "查看详情");
+  assert.equal(detail.__dcBound, true, "Excel action did not declare ownership before feedback classification");
+  assert.equal(detail.dataset.capabilityState, "real", "Excel action was not classified as real");
+  detail.click();
+  await waitForFeedback(
+    () => feedbackWindow.document.querySelector('.xeb-detail-nav button[data-tab="content"]'),
+    "feedback ownership fixture did not render detail tabs",
+  );
+  const content = feedbackWindow.document.querySelector('.xeb-detail-nav button[data-tab="content"]');
+  const effects = feedbackWindow.document.querySelector('.xeb-detail-nav button[data-tab="effects"]');
+  assert.equal(content.__dcBound, true, "content tab was not owned before its capture-phase click");
+  assert.equal(effects.__dcBound, true, "effects tab was not owned before its capture-phase click");
+  const toast = feedbackWindow.document.getElementById("fb-toast");
+  const readsBeforeTabs = detailReads;
+  effects.click();
+  await waitForFeedback(
+    () => effects.dataset.selected === "true" && detailReads > readsBeforeTabs,
+    "effects tab did not run its existing loadSelected handler",
+  );
+  content.click();
+  await waitForFeedback(
+    () => content.dataset.selected === "true" && detailReads > readsBeforeTabs + 1,
+    "content tab did not run its existing loadSelected handler",
+  );
+  assert.doesNotMatch(toast.textContent || "", /后端能力未就绪/, "owned Excel tabs still showed an unavailable-backend toast");
+  const requestsBeforeUnowned = feedbackRequests;
+  feedbackWindow.document.getElementById("unowned-send").click();
+  assert.match(toast.textContent || "", /后端能力未就绪/, "an unowned business action lost the shared feedback guard");
+  assert.equal(feedbackRequests, requestsBeforeUnowned, "unowned business action issued a request");
+  console.log("Excel action feedback ownership: PASS");
+} finally {
+  feedbackDom.window.close();
+}
