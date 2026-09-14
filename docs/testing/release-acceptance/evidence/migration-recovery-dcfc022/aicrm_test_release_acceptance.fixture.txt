@@ -1,2 +1,0 @@
-1:candidate=dcfc022 fixture=alpha
-2:candidate=dcfc022 fixture=beta

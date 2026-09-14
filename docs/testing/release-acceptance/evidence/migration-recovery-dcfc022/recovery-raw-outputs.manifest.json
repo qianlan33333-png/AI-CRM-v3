@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "archive": {
+    "path": "recovery-raw-outputs.tar",
+    "bytes": 19456,
+    "sha256": "8c0524590f91f1792719159e129de3bc0c991d4dc6e2ed95e1a3f71d54f644d4"
+  },
+  "entries": [
+    {
+      "path": "aicrm_test_release_acceptance.catalog.txt",
+      "bytes": 38,
+      "sha256": "d2ba3bd0c1fcece2478055d13dbc4524c4cb73b28070d4b5836ea969bca0c139"
+    },
+    {
+      "path": "aicrm_test_release_restore_dcfc022.catalog.txt",
+      "bytes": 38,
+      "sha256": "d2ba3bd0c1fcece2478055d13dbc4524c4cb73b28070d4b5836ea969bca0c139"
+    },
+    {
+      "path": "aicrm_test_release_acceptance.fixture.txt",
+      "bytes": 67,
+      "sha256": "a6f822ead2843ec0c88b8284a63e2e7c1e765879b221c048dbfb237610c11407"
+    },
+    {
+      "path": "aicrm_test_release_restore_dcfc022.fixture.txt",
+      "bytes": 67,
+      "sha256": "a6f822ead2843ec0c88b8284a63e2e7c1e765879b221c048dbfb237610c11407"
+    },
+    {
+      "path": "aicrm_test_release_acceptance.ledger.txt",
+      "bytes": 37,
+      "sha256": "f8ac0f711e9046e167b061a97f7b35f248f781b7e4a06c90cc406d96c91d2ccd"
+    },
+    {
+      "path": "aicrm_test_release_restore_dcfc022.ledger.txt",
+      "bytes": 37,
+      "sha256": "f8ac0f711e9046e167b061a97f7b35f248f781b7e4a06c90cc406d96c91d2ccd"
+    }
+  ]
+}
