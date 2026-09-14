@@ -209,8 +209,19 @@ function planOwner(value: Json): Json {
     return { owner_userid: String(staffID), owner_name: "负责人目录不可用", owner_state: "directory_unavailable" };
   return { owner_userid: String(staffID), owner_name: "负责人目录未同步", owner_state: "directory_pending" };
 }
+function boundGroupCount(value: Json): number | null {
+  // Servers that predate this list projection remain readable. The caller
+  // renders the missing fact as unknown; it must never turn into a false zero
+  // or trigger the former per-plan detail and directory waterfall.
+  if (!Object.prototype.hasOwnProperty.call(value, "bound_group_count")) return null;
+  const count = value.bound_group_count;
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0)
+    throw new Error("计划绑定群数数据无效");
+  return count;
+}
 function plan(value: Json, publishRevision = true): Json {
   const id = Number(value.plan_id);
+  const count = boundGroupCount(value);
   if (publishRevision) revisions.set(id, Number(value.revision || 0));
   return {
     id,
@@ -221,7 +232,7 @@ function plan(value: Json, publishRevision = true): Json {
     revision: Number(value.revision || 0),
     ...planOwner(value),
     queue_count: Number(value.queue_count || 0),
-    bound_group_count: null,
+    bound_group_count: count,
     today_estimated_reach: null,
     updated_at: value.updated_at,
   };
@@ -420,12 +431,12 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   if (id && method !== "GET") invalidateInitialDetailRead(id);
   if (url === `${base}/plans` && method === "GET") {
     const data = await nativeRequest(url);
-    const items = await Promise.all(
-      (data.items || []).map(async (item: Json) => ({
-        ...plan(item),
-        ...(await summary(Number(item.plan_id))),
-      })),
-    );
+    if (!Array.isArray(data.items)) throw new Error("计划列表数据无效");
+    // Parse the complete page before publishing any row revision. A malformed
+    // later row must not advance CAS for an earlier row that remains visible
+    // after the list read fails.
+    data.items.forEach((item: Json) => boundGroupCount(item));
+    const items = data.items.map((item: Json) => plan(item));
     return {
       ...data,
       items,
