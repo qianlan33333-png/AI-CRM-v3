@@ -10,14 +10,17 @@ const reply = (body, status = 200) => new Response(JSON.stringify(body), { statu
 function overview(period, { amount = 12500, refund = 1200 } = {}) {
   const section = { status: 'ready', as_of: '2026-09-15T02:00:00Z', scope: 'admin_authorized_global' };
   const days = period === '30d' ? 30 : period === '7d' ? 7 : 1;
-  const dailyAmount = days > 0 ? Math.floor(amount / days) : 0;
-  const trend = Array.from({ length: days }, (_, index) => {
-    const date = new Date(Date.UTC(2026, 8, 15 - (days - 1) + index)).toISOString().slice(0, 10);
-    const amountMinor = index === days - 1 ? amount - dailyAmount * (days - 1) : dailyAmount;
+  const rangeStart = new Date(Date.UTC(2026, 8, 15 - days, 16)).toISOString();
+  const rangeEnd = new Date(Date.UTC(2026, 8, 15, 16)).toISOString();
+  const sourceDays = days === 1 ? [0] : [0, Math.floor(days / 2), days - 1];
+  const dailyAmount = Math.floor(amount / sourceDays.length);
+  const trend = sourceDays.map((offset, index) => {
+    const date = new Date(Date.UTC(2026, 8, 15 - (days - 1) + offset)).toISOString().slice(0, 10);
+    const amountMinor = index === sourceDays.length - 1 ? amount - dailyAmount * (sourceDays.length - 1) : dailyAmount;
     return { date, gross: [{ amount_minor: amountMinor, currency: 'CNY' }], order_count: amountMinor > 0 ? 1 : 0 };
   });
   return {
-    range: { period, timezone: 'Asia/Shanghai', start: '2026-09-14T16:00:00Z', end: '2026-09-15T16:00:00Z' },
+    range: { period, timezone: 'Asia/Shanghai', start: rangeStart, end: rangeEnd },
     contract: { scope: 'admin_authorized_global' },
     paid: { ...section, gross: [{ amount_minor: amount, currency: 'CNY' }], order_count: 2, distinct_canonical_payers: 1, missing_confirmation_evidence_count: 1, trend },
     customers: { ...section, status: 'data_missing', reason_code: 'customer_creation_source_unknown', new_canonical_customers: 1, historical_excluded: 2, unknown_source_count: 3 },
@@ -39,7 +42,8 @@ const dom = new JSDOM('<!doctype html><main id="overview-admin-root"></main>', {
       if (scenario === 'malformed') { const bad = overview('30d'); bad.paid.gross = [{ amount_minor: Number.MAX_SAFE_INTEGER + 1, currency: 'CNY' }]; return reply(bad); }
       if (scenario === 'negative') return reply(overview(url.searchParams.get('period'), { amount: 500, refund: 1200 }));
       if (scenario === 'refund-zero') return reply(overview(url.searchParams.get('period'), { refund: 0 }));
-      if (scenario === 'paid-zero') return reply(overview(url.searchParams.get('period'), { amount: 0 }));
+      if (scenario === 'trend-missing') { const body = overview(url.searchParams.get('period')); body.paid.status = 'data_missing'; body.paid.reason_code = 'paid_confirmation_time_missing'; body.paid.trend = []; return reply(body); }
+      if (scenario === 'long-custom') { const body = overview('custom'); body.range = { period: 'custom', timezone: 'Asia/Shanghai', start: '2026-01-01T16:00:00Z', end: '2026-02-03T16:00:00Z' }; return reply(body); }
       return reply(overview(url.searchParams.get('period'), { amount: scenario === 'seven' ? 20000 : 12500 }));
     };
   },
@@ -69,7 +73,14 @@ scenario = 'seven';
 await waitFor(() => dom.window.document.body.textContent.includes('¥200.00'), 'retry did not load the selected range');
 assert.equal(calls[calls.length - 1].search, '?period=7d', 'retry must retain selected period');
 assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 7, 'the seven-day trend must retain all daily columns');
+assert.equal(dom.window.document.querySelectorAll('.overview-chart__bar').length, 3, 'ready ranges must infer zero-value days only between known payment dates');
 assert.ok([...dom.window.document.querySelectorAll('.overview-chart__bar')].some((bar) => bar.getAttribute('height') === '112'), 'the seven-day maximum must use a visible fixed-height bar');
+
+scenario = 'trend-missing';
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 30 天').click();
+await waitFor(() => dom.window.document.body.textContent.includes('部分历史支付缺少确认时间'), 'missing payment evidence did not render');
+assert.ok(dom.window.document.body.textContent.includes('暂无可定位到日期的支付记录，仍有数据待核实'), 'missing payment evidence must not be shown as a confirmed zero');
+assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 0, 'data-missing payment trends must not infer zero-value dates');
 
 scenario = 'negative';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
@@ -95,15 +106,26 @@ scenario = 'forbidden';
 await waitFor(() => dom.window.document.body.textContent.includes('暂无查看权限'), '403 must show a distinct permission state');
 assert.equal(dom.window.document.body.textContent.includes('¥200.00'), false, 'permission loss must hide cached operating metrics');
 
-scenario = 'paid-zero';
+scenario = 'seven';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 30 天').click();
-await waitFor(() => dom.window.document.body.textContent.includes('0.00'), 'a confirmed zero-payment period did not render its numeric zero');
+await waitFor(() => dom.window.document.querySelectorAll('.overview-chart__column').length === 30, 'a ready thirty-day period did not fill its complete Beijing date range');
 assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 30, 'the thirty-day trend must retain all daily columns');
-assert.equal(dom.window.document.querySelectorAll('.overview-chart__bar').length, 0, 'zero-value days must not paint a misleading non-zero bar');
+assert.equal(dom.window.document.querySelectorAll('.overview-chart__bar').length, 3, 'zero-value days must not paint a misleading non-zero bar');
+assert.equal(dom.window.document.querySelector('.overview-chart')?.classList.contains('overview-chart--dense'), true, 'thirty-day charts must use the dense layout');
+assert.equal([...dom.window.document.querySelectorAll('.overview-chart--dense .overview-chart__value')].filter((node) => node.textContent.trim()).length, 0, 'dense charts must not truncate monetary labels');
+assert.equal([...dom.window.document.querySelectorAll('.overview-chart--dense .overview-chart__bar title')].map((node) => node.textContent).join('|'), '¥66.66|¥66.66|¥66.68', 'dense payment bars must retain complete hover labels');
 assert.equal(dom.window.document.querySelector('.overview-trend-details')?.open, false, 'the thirty-day trend table must stay collapsed until requested');
 
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '自定义').click();
-const custom = dom.window.document.querySelector('[data-overview-custom]');
+let custom = dom.window.document.querySelector('[data-overview-custom]');
+scenario = 'long-custom';
+custom.querySelector('[name="from"]').value = '2026-01-02';
+custom.querySelector('[name="to"]').value = '2026-02-03';
+custom.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+await waitFor(() => dom.window.document.body.textContent.includes('展示有确认支付的日期'), 'long custom ranges must explain that their trends are sparse payment dates');
+assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 1, 'long custom ranges must not fabricate every date');
+
+custom = dom.window.document.querySelector('[data-overview-custom]');
 custom.querySelector('[name="from"]').value = '2026-09-01';
 custom.querySelector('[name="to"]').value = '';
 custom.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));

@@ -49,14 +49,43 @@ function isSection(value: unknown): value is Section {
 function isTrend(value: unknown): value is TrendPoint {
   return isRecord(value) && typeof value.date === 'string' && isMoneyList(value.gross) && isSafeCount(value.order_count);
 }
+function isPaid(value: unknown): value is Overview['paid'] {
+  if (!isRecord(value)) return false;
+  const record = value;
+  return isSection(value) && isMoneyList(record.gross) && isSafeCount(record.order_count) && isSafeCount(record.distinct_canonical_payers)
+    && (record.missing_payer_count === undefined || isSafeCount(record.missing_payer_count))
+    && (record.missing_confirmation_evidence_count === undefined || isSafeCount(record.missing_confirmation_evidence_count))
+    && (record.missing_confirmation_evidence_amount === undefined || isMoneyList(record.missing_confirmation_evidence_amount))
+    && Array.isArray(record.trend) && record.trend.every(isTrend);
+}
+function isCustomers(value: unknown): value is Overview['customers'] {
+  if (!isRecord(value)) return false;
+  const record = value;
+  return isSection(value) && isSafeCount(record.new_canonical_customers) && isSafeCount(record.historical_excluded)
+    && (record.unknown_source_count === undefined || isSafeCount(record.unknown_source_count));
+}
+function isRefunds(value: unknown): value is Overview['refunds'] {
+  if (!isRecord(value)) return false;
+  const record = value;
+  return isSection(value) && isMoneyList(record.completed_amount) && isSafeCount(record.completed_count)
+    && (record.missing_completion_evidence_count === undefined || isSafeCount(record.missing_completion_evidence_count))
+    && (record.net_amount === null || isMoneyList(record.net_amount));
+}
+function isDistribution(value: unknown): value is Overview['distribution'] {
+  if (!isRecord(value)) return false;
+  const record = value;
+  return isSection(value) && isSafeCount(record.period_paid_sales_minor) && isSafeCount(record.period_initial_commission_minor)
+    && isSafeCount(record.period_commission_count) && isSafeCount(record.current_unsettled_minor) && isSafeCount(record.current_settled_minor) && isCurrency(record.currency);
+}
+function isTodos(value: unknown): value is Overview['todos'] {
+  if (!isRecord(value)) return false;
+  const record = value;
+  return isSection(value) && Array.isArray(record.items)
+    && record.items.every((item: unknown) => isRecord(item) && typeof item.code === 'string' && isSafeCount(item.count) && typeof item.href === 'string');
+}
 function isOverview(value: unknown): value is Overview {
   if (!isRecord(value) || !isRecord(value.range) || !['today', '7d', '30d', 'custom'].includes(String(value.range.period)) || value.range.timezone !== 'Asia/Shanghai' || typeof value.range.start !== 'string' || typeof value.range.end !== 'string') return false;
-  const { paid, customers, refunds, distribution, todos } = value;
-  return isSection(paid) && isMoneyList(paid.gross) && isSafeCount(paid.order_count) && isSafeCount(paid.distinct_canonical_payers) && (paid.missing_payer_count === undefined || isSafeCount(paid.missing_payer_count)) && (paid.missing_confirmation_evidence_count === undefined || isSafeCount(paid.missing_confirmation_evidence_count)) && (paid.missing_confirmation_evidence_amount === undefined || isMoneyList(paid.missing_confirmation_evidence_amount)) && Array.isArray(paid.trend) && paid.trend.every(isTrend)
-    && isSection(customers) && isSafeCount(customers.new_canonical_customers) && isSafeCount(customers.historical_excluded) && (customers.unknown_source_count === undefined || isSafeCount(customers.unknown_source_count))
-    && isSection(refunds) && isMoneyList(refunds.completed_amount) && isSafeCount(refunds.completed_count) && (refunds.missing_completion_evidence_count === undefined || isSafeCount(refunds.missing_completion_evidence_count)) && (refunds.net_amount === null || isMoneyList(refunds.net_amount))
-    && isSection(distribution) && isSafeCount(distribution.period_paid_sales_minor) && isSafeCount(distribution.period_initial_commission_minor) && isSafeCount(distribution.period_commission_count) && isSafeCount(distribution.current_unsettled_minor) && isSafeCount(distribution.current_settled_minor) && isCurrency(distribution.currency)
-    && isSection(todos) && Array.isArray(todos.items) && todos.items.every((item) => isRecord(item) && typeof item.code === 'string' && isSafeCount(item.count) && typeof item.href === 'string');
+  return isPaid(value.paid) && isCustomers(value.customers) && isRefunds(value.refunds) && isDistribution(value.distribution) && isTodos(value.todos);
 }
 function unavailable(section: Section): boolean { return section.status === 'failed'; }
 function amount(money: Money): string {
@@ -127,25 +156,55 @@ function snapshotLabel(data: Overview): string {
     ? `统计区间：${range}`
     : `当前显示：${range}（上次成功读取）`;
 }
+function rangeDayCount(range: Overview['range']): number | null {
+  const start = beijingDate(range.start);
+  const end = beijingDate(range.end, true);
+  if (!start || !end) return null;
+  const first = new Date(`${start}T00:00:00Z`);
+  const last = new Date(`${end}T00:00:00Z`);
+  const dayCount = Math.round((last.getTime() - first.getTime()) / 86_400_000) + 1;
+  return dayCount > 0 ? dayCount : null;
+}
+function completeReadyTrend(points: TrendPoint[], section: Section, range: Overview['range']): TrendPoint[] {
+  if (section.status !== 'ready' && section.status !== 'zero') return points;
+  const start = beijingDate(range.start);
+  const dayCount = rangeDayCount(range);
+  if (!start || !dayCount || dayCount > 31) return points;
+  const first = new Date(`${start}T00:00:00Z`);
+  const last = new Date(first);
+  last.setUTCDate(last.getUTCDate() + dayCount - 1);
+  const byDate = new Map(points.map((point) => [point.date, point]));
+  const result: TrendPoint[] = [];
+  for (let cursor = new Date(first); cursor <= last; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const date = cursor.toISOString().slice(0, 10);
+    result.push(byDate.get(date) || { date, gross: [], order_count: 0 });
+  }
+  return result;
+}
 function errorMessage(error: unknown): string {
   return isRecord(error) && typeof error.message === 'string' && error.message.trim()
     ? error.message
     : '读取经营数据失败，请稍后重试。';
 }
-function renderTrend(points: TrendPoint[], section: Section): string {
+function renderTrend(source: TrendPoint[], section: Section, range: Overview['range']): string {
+  const points = completeReadyTrend(source, section, range);
   if (unavailable(section)) return '<p class="overview-empty">支付趋势暂时无法读取。</p>';
-  if (!points.length) return '<p class="overview-empty">该区间已确认无支付趋势记录。</p>';
+  if (!points.length) return `<p class="overview-empty">${section.status === 'data_missing' ? '暂无可定位到日期的支付记录，仍有数据待核实。' : '该区间已确认无支付趋势记录。'}</p>`;
   const currencies = [...new Set(points.flatMap((point) => point.gross.map((money) => money.currency)))];
+  if (!currencies.length) return `<p class="overview-empty">${section.status === 'data_missing' ? '暂无可定位到日期的支付记录，仍有数据待核实。' : '该区间已确认无支付趋势记录。'}</p>`;
   const chartCurrency = currencies.length === 1 ? currencies[0] : '';
   const values = chartCurrency ? points.map((point) => Math.max(0, point.gross.find((money) => money.currency === chartCurrency)?.amount_minor || 0)) : [];
   const max = Math.max(...values, 0);
   const plotHeight = 112;
-  const chart = chartCurrency ? `<div class="overview-chart" style="--overview-trend-points:${points.length}" aria-label="${escapeHTML(chartCurrency)} 支付趋势图">${points.map((point, index) => {
+  const chart = chartCurrency ? `<div class="overview-chart${points.length > 7 ? ' overview-chart--dense' : ''}" aria-label="${escapeHTML(chartCurrency)} 支付趋势图">${points.map((point, index) => {
     const money = point.gross.find((item) => item.currency === chartCurrency) || { amount_minor: 0, currency: chartCurrency };
     const barHeight = values[index] > 0 && max > 0 ? Math.max(8, Math.round((values[index] / max) * plotHeight)) : 0;
-    return `<div class="overview-chart__column"><span class="overview-chart__value">${escapeHTML(amount(money))}</span><span class="overview-chart__plot">${barHeight ? `<svg class="overview-chart__bar" viewBox="0 0 100 ${plotHeight}" width="100" height="${plotHeight}" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="${plotHeight - barHeight}" width="100" height="${barHeight}" rx="5"></rect></svg>` : ''}</span><time>${escapeHTML(point.date.slice(5))}</time></div>`;
+    const visibleDate = points.length <= 7 || index % 5 === 0 || index === points.length - 1;
+    const visibleAmount = points.length <= 7 && barHeight ? escapeHTML(amount(money)) : '';
+    const title = escapeHTML(amount(money));
+    return `<div class="overview-chart__column"><span class="overview-chart__value">${visibleAmount}</span><span class="overview-chart__plot">${barHeight ? `<svg class="overview-chart__bar" viewBox="0 0 100 ${plotHeight}" width="100" height="${plotHeight}" preserveAspectRatio="none" aria-label="${title}"><title>${title}</title><rect x="0" y="${plotHeight - barHeight}" width="100" height="${barHeight}" rx="5"></rect></svg>` : ''}</span><time>${visibleDate ? escapeHTML(point.date.slice(5)) : ''}</time></div>`;
   }).join('')}</div>` : '<p class="overview-panel__hint">该区间存在多种币种，未合并换算趋势。</p>';
-  const rows = points.map((point) => `<tr><td>${escapeHTML(point.date)}</td><td>${escapeHTML(amounts(point.gross, section))}</td><td>${integer(point.order_count, section)}</td></tr>`).join('');
+  const rows = points.map((point) => `<tr><td>${escapeHTML(point.date)}</td><td>${escapeHTML(amounts(point.gross, section, '0（当日无确认支付）'))}</td><td>${integer(point.order_count, section)}</td></tr>`).join('');
   const table = `<div class="overview-trend-table-wrap"><table class="overview-trend-table"><thead><tr><th>日期</th><th>已确认支付</th><th>订单</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   return `${chart}${points.length > 7 ? `<details class="overview-trend-details"><summary>查看每日明细（${points.length} 天）</summary>${table}</details>` : table}`;
 }
@@ -162,10 +221,11 @@ function renderData(data: Overview): string {
   const paidNote = paid.missing_confirmation_evidence_count ? `另有 ${integer(paid.missing_confirmation_evidence_count, paid)} 笔历史支付待核实` : '';
   const customerNote = customers.unknown_source_count ? `另有 ${integer(customers.unknown_source_count, customers)} 位客户来源待核实` : '';
   const observations = [['支付', paid], ['客户', customers], ['退款', refunds], ['分销', distribution], ['待处理', todos]] as const;
+  const trendSubtitle = (rangeDayCount(data.range) || 0) > 31 ? '展示有确认支付的日期' : '按已确认支付时间统计';
   return `<div class="overview-snapshot"><span>${escapeHTML(snapshotLabel(data))}</span><span class="overview-snapshot__times">数据读取：${observations.map(([label, section]) => `${label} ${timestamp(section.as_of)}`).join(' · ')}</span></div><div class="overview-dashboard">
     <section class="overview-metrics overview-metrics--primary" aria-label="核心经营指标">${metric('已确认支付', amounts(paid.gross, paid), paid, paidNote)}${metric('支付订单', integer(paid.order_count, paid), paid)}${metric('支付客户', integer(paid.distinct_canonical_payers, paid), paid, paid.missing_payer_count ? `${integer(paid.missing_payer_count, paid)} 位付款客户待核实` : '')}${metric('新增客户', integer(customers.new_canonical_customers, customers), customers, customerNote)}</section>
     <section class="overview-metrics overview-metrics--secondary" aria-label="补充经营指标">${metric('完成退款', amounts(refunds.completed_amount, refunds, '0（本期无退款）'), refunds, refunds.missing_completion_evidence_count ? `${integer(refunds.missing_completion_evidence_count, refunds)} 笔退款完成时间待核实` : '')}${metric('净收款', amounts(refunds.net_amount, refunds), refunds)}</section>
-    <section class="overview-panels"><article class="overview-panel overview-panel--wide"><div class="overview-panel__head"><div><h2>支付趋势</h2><p>按已确认支付时间统计</p></div>${statusBadge(paid)}</div>${renderTrend(paid.trend, paid)}<p class="overview-panel__hint">${escapeHTML(hint(paid))}</p></article>
+    <section class="overview-panels"><article class="overview-panel overview-panel--wide"><div class="overview-panel__head"><div><h2>支付趋势</h2><p>${escapeHTML(trendSubtitle)}</p></div>${statusBadge(paid)}</div>${renderTrend(paid.trend, paid, data.range)}<p class="overview-panel__hint">${escapeHTML(hint(paid))}</p></article>
       <article class="overview-panel"><div class="overview-panel__head"><div><h2>分销进度</h2><p>区间业绩与当前结算分开显示</p></div>${statusBadge(distribution)}</div><dl class="overview-facts"><div><dt>区间支付业绩</dt><dd>${escapeHTML(minorAmount(distribution.period_paid_sales_minor, distribution.currency, distribution))}</dd></div><div><dt>区间初始佣金</dt><dd>${escapeHTML(minorAmount(distribution.period_initial_commission_minor, distribution.currency, distribution))}</dd></div><div><dt>当前待结算</dt><dd>${escapeHTML(minorAmount(distribution.current_unsettled_minor, distribution.currency, distribution))}</dd></div><div><dt>当前已结算</dt><dd>${escapeHTML(minorAmount(distribution.current_settled_minor, distribution.currency, distribution))}</dd></div></dl><p class="overview-panel__hint">${escapeHTML(hint(distribution))}</p></article>
       <article class="overview-panel"><div class="overview-panel__head"><div><h2>待处理事项</h2><p>只显示已有处理入口的真实数量</p></div>${statusBadge(todos)}</div>${renderTodos(todos.items, todos)}<p class="overview-panel__hint">${escapeHTML(hint(todos))}</p></article></section></div>`;
 }
