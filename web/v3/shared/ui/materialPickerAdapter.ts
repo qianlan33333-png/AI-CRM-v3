@@ -52,7 +52,14 @@ type MaterialPickerOptions = {
   allowedMimeTypes?: string[];
   readonly?: boolean;
   onConfirm?: (item: Material) => void | Promise<void>;
-  /** Required when a caller permits removing already-selected material. */
+  /**
+   * Atomically applies the complete local selection. The dialog commits and
+   * closes only after this callback succeeds. Callers own persistent
+   * idempotency and recovery: a thrown or rejected callback keeps the local
+   * draft visible, is never replayed automatically, and is not a rollback of
+   * any caller-side effect that may already have happened.
+   * Required when a caller permits removing already-selected material.
+   */
   onCommit?: (result: { selected: Material[]; added: Material[]; removed: Material[] }) => void | Promise<void>;
   onCancel?: () => void;
 };
