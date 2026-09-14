@@ -4,6 +4,7 @@
 
 import { api } from '../src/shared/api/client';
 import type { AdminDb } from '../src/shared/api/types';
+import { confirmBox, toast } from '../src/shared/ui/feedback';
 import { startChannelAdmissionHost } from './channelAdmissionHost';
 
 // The standard admission form is a complete, persistent V3 page.  Keep the
@@ -28,6 +29,220 @@ const donorLoadDb = api.loadDb.bind(api);
 let channelFormDb: AdminDb | null = null;
 let staffPickerSource: 'common' | 'channel' | null = null;
 let staffPickerTrigger: HTMLButtonElement | null = null;
+type ArchiveIntent = { payload: Record<string, unknown>; etag: string; key: string };
+const archiveIntents = new Map<string, ArchiveIntent>();
+const archiveBusy = new Set<string>();
+const channelIDByVisibleName = new Map<string, string | null>();
+
+const catalogWriteFields = [
+  'channel_type', 'carrier_type', 'channel_name', 'channel_code', 'scene_value', 'qr_url', 'status', 'owner_staff_id', 'customer_channel', 'link_url', 'final_url',
+  'welcome_message', 'welcome_image_library_ids', 'welcome_miniprogram_library_ids', 'welcome_attachment_library_ids', 'welcome_group_invite_library_ids',
+  'auto_accept_friend', 'entry_tag_id', 'entry_tag_name', 'entry_tag_group_name', 'assignment_mode', 'assignment_strategy', 'overflow_policy', 'assignment_config_json',
+] as const;
+
+function archiveKey(): string {
+  return globalThis.crypto?.randomUUID ? `channel-archive-${globalThis.crypto.randomUUID()}` : `channel-archive-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function channelArchivePayload(channel: unknown): Record<string, unknown> | null {
+  if (!channel || typeof channel !== 'object' || Array.isArray(channel)) return null;
+  const source = channel as Record<string, unknown>;
+  const payload: Record<string, unknown> = {};
+  for (const field of catalogWriteFields) {
+    if (!(field in source)) return null;
+    payload[field] = source[field];
+  }
+  payload.status = 'archived';
+  return payload;
+}
+
+function sameArchiveIntent(intent: ArchiveIntent, payload: Record<string, unknown>, etag: string): boolean {
+  return intent.etag === etag && JSON.stringify(intent.payload) === JSON.stringify(payload);
+}
+
+function csrfToken(): string {
+  return document.cookie.split(';').map((part) => part.trim()).map((part) => part.split('='))
+    .find(([name]) => name === 'aicrm_csrf' || name === 'aicrm_admin_csrf')?.slice(1).join('=') || '';
+}
+
+async function readArchiveChannel(channelID: string): Promise<{ channel: Record<string, unknown>; etag: string } | null> {
+  const response = await donorFetch(`/api/admin/channels/${channelID}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+  if (!response.ok) return null;
+  const body = await response.json().catch(() => null) as { channel?: unknown } | null;
+  if (!body?.channel || !response.headers.get('ETag')) return null;
+  return { channel: body.channel as Record<string, unknown>, etag: response.headers.get('ETag') || '' };
+}
+
+async function refreshArchivedChannelList(channelID: string, channelCode: string): Promise<boolean> {
+  const query = new URLSearchParams({ limit: '50', include_archived: 'true', status: 'archived', q: channelCode });
+  const response = await donorFetch(`/api/admin/channels?${query}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+  if (!response.ok) return false;
+  const body = await response.json().catch(() => null) as { channels?: unknown; items?: unknown } | null;
+  const rows = Array.isArray(body?.channels) ? body.channels : Array.isArray(body?.items) ? body.items : [];
+  return rows.some((row) => row && typeof row === 'object' && String((row as Record<string, unknown>).id) === channelID && (row as Record<string, unknown>).status === 'archived');
+}
+
+function archiveFailureMessage(status: number): string {
+  if (status === 401) return '登录已失效，未归档渠道。请重新登录后重试。';
+  if (status === 403) return '当前账号没有归档渠道的权限，未归档渠道。';
+  if (status === 409) return '渠道已被其他人更新，未归档渠道。请刷新后核对再试。';
+  return `渠道归档失败（HTTP ${status}），当前配置未在页面中改写。`;
+}
+
+function markArchived(button: HTMLButtonElement): void {
+  const row = button.closest('tr');
+  const statusCell = row?.querySelectorAll(':scope > td')[2];
+  const label = statusCell?.querySelector('span') || statusCell;
+  if (label) label.textContent = '归档';
+  button.disabled = true;
+  button.textContent = '已归档';
+  button.setAttribute('aria-disabled', 'true');
+  button.title = '渠道已归档：扫码不会发送欢迎语或入渠标签；可编辑后再启用。';
+  button.style.color = '#A6AAB0';
+  button.style.cursor = 'not-allowed';
+  repairBlockedChannelReadiness();
+}
+
+async function archiveChannel(button: HTMLButtonElement): Promise<void> {
+  const channelID = button.dataset.channelArchiveId || '';
+  if (!/^[1-9][0-9]*$/.test(channelID) || archiveBusy.has(channelID)) return;
+  archiveBusy.add(channelID);
+  button.disabled = true;
+  const initialLabel = button.textContent || '归档';
+  button.textContent = '归档中…';
+  let confirmed = false;
+  try {
+    let current: { channel: Record<string, unknown>; etag: string } | null;
+    try {
+      current = await readArchiveChannel(channelID);
+    } catch {
+      toast('读取渠道配置失败，未发送归档请求。请刷新后重试。', true);
+      return;
+    }
+    if (current?.channel.status === 'archived') {
+      archiveIntents.delete(channelID);
+      markArchived(button);
+      confirmed = true;
+      toast('渠道已归档：扫码不会发送欢迎语或入渠标签；可编辑后再启用。');
+      return;
+    }
+    const payload = current && channelArchivePayload(current.channel);
+    if (!current || !payload) {
+      toast('未取得完整渠道配置或版本，未发送归档请求。请刷新后重试。', true);
+      return;
+    }
+    const existing = archiveIntents.get(channelID);
+    if (existing && !sameArchiveIntent(existing, payload, current.etag)) {
+      archiveIntents.delete(channelID);
+      toast('上次归档结果尚未确认，渠道配置或版本已变化；请核对后重新确认。', true);
+      return;
+    }
+    const intent = existing || { payload, etag: current.etag, key: archiveKey() };
+    archiveIntents.set(channelID, intent);
+    const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json', 'If-Match': intent.etag, 'Idempotency-Key': intent.key });
+    const token = csrfToken();
+    if (token) headers.set('X-CSRF-Token', token);
+    let response: Response | undefined;
+    let readback: { channel: Record<string, unknown>; etag: string } | null | undefined;
+    try {
+      response = await donorFetch(`/api/admin/channels/${channelID}`, { method: 'PATCH', credentials: 'same-origin', headers, body: JSON.stringify(intent.payload) });
+    } catch {
+      try {
+        readback = await readArchiveChannel(channelID);
+      } catch {
+        toast('归档结果尚未确认，回读渠道失败；请稍后刷新核对。', true);
+        return;
+      }
+      if (readback?.channel.status !== 'archived') {
+        toast('归档结果尚未确认，已回读但仍未确认归档；请稍后刷新核对。', true);
+        return;
+      }
+    }
+    if (response && !response.ok && response.status >= 400 && response.status < 500) {
+      archiveIntents.delete(channelID);
+      toast(archiveFailureMessage(response.status), true);
+      return;
+    }
+    if (!readback) {
+      try {
+        readback = await readArchiveChannel(channelID);
+      } catch {
+        toast('归档结果尚未确认，回读渠道失败；请稍后刷新核对。', true);
+        return;
+      }
+    }
+    if (readback?.channel.status !== 'archived') {
+      toast('归档结果尚未确认，回读未确认归档；请刷新后核对。', true);
+      return;
+    }
+    archiveIntents.delete(channelID);
+    markArchived(button);
+    confirmed = true;
+    let listReadback = false;
+    try {
+      listReadback = await refreshArchivedChannelList(channelID, String(intent.payload.channel_code));
+    } catch {
+      toast('渠道已归档，但列表回读失败；请刷新后核对归档状态。', true);
+      return;
+    }
+    if (!listReadback) {
+      toast('渠道已归档，但列表回读失败；请刷新后核对归档状态。', true);
+      return;
+    }
+    toast('渠道已归档：扫码不会发送欢迎语或入渠标签；历史与配置仍保留，可编辑后再启用。');
+    window.location.reload();
+  } finally {
+    archiveBusy.delete(channelID);
+    if (!confirmed) {
+      button.disabled = false;
+      button.textContent = initialLabel;
+    }
+  }
+}
+
+function installChannelArchiveActions(): void {
+  if (document.body?.dataset.page !== 'channels') return;
+  for (const row of document.querySelectorAll<HTMLTableRowElement>('tbody tr')) {
+    const cells = row.querySelectorAll(':scope > td');
+    if (cells.length !== 6) continue;
+    const visibleName = cells[0]?.textContent?.trim() || '';
+    const channelID = channelIDByVisibleName.get(visibleName);
+    if (!channelID) continue;
+    const actions = cells[5];
+    let button = actions.querySelector<HTMLButtonElement>('[data-channel-archive-id]');
+    if (!button) {
+      const placeholder = Array.from(actions.querySelectorAll<HTMLElement>('[aria-disabled="true"]'))
+        .find((item) => item.textContent?.trim() === '下架' && item.title === '后端暂无渠道归档 operation');
+      if (!placeholder) continue;
+      button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.channelArchiveId = channelID;
+      button.textContent = '归档';
+      button.style.cssText = `${placeholder.style.cssText};padding:0;border:0;background:transparent;cursor:pointer;`;
+      placeholder.replaceWith(button);
+      const deletion = Array.from(actions.querySelectorAll<HTMLElement>('[aria-disabled="true"]'))
+        .find((item) => item.textContent?.trim() === '删除');
+      if (deletion) {
+        deletion.textContent = '删除不可用';
+        deletion.title = '暂不支持永久删除；归档会保留历史配置和归因记录';
+        deletion.style.color = '#A6AAB0';
+        deletion.style.cursor = 'not-allowed';
+      }
+    }
+    if ((button as HTMLButtonElement & { __dcBound?: boolean }).__dcBound) continue;
+    (button as HTMLButtonElement & { __dcBound?: boolean }).__dcBound = true;
+    const status = button.closest('tr')?.querySelectorAll(':scope > td')[2]?.textContent?.trim();
+    if (status === '归档') {
+      markArchived(button);
+      continue;
+    }
+    button.addEventListener('click', () => {
+      const channelID = button.dataset.channelArchiveId || '';
+      if (!/^[1-9][0-9]*$/.test(channelID) || archiveBusy.has(channelID)) return;
+      confirmBox('归档渠道', '归档会停止新的扫码欢迎语和入渠标签，保留历史、配置与归因记录；可在编辑页选择“启用”后恢复。确认归档？', '确认归档', true, () => { void archiveChannel(button); });
+    });
+  }
+}
 
 function dependencyUnavailable(): Response {
   return new Response(JSON.stringify({ code: 'DEPENDENCY_UNAVAILABLE' }), {
@@ -85,6 +300,18 @@ function responseWithJSON(response: Response, payload: unknown): Response {
 function donorCompatibleCatalog(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const payload = { ...(value as Record<string, unknown>) };
+  const rememberVisibleNames = (rows: unknown): void => {
+    if (!Array.isArray(rows)) return;
+    channelIDByVisibleName.clear();
+    for (const value of rows) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const row = value as Record<string, unknown>;
+      const name = String(row.channel_name || '').trim();
+      const id = String(row.id || '').trim();
+      if (!name || !/^[1-9][0-9]*$/.test(id)) continue;
+      channelIDByVisibleName.set(name, channelIDByVisibleName.has(name) ? null : id);
+    }
+  };
   const normalizeRows = (rows: unknown): unknown => {
     if (!Array.isArray(rows)) return rows;
     return rows.map((value) => {
@@ -104,6 +331,7 @@ function donorCompatibleCatalog(value: unknown): unknown {
       return row;
     });
   };
+  rememberVisibleNames(payload.channels);
   payload.channels = normalizeRows(payload.channels);
   payload.items = normalizeRows(payload.items);
   return payload;
@@ -206,6 +434,7 @@ function repairFrozenChannelUI(): void {
   replaceFrozenQRHint();
   labelFrozenAssetAction();
   repairBlockedChannelReadiness();
+  installChannelArchiveActions();
 }
 
 function repairBlockedChannelReadiness(): void {
