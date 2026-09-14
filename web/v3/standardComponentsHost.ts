@@ -4,6 +4,8 @@ export {};
 // adapt selection data: each page Host remains responsible for scoped reads.
 // It supplies the V3 envelope for the shared directory refresh command and
 // guarantees dependency order and one evaluation per page.
+import { installTagPickerAdapter } from './shared/ui/tagPickerAdapter';
+import { installStaffPickerAdapter } from './shared/ui/staffPickerAdapter';
 declare global {
   interface Window {
     AICRMStandardComponents?: {
@@ -16,60 +18,6 @@ declare global {
 
 type StandardComponentCapability = 'operationMembers' | 'groupChats' | 'materials' | 'sendContent' | 'tags';
 type OnDemandStandardComponentCapability = 'tags';
-
-// The frozen picker refreshes the common saved staff-profile projection.
-// This is a Provider read plus a local projection update, never a message send.
-// Explicitly configured V3 requests keep their own envelope.
-const componentFetch = window.fetch.bind(window);
-window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const request = typeof input === 'string' || input instanceof URL ? undefined : input;
-  const url = new URL(request ? request.url : String(input), location.href);
-  const method = String(init?.method || request?.method || 'GET').toUpperCase();
-  if (url.origin !== location.origin || url.pathname !== '/api/admin/common/operation-members/sync' || method !== 'POST' || init?.body != null || request?.body != null) return componentFetch(input, init);
-  const headers = new Headers(init?.headers || request?.headers);
-  headers.set('Accept', 'application/json');
-  headers.set('Content-Type', 'application/json');
-  if (!headers.has('Idempotency-Key')) headers.set('Idempotency-Key', `operation-members-${crypto.randomUUID()}`);
-  const token = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('aicrm_admin_csrf=') || part.startsWith('aicrm_csrf='));
-  if (token && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', decodeURIComponent(token.slice(token.indexOf('=') + 1)));
-  return componentFetch(input, { ...init, method, headers, credentials: 'same-origin', body: JSON.stringify({ scope: 'group_ops', page_size: 100 }) });
-};
-
-// Keep the standard selector's current rows and selections while refreshing.
-// Its historical refresh handler clears all candidates on an HTTP error; the
-// V3 Host handles only this command and uses the existing search reload on success.
-let directoryRefreshPending = false;
-document.addEventListener('click', (event) => {
-  const button = (event.target as Element | null)?.closest<HTMLButtonElement>('[data-operation-member-refresh]');
-  if (!button) return;
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  if (directoryRefreshPending) return;
-  const modal = button.closest<HTMLElement>('[data-operation-member-picker]');
-  if (!modal) return;
-  directoryRefreshPending = true;
-  button.disabled = true;
-  button.textContent = '刷新中';
-  modal.querySelector('[data-v3-directory-refresh-error]')?.remove();
-  void (async () => {
-    try {
-      const response = await window.fetch('/api/admin/common/operation-members/sync', { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-      const data = await response.clone().json().catch(() => ({})) as { ok?: boolean };
-      if (!response.ok || data.ok === false) throw new Error(`刷新客服失败（HTTP ${response.status}），已保留当前列表和选择。`);
-      modal.querySelector<HTMLInputElement>('[data-operation-member-search]')?.dispatchEvent(new Event('input', { bubbles: true }));
-    } catch (error) {
-      const notice = document.createElement('div');
-      notice.dataset.v3DirectoryRefreshError = '1';
-      notice.setAttribute('role', 'alert');
-      notice.textContent = error instanceof Error ? error.message : '刷新客服失败，已保留当前列表和选择。';
-      modal.querySelector('[data-operation-member-list]')?.before(notice);
-    } finally {
-      directoryRefreshPending = false;
-      button.disabled = false;
-      button.textContent = '刷新客服';
-    }
-  })();
-}, true);
 
 const components: ReadonlyArray<{ capability: StandardComponentCapability; source: string; ready: () => boolean }> = [
   { capability: 'operationMembers', source: '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).OperationMemberPicker?.open === 'function' },
@@ -85,6 +33,7 @@ const components: ReadonlyArray<{ capability: StandardComponentCapability; sourc
 const componentByCapability = new Map(components.map((component) => [component.capability, component]));
 const componentLoads = new Map<StandardComponentCapability, Promise<void>>();
 const readyComponents = new Set<StandardComponentCapability>();
+const failedComponents = new Set<StandardComponentCapability>();
 let tagPickerLocked = false;
 
 function lockOriginalTagPicker(): void {
@@ -107,33 +56,17 @@ function matchingScript(source: string): HTMLScriptElement | undefined {
 
 function load(component: { capability: StandardComponentCapability; source: string; ready: () => boolean }): Promise<void> {
   if (readyComponents.has(component.capability)) return Promise.resolve();
+  // A cached browser error can surface while a previous promise is being
+  // registered. Keep the rejection state explicit so the next user-initiated
+  // retry always creates a fresh asset request.
+  if (failedComponents.delete(component.capability)) componentLoads.delete(component.capability);
   const pending = componentLoads.get(component.capability);
   if (pending) return pending;
-
   let startRequest: (() => void) | undefined;
   const request = new Promise<void>((resolve, reject) => {
     let script = matchingScript(component.source);
     let appendScript = false;
     let settled = false;
-    const fail = () => {
-      if (settled) return;
-      settled = true;
-      script?.remove();
-      componentLoads.delete(component.capability);
-      reject(new Error('标准选择组件加载失败，请刷新页面后重试'));
-    };
-    const succeed = () => {
-      if (settled) return;
-      if (!component.ready()) {
-        fail();
-        return;
-      }
-      settled = true;
-      readyComponents.add(component.capability);
-      if (component.capability === 'tags') lockOriginalTagPicker();
-      resolve();
-    };
-
     if (!script) {
       script = document.createElement('script');
       script.defer = true;
@@ -143,25 +76,42 @@ function load(component: { capability: StandardComponentCapability; source: stri
       script.dataset.aicrmStandardComponentState = 'pending';
       appendScript = true;
     }
-    script.addEventListener('load', () => {
-      script!.dataset.aicrmStandardComponentState = 'loaded';
-      succeed();
-    }, { once: true });
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      if (appendScript) script?.remove();
+      failedComponents.add(component.capability);
+      reject(new Error('标准选择组件加载失败，请刷新页面后重试'));
+    };
+    const succeed = () => {
+      if (settled) return;
+      if (!component.ready()) { fail(); return; }
+      settled = true;
+      failedComponents.delete(component.capability);
+      readyComponents.add(component.capability);
+      if (component.capability === 'tags') lockOriginalTagPicker();
+      resolve();
+    };
+    script.addEventListener('load', () => { script!.dataset.aicrmStandardComponentState = 'loaded'; succeed(); }, { once: true });
     script.addEventListener('error', fail, { once: true });
-    if (appendScript) startRequest = () => { if (!settled) document.head.append(script!); };
+    if (appendScript) {
+      // Register the single-flight before appending. A cached load failure can
+      // arrive synchronously, including in a real browser.
+      startRequest = () => { if (!settled) document.head.append(script!); };
+    }
     else if (script.dataset.aicrmStandardComponentState === 'loaded') queueMicrotask(succeed);
   });
   componentLoads.set(component.capability, request);
-  // Register the source-level single-flight before a loader can dispatch an
-  // immediate load/error event.
+  void request.then(undefined, () => {
+    // Do not let an older rejected request erase a later retry's single-flight.
+    if (componentLoads.get(component.capability) === request) componentLoads.delete(component.capability);
+  });
   startRequest?.();
   return request;
 }
 
 function readyFor(capabilities: readonly OnDemandStandardComponentCapability[]): Promise<void> {
-  const requested = [...new Set(capabilities)];
-  const selected = requested.map((capability) => {
-    if (capability !== 'tags') throw new Error(`未知标准选择组件：${capability}`);
+  const selected = [...new Set(capabilities)].map((capability) => {
     const component = componentByCapability.get(capability);
     if (!component) throw new Error(`未知标准选择组件：${capability}`);
     return component;
@@ -178,9 +128,14 @@ window.AICRMStandardComponents = {
   },
   readyFor,
 };
+// This is a separate V3 API. Keep the byte-frozen tag global available for
+// pages that still need it while V3-owned callers adopt the shared session.
+installTagPickerAdapter();
+// A separate V3 API. It never changes the frozen OperationMemberPicker's
+// request scope or refresh command: every migrated Host supplies its own
+// authorised read and optional refresh contract.
+installStaffPickerAdapter();
 const autoStart = document.querySelector('[data-customer-directory-root]')
   ? window.AICRMStandardComponents.readyFor(['tags'])
   : window.AICRMStandardComponents.ready();
-// The automatic preload has no page-level error surface. Explicit callers keep
-// the original rejected promise so their local UI can explain and retry it.
 void autoStart.catch(() => undefined);

@@ -8,13 +8,18 @@ type BatchLine = { Line: number; CustomerID: number; State: string; TransferStat
 type Batch = { ID: string; State: string; Mode: string; Lines?: BatchLine[] };
 type ImportedRow = { Line: number; ExternalUserID: string; MoveFlag: string; CurrentOwnerUserID: string; CustomerDisplayName: string; Remark: string; ParseStatus: string; ParseReason: string };
 type DisplayRow = { Line: number; ExternalUserID: string; CustomerDisplayName: string; MoveFlag: string; CurrentOwnerUserID: string; Remark: string; State: string; Reason: string; CustomerID?: number };
-type OperationMember = { user_id: string; display_name?: string };
-type SharedPicker = { open(options: { scope: string; pageSize: number; includeInactive: boolean; allowRefresh: boolean; title: string; onSelect(member: OperationMember): void }): Promise<void> };
+type StaffPickerRecord = { source: string; staff_id: string; user_id: string; display_name: string; active?: boolean; unavailable_reason?: string };
+type StaffPicker = { open(options: {
+  title: string; source: string; scope: string; selectedRecords: StaffPickerRecord[]; mode: "single"; limit: number; directoryHint: string;
+  loadPage(request: { query: string; cursor?: string; signal: AbortSignal }): Promise<{ items: StaffPickerRecord[]; nextCursor?: string }>;
+  refresh(request: { query: string; signal: AbortSignal }): Promise<void>;
+  accessLossMessage(error: unknown): string | undefined;
+  onCommit(result: { selected: StaffPickerRecord[] }): void;
+}): void };
 
-declare global { interface Window { OperationMemberPicker?: SharedPicker } }
+declare global { interface Window { AICRMStaffPicker?: StaffPicker } }
 
 const donorURL = "/static/admin_console/owner_migration_dd8d60d.html";
-const pickerURL = "/static/admin_console/operation_member_picker_dd8d60d.js?v=1b12b405d7377948";
 const key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).join("-")}`;
 const text = (value: unknown) => String(value ?? "").trim();
 const esc = (value: unknown) => text(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char] || char));
@@ -26,7 +31,6 @@ const requestFailure = (message: string, status: number): RequestFailure => {
   error.userMessage = true;
   return error;
 };
-let pickerLoad: Promise<SharedPicker> | undefined;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -110,53 +114,112 @@ function query<T extends Element>(root: ParentNode, selector: string): T {
   return node;
 }
 
-function sharedPicker(): Promise<SharedPicker> {
-  if (window.OperationMemberPicker) return Promise.resolve(window.OperationMemberPicker);
-  if (!pickerLoad) {
-    pickerLoad = new Promise<SharedPicker>((resolve, reject) => {
-      const existing = document.querySelector<HTMLScriptElement>('script[data-owner-handoff-shared-picker]');
-      const finish = () => window.OperationMemberPicker ? resolve(window.OperationMemberPicker) : reject(new Error("冻结员工选择器未注册"));
-      if (existing) { existing.addEventListener("load", finish, { once: true }); existing.addEventListener("error", () => reject(new Error("冻结员工选择器不可用")), { once: true }); return; }
-      const script = document.createElement("script");
-      script.src = pickerURL;
-      script.async = true;
-      script.dataset.ownerHandoffSharedPicker = "dd8d60d";
-      script.addEventListener("load", finish, { once: true });
-      script.addEventListener("error", () => reject(new Error("冻结员工选择器不可用")), { once: true });
-      document.head.append(script);
-    });
+class OwnerStaffDirectory {
+  private readonly byID = new Map<string, Staff>();
+
+  constructor(initial: Staff[]) { initial.forEach((member) => this.upsert(member)); }
+
+  upsert(member: Staff): void {
+    const id = Number(member.ID);
+    const userID = text(member.UserID);
+    if (!Number.isSafeInteger(id) || id < 1 || !userID) return;
+    this.byID.set(String(id), { ID: id, UserID: userID, DisplayName: text(member.DisplayName) || userID, Active: member.Active !== false });
   }
-  return pickerLoad;
+
+  get(rawID: unknown): Staff | undefined { return this.byID.get(text(rawID)); }
 }
 
-async function installPicker(root: HTMLElement, staff: Staff[]): Promise<void> {
-  const picker = await sharedPicker();
-  const choose = async (kind: "source" | "target") => {
-    await picker.open({
-      scope: "owner_migration",
-      pageSize: 100,
-      includeInactive: kind === "source",
-      allowRefresh: false,
-      title: kind === "source" ? "选择原负责人" : "选择目标负责人",
-      onSelect(member) {
-        const memberID = text(member.user_id);
-        const selected = staff.find(value => value.UserID === memberID);
-        if (!selected || (kind === "target" && !selected.Active)) return;
-        query<HTMLInputElement>(root, `[data-owner-userid="${kind}"]`).value = String(selected.ID);
-        query<HTMLInputElement>(root, `[data-owner-label="${kind}"]`).value = selected.DisplayName || selected.UserID;
+function ownerPickerFailure(response: Response, body: unknown): RequestFailure {
+  const detail = body && typeof body === "object" && "error" in body ? text((body as { error?: unknown }).error) : "";
+  return requestFailure(ownerHandoffRequestMessage(response.status, detail), response.status);
+}
+
+function ownerStaffRecord(member: Staff, kind: "source" | "target"): StaffPickerRecord {
+  return {
+    source: "owner_migration.operation_members", staff_id: String(member.ID), user_id: member.UserID,
+    display_name: member.DisplayName || member.UserID, active: member.Active,
+    unavailable_reason: kind === "target" && !member.Active ? "目标负责人必须是在职员工。" : undefined,
+  };
+}
+
+function unresolvedOwnerStaffRecord(rawID: unknown): StaffPickerRecord | undefined {
+  const id = text(rawID);
+  return /^[1-9]\d*$/.test(id) ? {
+    source: "owner_migration.operation_members", staff_id: id, user_id: "", display_name: `员工 #${id}`,
+    unavailable_reason: "当前员工目录最多返回前 100 项或搜索结果；原选择仍保留，不能据此判定失效。",
+  } : undefined;
+}
+
+function installPicker(root: HTMLElement, directory: OwnerStaffDirectory): void {
+  const choose = (kind: "source" | "target") => {
+    const picker = window.AICRMStaffPicker;
+    if (!picker || typeof picker.open !== "function") {
+      const notice = root.querySelector<HTMLElement>("[data-workbench-notice]");
+      if (notice) notice.textContent = "员工选择器无法打开；当前负责人草稿未修改，请刷新后重试。";
+      return;
+    }
+    const currentID = query<HTMLInputElement>(root, `[data-owner-userid="${kind}"]`).value;
+    const current = directory.get(currentID);
+    const initial = current ? ownerStaffRecord(current, kind) : unresolvedOwnerStaffRecord(currentID);
+    const loadPage = async ({ query: search, signal }: { query: string; signal: AbortSignal }) => {
+      const url = new URL("/api/admin/common/operation-members", window.location.origin);
+      url.searchParams.set("scope", "owner_migration");
+      url.searchParams.set("include_inactive", kind === "source" ? "true" : "false");
+      url.searchParams.set("page_size", "100");
+      if (text(search)) url.searchParams.set("q", text(search));
+      const response = await fetch(url.toString(), { credentials: "same-origin", headers: { Accept: "application/json" }, signal });
+      const payload = await response.json().catch(() => ({}));
+      if (signal.aborted) throw new DOMException("负责人目录读取已替换", "AbortError");
+      if (!response.ok) throw ownerPickerFailure(response, payload);
+      const rawItems = payload && typeof payload === "object" && Array.isArray((payload as { items?: unknown[] }).items) ? (payload as { items: unknown[] }).items : null;
+      if (!rawItems) throw new Error("员工目录响应不完整，请重试。");
+      const items = rawItems.flatMap((raw): StaffPickerRecord[] => {
+        if (signal.aborted) return [];
+        const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+        const id = Number(value.staff_id); const userID = text(value.user_id);
+        if (!Number.isSafeInteger(id) || id < 1 || !userID) return [];
+        const member: Staff = { ID: id, UserID: userID, DisplayName: text(value.display_name) || userID, Active: value.active !== false };
+        return [ownerStaffRecord(member, kind)];
+      });
+      return { items };
+    };
+    picker.open({
+      title: kind === "source" ? "选择原负责人" : "选择目标负责人", source: "owner_migration.operation_members", scope: "owner_migration", mode: "single", limit: 1,
+      selectedRecords: initial ? [initial] : [],
+      directoryHint: "本页只显示前 100 项或搜索结果；未出现的原选择仍保留，不能据此判定失效。",
+      loadPage,
+      // This endpoint exposes an authorised local read only. Refresh merely
+      // re-reads it; it never starts a Provider sync or mutation.
+      refresh: async () => undefined,
+      accessLossMessage: (error) => {
+        const status = Number((error as RequestFailure | undefined)?.httpStatus);
+        return status === 401 || status === 403 ? "负责人迁移员工目录权限已失效；当前选择仍可查看或取消。" : undefined;
+      },
+      onCommit: ({ selected }) => {
+        const picked = selected[0];
+        const member = picked && Number.isSafeInteger(Number(picked.staff_id)) && Number(picked.staff_id) > 0 && text(picked.user_id)
+          ? { ID: Number(picked.staff_id), UserID: text(picked.user_id), DisplayName: text(picked.display_name) || text(picked.user_id), Active: picked.active !== false }
+          : undefined;
+        if (!member || (kind === "target" && !member.Active)) throw new Error("所选员工不再可用于负责人迁移，请重新读取目录。");
+        // Only the selected record from the current, validated session enters
+        // the live map used by preview.  A superseded directory read can never
+        // overwrite this staff_id → UserID mapping after a newer selection.
+        directory.upsert(member);
+        query<HTMLInputElement>(root, `[data-owner-userid="${kind}"]`).value = String(member.ID);
+        query<HTMLInputElement>(root, `[data-owner-label="${kind}"]`).value = member.DisplayName || member.UserID;
         root.dispatchEvent(new Event("owner-handoff-change"));
       },
     });
   };
-  root.querySelectorAll<HTMLButtonElement>("[data-owner-picker]").forEach(button => button.addEventListener("click", () => { void choose(button.dataset.ownerPicker as "source" | "target"); }));
+  root.querySelectorAll<HTMLButtonElement>("[data-owner-picker]").forEach(button => button.addEventListener("click", () => choose(button.dataset.ownerPicker as "source" | "target")));
 }
 
 function currentMode(root: ParentNode): string { return query<HTMLInputElement>(root, "[data-include-wecom-transfer]").checked ? "wecom_then_crm" : "local_only"; }
 function ownerID(root: ParentNode, kind: "source" | "target"): number { return Number(query<HTMLInputElement>(root, `[data-owner-userid="${kind}"]`).value); }
-function ownerUserID(root: ParentNode, kind: "source" | "target", staff: Staff[]): string {
-  const selected = staff.find(member => member.ID === ownerID(root, kind));
-  return text(selected?.UserID);
+function ownerUserID(root: ParentNode, kind: "source" | "target", directory: OwnerStaffDirectory): string {
+  return text(directory.get(ownerID(root, kind))?.UserID);
 }
+
 function selectedScope(root: ParentNode): string { return query<HTMLInputElement>(root, 'input[name="scope_type"]:checked').value; }
 function transferStatusLabel(status: number): string {
   return ({ 0: "本地迁移", 1: "企微转接已完成", 2: "企微转接处理中", 3: "客户拒绝接替", 4: "目标成员客户上限", 5: "未找到企微转接记录" } as Record<number, string>)[status] || "企微转接状态待确认";
@@ -308,7 +371,8 @@ async function boot(): Promise<void> {
     stage.dataset.ownerHandoffInit = "donor_loaded";
     const context = await api<Context>("/api/admin/customers/owner-handoffs/context");
     stage.dataset.ownerHandoffInit = "context_loaded";
-    await installPicker(root, context.staff || []);
+    const staffDirectory = new OwnerStaffDirectory(context.staff || []);
+    installPicker(root, staffDirectory);
     query<HTMLInputElement>(root, '[data-owner-label="source"]').value = "";
     query<HTMLInputElement>(root, '[data-owner-label="target"]').value = "";
     query<HTMLInputElement>(root, '[data-owner-userid="source"]').value = "";
@@ -361,7 +425,7 @@ async function boot(): Promise<void> {
     query<HTMLButtonElement>(root, "[data-upload-file]").addEventListener("click", async () => {
       try {
         const source = ownerID(root, "source"); const target = ownerID(root, "target");
-        const sourceUserID = ownerUserID(root, "source", context.staff || []);
+        const sourceUserID = ownerUserID(root, "source", staffDirectory);
         if (!source || !target || source === target || !sourceUserID) throw new Error("请先选择不同的原负责人和目标负责人");
         const file = query<HTMLInputElement>(root, "[data-import-file]").files?.[0];
         if (!file) throw new Error("请选择包含旧模板五列的 XLSX、XLS 或 CSV 文件");
@@ -389,7 +453,7 @@ async function boot(): Promise<void> {
     query<HTMLButtonElement>(root, "[data-preview]").addEventListener("click", async () => {
       try {
         const source = ownerID(root, "source"); const target = ownerID(root, "target");
-        const sourceUserID = ownerUserID(root, "source", context.staff || []);
+        const sourceUserID = ownerUserID(root, "source", staffDirectory);
         if (!source || !target || source === target || !sourceUserID) throw new Error("请先选择不同的原负责人和目标负责人");
         const scope = selectedScope(root);
         if (scope === "excel_include" && !importedRows.length) throw new Error("请先上传旧模板名单");

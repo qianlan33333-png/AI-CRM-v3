@@ -575,7 +575,7 @@ func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	err = renderer.RenderProducts(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wechat-pay/products", nil), "普通商品", "", "api.admin_products_page"), "products", `<section data-page="products">frozen donor product fragment</section>`, ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", ProductCSS: "/product-assets/product-distribution.css", HostJS: "/product-assets/product-host.js", StandardHostJS: "/product-assets/standard-components-host.js", StandardCSS: []string{"/product-assets/standard-components/material_picker.css", "/product-assets/standard-components/send_content_composer.css", "/product-assets/standard-components/wecom_tag_picker.css"}})
+	err = renderer.RenderProducts(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wechat-pay/products", nil), "普通商品", "", "api.admin_products_page"), "products", `<section data-page="products">frozen donor product fragment</section>`, ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", ProductCSS: "/product-assets/product-distribution.css", HostJS: "/product-assets/product-host.js", StandardHostJS: "/product-assets/standard-components-host.js", StandardCSS: []string{"/product-assets/standard-components/material_picker.css", "/product-assets/standard-components/send_content_composer.css", "/product-assets/standard-components/wecom_tag_picker.css", "/product-assets/selection-dialog.css"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,8 +666,8 @@ func TestOwnerHandoffFrozenDonorAssetAndHostBinding(t *testing.T) {
 	if got := hex.EncodeToString(pickerSum[:]); got != "1b12b405d737794808dd1b998ccfa8c6eb77dd4d7c22e69380b428fb89a69e70" || !bytes.Contains(picker, []byte("OperationMemberPicker")) || !bytes.Contains(picker, []byte("/api/admin/common/operation-members")) {
 		t.Fatalf("shared frozen picker contract changed hash=%s", got)
 	}
-	if !bytes.Contains(host, []byte("owner_migration_dd8d60d.html")) || !bytes.Contains(host, []byte("operation_member_picker_dd8d60d.js")) || !bytes.Contains(host, []byte("OperationMemberPicker")) || bytes.Contains(host, []byte("data-owner-picker-options")) {
-		t.Fatal("Host did not mount the frozen donor and shared picker contract")
+	if !bytes.Contains(host, []byte("owner_migration_dd8d60d.html")) || !bytes.Contains(host, []byte("AICRMStaffPicker")) || bytes.Contains(host, []byte("operation_member_picker_dd8d60d.js")) || bytes.Contains(host, []byte("OperationMemberPicker")) || bytes.Contains(host, []byte("data-owner-picker-options")) {
+		t.Fatal("Host did not mount the frozen donor with the V3 scoped staff picker contract")
 	}
 }
 
@@ -997,7 +997,7 @@ func TestRenderGroupOpsInjectsManifestVerifiedReadonlyContentRenderer(t *testing
 	if err := renderer.RenderGroupOps(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "", "api.admin_group_ops_ui"), "groupops", `<section></section>`, GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}); err == nil {
 		t.Fatal("group ops shell accepted missing read-only content assets")
 	}
-	standardAssets := GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: "/groupops-assets/assets/groupops.css", HostJS: "/groupops-assets/assets/groupops.js", OperationPickerJS: "/groupops-assets/assets/standard-components/operation_member_picker.js", GroupPickerCSS: "/groupops-assets/assets/standard-components/group_chat_picker.css", GroupPickerJS: "/groupops-assets/assets/standard-components/group_chat_picker.js", MaterialPickerCSS: "/groupops-assets/assets/standard-components/material_picker.css", MaterialPickerJS: "/groupops-assets/assets/standard-components/material_picker.js", ComposerCSS: "/groupops-assets/assets/standard-components/send_content_composer.css", ComposerJS: "/groupops-assets/assets/standard-components/send_content_composer.js"}
+	standardAssets := GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: "/groupops-assets/assets/groupops.css", HostJS: "/groupops-assets/assets/groupops.js", SelectionDialogCSS: "/groupops-assets/assets/selection-dialog.css", OperationPickerJS: "/groupops-assets/assets/standard-components/operation_member_picker.js", GroupPickerCSS: "/groupops-assets/assets/standard-components/group_chat_picker.css", GroupPickerJS: "/groupops-assets/assets/standard-components/group_chat_picker.js", MaterialPickerCSS: "/groupops-assets/assets/standard-components/material_picker.css", MaterialPickerJS: "/groupops-assets/assets/standard-components/material_picker.js", ComposerCSS: "/groupops-assets/assets/standard-components/send_content_composer.css", ComposerJS: "/groupops-assets/assets/standard-components/send_content_composer.js"}
 	standardResponse := httptest.NewRecorder()
 	if err = renderer.RenderGroupOps(standardResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "管理本地群计划。", "api.admin_group_ops_ui"), "groupops", `<div id="group-ops-app" data-group-ops-standard-host="true"></div>`, standardAssets); err != nil {
 		t.Fatal(err)

@@ -38,6 +38,8 @@
     activeDetailPanel: "basic",
   };
   let detailReadGeneration = 0;
+  let ownerGroupsReadGeneration = 0;
+  let ownerGroupsRefreshGeneration = 0;
 
   const routes = {
     list: "/admin/automation-conversion/group-ops/ui",
@@ -346,26 +348,30 @@
   }
 
   function memberStaffId(member) {
-    return String((member || {}).staff_id || (member || {}).local_staff_id || (member || {}).user_id || "");
+    return String((member || {}).staff_id || (member || {}).local_staff_id || "");
   }
 
   function normalizeOwners(payload, plan) {
     const owners = new Map();
     normalizeItems(payload).forEach((member) => {
       const staffId = memberStaffId(member);
-      const userId = member.user_id || member.userid || staffId;
-      if (staffId) owners.set(staffId, { staff_id: staffId, user_id: userId, display_name: member.display_name || member.name || userId });
+      const userId = member.user_id || member.sender_userid || member.userid || "";
+      if (staffId) owners.set(staffId, { staff_id: staffId, user_id: userId, display_name: member.display_name || member.name || userId || `员工 #${staffId}`, directory_pending: !userId });
     });
     if (plan && plan.owner_userid && !owners.has(plan.owner_userid)) {
-      owners.set(plan.owner_userid, { staff_id: plan.owner_userid, user_id: plan.owner_userid, display_name: plan.owner_name || plan.owner_userid });
+      owners.set(plan.owner_userid, { staff_id: plan.owner_userid, user_id: "", display_name: plan.owner_name || `员工 #${plan.owner_userid}`, directory_pending: true });
     }
     return Array.from(owners.values());
   }
 
-  function currentMemberFor(userId) {
-    const normalized = String(userId || "");
+  // All GroupOps form and plan `owner_userid` fields are the GroupOps Owner's
+  // local staff_id compatibility value.  Never match a numeric external UserID
+  // here: it may collide with another local staff ID and select the wrong owner.
+  function currentMemberFor(staffId) {
+    const normalized = String(staffId || "");
     if (!normalized) return null;
-    return state.ownerOptions.find((member) => memberStaffId(member) === normalized || member.user_id === normalized) || { staff_id: normalized, user_id: normalized, display_name: normalized };
+    return state.ownerOptions.find((member) => memberStaffId(member) === normalized)
+      || { staff_id: normalized, user_id: "", display_name: `员工 #${normalized}`, directory_pending: true };
   }
 
   function renderMemberField(name, currentUserId, action, label, disabled = false) {
@@ -386,24 +392,98 @@
     if (current) current.textContent = memberLabel(member);
   }
 
-  function openMemberPicker({ fieldName, title, value, onPicked }) {
-    if (!window.OperationMemberPicker) {
-      state.notice = "人员加载失败，请稍后重试";
+  function staffPickerError(error) {
+    const status = Number(error && error.status);
+    if (status === 401 || status === 403) return "员工目录权限已失效；当前负责人草稿仍保留，请取消后重新登录。";
+    return undefined;
+  }
+
+  function memberRecord(member) {
+    const staffId = memberStaffId(member);
+    if (!/^[1-9]\d*$/.test(staffId)) return null;
+    const userId = String(member.user_id || member.sender_userid || member.userid || "").trim();
+    const displayName = String(member.display_name || member.name || userId || `员工 #${staffId}`).trim();
+    const unavailableReason = !userId
+      ? (member.directory_pending ? "当前负责人映射待目录确认；请重新选择后保存。" : "员工目录缺少可信企微 UserID，不能确认。")
+      : undefined;
+    return { source: "groupops.operation_members", staff_id: staffId, user_id: userId, display_name: displayName, active: member.active !== false, unavailable_reason: unavailableReason };
+  }
+
+  function memberReadError(response, body) {
+    const message = api.responseErrorMessage
+      ? api.responseErrorMessage(response, body, `员工目录读取失败（HTTP ${response.status}）`)
+      : `员工目录读取失败（HTTP ${response.status}）`;
+    const error = new Error(message);
+    error.status = response.status;
+    return error;
+  }
+
+  async function loadGroupOpsMembers({ query, signal }) {
+    const url = new URL(routes.apiMembers, window.location.origin);
+    const trimmed = String(query || "").trim();
+    if (trimmed) url.searchParams.set("q", trimmed);
+    const response = await fetch(url.toString(), { credentials: "same-origin", headers: { Accept: "application/json" }, signal });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw memberReadError(response, body);
+    if (!Array.isArray(body.items)) throw new Error("员工目录响应不完整，请重试。");
+    return { items: body.items.map(memberRecord).filter(Boolean) };
+  }
+
+  async function refreshGroupOpsMembers({ signal }) {
+    const headers = new Headers({ Accept: "application/json", "Content-Type": "application/json", "Idempotency-Key": `groupops-member-refresh-${Date.now()}-${crypto.randomUUID()}` });
+    const token = String(document.cookie || "").split(";").map(part => part.trim()).map(part => part.split("=")).find(([name]) => name === "aicrm_csrf" || name === "aicrm_admin_csrf");
+    if (token && token[1]) headers.set("X-CSRF-Token", token.slice(1).join("="));
+    const response = await fetch("/api/admin/common/operation-members/sync", { method: "POST", credentials: "same-origin", headers, signal, body: JSON.stringify({ scope: "group_ops", page_size: 100 }) });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw memberReadError(response, body);
+  }
+
+  function openMemberPicker({ fieldName, title, value, onPicked, allowEmpty = false }) {
+    const picker = window.AICRMStaffPicker;
+    if (!picker || typeof picker.open !== "function") {
+      state.notice = "员工选择器加载失败；当前草稿未修改，请刷新后重试。";
       if (state.mode === "detail") renderDetail();
       else if (state.mode === "groups") renderGroups();
       else renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
       return;
     }
-    window.OperationMemberPicker.open({
-      value,
-      context: "group_ops_owner",
-      selection: { mode: "single", max: 1 },
+    const currentValue = String(value || "");
+    // GroupOps stores the GroupOps Owner's local staff_id in its compatibility
+    // `owner_userid` field.  Compare that one local identifier only: a numeric
+    // external UserID may collide with a different authorised staff record.
+    // An unresolved numeric local ID remains visible/removable but blocked
+    // until the current scoped directory confirms its UserID mapping.
+    const known = state.ownerOptions.find((member) => memberStaffId(member) === currentValue);
+    const selected = known
+      ? memberRecord(known)
+      : (/^[1-9]\d*$/.test(currentValue)
+        ? { source: "groupops.operation_members", staff_id: currentValue, user_id: "", display_name: `员工 #${currentValue}`, unavailable_reason: "当前负责人映射待目录确认；请重新选择后保存。" }
+        : null);
+    picker.open({
       title: title || "选择负责人",
-      scope: "group_ops",
-      page_size: 100,
-      onSelect: (member) => {
-        setMemberField(fieldName, member);
-        if (typeof onPicked === "function") onPicked(member);
+      source: "groupops.operation_members",
+      scope: "group_ops.owner",
+      mode: "single",
+      limit: 1,
+      selectedRecords: selected ? [selected] : [],
+      loadPage: loadGroupOpsMembers,
+      refresh: refreshGroupOpsMembers,
+      directoryHint: "每次最多显示 100 位员工，可搜索定位；未出现的初选仍保留，不能据此判定失效。",
+      accessLossMessage: staffPickerError,
+      onCommit: ({ selected: next }) => {
+        const member = next[0];
+        if (!member) {
+          if (!allowEmpty) throw new Error("请选择一位负责人后再确认。");
+          setMemberField(fieldName, { staff_id: "", user_id: "", display_name: "" });
+          if (typeof onPicked === "function") onPicked(null);
+          return;
+        }
+        const projected = { staff_id: String(member.staff_id), user_id: member.user_id, sender_userid: member.user_id, display_name: member.display_name, active: member.active !== false };
+        const existing = state.ownerOptions.findIndex(item => memberStaffId(item) === String(member.staff_id));
+        if (existing >= 0) state.ownerOptions.splice(existing, 1, { ...state.ownerOptions[existing], ...projected });
+        else state.ownerOptions.push(projected);
+        setMemberField(fieldName, projected);
+        if (typeof onPicked === "function") onPicked(projected);
       },
     });
   }
@@ -465,16 +545,14 @@
           state.plan.owner_userid = memberStaffId(member);
           state.plan.owner_name = member.display_name || member.name || member.user_id || "";
         }
-        loadOwnerGroups(memberStaffId(member)).catch((error) => {
-          state.notice = error.message || "加载群聊失败";
-          renderDetail();
-        });
+        void loadOwnerGroups(memberStaffId(member));
       },
     });
     if (action === "pick-group-filter-owner") return openMemberPicker({
       fieldName: "owner_userid",
       title: "选择群主/管理员",
       value: currentFormValue("owner_userid"),
+      allowEmpty: true,
       onPicked: (member) => {
         state.groupFilterOwner = member;
         loadGroupsPage();
@@ -482,7 +560,7 @@
     });
     if (action === "clear-group-filter-owner") {
       state.groupFilterOwner = null;
-      setMemberField("owner_userid", { user_id: "", display_name: "" });
+      setMemberField("owner_userid", { staff_id: "", user_id: "", display_name: "" });
       return loadGroupsPage();
     }
     return undefined;
@@ -720,16 +798,48 @@
     loadDetailPage(state.plan.id);
   }
 
+  function ownerGroupsReadIsCurrent({ planId, ownerStaffId, generation, detailGeneration }) {
+    return generation === ownerGroupsReadGeneration
+      && detailGeneration === detailReadGeneration
+      && state.mode === "detail"
+      && Number(state.plan?.id) === planId
+      && currentFormValue("owner_userid") === ownerStaffId;
+  }
+
+  function invalidateOwnerGroupsRefresh() {
+    ownerGroupsReadGeneration += 1;
+    ownerGroupsRefreshGeneration += 1;
+    if (!state.refreshingOwnerGroups) return;
+    state.refreshingOwnerGroups = false;
+    state.notice = "";
+    state.noticeIsError = false;
+  }
+
   async function loadOwnerGroups(ownerUserId) {
     const owner = String(ownerUserId || "").trim();
+    invalidateOwnerGroupsRefresh();
+    const generation = ++ownerGroupsReadGeneration;
+    const planId = Number(state.plan?.id || 0);
+    const detailGeneration = detailReadGeneration;
+    if (!planId) return;
+    const isCurrent = () => ownerGroupsReadIsCurrent({ planId, ownerStaffId: owner, generation, detailGeneration });
     if (!owner) {
+      if (!isCurrent()) return;
       state.groups = [];
       renderDetail();
       return;
     }
-    const payload = await requestJson(`${routes.apiGroups}?owner_userid=${encodeURIComponent(owner)}`);
-    state.groups = normalizeItems(payload);
-    renderDetail();
+    try {
+      const payload = await requestJson(`${routes.apiGroups}?owner_userid=${encodeURIComponent(owner)}`);
+      if (!isCurrent()) return;
+      state.groups = normalizeItems(payload);
+      renderDetail();
+    } catch (error) {
+      if (!isCurrent()) return;
+      state.notice = requestErrorMessage(error, "加载群聊失败");
+      state.noticeIsError = true;
+      renderDetail();
+    }
   }
 
   async function refreshOwnerGroups() {
@@ -740,6 +850,12 @@
       renderDetail();
       return;
     }
+    const generation = ++ownerGroupsReadGeneration;
+    const refreshGeneration = ++ownerGroupsRefreshGeneration;
+    const planId = Number(state.plan.id || 0);
+    const detailGeneration = detailReadGeneration;
+    const isCurrent = () => refreshGeneration === ownerGroupsRefreshGeneration
+      && ownerGroupsReadIsCurrent({ planId, ownerStaffId: owner, generation, detailGeneration });
     state.refreshingOwnerGroups = true;
     state.notice = "刷新中";
     renderDetail();
@@ -752,12 +868,18 @@
           operator: "admin_ui",
         },
       });
+      if (!isCurrent()) return;
       const payload = await requestJson(`${routes.apiGroups}?owner_userid=${encodeURIComponent(owner)}`);
+      if (!isCurrent()) return;
       state.groups = normalizeItems(payload);
       state.notice = `已刷新：新增 ${formatNumber(synced.new_count || 0)} 个，更新 ${formatNumber(synced.updated_count || 0)} 个`;
+      state.noticeIsError = false;
     } catch (error) {
+      if (!isCurrent()) return;
       state.notice = requestErrorMessage(error, "刷新失败");
+      state.noticeIsError = true;
     } finally {
+      if (!isCurrent()) return;
       state.refreshingOwnerGroups = false;
       renderDetail();
     }
@@ -870,7 +992,7 @@
 
   function renderCreatePanel() {
     if (!state.showCreate) return "";
-    const ownerField = renderMemberField("create_owner_userid", (state.createOwner || {}).user_id, "pick-create-owner", state.createOwner ? "更换运营成员" : "选择运营成员");
+    const ownerField = renderMemberField("create_owner_userid", (state.createOwner || {}).staff_id, "pick-create-owner", state.createOwner ? "更换运营成员" : "选择运营成员");
     return `
       <section class="group-ops__card">
         <div class="group-ops__filters">
@@ -981,6 +1103,9 @@
 
   async function loadDetailPage(planId) {
     if (state.savingPlan || state.planReadbackPending) return;
+    // A navigation or authoritative reread invalidates an earlier owner
+    // projection too. Its late success/failure must not repaint this detail.
+    invalidateOwnerGroupsRefresh();
     const generation = ++detailReadGeneration;
     renderLoading();
     try {
@@ -1463,7 +1588,7 @@
       <section class="group-ops__card">
         <div class="group-ops__filters">
           <label class="group-ops__field group-ops__field--wide"><span>群名 / 群 ID</span><input name="keyword" data-filter></label>
-          <label class="group-ops__field"><span>群主/管理员</span>${renderMemberField("owner_userid", (state.groupFilterOwner || {}).user_id, "pick-group-filter-owner", state.groupFilterOwner ? "更换成员" : "选择成员")}</label>
+          <label class="group-ops__field"><span>群主/管理员</span>${renderMemberField("owner_userid", (state.groupFilterOwner || {}).staff_id, "pick-group-filter-owner", state.groupFilterOwner ? "更换成员" : "选择成员")}</label>
           <div class="group-ops__row-actions">${actionButton("清除成员", "clear-group-filter-owner")}</div>
           <label class="group-ops__field"><span>所属计划</span><select name="plan_id" data-filter><option value="">全部</option>${renderPlanFilter()}</select></label>
           <label class="group-ops__field"><span>已绑定 / 未绑定</span><select name="bind_status" data-filter><option value="">全部</option><option value="bound">已绑定</option><option value="unbound">未绑定</option></select></label>
@@ -1479,6 +1604,23 @@
       </section>
     `);
   }
+
+  // The V3 transport Host never writes donor state directly. A completed
+  // scoped selection asks this existing renderer to reread its own detail
+  // projection, so newly rendered action controls retain their native events.
+  window.addEventListener("aicrm:groupops-detail-refresh", (event) => {
+    const planId = Number(event && event.detail && event.detail.planId);
+    if (state.mode === "detail" && state.plan && Number(state.plan.id) === planId) void loadDetailPage(planId);
+  });
+  window.addEventListener("aicrm:groupops-directory-decoration", (event) => {
+    const detail = event && event.detail;
+    const planId = Number(detail && detail.planId);
+    if (state.mode !== "detail" || !state.plan || Number(state.plan.id) !== planId || !Array.isArray(detail && detail.rows)) return;
+    // The existing refresh flow renders immediately afterwards and rebinds its
+    // native action controls, while retaining the unsaved owner/name draft.
+    state.planGroups = detail.rows;
+    state.groupSummary = detail.summary || state.groupSummary;
+  });
 
   if (state.mode === "detail" && state.planId) {
     loadDetailPage(state.planId);

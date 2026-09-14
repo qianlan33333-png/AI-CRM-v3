@@ -149,14 +149,14 @@ type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 // CouponAssets are verified manifest paths for the frozen coupon workspaces.
 type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 
-type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS string }
+type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS, SelectionDialogCSS string }
 
 // GroupOpsAssets are manifest-derived URLs for the immutable donor Group Ops
 // bundle. The v3 shell owns the sidebar; the donor supplies only its stage
 // template and runtime assets.
 type GroupOpsAssets struct {
 	TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string
-	StandardCSS, HostJS                                  string
+	StandardCSS, HostJS, SelectionDialogCSS              string
 	OperationPickerJS                                    string
 	GroupPickerCSS, GroupPickerJS                        string
 	MaterialPickerCSS, MaterialPickerJS                  string
@@ -377,7 +377,7 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 // PR10 shell. The donor template is the release-built template#tpl fragment;
 // this method never renders the donor document or a second sidebar.
 func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 3 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 4 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -452,7 +452,7 @@ func (renderer *Renderer) RenderRadar(writer http.ResponseWriter, data AdminPage
 // are supplied as inert body data for the v3 host adapter; they are never
 // interpolated into donor markup.
 func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminPageData, page, resourceID, donorTemplate string, assets ChannelAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 5 || (page != "channels" && page != "channelForm") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 6 || (page != "channels" && page != "channelForm") {
 		return errors.New("channel shell assets are required")
 	}
 	if resourceID != "" {
@@ -478,7 +478,7 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 		return errors.New("Group Ops shell assets are required")
 	}
 	standard := strings.Contains(donorTemplate, `data-group-ops-standard-host="true"`)
-	if standard && (assets.StandardCSS == "" || assets.HostJS == "" || assets.OperationPickerJS == "" || assets.GroupPickerCSS == "" || assets.GroupPickerJS == "" || assets.MaterialPickerCSS == "" || assets.MaterialPickerJS == "" || assets.ComposerCSS == "" || assets.ComposerJS == "") {
+	if standard && (assets.StandardCSS == "" || assets.HostJS == "" || assets.SelectionDialogCSS == "" || assets.OperationPickerJS == "" || assets.GroupPickerCSS == "" || assets.GroupPickerJS == "" || assets.MaterialPickerCSS == "" || assets.MaterialPickerJS == "" || assets.ComposerCSS == "" || assets.ComposerJS == "") {
 		return errors.New("Group Ops standard host assets are required")
 	}
 	normalizeAdminPage(&data)

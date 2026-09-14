@@ -193,7 +193,16 @@ raceWindow.fetch = (input, init = {}) => {
     url.pathname === "/api/admin/automation-conversion/group-ops/groups/sync" &&
     method === "POST"
   )
-    return Promise.resolve(raceResponse({ total: 1 }));
+    return Promise.resolve(raceResponse({
+      total: 1,
+      items: [{
+        chat_reference: "current-group",
+        display_name: "同步后的当前群",
+        owner_staff_id: 7,
+        member_count: 22,
+        external_member_count: 13,
+      }],
+    }));
   if (
     url.pathname ===
       "/api/admin/automation-conversion/group-ops/plans/41/enable" &&
@@ -227,8 +236,8 @@ const currentAGroups = raceHost.requestJson(
   "/api/admin/automation-conversion/group-ops/plans/41/groups",
 );
 await waitFor(
-  () => raceReads.length === 8,
-  "same-kind reentry did not create four independent plan/directory epochs",
+  () => raceReads.length === 4,
+  "same-kind reentry did not create four independent scoped detail epochs",
 );
 const nextRaceRead = (expectedPath) => {
   const next = raceReads.shift();
@@ -242,45 +251,19 @@ const nextRaceRead = (expectedPath) => {
 const staleSuccessPlan = nextRaceRead(
   "/api/admin/automation-conversion/group-ops/plans/41",
 );
-const staleSuccessDirectory = nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
-);
 const staleErrorPlan = nextRaceRead(
   "/api/admin/automation-conversion/group-ops/plans/41",
-);
-const staleErrorDirectory = nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
 );
 const interveningBPlan = nextRaceRead(
   "/api/admin/automation-conversion/group-ops/plans/42",
 );
-const interveningBDirectory = nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
-);
 const currentPlan = nextRaceRead(
   "/api/admin/automation-conversion/group-ops/plans/41",
-);
-const currentDirectory = nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
 );
 currentPlan.resolve(
   raceResponse({
     plan: { plan_id: 41, name: "current", revision: 50 },
     group_assets: [{ asset_reference: "current-group" }],
-  }),
-);
-currentDirectory.resolve(
-  raceResponse({
-    items: [
-      {
-        chat_reference: "current-group",
-        display_name: "当前群",
-        owner_staff_id: 7,
-        member_count: 20,
-        external_member_count: 12,
-      },
-    ],
-    has_more: false,
   }),
 );
 const [currentPlanPayload, currentGroupPayload] = await Promise.all([
@@ -303,36 +286,20 @@ staleSuccessPlan.resolve(
     group_assets: [{ asset_reference: "stale-group" }],
   }),
 );
-staleSuccessDirectory.resolve(
-  raceResponse({
-    items: [
-      {
-        chat_reference: "stale-group",
-        display_name: "过期群",
-        owner_staff_id: 7,
-        member_count: 4,
-        external_member_count: 1,
-      },
-    ],
-    has_more: false,
-  }),
-);
 staleErrorPlan.resolve(raceResponse({ code: "operations_conflict" }, 409));
-staleErrorDirectory.resolve(raceResponse({ items: [], has_more: false }));
 interveningBPlan.resolve(
   raceResponse({
     plan: { plan_id: 42, name: "B", revision: 4 },
     group_assets: [],
   }),
 );
-interveningBDirectory.resolve(raceResponse({ items: [], has_more: false }));
 await staleSuccessA;
 await assert.rejects(staleErrorA, /计划状态、版本或配置不满足要求/);
 await interveningB;
 assert.equal(
   currentGroupPayload.items[0].group_name,
-  "当前群",
-  "late A success cannot overwrite the published current group view",
+  "群名称待同步",
+  "late A success cannot overwrite the published current scoped binding view",
 );
 assert.equal(
   currentPlanPayload.groups_summary,
@@ -353,7 +320,7 @@ const newPendingGroups = raceHost.requestJson(
   "/api/admin/automation-conversion/group-ops/plans/90/groups",
 );
 await waitFor(
-  () => raceReads.length === 4,
+  () => raceReads.length === 2,
   "pending-order fixture did not create distinct old and new A epochs",
 );
 nextRaceRead("/api/admin/automation-conversion/group-ops/plans/90").resolve(
@@ -362,9 +329,6 @@ nextRaceRead("/api/admin/automation-conversion/group-ops/plans/90").resolve(
     group_assets: [],
   }),
 );
-nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
-).resolve(raceResponse({ items: [], has_more: false }));
 await oldPendingA;
 nextRaceRead("/api/admin/automation-conversion/group-ops/plans/90").resolve(
   raceResponse({
@@ -372,9 +336,6 @@ nextRaceRead("/api/admin/automation-conversion/group-ops/plans/90").resolve(
     group_assets: [],
   }),
 );
-nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
-).resolve(raceResponse({ items: [], has_more: false }));
 const [newPendingPlan, newPendingGroupPayload] = await Promise.all([
   newPendingA,
   newPendingGroups,
@@ -391,15 +352,12 @@ const failed88 = raceHost.requestJson(
   "/api/admin/automation-conversion/group-ops/plans/88",
 );
 await waitFor(
-  () => raceReads.length === 2,
-  "failed detail did not start a new lease",
+  () => raceReads.length === 1,
+  "failed detail did not start a new scoped lease",
 );
 nextRaceRead("/api/admin/automation-conversion/group-ops/plans/88").resolve(
   raceResponse({ code: "service_unavailable" }, 503),
 );
-nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
-).resolve(raceResponse({ code: "directory_unavailable" }, 503));
 await assert.rejects(failed88, /HTTP 503/);
 const retry88 = raceHost.requestJson(
   "/api/admin/automation-conversion/group-ops/plans/88",
@@ -408,7 +366,7 @@ const retry88Groups = raceHost.requestJson(
   "/api/admin/automation-conversion/group-ops/plans/88/groups",
 );
 await waitFor(
-  () => raceReads.length === 2,
+  () => raceReads.length === 1,
   "retry did not start a fresh paired lease",
 );
 nextRaceRead("/api/admin/automation-conversion/group-ops/plans/88").resolve(
@@ -417,9 +375,6 @@ nextRaceRead("/api/admin/automation-conversion/group-ops/plans/88").resolve(
     group_assets: [],
   }),
 );
-nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
-).resolve(raceResponse({ items: [], has_more: false }));
 await Promise.all([retry88, retry88Groups]);
 
 // Sync invalidates the initial epoch, reads fresh server data, and mutates the
@@ -432,29 +387,13 @@ const sync = raceHost.requestJson(
   { method: "POST", body: { owner_userid: 7 } },
 );
 await waitFor(
-  () => raceReads.length === 2,
-  "sync readback did not force fresh plan and directory reads",
+  () => raceReads.length === 1,
+  "sync readback did not force a fresh scoped plan read",
 );
 nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41").resolve(
   raceResponse({
     plan: { plan_id: 41, name: "current", revision: 51 },
     group_assets: [{ asset_reference: "current-group" }],
-  }),
-);
-nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
-).resolve(
-  raceResponse({
-    items: [
-      {
-        chat_reference: "current-group",
-        display_name: "同步后的当前群",
-        owner_staff_id: 7,
-        member_count: 22,
-        external_member_count: 13,
-      },
-    ],
-    has_more: false,
   }),
 );
 await sync;
@@ -474,8 +413,8 @@ const explicitReread = raceHost.requestJson(
   "/api/admin/automation-conversion/group-ops/plans/41",
 );
 await waitFor(
-  () => raceReads.length === 2,
-  "explicit reread did not request a fresh plan and directory pair after the real conflict",
+  () => raceReads.length === 1,
+  "explicit reread did not request a fresh scoped plan after the real conflict",
 );
 nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41").resolve(
   raceResponse({
@@ -483,9 +422,6 @@ nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41").resolve(
     group_assets: [{ asset_reference: "current-group" }],
   }),
 );
-nextRaceRead(
-  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
-).resolve(raceResponse({ items: [], has_more: false }));
 const refreshedPlan = await explicitReread;
 assert.equal(refreshedPlan.revision, 51, "the explicit reread publishes the new server revision");
 const retriedEnable = raceHost.requestJson(
@@ -513,6 +449,9 @@ let returnWrongPlanIDAfterWrite = false;
 let delayNextPlanRead = false;
 let releaseDelayedPlanRead = null;
 let saveFailure = "";
+let dropCommittedGroupResponse = "";
+let rejectGroupOnce = "";
+const groupSelectionCommands = [];
 const state = {
   revision: 4,
   plan: { plan_id: 41, name: "标准群运营计划", revision: 4, status: "paused", plan_type: "standard", updated_at: "2026-09-08T00:00:00Z" },
@@ -544,7 +483,7 @@ fullWindow.fetch = async (input, init = {}) => {
   const url = new URL(String(input), fullWindow.location.href);
   const method = String(init.method || "GET").toUpperCase();
   const body = init.body ? JSON.parse(String(init.body)) : null;
-  calls.push({ path: url.pathname + url.search, method, body });
+  calls.push({ path: url.pathname + url.search, method, body, idempotencyKey: init.headers?.get?.("Idempotency-Key") || "" });
   const ownerFor = (staffID) => ({
     staff_id: staffID,
     sender_userid: staffID === 9 ? "wecom-replacement" : "wecom-owner",
@@ -586,8 +525,8 @@ fullWindow.fetch = async (input, init = {}) => {
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "PUT") {
     if (saveFailure === "network") throw new Error("网络连接中断");
-    if (saveFailure) return response({ code: saveFailure === "409" ? "revision_conflict" : "service_unavailable" }, Number(saveFailure));
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
+    if (saveFailure) return response({ code: saveFailure === "409" ? "operations_conflict" : "service_unavailable" }, Number(saveFailure));
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
     state.plan.name = body.name;
     state.plan.plan_type = body.plan_type;
     if (body.owner_staff_id) state.members = [{ staff_id: Number(body.owner_staff_id) }];
@@ -604,15 +543,41 @@ fullWindow.fetch = async (input, init = {}) => {
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/enable" && method === "POST") {
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
     state.revision += 1;
     state.plan.status = "active";
     state.plan.revision = state.revision;
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/groups" && method === "POST") {
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
-    state.group_assets.push({ asset_reference: body.asset_reference });
+    groupSelectionCommands.push({ reference: body.asset_reference, body: clone(body), idempotencyKey: init.headers?.get?.("Idempotency-Key") || "" });
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
+    if (!state.group_assets.some((item) => item.asset_reference === body.asset_reference)) state.group_assets.push({ asset_reference: body.asset_reference });
+    state.revision += 1;
+    state.plan.revision = state.revision;
+    if (dropCommittedGroupResponse === body.asset_reference) {
+      dropCommittedGroupResponse = "";
+      // Another actor changes the plan after the accepted write. The Host must
+      // prove the dropped response by Owner readback instead of changing this
+      // request body or minting a second idempotency key.
+      state.group_assets.push({ asset_reference: "other-concurrent" });
+      state.revision += 1;
+      state.plan.revision = state.revision;
+      throw new Error("网络连接中断");
+    }
+    if (rejectGroupOnce === body.asset_reference) {
+      rejectGroupOnce = "";
+      state.group_assets = state.group_assets.filter((item) => item.asset_reference !== body.asset_reference);
+      state.revision -= 1;
+      state.plan.revision = state.revision;
+      return response({ code: "service_unavailable" }, 503);
+    }
+    return response({ plan: clone(state.plan) });
+  }
+  if (/\/api\/admin\/automation-conversion\/group-ops\/plans\/41\/groups\/.+$/.test(url.pathname) && method === "DELETE") {
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
+    const reference = decodeURIComponent(url.pathname.split("/").pop() || "");
+    state.group_assets = state.group_assets.filter((item) => item.asset_reference !== reference);
     state.revision += 1;
     state.plan.revision = state.revision;
     return response({ plan: clone(state.plan) });
@@ -622,7 +587,7 @@ fullWindow.fetch = async (input, init = {}) => {
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/nodes" && method === "POST") {
-    if (body.expected_revision !== state.revision) return response({ code: "revision_conflict" }, 409);
+    if (body.expected_revision !== state.revision) return response({ code: "operations_conflict" }, 409);
     state.nodes.push({ node_id: 101, ...body });
     state.revision += 1;
     state.plan.revision = state.revision;
@@ -631,10 +596,11 @@ fullWindow.fetch = async (input, init = {}) => {
   if (url.pathname === "/api/admin/automation-conversion/group-ops/groups/sync" && method === "POST") {
     groupSyncAttempts++;
     assert.equal(body.owner_staff_id, 7, "refresh uses unsaved selected local member, not the saved owner");
-    state.directory[0].display_name = `同步群名${groupSyncAttempts}`;
-    state.directory[0].member_count = 300 + groupSyncAttempts;
-    state.directory[0].external_member_count = 230 + groupSyncAttempts;
-    return response({ items: clone(state.directory), total: 1, limit: 100, offset: 0, has_more: false });
+    const refreshTarget = state.directory.find((item) => item.chat_reference === "group-10") || state.directory[0];
+    refreshTarget.display_name = `同步群名${groupSyncAttempts}`;
+    refreshTarget.member_count = 300 + groupSyncAttempts;
+    refreshTarget.external_member_count = 230 + groupSyncAttempts;
+    return response({ items: clone(state.directory), total: state.directory.length, limit: 100, offset: 0, has_more: false });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") {
     if (failGroupReadback) return response({ code: "directory_unavailable" }, 503);
@@ -653,28 +619,37 @@ try {
   await waitFor(() => fullWindow.document.querySelector('[data-action="pick-plan-owner"]'), "standard Group Ops detail did not render");
   const directMembers = await (await fullWindow.fetch("/api/admin/common/operation-members?scope=group_ops&page_size=100")).json();
   assert.deepEqual(directMembers.items, [
-    { user_id: "wecom-owner", staff_id: "7", display_name: "一号运营" },
-    { user_id: "wecom-replacement", staff_id: "9", display_name: "九号运营" },
-  ], "picker must show the trusted WeCom user ID while retaining the local staff key");
+    { staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" },
+    { staff_id: 9, sender_userid: "wecom-replacement", display_name: "九号运营" },
+  ], "the Host must leave the authorised Owner response unchanged outside its scoped V3 picker");
 
   fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
-  await waitFor(() => fullWindow.document.querySelectorAll("[data-operation-member-row]").length === 2, "owner picker did not render both local staff");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-title]')?.textContent, "选择负责人", "Group Ops must declare the owner-selection context");
-  assert.match(fullWindow.document.querySelector('[data-operation-member-description]')?.textContent || "", /选择一位负责人/, "single owner selection must state its own business purpose");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-description]')?.textContent.includes("最多"), false, "single owner selection must not claim the channel member limit");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-picker] input[type="checkbox"]'), null, "Group Ops owner selection must use the single-select control");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-confirm]')?.textContent, "确认负责人", "single owner selection must keep the standard primary action explicit");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] .operation-member-picker__name')?.textContent, "九号运营");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] .operation-member-picker__user-id')?.textContent, "wecom-replacement");
-  fullWindow.document.querySelector('[data-operation-member-refresh]').click();
-  await waitFor(() => fullWindow.document.body.textContent.includes("企微客服刷新失败"), "member refresh error did not render a retryable message");
+  await waitFor(() => fullWindow.document.querySelectorAll('[data-v3-selection-session="staff"] [data-v3-staff-key]').length === 2, "V3 owner picker did not render both local staff");
+  assert.equal(fullWindow.document.querySelector('[data-v3-selection-session="staff"] h3')?.textContent, "选择负责人", "Group Ops must declare the owner-selection context");
+  assert.match(fullWindow.document.querySelector('[data-v3-selection-session="staff"]')?.textContent || "", /每次最多显示 100 位员工，可搜索定位/, "Group Ops must disclose its bounded owner directory rather than imply pagination coverage");
+  assert.equal(fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"] strong')?.textContent, "九号运营");
+  assert.match(fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"] span')?.textContent || "", /wecom-replacement/, "V3 row must retain the trusted WeCom user ID beside the local key");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-reload]').click();
+  await waitFor(() => memberRefreshAttempts === 1 && !fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-status]')?.textContent.includes("正在刷新"), "member refresh did not settle");
+  assert.match(fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-status]')?.textContent || "", /读取失败|刷新失败|暂不可用/, "member refresh error did not render a retryable message");
   assert.equal(fullWindow.document.body.textContent.includes("[object Object]"), false, "member refresh must not stringify an error object");
-  fullWindow.document.querySelector('[data-operation-member-refresh]').click();
-  await waitFor(() => memberRefreshAttempts === 2 && fullWindow.document.querySelectorAll("[data-operation-member-row]").length === 2, "member refresh retry did not recover the picker");
-  fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] [data-operation-member-row-select]').click();
-  fullWindow.document.querySelector("[data-operation-member-confirm]").click();
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-reload]').click();
+  await waitFor(() => memberRefreshAttempts === 2 && fullWindow.document.querySelectorAll('[data-v3-selection-session="staff"] [data-v3-staff-key]').length === 2 && fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]')?.disabled === false, "member refresh retry did not recover the V3 picker");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
   await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "9", "owner picker did not retain the selected local staff id");
   await waitFor(() => fullWindow.document.body.textContent.includes("群目录读取失败，请重试"), "owner directory failure must remain explicit rather than appear as an empty group list");
+  // Required plan ownership may not close a V3 dialog after the only temporary
+  // choice is removed: the existing draft stays visible and the caller gets an
+  // actionable validation error instead of a silent no-op.
+  fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"]')?.getAttribute('aria-pressed') === 'true', "required owner picker did not restore its current local staff");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-status]')?.textContent.includes("请选择一位负责人后再确认"), "removing the required owner must keep the dialog open with a validation error");
+  assert.equal(fullWindow.document.querySelector('[name="owner_userid"]')?.value, "9", "a rejected empty owner commit must preserve the existing field");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-cancel]').click();
+  await waitFor(() => !fullWindow.document.querySelector('[data-v3-selection-session="staff"]'), "cancel must close the rejected owner draft without applying it");
   const draftName = fullWindow.document.querySelector('[name="plan_name"]');
   const writesBeforeBlankName = calls.filter((call) => call.method === "PUT").length;
   draftName.value = "   ";
@@ -745,12 +720,76 @@ try {
   assert.equal(fullWindow.document.querySelector('.group-ops__notice--error'), null, "successful retry clears the prior failure");
 
   await waitFor(() => fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]'), "detail did not reload after owner save");
+  // Asset commands are draft-only at the Owner boundary. The selector must
+  // make that state explicit, and this scoped bind journey proceeds from a
+  // genuine draft plan rather than weakening the service rule.
+  state.plan.status = "draft";
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  const groupOpen = fullWindow.document.querySelector('[data-action="open-group-picker"]');
+  groupOpen.focus();
+  groupOpen.click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key]'), "V3 scoped group picker did not render the authorised directory page");
+  assert.equal(fullWindow.document.querySelector('[data-group-picker-search]'), null, 'the frozen per-keystroke group picker never opens beneath the V3 session');
+  const pickerSearch = fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-picker-search-input]');
+  const readsBeforePickerSearch = calls.length;
+  pickerSearch.value = "九号";
+  pickerSearch.dispatchEvent(new fullWindow.Event("input", { bubbles: true }));
+  pickerSearch.dispatchEvent(new fullWindow.KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  await waitFor(() => calls.slice(readsBeforePickerSearch).some((call) => call.method === "GET" && call.path.includes("/group-ops/groups?") && new URL(call.path, fullWindow.location.href).searchParams.get("q") === "九号"), "V3 group picker did not send the server query");
+  const ownerScopedPickerRead = calls.slice(readsBeforePickerSearch).find((call) => call.method === "GET" && call.path.includes("/group-ops/groups?") && new URL(call.path, fullWindow.location.href).searchParams.get("q") === "九号");
+  assert.equal(new URL(ownerScopedPickerRead.path, fullWindow.location.href).searchParams.get("owner_userid"), "9", "picker search must retain the current Owner scope");
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-confirm]')?.disabled === false, "Owner-scoped search did not settle before confirmation");
+  const groupRow = fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key]');
+  assert.equal(groupRow.textContent.includes("group-9"), true, "picker displays the opaque GroupOps chat reference");
+  groupRow.click();
+  assert.equal(fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key]')?.getAttribute("aria-pressed"), "true", "Owner-scoped query row remains selectable");
+  fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-confirm]').click();
+  await waitFor(() => state.group_assets.length === 1, "selected directory group was not bound through the existing GroupOps Owner command");
+  assert.equal(state.group_assets[0].asset_reference, "group-9");
+  assert.equal(fullWindow.document.querySelector('[data-v3-selection-session="group"]'), null, "successful commit closes the temporary selection session");
+
+  state.directory.push(
+    { chat_reference: "group-10", owner_staff_id: 9, display_name: "十号运营群", member_count: 13, external_member_count: 9 },
+    { chat_reference: "group-11", owner_staff_id: 9, display_name: "十一号运营群", member_count: 14, external_member_count: 10 },
+  );
+  dropCommittedGroupResponse = "group-10";
+  rejectGroupOnce = "group-11";
   fullWindow.document.querySelector('[data-action="open-group-picker"]').click();
-  await waitFor(() => fullWindow.document.querySelector('[data-group-choice][value="group-9"]'), "eligible directory group did not render for selected owner");
-  fullWindow.document.querySelector('[data-group-choice][value="group-9"]').checked = true;
-  fullWindow.document.querySelector('[data-action="confirm-group-picker"]').click();
-  await waitFor(() => state.group_assets.length === 1, "selected directory group was not bound through the Host command");
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key$="group-11"]'), "multi-step group picker did not load scoped results");
+  fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key$="group-10"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key$="group-11"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-remove$="group-9"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-confirm]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"]')?.textContent.includes("已实际保存：添加 group-10"), "partial group save did not preserve the actual accepted step");
+  const group10Commands = groupSelectionCommands.filter((command) => command.reference === "group-10");
+  assert.equal(group10Commands.length, 1, "dropped accepted response must not replay the confirmed step");
+  assert(state.group_assets.some((item) => item.asset_reference === "group-10") && state.group_assets.some((item) => item.asset_reference === "other-concurrent"), "Owner readback must retain accepted and concurrent bindings");
+  fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-confirm]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"]') === null && state.group_assets.some((item) => item.asset_reference === "group-11") && !state.group_assets.some((item) => item.asset_reference === "group-9"), "explicit retry did not finish only the remaining group differences");
+  const group11Commands = groupSelectionCommands.filter((command) => command.reference === "group-11");
+  assert.equal(group11Commands.length, 2, "only the unconfirmed step is retried");
+  assert.equal(group11Commands[0].idempotencyKey, group11Commands[1].idempotencyKey, "retry preserves the step idempotency key");
+  assert.deepEqual(group11Commands[0].body, group11Commands[1].body, "retry preserves the frozen CAS command body");
+  assert(state.group_assets.some((item) => item.asset_reference === "other-concurrent"), "selection retry never removes another actor's concurrent binding");
+  const cachedGroups = await fullWindow.AdminApi.requestJson("/api/admin/automation-conversion/group-ops/plans/41/groups");
+  const cachedGroup10 = cachedGroups.items.find((item) => item.chat_id === "group-10");
+  assert.deepEqual(
+    { name: cachedGroup10.group_name, owner: cachedGroup10.owner_userid, internal: cachedGroup10.internal_member_count_snapshot, external: cachedGroup10.external_member_count_snapshot },
+    { name: "十号运营群", owner: "9", internal: 4, external: 9 },
+    "confirmed groups retain raw directory name, owner and member snapshots",
+  );
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="nodes"]').click();
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-action="open-group-picker"]'), "group panel did not return after a tab switch");
+  fullWindow.document.querySelector('[data-action="open-group-picker"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"]')?.textContent.includes("十号运营群"), "reopened group picker lost the confirmed directory name");
+  fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-cancel]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"]') === null, "cancel must close without inventing a rollback");
+  await waitFor(() => state.group_assets.some((item) => item.asset_reference === "group-10"), "cancel readback must preserve the actual saved binding");
+  await waitFor(() => fullWindow.document.querySelector('[data-action="remove-group"][data-chat-id="group-11"]'), "successful selection did not redraw a native removable group row");
+  fullWindow.document.querySelector('[data-action="remove-group"][data-chat-id="group-11"]').click();
+  await waitFor(() => !state.group_assets.some((item) => item.asset_reference === "group-11"), "native row action did not remove the freshly rendered binding");
+  assert(state.group_assets.some((item) => item.asset_reference === "other-concurrent"), "fresh native remove action preserves concurrent binding");
 
   await waitFor(() => fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="nodes"]'), "detail did not reload after group bind");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="nodes"]').click();
@@ -770,28 +809,34 @@ try {
   assert(fullWindow.document.body.textContent.includes("wecom-replacement"), "selected owner must show the trusted WeCom user ID");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();
   fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
-  await waitFor(() => fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-owner"]'), "draft owner picker missing");
-  fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-owner"] [data-operation-member-row-select]').click();
-  fullWindow.document.querySelector('[data-operation-member-confirm]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="7"]'), "draft V3 owner picker missing");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="7"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
   await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "7", "draft owner missing");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
   const writesBeforeRefresh = calls.filter(item => item.method !== "GET" && !item.path.endsWith("/sync")).length;
   fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
-  await waitFor(() => fullWindow.document.body.textContent.includes("已刷新 1 个群聊"), "snapshot total notice missing");
+  await waitFor(() => fullWindow.document.body.textContent.includes("已刷新 3 个群聊"), "snapshot total notice missing");
   assert(fullWindow.document.querySelector('.group-ops__group-name').textContent.includes("同步群名1"), "bound group name must refresh without a page reload");
-  assert(fullWindow.document.body.textContent.includes("231"), "external contact overview must read back the new snapshot");
+  assert(fullWindow.document.body.textContent.includes("other-concurrent"), "readback must retain another actor's concurrent binding");
+  assert.equal(fullWindow.document.body.textContent.includes("231"), false, "an unknown concurrent binding must not fabricate an aggregate external count");
   assert.equal(fullWindow.document.querySelector('[name="owner_userid"]').value, "7", "refresh must preserve unsaved owner");
   assert.deepEqual(state.members, [{ staff_id: 9 }], "refresh must not save the draft owner");
   assert.equal(calls.filter(item => item.method !== "GET" && !item.path.endsWith("/sync")).length, writesBeforeRefresh, "refresh must not save or enable the plan");
   failGroupReadback = true;
   fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
-  await waitFor(() => fullWindow.document.body.textContent.includes("群聊已刷新，但页面读回失败"), "readback failure must not claim UI completion");
-  assert(fullWindow.document.querySelector('.group-ops__group-name').textContent.includes("同步群名1"), "failed readback preserves displayed snapshot");
-  assert.equal(fullWindow.document.body.textContent.includes("新增 0"), false);
+  await waitFor(() => fullWindow.document.body.textContent.includes("群目录读取失败，请重试；已绑定群仍可查看"), "directory failure must preserve the bound projection and state its reason");
+  assert.match(fullWindow.document.querySelector('.group-ops__group-name').textContent, /同步群名[12]/, "directory failure preserves a readable bound snapshot");
+  assert.equal(fullWindow.document.body.textContent.includes("暂无绑定群"), false);
   failGroupReadback = false;
   fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
   await waitFor(() => fullWindow.document.querySelector('.group-ops__group-name')?.textContent.includes("同步群名3"), "retry must update the bound projection");
+  // A bound-group command increments the server revision before its detail
+  // readback settles. A stale control must never write through that command;
+  // its CAS conflict is explicit, and the delayed read cannot erase the
+  // authoritative in-memory projection after the newer action generation.
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();
+  const planNameBeforeStaleControl = fullWindow.document.querySelector('[name="plan_name"]').value;
   fullWindow.document.querySelector('[name="plan_name"]').value = "新保存不会被旧读覆盖";
   const deferredSave = fullWindow.document.querySelector('[data-action="save-plan"]');
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
@@ -802,15 +847,282 @@ try {
   staleInput.name = 'plan_name'; staleInput.value = '新保存不会被旧读覆盖';
   fullWindow.document.getElementById('group-ops-app').append(staleInput);
   deferredSave.click();
-  await waitFor(() => state.plan.name === '新保存不会被旧读覆盖', "new save/readback did not complete before stale detail resumed");
+  await waitFor(
+    () => fullWindow.document.body.textContent.includes('计划状态、版本或配置不满足要求，请刷新后检查'),
+    () => `stale basic save must surface the authoritative revision conflict; text=${fullWindow.document.body.textContent} recent=${JSON.stringify(calls.slice(-8))}`,
+  );
+  assert.equal(state.plan.name, planNameBeforeStaleControl, "a stale basic save must not claim a later plan write succeeded");
   releaseDelayedPlanRead();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(state.plan.name, '新保存不会被旧读覆盖', "a delayed old detail response must not overwrite the newer authoritative save/readback");
-  assert.equal(fullWindow.document.body.textContent.includes('新保存不会被旧读覆盖'), true, "render after a stale response must retain the newer plan state");
+  assert.equal(state.plan.name, planNameBeforeStaleControl, "a delayed older detail response must not overwrite a later action generation");
+  assert.equal(fullWindow.document.body.textContent.includes('新保存不会被旧读覆盖'), false, "the stale draft must not appear as an authoritative plan value");
   if (fullJourneyErrors.length) throw new Error(`Group Ops standard DOM errors: ${JSON.stringify(fullJourneyErrors)}`);
   console.log("groupops-standard-dom: PASS");
 } finally {
   fullJourney.window.close();
+}
+
+// The detail renderer owns the dependent group directory. A second owner
+// choice (or an authoritative reread before navigation) must win over an old
+// response; the Staff picker only protects its own member loader.
+const ownerGroupsRaceJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="93"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/93",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const ownerGroupsRaceWindow = ownerGroupsRaceJourney.window;
+ownerGroupsRaceWindow.Headers = Headers;
+ownerGroupsRaceWindow.Response = Response;
+Object.defineProperty(ownerGroupsRaceWindow, "crypto", { configurable: true, value: crypto });
+const ownerPickerCalls = [];
+ownerGroupsRaceWindow.AICRMStaffPicker = { open: (options) => ownerPickerCalls.push(options) };
+const staleOwnerGroupReads = [];
+const ownerGroupQueries = [];
+let releaseStaleOwnerRefresh;
+const ownerRaceMembers = [
+  { staff_id: 6, user_id: "owner-six", display_name: "负责人六" },
+  { staff_id: 7, user_id: "owner-seven", display_name: "负责人七" },
+  { staff_id: 9, user_id: "owner-nine", display_name: "负责人九" },
+];
+const ownerRacePlan = () => ({
+  id: 93, plan_name: "负责人竞态计划", revision: 1, status: "draft", plan_type: "standard", owner_userid: "6", owner_name: "负责人六",
+});
+ownerGroupsRaceWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), ownerGroupsRaceWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: clone(ownerRaceMembers) });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/93" && method === "GET") return response(ownerRacePlan());
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/93/groups" && method === "GET") return response({ items: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/93/nodes" && method === "GET") return response({ items: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups/sync" && method === "POST") {
+    return new Promise((resolve) => { releaseStaleOwnerRefresh = () => resolve(response({ new_count: 1, updated_count: 0 })); });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") {
+    const owner = url.searchParams.get("owner_userid");
+    ownerGroupQueries.push(owner || "");
+    if (owner === "7") return new Promise((resolve) => staleOwnerGroupReads.push(() => resolve(response({ items: [{ chat_id: `owner-seven-${staleOwnerGroupReads.length}`, group_name: "迟到的负责人七群", owner_userid: "7" }] }))));
+    return response({ items: [{ chat_id: `owner-${owner || "none"}`, group_name: owner === "9" ? "负责人九群" : "负责人六群", owner_userid: owner || "6" }] });
+  }
+  throw new Error(`unexpected owner-race request ${method} ${url.pathname}${url.search}`);
+};
+try {
+  ownerGroupsRaceWindow.AdminApi = {
+    escapeHtml: (value) => String(value ?? ""),
+    errorMessage: (error, fallback) => error?.message || fallback,
+    responseErrorMessage: (_response, _body, fallback) => fallback,
+    requestJson: async (url, options) => {
+      const result = await ownerGroupsRaceWindow.fetch(url, options);
+      const body = await result.json();
+      if (!result.ok) throw new Error(`HTTP ${result.status}`);
+      return body;
+    },
+  };
+  ownerGroupsRaceWindow.eval(await readFile(new URL("../web/v3/groupOpsStandard.js", import.meta.url), "utf8"));
+  await waitFor(() => ownerGroupsRaceWindow.document.querySelector('[data-action="pick-plan-owner"]'), "owner race detail did not render");
+  const pick = (record) => {
+    ownerGroupsRaceWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
+    const options = ownerPickerCalls.at(-1);
+    assert(options, "plan owner action must call the V3 staff picker");
+    options.onCommit({ selected: [record] });
+  };
+
+  // Refresh starts for the original local owner, then a new owner is selected
+  // before the Owner refresh result is known. The old command remains issued,
+  // but neither its success nor its finally may repaint or unlock over B.
+  ownerGroupsRaceWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
+  await waitFor(() => releaseStaleOwnerRefresh, "slow owner-six refresh command did not begin");
+  pick(ownerRaceMembers[2]);
+  await waitFor(() => ownerGroupQueries.at(-1) === "9", "new owner-nine selection did not read its own group directory");
+  releaseStaleOwnerRefresh();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ownerGroupsRaceWindow.document.querySelector('[name="owner_userid"]')?.value, "9", "late owner-six refresh must not replace the newer local owner field");
+  assert.equal(ownerGroupsRaceWindow.document.body.textContent.includes("已刷新："), false, "late owner-six refresh must not announce completion for owner-nine");
+
+  pick(ownerRaceMembers[1]);
+  await waitFor(() => staleOwnerGroupReads.length === 1, "slow owner-seven group read did not begin");
+  pick(ownerRaceMembers[2]);
+  await waitFor(() => ownerGroupQueries.at(-1) === "9", "new owner-nine group projection did not request its current owner directory");
+  ownerGroupsRaceWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  ownerGroupsRaceWindow.document.querySelector('[data-action="open-group-picker"]').click();
+  await waitFor(
+    () => ownerGroupsRaceWindow.document.body.textContent.includes("负责人九群"),
+    () => `new owner-nine group projection did not render in the dependent group picker; queries=${JSON.stringify(ownerGroupQueries)} body=${ownerGroupsRaceWindow.document.body.textContent}`,
+  );
+  staleOwnerGroupReads.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ownerGroupsRaceWindow.document.querySelector('[name="owner_userid"]')?.value, "9", "late owner-seven read must not replace the newer local owner field");
+  assert.equal(ownerGroupsRaceWindow.document.body.textContent.includes("迟到的负责人七群"), false, "late owner-seven group rows must not repaint owner-nine detail");
+  ownerGroupsRaceWindow.document.querySelector('[data-action="close-group-picker"]').click();
+
+  pick(ownerRaceMembers[1]);
+  await waitFor(() => staleOwnerGroupReads.length === 1, "second slow owner-seven group read did not begin");
+  ownerGroupsRaceWindow.dispatchEvent(new ownerGroupsRaceWindow.CustomEvent("aicrm:groupops-detail-refresh", { detail: { planId: 93 } }));
+  await waitFor(() => ownerGroupQueries.at(-1) === "6", "authoritative detail reread did not request its own owner directory before stale owner response");
+  ownerGroupsRaceWindow.document.querySelector('[data-action="open-group-picker"]').click();
+  await waitFor(() => ownerGroupsRaceWindow.document.body.textContent.includes("负责人六群"), "authoritative detail reread did not render before stale owner response");
+  staleOwnerGroupReads.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ownerGroupsRaceWindow.document.body.textContent.includes("迟到的负责人七群"), false, "an owner response that outlives the detail generation must not repaint the reread plan");
+  console.log("groupops-owner-dependent-directory-race: PASS");
+} finally {
+  ownerGroupsRaceJourney.window.close();
+}
+
+// GroupOps treats every owner_userid form field as a local staff ID. This
+// collision fixture proves a numeric external UserID cannot replace another
+// staff record in create, plan-owner, or group-filter UI/reloads/requests.
+const collisionMembers = [
+  { staff_id: 1, sender_userid: "2", display_name: "外部 UserID 为 2 的一号员工" },
+  { staff_id: 2, sender_userid: "wecom-staff-two", display_name: "本地二号员工" },
+];
+const collisionResponse = (body) => response(body);
+const collisionWindow = (mode, planID = "") => {
+  const journey = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="${mode}"${planID ? ` data-plan-id="${planID}"` : ""}></main></body></html>`, {
+    url: `https://groupops.test/admin/automation-conversion/group-ops${mode === "groups" ? "/groups" : planID ? `/plans/${planID}` : ""}`,
+    runScripts: "outside-only", pretendToBeVisual: true,
+  });
+  const view = journey.window; view.Headers = Headers; view.Response = Response;
+  Object.defineProperty(view, "crypto", { configurable: true, value: crypto });
+  view.document.cookie = "aicrm_admin_csrf=test-csrf";
+  const requests = [];
+  view.fetch = async (input, init = {}) => {
+    const url = new URL(String(input), view.location.href); const method = String(init.method || "GET").toUpperCase();
+    requests.push({ path: url.pathname, query: url.search, method });
+    if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return collisionResponse({ items: collisionMembers });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return collisionResponse({ items: [] });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return collisionResponse({ items: [] });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52" && method === "GET") return collisionResponse({ plan: { plan_id: 52, name: "碰撞计划", revision: 1, status: "draft", plan_type: "standard", owner_userid: "2", owner_name: "本地二号员工" }, members: [{ staff_id: 2 }], group_assets: [], nodes: [] });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52/groups" && method === "GET") return collisionResponse({ items: [] });
+    throw new Error(`unexpected collision request ${method} ${url.pathname}${url.search}`);
+  };
+  view.eval(pickerSource); view.eval(bundle.outputFiles[0].text);
+  return { journey, view, requests };
+};
+const chooseCollisionStaffTwo = async (view, message) => {
+  await waitFor(() => view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]'), message);
+  const one = view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":1"]');
+  const two = view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]');
+  assert.equal(one.getAttribute("aria-pressed"), "false", "numeric external UserID must not preselect local staff #1");
+  two.click(); view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
+};
+const collisionCreate = collisionWindow("list");
+try {
+  await waitFor(() => collisionCreate.view.document.querySelector('[data-action="show-create-plan"]'), "collision create page did not render");
+  collisionCreate.view.document.querySelector('[data-action="show-create-plan"]').click();
+  collisionCreate.view.document.querySelector('[data-action="pick-create-owner"]').click();
+  await chooseCollisionStaffTwo(collisionCreate.view, "collision create picker did not render local staff #2");
+  await waitFor(() => collisionCreate.view.document.querySelector('[name="create_owner_userid"]')?.value === "2", "create selection did not retain local staff #2");
+  assert.match(collisionCreate.view.document.querySelector('[data-member-current="create_owner_userid"]')?.textContent || "", /本地二号员工/, "create selection must render the local staff #2 label");
+  collisionCreate.view.document.querySelector('[data-action="cancel-create-plan"]').click();
+  collisionCreate.view.document.querySelector('[data-action="show-create-plan"]').click();
+  assert.equal(collisionCreate.view.document.querySelector('[name="create_owner_userid"]')?.value, "2", "create rerender must retain the local staff ID rather than external UserID");
+  assert.match(collisionCreate.view.document.querySelector('[data-member-current="create_owner_userid"]')?.textContent || "", /本地二号员工/);
+} finally { collisionCreate.journey.window.close(); }
+const collisionPlan = collisionWindow("detail", "52");
+try {
+  await waitFor(() => collisionPlan.view.document.querySelector('[data-action="pick-plan-owner"]'), "collision plan page did not render");
+  assert.match(collisionPlan.view.document.querySelector('[data-member-current="owner_userid"]')?.textContent || "", /本地二号员工/, "plan owner rendering must use local staff #2");
+  collisionPlan.view.document.querySelector('[data-action="pick-plan-owner"]').click();
+  await waitFor(() => collisionPlan.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]')?.getAttribute("aria-pressed") === "true", "plan picker must preselect local staff #2");
+  assert.equal(collisionPlan.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":1"]')?.getAttribute("aria-pressed"), "false", "plan picker must not match external UserID 2 to staff #1");
+  collisionPlan.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-cancel]').click();
+} finally { collisionPlan.journey.window.close(); }
+const collisionFilter = collisionWindow("groups");
+try {
+  await waitFor(() => collisionFilter.view.document.querySelector('[data-action="pick-group-filter-owner"]'), "collision groups page did not render");
+  collisionFilter.view.document.querySelector('[data-action="pick-group-filter-owner"]').click();
+  await chooseCollisionStaffTwo(collisionFilter.view, "collision group filter picker did not render local staff #2");
+  await waitFor(() => collisionFilter.requests.some((request) => request.path.endsWith("/groups") && request.query.includes("owner_userid=2")), "group filter request must carry local staff #2");
+  assert.equal(collisionFilter.view.document.querySelector('[name="owner_userid"]')?.value, "2", "group filter rerender must retain the local staff ID");
+  assert.match(collisionFilter.view.document.querySelector('[data-member-current="owner_userid"]')?.textContent || "", /本地二号员工/);
+  collisionFilter.view.document.querySelector('[data-action="pick-group-filter-owner"]').click();
+  await waitFor(() => collisionFilter.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]')?.getAttribute("aria-pressed") === "true", "optional group filter did not restore local staff #2");
+  collisionFilter.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]').click();
+  collisionFilter.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
+  await waitFor(() => collisionFilter.requests.filter((request) => request.path.endsWith("/groups")).at(-1)?.query === "", "empty optional group filter must reload without an owner query");
+  assert.equal(collisionFilter.view.document.querySelector('[name="owner_userid"]')?.value, "", "empty optional group filter must clear the hidden local owner ID");
+  collisionFilter.view.document.querySelector('[data-action="clear-group-filter-owner"]').click();
+  await waitFor(() => collisionFilter.requests.filter((request) => request.path.endsWith("/groups")).at(-1)?.query === "", "clearing group filter must remove the local owner query");
+  assert.equal(collisionFilter.view.document.querySelector('[name="owner_userid"]')?.value, "", "clearing group filter must not retain an external UserID fallback");
+} finally { collisionFilter.journey.window.close(); }
+console.log("groupops-owner-local-id-collision: PASS");
+
+// A pre-existing detail read can legitimately become stale without any
+// intervening command. The newer plan save must win once its authoritative
+// readback completes; releasing the old response must not repaint its snapshot.
+const saveRaceJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="61"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/61",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const saveRaceWindow = saveRaceJourney.window;
+saveRaceWindow.Headers = Headers;
+saveRaceWindow.Response = Response;
+Object.defineProperty(saveRaceWindow, "crypto", { configurable: true, value: crypto });
+saveRaceWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
+let saveRacePlan = { plan_id: 61, name: "旧详情名称", revision: 5, status: "draft", plan_type: "standard" };
+let delaySaveRaceRead = false;
+let releaseSaveRaceRead = null;
+const saveRaceDetail = () => ({
+  plan: clone(saveRacePlan),
+  members: [{ staff_id: 7 }],
+  group_assets: [],
+  nodes: [],
+});
+saveRaceWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), saveRaceWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  const body = init.body ? JSON.parse(String(init.body)) : null;
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") {
+    return response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/61" && method === "GET") {
+    if (delaySaveRaceRead) {
+      delaySaveRaceRead = false;
+      const captured = response(saveRaceDetail());
+      return new Promise((resolve) => { releaseSaveRaceRead = () => resolve(captured); });
+    }
+    return response(saveRaceDetail());
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/61" && method === "PUT") {
+    assert.equal(body.expected_revision, 5, "a valid save must use the current Owner revision");
+    assert.equal(body.name, "较新合法保存", "the saved form value must reach the Owner command");
+    saveRacePlan = { ...saveRacePlan, name: body.name, revision: 6 };
+    return response({ plan: clone(saveRacePlan) });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/61/groups" && method === "GET") {
+    return response({ items: [], summary: { bound_group_count: 0 } });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") {
+    return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/61/nodes" && method === "GET") {
+    return response({ items: [] });
+  }
+  throw new Error(`unexpected save-race request ${method} ${url.pathname}`);
+};
+try {
+  saveRaceWindow.eval(pickerSource);
+  saveRaceWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => saveRaceWindow.document.querySelector('[data-action="save-plan"]'), "save race fixture did not render the basic form");
+  saveRaceWindow.document.querySelector('[name="plan_name"]').value = "较新合法保存";
+  const deferredSave = saveRaceWindow.document.querySelector('[data-action="save-plan"]');
+  delaySaveRaceRead = true;
+  saveRaceWindow.dispatchEvent(new saveRaceWindow.CustomEvent("aicrm:groupops-detail-refresh", { detail: { planId: 61 } }));
+  await waitFor(() => releaseSaveRaceRead && saveRaceWindow.document.body.textContent.includes("加载中"), "older detail request did not begin before the valid save");
+  const deferredDraft = saveRaceWindow.document.createElement("input");
+  deferredDraft.name = "plan_name";
+  deferredDraft.value = "较新合法保存";
+  saveRaceWindow.document.getElementById("group-ops-app").append(deferredDraft);
+  deferredSave.click();
+  await waitFor(() => saveRacePlan.name === "较新合法保存", "the newer valid save did not complete before the old detail response resumed");
+  releaseSaveRaceRead();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(saveRacePlan.name, "较新合法保存", "the delayed old detail response must not overwrite a completed valid save");
+  assert.equal(saveRaceWindow.document.body.textContent.includes("较新合法保存"), true, "the rendered detail must retain the newer authoritative plan name");
+  console.log("groupops-save-race-dom: PASS");
+} finally {
+  saveRaceJourney.window.close();
 }
 
 // Webhook presentation is rendered by the same standard Host: it must expose
@@ -854,7 +1166,7 @@ try {
   webhookWindow.eval(bundle.outputFiles[0].text);
   await waitFor(() => webhookWindow.document.querySelector('[data-action="save-webhook"]'), "unconfigured webhook did not render its configuration action");
   assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/plans/52").length, 1, "Webhook detail hydration must issue one plan read");
-  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0").length, 1, "Webhook detail hydration must issue one unfiltered group-directory read");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0").length, 0, "Webhook detail hydration must not crawl an unfiltered group directory to decorate persisted bindings");
   assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/groups?owner_userid=7").length, 1, "Webhook owner picker directory remains an independent read");
   assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/plans/52/webhook-descriptor").length, 1, "Webhook descriptor remains an independent read");
   assert.equal(webhookWindow.document.querySelector('[name="webhook_reference"]'), null, "users must not enter technical webhook references");

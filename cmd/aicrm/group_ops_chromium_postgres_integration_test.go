@@ -4,8 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,6 +93,10 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM group_ops_plan_nodes WHERE plan_id=$1 AND day_index=2 AND scheduled_time='09:30' AND trigger_time_label='09:30' AND action_title='Chromium 日程动作' AND node_status='active'`, fixture.planID).Scan(&matched); err != nil || matched != 1 {
 		t.Fatalf("browser node persistence count=%d err=%v", matched, err)
 	}
+	var groupBindings int64
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM group_ops_plan_group_assets WHERE plan_id=$1 AND asset_reference IN ('chromium-group-1','chromium-group-2')`, fixture.planID).Scan(&groupBindings); err != nil || groupBindings != 2 {
+		t.Fatalf("browser group selection persistence count=%d err=%v", groupBindings, err)
+	}
 	var ownerCount, ownerID int64
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*),coalesce(min(staff_id),0) FROM group_ops_plan_members WHERE plan_id=$1`, fixture.planID).Scan(&ownerCount, &ownerID); err != nil || ownerCount != 1 || ownerID != fixture.replacementStaffID {
 		t.Fatalf("browser owner persistence count=%d owner=%d err=%v", ownerCount, ownerID, err)
@@ -147,9 +157,47 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_plan_members(plan_id,staff_id) VALUES($1,$2)`, planID, actorID); err != nil {
 		t.Fatal(err)
 	}
+	// Keep the target outside the first picker page. The Chromium journey must
+	// prove a q-filtered Owner read can find it without preloading this directory.
+	for index := 1; index <= 50; index++ {
+		if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES($1,$2,$3,1,$4,$5,0)`, "chromium-a-"+strconv.Itoa(index), actorID, "Chromium 目录填充", "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES ('chromium-group-1',$1,'Chromium 群一',20,'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',$2,12),('chromium-group-2',$1,'Chromium 群二',18,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',$2,10),('chromium-group-3',$1,'Chromium 群三',16,'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',$2,8)`, actorID, now); err != nil {
+		t.Fatal(err)
+	}
+	seedGroupOpsChromiumRadarImages(t, ctx, application)
 	server.Config.Handler = application.handler
 	server.StartTLS()
 	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID}
+}
+
+// seedGroupOpsChromiumRadarImages uses the normal Media tables only. The
+// browser consumes the authenticated, page-scoped image-library read; it never
+// uploads or writes a Provider resource.
+func seedGroupOpsChromiumRadarImages(t *testing.T, ctx context.Context, application *composedApplication) {
+	t.Helper()
+	// A complete, visibly colored PNG makes the page-scoped thumbnail endpoint
+	// part of the browser journey; a signature-only byte slice renders broken.
+	canvas := image.NewRGBA(image.Rect(0, 0, 160, 90))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{37, 99, 235, 255}), image.Point{}, draw.Src)
+	draw.Draw(canvas, image.Rect(0, 60, 160, 90), image.NewUniform(color.RGBA{15, 118, 110, 255}), image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canvas); err != nil {
+		t.Fatal(err)
+	}
+	content := encoded.Bytes()
+	digestValue := sha256.Sum256(content)
+	digest := "sha256:" + hex.EncodeToString(digestValue[:])
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, digest, len(content), content); err != nil {
+		t.Fatal(err)
+	}
+	for index, name := range []string{"Chromium 雷达素材一", "Chromium 雷达素材二", "Chromium 雷达素材三"} {
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'真实雷达素材选择验收','chromium,radar','chromium-radar','image/png',$4,160,90,true,1,1)`, digest, "chromium-radar-"+strconv.Itoa(index+1)+".png", name, len(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // Group Ops runs against the same already-staged release closure as CI. The
