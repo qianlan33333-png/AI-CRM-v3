@@ -99,6 +99,7 @@ async function api(
   method = "GET",
   body?: Obj | Blob,
   idempotencyKey = key("excel-batch"),
+  signal?: AbortSignal,
 ): Promise<Obj> {
   const headers: Record<string, string> = { Accept: "application/json" };
   let encoded: BodyInit | undefined;
@@ -122,32 +123,55 @@ async function api(
     headers,
     body: encoded,
     credentials: "same-origin",
+    signal,
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(errorText(response.status, result));
   return result;
 }
-async function readAllPages(
-  path: string,
-  field: "rows" | "items",
-): Promise<Obj> {
-  let cursor = "";
-  let first: Obj | null = null;
-  const records: Obj[] = [];
-  const seen = new Set<string>();
-  do {
-    const query = new URLSearchParams({ limit: "50" });
-    if (cursor) query.set("cursor", cursor);
-    const page = await api(`${path}${path.includes("?") ? "&" : "?"}${query}`);
-    if (!first) first = page;
-    records.push(...(Array.isArray(page[field]) ? page[field] : []));
-    const next = typeof page.next_cursor === "string" ? page.next_cursor : "";
-    if (!next) return { ...first, [field]: records, next_cursor: "" };
-    if (seen.has(next))
-      throw new Error("分页游标重复，已停止读取以避免混合批次数据");
-    seen.add(next);
-    cursor = next;
-  } while (true);
+function pagedPath(path: string, cursor = ""): string {
+  const query = new URLSearchParams({ limit: "50" });
+  if (cursor) query.set("cursor", cursor);
+  return `${path}${path.includes("?") ? "&" : "?"}${query}`;
+}
+function aborted(error: unknown): boolean {
+  return (error as { name?: string } | null)?.name === "AbortError";
+}
+type CursorPage = {
+  items: Obj[];
+  cursors: string[];
+  index: number;
+  nextCursor: string;
+  retryCursor: string;
+  retryFromMetadata: boolean;
+  loading: boolean;
+  error: string;
+  requestID: number;
+  controller: AbortController | null;
+};
+function cursorPage(): CursorPage {
+  return {
+    items: [],
+    cursors: [""],
+    index: 0,
+    nextCursor: "",
+    retryCursor: "",
+    retryFromMetadata: false,
+    loading: false,
+    error: "",
+    requestID: 0,
+    controller: null,
+  };
+}
+type ReportRead = {
+  value: Obj | null;
+  loading: boolean;
+  error: string;
+  requestID: number;
+  controller: AbortController | null;
+};
+function reportRead(): ReportRead {
+  return { value: null, loading: false, error: "", requestID: 0, controller: null };
 }
 type ActionKind = "primary" | "secondary" | "ghost" | "danger";
 
@@ -323,9 +347,17 @@ class Workspace {
   private legacyError = "";
   private batches: Obj[] = [];
   private strategyKey = "";
+  private strategy: Obj = {};
   private batchID = 0;
   private tab = "content";
   private generation = 0;
+  private batch: Obj | null = null;
+  private metadataRequestID = 0;
+  private metadataController: AbortController | null = null;
+  private contentPage = cursorPage();
+  private receiptPage = cursorPage();
+  private report = reportRead();
+  private versionRefreshes = 0;
   private batchWritePending = false;
   constructor(parent: HTMLElement) {
     style();
@@ -339,9 +371,9 @@ class Workspace {
   private right(): HTMLElement {
     return this.root.querySelector<HTMLElement>(".xeb-detail-main")!;
   }
-  private tell(value: string): void {
+  private tell(value: string, kind: "success" | "error" = "success"): void {
     const node = this.root.querySelector<HTMLElement>("[data-excel-feedback]");
-    if (node) setNotice(node, value);
+    if (node) setNotice(node, value, kind);
   }
   private batchAction(
     node: HTMLButtonElement,
@@ -377,6 +409,95 @@ class Workspace {
       this.batchWritePending = false;
       this.syncBatchMutationControls();
     }
+  }
+  private resetCursorPage(page: CursorPage): void {
+    page.controller?.abort();
+    page.controller = null;
+    page.items = [];
+    page.cursors = [""];
+    page.index = 0;
+    page.nextCursor = "";
+    page.retryCursor = "";
+    page.retryFromMetadata = false;
+    page.loading = false;
+    page.error = "";
+    page.requestID += 1;
+  }
+  private resetReport(): void {
+    this.report.controller?.abort();
+    this.report.controller = null;
+    this.report.value = null;
+    this.report.loading = false;
+    this.report.error = "";
+    this.report.requestID += 1;
+  }
+  private cancelVisibleReads(): void {
+    this.metadataController?.abort();
+    this.metadataController = null;
+    this.metadataRequestID += 1;
+    this.resetCursorPage(this.contentPage);
+    this.resetCursorPage(this.receiptPage);
+    this.resetReport();
+  }
+  private beginWorkspaceRead(keepVersionRefresh = false): number {
+    this.generation += 1;
+    if (!keepVersionRefresh) this.versionRefreshes = 0;
+    this.cancelVisibleReads();
+    return this.generation;
+  }
+  private currentWorkspace(
+    workspaceGeneration: number,
+    batchID: number,
+    tab?: string,
+  ): boolean {
+    return (
+      workspaceGeneration === this.generation &&
+      batchID === this.batchID &&
+      (tab === undefined || tab === this.tab)
+    );
+  }
+  private currentContentVersion(batch: Obj | null): number {
+    const version = Number(batch?.current_content_version);
+    return Number.isSafeInteger(version) && version > 0 ? version : 0;
+  }
+  private batchPresentationChanged(previous: Obj, current: Obj): boolean {
+    const fields = [
+      "version",
+      "state",
+      "cover_digest",
+      "cover_image_id",
+      "current_content_version",
+    ];
+    return (
+      fields.some((field) => previous[field] !== current[field]) ||
+      JSON.stringify(previous.summary || {}) !== JSON.stringify(current.summary || {})
+    );
+  }
+  private historicalContentVersion(detail: Obj): number {
+    const version = detail.content_version;
+    if (!version || typeof version !== "object") return 0;
+    const revision = Number(version.content_version);
+    return Number.isSafeInteger(revision) && revision > 0 ? revision : 0;
+  }
+  private setCurrentBatch(batch: Obj): void {
+    this.batch = batch;
+    const id = Number(batch.id);
+    this.batches = this.batches.map((item) =>
+      Number(item.id) === id ? { ...item, ...batch } : item,
+    );
+  }
+  private paginationError(
+    page: CursorPage,
+    message: string,
+    retryCursor = page.cursors[page.index] || "",
+    retryFromMetadata = false,
+  ): void {
+    page.loading = false;
+    page.error = message;
+    page.nextCursor = "";
+    page.retryCursor = retryCursor;
+    page.retryFromMetadata = retryFromMetadata;
+    page.controller = null;
   }
   private async loadPlans(offset = this.planOffset, openHash = false): Promise<void> {
     if (this.plansLoading) return;
@@ -526,8 +647,10 @@ class Workspace {
     head.className = "xeb-head xeb-meta";
     head.append(
       action("返回计划列表", () => {
-        this.generation++;
+        this.beginWorkspaceRead();
         this.strategyKey = "";
+        this.strategy = {};
+        this.batch = null;
         this.batchID = 0;
         location.hash = "";
         this.renderShell();
@@ -571,18 +694,31 @@ class Workspace {
     next: string,
     updateLocation = true,
     preferredBatchID = 0,
+    requireReadback = false,
   ): Promise<void> {
-    const currentGeneration = ++this.generation;
+    const currentGeneration = this.beginWorkspaceRead();
     this.strategyKey = next;
     this.batchID = preferredBatchID;
+    this.batch = null;
     if (updateLocation)
       location.hash = new URLSearchParams({ strategy: next }).toString();
     this.renderDetailShell();
     try {
+      const requestID = ++this.metadataRequestID;
+      const controller = new AbortController();
+      this.metadataController = controller;
       const result = await api(
         `${base}/strategies/${encodeURIComponent(next)}`,
+        "GET",
+        undefined,
+        undefined,
+        controller.signal,
       );
-      if (currentGeneration !== this.generation || next !== this.strategyKey)
+      if (
+        requestID !== this.metadataRequestID ||
+        !this.currentWorkspace(currentGeneration, this.batchID) ||
+        next !== this.strategyKey
+      )
         return;
       this.batches = Array.isArray(result.items) ? result.items : [];
       this.batchID = Number(
@@ -595,40 +731,125 @@ class Workspace {
         this.plans.find(
           (value) => String(value.strategy_key) === this.strategyKey,
         ) || {};
-      await this.renderDetail(
-        { ...listedStrategy, ...(result.strategy || {}) },
-        this.batches,
-      );
+      this.strategy = { ...listedStrategy, ...(result.strategy || {}) };
+      this.batch =
+        this.batches.find((batch) => Number(batch.id) === this.batchID) ||
+        null;
+      this.metadataController = null;
+      await this.loadSelected(true, false, requireReadback);
     } catch (error) {
-      if (currentGeneration === this.generation) {
+      if (
+        !aborted(error) &&
+        currentGeneration === this.generation &&
+        next === this.strategyKey
+      ) {
         const failed = el("div", (error as Error).message);
         failed.className = "admin-state admin-state--error";
         this.right().replaceChildren(failed);
       }
+      if (requireReadback) throw error;
     }
   }
-  private async loadSelected(): Promise<void> {
-    const id = this.batchID,
-      requestGeneration = ++this.generation;
-    const result = await readAllPages(`${base}/${id}`, "rows");
-    if (requestGeneration !== this.generation || id !== this.batchID) return;
-    const current = result.batch || result.plan;
-    this.batches = this.batches.map((item) =>
-      Number(item.id) === id ? { ...item, ...current } : item,
+  private async refreshSelectedMetadata(
+    workspaceGeneration: number,
+    id: number,
+  ): Promise<Obj | null> {
+    const requestID = ++this.metadataRequestID;
+    const controller = new AbortController();
+    this.metadataController = controller;
+    const result = await api(
+      `${base}/strategies/${encodeURIComponent(this.strategyKey)}`,
+      "GET",
+      undefined,
+      undefined,
+      controller.signal,
     );
-    const strategy =
+    if (
+      requestID !== this.metadataRequestID ||
+      !this.currentWorkspace(workspaceGeneration, id)
+    )
+      return null;
+    this.batches = Array.isArray(result.items) ? result.items : [];
+    const listedStrategy =
       this.plans.find(
         (value) => String(value.strategy_key) === this.strategyKey,
       ) || {};
-    await this.renderDetail(strategy, this.batches, result);
+    this.strategy = { ...listedStrategy, ...(result.strategy || {}) };
+    const batch =
+      this.batches.find((item) => Number(item.id) === id) || null;
+    if (!batch) throw new Error("当前批次已变化，请返回计划列表后重新选择");
+    this.setCurrentBatch(batch);
+    this.metadataController = null;
+    return batch;
   }
-  private async renderDetail(
-    strategy: Obj,
-    batches: Obj[],
-    detail?: Obj,
+  private async loadSelected(
+    reuseCurrentMetadata = false,
+    keepVersionRefresh = false,
+    requireReadback = false,
   ): Promise<void> {
-    const selectedID = this.batchID;
-    const renderGeneration = this.generation;
+    const id = this.batchID;
+    const workspaceGeneration = this.beginWorkspaceRead(keepVersionRefresh);
+    if (!id) {
+      this.batch = null;
+      this.renderDetail();
+      return;
+    }
+    const loading = el("div", "正在读取批次详情…");
+    loading.className = "admin-state admin-state--loading";
+    this.right().replaceChildren(loading);
+    try {
+      const batch = reuseCurrentMetadata
+        ? this.batch
+        : await this.refreshSelectedMetadata(workspaceGeneration, id);
+      if (
+        !batch ||
+        !this.currentWorkspace(workspaceGeneration, id) ||
+        !this.currentContentVersion(batch)
+      ) {
+        if (this.currentWorkspace(workspaceGeneration, id) && batch)
+          throw new Error("批次读取响应缺少当前内容版本");
+        return;
+      }
+      this.setCurrentBatch(batch);
+      this.renderDetail();
+      if (this.tab === "content") {
+        await this.loadContentPage("", requireReadback);
+        if (!this.currentWorkspace(workspaceGeneration, id)) return;
+        if (requireReadback && this.contentPage.error) {
+          const failure = new Error(`内容回读失败：${this.contentPage.error}`) as Error & {
+            readback?: boolean;
+          };
+          failure.readback = true;
+          this.tell(failure.message, "error");
+          throw failure;
+        }
+      } else {
+        await Promise.all([this.loadReceiptPage(""), this.loadReport()]);
+      }
+    } catch (error) {
+      const readback = (error as { readback?: boolean } | null)?.readback === true;
+      if (
+        !readback &&
+        !aborted(error) &&
+        this.currentWorkspace(workspaceGeneration, id)
+      ) {
+        const failed = el("div", (error as Error).message);
+        failed.className = "admin-state admin-state--error";
+        this.right().replaceChildren(failed);
+      }
+      if (requireReadback) {
+        if (readback) throw error;
+        const failure = new Error(`批次回读失败：${(error as Error).message}`) as Error & {
+          readback?: boolean;
+        };
+        failure.readback = true;
+        this.tell(failure.message, "error");
+        throw failure;
+      }
+    }
+  }
+  private renderDetail(): void {
+    const batch = this.batch;
     const right = this.right();
     right.replaceChildren();
     const head = el("div");
@@ -636,16 +857,16 @@ class Workspace {
     const actions = el("div");
     actions.className = "admin-toolbar xeb-actions";
     actions.append(action("新建发送批次", () => this.importDialog(), "primary"));
-    if (batches.length) {
+    if (this.batches.length) {
       const select = el("select") as HTMLSelectElement;
       select.setAttribute("aria-label", "历史批次");
-      batches.forEach((batch) => {
+      this.batches.forEach((item) => {
         const option = el(
           "option",
-          `批次 #${batch.id} · ${batchState(batch)}`,
+          `批次 #${item.id} · ${batchState(item)}`,
         ) as HTMLOptionElement;
-        option.value = String(batch.id);
-        option.selected = Number(batch.id) === this.batchID;
+        option.value = String(item.id);
+        option.selected = Number(item.id) === this.batchID;
         select.append(option);
       });
       select.onchange = async () => {
@@ -654,9 +875,9 @@ class Workspace {
       };
       actions.append(field("历史批次", select));
     }
-    head.append(el("h2", String(strategy.title || this.strategyKey)), actions);
+    head.append(el("h2", String(this.strategy.title || this.strategyKey)), actions);
     right.append(head);
-    if (!selectedID) {
+    if (!this.batchID) {
       const empty = el(
         "div",
         "此长期计划还没有 Excel 批次。文件在本地选择期间不会创建任何计划或批次。",
@@ -665,36 +886,15 @@ class Workspace {
       right.append(empty, notice());
       return;
     }
-    const payload =
-      detail || (await readAllPages(`${base}/${selectedID}`, "rows"));
-    if (
-      renderGeneration !== this.generation ||
-      selectedID !== this.batchID
-    )
-      return;
-    const batch =
-      payload.batch ||
-      payload.plan ||
-      batches.find((value) => Number(value.id) === selectedID);
     if (!batch) throw new Error("批次读取响应缺少当前批次");
     const body = el("div");
     body.className = "xeb-body";
     body.append(this.batchSummary(batch));
     const status = notice();
     body.append(status);
-    if (this.tab === "content")
-      this.content(
-        body,
-        batch,
-        Array.isArray(payload.rows) ? payload.rows : [],
-      );
-    else await this.effects(body, batch);
-    if (
-      renderGeneration !== this.generation ||
-      selectedID !== this.batchID
-    )
-      return;
     right.append(body);
+    if (this.tab === "content") this.content(body, batch);
+    else this.effects(body, batch);
   }
   private batchSummary(batch: Obj): HTMLElement {
     const summary = batch.summary || {};
@@ -737,7 +937,7 @@ class Workspace {
       String(batch.state),
     );
   }
-  private content(parent: HTMLElement, batch: Obj, rows: Obj[]): void {
+  private content(parent: HTMLElement, batch: Obj): void {
     const id = Number(batch.id),
       editable = this.editable(batch),
       actions = el("div");
@@ -767,7 +967,7 @@ class Workspace {
               { expected_version: batch.version, preview_digest: digest },
               approveKey,
             );
-            await this.loadSelected();
+            await this.loadSelected(false, false, true);
             this.tell(
               "企微任务意图已创建，员工仍需在企微端执行；这不等于发送成功。",
             );
@@ -795,7 +995,7 @@ class Workspace {
                 file,
                 coverKey,
               );
-              await this.loadSelected();
+              await this.loadSelected(false, false, true);
               this.tell("统一封面已更新；请重新核对预览。");
             });
           }),
@@ -808,14 +1008,69 @@ class Workspace {
     parent.append(actions);
     if (!(batch.cover_digest || Number(batch.cover_image_id || 0) > 0) && editable)
       parent.append(el("p", "没有统一封面，不能审核通过并创建企微群发任务。"));
+    const page = el("div");
+    page.dataset.excelContentPage = "";
+    parent.append(page);
+    this.renderContentPage(batch);
+  }
+  private pageNavigation(
+    page: CursorPage,
+    kind: "content" | "receipts" | "history",
+    onPage: (cursor: string) => Promise<void>,
+  ): HTMLElement {
+    const pager = el("div");
+    pager.className = "admin-toolbar admin-pagination xeb-actions xeb-pagination";
+    pager.dataset.excelPage = kind;
+    const previous = action("上一页", () => {
+      const cursor = page.cursors[page.index - 1];
+      if (cursor !== undefined) return onPage(cursor);
+    }, "ghost");
+    previous.disabled = page.loading || this.batchWritePending || page.index <= 0;
+    const next = action("下一页", () => {
+      if (page.nextCursor) return onPage(page.nextCursor);
+    }, "ghost");
+    next.disabled = page.loading || this.batchWritePending || !page.nextCursor;
+    pager.append(
+      el("small", `第 ${page.index + 1} 页 · 当前页 ${page.items.length} 项`),
+      previous,
+      next,
+    );
+    return pager;
+  }
+  private renderContentPage(batch: Obj): void {
+    const id = Number(batch.id);
+    const target = this.root.querySelector<HTMLElement>("[data-excel-content-page]");
+    if (!target || this.tab !== "content" || Number(batch.id) !== this.batchID)
+      return;
+    const page = this.contentPage;
+    target.replaceChildren();
+    if (page.loading) {
+      const loading = el("div", "正在读取当前内容页…");
+      loading.className = "admin-state admin-state--loading";
+      target.append(loading);
+      return;
+    }
+    if (page.error) {
+      target.append(
+        notice(`内容页读取失败：${page.error}`, "error"),
+        action("重新读取当前页", () =>
+          page.retryFromMetadata
+            ? this.loadSelected()
+            : this.loadContentPage(
+                page.retryCursor || page.cursors[page.index] || "",
+              ),
+        ),
+      );
+      return;
+    }
     const scroll = el("div");
     scroll.className = "xeb-scroll";
     scroll.append(
       table(
         ["UnionID / 员工", "话术", "小程序卡片", "分层", "状态", "审核操作"],
-        rows.map((row) => {
+        page.items.map((row) => {
           const controls = el("div");
-          if (editable) {
+          if (this.editable(batch)) {
             controls.className = "admin-toolbar xeb-actions";
             controls.append(
               this.batchAction(action("修改", () => this.rowDialog(batch, row), "ghost")),
@@ -835,7 +1090,7 @@ class Workspace {
                       },
                       key(`excel-row-${id}-${row.id}`),
                     );
-                    await this.loadSelected();
+                    await this.loadSelected(false, false, true);
                   });
                 }, row.excluded ? "ghost" : "danger"),
               ),
@@ -852,7 +1107,119 @@ class Workspace {
         }),
       ),
     );
-    parent.append(scroll);
+    target.append(scroll);
+    if (!page.items.length) target.append(el("p", "当前页没有内容行。"));
+    target.append(
+      this.pageNavigation(page, "content", (cursor) =>
+        this.loadContentPage(cursor),
+      ),
+    );
+  }
+  private async loadContentPage(
+    cursor: string,
+    requireReadback = false,
+  ): Promise<void> {
+    const batch = this.batch;
+    const id = Number(batch?.id);
+    const expectedVersion = this.currentContentVersion(batch);
+    const page = this.contentPage;
+    const workspaceGeneration = this.generation;
+    const index = page.cursors.indexOf(cursor);
+    if (
+      !batch ||
+      this.tab !== "content" ||
+      !Number.isSafeInteger(id) ||
+      id < 1 ||
+      !expectedVersion ||
+      index < 0
+    )
+      return;
+    page.controller?.abort();
+    const requestID = ++page.requestID;
+    const controller = new AbortController();
+    page.controller = controller;
+    page.loading = true;
+    page.error = "";
+    this.renderContentPage(batch);
+    try {
+      const result = await api(
+        pagedPath(`${base}/${id}`, cursor),
+        "GET",
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      if (
+        requestID !== page.requestID ||
+        !this.currentWorkspace(workspaceGeneration, id, "content")
+      )
+        return;
+      const current = result.batch || result.plan;
+      const returnedVersion = this.currentContentVersion(current);
+      if (
+        !current ||
+        Number(current.id) !== id ||
+        returnedVersion !== expectedVersion
+      ) {
+        await this.recoverVersionDrift(page, "内容", cursor, requireReadback);
+        return;
+      }
+      const next = typeof result.next_cursor === "string" ? result.next_cursor : "";
+      const knownNext = page.cursors[index + 1] || "";
+      if (
+        next &&
+        (next === cursor ||
+          page.cursors.slice(0, index + 1).includes(next) ||
+          (knownNext && knownNext !== next))
+      ) {
+        this.paginationError(page, "分页游标重复，已停止读取以避免混合批次数据", cursor);
+        this.renderContentPage(batch);
+        return;
+      }
+      page.items = Array.isArray(result.rows) ? result.rows : [];
+      page.cursors = page.cursors.slice(0, index + 1);
+      if (next) page.cursors.push(next);
+      page.index = index;
+      page.nextCursor = next;
+      page.loading = false;
+      page.error = "";
+      page.retryFromMetadata = false;
+      page.controller = null;
+      const presentationChanged = this.batchPresentationChanged(batch, current);
+      this.setCurrentBatch(current);
+      if (presentationChanged) this.renderDetail();
+      else this.renderContentPage(current);
+    } catch (error) {
+      if ((error as { readback?: boolean } | null)?.readback === true)
+        throw error;
+      if (
+        !aborted(error) &&
+        requestID === page.requestID &&
+        this.currentWorkspace(workspaceGeneration, id, "content")
+      ) {
+        this.paginationError(page, (error as Error).message, cursor);
+        this.renderContentPage(batch);
+      }
+    }
+  }
+  private recoverVersionDrift(
+    page: CursorPage,
+    label: string,
+    retryCursor: string,
+    requireReadback = false,
+  ): Promise<void> {
+    if (this.versionRefreshes >= 1) {
+      this.paginationError(
+        page,
+        `${label}版本持续变化，请重新读取后重试`,
+        retryCursor,
+        true,
+      );
+      if (this.batch) this.renderDetail();
+      return Promise.resolve();
+    }
+    this.versionRefreshes += 1;
+    return this.loadSelected(false, true, requireReadback);
   }
   private coverPickerDialog(batch: Obj): void {
     if (!this.editable(batch) || Number(batch.id) !== this.batchID) return;
@@ -936,7 +1303,7 @@ class Workspace {
         closed = true;
         dialog.close();
         dialog.remove();
-        await this.loadSelected();
+        await this.loadSelected(false, false, true);
         this.tell("已选择启用图片作为统一封面；请重新核对预览。");
       } catch (error) {
         button.disabled = false;
@@ -1002,104 +1369,179 @@ class Workspace {
     dialog.showModal();
     void load(0);
   }
-  private async effects(parent: HTMLElement, batch: Obj): Promise<void> {
-    const id = Number(batch.id);
-    let receipts: Obj = {};
-    let receiptsError = "";
-    let report: Obj | null = null;
-    let reportError = "";
-    try {
-      receipts = await readAllPages(`${base}/${id}/receipts`, "items");
-    } catch (error) {
-      receiptsError = (error as Error).message;
-    }
-    try {
-      report = await api(`${base}/${id}/report`);
-    } catch (error) {
-      reportError = (error as Error).message;
-    }
-    parent.append(
+  private effects(parent: HTMLElement, batch: Obj): void {
+    const report = el("div");
+    report.dataset.excelReport = "";
+    const receipts = el("div");
+    receipts.dataset.excelReceiptsPage = "";
+    parent.append(report, receipts);
+    this.renderReport(batch);
+    this.renderReceiptPage(batch);
+  }
+  private renderReport(batch: Obj): void {
+    const target = this.root.querySelector<HTMLElement>("[data-excel-report]");
+    if (!target || this.tab !== "effects" || Number(batch.id) !== this.batchID)
+      return;
+    const state = this.report;
+    target.replaceChildren();
+    const report = state.value;
+    target.append(
       el(
         "p",
         `报告按每人实际成功发送时间计算；结果未知先进入对账，不会换 key 重发。${report?.updated_at ? ` 最近采集：${displayDateTime(report.updated_at)}` : ""}`,
       ),
     );
-    if (report) {
-      const source =
-        report.segment_source === "excel"
-          ? "Excel"
-          : report.segment_source === "legacy_snapshot"
-            ? "旧审核快照"
-            : "暂不可识别";
-      parent.append(
-        el(
-          "p",
-          report.has_segments
-            ? `分层来源：${source}；已按分层统计。`
-            : `分层来源：${source}；分层数据暂不可用，只显示总体。`,
+    if (state.loading) {
+      const loading = el("div", "正在读取效果报告…");
+      loading.className = "admin-state admin-state--loading";
+      target.append(loading);
+      return;
+    }
+    if (state.error) {
+      target.append(
+        notice(`效果报告暂不可统计：${state.error}`, "error"),
+        action("重新读取效果报告", () => this.loadReport()),
+      );
+      return;
+    }
+    if (!report) return;
+    const source =
+      report.segment_source === "excel"
+        ? "Excel"
+        : report.segment_source === "legacy_snapshot"
+          ? "旧审核快照"
+          : "暂不可识别";
+    target.append(
+      el(
+        "p",
+        report.has_segments
+          ? `分层来源：${source}；已按分层统计。`
+          : `分层来源：${source}；分层数据暂不可用，只显示总体。`,
+      ),
+    );
+    const hours = el("select") as HTMLSelectElement;
+    hours.setAttribute("aria-label", "观察窗口");
+    [12, 24, 48].forEach((value) => {
+      const option = el("option", `${value} 小时累计`) as HTMLOptionElement;
+      option.value = String(value);
+      hours.append(option);
+    });
+    const grid = el("div");
+    grid.className = "xeb-scroll";
+    const draw = () => {
+      const window = report.windows?.[hours.value] || {};
+      const groups: Array<[string, Obj]> = [
+        ["总体", window.overall || report.overall?.[hours.value] || {}],
+        ...(Object.entries(window.groups || {}) as Array<[string, Obj]>),
+      ];
+      grid.replaceChildren(
+        table(
+          [
+            "分组",
+            "成功发送",
+            "已满窗口",
+            "观察中",
+            "打开人数",
+            "数据缺失",
+            "打开率",
+          ],
+          groups.map(([label, stats]) => [
+            label,
+            String(stats.sent ?? 0),
+            String(stats.matured ?? 0),
+            String(stats.observing ?? 0),
+            String(stats.opened ?? 0),
+            String(stats.unavailable ?? 0),
+            rate(stats.open_rate),
+          ]),
         ),
       );
-      const hours = el("select") as HTMLSelectElement;
-      hours.setAttribute("aria-label", "观察窗口");
-      [12, 24, 48].forEach((value) => {
-        const option = el("option", `${value} 小时累计`) as HTMLOptionElement;
-        option.value = String(value);
-        hours.append(option);
-      });
-      const grid = el("div");
-      grid.className = "xeb-scroll";
-      const draw = () => {
-        const window = report.windows?.[hours.value] || {};
-        const groups: Array<[string, Obj]> = [
-          ["总体", window.overall || report.overall?.[hours.value] || {}],
-          ...(Object.entries(window.groups || {}) as Array<[string, Obj]>),
-        ];
-        grid.replaceChildren(
-          table(
-            [
-              "分组",
-              "成功发送",
-              "已满窗口",
-              "观察中",
-              "打开人数",
-              "数据缺失",
-              "打开率",
-            ],
-            groups.map(([label, stats]) => {
-              return [
-                label,
-                String(stats.sent ?? 0),
-                String(stats.matured ?? 0),
-                String(stats.observing ?? 0),
-                String(stats.opened ?? 0),
-                String(stats.unavailable ?? 0),
-                rate(stats.open_rate),
-              ];
-            }),
-          ),
-        );
-      };
-      hours.onchange = draw;
-      draw();
-      parent.append(field("观察窗口", hours), grid);
-      const download = el("a", "下载逐人报告");
-      download.className = "admin-button admin-button--secondary";
-      download.href = `${base}/${id}/report.csv`;
-      download.download = `excel-batch-${id}-report.csv`;
-      parent.append(download);
-    } else parent.append(notice(`效果报告暂不可统计：${reportError}`, "error"));
-    const items = Array.isArray(receipts.items)
-      ? receipts.items
-      : Array.isArray(receipts.rows)
-        ? receipts.rows
-        : [];
+    };
+    hours.onchange = draw;
+    draw();
+    const id = Number(batch.id);
+    const download = el("a", "下载逐人报告");
+    download.className = "admin-button admin-button--secondary";
+    download.href = `${base}/${id}/report.csv`;
+    download.download = `excel-batch-${id}-report.csv`;
+    target.append(field("观察窗口", hours), grid, download);
+  }
+  private async loadReport(): Promise<void> {
+    const batch = this.batch;
+    const id = Number(batch?.id);
+    const workspaceGeneration = this.generation;
+    if (!batch || this.tab !== "effects" || !Number.isSafeInteger(id) || id < 1)
+      return;
+    const state = this.report;
+    state.controller?.abort();
+    const requestID = ++state.requestID;
+    const controller = new AbortController();
+    state.controller = controller;
+    state.loading = true;
+    state.error = "";
+    this.renderReport(batch);
+    try {
+      const report = await api(
+        `${base}/${id}/report`,
+        "GET",
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      if (
+        requestID !== state.requestID ||
+        !this.currentWorkspace(workspaceGeneration, id, "effects")
+      )
+        return;
+      state.value = report;
+      state.loading = false;
+      state.error = "";
+      state.controller = null;
+      this.renderReport(batch);
+    } catch (error) {
+      if (
+        !aborted(error) &&
+        requestID === state.requestID &&
+        this.currentWorkspace(workspaceGeneration, id, "effects")
+      ) {
+        state.loading = false;
+        state.error = (error as Error).message;
+        state.controller = null;
+        this.renderReport(batch);
+      }
+    }
+  }
+  private renderReceiptPage(batch: Obj): void {
+    const target = this.root.querySelector<HTMLElement>("[data-excel-receipts-page]");
+    if (!target || this.tab !== "effects" || Number(batch.id) !== this.batchID)
+      return;
+    const page = this.receiptPage;
+    target.replaceChildren(el("h3", "逐人回执"));
+    if (page.loading) {
+      const loading = el("div", "正在读取当前回执页…");
+      loading.className = "admin-state admin-state--loading";
+      target.append(loading);
+      return;
+    }
+    if (page.error) {
+      target.append(
+        notice(`逐人回执暂不可读取：${page.error}`, "error"),
+        action("重新读取当前回执页", () =>
+          page.retryFromMetadata
+            ? this.loadSelected()
+            : this.loadReceiptPage(
+                page.retryCursor || page.cursors[page.index] || "",
+              ),
+        ),
+      );
+      return;
+    }
     const scroll = el("div");
     scroll.className = "xeb-scroll";
     scroll.append(
-      el("h3", "逐人回执"),
       table(
         ["接收人", "发送员工", "状态", "实际发送时间", "原因"],
-        items.map((item: Obj) => [
+        page.items.map((item) => [
           String(item.unionid || item.recipient || ""),
           String(item.sender_userid || ""),
           deliveryLabel(item.delivery_state || item.state, "状态待核对"),
@@ -1108,9 +1550,92 @@ class Workspace {
         ]),
       ),
     );
-    parent.append(scroll);
-    if (receiptsError)
-      parent.append(notice(`逐人回执暂不可读取：${receiptsError}`, "error"));
+    target.append(scroll);
+    if (!page.items.length) target.append(el("p", "当前页没有逐人回执。"));
+    target.append(
+      this.pageNavigation(page, "receipts", (cursor) =>
+        this.loadReceiptPage(cursor),
+      ),
+    );
+  }
+  private async loadReceiptPage(cursor: string): Promise<void> {
+    const batch = this.batch;
+    const id = Number(batch?.id);
+    const expectedVersion = this.currentContentVersion(batch);
+    const page = this.receiptPage;
+    const workspaceGeneration = this.generation;
+    const index = page.cursors.indexOf(cursor);
+    if (
+      !batch ||
+      this.tab !== "effects" ||
+      !Number.isSafeInteger(id) ||
+      id < 1 ||
+      !expectedVersion ||
+      index < 0
+    )
+      return;
+    page.controller?.abort();
+    const requestID = ++page.requestID;
+    const controller = new AbortController();
+    page.controller = controller;
+    page.loading = true;
+    page.error = "";
+    this.renderReceiptPage(batch);
+    try {
+      const result = await api(
+        pagedPath(`${base}/${id}/receipts`, cursor),
+        "GET",
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      if (
+        requestID !== page.requestID ||
+        !this.currentWorkspace(workspaceGeneration, id, "effects")
+      )
+        return;
+      const returnedID = Number(result.batch_id);
+      const returnedVersion = Number(result.content_version);
+      if (returnedID !== id || returnedVersion !== expectedVersion) {
+        await this.recoverVersionDrift(page, "回执", cursor);
+        return;
+      }
+      const next = typeof result.next_cursor === "string" ? result.next_cursor : "";
+      const knownNext = page.cursors[index + 1] || "";
+      if (
+        next &&
+        (next === cursor ||
+          page.cursors.slice(0, index + 1).includes(next) ||
+          (knownNext && knownNext !== next))
+      ) {
+        this.paginationError(page, "分页游标重复，已停止读取以避免混合批次数据", cursor);
+        this.renderReceiptPage(batch);
+        return;
+      }
+      page.items = Array.isArray(result.items)
+        ? result.items
+        : Array.isArray(result.rows)
+          ? result.rows
+          : [];
+      page.cursors = page.cursors.slice(0, index + 1);
+      if (next) page.cursors.push(next);
+      page.index = index;
+      page.nextCursor = next;
+      page.loading = false;
+      page.error = "";
+      page.retryFromMetadata = false;
+      page.controller = null;
+      this.renderReceiptPage(batch);
+    } catch (error) {
+      if (
+        !aborted(error) &&
+        requestID === page.requestID &&
+        this.currentWorkspace(workspaceGeneration, id, "effects")
+      ) {
+        this.paginationError(page, (error as Error).message, cursor);
+        this.renderReceiptPage(batch);
+      }
+    }
   }
   private rowDialog(batch: Obj, row: Obj): void {
     const boundBatch = Number(batch.id),
@@ -1160,7 +1685,7 @@ class Workspace {
           );
           dialog.close();
           dialog.remove();
-          await this.loadSelected();
+          await this.loadSelected(false, false, true);
         });
       }, "primary"),
       action("取消", () => {
@@ -1230,7 +1755,7 @@ class Workspace {
         );
         dialog.close();
         dialog.remove();
-        await this.openStrategy(strategyKey, false, selectedID);
+        await this.openStrategy(strategyKey, false, selectedID, true);
       }, "primary"),
       action("取消", () => {
         dialog.close();
@@ -1242,10 +1767,148 @@ class Workspace {
     dialog.showModal();
   }
   private async versionDialog(id: number): Promise<void> {
+    const boundGeneration = this.generation;
+    if (id !== this.batchID) return;
     const dialog = el("dialog") as HTMLDialogElement;
     dialog.append(el("h3", "历史上传内容版本"));
-    const result = await api(`${base}/${id}/versions`);
+    let result: Obj;
+    try {
+      result = await api(`${base}/${id}/versions`);
+    } catch (error) {
+      if (boundGeneration !== this.generation || id !== this.batchID) return;
+      throw error;
+    }
+    if (boundGeneration !== this.generation || id !== this.batchID) return;
     const items = Array.isArray(result.items) ? result.items : [];
+    const viewer = el("div");
+    viewer.dataset.excelHistoryPage = "";
+    let selectedVersion = 0;
+    let viewerGeneration = 0;
+    let page = cursorPage();
+    let closed = false;
+    const renderViewer = (): void => {
+      viewer.replaceChildren();
+      if (!selectedVersion) return;
+      viewer.append(el("h4", `历史版本 ${selectedVersion}（只读）`));
+      if (page.loading) {
+        const loading = el("div", "正在读取当前历史内容页…");
+        loading.className = "admin-state admin-state--loading";
+        viewer.append(loading);
+        return;
+      }
+      if (page.error) {
+        viewer.append(
+          notice(`历史内容页读取失败：${page.error}`, "error"),
+          action("重新读取当前历史页", () =>
+            load(
+              selectedVersion,
+              page.retryCursor || page.cursors[page.index] || "",
+            ),
+          ),
+        );
+        return;
+      }
+      const view = el("pre", JSON.stringify(page.items, null, 2));
+      view.style.whiteSpace = "pre-wrap";
+      viewer.append(view);
+      if (!page.items.length) viewer.append(el("p", "当前历史页没有内容行。"));
+      viewer.append(
+        this.pageNavigation(page, "history", (cursor) =>
+          load(selectedVersion, cursor),
+        ),
+      );
+    };
+    const load = async (revision: number, cursor: string): Promise<void> => {
+      const requestedPage = page;
+      const requestedViewerGeneration = viewerGeneration;
+      if (
+        closed ||
+        boundGeneration !== this.generation ||
+        id !== this.batchID ||
+        revision !== selectedVersion
+      )
+        return;
+      const index = requestedPage.cursors.indexOf(cursor);
+      if (index < 0) return;
+      requestedPage.controller?.abort();
+      const requestID = ++requestedPage.requestID;
+      const controller = new AbortController();
+      requestedPage.controller = controller;
+      requestedPage.loading = true;
+      requestedPage.error = "";
+      renderViewer();
+      try {
+        const detail = await api(
+          pagedPath(`${base}/${id}/versions/${revision}`, cursor),
+          "GET",
+          undefined,
+          undefined,
+          controller.signal,
+        );
+        if (
+          closed ||
+          requestedPage !== page ||
+          requestedViewerGeneration !== viewerGeneration ||
+          requestID !== requestedPage.requestID ||
+          boundGeneration !== this.generation ||
+          id !== this.batchID ||
+          revision !== selectedVersion
+        )
+          return;
+        if (
+          Number(detail.batch_id) !== id ||
+          this.historicalContentVersion(detail) !== revision ||
+          detail.read_only !== true
+        ) {
+          this.paginationError(
+            requestedPage,
+            "历史版本响应无效，请重新读取后重试",
+            cursor,
+          );
+          renderViewer();
+          return;
+        }
+        const next = typeof detail.next_cursor === "string" ? detail.next_cursor : "";
+        const knownNext = requestedPage.cursors[index + 1] || "";
+        if (
+          next &&
+          (next === cursor ||
+            requestedPage.cursors.slice(0, index + 1).includes(next) ||
+            (knownNext && knownNext !== next))
+        ) {
+          this.paginationError(
+            requestedPage,
+            "分页游标重复，已停止读取以避免混合版本数据",
+            cursor,
+          );
+          renderViewer();
+          return;
+        }
+        requestedPage.items = Array.isArray(detail.rows) ? detail.rows : [];
+        requestedPage.cursors = requestedPage.cursors.slice(0, index + 1);
+        if (next) requestedPage.cursors.push(next);
+        requestedPage.index = index;
+        requestedPage.nextCursor = next;
+        requestedPage.loading = false;
+        requestedPage.error = "";
+        requestedPage.controller = null;
+        renderViewer();
+      } catch (error) {
+        if (
+          !aborted(error) &&
+          !closed &&
+          requestedPage === page &&
+          requestedViewerGeneration === viewerGeneration &&
+          requestID === requestedPage.requestID &&
+          boundGeneration === this.generation &&
+          id === this.batchID &&
+          revision === selectedVersion
+        ) {
+          this.paginationError(requestedPage, (error as Error).message, cursor);
+          renderViewer();
+        }
+      }
+    };
     dialog.append(
       table(
         ["版本", "封面素材", "创建时间", "操作"],
@@ -1257,24 +1920,33 @@ class Workspace {
               ? "已上传内容"
               : "—",
           displayDateTime(item.created_at),
-          action("只读查看", async () => {
-            const detail = await readAllPages(
-              `${base}/${id}/versions/${item.content_version || item.version}`,
-              "rows",
-            );
-            const view = el("pre", JSON.stringify(detail.rows || [], null, 2));
-            view.style.whiteSpace = "pre-wrap";
-            dialog.append(view);
+          action("只读查看", () => {
+            const revision = Number(item.content_version || item.version);
+            if (!Number.isSafeInteger(revision) || revision < 1)
+              throw new Error("历史版本编号无效");
+            page.controller?.abort();
+            viewerGeneration += 1;
+            page = cursorPage();
+            selectedVersion = revision;
+            void load(revision, "");
           }, "ghost"),
         ]),
       ),
     );
-    dialog.append(
-      action("关闭", () => {
-        dialog.close();
-        dialog.remove();
-      }, "ghost"),
-    );
+    dialog.append(viewer);
+    const close = action("关闭", () => {
+      closed = true;
+      viewerGeneration += 1;
+      page.controller?.abort();
+      page.requestID += 1;
+      dialog.close();
+      dialog.remove();
+    }, "ghost");
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      close.click();
+    });
+    dialog.append(close);
     this.root.append(dialog);
     dialog.showModal();
   }
