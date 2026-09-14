@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/domain"
@@ -1018,15 +1019,16 @@ func directoryProfileFailureCode(err error) string {
 	return "provider_profile_unavailable"
 }
 
-func (s *RuntimeService) ListGroups(ctx context.Context, owner int64, limit, offset int32) (groupopsport.GroupDirectoryPage, error) {
-	if s == nil || s.uow == nil || s.runtime == nil || owner < 0 || limit < 1 || limit > 200 || offset < 0 || offset > MaximumOffset {
+func (s *RuntimeService) ListGroups(ctx context.Context, owner int64, query string, limit, offset int32) (groupopsport.GroupDirectoryPage, error) {
+	query = strings.TrimSpace(query)
+	if s == nil || s.uow == nil || s.runtime == nil || owner < 0 || !validDirectoryQuery(query) || limit < 1 || limit > 200 || offset < 0 || offset > MaximumOffset {
 		return groupopsport.GroupDirectoryPage{}, invalidOrUnavailableRuntime(s)
 	}
 	var items []groupopsport.GroupDirectoryItem
 	var total int64
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
-		items, total, err = s.runtime.ListDirectoryGroups(tx, owner, limit, offset)
+		items, total, err = s.runtime.ListDirectoryGroups(tx, owner, query, limit, offset)
 		return err
 	})
 	if err != nil {
@@ -1036,6 +1038,10 @@ func (s *RuntimeService) ListGroups(ctx context.Context, owner int64, limit, off
 		items = []groupopsport.GroupDirectoryItem{}
 	}
 	return groupopsport.GroupDirectoryPage{Items: items, Total: total, Limit: limit, Offset: offset, HasMore: int64(offset)+int64(len(items)) < total, RuntimeSafety: s.safety()}, nil
+}
+
+func validDirectoryQuery(value string) bool {
+	return utf8.ValidString(value) && utf8.RuneCountInString(value) <= 160
 }
 
 func (s *RuntimeService) RefreshGroups(ctx context.Context, command groupopsport.GroupRefreshCommand) (groupopsport.GroupDirectoryPage, error) {

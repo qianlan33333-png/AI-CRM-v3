@@ -93,6 +93,18 @@ try {
   await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: 1280, screenHeight: 900 });
   await evaluate(cdp, "document.querySelector('[data-action=\"switch-detail-panel\"][data-panel=\"groups\"]').click(); document.querySelector('[data-action=\"open-group-picker\"]').click(); true");
   await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-key]'))", "V3 group selection session did not open");
+  // The matching group lives beyond the first 50 Owner records. This proves
+  // search is a server-owned q+offset read instead of a browser filter over
+  // the first directory page.
+  await evaluate(cdp, "(() => { const input=document.querySelector('[data-v3-picker-search-input]'); input.value='群二'; input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter'})); return true; })()");
+  await waitFor(cdp, "document.querySelectorAll('[data-v3-selection-session=\"group\"] [data-v3-group-key]').length===1 && document.body.textContent.includes('Chromium 群二')", "Owner query did not narrow the V3 group picker");
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-key$=\"chromium-group-2\"]').click(); true");
+  await evaluate(cdp, "(() => { const input=document.querySelector('[data-v3-picker-search-input]'); input.value=''; input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter'})); return true; })()");
+  await waitFor(cdp, "document.querySelectorAll('[data-v3-selection-session=\"group\"] [data-v3-group-key]').length===50", "cleared Owner query did not restore the first scoped page");
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-more]').click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-key$=\"chromium-group-1\"]'))", "Owner paging did not reach the post-query group record");
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-key$=\"chromium-group-1\"]').click(); true");
+  await waitFor(cdp, "document.querySelectorAll('[data-v3-selection-session=\"group\"] [data-v3-group-remove]').length===2", "multi-select group draft did not render");
   for (const width of [1280, 420, 360]) {
     await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
     await delay(80);
@@ -100,7 +112,11 @@ try {
     if (!picker || picker.documentWidth > width + 1 || !picker.dialog || picker.dialog.width > width || picker.dialog.bottom > 900 || !picker.selected || !picker.list || picker.selectedOverflow !== 'auto' || picker.listOverflow !== 'auto' || !picker.confirm || picker.confirm.bottom > picker.dialog.bottom + 1) throw new Error(`group picker ${width}px layout is not operable: ${JSON.stringify(picker)}`);
     if (screenshotDir) { await fs.mkdir(screenshotDir, { recursive: true }); const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, `group-picker-${width}.png`); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
   }
-  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-cancel]').click(); true");
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: 1280, screenHeight: 900 });
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"group\"] [data-v3-group-confirm]').click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"group\"]')", "browser group selection did not finish its commit");
+  const selectedGroupsPersisted = await evaluate(cdp, `fetch('/api/admin/automation-conversion/group-ops/plans/${planID}',{credentials:'same-origin'}).then((response)=>response.json()).then((body)=>['chromium-group-1','chromium-group-2'].every((reference)=>body.group_assets?.some((item)=>item.asset_reference===reference)))`);
+  if (!selectedGroupsPersisted) throw new Error("Group Ops API did not return browser-persisted group bindings");
   await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
   await evaluate(cdp, "document.querySelector('[data-action=\"open-node-modal\"]').click(); true");
   await waitFor(cdp, "Boolean(document.querySelector('[name=\"node_day_index\"]'))", "standard node editor did not open");
@@ -117,6 +133,36 @@ try {
   await waitFor(cdp, "document.body.textContent.includes('saved') || document.body.textContent.includes('已保存')", "browser owner save did not return persisted detail");
   const ownerPersisted = await evaluate(cdp, `fetch("/api/admin/automation-conversion/group-ops/plans/${planID}",{credentials:"same-origin"}).then((response)=>response.json()).then((body)=>body.members?.length===1 && String(body.members[0].staff_id)===${JSON.stringify(replacementStaffID)})`);
   if (!ownerPersisted) throw new Error("Group Ops plan API did not return browser-persisted owner replacement");
+
+  // The material dialog is installed by the actual Radar Host. Its page-scoped
+  // loader supplies the selection below; a three-item temporary draft then
+  // measures the shared dialog at every target width without a parallel picker.
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin/radarForm.html` });
+  await waitFor(cdp, "Boolean(document.querySelector('#btnPick')) && Boolean(document.querySelector('#typeCards'))", "actual Radar form did not mount");
+  const materialHost = await evaluate(cdp, "(() => ({dialogCSS:Array.from(document.querySelectorAll('link[rel=stylesheet]')).some((link)=>String(link.href).includes('selectionDialogStyles-')), picker:typeof window.AICRMMaterialPicker?.open==='function'}))()");
+  if (!materialHost?.dialogCSS || !materialHost?.picker) throw new Error("Radar selection dialog stylesheet or material adapter is absent");
+  // Invoke the actual Radar Host's installed picker with the same
+  // page-scoped loader. The frozen callback relay is covered by its composed
+  // Host journey; this browser gate concentrates on real layout and input.
+  await evaluate(cdp, "(() => { window.__aicrmRadarMaterial=0; window.AICRMMaterialPicker.open({type:'image',title:'Radar 素材验收',selectedIds:[],limit:1,onConfirm:item=>{window.__aicrmRadarMaterial=item.library_id;},onCancel:()=>{}}); return true; })()");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-key]'))", "actual Radar page-scoped material picker did not open");
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-key]').click(); document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-confirm]').click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && Number(window.__aicrmRadarMaterial)>0", "actual Radar material picker did not return its selected material");
+  await evaluate(cdp, "window.AICRMMaterialPicker.open({type:'image',title:'多素材布局验收',selectedIds:[],limit:3,onCommit:()=>{},onCancel:()=>{}}); true");
+  await waitFor(cdp, "document.querySelectorAll('[data-v3-selection-session=\"material\"] [data-v3-material-key]').length>=3", "Radar scoped material page did not return its records");
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-key]').click(); true");
+  await waitFor(cdp, "document.querySelectorAll('[data-v3-selection-session=\"material\"] [data-v3-material-remove]').length===1", "first material temporary selection did not render");
+  await evaluate(cdp, "Array.from(document.querySelectorAll('[data-v3-selection-session=\"material\"] [data-v3-material-key]')).find((row)=>row.getAttribute('aria-pressed')==='false')?.click(); true");
+  await waitFor(cdp, "document.querySelectorAll('[data-v3-selection-session=\"material\"] [data-v3-material-remove]').length===2", "multi-material temporary selection did not render");
+  for (const width of [1280, 420, 360]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+    await delay(80);
+    const layout = await evaluate(cdp, "(() => { const mask=document.querySelector('[data-v3-selection-session=\"material\"]'), dialog=mask?.querySelector('.aicrm-material-picker'), selected=mask?.querySelector('[data-v3-picker-selected]')?.closest('.aicrm-material-picker__body'), body=mask?.querySelector('[data-picker-grid]')?.closest('.aicrm-material-picker__body'), confirm=mask?.querySelector('[data-v3-picker-confirm]'); const box=node=>node&&node.getBoundingClientRect(); return {documentWidth:document.documentElement.scrollWidth,dialog:box(dialog),selected:box(selected),body:box(body),confirm:box(confirm),selectedOverflow:selected&&getComputedStyle(selected).overflowY,bodyOverflow:body&&getComputedStyle(body).overflowY}; })()");
+    if (!layout || layout.documentWidth > width + 1 || !layout.dialog || layout.dialog.width > width || layout.dialog.bottom > 900 || !layout.selected || !layout.body || layout.selectedOverflow !== 'auto' || layout.bodyOverflow !== 'auto' || !layout.confirm || layout.confirm.bottom > layout.dialog.bottom + 1) throw new Error(`material picker ${width}px layout is not operable: ${JSON.stringify(layout)}`);
+    if (screenshotDir) { await fs.mkdir(screenshotDir, { recursive: true }); const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, `material-picker-${width}.png`); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
+  }
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]')", "material dialog cancel did not return to the actual Radar form");
   console.log("group_ops_chromium: PASS");
 } catch (error) {
   if (error instanceof DevToolsUnavailable) console.log("group_ops_chromium: SKIP_DEVTOOLS");
