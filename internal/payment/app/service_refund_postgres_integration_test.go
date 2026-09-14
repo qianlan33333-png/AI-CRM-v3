@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -17,9 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	distributionapp "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/app"
-	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
-	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
@@ -52,6 +48,18 @@ func (postgresRefundEffects) AcceptAndQueueWithin(ctx context.Context, command e
 type profitSharingReconcilerSequence struct {
 	results []paymentport.ProfitSharingProviderResult
 	next    int
+}
+
+// paymentReceiverStatusObserver is a Payment-port test double. Cross-domain
+// projection is covered by cmd/aicrm's composed PostgreSQL journey; Payment
+// only verifies that it emits the bounded stable-port snapshot.
+type paymentReceiverStatusObserver struct {
+	values []paymentport.ReceiverReadiness
+}
+
+func (o *paymentReceiverStatusObserver) SyncProfitSharingReceiverStatusWithin(_ context.Context, value paymentport.ReceiverReadiness) error {
+	o.values = append(o.values, value)
+	return nil
 }
 
 func (sequence *profitSharingReconcilerSequence) QueryProfitSharing(context.Context, string) (paymentport.ProfitSharingProviderResult, error) {
@@ -204,7 +212,7 @@ func TestPostgreSQLProfitSharingCompletionUpdatesOnlyMatchingEffect(t *testing.T
 	}
 }
 
-func TestPostgreSQLReceiverProviderPermissionDenialProjectsOnlySafeFailureClass(t *testing.T) {
+func TestPostgreSQLReceiverPermissionDenialForwardsOnlySafeClassToObserver(t *testing.T) {
 	pool, cleanup := paymentAppIntegrationPool(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -217,21 +225,14 @@ func TestPostgreSQLReceiverProviderPermissionDenialProjectsOnlySafeFailureClass(
 	if err != nil {
 		t.Fatal(err)
 	}
-	distributionRepository, err := distributionstore.NewPostgreSQL(pool, uow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	paymentRepository := paymentstore.NewPostgreSQL()
-	paymentService := NewService(uow, paymentRepository, orderStub{}, sessionStub{}, postgresRefundEffects{})
 	now := time.Date(2026, 9, 14, 19, 30, 0, 0, time.UTC)
-	paymentService.now = func() time.Time { return now.Add(time.Minute) }
-	registration, err := distributionapp.NewRegistrationService(uow, distributionRepository, paymentService)
-	if err != nil {
+	observer := &paymentReceiverStatusObserver{}
+	service := NewService(uow, paymentstore.NewPostgreSQL(), orderStub{}, sessionStub{}, postgresRefundEffects{})
+	service.now = func() time.Time { return now.Add(time.Minute) }
+	if err = service.SetProfitSharingReceiverStatusObserver(observer); err != nil {
 		t.Fatal(err)
 	}
-	if err = paymentService.SetProfitSharingReceiverStatusObserver(registration); err != nil {
-		t.Fatal(err)
-	}
+
 	var effectID, receiverID int64
 	if err = pool.QueryRow(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES('payment',$1,$2,$3,$4,$5,$6,'queued') RETURNING id`, effectport.KindWeChatPayReceiverAdd, effectport.Hash("receiver-denied-source"), effectport.Hash("receiver-denied-target"), effectport.Hash("receiver-denied-payload"), effectport.Hash("receiver-denied-policy"), effectport.Hash("receiver-denied-envelope")).Scan(&effectID); err != nil {
 		t.Fatal(err)
@@ -239,35 +240,20 @@ func TestPostgreSQLReceiverProviderPermissionDenialProjectsOnlySafeFailureClass(
 	if err = pool.QueryRow(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,external_effect_id,version,created_at,updated_at) VALUES(701,702,'wx-receiver-denied','wechat-app:wx-receiver-denied','h5_official_account',$1,'accepted',$2,1,$3,$3) RETURNING id`, effectport.Hash("receiver-denied-account"), effectID, now).Scan(&receiverID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, `INSERT INTO distribution_distributors(customer_id,public_no,agreement_version,enabled,receiver_reference,receiver_app_id,receiver_ready,receiver_reason,receiver_checked_at,registered_at,version,created_at,updated_at) VALUES(701,'DRECEIVERDENIED','v1',TRUE,'psrecv_`+strconv.FormatInt(receiverID, 10)+`','wx-receiver-denied',FALSE,'receiver_accepted',$1,$1,1,$1,$1)`, now); err != nil {
-		t.Fatal(err)
-	}
 	if err = uow.Within(ctx, func(tx context.Context) error {
-		return paymentService.CompleteEffect(tx, fmt.Sprintf("eer_%d", effectID), effectport.Envelope{Owner: effectport.OwnerPayment, Kind: effectport.KindWeChatPayReceiverAdd}, effectport.Attempt{Number: 1}, effectport.AdapterResult{Completion: effectport.StateFinalFailed, FailureCode: domain.ProfitSharingReceiverFailureProviderPermissionDenied, CallAttempted: true, RealExternalCallExecuted: true})
+		return service.CompleteEffect(tx, fmt.Sprintf("eer_%d", effectID), effectport.Envelope{Owner: effectport.OwnerPayment, Kind: effectport.KindWeChatPayReceiverAdd}, effectport.Attempt{Number: 1}, effectport.AdapterResult{Completion: effectport.StateFinalFailed, FailureCode: domain.ProfitSharingReceiverFailureProviderPermissionDenied, CallAttempted: true, RealExternalCallExecuted: true})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var paymentClass, state, receiverReason, paymentAuditClass, distributionAuditClass string
-	if err = pool.QueryRow(ctx, `SELECT r.failure_class,r.state,d.receiver_reason,(SELECT payload->>'failure_class' FROM payment_profit_sharing_audit_events WHERE aggregate_kind='receiver' AND aggregate_id=r.id ORDER BY id DESC LIMIT 1),(SELECT payload->>'failure_class' FROM distribution_audit_events WHERE event_type='distribution.receiver_status_synchronized.v1' ORDER BY id DESC LIMIT 1) FROM payment_profit_sharing_receivers r JOIN distribution_distributors d ON d.customer_id=r.customer_id WHERE r.id=$1`, receiverID).Scan(&paymentClass, &state, &receiverReason, &paymentAuditClass, &distributionAuditClass); err != nil {
+	var failureClass, state, auditClass string
+	if err = pool.QueryRow(ctx, `SELECT r.failure_class,r.state,(SELECT payload->>'failure_class' FROM payment_profit_sharing_audit_events WHERE aggregate_kind='receiver' AND aggregate_id=r.id ORDER BY id DESC LIMIT 1) FROM payment_profit_sharing_receivers r WHERE r.id=$1`, receiverID).Scan(&failureClass, &state, &auditClass); err != nil {
 		t.Fatal(err)
 	}
-	if paymentClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied || state != string(domain.ProfitSharingReceiverFinalFailed) || receiverReason != "receiver_provider_permission_denied" || paymentAuditClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied || distributionAuditClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied {
-		t.Fatalf("class=%q state=%q receiver_reason=%q payment_audit=%q distribution_audit=%q", paymentClass, state, receiverReason, paymentAuditClass, distributionAuditClass)
+	if failureClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied || state != string(domain.ProfitSharingReceiverFinalFailed) || auditClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied {
+		t.Fatalf("failure_class=%q state=%q audit_class=%q", failureClass, state, auditClass)
 	}
-	profile, err := registration.Profile(ctx, distributionport.TrustedSessionActor{CustomerID: 701, IdentityID: 702, AppID: "wx-receiver-denied", AppScope: "wechat-app:wx-receiver-denied", Channel: "h5_official_account", OccurredAt: now})
-	if err != nil || profile.Receiver.Reason != "receiver_provider_permission_denied" || profile.Receiver.Ready {
-		t.Fatalf("public profile=%+v err=%v", profile, err)
-	}
-	var adminReason string
-	if err = uow.Within(ctx, func(tx context.Context) error {
-		page, readErr := distributionRepository.ListAdminDistributors(tx, "", 50)
-		if readErr != nil || len(page.Items) != 1 {
-			return fmt.Errorf("admin page=%+v err=%w", page, readErr)
-		}
-		adminReason = page.Items[0].ReceiverReason
-		return nil
-	}); err != nil || adminReason != "receiver_provider_permission_denied" {
-		t.Fatalf("admin reason=%q err=%v", adminReason, err)
+	if len(observer.values) != 1 || observer.values[0].FailureClass != domain.ProfitSharingReceiverFailureProviderPermissionDenied || observer.values[0].Ready || !observer.values[0].OutcomeKnown {
+		t.Fatalf("safe receiver observer payload=%+v", observer.values)
 	}
 }
 
