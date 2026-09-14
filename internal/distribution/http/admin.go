@@ -263,7 +263,7 @@ func settlementJSONs(xs []distributionport.AdminSettlement) []any {
 	return result
 }
 func exceptionJSON(x distributionport.AdminException) map[string]any {
-	return map[string]any{"exception_id": x.ExceptionID, "commission_id": x.CommissionID, "distributor_display_name": x.DistributorDisplayName, "order_reference": x.OrderReference, "kind": x.Kind, "status": x.Status, "unpaid_due_minor": x.UnpaidDueMinor, "already_paid_minor": x.AlreadyPaidMinor, "amount_minor": x.AmountMinor, "reason": x.Reason, "payment_instruction_reference": x.PaymentInstructionReference, "reconcile_target": x.ReconcileTarget, "created_at": x.CreatedAt.UTC(), "updated_at": x.UpdatedAt.UTC(), "version": x.Version, "can_reconcile": x.CanReconcile, "can_record_recovery": x.CanRecordRecovery, "can_record_merchant_liability": x.CanRecordMerchantLiability}
+	return map[string]any{"exception_id": x.ExceptionID, "commission_id": x.CommissionID, "distributor_display_name": x.DistributorDisplayName, "order_reference": x.OrderReference, "kind": x.Kind, "status": x.Status, "unpaid_due_minor": x.UnpaidDueMinor, "already_paid_minor": x.AlreadyPaidMinor, "amount_minor": x.AmountMinor, "currency": x.Currency, "reason": x.Reason, "payment_instruction_reference": x.PaymentInstructionReference, "reconcile_target": x.ReconcileTarget, "created_at": x.CreatedAt.UTC(), "updated_at": x.UpdatedAt.UTC(), "version": x.Version, "can_reconcile": x.CanReconcile, "can_record_recovery": x.CanRecordRecovery, "can_record_merchant_liability": x.CanRecordMerchantLiability}
 }
 func exceptionDetailJSON(x distributionport.AdminException) map[string]any {
 	value := exceptionJSON(x)

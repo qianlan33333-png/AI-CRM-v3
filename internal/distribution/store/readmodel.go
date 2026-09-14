@@ -93,7 +93,7 @@ func (r *Repository) ListAdminExceptions(ctx context.Context, cursor string, lim
 	if e != nil {
 		return distributionport.AdminPage[distributionport.AdminException]{}, e
 	}
-	rows, e := tx.Query(ctx, `SELECT e.id,e.commission_id,d.public_no,d.customer_id,'order-'||c.order_id,e.kind,e.status,e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,e.reason,COALESCE(s.payment_instruction_reference,''),e.created_at,e.updated_at,e.version,
+	rows, e := tx.Query(ctx, `SELECT e.id,e.commission_id,d.public_no,d.customer_id,'order-'||c.order_id,e.kind,e.status,e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,'CNY',e.reason,COALESCE(s.payment_instruction_reference,''),e.created_at,e.updated_at,e.version,
 		CASE WHEN e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[1-9][0-9]*$' THEN 'unfreeze' WHEN COALESCE(s.payment_instruction_reference,'') ~ '^psinst_[1-9][0-9]*$' THEN 'split' ELSE '' END,
 		(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','querying') AND ((e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[1-9][0-9]*$') OR (COALESCE(s.payment_instruction_reference,'') ~ '^psinst_[1-9][0-9]*$' AND c.status NOT IN ('cancelled','zero_commission') AND GREATEST(c.current_payable_minor-c.paid_minor,0)>0))),
 		(e.status IN ('open','resolved') AND c.status NOT IN ('cancelled','zero_commission') AND (CASE WHEN e.kind='buyer_refund_after_paid' THEN GREATEST(c.paid_minor-c.current_payable_minor,0) WHEN e.kind='qualification_revoked_after_paid' AND e.reason='qualification_revoked_after_paid' THEN c.paid_minor ELSE 0 END) > COALESCE((SELECT SUM(recorded.delta_minor) FROM distribution_commission_adjustments recorded WHERE recorded.commission_id=c.id AND recorded.kind IN ('manual_recovery','merchant_liability')),0)),
@@ -106,7 +106,7 @@ func (r *Repository) ListAdminExceptions(ctx context.Context, cursor string, lim
 	p := distributionport.AdminPage[distributionport.AdminException]{}
 	for rows.Next() {
 		var x distributionport.AdminException
-		if e = rows.Scan(&x.ExceptionID, &x.CommissionID, &x.DistributorPublicNo, &x.DistributorCustomerID, &x.OrderReference, &x.Kind, &x.Status, &x.UnpaidDueMinor, &x.AlreadyPaidMinor, &x.AmountMinor, &x.Reason, &x.PaymentInstructionReference, &x.CreatedAt, &x.UpdatedAt, &x.Version, &x.ReconcileTarget, &x.CanReconcile, &x.CanRecordRecovery, &x.CanRecordMerchantLiability); e != nil {
+		if e = rows.Scan(&x.ExceptionID, &x.CommissionID, &x.DistributorPublicNo, &x.DistributorCustomerID, &x.OrderReference, &x.Kind, &x.Status, &x.UnpaidDueMinor, &x.AlreadyPaidMinor, &x.AmountMinor, &x.Currency, &x.Reason, &x.PaymentInstructionReference, &x.CreatedAt, &x.UpdatedAt, &x.Version, &x.ReconcileTarget, &x.CanReconcile, &x.CanRecordRecovery, &x.CanRecordMerchantLiability); e != nil {
 			return p, mapError(e)
 		}
 		p.Items = append(p.Items, x)

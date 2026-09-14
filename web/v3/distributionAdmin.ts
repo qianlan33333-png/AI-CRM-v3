@@ -608,6 +608,7 @@ async function showOrder(id: number): Promise<void> {
     const response = obj(await request(`/api/admin/distribution/orders/${id}`));
     const order = obj(response.order);
     const commission = obj(response.commission);
+    const commissionCurrency = commission.currency;
     const grid = document.createElement('div');
     grid.className = 'distribution-detail-grid';
     grid.append(fact('订单', text(order.order_reference)), fact('商品', text(order.product_name)), fact('分销员', displayName(order.distributor_display_name)), fact('推广资格', qualifyLabel(order.qualification_state)), fact('购买凭证', text(order.qualification_evidence_reference)), fact('佣金政策', policyText(order.policy_version, order.rate_basis_points, order.wait_days)), fact('商品实付', money(order.paid_minor, order.currency)));
@@ -617,7 +618,7 @@ async function showOrder(id: number): Promise<void> {
     const exceptions = Array.isArray(response.exceptions) ? response.exceptions.map(obj) : [];
     body.replaceChildren(
       grid,
-      recordList('退款与资格调整', adjustments, (item) => record([['类型', adjustmentLabel(item.kind)], ['变动金额', money(item.delta_minor, item.currency)], ['调整后应付', money(item.resulting_payable_minor, item.currency)], ['原因', reasonLabel(item.reason)], ['凭证参考', text(item.source_reference)], ['发生时间', timeText(item.occurred_at)]])),
+      recordList('退款与资格调整', adjustments, (item) => record([['类型', adjustmentLabel(item.kind)], ['变动金额', money(item.delta_minor, commissionCurrency)], ['调整后应付', money(item.resulting_payable_minor, commissionCurrency)], ['原因', reasonLabel(item.reason)], ['凭证参考', text(item.source_reference)], ['发生时间', timeText(item.occurred_at)]])),
       recordList('结算记录', settlements, (item) => {
         const facts: [string, string][] = [['结算单', text(item.reference)], ['金额', money(item.amount_minor, item.currency)], ['状态', settlementLabel(item.state)], ['最晚结算时间', timeText(item.provider_deadline_at)], ['创建时间', timeText(item.created_at)], ['记录更新时间', timeText(item.updated_at)]];
         if (item.state === 'receiver_succeeded') facts.splice(4, 0, ['系统分账成功时间', timeText(item.settlement_confirmed_at) === '—' ? '未记录' : timeText(item.settlement_confirmed_at)]);
@@ -639,7 +640,7 @@ async function showException(id: string): Promise<void> {
       fact('异常', idText(response.exception_id)), fact('分销员', displayName(response.distributor_display_name)), fact('订单', text(response.order_reference)), fact('类型', exceptionLabel(response.kind)), fact('状态', status === 'open' ? '待处理' : status === 'resolved' ? '已处理' : status === 'recovery_recorded' ? '已登记追回' : status === 'merchant_liability_recorded' ? '已登记商户承担' : '状态待确认'), fact('尚欠应付', money(response.unpaid_due_minor, response.currency)), fact('系统分账成功确认', money(response.already_paid_minor, response.currency)), fact('原因', reasonLabel(response.reason)), fact('凭证参考', text(response.evidence_reference)), fact('处理来源', actorScopeLabel(response.actor_scope)), fact('创建时间', timeText(response.created_at)), fact('更新时间', timeText(response.updated_at)),
     );
     const audit = Array.isArray(response.audit) ? response.audit.map(obj) : [];
-    body.replaceChildren(grid, recordList('处理审计', audit, (item) => record([['处理', auditEventLabel(item.event_type)], ['处理来源', actorScopeLabel(item.actor_scope)], ['金额', money(item.amount_minor, item.currency)], ['原因', reasonLabel(item.reason)], ['凭证参考', text(item.evidence_reference)], ['处理时间', timeText(item.occurred_at)]])));
+    body.replaceChildren(grid, recordList('处理审计', audit, (item) => record([['处理', auditEventLabel(item.event_type)], ['处理来源', actorScopeLabel(item.actor_scope)], ['金额', money(item.amount_minor, response.currency)], ['原因', reasonLabel(item.reason)], ['凭证参考', text(item.evidence_reference)], ['处理时间', timeText(item.occurred_at)]])));
   } catch (error) { failed(body, error); }
 }
 
