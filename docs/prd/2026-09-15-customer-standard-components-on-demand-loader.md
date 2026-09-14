@@ -84,6 +84,12 @@ Persistence: stateless — 不改变数据库、内部持久任务、标签命�
 
 本地执行证据与 GitHub 分开记录：本次在新建 PostgreSQL 16 数据目录与空数据库上，以显式 `127.0.0.1:59424` DSN 运行 `TestPostgreSQLCustomerTagCommandChromiumJourney`，exit 0（日志 `/tmp/aicrm-306-customer-tag-browser.log`）；测试结束后已 drop 该数据库并停止、删除数据目录。该 Provider-enabled fixture 只验证既有标签命令/收据读回，不表示本 PR 新增 Provider 写入、持久任务或外部效果。
 
+### Runtime HTTP composition JSDOM fixture
+
+`customer_tag_command_runtime_e2e.mjs` 是后端 composition 测试：它直接执行客户目录脚本，却不运行 release renderer 或构建 `web/dist`。因此夹具在 `beforeParse` 中仅注入受控的 `AICRMStandardComponents.readyFor` Port 与 picker `open` 能力，并断言客户脚本只请求 `['tags']`，而不会模拟 loader、script injection、manifest 或 picker UI。客户列表响应仍是该 Host 壳的最小本地数据；标签 catalog、标签命令 preview/submit 和 PostgreSQL 收据读取仍通过正在运行的 composition HTTP 路由执行，不能把此夹具称为“mocked catalog”。
+
+完整 loader、manifest 资产与真实 picker global 的闭环由上面的 Chromium release-artifact journey 和 `standardComponentsRefresh` JSDOM 合同测试验证。Runtime fixture 只覆盖在真实 catalog/preview/command/receipt composition 下，客户脚本会请求其所需的标准 tags 能力；它不替代发布构建或真实 picker 交互验收。
+
 ## 参考页面与审查记录
 
 | 项目 | 结论 |

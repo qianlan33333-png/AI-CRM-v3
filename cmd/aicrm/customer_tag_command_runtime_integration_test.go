@@ -197,9 +197,9 @@ func TestCustomerTagCommandCompositionHTTPPostgreSQL(t *testing.T) {
 		t.Fatalf("history=%+v accepted=%+v", history, accepted)
 	}
 	// The frozen WebShell template and Host script make the real preview and
-	// confirmation requests and catalog-name selection against this live mux;
-	// only the unrelated customer directory list fixture is local to the browser
-	// harness.
+	// confirmation requests and catalog-name selection against this live mux.
+	// The browser harness supplies only the unrelated customer-directory list
+	// response plus controlled standard-component readiness and picker Ports.
 	browser := exec.Command("node", "customer_tag_command_runtime_e2e.mjs", server.URL)
 	browser.Dir = "."
 	browser.Env = os.Environ()
