@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,11 +16,11 @@ import (
 )
 
 func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
-	if len(ADMIN_NAV_GROUPS) != 4 {
-		t.Fatalf("group count=%d, want 4", len(ADMIN_NAV_GROUPS))
+	if len(ADMIN_NAV_GROUPS) != 7 {
+		t.Fatalf("group count=%d, want 7", len(ADMIN_NAV_GROUPS))
 	}
-	wantTitles := []string{"运营", "交易", "素材", "配置及后台"}
-	wantCounts := []int{10, 5, 3, 4}
+	wantTitles := []string{"总览", "客户", "运营", "交易", "分销", "内容素材", "系统设置"}
+	wantCounts := []int{1, 3, 6, 4, 1, 5, 3}
 	for index, group := range ADMIN_NAV_GROUPS {
 		if group.Title != wantTitles[index] || len(group.Items) != wantCounts[index] {
 			t.Fatalf("group %d=%+v, want title=%q count=%d", index, group, wantTitles[index], wantCounts[index])
@@ -35,12 +36,45 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 	}
 
 	navigation := NavItems("api.admin_orders_page")
-	if !navigation[1].Active || !navigation[1].Items[0].Active {
-		t.Fatalf("transaction item is not active: %+v", navigation[1])
+	if !navigation[3].Active || !navigation[3].Items[0].Active {
+		t.Fatalf("transaction item is not active: %+v", navigation[3])
 	}
-	navigation[1].Items[0].Label = "mutated copy"
-	if ADMIN_NAV_GROUPS[1].Items[0].Label == "mutated copy" {
+	navigation[3].Items[0].Label = "mutated copy"
+	if ADMIN_NAV_GROUPS[3].Items[0].Label == "mutated copy" {
 		t.Fatal("NavItems returned mutable source item")
+	}
+
+	var source adminNavigationDocument
+	if err := json.Unmarshal(adminNavigationJSON, &source); err != nil {
+		t.Fatal(err)
+	}
+	prefixes := map[string]map[string]bool{}
+	for _, group := range source.Groups {
+		for _, item := range group.Items {
+			prefixes[item.Key] = map[string]bool{}
+			for _, prefix := range item.ActivePrefixes {
+				prefixes[item.Key][prefix] = true
+			}
+		}
+	}
+	for key, aliases := range map[string][]string{
+		"overview":                {"/admin", "/admin/index.html"},
+		"customers":               {"/admin/customers", "/admin/customerDetail.html"},
+		"wechat_pay_products":     {"/admin/wechat-pay/products", "/admin/productForm.html"},
+		"service_period_products": {"/admin/service-period-products", "/admin/spProductForm.html"},
+		"wechat_pay_transactions": {"/admin/orders", "/admin/orderDetail.html"},
+		"automation_agents":       {"/admin/automation-agents", "/admin/agentEdit.html"},
+		"questionnaires":          {"/admin/questionnaires", "/admin/questionnaireDetail.html"},
+		"radar_links":             {"/admin/radar-links", "/admin/radarDetail.html"},
+		"owner_migration":         {"/admin/owner-migration", "/admin/ownerMig.html"},
+		"config":                  {"/admin/config", "/admin/configDetail.html"},
+		"api_docs":                {"/admin/api-docs", "/admin/apidocs.html"},
+	} {
+		for _, alias := range aliases {
+			if !prefixes[key][alias] {
+				t.Fatalf("navigation %q omits active alias %q", key, alias)
+			}
+		}
 	}
 }
 

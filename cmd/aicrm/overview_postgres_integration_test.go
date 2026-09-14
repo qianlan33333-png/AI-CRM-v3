@@ -65,6 +65,14 @@ type adminOverviewFixture struct {
 
 func newAdminOverviewFixture(t *testing.T) *adminOverviewFixture {
 	t.Helper()
+	// compose resolves the release manifest as web/dist relative to the running
+	// service. Go package tests otherwise start in cmd/aicrm and silently take
+	// the generic no-assets fallback, which cannot validate the V3 page Host.
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate overview composition fixture")
+	}
+	t.Chdir(filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..")))
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)

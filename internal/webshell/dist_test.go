@@ -34,12 +34,28 @@ func newDistFixture(t *testing.T) string {
 	write("assets/distributionAdmin-test.js", `console.log("distribution")`)
 	write("assets/distributionStyles-test.css", `.distribution-shell{}`)
 	write("assets/sharedDetailDrawerStyles-test.css", `.shared-detail-drawer{}`)
-	write("asset-manifest.json", `{"entries":{"distributionAdmin":"assets/distributionAdmin-test.js","distributionStyles":"assets/distributionStyles-test.css","sharedDetailDrawerStyles":"assets/sharedDetailDrawerStyles-test.css"},"files":{"assets/distributionAdmin-test.js":{},"assets/distributionStyles-test.css":{},"assets/sharedDetailDrawerStyles-test.css":{}}}`)
+	write("assets/overviewAdmin-test.js", `console.log("overview")`)
+	write("assets/overviewStyles-test.css", `.overview-admin{}`)
+	write("asset-manifest.json", `{"entries":{"distributionAdmin":"assets/distributionAdmin-test.js","distributionStyles":"assets/distributionStyles-test.css","sharedDetailDrawerStyles":"assets/sharedDetailDrawerStyles-test.css","overviewAdmin":"assets/overviewAdmin-test.js","overviewStyles":"assets/overviewStyles-test.css"},"files":{"assets/distributionAdmin-test.js":{},"assets/distributionStyles-test.css":{},"assets/sharedDetailDrawerStyles-test.css":{},"assets/overviewAdmin-test.js":{},"assets/overviewStyles-test.css":{}}}`)
 	write("distribution/index.html", `<!doctype html><title>distribution</title><body data-page="distribution-center">分销中心</body>`)
 	write("sidebar/index.html", `<link rel="stylesheet" href="../assets/sidebarStyles-test.css"><script type="module" src="../assets/sidebar-test.js"></script>新侧边栏`)
 	write("assets/sidebar-test.js", `console.log("sidebar")`)
 	write("assets/sidebarStyles-test.css", `.sidebar-shell{}`)
 	return root
+}
+
+func TestDistOverviewAdminAssetsRequireManifestAndFiles(t *testing.T) {
+	root := newDistFixture(t)
+	assets, ok := DistOverviewAdminAssets(root)
+	if !ok || assets.CSS != "/assets/overviewStyles-test.css" || assets.AdminJS != "/assets/overviewAdmin-test.js" {
+		t.Fatalf("overview assets=%+v ok=%t", assets, ok)
+	}
+	if err := os.Remove(filepath.Join(root, "assets", "overviewAdmin-test.js")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := DistOverviewAdminAssets(root); ok {
+		t.Fatal("manifest entry with a missing physical overview asset was accepted")
+	}
 }
 
 func TestDistAdminPagesReplacePlaceholderShell(t *testing.T) {
@@ -86,13 +102,14 @@ func TestDistAdminPagesReplacePlaceholderShell(t *testing.T) {
 		t.Fatalf("canonical deep-alias target must serve the document: status=%d", response.Code)
 	}
 
-	// The admin root canonicalizes onto the built home document instead of
-	// relying on a meta refresh resolving against a slash-less base URL.
+	// The V3-owned root renders its own shell and manifest-verified assets; it
+	// must never redirect to a frozen home document or customer page.
 	for _, root := range []string{"/admin", "/admin/"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, root, nil))
-		if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/customers.html" {
-			t.Fatalf("admin root %s status=%d location=%q", root, response.Code, response.Header().Get("Location"))
+		body := response.Body.String()
+		if response.Code != http.StatusOK || strings.Contains(response.Header().Get("Location"), "customers") || !strings.Contains(body, `id="overview-admin-root"`) || !strings.Contains(body, `href="/assets/overviewStyles-test.css"`) || !strings.Contains(body, `src="/assets/overviewAdmin-test.js"`) {
+			t.Fatalf("admin root %s status=%d location=%q body=%q", root, response.Code, response.Header().Get("Location"), body)
 		}
 	}
 

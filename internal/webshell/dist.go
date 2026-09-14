@@ -29,10 +29,45 @@ func DistDistributionAdminAssets(distRoot string) (DistributionAssets, bool) {
 		return DistributionAssets{}, false
 	}
 	css, drawerCSS, js := manifest.Entries["distributionStyles"], manifest.Entries["sharedDetailDrawerStyles"], manifest.Entries["distributionAdmin"]
-	if !strings.HasPrefix(css, "assets/") || !strings.HasSuffix(css, ".css") || !strings.HasPrefix(drawerCSS, "assets/") || !strings.HasSuffix(drawerCSS, ".css") || !strings.HasPrefix(js, "assets/") || !strings.HasSuffix(js, ".js") || manifest.Files[css] == nil || manifest.Files[drawerCSS] == nil || manifest.Files[js] == nil {
+	if !validDistManifestAsset(distRoot, manifest.Files, css, ".css") || !validDistManifestAsset(distRoot, manifest.Files, drawerCSS, ".css") || !validDistManifestAsset(distRoot, manifest.Files, js, ".js") {
 		return DistributionAssets{}, false
 	}
 	return DistributionAssets{CSS: "/" + css, DetailDrawerCSS: "/" + drawerCSS, AdminJS: "/" + js}, true
+}
+
+// DistOverviewAdminAssets returns only the V3 overview stylesheet and Host
+// module recorded in the release manifest. A missing or malformed pair keeps
+// the generic shell available rather than falling back to a frozen document.
+func DistOverviewAdminAssets(distRoot string) (OverviewAssets, bool) {
+	if distRoot == "" {
+		return OverviewAssets{}, false
+	}
+	var manifest struct {
+		Entries map[string]string          `json:"entries"`
+		Files   map[string]json.RawMessage `json:"files"`
+	}
+	raw, err := os.ReadFile(filepath.Join(distRoot, "asset-manifest.json"))
+	if err != nil || json.Unmarshal(raw, &manifest) != nil {
+		return OverviewAssets{}, false
+	}
+	css, js := manifest.Entries["overviewStyles"], manifest.Entries["overviewAdmin"]
+	if !validDistManifestAsset(distRoot, manifest.Files, css, ".css") || !validDistManifestAsset(distRoot, manifest.Files, js, ".js") {
+		return OverviewAssets{}, false
+	}
+	return OverviewAssets{CSS: "/" + css, AdminJS: "/" + js}, true
+}
+
+func validDistManifestAsset(distRoot string, files map[string]json.RawMessage, entry, extension string) bool {
+	if !strings.HasPrefix(entry, "assets/") || !strings.HasSuffix(entry, extension) || files[entry] == nil {
+		return false
+	}
+	root := filepath.Clean(filepath.Join(distRoot, "assets"))
+	file := filepath.Clean(filepath.Join(distRoot, filepath.FromSlash(entry)))
+	if !strings.HasPrefix(file, root+string(filepath.Separator)) {
+		return false
+	}
+	info, err := os.Stat(file)
+	return err == nil && !info.IsDir()
 }
 
 // The new-shell frontend builds every admin screen as a standalone document

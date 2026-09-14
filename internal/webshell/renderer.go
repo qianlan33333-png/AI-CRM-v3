@@ -114,6 +114,8 @@ type AdminShellView struct {
 	AIAssistantAssets    AIAssistantAssets
 	Distribution         bool
 	DistributionAssets   DistributionAssets
+	Overview             bool
+	OverviewAssets       OverviewAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -189,6 +191,11 @@ type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, Compos
 // DistributionAssets is the small manifest-derived closure mounted inside the
 // admin shell. It never contains a donor document or business data.
 type DistributionAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
+
+// OverviewAssets is the V3-owned stylesheet and Host module for the
+// read-only operating overview. The shell receives only manifest-derived
+// URLs; all business facts remain in the authorized HTTP endpoint.
+type OverviewAssets struct{ CSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -274,6 +281,31 @@ func (renderer *Renderer) RenderDistribution(writer http.ResponseWriter, data Ad
 	normalizeAdminPage(&data)
 	content := template.HTML(`<section id="distribution-admin-root" aria-live="polite"></section>`)
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: content, Distribution: true, DistributionAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderOverview mounts the V3 operating overview root in the standard admin
+// shell. The Host independently fetches the already-authorized read-only API;
+// this package never receives or resolves operating facts.
+func (renderer *Renderer) RenderOverview(writer http.ResponseWriter, data AdminPageData, assets OverviewAssets) error {
+	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.AdminJS == "" {
+		return errors.New("overview shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = true
+	content, err := executeTemplate(renderer.templates, "admin_overview", data)
+	if err != nil {
+		return err
+	}
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{
+		AdminPageData:  data,
+		Content:        template.HTML(content),
+		Overview:       true,
+		OverviewAssets: assets,
+	})
 	if err != nil {
 		return err
 	}

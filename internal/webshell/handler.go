@@ -145,15 +145,26 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 		methodNotAllowed(writer, http.MethodGet+", "+http.MethodHead)
 		return
 	}
-	// The built frontend declares customers.html as the admin home through its
-	// index redirect document.  Canonicalize the shell root onto it directly so
-	// the meta refresh never resolves against a slash-less base URL.
-	switch request.URL.Path {
-	case "/admin", "/admin/":
-		if _, ok := DistAdminPageFile(handler.distDir, "/admin/customers.html"); ok {
-			http.Redirect(writer, request, "/admin/customers.html", http.StatusSeeOther)
+	// The operating overview is a V3-owned server shell. It takes the admin
+	// root before generic frozen-document fallback; its Host reads the
+	// authenticated overview API and never relies on the donor home redirect.
+	if request.URL.Path == AdminRootPath || request.URL.Path == AdminRootPath+"/" {
+		spec := adminSpecForPath(AdminRootPath)
+		if assets, ok := DistOverviewAdminAssets(handler.distDir); ok {
+			if err := handler.renderer.RenderOverview(writer, AdminPageForRequest(request, spec.title, spec.summary, spec.activeEndpoint), assets); err != nil {
+				http.Error(writer, "unable to render overview shell", http.StatusInternalServerError)
+			}
 			return
 		}
+		// Do not redirect the root into a generated donor document when the
+		// current release has not yet supplied the Overview Host. The generic
+		// shell is explicit and does not manufacture operating data.
+		data := AdminPageForRequest(request, spec.title, spec.summary, spec.activeEndpoint)
+		data.PageNotice = "经营数据页面资源正在准备，请稍后刷新。"
+		if err := handler.renderer.RenderAdmin(writer, data); err != nil {
+			http.Error(writer, "unable to render overview fallback shell", http.StatusInternalServerError)
+		}
+		return
 	}
 	// Distribution has employee-only facts but used to be served as a separate
 	// built document. Capture both old and canonical paths before the generic
@@ -229,9 +240,9 @@ type adminSpec struct {
 
 var adminSpecs = map[string]adminSpec{
 	"/admin": {
-		title:          "快捷入口",
-		summary:        "进入需要直接操作的业务模块。",
-		activeEndpoint: "api.admin_automation_conversion",
+		title:          "经营总览",
+		summary:        "查看已确认的经营数据与需要处理的事项。",
+		activeEndpoint: "api.admin_operating_overview",
 	},
 	"/admin/automation-conversion": {
 		title:          "AI 自动化运营",

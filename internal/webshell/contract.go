@@ -8,6 +8,8 @@
 package webshell
 
 import (
+	_ "embed"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"path"
@@ -61,6 +63,7 @@ type AdminNavGroup struct {
 // implemented.
 var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
 	"api.admin_console_dashboard":                      {"api.admin_console_dashboard", "/admin"},
+	"api.admin_operating_overview":                     {"api.admin_operating_overview", AdminRootPath},
 	"api.admin_console_customers":                      {"api.admin_console_customers", "/admin/customers"},
 	"api.admin_owner_migration_page":                   {"api.admin_owner_migration_page", "/admin/owner-migration"},
 	"api.admin_owner_migration_action":                 {"api.admin_owner_migration_action", "/admin/owner-migration"},
@@ -110,52 +113,80 @@ var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
 	"api.sidebar_context_token":                        {"api.sidebar_context_token", SidebarContextPath},
 }
 
-// ADMIN_NAV_GROUPS is the complete source admin shell menu.  It deliberately
-// contains links to reserved paths even while those feature pages display a
-// controlled placeholder. No item is backed by sample data.
-var ADMIN_NAV_GROUPS = []AdminNavGroup{
-	{
-		Title: "运营",
-		Items: []AdminNavItem{
-			{Key: "automation_conversion", Label: "自动化运营", Endpoint: "api.admin_automation_conversion"},
-			{Key: "operation_cycles", Label: "运营闭环", Endpoint: "api.admin_operation_cycles_page"},
-			{Key: "group_ops", Label: "群运营计划", Endpoint: "api.admin_group_ops_ui"},
-			{Key: "channels", Label: "渠道码中心", Endpoint: "api.admin_channels_page"},
-			{Key: "cloud_orchestrator", Label: "AI 助手", Endpoint: "api.admin_cloud_orchestrator_workspace"},
-			{Key: "customers", Label: "客户激活 / 客户列表", Endpoint: "api.admin_console_customers"},
-			{Key: "user_ops_funnel", Label: "漏斗 / 数据看板", Endpoint: "api.admin_hxc_dashboard_workspace"},
-			{Key: "questionnaires", Label: "问卷", Endpoint: "api.admin_questionnaires"},
-			{Key: "radar_links", Label: "内容雷达", Endpoint: "api.admin_radar_links"},
-			{Key: "wecom_tags", Label: "企微标签管理", Endpoint: "api.admin_wecom_tags_page"},
-		},
-	},
-	{
-		Title: "交易",
-		Items: []AdminNavItem{
-			{Key: "wechat_pay_transactions", Label: "交易管理", Endpoint: "api.admin_orders_page"},
-			{Key: "wechat_pay_products", Label: "商品管理", Endpoint: "api.admin_wechat_pay_products_page"},
-			{Key: "service_period_products", Label: "周期商品管理", Endpoint: "api.admin_service_period_products_page"},
-			{Key: "distribution", Label: "分销管理", Endpoint: "api.admin_distribution_page"},
-			{Key: "coupons", Label: "优惠券", Endpoint: "api.admin_coupons_page"},
-		},
-	},
-	{
-		Title: "素材",
-		Items: []AdminNavItem{
-			{Key: "image_library", Label: "图片素材库", Endpoint: "api.admin_image_library_workspace"},
-			{Key: "miniprogram_library", Label: "小程序素材库", Endpoint: "api.admin_miniprogram_library_workspace"},
-			{Key: "attachment_library", Label: "附件素材库", Endpoint: "api.admin_attachment_library_workspace"},
-		},
-	},
-	{
-		Title: "配置及后台",
-		Items: []AdminNavItem{
-			{Key: "automation_agents", Label: "自动化话术", Endpoint: "api.admin_automation_agents_page"},
-			{Key: "owner_migration", Label: "负责人迁移", Endpoint: "api.admin_owner_migration_page"},
-			{Key: "config", Label: "配置", Endpoint: "api.admin_config"},
-			{Key: "api_docs", Label: "API 文档", Endpoint: "api.admin_api_docs"},
-		},
-	},
+// ADMIN_NAV_GROUPS is loaded from the one V3-owned navigation data source.
+// Both the server-rendered shell and the release-document adapter use this
+// embedded JSON; endpoint paths and access enforcement remain in their
+// existing server-owned route registration.
+//
+//go:embed static/admin_console/admin-navigation.v3.json
+var adminNavigationJSON []byte
+
+type adminNavigationDocument struct {
+	Version int                    `json:"version"`
+	Groups  []adminNavigationGroup `json:"groups"`
+}
+
+type adminNavigationGroup struct {
+	Key   string                `json:"key"`
+	Label string                `json:"label"`
+	Items []adminNavigationItem `json:"items"`
+}
+
+type adminNavigationItem struct {
+	Key                string   `json:"key"`
+	Label              string   `json:"label"`
+	Endpoint           string   `json:"endpoint"`
+	Href               string   `json:"href"`
+	ActivePrefixes     []string `json:"active_prefixes"`
+	RequiredPermission string   `json:"required_permission"`
+}
+
+var ADMIN_NAV_GROUPS = loadAdminNavigationGroups()
+
+func loadAdminNavigationGroups() []AdminNavGroup {
+	var document adminNavigationDocument
+	if err := json.Unmarshal(adminNavigationJSON, &document); err != nil || document.Version != 1 || len(document.Groups) == 0 {
+		panic("webshell admin navigation configuration is invalid")
+	}
+	groups := make([]AdminNavGroup, 0, len(document.Groups))
+	keys := map[string]struct{}{}
+	endpoints := map[string]struct{}{}
+	for _, sourceGroup := range document.Groups {
+		if strings.TrimSpace(sourceGroup.Key) == "" || strings.TrimSpace(sourceGroup.Label) == "" || len(sourceGroup.Items) == 0 {
+			panic("webshell admin navigation group is invalid")
+		}
+		group := AdminNavGroup{Title: sourceGroup.Label, Items: make([]AdminNavItem, 0, len(sourceGroup.Items))}
+		for _, sourceItem := range sourceGroup.Items {
+			if strings.TrimSpace(sourceItem.Key) == "" || strings.TrimSpace(sourceItem.Label) == "" || strings.TrimSpace(sourceItem.Endpoint) == "" || strings.TrimSpace(sourceItem.Href) == "" || len(sourceItem.ActivePrefixes) == 0 {
+				panic("webshell admin navigation item is invalid")
+			}
+			if _, exists := keys[sourceItem.Key]; exists {
+				panic("webshell admin navigation repeats a key")
+			}
+			if _, exists := endpoints[sourceItem.Endpoint]; exists {
+				panic("webshell admin navigation repeats an endpoint")
+			}
+			route, exists := ADMIN_ROUTE_REGISTRY[sourceItem.Endpoint]
+			if !exists || !strings.HasPrefix(route.Path, AdminRootPath) || route.Path != sourceItem.Href {
+				panic("webshell admin navigation names an unavailable endpoint")
+			}
+			for _, prefix := range sourceItem.ActivePrefixes {
+				if prefix != AdminRootPath && !strings.HasPrefix(prefix, AdminRootPath+"/") {
+					panic("webshell admin navigation active prefix is invalid")
+				}
+			}
+			if sourceItem.RequiredPermission != "" {
+				if _, exists := ADMIN_ROUTE_REGISTRY[sourceItem.RequiredPermission]; !exists {
+					panic("webshell admin navigation permission mapping is invalid")
+				}
+			}
+			keys[sourceItem.Key] = struct{}{}
+			endpoints[sourceItem.Endpoint] = struct{}{}
+			group.Items = append(group.Items, AdminNavItem{Key: sourceItem.Key, Label: sourceItem.Label, Endpoint: sourceItem.Endpoint})
+		}
+		groups = append(groups, group)
+	}
+	return groups
 }
 
 // AdminNavGroups is the idiomatic Go alias for callers that do not need to
@@ -359,7 +390,7 @@ func AdminPageForRequest(request *http.Request, title, summary, activeEndpoint s
 		title = "管理后台"
 	}
 	if summary == "" {
-		summary = "v3 管理后台壳已就绪，业务能力按模块逐项接入。"
+		summary = "从导航选择需要处理的业务模块。"
 	}
 	return AdminPageData{
 		PageTitle:      title,
