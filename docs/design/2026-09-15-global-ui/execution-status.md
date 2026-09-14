@@ -1,7 +1,7 @@
 # Global UI 执行状态
 
-更新时间：2026-09-15  
-工作树：`/Users/qianlan/Downloads/新CRM-global-ui-20260915`  
+更新时间：2026-09-15
+工作树：`/Users/qianlan/Downloads/新CRM-global-ui-20260915`
 分支：`codex/global-ui-20260915`
 
 | 阶段 | Owner | 状态 | commit | 证据 |
@@ -10,7 +10,7 @@
 | 独立工作树 | `/root/template_packaging` | 已完成 | 待基础 docs commit | `git worktree` 创建成功，工作树从 `origin/main` 建立 |
 | PRD 与前端 Skill | `/root/template_packaging` | 已完成，待提交 | 待基础 docs commit | `PRD.md`、`SKILL.md` 已落盘；main 现有 `references/component-map.md` 保留 |
 | Product Design PNG 模板 | `/root/template_packaging` | 进行中 | 不适用 | 使用 Template Creator 脚本与 runtime Node，完成后补 JSON/hash |
-| UI 实现 | terra | 待 PRD/模板 ready | 待定 | 本状态文件完成后通知开发 |
+| UI 实现 | terra | 待 PRD ready | 待定 | PRD 基础 commit 完成后通知开发，不等待模板脚本 |
 | 审计与验收 | luna | 待排期 | 待定 | 由 luna 维护后续 fast/compile/browser 与真实 readback 证据 |
 
 截图位于 `references/` 仅作本地视觉参考，含用户数据的 PNG 不进入 Git 提交。
