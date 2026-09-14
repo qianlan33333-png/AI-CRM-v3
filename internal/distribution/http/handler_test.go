@@ -85,7 +85,10 @@ func (distributionHTTPEarningsStub) ListCommissions(_ context.Context, actor dis
 		return distributionport.CommissionPage{}, distributionport.ErrConflict
 	}
 	now := time.Date(2026, 9, 14, 8, 0, 0, 0, time.UTC)
-	return distributionport.CommissionPage{Items: []distributionport.CommissionListItem{{CommissionID: "4", OrderReference: "order-9001", ProductName: "冻结商品", InitialMinor: 990, CurrentPayableMinor: 880, PaidMinor: 0, Status: "pending", PaidConfirmedAt: now, DueAt: now.Add(24 * time.Hour), CreatedAt: now, Currency: "CNY"}}, NextCursor: "4"}, nil
+	return distributionport.CommissionPage{Items: []distributionport.CommissionListItem{
+		{CommissionID: "4", OrderReference: "order-9001", ProductName: "无确认事实", InitialMinor: 990, CurrentPayableMinor: 880, PaidMinor: 0, Status: "pending", PaidConfirmedAt: now, DueAt: now.Add(24 * time.Hour), CreatedAt: now, Currency: "CNY"},
+		{CommissionID: "5", OrderReference: "order-9002", ProductName: "已确认事实", InitialMinor: 990, CurrentPayableMinor: 880, PaidMinor: 880, Status: "paid", PaidConfirmedAt: now, DueAt: now.Add(24 * time.Hour), SettlementConfirmedAt: now.Add(time.Hour), PaidAt: now.Add(time.Hour), CreatedAt: now, Currency: "CNY"},
+	}, NextCursor: "5"}, nil
 }
 
 func TestCommissionsResponseMapsFrozenReadModelToPublicContract(t *testing.T) {
@@ -98,10 +101,13 @@ func TestCommissionsResponseMapsFrozenReadModelToPublicContract(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	body := w.Body.String()
-	for _, wanted := range []string{`"items":[{`, `"commission_id":"4"`, `"order_reference":"order-9001"`, `"product_name":"冻结商品"`, `"next_cursor":"4"`} {
+	for _, wanted := range []string{`"items":[{`, `"commission_id":"4"`, `"order_reference":"order-9001"`, `"product_name":"无确认事实"`, `"commission_id":"5"`, `"paid_at":"2026-09-14T09:00:00Z"`, `"next_cursor":"5"`} {
 		if !strings.Contains(body, wanted) {
 			t.Fatalf("response missing %s: %s", wanted, body)
 		}
+	}
+	if strings.Count(body, `"paid_at"`) != 1 {
+		t.Fatalf("missing confirmation fact must omit paid_at: %s", body)
 	}
 	if w.Code != http.StatusOK || strings.Contains(body, `"Items"`) || strings.Contains(body, `"NextCursor"`) {
 		t.Fatalf("response=%d body=%s", w.Code, body)
