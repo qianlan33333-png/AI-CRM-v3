@@ -53,7 +53,7 @@ for (const page of adminPages) {
   const html = fs.readFileSync(path.join(stage, relative), 'utf8');
   assert.ok(html.includes('data-ui-surface="admin"'), `staged ${relative} does not identify its UI surface`);
   assert.ok(html.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), `staged ${relative} does not load the surface feedback stylesheet`);
-  assert.ok(html.includes(`<script async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host`);
+  assert.ok(html.includes(`<script type="module" async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host as an ESM module`);
   if (html.includes('class="side-user"')) assert.ok(html.includes(`src="../${sourceManifest.entries.adminSessionHost}"`), `staged ${relative} has no working session Host`);
   assert.ok(!html.includes('href="cycles.html"'), `staged ${relative} still routes its Operation Cycles menu to the retired document`);
   if (html.includes('运营闭环')) assert.ok(html.includes('href="/admin/operation-cycles"'), `staged ${relative} omitted the canonical Operation Cycles menu route`);
@@ -81,7 +81,7 @@ assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.entry_point, 'w
 assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.sha256, '38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d', 'sidebar image loader must retain its audited dd8 bytes');
 assert.equal(sourceManifest.files?.[sidebarStandardStyles]?.entry_point, 'internal/webshell/static/sidebar_workbench/sidebar_workbench.css', 'sidebar release manifest must contain the standard stylesheet');
 const sidebarHTML = fs.readFileSync(path.join(stage, 'sidebar', 'index.html'), 'utf8');
-const sidebarScripts = [...sidebarHTML.matchAll(/<script(?: async| type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
+const sidebarScripts = [...sidebarHTML.matchAll(/<script(?:(?:\s+type="module")|(?:\s+async))*\s+src="([^"]+)"><\/script>/g)].map((match) => match[1]);
 assert.deepEqual(sidebarScripts, [`../${surfaceFeedbackHost}`, weComJSSDK, `../${sidebarImageResourceLoader}`, `../${sidebarHost}`], 'staged sidebar document must preserve feedback, JSSDK, standard image loader, and V3 Host order');
 assert.ok(sidebarHTML.includes('data-ui-surface="sidebar"'), 'staged sidebar document does not identify its UI surface');
 assert.ok(sidebarHTML.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), 'staged sidebar document does not load surface feedback styles');
