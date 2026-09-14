@@ -1203,8 +1203,8 @@ function distributionListSummary(order: DetailRecord | undefined): string | unde
     : '';
   const payableAmounts = Array.from(totals, ([currency, amount]) => moneyFromMinorCurrency(amount, currency));
   const payable = payableAmounts.length > 0
-    ? `当前应付 ${payableAmounts.join(' / ')}${hasUnknownPayable ? '（另有金额待确认）' : ''}`
-    : '当前应付 金额待确认';
+    ? `佣金总额 ${payableAmounts.join(' / ')}${hasUnknownPayable ? '（另有金额待确认）' : ''}`
+    : '佣金总额待确认';
   return `分销：${names.join('、')} · ${formation}${payable}`;
 }
 function appendDistributionDetailSections(card: HTMLElement, order: DetailRecord): void {
@@ -1232,7 +1232,7 @@ function appendDistributionDetailSections(card: HTMLElement, order: DetailRecord
     }
     entries.push(
       ['初始佣金', moneyFromMinorCurrency(line.initial_minor, currency)],
-      ['当前应付佣金', moneyFromMinorCurrency(line.current_payable_minor, currency)],
+      ['当前佣金总额（含已分账）', moneyFromMinorCurrency(line.current_payable_minor, currency)],
       ['已分账佣金', moneyFromMinorCurrency(line.paid_minor, currency)],
       ['佣金状态', distributionCommissionStatusLabel(line.status)],
       ['预计可结算时间', formatShanghaiDateTime(line.due_at)],

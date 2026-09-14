@@ -111,7 +111,7 @@ try {
   await collisionDom.window.fetch('/api/admin/orders');
   await pause();
   const rows = Array.from(collisionDom.window.document.querySelectorAll('tbody tr'));
-  assert.match(rows[0].textContent, /分销：分销员成功 · 当前应付 ¥1\.00/, 'provider-scoped successful row retains only its canonical order distribution');
+  assert.match(rows[0].textContent, /分销：分销员成功 · 佣金总额 ¥1\.00/, 'provider-scoped successful row labels the preserved commission total rather than an unpaid balance');
   assert.match(rows[1].textContent, /非分销订单/, 'same merchant reference from another provider cannot borrow a distribution summary');
   assert.equal(new URL(rows[0].dataset.orderDetailUrl).searchParams.get('provider'), 'wechat', 'row detail URL preserves server-owned WeChat provider');
   assert.equal(new URL(rows[1].dataset.orderDetailUrl).searchParams.get('provider'), 'alipay', 'row detail URL preserves server-owned Alipay provider');
@@ -143,7 +143,7 @@ try {
   await pause();
   const summary = mixedDistributionDom.window.document.querySelector('tbody tr').textContent;
   assert.match(summary, /2项已形成 \/ 1项待形成/, 'a partially formed order must preserve both formed and pending attribution lines');
-  assert.match(summary, /当前应付 ¥1\.00（另有金额待确认）/, 'unknown payable data must not be rendered as a real zero amount');
+  assert.match(summary, /佣金总额 ¥1\.00（另有金额待确认）/, 'unknown commission-total data must not be rendered as a real zero amount');
   assert.doesNotMatch(summary, /已归因 · 未形成佣金/, 'a pending line must not hide the formed commission summary for the same order');
 } finally {
   mixedDistributionDom.window.close();
@@ -307,6 +307,7 @@ try {
   assert.match(detailDom.window.document.body.textContent, /分销信息/, 'detail must include the Distribution-owned item snapshot section');
   assert.match(detailDom.window.document.body.textContent, /冻结佣金比例12.34%/, 'detail must use the frozen attribution ratio, not current product policy');
   assert.match(detailDom.window.document.body.textContent, /退款复核等待7 天/, 'detail must show the frozen refund-review wait days');
+  assert.match(detailDom.window.document.body.textContent, /当前佣金总额（含已分账）¥2\.22/, 'the preserved current payable field is labeled as a total, never inferred as an unpaid balance');
   assert.match(detailDom.window.document.body.textContent, /分账成功确认时间2026-10-09 00:01:02/, 'detail labels audit fact as system split confirmation, not bank arrival');
   assert.match(detailDom.window.document.body.textContent, /买家退款调整/, 'partial refund adjustment evidence remains visible');
   assert.match(detailDom.window.document.body.textContent, /退款后已分账/, 'exception evidence remains visible');
