@@ -75,7 +75,8 @@ def require_clean_source(source_root: Path) -> None:
         raise RuntimeError("source tree is dirty; commit the harness or create a fresh test worktree before running")
 
 
-def isolated_env(database_url: str, candidate_sha: str, dedup_base_sha: str) -> dict[str, str]:
+def isolated_env(database_url: str, candidate_sha: str, dedup_base_sha: str,
+                 v2_donor_dir: Path | None, sidebar_donor_dir: Path | None) -> dict[str, str]:
     env = dict(os.environ)
     # A test run must not inherit credentials, runtime files, or a provider gate
     # from the caller.  Non-AICRM toolchain configuration remains available.
@@ -91,6 +92,10 @@ def isolated_env(database_url: str, candidate_sha: str, dedup_base_sha: str) -> 
         "AICRM_DEDUP_BASE_SHA": dedup_base_sha,
         "PYTHONDONTWRITEBYTECODE": "1",
     })
+    if v2_donor_dir is not None:
+        env["PR07_DONOR_DIR"] = str(v2_donor_dir.resolve())
+    if sidebar_donor_dir is not None:
+        env["AICRM_SIDEBAR_DONOR_DIR"] = str(sidebar_donor_dir.resolve())
     return env
 
 
@@ -108,6 +113,8 @@ def main() -> int:
     parser.add_argument("--report-dir", required=True, type=Path)
     parser.add_argument("--source-root", type=Path, default=HARNESS_ROOT,
                         help="clean candidate worktree to test; defaults to this harness checkout")
+    parser.add_argument("--v2-donor-dir", type=Path)
+    parser.add_argument("--sidebar-donor-dir", type=Path)
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--execute", action="store_true", help="run the lane; otherwise only check its prerequisites")
     args = parser.parse_args()
@@ -136,13 +143,16 @@ def main() -> int:
         "mode": "execute" if args.execute else "prerequisites_only",
         "database": database,
         "providers": "disabled",
+        "v2_donor_dir": str(args.v2_donor_dir.resolve()) if args.v2_donor_dir else None,
+        "sidebar_donor_dir": str(args.sidebar_donor_dir.resolve()) if args.sidebar_donor_dir else None,
         "provider_keys_forced_disabled": sorted(DISABLED_PROVIDER_ENV),
         "command": ["scripts/ci/quality_lanes.py", args.lane, "--check-prerequisites" if not args.execute else "execute"],
     }
     write_receipt(report_dir, receipt)
     dedup_base = git(source_root, "rev-parse", "HEAD^")
     result = subprocess.run(command, cwd=source_root,
-                            env=isolated_env(database_url, current, dedup_base), check=False)
+                            env=isolated_env(database_url, current, dedup_base,
+                                             args.v2_donor_dir, args.sidebar_donor_dir), check=False)
     source_dirty_after = bool(git(source_root, "status", "--porcelain=v1", "--untracked-files=all"))
     receipt["lane_exit_code"] = result.returncode
     receipt["source_dirty_after_run"] = source_dirty_after
