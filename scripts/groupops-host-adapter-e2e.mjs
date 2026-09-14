@@ -142,8 +142,362 @@ const waitFor = async (condition, message) => {
     if (condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(message);
+  throw new Error(typeof message === "function" ? message() : message);
 };
+// The Host lease is deliberately narrower than a plan-ID cache. These
+// controlled responses exercise same-kind reentry and A -> B -> A: late A
+// success/error/finally must not replace the current A view or its subsequent
+// write/readback.
+const pending = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+};
+const raceResponse = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+const raceReads = [];
+const raceWrites = [];
+let raceEnableAttempts = 0;
+const raceJourney = new JSDOM("<!doctype html><html><body></body></html>", {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/41",
+  runScripts: "outside-only",
+});
+const raceWindow = raceJourney.window;
+raceWindow.Headers = Headers;
+raceWindow.Response = Response;
+Object.defineProperty(raceWindow, "crypto", {
+  configurable: true,
+  value: crypto,
+});
+raceWindow.fetch = (input, init = {}) => {
+  const url = new URL(String(input), raceWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  if (
+    method === "GET" &&
+    (/\/plans\/(41|42|88|90)$/.test(url.pathname) ||
+      (url.pathname === "/api/admin/automation-conversion/group-ops/groups" &&
+        url.searchParams.get("owner_userid") === null))
+  ) {
+    const request = pending();
+    raceReads.push({ path: url.pathname + url.search, request });
+    return request.promise;
+  }
+  if (
+    url.pathname === "/api/admin/automation-conversion/group-ops/groups/sync" &&
+    method === "POST"
+  )
+    return Promise.resolve(raceResponse({ total: 1 }));
+  if (
+    url.pathname ===
+      "/api/admin/automation-conversion/group-ops/plans/41/enable" &&
+    method === "POST"
+  ) {
+    raceWrites.push(JSON.parse(String(init.body || "{}")));
+    raceEnableAttempts += 1;
+    if (raceEnableAttempts === 1)
+      return Promise.resolve(raceResponse({ code: "operations_conflict" }, 409));
+    return Promise.resolve(raceResponse({ plan: { plan_id: 41, revision: 52 } }));
+  }
+  throw new Error(
+    `unexpected race request ${method} ${url.pathname}${url.search}`,
+  );
+};
+raceWindow.eval(bundle.outputFiles[0].text);
+const raceHost = raceWindow.AdminApi;
+const staleSuccessA = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/41",
+);
+const staleErrorA = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/41",
+);
+const interveningB = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/42",
+);
+const currentA = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/41",
+);
+const currentAGroups = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/41/groups",
+);
+await waitFor(
+  () => raceReads.length === 8,
+  "same-kind reentry did not create four independent plan/directory epochs",
+);
+const nextRaceRead = (expectedPath) => {
+  const next = raceReads.shift();
+  assert.equal(
+    next.path,
+    expectedPath,
+    "race fixture must preserve request order",
+  );
+  return next.request;
+};
+const staleSuccessPlan = nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/plans/41",
+);
+const staleSuccessDirectory = nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+);
+const staleErrorPlan = nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/plans/41",
+);
+const staleErrorDirectory = nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+);
+const interveningBPlan = nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/plans/42",
+);
+const interveningBDirectory = nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+);
+const currentPlan = nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/plans/41",
+);
+const currentDirectory = nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+);
+currentPlan.resolve(
+  raceResponse({
+    plan: { plan_id: 41, name: "current", revision: 50 },
+    group_assets: [{ asset_reference: "current-group" }],
+  }),
+);
+currentDirectory.resolve(
+  raceResponse({
+    items: [
+      {
+        chat_reference: "current-group",
+        display_name: "当前群",
+        owner_staff_id: 7,
+        member_count: 20,
+        external_member_count: 12,
+      },
+    ],
+    has_more: false,
+  }),
+);
+const [currentPlanPayload, currentGroupPayload] = await Promise.all([
+  currentA,
+  currentAGroups,
+]);
+assert.equal(
+  currentPlanPayload.revision,
+  50,
+  "the current A epoch must publish its own revision before old A completes",
+);
+assert.equal(
+  currentPlanPayload.groups_summary,
+  currentGroupPayload.summary,
+  "the paired routes must retain one current summary view reference",
+);
+staleSuccessPlan.resolve(
+  raceResponse({
+    plan: { plan_id: 41, name: "stale", revision: 3 },
+    group_assets: [{ asset_reference: "stale-group" }],
+  }),
+);
+staleSuccessDirectory.resolve(
+  raceResponse({
+    items: [
+      {
+        chat_reference: "stale-group",
+        display_name: "过期群",
+        owner_staff_id: 7,
+        member_count: 4,
+        external_member_count: 1,
+      },
+    ],
+    has_more: false,
+  }),
+);
+staleErrorPlan.resolve(raceResponse({ code: "operations_conflict" }, 409));
+staleErrorDirectory.resolve(raceResponse({ items: [], has_more: false }));
+interveningBPlan.resolve(
+  raceResponse({
+    plan: { plan_id: 42, name: "B", revision: 4 },
+    group_assets: [],
+  }),
+);
+interveningBDirectory.resolve(raceResponse({ items: [], has_more: false }));
+await staleSuccessA;
+await assert.rejects(staleErrorA, /计划状态、版本或配置不满足要求/);
+await interveningB;
+assert.equal(
+  currentGroupPayload.items[0].group_name,
+  "当前群",
+  "late A success cannot overwrite the published current group view",
+);
+assert.equal(
+  currentPlanPayload.groups_summary,
+  currentGroupPayload.summary,
+  "late A success/error/finally cannot replace the current summary view reference",
+);
+
+// This order is distinct: old A finishes while the newer A is still pending.
+// Its finally must leave the newer epoch claim installed so that both newer
+// routes publish the same donor view once their shared reads arrive.
+const oldPendingA = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/90",
+);
+const newPendingA = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/90",
+);
+const newPendingGroups = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/90/groups",
+);
+await waitFor(
+  () => raceReads.length === 4,
+  "pending-order fixture did not create distinct old and new A epochs",
+);
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/90").resolve(
+  raceResponse({
+    plan: { plan_id: 90, name: "old pending", revision: 1 },
+    group_assets: [],
+  }),
+);
+nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+).resolve(raceResponse({ items: [], has_more: false }));
+await oldPendingA;
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/90").resolve(
+  raceResponse({
+    plan: { plan_id: 90, name: "new pending", revision: 2 },
+    group_assets: [],
+  }),
+);
+nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+).resolve(raceResponse({ items: [], has_more: false }));
+const [newPendingPlan, newPendingGroupPayload] = await Promise.all([
+  newPendingA,
+  newPendingGroups,
+]);
+assert.equal(
+  newPendingPlan.groups_summary,
+  newPendingGroupPayload.summary,
+  "old A finally must not delete the newer pending A epoch",
+);
+
+// A failed epoch cannot become a retained failed snapshot. The retry starts a
+// fresh pair immediately and returns its own current DTOs.
+const failed88 = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/88",
+);
+await waitFor(
+  () => raceReads.length === 2,
+  "failed detail did not start a new lease",
+);
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/88").resolve(
+  raceResponse({ code: "service_unavailable" }, 503),
+);
+nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+).resolve(raceResponse({ code: "directory_unavailable" }, 503));
+await assert.rejects(failed88, /HTTP 503/);
+const retry88 = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/88",
+);
+const retry88Groups = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/88/groups",
+);
+await waitFor(
+  () => raceReads.length === 2,
+  "retry did not start a fresh paired lease",
+);
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/88").resolve(
+  raceResponse({
+    plan: { plan_id: 88, name: "retry", revision: 6 },
+    group_assets: [],
+  }),
+);
+nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+).resolve(raceResponse({ items: [], has_more: false }));
+await Promise.all([retry88, retry88Groups]);
+
+// Sync invalidates the initial epoch, reads fresh server data, and mutates the
+// current donor view rather than an older A array. It does not silently discard
+// the revision the operator saw before starting a write.
+raceWindow.document.body.innerHTML =
+  '<main id="group-ops-app" data-plan-id="41"></main>';
+const sync = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/groups/sync",
+  { method: "POST", body: { owner_userid: 7 } },
+);
+await waitFor(
+  () => raceReads.length === 2,
+  "sync readback did not force fresh plan and directory reads",
+);
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41").resolve(
+  raceResponse({
+    plan: { plan_id: 41, name: "current", revision: 51 },
+    group_assets: [{ asset_reference: "current-group" }],
+  }),
+);
+nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+).resolve(
+  raceResponse({
+    items: [
+      {
+        chat_reference: "current-group",
+        display_name: "同步后的当前群",
+        owner_staff_id: 7,
+        member_count: 22,
+        external_member_count: 13,
+      },
+    ],
+    has_more: false,
+  }),
+);
+await sync;
+assert.equal(
+  currentGroupPayload.items[0].group_name,
+  "同步后的当前群",
+  "late A must not replace the group view that sync mutates",
+);
+const conflictingEnable = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/41/enable",
+  { method: "POST" },
+);
+assert.equal(raceReads.length, 0, "a write must retain the operator-visible revision instead of silently rereading it");
+await assert.rejects(conflictingEnable, /计划状态、版本或配置不满足要求/);
+assert.equal(raceWrites[0].expected_revision, 50, "the first write must preserve revision 50 and let the server reject the unseen revision 51");
+const explicitReread = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/41",
+);
+await waitFor(
+  () => raceReads.length === 2,
+  "explicit reread did not request a fresh plan and directory pair after the real conflict",
+);
+nextRaceRead("/api/admin/automation-conversion/group-ops/plans/41").resolve(
+  raceResponse({
+    plan: { plan_id: 41, name: "current", revision: 51 },
+    group_assets: [{ asset_reference: "current-group" }],
+  }),
+);
+nextRaceRead(
+  "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0",
+).resolve(raceResponse({ items: [], has_more: false }));
+const refreshedPlan = await explicitReread;
+assert.equal(refreshedPlan.revision, 51, "the explicit reread publishes the new server revision");
+const retriedEnable = raceHost.requestJson(
+  "/api/admin/automation-conversion/group-ops/plans/41/enable",
+  { method: "POST" },
+);
+assert.equal(raceReads.length, 0, "the post-reread write must use the newly read revision directly");
+await retriedEnable;
+assert.equal(raceWrites[1].expected_revision, 51, "only an explicit reread may advance the next write to revision 51");
+console.log("groupops-hydration-epoch: PASS");
+raceJourney.window.close();
+
 const fullJourneyErrors = [];
 const fullJourneyConsole = new VirtualConsole();
 fullJourneyConsole.on("jsdomError", (error) => fullJourneyErrors.push(String(error?.message || error)));
@@ -152,6 +506,12 @@ let memberRefreshAttempts = 0;
 let ownerDirectoryFailures = 0;
 let groupSyncAttempts = 0;
 let failGroupReadback = false;
+let failPlanReadback = false;
+let failNextPlanReadbackAfterWrite = false;
+let wrongPlanIDOnce = false;
+let returnWrongPlanIDAfterWrite = false;
+let delayNextPlanRead = false;
+let releaseDelayedPlanRead = null;
 let saveFailure = "";
 const state = {
   revision: 4,
@@ -211,7 +571,19 @@ fullWindow.fetch = async (input, init = {}) => {
     if (memberRefreshAttempts === 1) return response({ error: { code: "provider_read_unavailable" } }, 503);
     return response({ items: [], page_size: 100 });
   }
-  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "GET") return response(detailPayload());
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "GET") {
+    if (failPlanReadback) throw new Error("详情读取中断");
+    if (wrongPlanIDOnce) {
+      wrongPlanIDOnce = false;
+      return response({ ...detailPayload(), plan: { ...clone(state.plan), plan_id: 99 } });
+    }
+    if (delayNextPlanRead) {
+      delayNextPlanRead = false;
+      const captured = response(detailPayload());
+      return new Promise((resolve) => { releaseDelayedPlanRead = () => resolve(captured); });
+    }
+    return response(detailPayload());
+  }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "PUT") {
     if (saveFailure === "network") throw new Error("网络连接中断");
     if (saveFailure) return response({ code: saveFailure === "409" ? "revision_conflict" : "service_unavailable" }, Number(saveFailure));
@@ -221,6 +593,14 @@ fullWindow.fetch = async (input, init = {}) => {
     if (body.owner_staff_id) state.members = [{ staff_id: Number(body.owner_staff_id) }];
     state.revision += 1;
     state.plan.revision = state.revision;
+    if (failNextPlanReadbackAfterWrite) {
+      failNextPlanReadbackAfterWrite = false;
+      failPlanReadback = true;
+    }
+    if (returnWrongPlanIDAfterWrite) {
+      returnWrongPlanIDAfterWrite = false;
+      wrongPlanIDOnce = true;
+    }
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/enable" && method === "POST") {
@@ -235,6 +615,10 @@ fullWindow.fetch = async (input, init = {}) => {
     state.group_assets.push({ asset_reference: body.asset_reference });
     state.revision += 1;
     state.plan.revision = state.revision;
+    return response({ plan: clone(state.plan) });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/groups/group-9" && method === "DELETE") {
+    state.group_assets = state.group_assets.filter((item) => item.asset_reference !== "group-9");
     return response({ plan: clone(state.plan) });
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41/nodes" && method === "POST") {
@@ -292,21 +676,33 @@ try {
   await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "9", "owner picker did not retain the selected local staff id");
   await waitFor(() => fullWindow.document.body.textContent.includes("群目录读取失败，请重试"), "owner directory failure must remain explicit rather than appear as an empty group list");
   const draftName = fullWindow.document.querySelector('[name="plan_name"]');
-  draftName.value = "失败重试保留草稿";
-  for (const failure of ["409", "503", "network"]) {
+  const writesBeforeBlankName = calls.filter((call) => call.method === "PUT").length;
+  draftName.value = "   ";
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => fullWindow.document.body.textContent.includes("请输入计划名称后再保存"), "blank plan name must be rejected locally");
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeBlankName, "blank plan name must not issue a PUT");
+  assert.equal(fullWindow.document.querySelector('[name="plan_name"]')?.value, "", "blank name must remain blank after local rejection");
+  assert.equal(fullWindow.document.querySelector('[name="owner_userid"]')?.value, "9", "blank name rejection must preserve the other drafted fields");
+  const doubleClickName = fullWindow.document.querySelector('[name="plan_name"]');
+  doubleClickName.value = "一次提交";
+  const writesBeforeDoubleClick = calls.filter((call) => call.method === "PUT").length;
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  fullWindow.document.querySelector('[data-action="save-active-detail-panel"]').click();
+  await waitFor(() => state.plan.name === "一次提交", "single save did not persist before the shared-lock assertion");
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeDoubleClick + 1, "two save controls must share one in-flight PUT");
+  assert.equal(fullWindow.document.querySelector('[data-action="save-plan"]')?.disabled, false, "both save controls unlock only after authoritative readback");
+  fullWindow.document.querySelector('[name="plan_name"]').value = "失败重试保留草稿";
+  for (const failure of ["409", "500", "network"]) {
     saveFailure = failure;
     const writesBefore = calls.filter((call) => call.method === "PUT").length;
-    const action = failure === "503" ? "save-active-detail-panel" : "save-plan";
+    const action = failure === "500" ? "save-active-detail-panel" : "save-plan";
     fullWindow.document.querySelector(`[data-action="${action}"]`).click();
-    await waitFor(() => calls.filter((call) => call.method === "PUT").length > writesBefore && fullWindow.document.querySelector('[data-groupops-save-error]'), "real save rejection must be visible");
-    assert.equal(fullWindow.document.querySelectorAll('[data-groupops-save-error][role="alert"]').length, 1, "repeated failures reuse one alert");
-    const saveAlert = fullWindow.document.querySelector('[data-groupops-save-error]');
-    assert.match(saveAlert.textContent, /^保存失败：/);
-    assert.equal(saveAlert.style.color, "rgb(180, 35, 24)", "failure feedback must not inherit the green standard notice color");
-    assert.equal(fullWindow.document.querySelector('[name="plan_name"]'), draftName, "failure must not rerender the draft form");
-    assert.equal(draftName.value, "失败重试保留草稿");
+    await waitFor(() => calls.filter((call) => call.method === "PUT").length > writesBefore && fullWindow.document.querySelector('.group-ops__notice--error'), "real save rejection must be visible");
+    const retainedName = fullWindow.document.querySelector('[name="plan_name"]');
+    assert.equal(retainedName.value, "失败重试保留草稿", "failure must retain the draft after the standard page rerenders");
+    assert.equal(fullWindow.document.querySelector('.group-ops__notice--error')?.getAttribute('role'), 'alert', "save failure must remain an accessible alert");
     assert.equal(fullWindow.document.querySelector('[name="owner_userid"]').value, "9");
-    assert.equal(state.plan.name, "标准群运营计划", "failed save must not pretend the server changed");
+    assert.equal(state.plan.name, "一次提交", "failed save must not pretend the server changed");
     assert.equal(fullWindow.document.body.textContent.includes("已保存"), false);
   }
   saveFailure = "";
@@ -316,13 +712,37 @@ try {
   assert.equal(state.plan.status, "paused", "saving paused configuration must not activate the plan");
   assert.deepEqual(state.members, [{ staff_id: 9 }], "paused save must persist the chosen owner");
   assert.equal(calls.some((call) => call.method === "POST" && /\/(enable|disable)$/.test(call.path)), false, "paused save must not trigger a lifecycle command");
-  assert.equal(fullWindow.document.querySelector('[data-groupops-save-error]'), null);
+  assert.equal(fullWindow.document.querySelector('.group-ops__notice--error'), null);
+  fullWindow.document.querySelector('[name="plan_name"]').value = "已写待回读";
+  const writesBeforeReadbackFailure = calls.filter((call) => call.method === "PUT").length;
+  failNextPlanReadbackAfterWrite = true;
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => calls.filter((call) => call.method === "PUT").length === writesBeforeReadbackFailure + 1 && fullWindow.document.querySelector('[data-action="reload-plan-detail"]'), "a successful PUT followed by failed detail readback must lock for an explicit retry");
+  assert.match(fullWindow.document.body.textContent, /已保存，但读取最新配置失败/, "a successful PUT followed by failed detail readback must be explicit");
+  assert.equal(fullWindow.document.querySelector('.group-ops__notice--error')?.getAttribute('role'), 'alert', "readback failure must remain an accessible alert");
+  assert.equal(fullWindow.document.querySelector('[data-action="save-plan"]')?.disabled, true, "readback-pending state must keep basic save locked");
+  assert.equal(fullWindow.document.querySelector('[data-action="save-active-detail-panel"]')?.disabled, true, "readback-pending state must keep shared save locked");
+  fullWindow.document.querySelector('[data-action="save-active-detail-panel"]').click();
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeReadbackFailure + 1, "readback-pending state must not issue a replacement PUT");
+  failPlanReadback = false;
+  fullWindow.document.querySelector('[data-action="reload-plan-detail"]').click();
+  await waitFor(() => state.plan.name === "已写待回读" && !fullWindow.document.querySelector('[data-action="save-plan"]')?.disabled, "retrying detail readback must restore the authoritative editable plan");
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeReadbackFailure + 1, "readback retry must not submit a second PUT");
+  fullWindow.document.querySelector('[name="plan_name"]').value = "错误详情 ID 只读恢复";
+  const writesBeforeWrongID = calls.filter((call) => call.method === "PUT").length;
+  returnWrongPlanIDAfterWrite = true;
+  fullWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => calls.filter((call) => call.method === "PUT").length === writesBeforeWrongID + 1 && fullWindow.document.querySelector('[data-action="reload-plan-detail"]'), "a mismatched 200 detail ID must enter readback-only recovery");
+  assert.match(fullWindow.document.body.textContent, /与当前页面不一致/, "a mismatched 200 detail ID must be visible instead of silently leaving the save locked");
+  fullWindow.document.querySelector('[data-action="reload-plan-detail"]').click();
+  await waitFor(() => state.plan.name === "错误详情 ID 只读恢复" && !fullWindow.document.querySelector('[data-action="save-plan"]')?.disabled, "mismatched detail recovery must read the authoritative plan without a second write");
+  assert.equal(calls.filter((call) => call.method === "PUT").length, writesBeforeWrongID + 1, "mismatched detail recovery must stay read-only");
   fullWindow.document.querySelector('[name="status"]').value = "active";
   fullWindow.document.querySelector('[data-action="save-plan"]').click();
   await waitFor(() => state.plan.status === "active", "saving the selected owner did not enable the existing plan");
   assert.deepEqual(state.members, [{ staff_id: 9 }], "Host must write the selected staff id as owner_staff_id");
-  assert.equal(state.plan.name, "失败重试保留草稿", "successful retry must submit the retained draft");
-  assert.equal(fullWindow.document.querySelector('[data-groupops-save-error]'), null, "successful retry clears the prior failure");
+  assert.equal(state.plan.name, "错误详情 ID 只读恢复", "successful retry must submit the retained authoritative draft");
+  assert.equal(fullWindow.document.querySelector('.group-ops__notice--error'), null, "successful retry clears the prior failure");
 
   await waitFor(() => fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]'), "detail did not reload after owner save");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
@@ -371,6 +791,22 @@ try {
   failGroupReadback = false;
   fullWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
   await waitFor(() => fullWindow.document.querySelector('.group-ops__group-name')?.textContent.includes("同步群名3"), "retry must update the bound projection");
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();
+  fullWindow.document.querySelector('[name="plan_name"]').value = "新保存不会被旧读覆盖";
+  const deferredSave = fullWindow.document.querySelector('[data-action="save-plan"]');
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  delayNextPlanRead = true;
+  fullWindow.document.querySelector('[data-action="remove-group"]').click();
+  await waitFor(() => releaseDelayedPlanRead && fullWindow.document.body.textContent.includes("加载中"), "old detail load did not pause for the stale-response assertion");
+  const staleInput = fullWindow.document.createElement('input');
+  staleInput.name = 'plan_name'; staleInput.value = '新保存不会被旧读覆盖';
+  fullWindow.document.getElementById('group-ops-app').append(staleInput);
+  deferredSave.click();
+  await waitFor(() => state.plan.name === '新保存不会被旧读覆盖', "new save/readback did not complete before stale detail resumed");
+  releaseDelayedPlanRead();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(state.plan.name, '新保存不会被旧读覆盖', "a delayed old detail response must not overwrite the newer authoritative save/readback");
+  assert.equal(fullWindow.document.body.textContent.includes('新保存不会被旧读覆盖'), true, "render after a stale response must retain the newer plan state");
   if (fullJourneyErrors.length) throw new Error(`Group Ops standard DOM errors: ${JSON.stringify(fullJourneyErrors)}`);
   console.log("groupops-standard-dom: PASS");
 } finally {
@@ -381,6 +817,7 @@ try {
 // the configured, callable URL and give a truthful copy receipt. A missing
 // descriptor takes the explicit unavailable branch in the production code.
 const copiedWebhook = [];
+const webhookCalls = [];
 let webhookPlan = { plan_id: 52, name: "Webhook 计划", revision: 2, status: "draft", plan_type: "webhook" };
 let webhookDescriptor = { configured: false, reference: "", path: "", signature_algorithm: "HMAC-SHA256", signature_header: "X-Signature", timestamp_header: "X-Timestamp", nonce_header: "X-Nonce", client_id_header: "X-Client-ID" };
 const webhookJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="52"></main></body></html>`, {
@@ -397,6 +834,7 @@ webhookWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
 webhookWindow.fetch = async (input, init = {}) => {
   const url = new URL(String(input), webhookWindow.location.href);
   const method = String(init.method || "GET").toUpperCase();
+  webhookCalls.push({ path: url.pathname + url.search, method });
   if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52" && method === "GET") return response({ plan: clone(webhookPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
@@ -415,6 +853,10 @@ try {
   webhookWindow.eval(pickerSource);
   webhookWindow.eval(bundle.outputFiles[0].text);
   await waitFor(() => webhookWindow.document.querySelector('[data-action="save-webhook"]'), "unconfigured webhook did not render its configuration action");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/plans/52").length, 1, "Webhook detail hydration must issue one plan read");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/groups?limit=200&offset=0").length, 1, "Webhook detail hydration must issue one unfiltered group-directory read");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/groups?owner_userid=7").length, 1, "Webhook owner picker directory remains an independent read");
+  assert.equal(webhookCalls.filter((call) => call.method === "GET" && call.path === "/api/admin/automation-conversion/group-ops/plans/52/webhook-descriptor").length, 1, "Webhook descriptor remains an independent read");
   assert.equal(webhookWindow.document.querySelector('[name="webhook_reference"]'), null, "users must not enter technical webhook references");
   webhookWindow.document.querySelector('[data-action="save-webhook"]').click();
   await waitFor(() => webhookWindow.document.querySelector('[data-action="copy-webhook"]'), "saved webhook did not reread and render its copy action");

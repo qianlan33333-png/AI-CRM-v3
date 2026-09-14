@@ -13,7 +13,14 @@ import (
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 )
 
-const webhookMaxBody = 32 << 10
+const (
+	webhookMaxBody         = 32 << 10
+	webhookPathPrefix      = "/api/integrations/ai-audience/"
+	webhookPathSuffix      = "/membership-facts"
+	webhookTimestampHeader = "X-AICRM-Timestamp"
+	webhookEventIDHeader   = "X-AICRM-Event-Id"
+	webhookSignatureHeader = "X-AICRM-Signature"
+)
 
 var packageKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,119}$`)
 
@@ -45,12 +52,11 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		method(w, "POST")
 		return
 	}
-	prefix, suffix := "/api/integrations/ai-audience/", "/membership-facts"
-	if !strings.HasPrefix(r.URL.Path, prefix) || !strings.HasSuffix(r.URL.Path, suffix) {
+	if !strings.HasPrefix(r.URL.Path, webhookPathPrefix) || !strings.HasSuffix(r.URL.Path, webhookPathSuffix) {
 		fail(w, 404, "not_found")
 		return
 	}
-	key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), suffix)
+	key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, webhookPathPrefix), webhookPathSuffix)
 	if !packageKeyPattern.MatchString(key) {
 		fail(w, 404, "not_found")
 		return
@@ -65,7 +71,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	fact, err := h.verifier.Verify(key, r.Header.Get("X-AICRM-Event-Id"), r.Header.Get("X-AICRM-Timestamp"), r.Header.Get("X-AICRM-Signature"), body, h.now())
+	fact, err := h.verifier.Verify(key, r.Header.Get(webhookEventIDHeader), r.Header.Get(webhookTimestampHeader), r.Header.Get(webhookSignatureHeader), body, h.now())
 	if errors.Is(err, segmentadapter.ErrInvalidWebhookProof) {
 		fail(w, 401, "invalid_signature")
 		return

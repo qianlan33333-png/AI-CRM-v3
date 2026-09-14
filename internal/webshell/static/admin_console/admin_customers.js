@@ -41,8 +41,16 @@
   let nextCursor = "";
   let pageIndex = 0;
   let pageCursors = [""];
+  let listRequestID = 0;
+  let listAbortController = null;
+  let listBusy = false;
+  let committedQuery = "";
+  // A failed read must retry the same submitted filter/cursor pair even when
+  // an administrator has edited the form again without submitting it.
+  let listRetry = { query: "", cursor: "", navigation: "reset" };
   let detailID = "";
   let clearPhoneTimer = 0;
+  let tagSelectorsPending = null;
   const selectedCustomers = new Set();
   const acceptedTagCommands = new Map();
 
@@ -214,48 +222,92 @@
     el.wrap.hidden = true;
   }
 
+  function setListBusy(busy) {
+    listBusy = busy;
+    root.setAttribute("aria-busy", busy ? "true" : "false");
+    if (el.refresh) el.refresh.disabled = busy;
+    const pageStateUnavailable = activeQuery !== committedQuery;
+    for (const control of [el.previous, el.next]) if (control) control.disabled = busy || pageStateUnavailable;
+  }
+
   function tagIDs(values) {
     const parsed = (Array.isArray(values) ? values : [values]).flatMap((value) => String(value || "").split(",")).map((item) => Number(item.trim())).filter((id) => Number.isSafeInteger(id) && id > 0);
     const unique = [...new Set(parsed)].sort((a, b) => a - b);
     return unique.length === parsed.length && unique.length <= 100 ? unique : null;
   }
 
-  async function loadTagSelectors() {
-    const selects = [...root.querySelectorAll('select[name="add_tag_ids"],select[name="remove_tag_ids"]')];
-    if (!selects.length) return;
-    try {
-      const catalog = await request(api.tags);
-      const tags = Array.isArray(catalog.items) ? catalog.items : [];
-      await window.AICRMStandardComponents?.ready?.();
-      for (const select of selects) {
-        select.replaceChildren();
-        select.disabled = false;
-        for (const tag of tags) {
-          const id = Number(tag.id || tag.tag_id);
-          if (!Number.isSafeInteger(id) || id < 1) continue;
-          const option = document.createElement("option");
-          option.value = String(id);
-          option.textContent = (tag.group_name ? tag.group_name + " / " : "") + (tag.tag_name || tag.name || ("标签 " + id));
-          select.append(option);
-        }
-        if (!window.AICRMWeComTagPicker || select.dataset.standardTagPicker) continue;
-        select.dataset.standardTagPicker = "1";
-        select.hidden = true;
-        const button = document.createElement("button");
-        button.type = "button"; button.className = "admin-button admin-button--ghost"; button.textContent = "选择标签";
-        const summary = document.createElement("span"); summary.style.cssText = "font-size:12px;color:#646A73";
-        const sync = () => { const selected = [...select.selectedOptions].map((option) => option.textContent || option.value); summary.textContent = selected.length ? `已选：${selected.join("、")}` : "暂未选择标签"; };
-        button.addEventListener("click", () => {
-          const selected = [...select.selectedOptions].map((option) => ({ tag_id: option.value, tag_name: option.textContent || option.value }));
-          window.AICRMWeComTagPicker.open({ title: select.name === "add_tag_ids" ? "选择新增标签" : "选择移除标签", mode: "multiple", catalog: { groups: catalog.groups || [], items: tags }, value: selected, allowManual: false,
-            onConfirm: (picked) => { const ids = new Set(picked.map((tag) => String(tag.tag_id))); [...select.options].forEach((option) => { option.selected = ids.has(option.value); }); sync(); },
-            onClear: () => { [...select.options].forEach((option) => { option.selected = false; }); sync(); } });
-        });
-        select.parentElement?.append(button, summary); sync();
-      }
-    } catch (_error) {
-      for (const select of selects) select.disabled = true;
+  function clearTagSelectorErrors() {
+    root.querySelectorAll("[data-customer-tag-loader-error]").forEach((node) => node.remove());
+  }
+
+  function showTagSelectorError(selects) {
+    for (const form of new Set(selects.map((select) => select.closest("form")).filter(Boolean))) {
+      if (form.querySelector("[data-customer-tag-loader-error]")) continue;
+      const notice = document.createElement("span");
+      notice.dataset.customerTagLoaderError = "1";
+      notice.className = "admin-alert admin-alert--error";
+      notice.setAttribute("role", "alert");
+      notice.textContent = "标签选择暂时不可用。";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "admin-button admin-button--ghost";
+      retry.dataset.customerTagLoaderRetry = "1";
+      retry.textContent = "重试加载标签";
+      retry.addEventListener("click", () => { void loadTagSelectors(); });
+      notice.append(" ", retry);
+      form.append(notice);
     }
+  }
+
+  function loadTagSelectors() {
+    if (tagSelectorsPending) return tagSelectorsPending;
+    const selects = [...root.querySelectorAll('select[name="add_tag_ids"],select[name="remove_tag_ids"]')];
+    if (!selects.length) return Promise.resolve();
+    tagSelectorsPending = (async () => {
+      root.querySelectorAll("[data-customer-tag-loader-retry]").forEach((button) => { button.disabled = true; });
+      for (const select of selects) select.disabled = true;
+      clearTagSelectorErrors();
+      try {
+        const catalog = await request(api.tags);
+        const tags = Array.isArray(catalog.items) ? catalog.items : [];
+        const standardComponents = window.AICRMStandardComponents;
+        if (!standardComponents || typeof standardComponents.readyFor !== "function") throw new Error("标签选择组件不可用");
+        await standardComponents.readyFor(["tags"]);
+        if (!window.AICRMWeComTagPicker || typeof window.AICRMWeComTagPicker.open !== "function") throw new Error("标签选择组件未初始化");
+        for (const select of selects) {
+          const selectedValues = new Set([...select.selectedOptions].map((option) => option.value));
+          select.replaceChildren();
+          select.disabled = false;
+          for (const tag of tags) {
+            const id = Number(tag.id || tag.tag_id);
+            if (!Number.isSafeInteger(id) || id < 1) continue;
+            const option = document.createElement("option");
+            option.value = String(id);
+            option.textContent = (tag.group_name ? tag.group_name + " / " : "") + (tag.tag_name || tag.name || ("标签 " + id));
+            option.selected = selectedValues.has(option.value);
+            select.append(option);
+          }
+          if (!window.AICRMWeComTagPicker || select.dataset.standardTagPicker) continue;
+          select.dataset.standardTagPicker = "1";
+          select.hidden = true;
+          const button = document.createElement("button");
+          button.type = "button"; button.className = "admin-button admin-button--ghost"; button.textContent = "选择标签";
+          const summary = document.createElement("span"); summary.style.cssText = "font-size:12px;color:#646A73";
+          const sync = () => { const selected = [...select.selectedOptions].map((option) => option.textContent || option.value); summary.textContent = selected.length ? `已选：${selected.join("、")}` : "暂未选择标签"; };
+          button.addEventListener("click", () => {
+            const selected = [...select.selectedOptions].map((option) => ({ tag_id: option.value, tag_name: option.textContent || option.value }));
+            window.AICRMWeComTagPicker.open({ title: select.name === "add_tag_ids" ? "选择新增标签" : "选择移除标签", mode: "multiple", catalog: { groups: catalog.groups || [], items: tags }, value: selected, allowManual: false,
+              onConfirm: (picked) => { const ids = new Set(picked.map((tag) => String(tag.tag_id))); [...select.options].forEach((option) => { option.selected = ids.has(option.value); }); sync(); },
+              onClear: () => { [...select.options].forEach((option) => { option.selected = false; }); sync(); } });
+          });
+          select.parentElement?.append(button, summary); sync();
+        }
+      } catch (_error) {
+        for (const select of selects) select.disabled = true;
+        showTagSelectorError(selects);
+      }
+    })().finally(() => { tagSelectorsPending = null; });
+    return tagSelectorsPending;
   }
 
   function commandKey() {
@@ -402,27 +454,41 @@
     return row;
   }
 
-  async function loadList(cursor, navigation) {
+  async function loadList(cursor, navigation, retryQuery) {
+    let params;
+    let filterQuery;
+    if (navigation === "reset") {
+      params = retryQuery === undefined ? queryFromForm() : new URLSearchParams(retryQuery);
+      filterQuery = params.toString();
+      if (filterQuery !== activeQuery) selectedCustomers.clear();
+      activeQuery = filterQuery;
+    } else {
+      filterQuery = retryQuery === undefined ? activeQuery : retryQuery;
+      params = new URLSearchParams(filterQuery);
+    }
+    const requestCursor = String(cursor || "");
+    if (requestCursor) params.set("cursor", requestCursor);
+    const requestID = ++listRequestID;
+    const pageSnapshot = { index: pageIndex, cursors: pageCursors.slice() };
+    listRetry = { query: filterQuery, cursor: requestCursor, navigation };
+    if (listAbortController) listAbortController.abort();
+    const controller = new AbortController();
+    listAbortController = controller;
+    setListBusy(true);
     listState("正在加载客户", "按当前筛选读取客户目录。", false);
     try {
-      let params;
-      if (navigation === "reset") {
-        params = queryFromForm();
-        activeQuery = params.toString();
-      } else {
-        params = new URLSearchParams(activeQuery);
-      }
-      if (cursor) params.set("cursor", cursor);
-      const data = await request(api.customers + "?" + params.toString());
+      const data = await request(api.customers + "?" + params.toString(), { signal: controller.signal });
+      if (requestID !== listRequestID) return;
       if (navigation === "reset") {
         pageIndex = 0;
         pageCursors = [""];
       } else if (navigation === "next") {
-        pageIndex += 1;
-        pageCursors = pageCursors.slice(0, pageIndex);
-        pageCursors[pageIndex] = cursor;
+        pageIndex = pageSnapshot.index + 1;
+        pageCursors = pageSnapshot.cursors.slice(0, pageIndex);
+        pageCursors[pageIndex] = requestCursor;
       } else if (navigation === "previous") {
-        pageIndex -= 1;
+        pageIndex = Math.max(0, pageSnapshot.index - 1);
+        pageCursors = pageSnapshot.cursors;
       }
       el.body.replaceChildren();
       for (const item of data.items || []) el.body.append(listRow(item));
@@ -434,10 +500,17 @@
       nextCursor = data.next_cursor || "";
       el.previous.hidden = pageIndex === 0;
       el.next.hidden = !nextCursor;
+      committedQuery = filterQuery;
+      listRetry = { query: filterQuery, cursor: requestCursor, navigation: "refresh" };
     } catch (error) {
+      if (requestID !== listRequestID || controller.signal.aborted) return;
       if (error.status === 401) listState("登录已失效", "请重新登录后查询。", true);
       else if (error.status === 400 && error.message === "invalid_request") listState("手机号格式不正确", "请输入11位中国大陆手机号。", true);
       else listState("客户列表暂时不可用", "请稍后重试。", true);
+    } finally {
+      if (requestID !== listRequestID) return;
+      listAbortController = null;
+      setListBusy(false);
     }
   }
 
@@ -612,11 +685,11 @@
   if (el.singleTags) el.singleTags.addEventListener("submit", function (event) { event.preventDefault(); if (detailID) void previewAndConfirm([Number(detailID)], el.singleTags, el.singleTagResult, el.singleTagRefresh); });
   if (el.batchTagRefresh) el.batchTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.batchTagResult, el.batchTagRefresh); });
   if (el.singleTagRefresh) el.singleTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.singleTagResult, el.singleTagRefresh); });
-  if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); loadList("", "reset"); });
-  if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); loadList("", "reset"); });
-  if (el.refresh) el.refresh.addEventListener("click", function () { loadList(pageCursors[pageIndex], "refresh"); });
-  if (el.previous) el.previous.addEventListener("click", function () { if (pageIndex > 0) loadList(pageCursors[pageIndex - 1], "previous"); });
-  if (el.next) el.next.addEventListener("click", function () { if (nextCursor) loadList(nextCursor, "next"); });
+  if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); void loadList("", "reset"); });
+  if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); void loadList("", "reset"); });
+  if (el.refresh) el.refresh.addEventListener("click", function () { if (!listBusy) void loadList(listRetry.cursor, listRetry.navigation, listRetry.query); });
+  if (el.previous) el.previous.addEventListener("click", function () { if (!listBusy && activeQuery === committedQuery && pageIndex > 0) void loadList(pageCursors[pageIndex - 1], "previous"); });
+  if (el.next) el.next.addEventListener("click", function () { if (!listBusy && activeQuery === committedQuery && nextCursor) void loadList(nextCursor, "next"); });
   if (el.syncStart) el.syncStart.addEventListener("click", startSync);
   const startInitialLoads = function () {
     void loadTagSelectors();
@@ -624,7 +697,7 @@
     if (match) loadDetail(match[1]);
     else {
       loadSync();
-      loadList("", "reset");
+      void loadList("", "reset");
     }
   };
   if (window.AdminFmt && typeof window.AdminFmt.whenAdminDateTimeReady === "function") {
