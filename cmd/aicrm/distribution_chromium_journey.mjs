@@ -135,11 +135,14 @@ try {
   await cdp.call("Page.navigate",{url:`${base}/admin/orders`}); await sleep(200); await value(cdp,"import(document.querySelector('script')?.src).then(()=>true)");
   await wait(cdp,`[...document.querySelectorAll('tbody tr')].filter(row=>row.textContent.includes(${JSON.stringify(orderCollisionReference)})).length===2`,'Orders list did not render both provider-local rows with the same merchant reference');
   await captureOrderScreen(cdp,'order-list',1280); await captureOrderScreen(cdp,'order-list',1440);
-  const orderRows=await value(cdp,`[...document.querySelectorAll('tbody tr')].filter(row=>row.textContent.includes(${JSON.stringify(orderCollisionReference)})).map(row=>({text:row.textContent||'',detailURL:row.dataset.orderDetailUrl||''}))`);
+  const orderRows=await value(cdp,`[...document.querySelectorAll('tbody tr')].filter(row=>row.textContent.includes(${JSON.stringify(orderCollisionReference)})).map(row=>({text:row.textContent||'',detailURL:row.dataset.orderDetailUrl||'',paymentLabel:row.querySelectorAll('td')[6]?.textContent?.trim()||''}))`);
   assert.equal(orderRows.length,2,'two provider-scoped rows must remain visible');
   const wechatRow=orderRows.find(row=>new URL(row.detailURL,base).searchParams.get('provider')==='wechat');
   const alipayRow=orderRows.find(row=>new URL(row.detailURL,base).searchParams.get('provider')==='alipay');
   assert.ok(wechatRow&&alipayRow,'each list row must use a server-owned provider detail URL');
+  assert.equal(wechatRow.paymentLabel,'微信支付','the WeChat row must retain its provider payment label after the frozen renderer projection');
+  assert.equal(alipayRow.paymentLabel,'支付宝','the Alipay row must retain its provider payment label after the frozen renderer projection');
+  assert.doesNotMatch(orderRows.map(row=>`${row.text}\n${row.paymentLabel}`).join('\n'),/aicrm-order-v3:/,'list presentation must never expose the retired correlation marker');
   assert.match(wechatRow.text,/分销：/, 'successful split row retains a distribution summary');
   assert.match(alipayRow.text,/分销：/, 'outcome-unknown row retains a separate distribution summary');
   const orderDetailEvidence=[];
@@ -162,7 +165,7 @@ try {
     await captureOrderScreen(cdp,'order-detail',detailCase.width);
     orderDetailEvidence.push({provider:detailCase.provider,product:detailCase.product,settlement:detailCase.settlement,confirmed:detailCase.confirmed,url:detailCase.row.detailURL,screenshot:`order-detail-${detailCase.width}.png`});
   }
-  if(screenshotDir)await fs.writeFile(path.join(screenshotDir,'order-browser-evidence.json'),JSON.stringify({revision,order_collision_reference:orderCollisionReference,settlement_confirmed_at:orderSettledAt,list_rows:orderRows.map(row=>({detail_url:row.detailURL})),details:orderDetailEvidence,screenshots:{lists:['order-list-1280.png','order-list-1440.png'],details:orderDetailEvidence.map(detail=>detail.screenshot)}},null,2));
+  if(screenshotDir)await fs.writeFile(path.join(screenshotDir,'order-browser-evidence.json'),JSON.stringify({revision,order_collision_reference:orderCollisionReference,settlement_confirmed_at:orderSettledAt,list_rows:orderRows.map(row=>({detail_url:row.detailURL,payment_label:row.paymentLabel})),details:orderDetailEvidence,screenshots:{lists:['order-list-1280.png','order-list-1440.png'],details:orderDetailEvidence.map(detail=>detail.screenshot)}},null,2));
   await cdp.call("Page.navigate",{url:`${base}/admin/distribution`}); await sleep(200); await value(cdp,"import(document.querySelector('script')?.src).then(()=>true)"); await wait(cdp,`document.querySelector('#distribution-admin-root')?.textContent.includes(${JSON.stringify(adminDisplayName)})`,'Distribution admin distributor view did not read the Customer directory nickname');
   assert.equal(await value(cdp,"document.querySelector('#distribution-admin-root .admin-table')?.textContent.includes('DISTBROWSER01')"),false,'admin distributor list must use the Customer directory nickname as its primary display');
   await value(cdp,"[...document.querySelectorAll('#distribution-admin-root button')].find(x=>x.textContent==='查看详情')?.click(); true"); await wait(cdp,"[...document.querySelectorAll('dialog')].at(-1)?.textContent.includes('关联推广订单')",'Distribution admin detail did not render related orders');
