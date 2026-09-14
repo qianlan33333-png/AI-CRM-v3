@@ -285,6 +285,18 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	customerOverview, err := customerapp.NewOverviewReader(uow, identityRepository)
+	if err != nil {
+		return fail(err)
+	}
+	paymentOverview, err := paymentapp.NewOverviewReader(uow, paymentRepository)
+	if err != nil {
+		return fail(err)
+	}
+	distributionOverview, err := distributionapp.NewOverviewReader(uow, distributionRepository)
+	if err != nil {
+		return fail(err)
+	}
 	distributionPolicyService := distributionapp.NewPolicyService(distributionRepository)
 	customerStore := customerstore.NewPostgreSQL()
 	sidebarProfiles, err := customerapp.NewSidebarProfileApplication(uow, customerStore, oneID, customerStore, auditService, platformoutbox.NewPostgreSQL())
@@ -292,6 +304,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	requestSecurity := requestAccessSecurity{authentication: authentication}
+	adminOverviewHandler, err := newAdminOverviewHandler(customerOverview, paymentOverview, distributionOverview, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	effectsModule := externaleffects.NewModuleRegistration()
 	effectWorkers := river.NewWorkers()
 	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
@@ -1729,6 +1745,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/v1/customer-tag-commands/", customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
+	adminAPIs.Handle("/api/admin/overview", adminOverviewHandler)
 	adminAPIs.Handle("/api/admin/hxc-dashboard/", hxcHandler.Routes())
 	adminAPIs.Handle("/api/admin/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/orders/", orderHandler)
@@ -2316,6 +2333,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/customers/", identity)
 	mux.Handle("/api/admin/customer-sync-runs", identity)
 	mux.Handle("/api/admin/customer-sync-runs/", identity)
+	mux.Handle("/api/admin/overview", identity)
 	mux.Handle("/api/admin/hxc-dashboard/", identity)
 	mux.Handle("/api/admin/questionnaires", identity)
 	mux.Handle("/api/admin/questionnaires/", identity)
