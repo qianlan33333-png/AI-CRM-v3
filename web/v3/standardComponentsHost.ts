@@ -7,9 +7,11 @@ export {};
 // It supplies the V3 envelope for the shared directory refresh command and
 // guarantees dependency order and one evaluation per page.
 declare global {
+  type OperationMemberPickerOptions = Record<string, unknown>;
   interface Window {
     AICRMStandardComponents?: { ready(): Promise<void> };
     AICRMWeComTagPicker?: unknown;
+    OperationMemberPicker?: { open(options: OperationMemberPickerOptions): unknown };
   }
 }
 
@@ -97,7 +99,7 @@ function installOperationMemberSearchLifecycle(): void {
   const picker = window.OperationMemberPicker;
   operationMemberSearchLifecycleInstalled.add(picker);
   const open = picker.open.bind(picker);
-  picker.open = (options) => {
+  picker.open = (options: OperationMemberPickerOptions) => {
     const result = open(options);
     const input = document.querySelector<HTMLInputElement>('[data-operation-member-picker] [data-operation-member-search]');
     if (input) resetCommittedTextSearch(input);
