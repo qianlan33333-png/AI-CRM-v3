@@ -21,11 +21,12 @@ import (
 )
 
 // TestPostgreSQLTagPickerChromiumJourney uses the actual Access login and the
-// three shipped V3 callers: customer filtering, ordinary-product form draft
-// and Channel Center entry-tag form draft. OneID is not involved: the customer
-// page only changes its existing local tag predicate. Persistence belongs to
-// the original product/channel save commands; this journey issues no tag CRUD,
-// customer-tag command, Provider read, or Provider write.
+// three shipped V3 tag callers—customer filtering, ordinary-product form draft
+// and Channel Center entry-tag form draft—plus the Channel Center's scoped
+// staff-add seam. OneID is not involved: these dialogs only change existing
+// local page drafts. Persistence remains with the original product/channel
+// save commands; selection issues no tag CRUD, customer-tag command, Provider
+// read, or Provider write.
 func TestPostgreSQLTagPickerChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
@@ -49,6 +50,7 @@ func TestPostgreSQLTagPickerChromiumJourney(t *testing.T) {
 		"AICRM_TAG_PICKER_TEST_PRODUCT_ID="+strconv.FormatInt(fixture.productID, 10),
 		"AICRM_TAG_PICKER_TEST_CHANNEL_ID="+strconv.FormatInt(fixture.channelID, 10),
 		"AICRM_TAG_PICKER_TEST_TAG_ID="+strconv.FormatInt(fixture.tagID, 10),
+		"AICRM_TAG_PICKER_TEST_CHANNEL_STAFF_ID="+strconv.FormatInt(fixture.channelStaffID, 10),
 		"AICRM_TAG_PICKER_SCREENSHOT_DIR="+screenshotDir,
 	)
 	output, err := command.CombinedOutput()
@@ -81,16 +83,21 @@ func TestPostgreSQLTagPickerChromiumJourney(t *testing.T) {
 	if entryTagID != fixture.tagID || entryTagName != "Chromium 标签" || entryTagGroup != "Chromium 新客" {
 		t.Fatalf("browser channel tag persistence id=%d name=%q group=%q", entryTagID, entryTagName, entryTagGroup)
 	}
+	var selectedStaff int
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM channel_assignees WHERE channel_id=$1 AND config_version=(SELECT current_config_version FROM channels WHERE id=$1) AND staff_id=$2`, fixture.channelID, fixture.channelStaffID).Scan(&selectedStaff); err != nil || selectedStaff != 1 {
+		t.Fatalf("browser channel staff selection count=%d staff=%d err=%v", selectedStaff, fixture.channelStaffID, err)
+	}
 }
 
 type tagPickerChromiumFixture struct {
-	ctx         context.Context
-	application *composedApplication
-	server      *httptest.Server
-	script      string
-	productID   int64
-	channelID   int64
-	tagID       int64
+	ctx            context.Context
+	application    *composedApplication
+	server         *httptest.Server
+	script         string
+	productID      int64
+	channelID      int64
+	tagID          int64
+	channelStaffID int64
 }
 
 func newTagPickerChromiumFixture(t *testing.T) *tagPickerChromiumFixture {
@@ -128,10 +135,10 @@ func newTagPickerChromiumFixture(t *testing.T) *tagPickerChromiumFixture {
 	if err = application.bootstrap(ctx, bootstrap); err != nil {
 		t.Fatal(err)
 	}
-	productID, channelID, tagID := seedTagPickerChromiumFixture(t, ctx, application)
+	productID, channelID, tagID, channelStaffID := seedTagPickerChromiumFixture(t, ctx, application)
 	server.Config.Handler = application.handler
 	server.StartTLS()
-	return &tagPickerChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "tag_picker_chromium_journey.mjs"), productID: productID, channelID: channelID, tagID: tagID}
+	return &tagPickerChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "tag_picker_chromium_journey.mjs"), productID: productID, channelID: channelID, tagID: tagID, channelStaffID: channelStaffID}
 }
 
 func prepareTagPickerChromiumArtifacts(t *testing.T, repository string) {
@@ -147,11 +154,23 @@ func prepareTagPickerChromiumArtifacts(t *testing.T, repository string) {
 	}
 }
 
-func seedTagPickerChromiumFixture(t *testing.T, ctx context.Context, application *composedApplication) (productID, channelID, tagID int64) {
+func seedTagPickerChromiumFixture(t *testing.T, ctx context.Context, application *composedApplication) (productID, channelID, tagID, channelStaffID int64) {
 	t.Helper()
 	pool := application.pool.Native()
 	var adminID int64
 	if err := pool.QueryRow(ctx, `SELECT id FROM admin_users WHERE username='tag-picker-browser-owner'`).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	// Access governance requires every account and its single role to enter in
+	// one transaction.  This fixture staff is a directory row, not a second
+	// authenticated actor or super administrator.
+	if err := pool.QueryRow(ctx, `WITH account AS (
+		INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,login_enabled,access_granted_at)
+		VALUES('tag-picker-channel-staff','$argon2id$fixture','Chromium 渠道客服','chromium-channel-staff',true,true,clock_timestamp())
+		RETURNING id
+	), role AS (
+		INSERT INTO admin_user_roles(admin_user_id,role_code) SELECT id,'viewer' FROM account
+	) SELECT id FROM account`).Scan(&channelStaffID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO customers(id,status) OVERRIDING SYSTEM VALUE VALUES(1,'active');
@@ -195,5 +214,5 @@ func seedTagPickerChromiumFixture(t *testing.T, ctx context.Context, application
 	if err = tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return productID, channelID, tagID
+	return productID, channelID, tagID, channelStaffID
 }

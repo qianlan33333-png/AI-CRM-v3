@@ -156,7 +156,7 @@ type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS, Se
 // template and runtime assets.
 type GroupOpsAssets struct {
 	TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string
-	StandardCSS, HostJS                                  string
+	StandardCSS, HostJS, SelectionDialogCSS              string
 	OperationPickerJS                                    string
 	GroupPickerCSS, GroupPickerJS                        string
 	MaterialPickerCSS, MaterialPickerJS                  string
@@ -478,7 +478,7 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 		return errors.New("Group Ops shell assets are required")
 	}
 	standard := strings.Contains(donorTemplate, `data-group-ops-standard-host="true"`)
-	if standard && (assets.StandardCSS == "" || assets.HostJS == "" || assets.OperationPickerJS == "" || assets.GroupPickerCSS == "" || assets.GroupPickerJS == "" || assets.MaterialPickerCSS == "" || assets.MaterialPickerJS == "" || assets.ComposerCSS == "" || assets.ComposerJS == "") {
+	if standard && (assets.StandardCSS == "" || assets.HostJS == "" || assets.SelectionDialogCSS == "" || assets.OperationPickerJS == "" || assets.GroupPickerCSS == "" || assets.GroupPickerJS == "" || assets.MaterialPickerCSS == "" || assets.MaterialPickerJS == "" || assets.ComposerCSS == "" || assets.ComposerJS == "") {
 		return errors.New("Group Ops standard host assets are required")
 	}
 	normalizeAdminPage(&data)

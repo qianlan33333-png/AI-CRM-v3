@@ -35,9 +35,9 @@ const uploadLegacyFileExpression = () => `(() => { const root=document.querySele
 const selectExcelScopeExpression = () => `(() => { document.querySelector('[data-owner-handoff-host] [data-scope-segment="excel_include"]').click(); return true; })()`;
 const downloadBlockedRowsExpression = () => `document.querySelector("[data-owner-handoff-host] [data-download-errors]").click(); true`;
 const downloadResultRowsExpression = () => `document.querySelector("[data-owner-handoff-host] [data-download-result]").click(); true`;
-const operationMemberSelector = userID => `[data-operation-member-row][data-user-id=${JSON.stringify(userID)}]`;
-const operationMemberPresentExpression = userID => `Boolean(document.querySelector(${JSON.stringify(operationMemberSelector(userID))}))`;
-const operationMemberChooseExpression = userID => `document.querySelector(${JSON.stringify(`${operationMemberSelector(userID)} [data-operation-member-row-select]`)}).click(); true`;
+const staffPickerSelector = userID => `[data-v3-selection-session="staff"] [data-v3-staff-key]`;
+const staffPickerPresentExpression = userID => `Array.from(document.querySelectorAll(${JSON.stringify(staffPickerSelector(userID))})).some(row=>String(row.textContent||'').includes(${JSON.stringify(userID)}))`;
+const staffPickerChooseExpression = userID => `(() => { const row=Array.from(document.querySelectorAll(${JSON.stringify(staffPickerSelector(userID))})).find(item=>String(item.textContent||'').includes(${JSON.stringify(userID)})); if(!row) return false; row.click(); return true; })()`;
 const ownerHandoffBatchStateExpression = () => String.raw`(async () => {
   const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]');
   const batchID=String(root?.dataset.ownerHandoffBatchId || '').trim();
@@ -66,15 +66,15 @@ const preflightRuntimeExpressions = () => [
   `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const header=root?.querySelector('.owner-migration-header'); return { page_max_width: root ? getComputedStyle(root).maxWidth : '', header_display: header ? getComputedStyle(header).display : '' }; })()`,
   `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`,
   `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); root.querySelector('[data-owner-picker="source"]').click(); return true; })()`,
-  operationMemberPresentExpression(sourceUserID),
-  `(() => { const picker=document.querySelector('[data-operation-member-picker]'); return { hidden: Boolean(picker?.hidden), display: picker ? getComputedStyle(picker).display : '', visibility: picker ? getComputedStyle(picker).visibility : '' }; })()`,
-  operationMemberChooseExpression(sourceUserID),
-  `document.querySelector('[data-operation-member-confirm]').click(); true`,
+  staffPickerPresentExpression(sourceUserID),
+  `(() => { const picker=document.querySelector('[data-v3-selection-session="staff"]'); return { display: picker ? getComputedStyle(picker).display : '', visibility: picker ? getComputedStyle(picker).visibility : '' }; })()`,
+  staffPickerChooseExpression(sourceUserID),
+  `document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click(); true`,
   `document.querySelector('[data-owner-handoff-host] [data-owner-userid="source"]').value === ${JSON.stringify(source)}`,
   `document.querySelector('[data-owner-handoff-host] [data-owner-picker="target"]').click(); true`,
-  operationMemberPresentExpression(targetUserID),
-  operationMemberChooseExpression(targetUserID),
-  `document.querySelector('[data-operation-member-confirm]').click(); true`,
+  staffPickerPresentExpression(targetUserID),
+  staffPickerChooseExpression(targetUserID),
+  `document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click(); true`,
   `document.querySelector('[data-owner-handoff-host] [data-owner-userid="target"]').value === ${JSON.stringify(target)}`,
   selectExcelScopeExpression(),
   uploadLegacyFileExpression(),
@@ -226,16 +226,16 @@ try {
   if (pageStyle.page_max_width !== '1440px' || pageStyle.header_display !== 'flex') throw new Error(`owner handoff frozen-page styles were blocked ${JSON.stringify(pageStyle)}`);
   const run=async (mode, scope=requestedScope)=>{
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); root.querySelector('[data-owner-picker="source"]').click(); return true; })()`);
-    await waitFor(operationMemberPresentExpression(sourceUserID),"source picker did not include inactive source");
-    const pickerStyle = await evaluate(`(() => { const picker=document.querySelector('[data-operation-member-picker]'); return { hidden: Boolean(picker?.hidden), display: picker ? getComputedStyle(picker).display : '', visibility: picker ? getComputedStyle(picker).visibility : '' }; })()`);
-    if (pickerStyle.hidden || pickerStyle.display !== 'flex' || pickerStyle.visibility !== 'visible') throw new Error(`owner handoff shared picker styles were blocked ${JSON.stringify(pickerStyle)}`);
-    await evaluate(operationMemberChooseExpression(sourceUserID));
-    await evaluate("document.querySelector('[data-operation-member-confirm]').click(); true");
+    await waitFor(staffPickerPresentExpression(sourceUserID),"source picker did not include inactive source");
+    const pickerStyle = await evaluate(`(() => { const picker=document.querySelector('[data-v3-selection-session="staff"]'); return { display: picker ? getComputedStyle(picker).display : '', visibility: picker ? getComputedStyle(picker).visibility : '' }; })()`);
+    if (pickerStyle.display === 'none' || pickerStyle.visibility !== 'visible') throw new Error(`owner handoff shared picker styles were blocked ${JSON.stringify(pickerStyle)}`);
+    await evaluate(staffPickerChooseExpression(sourceUserID));
+    await evaluate("document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-confirm]').click(); true");
     await waitFor(`document.querySelector('[data-owner-handoff-host] [data-owner-userid="source"]').value === ${JSON.stringify(source)}`, "source picker did not persist the selected Access staff");
     await evaluate(`document.querySelector('[data-owner-handoff-host] [data-owner-picker="target"]').click(); true`);
-    await waitFor(operationMemberPresentExpression(targetUserID),"target picker did not include active target");
-    await evaluate(operationMemberChooseExpression(targetUserID));
-    await evaluate("document.querySelector('[data-operation-member-confirm]').click(); true");
+    await waitFor(staffPickerPresentExpression(targetUserID),"target picker did not include active target");
+    await evaluate(staffPickerChooseExpression(targetUserID));
+    await evaluate("document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-confirm]').click(); true");
     await waitFor(`document.querySelector('[data-owner-handoff-host] [data-owner-userid="target"]').value === ${JSON.stringify(target)}`, "target picker did not persist the selected Access staff");
     if (scope === "excel_include") {
       await evaluate(selectExcelScopeExpression(), "excel_scope_select");

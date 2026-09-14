@@ -619,28 +619,37 @@ try {
   await waitFor(() => fullWindow.document.querySelector('[data-action="pick-plan-owner"]'), "standard Group Ops detail did not render");
   const directMembers = await (await fullWindow.fetch("/api/admin/common/operation-members?scope=group_ops&page_size=100")).json();
   assert.deepEqual(directMembers.items, [
-    { user_id: "wecom-owner", staff_id: "7", display_name: "一号运营" },
-    { user_id: "wecom-replacement", staff_id: "9", display_name: "九号运营" },
-  ], "picker must show the trusted WeCom user ID while retaining the local staff key");
+    { staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" },
+    { staff_id: 9, sender_userid: "wecom-replacement", display_name: "九号运营" },
+  ], "the Host must leave the authorised Owner response unchanged outside its scoped V3 picker");
 
   fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
-  await waitFor(() => fullWindow.document.querySelectorAll("[data-operation-member-row]").length === 2, "owner picker did not render both local staff");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-title]')?.textContent, "选择负责人", "Group Ops must declare the owner-selection context");
-  assert.match(fullWindow.document.querySelector('[data-operation-member-description]')?.textContent || "", /选择一位负责人/, "single owner selection must state its own business purpose");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-description]')?.textContent.includes("最多"), false, "single owner selection must not claim the channel member limit");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-picker] input[type="checkbox"]'), null, "Group Ops owner selection must use the single-select control");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-confirm]')?.textContent, "确认负责人", "single owner selection must keep the standard primary action explicit");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] .operation-member-picker__name')?.textContent, "九号运营");
-  assert.equal(fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] .operation-member-picker__user-id')?.textContent, "wecom-replacement");
-  fullWindow.document.querySelector('[data-operation-member-refresh]').click();
-  await waitFor(() => fullWindow.document.body.textContent.includes("企微客服刷新失败"), "member refresh error did not render a retryable message");
+  await waitFor(() => fullWindow.document.querySelectorAll('[data-v3-selection-session="staff"] [data-v3-staff-key]').length === 2, "V3 owner picker did not render both local staff");
+  assert.equal(fullWindow.document.querySelector('[data-v3-selection-session="staff"] h3')?.textContent, "选择负责人", "Group Ops must declare the owner-selection context");
+  assert.match(fullWindow.document.querySelector('[data-v3-selection-session="staff"]')?.textContent || "", /每次最多显示 100 位员工，可搜索定位/, "Group Ops must disclose its bounded owner directory rather than imply pagination coverage");
+  assert.equal(fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"] strong')?.textContent, "九号运营");
+  assert.match(fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"] span')?.textContent || "", /wecom-replacement/, "V3 row must retain the trusted WeCom user ID beside the local key");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-reload]').click();
+  await waitFor(() => memberRefreshAttempts === 1 && !fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-status]')?.textContent.includes("正在刷新"), "member refresh did not settle");
+  assert.match(fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-status]')?.textContent || "", /读取失败|刷新失败|暂不可用/, "member refresh error did not render a retryable message");
   assert.equal(fullWindow.document.body.textContent.includes("[object Object]"), false, "member refresh must not stringify an error object");
-  fullWindow.document.querySelector('[data-operation-member-refresh]').click();
-  await waitFor(() => memberRefreshAttempts === 2 && fullWindow.document.querySelectorAll("[data-operation-member-row]").length === 2, "member refresh retry did not recover the picker");
-  fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-replacement"] [data-operation-member-row-select]').click();
-  fullWindow.document.querySelector("[data-operation-member-confirm]").click();
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-reload]').click();
+  await waitFor(() => memberRefreshAttempts === 2 && fullWindow.document.querySelectorAll('[data-v3-selection-session="staff"] [data-v3-staff-key]').length === 2 && fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]')?.disabled === false, "member refresh retry did not recover the V3 picker");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
   await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "9", "owner picker did not retain the selected local staff id");
   await waitFor(() => fullWindow.document.body.textContent.includes("群目录读取失败，请重试"), "owner directory failure must remain explicit rather than appear as an empty group list");
+  // Required plan ownership may not close a V3 dialog after the only temporary
+  // choice is removed: the existing draft stays visible and the caller gets an
+  // actionable validation error instead of a silent no-op.
+  fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"]')?.getAttribute('aria-pressed') === 'true', "required owner picker did not restore its current local staff");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="9"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-status]')?.textContent.includes("请选择一位负责人后再确认"), "removing the required owner must keep the dialog open with a validation error");
+  assert.equal(fullWindow.document.querySelector('[name="owner_userid"]')?.value, "9", "a rejected empty owner commit must preserve the existing field");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-cancel]').click();
+  await waitFor(() => !fullWindow.document.querySelector('[data-v3-selection-session="staff"]'), "cancel must close the rejected owner draft without applying it");
   const draftName = fullWindow.document.querySelector('[name="plan_name"]');
   const writesBeforeBlankName = calls.filter((call) => call.method === "PUT").length;
   draftName.value = "   ";
@@ -800,9 +809,9 @@ try {
   assert(fullWindow.document.body.textContent.includes("wecom-replacement"), "selected owner must show the trusted WeCom user ID");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();
   fullWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
-  await waitFor(() => fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-owner"]'), "draft owner picker missing");
-  fullWindow.document.querySelector('[data-operation-member-row][data-user-id="wecom-owner"] [data-operation-member-row-select]').click();
-  fullWindow.document.querySelector('[data-operation-member-confirm]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="7"]'), "draft V3 owner picker missing");
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$="7"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
   await waitFor(() => fullWindow.document.querySelector('[name="owner_userid"]')?.value === "7", "draft owner missing");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
   const writesBeforeRefresh = calls.filter(item => item.method !== "GET" && !item.path.endsWith("/sync")).length;
@@ -852,6 +861,191 @@ try {
 } finally {
   fullJourney.window.close();
 }
+
+// The detail renderer owns the dependent group directory. A second owner
+// choice (or an authoritative reread before navigation) must win over an old
+// response; the Staff picker only protects its own member loader.
+const ownerGroupsRaceJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="93"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/93",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const ownerGroupsRaceWindow = ownerGroupsRaceJourney.window;
+ownerGroupsRaceWindow.Headers = Headers;
+ownerGroupsRaceWindow.Response = Response;
+Object.defineProperty(ownerGroupsRaceWindow, "crypto", { configurable: true, value: crypto });
+const ownerPickerCalls = [];
+ownerGroupsRaceWindow.AICRMStaffPicker = { open: (options) => ownerPickerCalls.push(options) };
+const staleOwnerGroupReads = [];
+const ownerGroupQueries = [];
+let releaseStaleOwnerRefresh;
+const ownerRaceMembers = [
+  { staff_id: 6, user_id: "owner-six", display_name: "负责人六" },
+  { staff_id: 7, user_id: "owner-seven", display_name: "负责人七" },
+  { staff_id: 9, user_id: "owner-nine", display_name: "负责人九" },
+];
+const ownerRacePlan = () => ({
+  id: 93, plan_name: "负责人竞态计划", revision: 1, status: "draft", plan_type: "standard", owner_userid: "6", owner_name: "负责人六",
+});
+ownerGroupsRaceWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), ownerGroupsRaceWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: clone(ownerRaceMembers) });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/93" && method === "GET") return response(ownerRacePlan());
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/93/groups" && method === "GET") return response({ items: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/93/nodes" && method === "GET") return response({ items: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups/sync" && method === "POST") {
+    return new Promise((resolve) => { releaseStaleOwnerRefresh = () => resolve(response({ new_count: 1, updated_count: 0 })); });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") {
+    const owner = url.searchParams.get("owner_userid");
+    ownerGroupQueries.push(owner || "");
+    if (owner === "7") return new Promise((resolve) => staleOwnerGroupReads.push(() => resolve(response({ items: [{ chat_id: `owner-seven-${staleOwnerGroupReads.length}`, group_name: "迟到的负责人七群", owner_userid: "7" }] }))));
+    return response({ items: [{ chat_id: `owner-${owner || "none"}`, group_name: owner === "9" ? "负责人九群" : "负责人六群", owner_userid: owner || "6" }] });
+  }
+  throw new Error(`unexpected owner-race request ${method} ${url.pathname}${url.search}`);
+};
+try {
+  ownerGroupsRaceWindow.AdminApi = {
+    escapeHtml: (value) => String(value ?? ""),
+    errorMessage: (error, fallback) => error?.message || fallback,
+    responseErrorMessage: (_response, _body, fallback) => fallback,
+    requestJson: async (url, options) => {
+      const result = await ownerGroupsRaceWindow.fetch(url, options);
+      const body = await result.json();
+      if (!result.ok) throw new Error(`HTTP ${result.status}`);
+      return body;
+    },
+  };
+  ownerGroupsRaceWindow.eval(await readFile(new URL("../web/v3/groupOpsStandard.js", import.meta.url), "utf8"));
+  await waitFor(() => ownerGroupsRaceWindow.document.querySelector('[data-action="pick-plan-owner"]'), "owner race detail did not render");
+  const pick = (record) => {
+    ownerGroupsRaceWindow.document.querySelector('[data-action="pick-plan-owner"]').click();
+    const options = ownerPickerCalls.at(-1);
+    assert(options, "plan owner action must call the V3 staff picker");
+    options.onCommit({ selected: [record] });
+  };
+
+  // Refresh starts for the original local owner, then a new owner is selected
+  // before the Owner refresh result is known. The old command remains issued,
+  // but neither its success nor its finally may repaint or unlock over B.
+  ownerGroupsRaceWindow.document.querySelector('[data-action="refresh-owner-groups"]').click();
+  await waitFor(() => releaseStaleOwnerRefresh, "slow owner-six refresh command did not begin");
+  pick(ownerRaceMembers[2]);
+  await waitFor(() => ownerGroupQueries.at(-1) === "9", "new owner-nine selection did not read its own group directory");
+  releaseStaleOwnerRefresh();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ownerGroupsRaceWindow.document.querySelector('[name="owner_userid"]')?.value, "9", "late owner-six refresh must not replace the newer local owner field");
+  assert.equal(ownerGroupsRaceWindow.document.body.textContent.includes("已刷新："), false, "late owner-six refresh must not announce completion for owner-nine");
+
+  pick(ownerRaceMembers[1]);
+  await waitFor(() => staleOwnerGroupReads.length === 1, "slow owner-seven group read did not begin");
+  pick(ownerRaceMembers[2]);
+  await waitFor(() => ownerGroupQueries.at(-1) === "9", "new owner-nine group projection did not request its current owner directory");
+  ownerGroupsRaceWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  ownerGroupsRaceWindow.document.querySelector('[data-action="open-group-picker"]').click();
+  await waitFor(
+    () => ownerGroupsRaceWindow.document.body.textContent.includes("负责人九群"),
+    () => `new owner-nine group projection did not render in the dependent group picker; queries=${JSON.stringify(ownerGroupQueries)} body=${ownerGroupsRaceWindow.document.body.textContent}`,
+  );
+  staleOwnerGroupReads.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ownerGroupsRaceWindow.document.querySelector('[name="owner_userid"]')?.value, "9", "late owner-seven read must not replace the newer local owner field");
+  assert.equal(ownerGroupsRaceWindow.document.body.textContent.includes("迟到的负责人七群"), false, "late owner-seven group rows must not repaint owner-nine detail");
+  ownerGroupsRaceWindow.document.querySelector('[data-action="close-group-picker"]').click();
+
+  pick(ownerRaceMembers[1]);
+  await waitFor(() => staleOwnerGroupReads.length === 1, "second slow owner-seven group read did not begin");
+  ownerGroupsRaceWindow.dispatchEvent(new ownerGroupsRaceWindow.CustomEvent("aicrm:groupops-detail-refresh", { detail: { planId: 93 } }));
+  await waitFor(() => ownerGroupQueries.at(-1) === "6", "authoritative detail reread did not request its own owner directory before stale owner response");
+  ownerGroupsRaceWindow.document.querySelector('[data-action="open-group-picker"]').click();
+  await waitFor(() => ownerGroupsRaceWindow.document.body.textContent.includes("负责人六群"), "authoritative detail reread did not render before stale owner response");
+  staleOwnerGroupReads.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ownerGroupsRaceWindow.document.body.textContent.includes("迟到的负责人七群"), false, "an owner response that outlives the detail generation must not repaint the reread plan");
+  console.log("groupops-owner-dependent-directory-race: PASS");
+} finally {
+  ownerGroupsRaceJourney.window.close();
+}
+
+// GroupOps treats every owner_userid form field as a local staff ID. This
+// collision fixture proves a numeric external UserID cannot replace another
+// staff record in create, plan-owner, or group-filter UI/reloads/requests.
+const collisionMembers = [
+  { staff_id: 1, sender_userid: "2", display_name: "外部 UserID 为 2 的一号员工" },
+  { staff_id: 2, sender_userid: "wecom-staff-two", display_name: "本地二号员工" },
+];
+const collisionResponse = (body) => response(body);
+const collisionWindow = (mode, planID = "") => {
+  const journey = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="${mode}"${planID ? ` data-plan-id="${planID}"` : ""}></main></body></html>`, {
+    url: `https://groupops.test/admin/automation-conversion/group-ops${mode === "groups" ? "/groups" : planID ? `/plans/${planID}` : ""}`,
+    runScripts: "outside-only", pretendToBeVisual: true,
+  });
+  const view = journey.window; view.Headers = Headers; view.Response = Response;
+  Object.defineProperty(view, "crypto", { configurable: true, value: crypto });
+  view.document.cookie = "aicrm_admin_csrf=test-csrf";
+  const requests = [];
+  view.fetch = async (input, init = {}) => {
+    const url = new URL(String(input), view.location.href); const method = String(init.method || "GET").toUpperCase();
+    requests.push({ path: url.pathname, query: url.search, method });
+    if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return collisionResponse({ items: collisionMembers });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return collisionResponse({ items: [] });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return collisionResponse({ items: [] });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52" && method === "GET") return collisionResponse({ plan: { plan_id: 52, name: "碰撞计划", revision: 1, status: "draft", plan_type: "standard", owner_userid: "2", owner_name: "本地二号员工" }, members: [{ staff_id: 2 }], group_assets: [], nodes: [] });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52/groups" && method === "GET") return collisionResponse({ items: [] });
+    throw new Error(`unexpected collision request ${method} ${url.pathname}${url.search}`);
+  };
+  view.eval(pickerSource); view.eval(bundle.outputFiles[0].text);
+  return { journey, view, requests };
+};
+const chooseCollisionStaffTwo = async (view, message) => {
+  await waitFor(() => view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]'), message);
+  const one = view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":1"]');
+  const two = view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]');
+  assert.equal(one.getAttribute("aria-pressed"), "false", "numeric external UserID must not preselect local staff #1");
+  two.click(); view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
+};
+const collisionCreate = collisionWindow("list");
+try {
+  await waitFor(() => collisionCreate.view.document.querySelector('[data-action="show-create-plan"]'), "collision create page did not render");
+  collisionCreate.view.document.querySelector('[data-action="show-create-plan"]').click();
+  collisionCreate.view.document.querySelector('[data-action="pick-create-owner"]').click();
+  await chooseCollisionStaffTwo(collisionCreate.view, "collision create picker did not render local staff #2");
+  await waitFor(() => collisionCreate.view.document.querySelector('[name="create_owner_userid"]')?.value === "2", "create selection did not retain local staff #2");
+  assert.match(collisionCreate.view.document.querySelector('[data-member-current="create_owner_userid"]')?.textContent || "", /本地二号员工/, "create selection must render the local staff #2 label");
+  collisionCreate.view.document.querySelector('[data-action="cancel-create-plan"]').click();
+  collisionCreate.view.document.querySelector('[data-action="show-create-plan"]').click();
+  assert.equal(collisionCreate.view.document.querySelector('[name="create_owner_userid"]')?.value, "2", "create rerender must retain the local staff ID rather than external UserID");
+  assert.match(collisionCreate.view.document.querySelector('[data-member-current="create_owner_userid"]')?.textContent || "", /本地二号员工/);
+} finally { collisionCreate.journey.window.close(); }
+const collisionPlan = collisionWindow("detail", "52");
+try {
+  await waitFor(() => collisionPlan.view.document.querySelector('[data-action="pick-plan-owner"]'), "collision plan page did not render");
+  assert.match(collisionPlan.view.document.querySelector('[data-member-current="owner_userid"]')?.textContent || "", /本地二号员工/, "plan owner rendering must use local staff #2");
+  collisionPlan.view.document.querySelector('[data-action="pick-plan-owner"]').click();
+  await waitFor(() => collisionPlan.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]')?.getAttribute("aria-pressed") === "true", "plan picker must preselect local staff #2");
+  assert.equal(collisionPlan.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":1"]')?.getAttribute("aria-pressed"), "false", "plan picker must not match external UserID 2 to staff #1");
+  collisionPlan.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-cancel]').click();
+} finally { collisionPlan.journey.window.close(); }
+const collisionFilter = collisionWindow("groups");
+try {
+  await waitFor(() => collisionFilter.view.document.querySelector('[data-action="pick-group-filter-owner"]'), "collision groups page did not render");
+  collisionFilter.view.document.querySelector('[data-action="pick-group-filter-owner"]').click();
+  await chooseCollisionStaffTwo(collisionFilter.view, "collision group filter picker did not render local staff #2");
+  await waitFor(() => collisionFilter.requests.some((request) => request.path.endsWith("/groups") && request.query.includes("owner_userid=2")), "group filter request must carry local staff #2");
+  assert.equal(collisionFilter.view.document.querySelector('[name="owner_userid"]')?.value, "2", "group filter rerender must retain the local staff ID");
+  assert.match(collisionFilter.view.document.querySelector('[data-member-current="owner_userid"]')?.textContent || "", /本地二号员工/);
+  collisionFilter.view.document.querySelector('[data-action="pick-group-filter-owner"]').click();
+  await waitFor(() => collisionFilter.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]')?.getAttribute("aria-pressed") === "true", "optional group filter did not restore local staff #2");
+  collisionFilter.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":2"]').click();
+  collisionFilter.view.document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]').click();
+  await waitFor(() => collisionFilter.requests.filter((request) => request.path.endsWith("/groups")).at(-1)?.query === "", "empty optional group filter must reload without an owner query");
+  assert.equal(collisionFilter.view.document.querySelector('[name="owner_userid"]')?.value, "", "empty optional group filter must clear the hidden local owner ID");
+  collisionFilter.view.document.querySelector('[data-action="clear-group-filter-owner"]').click();
+  await waitFor(() => collisionFilter.requests.filter((request) => request.path.endsWith("/groups")).at(-1)?.query === "", "clearing group filter must remove the local owner query");
+  assert.equal(collisionFilter.view.document.querySelector('[name="owner_userid"]')?.value, "", "clearing group filter must not retain an external UserID fallback");
+} finally { collisionFilter.journey.window.close(); }
+console.log("groupops-owner-local-id-collision: PASS");
 
 // A pre-existing detail read can legitimately become stale without any
 // intervening command. The newer plan save must win once its authoritative

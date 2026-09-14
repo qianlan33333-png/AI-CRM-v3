@@ -214,7 +214,10 @@
 [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__tools { padding-top: 10px; padding-bottom: 8px; }
 [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__tools label { display: inline-flex; align-items: center; gap: 6px; color: #526176; font-size: 13px; }
 [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__tools select { min-width: 140px; min-height: 34px; border: 1px solid #cdd7e4; border-radius: 7px; padding: 0 8px; background: #fff; color: #334155; font: inherit; }
-[data-v3-selection-session="staff"] .aicrm-v3-staff-picker__status { min-height: 20px; margin: 0; padding: 0 18px 8px; color: #526176; font-size: 13px; }
+[data-v3-selection-session="staff"] .aicrm-v3-staff-picker__meta { min-height: 20px; padding: 0 18px 8px; color: #526176; font-size: 13px; }
+[data-v3-selection-session="staff"] .aicrm-v3-staff-picker__status,
+[data-v3-selection-session="staff"] .aicrm-v3-staff-picker__directory-hint { min-height: 20px; margin: 0; }
+[data-v3-selection-session="staff"] .aicrm-v3-staff-picker__directory-hint { margin-top: 2px; }
 
 [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__selected {
   display: flex;
@@ -278,7 +281,7 @@
   [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__tools,
   [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__footer { padding-right: 12px; padding-left: 12px; }
   [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__search,
-  [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__status,
+  [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__meta,
   [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__selected,
   [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__list { padding-right: 12px; padding-left: 12px; }
   [data-v3-selection-session="staff"] .aicrm-v3-staff-picker__tools { flex-wrap: wrap; }

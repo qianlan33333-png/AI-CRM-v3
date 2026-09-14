@@ -2,6 +2,7 @@
 // authenticated transport and DTO projection; plan, node and directory facts
 // remain in internal/groupops and the existing WeCom read adapter.
 import { openGroupPicker, type GroupPickerRecord } from './shared/ui/groupPickerAdapter';
+import { installStaffPickerAdapter } from './shared/ui/staffPickerAdapter';
 
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";
@@ -28,87 +29,6 @@ const groupSelectionOperations = new Map<number, GroupSelectionOperation>();
 let refreshedGroupTotal: number | null = null;
 let openingGroupPicker = false;
 let activeGroupPickerPlan: number | undefined;
-const operationMembersPath = "/api/admin/common/operation-members";
-const nativeFetch = window.fetch.bind(window);
-
-function requestURL(input: RequestInfo | URL): URL {
-  if (input instanceof URL) return new URL(input.toString(), window.location.origin);
-  if (typeof input === "string") return new URL(input, window.location.origin);
-  return new URL(input.url, window.location.origin);
-}
-
-function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
-  if (init?.method) return init.method.toUpperCase();
-  if (typeof input !== "string" && !(input instanceof URL)) return input.method.toUpperCase();
-  return "GET";
-}
-
-function pickerMembersPayload(source: Json): Json | null {
-  if (!Array.isArray(source.items)) return null;
-  const items = source.items.flatMap((value: Json) => {
-    const staffID = Number(value.staff_id);
-    if (!Number.isSafeInteger(staffID) || staffID < 1) return [];
-    return [{
-      // The picker shows `user_id` as its second line. Keep the real WeCom
-      // identity there, while preserving the local staff ID as the value that
-      // plan commands write through the Host.
-      user_id: String(value.sender_userid || staffID),
-      staff_id: String(staffID),
-      display_name: memberDisplayName(value),
-    }];
-  });
-  return { scope: "group_ops", page_size: source.page_size, items };
-}
-
-function memberDisplayName(value: Json): string {
-  const name = String(value.display_name || "").trim();
-  const userID = String(value.sender_userid || "").trim();
-  // Imported placeholder names are not real WeCom profile names.
-  if (!name || (value.name_source !== "wecom_profile" && (name === `企微客服 ${userID}` || name === userID))) return "姓名待同步";
-  return name;
-}
-
-// The frozen picker reads this endpoint directly instead of AdminApi.requestJson.
-// Keep its byte-derived implementation untouched and make the single Group Ops
-// read compatible at the V3 Host boundary. The frozen refresh call predates
-// the V3 scoped command body, so add its scope, CSRF and idempotency envelope
-// here without changing the donor picker.
-window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = requestURL(input);
-  if (url.origin !== window.location.origin) return nativeFetch(input, init);
-  const method = requestMethod(input, init);
-  if (method === "POST" && url.pathname === `${operationMembersPath}/sync`) {
-    const headers = new Headers(init?.headers || (typeof input === "string" || input instanceof URL ? undefined : input.headers));
-    headers.set("Accept", "application/json");
-    headers.set("Content-Type", "application/json");
-    headers.set("Idempotency-Key", key());
-    const token = csrf();
-    if (token) headers.set("X-CSRF-Token", token);
-    return nativeFetch(input, {
-      ...init,
-      method: "POST",
-      headers,
-      credentials: "same-origin",
-      body: JSON.stringify({ scope: "group_ops", page_size: 100 }),
-    });
-  }
-  const response = await nativeFetch(input, init);
-  if (
-    method !== "GET" ||
-    url.pathname !== operationMembersPath ||
-    url.searchParams.get("scope") !== "group_ops" ||
-    !response.ok
-  ) return response;
-  const source = await response.clone().json().catch(() => null);
-  const projected = source && typeof source === "object" ? pickerMembersPayload(source as Json) : null;
-  if (!projected) return response;
-  return new Response(JSON.stringify(projected), {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
-};
-
 function csrf(): string {
   return (
     document.cookie
@@ -693,7 +613,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     if (Number.isSafeInteger(result.total) && result.total >= 0) refreshedGroupTotal = result.total;
     return result;
   }
-  if (url.startsWith(operationMembersPath)) {
+  if (url.startsWith("/api/admin/common/operation-members")) {
     const data = await nativeRequest(url);
     return {
       ...data,
@@ -1041,6 +961,7 @@ function installGroupPickerBridge(): void {
   }, true);
 }
 installGroupPickerBridge();
+installStaffPickerAdapter();
 
 installSaveFailureFeedback();
 // @ts-expect-error The standard donor script is intentionally JavaScript.

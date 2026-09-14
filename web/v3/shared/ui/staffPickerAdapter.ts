@@ -27,6 +27,8 @@ export type StaffPickerOptions = {
   limit?: number;
   readonly?: boolean;
   readonlyReason?: string;
+  /** Caller disclosure for a bounded directory; missing rows stay unresolved. */
+  directoryHint?: string;
   loadPage(request: { query: string; cursor?: string; signal: AbortSignal }): Promise<StaffPickerPage>;
   /** Optional caller-owned directory refresh. It must use the caller's actual scope. */
   refresh?(request: { query: string; signal: AbortSignal }): Promise<void>;
@@ -56,14 +58,17 @@ function recordItem(record: StaffPickerRecord, source: string): SelectionItem<St
   if (record.source !== source) throw new Error(`员工目录来源不匹配：期望 ${source}，实际 ${record.source || '缺失'}。`);
   const id = staffID(record.staff_id);
   const userID = string(record.user_id);
-  if (!id || !userID) throw new Error('员工目录缺少可信 staff_id 或 user_id。');
+  if (!id) throw new Error('员工目录缺少可信 staff_id。');
+  const label = string(record.display_name) || userID || `员工 #${id}`;
+  const unavailableReason = string(record.unavailable_reason)
+    || (!userID ? '员工目录缺少可信企微 UserID，不能确认。' : undefined);
   return {
     kind: 'staff.catalog',
     source,
     id,
-    label: string(record.display_name) || userID,
-    value: { ...record, source, staff_id: id, user_id: userID, display_name: string(record.display_name) || userID },
-    disabledReason: string(record.unavailable_reason) || undefined,
+    label,
+    value: { ...record, source, staff_id: id, user_id: userID, display_name: label },
+    disabledReason: unavailableReason,
   };
 }
 
@@ -120,7 +125,10 @@ export function openStaffPicker(options: StaffPickerOptions): void {
     <header class="aicrm-v3-staff-picker__header"><div><p class="aicrm-v3-staff-picker__eyebrow">受权员工目录</p><h3 id="aicrm-v3-staff-picker-title">${escape(options.title)}</h3></div><button class="aicrm-v3-staff-picker__plain" type="button" data-v3-staff-cancel>取消</button></header>
     <label class="aicrm-v3-staff-picker__search"><span>姓名或企微 UserID</span><input data-v3-picker-search-input aria-label="搜索员工"></label>
     <div class="aicrm-v3-staff-picker__tools"><button class="aicrm-v3-staff-picker__button aicrm-v3-staff-picker__button--primary" type="button" data-v3-staff-search>搜索</button>${options.refresh ? '<button class="aicrm-v3-staff-picker__button" type="button" data-v3-staff-reload>刷新目录</button>' : ''}</div>
-    <p class="aicrm-v3-staff-picker__status" data-v3-staff-status role="status"></p>
+    <div class="aicrm-v3-staff-picker__meta">
+      <p class="aicrm-v3-staff-picker__status" data-v3-staff-status role="status"></p>
+      ${options.directoryHint ? `<p class="aicrm-v3-staff-picker__directory-hint">${escape(options.directoryHint)}</p>` : ''}
+    </div>
     <section class="aicrm-v3-staff-picker__selected" data-v3-staff-selected aria-label="当前暂选员工"></section>
     <section class="aicrm-v3-staff-picker__list" data-v3-staff-list aria-label="员工目录"></section>
     <footer class="aicrm-v3-staff-picker__footer"><button class="aicrm-v3-staff-picker__button" type="button" data-v3-staff-more>加载更多</button><span></span><button class="aicrm-v3-staff-picker__button" type="button" data-v3-staff-cancel>取消</button><button class="aicrm-v3-staff-picker__button aicrm-v3-staff-picker__button--primary" type="button" data-v3-staff-confirm>确认选择</button></footer>
@@ -211,7 +219,7 @@ export function openStaffPicker(options: StaffPickerOptions): void {
     confirm.disabled = Boolean(applying || refreshPending || snapshot.readonlyReason || snapshot.loading || snapshot.overLimit || unavailableDraft);
     search.disabled = Boolean(applying || refreshPending || snapshot.readonlyReason);
     if (reload) reload.disabled = Boolean(applying || refreshPending || snapshot.readonlyReason);
-    for (const button of cancelButtons) button.disabled = applying || refreshPending;
+    for (const button of cancelButtons) button.disabled = applying;
     mask.classList.toggle('is-applying', applying || refreshPending);
     restoreSelectionFocus(list, '[data-v3-staff-key]', 'v3StaffKey', focusedKey);
     if (restoreRemovedFocus !== undefined) {
@@ -277,8 +285,9 @@ export function openStaffPicker(options: StaffPickerOptions): void {
 
   mask.addEventListener('click', (event) => {
     const target = event.target instanceof Element ? event.target : null;
-    if (!target || applying || refreshPending) return;
+    if (!target || applying) return;
     if (target === mask || target.closest('[data-v3-staff-cancel]')) { close(); return; }
+    if (refreshPending) return;
     if (target.closest('[data-v3-staff-search]')) { submit(); return; }
     if (target.closest('[data-v3-staff-reload]')) { void refresh(); return; }
     if (target.closest('[data-v3-staff-more]')) { void session.loadNextPage(loader); return; }

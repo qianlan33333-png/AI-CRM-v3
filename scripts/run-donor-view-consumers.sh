@@ -68,6 +68,7 @@ run_frontend_and_stage_checks() {
   node web/v3/shared/ui/materialPickerAdapter.test.mjs
   node web/v3/shared/ui/groupPickerAdapter.test.mjs
   node web/v3/shared/ui/tagPickerAdapter.test.mjs
+  node web/v3/shared/ui/staffPickerAdapter.test.mjs
   node scripts/operation-cycles-shell-e2e.mjs
   node scripts/ai-assistant-shell-e2e.mjs
   TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs

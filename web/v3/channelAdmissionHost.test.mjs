@@ -36,7 +36,7 @@ function channel(overrides = {}) {
   };
 }
 
-function createPage({ saved = channel(), mutations = [], creates = [], resourceID = '17', donorScriptStatus = 200, delayDonorScript = false, tagPickerReady = true, operationMembers = { status: 200, payload: { items: [{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }] } } } = {}) {
+function createPage({ saved = channel(), mutations = [], creates = [], resourceID = '17', donorScriptStatus = 200, delayDonorScript = false, tagPickerReady = true, staffPickerReady = true, staffPickerAutoCommit = true, operationMembers = { status: 200, payload: { items: [{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }] } } } = {}) {
   const calls = [];
   let releaseDonorScript;
   const resourceAttribute = resourceID ? ` data-channel-resource-id="${resourceID}"` : '';
@@ -62,12 +62,13 @@ function createPage({ saved = channel(), mutations = [], creates = [], resourceI
       window.AICRMSendContentComposer = { mount(_container, options) { window.__channelComposerOptions = options; } };
       window.AICRMWeComTagPicker = { open() { window.__frozenTagPickerCalled = true; } };
       if (tagPickerReady) window.AICRMTagPicker = { open(options) { window.__entryTagPickerOptions = options; options.onCommit({ selected: [{ source: 'local_tag_catalog', group_id: '4', group_name: '渠道标签', tag_id: '37', tag_name: '扫码入渠' }], added: [], removed: [] }); } };
-      window.OperationMemberPicker = { open(options) { window.__pickerOptions = options; const { onConfirm } = options; onConfirm([{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }]); } };
+      if (staffPickerReady) window.AICRMStaffPicker = { open(options) { window.__staffPickerOptions = options; if (staffPickerAutoCommit) options.onCommit({ selected: [{ source: 'channel_code.operation_members', staff_id: '12', user_id: 'wecom-alice', display_name: '测试客服', active: true }] }); } };
+      window.OperationMemberPicker = { open(options) { window.__frozenOperationMemberPickerOptions = options; } };
       window.fetch = async (input, init = {}) => {
         const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
         const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method)).toUpperCase();
         const headers = new Headers(init.headers || (typeof input === 'string' ? undefined : input.headers));
-        calls.push({ path: url.pathname, method, headers, body: init.body || '' });
+        calls.push({ path: url.pathname, search: url.search, method, headers, body: init.body || '' });
         if (['PATCH', 'POST'].includes(method) && /^\/api\/admin\/channels(?:\/[0-9]+)?$/.test(url.pathname)) {
           const allowed = new Set(['channel_type','carrier_type','channel_name','channel_code','scene_value','qr_url','status','owner_staff_id','customer_channel','link_url','final_url','welcome_message','welcome_image_library_ids','welcome_miniprogram_library_ids','welcome_attachment_library_ids','welcome_group_invite_library_ids','auto_accept_friend','entry_tag_id','entry_tag_name','entry_tag_group_name','assignment_mode','assignment_strategy','overflow_policy','assignment_config_json']);
           const unknown = Object.keys(JSON.parse(init.body || '{}')).filter((name) => !allowed.has(name));
@@ -152,6 +153,45 @@ try {
   assert.equal(unavailableTagPicker.dom.window.__frozenTagPickerCalled, undefined, 'missing V3 picker must not invoke the frozen fallback');
   assert.equal(unavailableTagPicker.calls.some((call) => call.method === 'PATCH' || call.method === 'POST'), false, 'missing picker must not issue a channel command');
 } finally { unavailableTagPicker.dom.window.close(); }
+
+// The real frozen add-assignee callback is intercepted only when the V3 Staff
+// adapter is ready. If its release asset is unavailable, keep the donor draft
+// and report the failure instead of opening a second, frozen dialog.
+const unavailableStaffPicker = createPage({ staffPickerReady: false });
+try {
+  await waitFor(() => unavailableStaffPicker.dom.window.document.querySelector('[data-add-channel-assignee]'), 'channel form must mount before the V3 staff availability check');
+  await waitFor(() => unavailableStaffPicker.dom.window.__channelComposerOptions, 'the frozen channel callback must bind before the Staff availability check');
+  const document = unavailableStaffPicker.dom.window.document;
+  document.querySelector('[data-add-channel-assignee]').click();
+  await waitFor(() => document.querySelector('[data-channel-staff-picker-error]'), 'missing V3 Staff adapter must leave a visible retryable error');
+  assert.match(document.querySelector('[data-channel-staff-picker-error]')?.textContent || '', /当前渠道草稿已保留/);
+  assert.equal(unavailableStaffPicker.dom.window.__frozenOperationMemberPickerOptions, undefined, 'missing V3 Staff adapter must not fall through to the frozen member picker');
+  assert.equal(unavailableStaffPicker.calls.some((call) => call.method === 'PATCH' || call.method === 'POST'), false, 'missing V3 Staff adapter must not issue a channel command');
+} finally { unavailableStaffPicker.dom.window.close(); }
+
+// The bounded channel directory may change while the dialog is open. A refresh
+// must query its actual channel_code scope, admit the newly returned local
+// staff record into the existing donor draft, and never write before Save.
+const refreshedStaffDirectory = { status: 200, payload: { items: [{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }] } };
+const refreshedStaffPicker = createPage({ staffPickerAutoCommit: false, operationMembers: refreshedStaffDirectory });
+try {
+  await waitFor(() => refreshedStaffPicker.dom.window.document.querySelector('[data-add-channel-assignee]'), 'channel form must mount before Staff refresh');
+  await waitFor(() => refreshedStaffPicker.dom.window.__channelComposerOptions, 'the frozen channel callback must bind before Staff refresh');
+  const document = refreshedStaffPicker.dom.window.document;
+  document.querySelector('[data-add-channel-assignee]').click();
+  const options = await waitFor(() => refreshedStaffPicker.dom.window.__staffPickerOptions, 'V3 Staff adapter must receive the exact frozen callback');
+  const controller = new AbortController();
+  const first = await options.loadPage({ query: '测试', signal: controller.signal });
+  assert.equal(first.items[0]?.staff_id, '12', 'initial scoped Staff read must preserve the local ID');
+  assert.match(refreshedStaffPicker.calls.find((call) => call.path === '/api/admin/common/operation-members' && call.search.includes('q='))?.search || '', /scope=channel_code/, 'Staff search must name the authorised channel_code server scope');
+  refreshedStaffDirectory.payload = { items: [{ staff_id: 13, user_id: 'wecom-new', display_name: '刷新后客服', active: true }] };
+  await options.refresh({ query: '刷新', signal: controller.signal });
+  const refreshed = await options.loadPage({ query: '刷新', signal: controller.signal });
+  assert.equal(refreshed.items[0]?.staff_id, '13', 'the refreshed directory must expose its new trusted local staff record');
+  options.onCommit({ selected: refreshed.items, added: refreshed.items, removed: [] });
+  await waitFor(() => document.querySelector('[data-assignee-list]')?.textContent.includes('刷新后客服'), 'refreshed Staff selection must update the original frozen channel draft');
+  assert.equal(refreshedStaffPicker.calls.some((call) => call.method === 'PATCH' || call.method === 'POST'), false, 'refreshing or selecting Staff must not save the channel early');
+} finally { refreshedStaffPicker.dom.window.close(); }
 
 // The V3 picker updates the exact existing draft fields. The normal channel
 // save is the only persistence step, and a reopened Host must read those
@@ -368,11 +408,12 @@ try {
   document.querySelector('[name="channel_code"]').value = 'new-channel';
   document.querySelector('[data-add-channel-assignee]').click();
   await waitFor(() => document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), 'new channel picker result must enter assignment state');
+  await pause();
   document.querySelector('[data-add-channel-assignee]').click();
-  await waitFor(() => created.dom.window.__pickerOptions.disabledUserIds?.includes('wecom-alice'), 'existing local assignee IDs must disable the corresponding real WeCom ID in the shared picker');
-  assert.equal(created.dom.window.__pickerOptions.context, 'channel_assignees', 'the channel Host must declare the shared picker business context');
-  assert.deepEqual(JSON.parse(JSON.stringify(created.dom.window.__pickerOptions.selection)), { mode: 'multiple', max: 4 }, 'the channel Host must retain the donor remaining-capacity limit through the explicit multi-select contract');
-  assert.equal(created.dom.window.__pickerOptions.multiple, true, 'the channel Host must retain the donor multi-select behavior');
+  await waitFor(() => created.dom.window.__staffPickerOptions?.limit === 4, 'existing local assignee IDs must be supplied through the actual V3 picker seam');
+  assert.equal(created.dom.window.__staffPickerOptions.scope, 'channel_code.assignment', 'the channel Host must declare its V3 UI scope without inventing a server scope');
+  assert.equal(created.dom.window.__staffPickerOptions.limit, 4, 'the V3 picker must receive only the remaining capacity after the existing frozen draft');
+  assert.equal(created.dom.window.__frozenOperationMemberPickerOptions, undefined, 'the exact add-assignee callback seam must not invoke a second frozen dialog');
   document.querySelector('[data-save-channel]').click();
   await waitFor(() => created.calls.some((call) => call.method === 'POST' && call.path === '/api/admin/channels'), 'new channel must submit one Catalog create');
   const post = created.calls.find((call) => call.method === 'POST' && call.path === '/api/admin/channels');
