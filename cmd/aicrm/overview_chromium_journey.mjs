@@ -25,15 +25,21 @@ function browserBinary() {
 
 class CDP {
   constructor(socket) {
-    this.socket = socket; this.nextID = 0; this.pending = new Map();
+    this.socket = socket; this.nextID = 0; this.pending = new Map(); this.events = new Map();
     socket.addEventListener("message", (event) => {
-      const message = JSON.parse(String(event.data)); const pending = this.pending.get(message.id);
+      const message = JSON.parse(String(event.data));
+      if (!message.id) {
+        for (const listener of this.events.get(message.method) || []) listener(message.params || {});
+        return;
+      }
+      const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
       message.error ? pending.reject(new Error(`CDP ${message.error.code || "error"}`)) : pending.resolve(message.result || {});
     });
   }
   call(method, params = {}) { return new Promise((resolve, reject) => { const id = ++this.nextID; this.pending.set(id, { resolve, reject }); this.socket.send(JSON.stringify({ id, method, params })); }); }
+  on(method, listener) { const listeners = this.events.get(method) || []; listeners.push(listener); this.events.set(method, listeners); }
   close() { for (const pending of this.pending.values()) pending.reject(new Error("CDP closed")); this.pending.clear(); this.socket.close(); }
 }
 
@@ -80,7 +86,16 @@ try {
   const target = await (await fetch(`${await port(profile)}/json/new?about:blank`, { method: "PUT" })).json();
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
-  cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
+  cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
+  const assetResponses = new Map();
+  cdp.on("Network.responseReceived", (params) => {
+    try {
+      const responseURL = new URL(String(params.response?.url || ""));
+      if (responseURL.origin !== new URL(baseURL).origin) return;
+      const match = responseURL.pathname.match(/^\/assets\/(overviewAdmin|overviewStyles|navigationHost)-[A-Za-z0-9_-]+\.(?:js|css)$/);
+      if (match) assetResponses.set(match[1], Number(params.response?.status) || 0);
+    } catch (_) {}
+  });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin` });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
@@ -90,6 +105,9 @@ try {
   } catch (error) {
     const diagnostics = await evaluate(cdp, "JSON.stringify({root:document.querySelector('#overview-admin-root')?.outerHTML||'',scripts:[...document.scripts].map((script)=>script.src),text:document.body.textContent.slice(0,1200)})");
     throw new Error(`${error.message}: ${diagnostics}`);
+  }
+  for (const asset of ["overviewAdmin", "overviewStyles"]) {
+    if (assetResponses.get(asset) !== 200) throw new Error(`staged overview asset ${asset} HTTP status=${assetResponses.get(asset) || 0}`);
   }
   const overviewDOM = await evaluate(cdp, "JSON.stringify({primary:[...document.querySelectorAll('.overview-metrics--primary .overview-metric')].map((node)=>node.textContent),secondary:[...document.querySelectorAll('.overview-metrics--secondary .overview-metric')].map((node)=>node.textContent),today:performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/overview?period=today')),nav:[...document.querySelectorAll('.admin-nav-section-title')].map((node)=>node.textContent)})");
   const rendered = JSON.parse(overviewDOM || "{}");
@@ -119,6 +137,7 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('#distribution-admin-root')) && Boolean(document.querySelector('.admin-nav a[href=\"/admin/distribution\"].is-active'))", "server-rendered distribution shell did not retain the V3 navigation state");
   await cdp.call("Page.navigate", { url: `${baseURL}/admin/customerDetail.html?id=1` });
   await waitFor(cdp, "Boolean(document.querySelector('.side-nav[data-v3-navigation-host=\"ready\"]'))", "built customer document did not receive the shared V3 navigation Host");
+  if (assetResponses.get("navigationHost") !== 200) throw new Error(`staged navigation Host HTTP status=${assetResponses.get("navigationHost") || 0}`);
   const customerNavigation = await evaluate(cdp, "JSON.stringify({groups:[...document.querySelectorAll('.side-nav .side-grp')].map((node)=>node.textContent),active:[...document.querySelectorAll('.side-nav .nav-item.on')].map((node)=>node.textContent?.trim()),access:document.body.textContent.includes('登录与权限')})");
   const customer = JSON.parse(customerNavigation || "{}");
   if (customer.groups?.join("|") !== "总览|客户|运营|交易|分销|内容素材|系统设置" || customer.active?.join("|") !== "客户激活 / 客户列表" || customer.access) throw new Error("built customer document did not apply the shared navigation safely");

@@ -24,7 +24,7 @@ const entryKeys = [
   'admin', 'adminSessionHost', 'standardComponentsHost', 'adminDateTimeHost', 'standardComponentsStableHost', 'tokens', 'labs',
   'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'radarHost',
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'productDistributionStyles', 'memberGridFeedbackHost',
-  'distributionCenter', 'distributionAdmin', 'distributionStyles',
+  'distributionCenter', 'distributionAdmin', 'distributionStyles', 'navigationHost', 'overviewAdmin', 'overviewStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {

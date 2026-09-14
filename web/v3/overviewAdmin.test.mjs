@@ -43,6 +43,7 @@ const dom = new JSDOM('<!doctype html><main id="overview-admin-root"></main>', {
       if (scenario === 'negative') return reply(overview(url.searchParams.get('period'), { amount: 500, refund: 1200 }));
       if (scenario === 'refund-zero') return reply(overview(url.searchParams.get('period'), { refund: 0 }));
       if (scenario === 'trend-missing') { const body = overview(url.searchParams.get('period')); body.paid.status = 'data_missing'; body.paid.reason_code = 'paid_confirmation_time_missing'; body.paid.trend = []; return reply(body); }
+      if (scenario === 'distribution-not-configured') { const body = overview(url.searchParams.get('period')); body.distribution.status = 'data_missing'; body.distribution.reason_code = 'distribution_not_configured'; body.distribution.period_paid_sales_minor = 0; body.distribution.period_initial_commission_minor = 0; body.distribution.current_unsettled_minor = 0; body.distribution.current_settled_minor = 0; body.todos.status = 'data_missing'; body.todos.reason_code = 'distribution_not_configured'; body.todos.items = []; return reply(body); }
       if (scenario === 'long-custom') { const body = overview('custom'); body.range = { period: 'custom', timezone: 'Asia/Shanghai', start: '2026-01-01T16:00:00Z', end: '2026-02-03T16:00:00Z' }; return reply(body); }
       return reply(overview(url.searchParams.get('period'), { amount: scenario === 'seven' ? 20000 : 12500 }));
     };
@@ -81,6 +82,14 @@ scenario = 'trend-missing';
 await waitFor(() => dom.window.document.body.textContent.includes('部分历史支付缺少确认时间'), 'missing payment evidence did not render');
 assert.ok(dom.window.document.body.textContent.includes('暂无可定位到日期的支付记录，仍有数据待核实'), 'missing payment evidence must not be shown as a confirmed zero');
 assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 0, 'data-missing payment trends must not infer zero-value dates');
+
+scenario = 'distribution-not-configured';
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
+await waitFor(() => dom.window.document.body.textContent.includes('分销数据暂未接入，暂无法确认待处理事项'), 'unconfigured distribution did not expose its unavailable todo state');
+const distributionValues = [...dom.window.document.querySelectorAll('.overview-panel')].find((panel) => panel.textContent.includes('分销进度'))?.querySelectorAll('dd') || [];
+assert.deepEqual([...distributionValues].map((node) => node.textContent), ['—', '—', '—', '—'], 'unconfigured distribution must not present default zeroes as known amounts');
+assert.equal([...dom.window.document.querySelectorAll('.overview-status')].filter((node) => node.textContent === '暂未接入').length, 2, 'unconfigured distribution and todos must disclose that their source is not connected');
+assert.equal(dom.window.document.body.textContent.includes('暂无需要处理的事项。'), false, 'unconfigured distribution must not present an empty todo list as confirmed');
 
 scenario = 'negative';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();

@@ -101,7 +101,9 @@ function amounts(values: Money[] | null | undefined, section: Section, confirmed
   }
   return values.map(amount).join(' · ');
 }
-function minorAmount(value: number, currency: string, section: Section): string { return unavailable(section) ? '—' : amount({ amount_minor: value, currency }); }
+function minorAmount(value: number, currency: string, section: Section): string {
+  return unavailable(section) || (section.status === 'data_missing' && section.reason_code === 'distribution_not_configured') ? '—' : amount({ amount_minor: value, currency });
+}
 function integer(value: number, section: Section): string { return unavailable(section) ? '—' : new Intl.NumberFormat('zh-CN').format(value); }
 function timestamp(value: string): string {
   const date = new Date(value); if (Number.isNaN(date.getTime())) return '—';
@@ -109,7 +111,9 @@ function timestamp(value: string): string {
 }
 function statusBadge(section: Section): string {
   if (section.status === 'ready' || section.status === 'zero') return '';
-  const label = section.status === 'data_missing' ? '来源待核实' : '暂时无法读取';
+  const label = section.status === 'data_missing'
+    ? (section.reason_code === 'distribution_not_configured' ? '暂未接入' : '来源待核实')
+    : '暂时无法读取';
   return `<span class="overview-status overview-status--${section.status}">${label}</span>`;
 }
 function hint(section: Section): string {
@@ -213,6 +217,7 @@ function safeTodoHref(raw: string): string | null {
 }
 function renderTodos(items: Todo[], section: Section): string {
   if (unavailable(section)) return '<p class="overview-empty">待处理事项暂时无法读取。</p>';
+  if (section.status === 'data_missing' && section.reason_code === 'distribution_not_configured') return '<p class="overview-empty">分销数据暂未接入，暂无法确认待处理事项。</p>';
   if (!items.length) return '<p class="overview-empty">暂无需要处理的事项。</p>';
   return `<ul class="overview-todos">${items.map((todo) => { const href = safeTodoHref(todo.href); const label = todo.code === 'distribution_exceptions' ? '分销异常待处理' : '待处理事项'; const contents = `<span>${escapeHTML(label)}</span><strong>${integer(todo.count, section)}</strong>`; return `<li>${href ? `<a href="${escapeHTML(href)}">${contents}<span aria-hidden="true">→</span></a>` : contents}</li>`; }).join('')}</ul>`;
 }

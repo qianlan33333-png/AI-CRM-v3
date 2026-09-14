@@ -48,7 +48,6 @@ func TestPostgreSQLAdminOverviewChromiumJourney(t *testing.T) {
 		"AICRM_OVERVIEW_BROWSER_URL="+fixture.server.URL,
 		"AICRM_OVERVIEW_BROWSER_USERNAME=overview-browser-admin",
 		"AICRM_OVERVIEW_BROWSER_PASSWORD=overview-browser-admin-password",
-		"AICRM_CHROMIUM_BINARY=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 	)
 	output, err := command.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "admin_overview_chromium: PASS") {
