@@ -110,6 +110,20 @@ func TestPostgreSQLProfitSharingReceiverRecoveryCreatesOneNewReviewedIntent(t *t
 	if state != "accepted" || oldState != "final_failed" || effectsCount != 2 || receipts != 1 || intents != 1 || audits != 1 || actor != "admin:17" || review != "controlled_review_all_attempts_unexecuted_current_configuration_verified" {
 		t.Fatalf("state=%q old=%q effects=%d receipts=%d intents=%d audits=%d actor=%q review=%q", state, oldState, effectsCount, receipts, intents, audits, actor, review)
 	}
+	// The recovery is not complete merely because its intent was accepted. The
+	// independently executed EER worker must be able to resolve exactly that
+	// persisted source/payload back to the current trusted receiver material.
+	var source, payload string
+	if err = pool.QueryRow(ctx, `SELECT source_ref_digest,payload_digest FROM payment_profit_sharing_provider_intents WHERE receiver_id=$1`, receiverID).Scan(&source, &payload); err != nil {
+		t.Fatal(err)
+	}
+	material, err := service.LoadProfitSharingEffectMaterial(ctx, effectport.KindWeChatPayReceiverAdd, effectport.Digest(source))
+	if err != nil {
+		t.Fatalf("recovered receiver material source=%q: %v", source, err)
+	}
+	if string(material.PayloadDigest) != payload || material.AppID != "wx-recovery" || material.ReceiverAccount != "trusted-openid" {
+		t.Fatalf("recovered material=%+v payload=%q", material, payload)
+	}
 	if _, err = service.RecoverProfitSharingReceiver(ctx, paymentport.ProfitSharingReceiverRecoveryCommand{ReceiverReference: command.ReceiverReference, ActorAdminUserID: command.ActorAdminUserID, IdempotencyKey: command.IdempotencyKey, EvidenceReference: "changed-review"}); !errors.Is(err, paymentport.ErrConflict) {
 		t.Fatalf("evidence drift err=%v", err)
 	}

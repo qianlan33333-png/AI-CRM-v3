@@ -19,6 +19,7 @@
 2. Distribution 将这类底层失败聚合为 `503 unavailable`，H5 显示“请稍后重试”；商品清单直接过滤所有未通过资格的候选，空态没有原因。
 3. 生产只读结果表明本次 actor 已由可信 H5/精确 scope identity 验证；唯一 receiver 为 `final_failed`，全历史 attempt 无外调标记，运行时分佣开关未配置且 SDK public key ID 缺失，无微信返回码。该事实说明当前能力不可用，但旧 effect 无持久化 failure code，不能据此自动重试。
 4. 同一商品存在本人已支付、未退款订单，但 Payment `paid_confirmed_at` 缺失；当前资格正确 fail closed。既有签名 Provider 查单已返回 `SUCCESS.success_time`，但 `ReconcileWeChatPayPayment` 在 payment 已为 `paid` 时提前返回，未补齐 Payment 与 Order 的确认事实。
+5. `a328` 上一次受控 receiver 恢复已正确接受新 effect、持久化 intent 与审计，却在 worker 的 `wechatpay.profit-sharing.material` 本地阶段终态失败，且两项外调标记均为 false。生产只读已确认开关、认证材料模式、intent、可信 scoped identity、account digest、canonical lineage 和 API/worker runtime snapshot 一致；因此这不是微信拒绝，也没有可安全重试的外调。根因是 Payment 读取 polymorphic provider intent 时错误用三对布尔相等判断 owner：合法的 receiver-only row 会因另两列均为空被判冲突。修复改为“恰好一个 receiver/instruction/unfreeze owner”，不改变 effect、身份或资金策略。
 
 ## 交付
 
@@ -82,3 +83,4 @@ Payment worker 或受控 recovery 的 receiver 状态变化会在同一 PostgreS
 4. receiver 恢复覆盖超级管理员权限、全历史未外调、当前身份/AppID 与 SDK readiness、CAS、同 key 回放、payload drift、已外调与 outcome unknown 拒绝；真实 PostgreSQL 证明旧 effect 未覆盖、新 intent/audit 原子提交。
 5. Payment worker/recovery 就绪状态在同一 UoW 更新 Distribution snapshot；重复 ready 不重复版本或审计，且 `/me`、推广资格及管理端读回一致，无再次 prepare 或网络读取。
 6. JSDOM/Chromium 验证状态刷新、严格空态/候选动作和禁用状态；完整 CI、独立审计、合并后部署与登录态只读回验分别记录。
+7. 真实 PostgreSQL 覆盖被审阅恢复的完整异步链：`RecoverProfitSharingReceiver` 写入新 EER intent 后，Payment loader 必须按 effect source 读回同一 payload；真实 River EER worker 仅在本地 fake SDK 叶子调用一次 `AddReceiver`，随后 effect 为 `executed`、receiver 为 `ready`。receiver、instruction、unfreeze 三种单一 intent owner 均可读取；零个、两个或三个 owner 均 fail closed。
