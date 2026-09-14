@@ -23,6 +23,8 @@ let persistedPolicy = { ...policy };
 let productVersion = 7;
 const writes = [];
 const requests = [];
+let deferPolicyWrite = false;
+let resolveDeferredPolicyWrite;
 const editorConsole = new VirtualConsole();
 editorConsole.on('jsdomError', (error) => process.stderr.write(`JSDOM: ${error.message}\n`));
 const projection = {
@@ -48,12 +50,22 @@ const dom = new JSDOM(page, {
     window.fetch = async (input, init = {}) => {
       const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
-      requests.push({ path: url.pathname, method });
+      requests.push({ path: url.pathname, method, key: new Headers(init.headers || (input instanceof Request ? input.headers : undefined)).get('Idempotency-Key') || '' });
       const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
       if (url.pathname === '/api/v1/products/101') {
         if (method === 'PUT') {
           const body = JSON.parse(init.body);
           writes.push(body);
+          if (Object.hasOwn(body, 'distribution_policy') && deferPolicyWrite) {
+            deferPolicyWrite = false;
+            return new Promise((resolve) => {
+              resolveDeferredPolicyWrite = () => {
+                persistedPolicy = { ...body.distribution_policy, version: body.distribution_policy.version + 1 };
+                productVersion += 1;
+                resolve(reply(product()));
+              };
+            });
+          }
           if (Object.hasOwn(body, 'distribution_policy')) persistedPolicy = body.distribution_policy;
           productVersion += 1;
         }
@@ -112,6 +124,23 @@ await waitFor(() => writes.length === expectedWrites, 'sale save did not write t
 assert.deepEqual(writes.at(-1).distribution_policy, { enabled: false, commission_rate_basis_points: 2345, wait_days: 8, version: 2 }, 'sale save must persist the disabled policy exactly as read and drafted');
 const afterSaleSave = await dom.window.fetch('/api/v1/products/101').then((response) => response.json());
 assert.deepEqual(afterSaleSave.distribution_policy, { enabled: false, commission_rate_basis_points: 2345, wait_days: 8, version: 2 }, 'sale save must persist the drafted policy for the next server read');
+const firstPolicySaveKey = requests.filter(request => request.path === '/api/v1/products/101' && request.method === 'PUT').at(-1).key;
+
+rate.value = '12.34';
+rate.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+deferPolicyWrite = true;
+const writesBeforeRace = writes.length;
+saleSave.click();
+await waitFor(() => typeof resolveDeferredPolicyWrite === 'function', 'sale policy save did not reach the deferred server response');
+rate.value = '23.45';
+rate.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+resolveDeferredPolicyWrite();
+await waitFor(() => writes.length === writesBeforeRace + 1, 'deferred sale save did not write the product');
+await waitFor(() => distribution.dataset.distributionPolicyVersion === '3', 'deferred sale save did not advance the saved policy revision');
+assert.equal(rate.value, '23.45', 'a response must not overwrite a newer in-flight sale draft');
+const editedPolicySaveKey = requests.filter(request => request.path === '/api/v1/products/101' && request.method === 'PUT').at(-1).key;
+assert.match(firstPolicySaveKey, /^product-save-/, 'policy save must use a Product command idempotency key');
+assert.notEqual(editedPolicySaveKey, firstPolicySaveKey, 'a policy edit after a confirmed save must use a new Product command key');
 
 dom.window.close();
 console.log('product distribution policy dimensions, drafts, and save boundaries: PASS');

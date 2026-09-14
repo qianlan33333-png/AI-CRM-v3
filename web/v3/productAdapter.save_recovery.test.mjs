@@ -22,7 +22,7 @@ async function waitFor(check, message) {
 }
 
 const projection = { schema_version: 1, status: 'active', enabled: true, buy_button_text: '立即购买', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, purchase_action_enabled: false, purchase_action_mode: '', wecom_tagging: {}, slices: [] };
-const created = { id: 101, product_code: 'recovery-product', name: '恢复商品', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z' };
+const created = { id: 101, product_code: 'recovery-product', name: '恢复商品', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, distribution_policy: { enabled: true, commission_rate_basis_points: 1234, wait_days: 8, version: 1 }, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z' };
 const calls = [];
 let savedVersion = 1;
 let externalAttempts = 0;
@@ -76,6 +76,11 @@ dom.window.eval(host);
 
 dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 await waitFor(() => dom.window.document.getElementById('pfName'), 'frozen product form must mount through the real Admin client');
+const newPolicy = await waitFor(() => dom.window.document.querySelector('[data-distribution-policy]'), 'new ordinary product must render editable distribution controls in sale information');
+assert.equal(newPolicy.parentElement.id, 'product-sale', 'new ordinary distribution controls belong only to sale information');
+assert.equal(newPolicy.querySelector('[data-distribution-policy-enabled]').checked, false, 'new ordinary product defaults distribution to disabled');
+assert.equal(newPolicy.querySelector('[data-distribution-policy-rate]').value, '0.00', 'new ordinary product defaults commission rate');
+assert.equal(newPolicy.querySelector('[data-distribution-policy-wait-days]').value, '7', 'new ordinary product defaults refund-review wait days');
 const materialOpen = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.trim() === '从素材库选择');
 materialOpen.click();
 const materialRow = await waitFor(() => dom.window.document.querySelector('[data-picker-id="39"]'), 'the original product picker must retain later catalog pages');
@@ -108,6 +113,16 @@ for (const [id, value] of [['pfName', '恢复商品'], ['pfCode', 'recovery-prod
 }
 const push = dom.window.document.getElementById('pfExternalPushEnabled');
 push.value = 'true'; push.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+const policyBeforeCreate = dom.window.document.querySelector('[data-distribution-policy]');
+policyBeforeCreate.querySelector('[data-distribution-policy-enabled]').checked = true;
+policyBeforeCreate.querySelector('[data-distribution-policy-enabled]').dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+policyBeforeCreate.querySelector('[data-distribution-policy-rate]').value = '12.34';
+policyBeforeCreate.querySelector('[data-distribution-policy-rate]').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+policyBeforeCreate.querySelector('[data-distribution-policy-wait-days]').value = '8';
+policyBeforeCreate.querySelector('[data-distribution-policy-wait-days]').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+assert.equal(dom.window.document.querySelector('[data-distribution-policy-rate]').value, '12.34', 'new ordinary product must retain the edited commission before create');
+assert.equal(dom.window.document.querySelector('[data-distribution-policy-wait-days]').value, '8', 'new ordinary product must retain the edited wait days before create');
+assert.equal(dom.window.document.querySelector('[data-distribution-policy-enabled]').checked, true, 'new ordinary product must retain the selected state before create');
 const save = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存当前维度');
 assert.ok(save, 'frozen product form must retain save action');
 save.click();
@@ -119,10 +134,15 @@ assert.match(creates[0].key, /^product-save-/, 'subject create must carry an ide
 const createPayload = JSON.parse(creates[0].body);
 assert.deepEqual(createPayload.admin_projection.wecom_tagging, { enabled: true, tag_ids: [37] }, 'product save must forward the enabled catalog-selected numeric tag IDs');
 assert.deepEqual(createPayload.images, ['/api/admin/image-library/39/variants/original'], 'product save must preserve the original picker later-page URL');
-assert.deepEqual(createPayload.distribution_policy, { enabled: false, commission_rate_basis_points: 0, wait_days: 7, version: 0 }, 'ordinary product save must atomically carry the default distribution policy');
+assert.deepEqual(createPayload.distribution_policy, { enabled: true, commission_rate_basis_points: 1234, wait_days: 8, version: 0 }, 'ordinary product create must atomically carry the edited distribution policy');
 assert.equal(createPayload.admin_projection.purchase_action_enabled, true, 'product save must enable the selected purchase action');
 assert.equal(createPayload.admin_projection.purchase_action_mode, 'qr', 'product save must preserve the selected QR action mode');
 assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101', 'failed external push must recover the created ID into the editor URL');
+const policyAfterCreate = dom.window.document.querySelector('[data-distribution-policy]');
+assert.equal(policyAfterCreate.dataset.distributionPolicyVersion, '1', 'new ordinary product must read back the server policy revision after receiving an ID');
+assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-enabled]').checked, true, 'new ordinary product readback must retain the selected distribution state');
+assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-rate]').value, '12.34', 'new ordinary product readback must retain the edited commission rate');
+assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-wait-days]').value, '8', 'new ordinary product readback must retain the edited wait days');
 
 const recoverySave = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存当前维度');
 assert.ok(recoverySave, 'recovery must keep a live frozen save action');

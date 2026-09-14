@@ -106,7 +106,7 @@ function stableProductSaveKeys(input: Parameters<typeof api.saveProduct>[0]): { 
   // One click and its recovery retry must keep their original keys.  The
   // key is intentionally held only in this page runtime: it never enters a
   // URL, log, or persisted product field.
-  const key = JSON.stringify([input, input.id ? openedProductPayloads.get(input.id)?.version : undefined]);
+  const key = JSON.stringify([input, input.id ? openedProductPayloads.get(input.id)?.version ?? periodicSnapshots.get(input.id)?.version : undefined]);
   let saved = productSaveKeys.get(key);
   if (!saved) {
     saved = { subjectKey: newIdempotencyKey('product-save'), externalPushKey: newIdempotencyKey('product-external-push') };
@@ -219,7 +219,10 @@ function distributionPolicyDimensionSelected(): boolean {
   const sale = productSaleDimension();
   if (!sale) return false;
   const nav = document.querySelector<HTMLAnchorElement>(`a[href="#${sale}"]`)?.parentElement;
-  return nav?.dataset.productDimension === sale;
+  // The frozen new-product form reaches its default sale panel before the
+  // Host's dimension observer records a selection. That initial state is
+  // still sale information; later tab clicks always set this dataset.
+  return !nav?.dataset.productDimension || nav.dataset.productDimension === sale;
 }
 
 function currentDistributionPolicy(): DistributionPolicy | undefined {
@@ -232,7 +235,7 @@ function currentDistributionPolicy(): DistributionPolicy | undefined {
   // its authoritative product payload is still loading (or failed), and must
   // never overwrite the saved policy with the new-product default on save.
   if (!host) {
-    if (productEditorRoute()) throw new Error('分销设置尚未加载，未提交保存。');
+    if (!newProductEditor()) throw new Error('分销设置尚未加载，未提交保存。');
     return defaultDistributionPolicy();
   }
   const enabled = host.querySelector<HTMLInputElement>('[data-distribution-policy-enabled]')?.checked === true;
@@ -251,6 +254,12 @@ function currentDistributionPolicy(): DistributionPolicy | undefined {
   return { enabled, commissionRateBasisPoints: basisPoints, waitDays, version };
 }
 
+function newProductEditor(): boolean {
+  const prefix = productPrefix();
+  if (!prefix) return false;
+  try { return !new URLSearchParams(location.search).has('id'); } catch { return false; }
+}
+
 function editorDistributionPolicy(): DistributionPolicy {
   const route = productEditorRoute();
   if (!route) return defaultDistributionPolicy();
@@ -260,18 +269,20 @@ function editorDistributionPolicy(): DistributionPolicy {
 }
 
 function mountDistributionPolicyControls(): void {
+  if (typeof document === 'undefined' || !document.documentElement) return;
   const route = productEditorRoute();
-  if (!route || document.querySelector('[data-distribution-policy]')) return;
-  const prefix = route.prefix;
-  const snapshot = prefix === 'pf' ? openedProductPayloads.get(route.id) : periodicSnapshots.get(route.id);
+  if (document.querySelector('[data-distribution-policy]')) return;
+  const prefix = route?.prefix || productPrefix();
+  if (!prefix || (!route && !newProductEditor())) return;
+  const snapshot = route ? prefix === 'pf' ? openedProductPayloads.get(route.id) : periodicSnapshots.get(route.id) : undefined;
   // The observer can fire while a frozen donor form is still loading. Wait for
   // its authoritative snapshot hook instead of mutating the DOM with an error,
   // which would trigger the observer again and fabricate a draft policy.
-  if (!snapshot) return;
+  if (route && !snapshot) return;
   const anchor = document.getElementById(prefix === 'pf' ? 'product-sale' : 'sp-sale');
   if (!anchor) return;
   let policy: DistributionPolicy;
-  try { policy = distributionPolicy(snapshot.distribution_policy); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
+  try { policy = route ? distributionPolicy(snapshot?.distribution_policy) : defaultDistributionPolicy(); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
   const host = document.createElement('section');
   host.className = 'product-distribution-policy';
   host.dataset.distributionPolicy = '';
@@ -304,6 +315,45 @@ function mountDistributionPolicyControls(): void {
   anchor.firstElementChild?.after(host);
 }
 
+function syncDistributionPolicyControls(raw: unknown, submitted: DistributionPolicy): void {
+  if (typeof document === 'undefined' || !document.documentElement) return;
+  const host = document.querySelector<HTMLElement>('[data-distribution-policy]');
+  if (!host || raw === undefined || raw === null) return;
+  let policy: DistributionPolicy;
+  try { policy = distributionPolicy(raw); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
+  const enabled = host.querySelector<HTMLInputElement>('[data-distribution-policy-enabled]');
+  const rate = host.querySelector<HTMLInputElement>('[data-distribution-policy-rate]');
+  const days = host.querySelector<HTMLInputElement>('[data-distribution-policy-wait-days]');
+  if (!enabled || !rate || !days) return;
+  const currentRate = Number(rate.value);
+  const currentDays = Number(days.value);
+  const currentMatchesSubmission = enabled.checked === submitted.enabled && Number.isFinite(currentRate) &&
+    Math.round(currentRate * 100) === submitted.commissionRateBasisPoints && Number.isSafeInteger(currentDays) &&
+    currentDays === submitted.waitDays && Number(host.dataset.distributionPolicyVersion || '0') === submitted.version;
+  host.dataset.distributionPolicyVersion = String(policy.version);
+  // A user may continue editing while the Product command is in flight. Do
+  // not replace that later sale draft with the response for an earlier save;
+  // only advance its base version for the next explicit save.
+  if (!currentMatchesSubmission) return;
+  enabled.checked = policy.enabled;
+  rate.value = (policy.commissionRateBasisPoints / 100).toFixed(2);
+  days.value = String(policy.waitDays);
+  host.querySelector<HTMLElement>('[data-distribution-policy-fields]')?.classList.toggle('is-disabled', !policy.enabled);
+}
+
+function mountNewServicePeriodDuration(): void {
+  if (typeof document === 'undefined' || !document.documentElement || !newProductEditor() || productPrefix() !== 'spf' || document.getElementById('spfDurationDays')) return;
+  const sale = document.getElementById('sp-sale');
+  const fields = Array.from(sale?.children || []).find((node) => node instanceof HTMLElement && node.style.display === 'grid' && node.style.gridTemplateColumns) as HTMLElement | undefined;
+  if (!fields) return;
+  const field = document.createElement('label');
+  field.style.cssText = 'display:grid;gap:6px'; field.textContent = '服务周期（天）';
+  const input = document.createElement('input');
+  input.id = 'spfDurationDays'; input.type = 'number'; input.min = '1'; input.step = '1'; input.inputMode = 'numeric'; input.required = true;
+  input.style.cssText = 'width:100%;min-height:36px;border:1px solid #DEE0E3;border-radius:6px;background:#fff;padding:8px 10px;font-size:13px;box-sizing:border-box';
+  field.append(input); fields.append(field);
+}
+
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const request = input instanceof Request ? input : undefined;
   const url = new URL(request?.url || String(input), location.origin);
@@ -322,7 +372,8 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
 
   let nextInit = init;
   if (context && method !== 'GET' && method !== 'HEAD') {
-    const isSubject = url.pathname === '/api/v1/products' || url.pathname === `/api/v1/products/${context.productID}`;
+    const isSubject = url.pathname === '/api/v1/products' || url.pathname === `/api/v1/products/${context.productID}` ||
+      url.pathname === '/api/admin/service-period-products' || url.pathname === `/api/admin/service-period-products/${context.productID}`;
     const isExternalPush = /\/api\/admin\/wechat-pay\/products\/\d+\/external-push$/.test(url.pathname);
     if (isSubject || isExternalPush) {
       const headers = new Headers(request?.headers);
@@ -340,8 +391,22 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     const body = JSON.parse(String(nextInit?.body || '{}'));
     nextInit = { ...nextInit, body: JSON.stringify({ ...body, duration_days: duration, expected_version: prior?.version }) };
   }
+  if (periodicCollection && method === 'POST') {
+    const input = document.getElementById('spfDurationDays') as HTMLInputElement | null;
+    const duration = Number(input?.value);
+    if (!Number.isSafeInteger(duration) || duration < 1) throw new Error('请填写正整数服务周期天数。');
+    const body = JSON.parse(String(nextInit?.body || '{}'));
+    nextInit = { ...nextInit, body: JSON.stringify({ ...body, duration_days: duration }) };
+  }
   if (isProductSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
   if (isDistributionProductSubjectWrite(url, method)) nextInit = adaptDistributionPolicyWrite(nextInit);
+  let submittedDistributionPolicy: DistributionPolicy | undefined;
+  if (isDistributionProductSubjectWrite(url, method) && typeof nextInit?.body === 'string') {
+    try {
+      const body = object(JSON.parse(nextInit.body));
+      if (Object.hasOwn(body, 'distribution_policy')) submittedDistributionPolicy = distributionPolicy(body.distribution_policy);
+    } catch { /* the Product API validates malformed JSON */ }
+  }
   const response = await donorFetch(input, nextInit);
   if ((periodicMatch && (method === 'GET' || method === 'PUT')) || (periodicCollection && method === 'POST')) {
     if (response.ok) {
@@ -354,6 +419,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
         // from the still-editable donor form.
         if (method === 'POST' || method === 'PUT' || !periodicSnapshots.has(id)) periodicSnapshots.set(id, product);
         mountDistributionPolicyControls();
+        if (submittedDistributionPolicy) syncDistributionPolicyControls(product.distribution_policy, submittedDistributionPolicy);
         const action = object(product.admin_projection);
         purchaseActionByProduct.set(id, {
           enabled: action.purchase_action_enabled === true,
@@ -368,6 +434,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     const id = Number(url.pathname.split('/').pop());
     if (Number(saved.id) === id && Number.isSafeInteger(Number(saved.version))) {
       openedProductPayloads.set(id, saved);
+      if (submittedDistributionPolicy) syncDistributionPolicyControls(saved.distribution_policy, submittedDistributionPolicy);
       if (context?.productID === id) { context.createdProductID = id; context.createdProduct = saved; }
     }
   }
@@ -379,6 +446,8 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
       if (Number.isSafeInteger(id) && id > 0) {
         context.createdProductID = id;
         context.createdProduct = created;
+        openedProductPayloads.set(id, created);
+        if (submittedDistributionPolicy) syncDistributionPolicyControls(created.distribution_policy, submittedDistributionPolicy);
       }
     } catch {
       // The frozen DTO parser will surface the malformed create response.
@@ -446,6 +515,30 @@ api.saveProduct = (input) => {
     } finally {
       productSaveContext = undefined;
     }
+  })();
+  void productSaveInFlight.then(
+    () => { productSaveInFlight = undefined; },
+    () => { productSaveInFlight = undefined; },
+  );
+  return productSaveInFlight;
+};
+
+const donorSaveServiceProduct = api.saveServiceProduct.bind(api);
+api.saveServiceProduct = (input) => {
+  if (productSaveInFlight) return productSaveInFlight;
+  const keys = stableProductSaveKeys(input);
+  const productID = input.id;
+  const context: ProductSaveContext = {
+    productID,
+    opened: productID ? periodicSnapshots.get(productID) : undefined,
+    subjectKey: keys.subjectKey,
+    externalPushKey: keys.externalPushKey,
+    externalPushAttempted: false,
+  };
+  productSaveInFlight = (async () => {
+    productSaveContext = context;
+    try { return await donorSaveServiceProduct(input); }
+    finally { productSaveContext = undefined; }
   })();
   void productSaveInFlight.then(
     () => { productSaveInFlight = undefined; },
@@ -1400,6 +1493,9 @@ mountPurchaseActionControls();
 const distributionPolicyObserver = new MutationObserver(mountDistributionPolicyControls);
 distributionPolicyObserver.observe(document, { childList: true, subtree: true });
 mountDistributionPolicyControls();
+const servicePeriodDurationObserver = new MutationObserver(mountNewServicePeriodDuration);
+servicePeriodDurationObserver.observe(document, { childList: true, subtree: true });
+mountNewServicePeriodDuration();
 
 type ProductMaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: { type: 'image'; title: string; selectedIds: number[]; limit: number; onConfirm(item: MaterialPickerItem): void; onCancel(): void }): void } };
 let pendingProductMaterialObserver: MutationObserver | undefined;
