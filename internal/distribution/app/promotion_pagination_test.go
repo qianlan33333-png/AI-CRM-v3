@@ -10,6 +10,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
+	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -38,11 +39,23 @@ func (promotionPaginationStore) InsertPromotionCredentialWithin(context.Context,
 func (promotionPaginationStore) ReadPromotionCredentialByDigestWithin(context.Context, [32]byte, bool) (distributiondomain.PromotionCredential, error) {
 	return distributiondomain.PromotionCredential{}, distributionport.ErrNotFound
 }
+func (promotionPaginationStore) ReadPromotionCredentialWithin(context.Context, int64, bool) (distributiondomain.PromotionCredential, error) {
+	return distributiondomain.PromotionCredential{}, distributionport.ErrNotFound
+}
 func (promotionPaginationStore) ExpirePromotionCredentialWithin(context.Context, distributiondomain.PromotionCredential, time.Time) error {
 	return nil
 }
 func (promotionPaginationStore) InsertAttributionWithin(context.Context, distributiondomain.Attribution, int64) (distributiondomain.Attribution, bool, error) {
 	return distributiondomain.Attribution{}, false, nil
+}
+func (promotionPaginationStore) LockOperationReceiptWithin(context.Context, string, string, string) error {
+	return nil
+}
+func (promotionPaginationStore) ReadOperationReceiptWithin(context.Context, string, string, string) (distributionstore.OperationReceipt, bool, error) {
+	return distributionstore.OperationReceipt{}, false, nil
+}
+func (promotionPaginationStore) AppendOperationReceiptWithin(context.Context, string, string, string, [32]byte, string, int64, time.Time) error {
+	return nil
 }
 func (promotionPaginationStore) AppendAuditWithin(context.Context, string, string, int64, string, any, time.Time) error {
 	return nil
@@ -108,7 +121,7 @@ func promotionPaginationFixture(t *testing.T, productCount int) (*PromotionServi
 		t.Fatal(err)
 	}
 	qualification.now = func() time.Time { return now }
-	service, err := NewPromotionService(settlementUOWStub{}, promotionPaginationStore{now: now}, qualification, products, promotionPaginationSaleable{}, lineageStub{roots: []customerdomain.CustomerID{11}}, "https://crm.example.test")
+	service, err := NewPromotionService(settlementUOWStub{}, promotionPaginationStore{now: now}, qualification, products, promotionPaginationSaleable{}, lineageStub{roots: []customerdomain.CustomerID{11}}, "https://crm.example.test", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
 	if err != nil {
 		t.Fatal(err)
 	}

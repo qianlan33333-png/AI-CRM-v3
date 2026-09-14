@@ -338,6 +338,20 @@ func TestListLegacyReturnsBoundedOffsetPageAndExactTotal(t *testing.T) {
 	}
 }
 
+func TestGetUsesOneTransactionForAnOrdinaryExternalRead(t *testing.T) {
+	uow := &productTestUoW{}
+	store := &productTestStore{products: []productport.Product{validTestProduct(19)}}
+	service := NewService(uow, store, &productTestEvents{})
+
+	got, err := service.Get(context.Background(), 19)
+	if err != nil || got.ID != 19 {
+		t.Fatalf("Get() product=%+v err=%v", got, err)
+	}
+	if uow.calls != 1 {
+		t.Fatalf("ordinary Get opened %d transactions, want 1", uow.calls)
+	}
+}
+
 func TestOrdinaryCatalogRejectsServicePeriodProjectionAtEveryApplicationBoundary(t *testing.T) {
 	servicePeriod := validTestProduct(7)
 	servicePeriod.LegacyAdminProjection = validServicePeriodProjection(t, ServicePeriodProjectionDraftStatus, false)

@@ -322,7 +322,7 @@ func (h *Handler) issueCredential(w http.ResponseWriter, r *http.Request, rawID 
 		if item.ProductID != id {
 			continue
 		}
-		link, issueErr := h.promotion.IssuePromotionLink(r.Context(), distributionport.IssuePromotionCommand{Actor: actor, ProductID: item.ProductID, ProductType: item.ProductType})
+		link, issueErr := h.promotion.IssuePromotionLink(r.Context(), distributionport.IssuePromotionCommand{Actor: actor, ProductID: item.ProductID, ProductType: item.ProductType, IdempotencyKey: r.Header.Get("Idempotency-Key")})
 		if issueErr != nil {
 			resultError(w, issueErr)
 			return

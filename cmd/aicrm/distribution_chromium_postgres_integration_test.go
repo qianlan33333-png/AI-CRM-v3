@@ -15,11 +15,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 )
 
@@ -48,74 +50,236 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	defer server.Close()
 	dataKey := base64.RawStdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	application, err := compose(ctx, platformconfig.Runtime{
-		Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: "https://" + server.Listener.Addr().String(), ReleaseSHA: "distribution-chromium", WorkerOwner: "distribution-chromium", WorkerLimit: 1,
-		GroupOps:  platformconfig.GroupOps{WebhookSecret: "distribution-chromium-webhook"},
-		Survey:    platformconfig.Survey{DataKey: dataKey, IdentityPhoneDataKey: dataKey},
-		WeChatPay: platformconfig.WeChatPay{Enabled: true, AppID: "wx-distribution-browser", AppSecret: "fixture-secret", AppScope: "wechat-app:distribution-browser", MerchantID: "fixture-mch", MerchantSerial: "fixture-merchant", PrivateKeyPath: key, PlatformCertPath: cert, APIV3Key: "0123456789abcdef0123456789abcdef"},
+		Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: "https://" + server.Listener.Addr().String(), ReleaseSHA: "1111111111111111111111111111111111111111", WorkerOwner: "distribution-chromium", WorkerLimit: 1,
+		GroupOps: platformconfig.GroupOps{WebhookSecret: "distribution-chromium-webhook"},
+		Survey:   platformconfig.Survey{DataKey: dataKey, IdentityPhoneDataKey: dataKey, OAuthEnabled: true, OAuthAppID: "wx-distribution-h5", OAuthSecret: "fixture-h5-secret", OAuthOpenPlatformID: "distribution-open-platform", OAuthScope: "snsapi_userinfo"},
+		// This fixture enables the composed settlement gate only to verify that
+		// a qualified distributor can obtain an opaque credential. The journey
+		// neither registers a receiver nor sends a Payment provider command.
+		Effects:   platformconfig.Effects{ProviderEnabled: true},
+		WeChatPay: platformconfig.WeChatPay{Enabled: true, AppID: "wx-distribution-browser", AppSecret: "fixture-secret", AppScope: "wechat-app:distribution-browser", H5OAuthEnabled: true, H5AppID: "wx-distribution-h5", H5AppSecret: "fixture-h5-secret", H5AppScope: "wechat-app:wx-distribution-h5", OrderContactDataKey: dataKey, MerchantID: "fixture-mch", MerchantSerial: "fixture-merchant", PrivateKeyPath: key, PlatformCertPath: cert, APIV3Key: "0123456789abcdef0123456789abcdef", ProfitSharingEnabled: true, ProfitSharingPublicKeyID: "fixture-profit-sharing-public-key"},
 		Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "distribution-admin", Password: "distribution-admin-password", DisplayName: "Distribution Admin"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer application.Close()
+	assertDistributionH5OAuthStart(t, application.handler)
 	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "distribution-admin", Password: "distribution-admin-password", DisplayName: "Distribution Admin"}); err != nil {
 		t.Fatal(err)
 	}
 	seed := seedDistributionChromiumFacts(t, ctx, application)
+	assertDistributionAdminDetailFacts(t, ctx, application, seed)
 	assertDistributionAdminDeadlineWarningReadModel(t, ctx, application, seed.commissionID)
 	server.Config.Handler = application.handler
 	server.StartTLS()
 	journey := filepath.Join(repository, "cmd", "aicrm", "distribution_chromium_journey.mjs")
 	command := exec.CommandContext(ctx, "node", journey)
-	command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
+	command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
 	output, err := command.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "distribution_chromium: PASS") {
 		t.Fatalf("Distribution Chromium journey err=%v output=%s", err, strings.TrimSpace(string(output)))
 	}
+	assertDistributionRegistrationAndCredentialFacts(t, ctx, application, seed)
 }
 
 type distributionChromiumSeed struct {
-	session, promotion, productCode string
-	commissionID                    int64
+	session, promotion, productCode, csrf   string
+	registrationCustomerID                  int64
+	productID                               int64
+	commissionID, detailAttributionID       int64
+	detailExceptionID                       int64
+	detailCreatedAt                         time.Time
+	receiverCount, effectCount, intentCount int64
+}
+
+func assertDistributionH5OAuthStart(t *testing.T, handler http.Handler) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fdistribution%3Fproduct_id%3D1%26product_type%3Dstandard_product", nil)
+	request.Header.Set("User-Agent", "Mozilla/5.0 MicroMessenger")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusFound || !strings.HasPrefix(response.Header().Get("Location"), "https://open.weixin.qq.com/connect/oauth2/authorize?") {
+		t.Fatalf("payment H5 OAuth start status=%d location=%q body=%s", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
 }
 
 func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, application *composedApplication) distributionChromiumSeed {
 	t.Helper()
 	pool := application.pool.Native()
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	const code = "distribution-browser-product"
 	const token = "dpc_" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	session := "dist_" + "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
-	var customer, product, distributor, policy, credential, attribution int64
-	if err := pool.QueryRow(ctx, "INSERT INTO customers DEFAULT VALUES RETURNING id").Scan(&customer); err != nil {
+	var registrationCustomer, detailCustomer, identityID, product, distributor, policy, credential, attribution int64
+	if err := pool.QueryRow(ctx, "INSERT INTO customers DEFAULT VALUES RETURNING id").Scan(&registrationCustomer); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, "INSERT INTO customers DEFAULT VALUES RETURNING id").Scan(&detailCustomer); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,'mp_openid','wechat-app:distribution-browser','distribution-browser-openid','verified','distribution-browser-fixture',1,$2) RETURNING id`, registrationCustomer, now).Scan(&identityID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO payment_profit_sharing_receivers(customer_id,identity_id,app_id,app_scope,channel,account_digest,state,version,created_at,updated_at) VALUES($1,$2,'wx-distribution-browser','wechat-app:distribution-browser','mini_program',$3,'ready',1,$4,$4)`, registrationCustomer, identityID, string(effectport.Hash("payment.profit-sharing.receiver.account.v1", "wx-distribution-browser", "wechat-app:distribution-browser", "distribution-browser-openid")), now); err != nil {
 		t.Fatal(err)
 	}
 	projection := `{"schema_version":1,"status":"enabled","enabled":true,"buy_button_text":"立即购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`
 	if err := pool.QueryRow(ctx, "INSERT INTO products(product_code,name,description,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES($1,'分销浏览器商品','真实分销浏览器夹具',9900,'CNY',10,1,$2::jsonb) RETURNING id", code, projection).Scan(&product); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, "INSERT INTO distribution_distributors(customer_id,public_no,agreement_version,enabled,receiver_reference,receiver_app_id,receiver_ready,receiver_reason,receiver_checked_at,registered_at,version,created_at,updated_at) VALUES($1,'DISTBROWSER01','v1',TRUE,'receiver-browser','wx-distribution-browser',TRUE,'',$2,$2,1,$2,$2) RETURNING id", customer, now).Scan(&distributor); err != nil {
+	if err := pool.QueryRow(ctx, "INSERT INTO distribution_distributors(customer_id,public_no,agreement_version,enabled,receiver_reference,receiver_app_id,receiver_ready,receiver_reason,receiver_checked_at,registered_at,version,created_at,updated_at) VALUES($1,'DISTBROWSER01','v1',TRUE,'receiver-browser','wx-distribution-browser',TRUE,'',$2,$2,1,$2,$2) RETURNING id", detailCustomer, now).Scan(&distributor); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, "INSERT INTO distribution_product_policies(product_id,product_type,enabled,commission_rate_basis_points,wait_days,version,created_at,updated_at) VALUES($1,'standard_product',TRUE,1000,7,1,$2,$2) RETURNING id", product, now).Scan(&policy); err != nil {
+		t.Fatal(err)
+	}
+	var qualificationOrder int64
+	if err := pool.QueryRow(ctx, "INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','distribution-browser','qualification','M-distribution-qualification',$1,$1,9900,'CNY','paid','native',true,2,$2,$2) RETURNING id", registrationCustomer, now).Scan(&qualificationOrder); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO order_items(order_id,line_no,product_id,product_version,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,1,$2,1,$3,'分销浏览器商品',9900,1,9900)", qualificationOrder, product, code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO order_checkout_snapshots(order_id,product_type,product_id,product_code,product_name,product_version,service_period_duration_days,gross_amount_minor,discount_amount_minor,payable_amount_minor,currency,coupon_applied,coupon_reservation_ref,reserved_at,created_at) VALUES($1,'standard_product',$2,$3,'分销浏览器商品',1,0,9900,0,9900,'CNY',false,'',$4,$4)", qualificationOrder, product, code, now); err != nil {
+		t.Fatal(err)
+	}
+	paidDigest := sha256.Sum256([]byte("distribution-browser-qualified-paid"))
+	if _, err := pool.Exec(ctx, "INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at) VALUES($1,2,$2,$3)", qualificationOrder, paidDigest[:], now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,profit_sharing_marked,version,paid_confirmed_at,created_at,updated_at) VALUES($1,'wechat_pay','mini_program','M-distribution-qualification',$2,$3,$3,9900,'CNY','paid',false,1,$4,$4,$4)", qualificationOrder, identityID, registrationCustomer, now); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte(token))
 	if err := pool.QueryRow(ctx, "INSERT INTO distribution_promotion_credentials(distributor_id,product_id,product_type,token_digest,status,created_at,expires_at) VALUES($1,$2,'standard_product',$3,'active',$4,$5) RETURNING id", distributor, product, digest[:], now, now.Add(24*time.Hour)).Scan(&credential); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, "INSERT INTO distribution_order_attributions(order_id,order_item_line,product_code,product_name,distributor_id,promotion_credential_id,qualification_evidence_reference,qualification_state,policy_id,policy_version,commission_rate_basis_points,wait_days,attributed_at) VALUES(9001,1,$1,'分销浏览器商品',$2,$3,'order:9000:line:1','eligible',$4,1,1000,7,$5) RETURNING id", code, distributor, credential, policy, now).Scan(&attribution); err != nil {
-		t.Fatal(err)
-	}
-	var commission int64
-	if err := pool.QueryRow(ctx, "INSERT INTO distribution_commissions(attribution_id,order_id,order_item_line,distributor_id,original_item_paid_minor,successful_refund_minor,initial_minor,current_payable_minor,paid_minor,commission_rate_basis_points,paid_confirmed_at,due_at,status,hold_reason,cancel_reason,exception_reason,version,created_at,updated_at) VALUES($1,9001,1,$2,9900,0,990,990,0,1000,$3,$4,'pending','','','',1,$3,$3) RETURNING id", attribution, distributor, now, now.Add(7*24*time.Hour)).Scan(&commission); err != nil {
-		t.Fatal(err)
+	var commission, detailAttribution, detailCommission, detailException int64
+	detailCreatedAt := now.Add(2 * time.Minute)
+	for offset := int64(0); offset < 11; offset++ {
+		attributedAt := now.Add(time.Duration(offset) * time.Second)
+		orderID := int64(9001) + offset
+		initial, current, successfulRefund, status := int64(990), int64(990), int64(0), "pending"
+		if offset == 9 {
+			initial, current, successfulRefund, status = 990, 495, 4950, "exception"
+		}
+		if offset == 10 {
+			initial, current, status = 0, 0, "zero_commission"
+		}
+		if err := pool.QueryRow(ctx, "INSERT INTO distribution_order_attributions(order_id,order_item_line,product_code,product_name,distributor_id,promotion_credential_id,qualification_evidence_reference,qualification_state,policy_id,policy_version,commission_rate_basis_points,wait_days,attributed_at) VALUES($1,1,$2,'分销浏览器商品',$3,$4,$5,'eligible',$6,1,1000,7,$7) RETURNING id", orderID, code, distributor, credential, "order:"+strconv.FormatInt(orderID, 10)+":line:1", policy, attributedAt).Scan(&attribution); err != nil {
+			t.Fatal(err)
+		}
+		var insertedCommission int64
+		if err := pool.QueryRow(ctx, "INSERT INTO distribution_commissions(attribution_id,order_id,order_item_line,distributor_id,original_item_paid_minor,successful_refund_minor,initial_minor,current_payable_minor,paid_minor,commission_rate_basis_points,paid_confirmed_at,due_at,status,hold_reason,cancel_reason,exception_reason,version,created_at,updated_at) VALUES($1,$2,1,$3,9900,$4,$5,$6,0,1000,$7,$8,$9,'','','',1,$7,$7) RETURNING id", attribution, orderID, distributor, successfulRefund, initial, current, attributedAt, attributedAt.Add(7*24*time.Hour), status).Scan(&insertedCommission); err != nil {
+			t.Fatal(err)
+		}
+		if offset == 0 {
+			commission = insertedCommission
+		}
+		if offset != 9 {
+			continue
+		}
+		detailAttribution, detailCommission = attribution, insertedCommission
+		if _, err := pool.Exec(ctx, "INSERT INTO distribution_commission_adjustments(commission_id,kind,delta_minor,resulting_payable_minor,reason,source_reference,occurred_at) VALUES($1,'buyer_refund',-495,495,'buyer_refund','payment:browser:9010',$2)", detailCommission, detailCreatedAt); err != nil {
+			t.Fatal(err)
+		}
+		var settlementID int64
+		if err := pool.QueryRow(ctx, "INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,payment_instruction_reference,payment_effect_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'dstl_browser_partial',495,'CNY','payment:browser:9010','','','outcome_unknown',$2,1,$3,$3) RETURNING id", detailCommission, detailCreatedAt.Add(24*time.Hour), detailCreatedAt).Scan(&settlementID); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, "INSERT INTO distribution_exceptions(commission_id,settlement_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at) VALUES($1,$2,'settlement_unknown','open',495,0,495,'settlement_outcome_unknown','reconcile:browser-partial','worker:distribution-due',1,$3,$3) RETURNING id", detailCommission, settlementID, detailCreatedAt).Scan(&detailException); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, "INSERT INTO distribution_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,payload,occurred_at) VALUES('distribution.exception_opened.v1','exception',$1,'worker:distribution-due',$2::jsonb,$3)", detailException, `{"reason":"settlement_outcome_unknown","amount_minor":495,"evidence_reference":"reconcile:browser-partial"}`, detailCreatedAt); err != nil {
+			t.Fatal(err)
+		}
 	}
 	sessionDigest := sha256.Sum256([]byte(session))
-	if _, err := pool.Exec(ctx, "INSERT INTO distribution_browser_sessions(token_digest,customer_id,identity_id,channel,app_id,app_scope,expires_at,created_at) VALUES($1,$2,1,'mini_program','wx-distribution-browser','wechat-app:distribution-browser',$3,$4)", sessionDigest[:], customer, now.Add(8*time.Hour), now); err != nil {
+	if _, err := pool.Exec(ctx, "INSERT INTO distribution_browser_sessions(token_digest,customer_id,identity_id,channel,app_id,app_scope,expires_at,created_at) VALUES($1,$2,$3,'mini_program','wx-distribution-browser','wechat-app:distribution-browser',$4,$5)", sessionDigest[:], registrationCustomer, identityID, now.Add(8*time.Hour), now); err != nil {
 		t.Fatal(err)
 	}
-	return distributionChromiumSeed{session: session, promotion: token, productCode: code, commissionID: commission}
+	var receiverCount, effectCount, intentCount int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_receivers`).Scan(&receiverCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_provider_intents`).Scan(&intentCount); err != nil {
+		t.Fatal(err)
+	}
+	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", registrationCustomerID: registrationCustomer, productID: product, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, detailCreatedAt: detailCreatedAt, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
+}
+
+func assertDistributionRegistrationAndCredentialFacts(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
+	t.Helper()
+	pool := application.pool.Native()
+	var distributors, registerReceipts, registerAudits, registerOutbox, credentials, receipts, audits, outbox, receivers, effects, intents int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_distributors WHERE customer_id=$1`, seed.registrationCustomerID).Scan(&distributors); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_operation_receipts WHERE operation='register' AND actor_scope=$1 AND result_kind='distributor'`, "customer:"+strconv.FormatInt(seed.registrationCustomerID, 10)).Scan(&registerReceipts); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_audit_events a JOIN distribution_distributors d ON d.id=a.aggregate_id WHERE a.event_type='distribution.distributor_registered.v1' AND a.aggregate_type='distributor' AND d.customer_id=$1`, seed.registrationCustomerID).Scan(&registerAudits); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_outbox WHERE event_type='distribution.distributor_registered.v1'`).Scan(&registerOutbox); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_promotion_credentials c JOIN distribution_distributors d ON d.id=c.distributor_id WHERE d.customer_id=$1`, seed.registrationCustomerID).Scan(&credentials); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_operation_receipts WHERE operation='credential' AND actor_scope=$1 AND result_kind='credential'`, "customer:"+strconv.FormatInt(seed.registrationCustomerID, 10)).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_audit_events a JOIN distribution_promotion_credentials c ON c.id=a.aggregate_id JOIN distribution_distributors d ON d.id=c.distributor_id WHERE a.event_type='distribution.credential_issued.v1' AND a.aggregate_type='credential' AND d.customer_id=$1`, seed.registrationCustomerID).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_outbox WHERE event_type='distribution.credential_issued.v1'`).Scan(&outbox); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_receivers`).Scan(&receivers); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effects); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_provider_intents`).Scan(&intents); err != nil {
+		t.Fatal(err)
+	}
+	if distributors != 1 || registerReceipts != 1 || registerAudits != 1 || registerOutbox != 1 || credentials != 1 || receipts != 1 || audits != 1 || outbox != 1 || receivers != seed.receiverCount || effects != seed.effectCount || intents != seed.intentCount {
+		t.Fatalf("registration/credential facts distributors=%d registration_receipts=%d registration_audits=%d registration_outbox=%d credentials=%d credential_receipts=%d credential_audits=%d credential_outbox=%d receivers=%d/%d effects=%d/%d intents=%d/%d", distributors, registerReceipts, registerAudits, registerOutbox, credentials, receipts, audits, outbox, receivers, seed.receiverCount, effects, seed.effectCount, intents, seed.intentCount)
+	}
+}
+
+func assertDistributionAdminDetailFacts(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
+	t.Helper()
+	session, _ := adminAccessLogin(t, application.handler, "distribution-admin", "distribution-admin-password")
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/distribution/orders/"+strconv.FormatInt(seed.detailAttributionID, 10), nil)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	response := httptest.NewRecorder()
+	application.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	for _, want := range []string{`"delta_minor":-495`, `"resulting_payable_minor":495`, `"reference":"dstl_browser_partial"`, `"amount_minor":495`, `"created_at":"` + seed.detailCreatedAt.Format(time.RFC3339Nano) + `"`} {
+		if response.Code != http.StatusOK || !strings.Contains(body, want) {
+			t.Fatalf("admin order detail omitted real fact %s status=%d body=%s", want, response.Code, body)
+		}
+	}
+	if strings.Contains(body, `"DeltaMinor"`) || strings.Contains(body, `"CreatedAt"`) {
+		t.Fatalf("admin order detail leaked Go-shaped DTO: %s", body)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/admin/distribution/exceptions/"+strconv.FormatInt(seed.detailExceptionID, 10), nil)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	response = httptest.NewRecorder()
+	application.handler.ServeHTTP(response, request)
+	body = response.Body.String()
+	for _, want := range []string{`"event_type":"distribution.exception_opened.v1"`, `"actor_scope":"worker:distribution-due"`, `"amount_minor":495`, `"occurred_at":"` + seed.detailCreatedAt.Format(time.RFC3339Nano) + `"`} {
+		if response.Code != http.StatusOK || !strings.Contains(body, want) {
+			t.Fatalf("admin exception detail omitted real audit fact %s status=%d body=%s", want, response.Code, body)
+		}
+	}
 }
 
 func assertDistributionAdminDeadlineWarningReadModel(t *testing.T, ctx context.Context, application *composedApplication, commissionID int64) {

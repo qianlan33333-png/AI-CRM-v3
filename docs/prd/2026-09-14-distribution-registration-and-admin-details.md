@@ -12,8 +12,8 @@
 
 ```text
 OneID: reads canonical customer。公开中心仅接收 Payment 已验证的可信会话；管理详情仅读取既有 Customer 引用，不解析、创建、合并或暴露外部身份。
-Persistence: local transaction（现有注册和人工命令保持原 UoW/CAS/审计）；本次新增管理详情为只读查询。
-External Effects: not involved。本次不新增支付、分账、收款人准备或 Provider 调用；异常处理仍不得伪造到账。
+Persistence: local transaction（现有注册和人工命令保持原 UoW/CAS/审计）；本次新增管理详情为只读查询。Payment 的前向 schema migration 仅收紧并扩展 `payment_h5_oauth_states.return_path` 的本地可信回跳约束，以持久化严格的分销商品申请上下文。
+External Effects: not involved。本次不新增支付、分账、收款人准备或 Provider 调用；该 Payment schema migration 不触发 Provider write。异常处理仍不得伪造到账。
 ```
 
 ## 参考与前端复用
@@ -59,6 +59,10 @@ flowchart LR
 | `GET /api/admin/distribution/exceptions/{id}` | 异常金额、原因、状态、受控结算引用、可用人工操作和审计可见事实 |
 
 公开申请页还读取 `GET /api/v1/distribution/application-context?product_id=&product_type=`：严格验证正整数与 `standard_product|service_period`，通过稳定 Product Port 只返回已启用分销且可售商品的真实名称、购买链接和商品上下文。不存在、未启用或不可售统一为受控 404；读取不可用为 503。它不读取任何身份、佣金、收款人或 Provider 事实，也不产生外部效果。
+
+Payment H5 OAuth 的 `return_url` 只允许既有无查询公开商品路径、`/distribution`，或精确 `/distribution?product_id=<int64 正整数>&product_type=standard_product|service_period`。推广链接进入购买页时，只允许普通商品 `/p/<code>`、`/pay/<code>`，或周期商品 `/s/<code>`、`/s/<code>/pay` 加唯一 `promotion_context=dpc_<43>` 参数；不能附带其他参数。重复、乱序、未知、编码拼接、片段、开放跳转和溢出 ID 必须在服务与数据库边界拒绝。
+
+推广凭证以既有必填的 Survey DataKey 派生 HMAC，不另增运行时密钥或保存可恢复的 bearer token。凭证、operation receipt、审计和 outbox 在同一 Distribution PostgreSQL UoW 提交。相同客户、同一幂等键和同一商品快照回放同一 URL；商品快照漂移返回 409。DataKey 轮换后，已签发链接仍按数据库中已有 token digest 校验；使用轮换前幂等键重放会因无法复现原 token digest 而 fail closed，不能生成第二个凭证或事件。
 
 查询只读取 Distribution 已拥有的 `distribution_*` 表。按分销员的订单明细必须由 PostgreSQL 过滤和 cursor 分页，禁止前端跨页加载全局列表后筛选。不存在、无权限和读取失败分别返回既有受控错误；空态保留为空态。
 

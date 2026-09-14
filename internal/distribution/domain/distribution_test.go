@@ -85,3 +85,34 @@ func TestPendingCommissionCanBecomeDeadlineExceptionWithoutPretendingPayment(t *
 		t.Fatalf("pending exception=%+v err=%v", exception, err)
 	}
 }
+
+func TestPromotionCredentialSeparatesInsertAndPersistedValidity(t *testing.T) {
+	now := time.Date(2026, 9, 14, 8, 0, 0, 0, time.UTC)
+	credential := PromotionCredential{
+		DistributorID: 1,
+		ProductID:     2,
+		ProductType:   ProductTypeStandard,
+		Status:        CredentialActive,
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(time.Hour),
+	}
+	if !credential.ValidForInsert() || credential.Valid() {
+		t.Fatalf("new credential validity insert=%t persisted=%t", credential.ValidForInsert(), credential.Valid())
+	}
+	credential.ID = 3
+	if credential.ValidForInsert() || !credential.Valid() {
+		t.Fatalf("persisted credential validity insert=%t persisted=%t", credential.ValidForInsert(), credential.Valid())
+	}
+}
+
+func TestAttributionSeparatesInsertAndPersistedValidity(t *testing.T) {
+	now := time.Date(2026, 9, 14, 8, 0, 0, 0, time.UTC)
+	attribution := Attribution{OrderID: 2, OrderItemLine: 1, ProductCode: "p-1", ProductName: "Product 1", DistributorID: 3, PromotionCredentialID: 4, QualificationEvidenceRef: "order:1:item:1", QualificationState: QualificationEligible, PolicyVersion: 2, CommissionRateBasisPoints: 333, WaitDays: 7, AttributedAt: now}
+	if !attribution.ValidForInsert() || attribution.Valid() {
+		t.Fatalf("new attribution validity insert=%t persisted=%t", attribution.ValidForInsert(), attribution.Valid())
+	}
+	attribution.ID = 5
+	if attribution.ValidForInsert() || !attribution.Valid() {
+		t.Fatalf("persisted attribution validity insert=%t persisted=%t", attribution.ValidForInsert(), attribution.Valid())
+	}
+}

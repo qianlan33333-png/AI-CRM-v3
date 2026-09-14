@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
+	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -35,8 +35,12 @@ type promotionStore interface {
 	ProductPolicyIDWithin(context.Context, int64, distributiondomain.ProductType) (int64, error)
 	InsertPromotionCredentialWithin(context.Context, distributiondomain.PromotionCredential) (distributiondomain.PromotionCredential, error)
 	ReadPromotionCredentialByDigestWithin(context.Context, [32]byte, bool) (distributiondomain.PromotionCredential, error)
+	ReadPromotionCredentialWithin(context.Context, int64, bool) (distributiondomain.PromotionCredential, error)
 	ExpirePromotionCredentialWithin(context.Context, distributiondomain.PromotionCredential, time.Time) error
 	InsertAttributionWithin(context.Context, distributiondomain.Attribution, int64) (distributiondomain.Attribution, bool, error)
+	LockOperationReceiptWithin(context.Context, string, string, string) error
+	ReadOperationReceiptWithin(context.Context, string, string, string) (distributionstore.OperationReceipt, bool, error)
+	AppendOperationReceiptWithin(context.Context, string, string, string, [sha256.Size]byte, string, int64, time.Time) error
 	AppendAuditWithin(context.Context, string, string, int64, string, any, time.Time) error
 	AppendOutboxWithin(context.Context, string, string, int64, any, time.Time) error
 }
@@ -52,6 +56,7 @@ type PromotionService struct {
 	saleableProduct   productport.SidebarProductShareReader
 	lineage           identityport.LockedCanonicalLineageReader
 	promotionOrigin   string
+	tokens            promotionTokenIssuer
 	settlementEnabled bool
 	now               func() time.Time
 }
@@ -66,11 +71,15 @@ func (s *PromotionService) SetSettlementEnabled(enabled bool) {
 	}
 }
 
-func NewPromotionService(uow platformport.UnitOfWork, store promotionStore, qualification *QualificationService, products productport.ProductOptionReader, saleable productport.SidebarProductShareReader, lineage identityport.LockedCanonicalLineageReader, promotionOrigin string) (*PromotionService, error) {
+func NewPromotionService(uow platformport.UnitOfWork, store promotionStore, qualification *QualificationService, products productport.ProductOptionReader, saleable productport.SidebarProductShareReader, lineage identityport.LockedCanonicalLineageReader, promotionOrigin, tokenDataKey string) (*PromotionService, error) {
 	if uow == nil || store == nil || qualification == nil || products == nil || saleable == nil || lineage == nil || !validPromotionOrigin(promotionOrigin) {
 		return nil, distributionport.ErrUnavailable
 	}
-	return &PromotionService{uow: uow, store: store, qualification: qualification, products: products, saleableProduct: saleable, lineage: lineage, promotionOrigin: strings.TrimRight(promotionOrigin, "/"), now: time.Now}, nil
+	tokens, err := newPromotionTokenIssuer(tokenDataKey)
+	if err != nil {
+		return nil, distributionport.ErrUnavailable
+	}
+	return &PromotionService{uow: uow, store: store, qualification: qualification, products: products, saleableProduct: saleable, lineage: lineage, promotionOrigin: strings.TrimRight(promotionOrigin, "/"), tokens: tokens, now: time.Now}, nil
 }
 
 func (s *PromotionService) ListPromotionProducts(ctx context.Context, actor distributionport.TrustedSessionActor, cursor string, limit int32) (distributionport.PromotionPage, error) {
@@ -252,18 +261,28 @@ func (s *PromotionService) IssuePromotionLink(ctx context.Context, command distr
 	if s == nil || !s.settlementEnabled {
 		return distributionport.PromotionLink{}, distributionport.ErrUnavailable
 	}
-	if !command.Actor.Valid() || command.ProductID < 1 || !command.ProductType.Valid() {
+	if !command.Actor.Valid() || command.ProductID < 1 || !command.ProductType.Valid() || !validPromotionIdempotencyKey(command.IdempotencyKey) {
 		return distributionport.PromotionLink{}, distributionport.ErrConflict
 	}
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
+	actorScope := promotionActorScope(command.Actor)
+	payloadDigest := promotionCredentialPayloadDigest(command.ProductID, command.ProductType)
+	token, err := s.tokens.issue(actorScope, command.ProductID, command.ProductType, command.IdempotencyKey)
+	if err != nil {
 		return distributionport.PromotionLink{}, distributionport.ErrUnavailable
 	}
-	token := "dpc_" + base64.RawURLEncoding.EncodeToString(raw)
 	digest := sha256.Sum256([]byte(token))
 	now := s.now().UTC()
 	var expiresAt time.Time
-	err := s.uow.Within(ctx, func(tx context.Context) error {
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		if err := s.store.LockOperationReceiptWithin(tx, "credential", actorScope, command.IdempotencyKey); err != nil {
+			return err
+		}
+		if replay, found, replayErr := s.promotionCredentialReplay(tx, command, actorScope, payloadDigest, digest); replayErr != nil {
+			return replayErr
+		} else if found {
+			expiresAt = replay.ExpiresAt
+			return nil
+		}
 		distributor, readiness, err := s.store.ReadDistributorByCustomerWithin(tx, command.Actor.CustomerID, true)
 		if err != nil {
 			return err
@@ -288,6 +307,9 @@ func (s *PromotionService) IssuePromotionLink(ctx context.Context, command distr
 			return err
 		}
 		payload := map[string]any{"credential_id": credential.ID, "product_id": command.ProductID, "expires_at": expiresAt}
+		if err = s.store.AppendOperationReceiptWithin(tx, "credential", actorScope, command.IdempotencyKey, payloadDigest, "credential", credential.ID, now); err != nil {
+			return err
+		}
 		if err = s.store.AppendAuditWithin(tx, "distribution.credential_issued.v1", "credential", credential.ID, "distributor:"+decimal(distributor.ID), payload, now); err != nil {
 			return err
 		}
@@ -297,6 +319,40 @@ func (s *PromotionService) IssuePromotionLink(ctx context.Context, command distr
 		return distributionport.PromotionLink{}, err
 	}
 	return distributionport.PromotionLink{URL: s.promotionOrigin + "/d/" + token, ExpiresAt: expiresAt}, nil
+}
+
+func (s *PromotionService) promotionCredentialReplay(ctx context.Context, command distributionport.IssuePromotionCommand, actorScope string, payloadDigest, tokenDigest [sha256.Size]byte) (distributiondomain.PromotionCredential, bool, error) {
+	receipt, found, err := s.store.ReadOperationReceiptWithin(ctx, "credential", actorScope, command.IdempotencyKey)
+	if err != nil || !found {
+		return distributiondomain.PromotionCredential{}, found, err
+	}
+	if receipt.PayloadDigest != payloadDigest || receipt.ResultKind != "credential" {
+		return distributiondomain.PromotionCredential{}, true, distributionport.ErrConflict
+	}
+	credential, err := s.store.ReadPromotionCredentialWithin(ctx, receipt.ResultID, false)
+	if err != nil {
+		return distributiondomain.PromotionCredential{}, true, err
+	}
+	distributor, _, err := s.store.ReadDistributorWithin(ctx, credential.DistributorID, false)
+	if err != nil {
+		return distributiondomain.PromotionCredential{}, true, err
+	}
+	if distributor.CustomerID != command.Actor.CustomerID || credential.ProductID != command.ProductID || credential.ProductType != command.ProductType || credential.TokenDigest != tokenDigest {
+		return distributiondomain.PromotionCredential{}, true, distributionport.ErrConflict
+	}
+	return credential, true, nil
+}
+
+func promotionActorScope(actor distributionport.TrustedSessionActor) string {
+	return "customer:" + decimal(actor.CustomerID)
+}
+
+func promotionCredentialPayloadDigest(productID int64, productType distributiondomain.ProductType) [sha256.Size]byte {
+	return sha256.Sum256([]byte("distribution.credential.v1:product_id=" + decimal(productID) + "&product_type=" + string(productType)))
+}
+
+func validPromotionIdempotencyKey(value string) bool {
+	return value == strings.TrimSpace(value) && len(value) >= 16 && len(value) <= 200
 }
 
 // ResolvePromotionTarget is the public entry-point handoff. It validates only

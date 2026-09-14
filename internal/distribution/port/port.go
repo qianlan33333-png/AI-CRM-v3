@@ -127,9 +127,10 @@ type ApplicationTarget struct {
 }
 
 type IssuePromotionCommand struct {
-	Actor       TrustedSessionActor
-	ProductID   int64
-	ProductType domain.ProductType
+	Actor          TrustedSessionActor
+	ProductID      int64
+	ProductType    domain.ProductType
+	IdempotencyKey string
 }
 
 type PromotionLink struct {

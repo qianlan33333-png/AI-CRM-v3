@@ -16,7 +16,7 @@ const dom = new JSDOM('<!doctype html><main id="distribution-root"></main>', { u
     if (url.pathname === '/api/v1/distribution/products') return json({ items: [{ product_id: 7, product_type: 'standard_product', cover_url: '', purchase_url: '/p/growth-course', name: '增长课', price_minor: 19900, currency: 'CNY', commission_rate_basis_points: 333, estimated_commission_minor: 662, wait_days: 7, promotion_ready: true, promotion_block_reason: '' }], next_cursor: '' });
     if (url.pathname === '/api/v1/distribution/earnings') return json({ gross_paid_sales_minor: 19900, successful_refunds_minor: 0, initial_commission_minor: 662, commission_adjustments_minor: 0, unsettled_payable_minor: 662, paid_commission_minor: 0, recovered_minor: 0, currency: 'CNY' });
     if (url.pathname === '/api/v1/distribution/commissions') return json({ items: [{ commission_id: 'c1', order_reference: 'O-1', product_name: '增长课', initial_minor: 662, current_payable_minor: 662, paid_minor: 0, status: 'pending', hold_reason: '', cancel_reason: '', exception_reason: '', paid_confirmed_at: '2026-09-14T00:00:00Z', due_at: '2026-09-21T00:00:00Z', paid_at: '', created_at: '2026-09-14T00:00:00Z', currency: 'CNY' }], next_cursor: '' });
-    if (url.pathname === '/api/v1/distribution/products/7/promotion-credentials') return json({ promotion_url: 'https://crm.example/d/dpc_12345678901234567890', credential_expires_at: '2026-09-15T00:00:00Z' });
+    if (url.pathname === '/api/v1/distribution/products/7/promotion-credentials') return json({ url: 'https://crm.example/d/dpc_12345678901234567890', expires_at: '2026-09-15T00:00:00Z' }, 201);
     return json({ error: 'not_found' }, 404);
   };
 } });
@@ -26,7 +26,7 @@ assert.match(dom.window.document.body.textContent, /预计 ¥6\.62/, 'estimated 
 await waitFor(() => calls.some((call) => call.path.endsWith('/promotion-credentials')), 'promotion credential did not use the real API');
 await waitFor(() => dom.window.document.querySelector('dialog'), 'promotion dialog did not render');
 const credential = calls.find((call) => call.path.endsWith('/promotion-credentials'));
-assert.deepEqual(JSON.parse(credential.body), { product_type: 'standard_product' }, 'credential request must not carry distributor, amount, receiver, or policy');
+assert.equal(credential.body, '', 'credential request must not carry product type, distributor, amount, receiver, or policy');
 assert.match(credential.idempotencyKey || '', /^[0-9a-f-]{16,}$/i, 'credential request must carry a stable server replay key');
 assert.equal(dom.window.document.querySelector('a[href="/p/growth-course"]')?.textContent, '查看商品并购买', 'purchase entry must use server-provided URL');
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '关闭')?.click();
@@ -77,7 +77,7 @@ const application = new JSDOM('<!doctype html><main id="distribution-root"></mai
 application.window.eval(bundle);
 await waitFor(() => application.window.document.body.textContent.includes('申请推广：申请商品'), 'application link must display the server-confirmed product before login');
 const login = application.window.document.querySelector('a.distribution-button');
-assert.equal(login?.getAttribute('href'), '/auth/wechat/start?next=%2Fdistribution%3Fproduct_id%3D7%26product_type%3Dstandard_product', 'OAuth login must preserve only the canonical application context');
+assert.equal(login?.getAttribute('href'), '/api/h5/wechat-pay/oauth/start?return_url=%2Fdistribution%3Fproduct_id%3D7%26product_type%3Dstandard_product', 'OAuth login must preserve only the canonical application context');
 assert.ok(applicationCalls.some((call) => call.path === '/api/v1/distribution/application-context' && call.query === '?product_id=7&product_type=standard_product'), 'application context must be read from the controlled server API');
 application.window.close();
 console.log('distribution application context contract: PASS');

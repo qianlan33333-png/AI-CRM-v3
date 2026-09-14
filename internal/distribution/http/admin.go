@@ -161,7 +161,7 @@ func (h *AdminHandler) orderDetail(w http.ResponseWriter, r *http.Request, rawID
 		adminResultError(w, err)
 		return
 	}
-	response := map[string]any{"order": orderJSON(value.Order), "adjustments": value.Adjustments, "settlements": value.Settlements, "exceptions": exceptionJSONs(value.Exceptions)}
+	response := map[string]any{"order": orderJSON(value.Order), "adjustments": adjustmentJSONs(value.Adjustments), "settlements": settlementJSONs(value.Settlements), "exceptions": exceptionJSONs(value.Exceptions)}
 	if value.Commission != nil {
 		response["commission"] = commissionDetailJSON(*value.Commission)
 	}
@@ -203,6 +203,26 @@ func commissionJSON(x distributionport.CommissionListItem) map[string]any {
 }
 func commissionDetailJSON(x distributionport.AdminCommissionDetail) map[string]any {
 	return map[string]any{"commission_id": x.CommissionID, "order_reference": x.OrderReference, "product_name": x.ProductName, "original_item_paid_minor": x.OriginalItemPaidMinor, "successful_refund_minor": x.SuccessfulRefundMinor, "initial_minor": x.InitialMinor, "current_payable_minor": x.CurrentPayableMinor, "paid_minor": x.PaidMinor, "status": x.Status, "hold_reason": x.HoldReason, "cancel_reason": x.CancelReason, "exception_reason": x.ExceptionReason, "paid_confirmed_at": x.PaidConfirmedAt.UTC(), "due_at": x.DueAt.UTC(), "created_at": x.CreatedAt.UTC(), "currency": x.Currency}
+}
+func adjustmentJSON(x distributionport.AdminCommissionAdjustment) map[string]any {
+	return map[string]any{"id": x.ID, "kind": x.Kind, "delta_minor": x.DeltaMinor, "resulting_payable_minor": x.ResultingPayableMinor, "reason": x.Reason, "source_reference": x.SourceReference, "occurred_at": x.OccurredAt.UTC()}
+}
+func adjustmentJSONs(xs []distributionport.AdminCommissionAdjustment) []any {
+	result := make([]any, 0, len(xs))
+	for _, x := range xs {
+		result = append(result, adjustmentJSON(x))
+	}
+	return result
+}
+func settlementJSON(x distributionport.AdminSettlement) map[string]any {
+	return map[string]any{"id": x.ID, "reference": x.Reference, "amount_minor": x.AmountMinor, "currency": x.Currency, "state": x.State, "provider_deadline_at": x.ProviderDeadlineAt, "created_at": x.CreatedAt, "updated_at": x.UpdatedAt}
+}
+func settlementJSONs(xs []distributionport.AdminSettlement) []any {
+	result := make([]any, 0, len(xs))
+	for _, x := range xs {
+		result = append(result, settlementJSON(x))
+	}
+	return result
 }
 func exceptionJSON(x distributionport.AdminException) map[string]any {
 	return map[string]any{"exception_id": x.ExceptionID, "commission_id": x.CommissionID, "distributor_public_no": x.DistributorPublicNo, "order_reference": x.OrderReference, "kind": x.Kind, "status": x.Status, "unpaid_due_minor": x.UnpaidDueMinor, "already_paid_minor": x.AlreadyPaidMinor, "amount_minor": x.AmountMinor, "reason": x.Reason, "payment_instruction_reference": x.PaymentInstructionReference, "reconcile_target": x.ReconcileTarget, "created_at": x.CreatedAt.UTC(), "updated_at": x.UpdatedAt.UTC(), "version": x.Version, "can_reconcile": x.CanReconcile, "can_record_recovery": x.CanRecordRecovery, "can_record_merchant_liability": x.CanRecordMerchantLiability}

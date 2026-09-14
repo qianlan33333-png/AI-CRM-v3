@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
@@ -25,10 +26,19 @@ func TestPostgreSQLAdminDistributorOrderDetailPagination(t *testing.T) {
 	credential := seedAdminDetailCredential(t, ctx, pool, owner, now)
 	otherCredential := seedAdminDetailCredential(t, ctx, pool, other, now)
 
-	firstID := seedAdminDetailAttribution(t, ctx, pool, owner, credential, policy, 9101, "owner-first", now)
-	secondID := seedAdminDetailAttribution(t, ctx, pool, owner, credential, policy, 9102, "owner-second", now.Add(time.Minute))
-	thirdID := seedAdminDetailAttribution(t, ctx, pool, owner, credential, policy, 9103, "owner-third", now.Add(2*time.Minute))
+	ownerIDs := make([]int64, 0, 11)
+	for offset := int64(0); offset < 11; offset++ {
+		ownerIDs = append(ownerIDs, seedAdminDetailAttribution(t, ctx, pool, owner, credential, policy, 9101+offset, fmt.Sprintf("owner-%02d", offset+1), now.Add(time.Duration(offset)*time.Minute)))
+	}
 	_ = seedAdminDetailAttribution(t, ctx, pool, other, otherCredential, policy, 9199, "other-distributor", now.Add(3*time.Minute))
+	// A partial buyer refund is an append-only adjustment against a commission;
+	// the following zero-commission order is still a real attributed sale fact.
+	// This makes the staff summary prove both cases without filtering either out.
+	updateAdminDetailCommission(t, ctx, pool, ownerIDs[9], 500, 100, 50, "pending")
+	if _, err := pool.Exec(ctx, `INSERT INTO distribution_commission_adjustments(commission_id,kind,delta_minor,resulting_payable_minor,reason,source_reference,occurred_at) SELECT id,'buyer_refund',-50,50,'buyer_refund','refund:9110',$2 FROM distribution_commissions WHERE attribution_id=$1`, ownerIDs[9], now.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	updateAdminDetailCommission(t, ctx, pool, ownerIDs[10], 0, 0, 0, "zero_commission")
 
 	wrapped, err := platformpostgres.Wrap(pool, time.Second)
 	if err != nil {
@@ -46,8 +56,9 @@ func TestPostgreSQLAdminDistributorOrderDetailPagination(t *testing.T) {
 
 	var first, secondIDs []int64
 	var cursor string
+	var earnings distributionport.Earnings
 	err = uow.Within(ctx, func(tx context.Context) error {
-		page, readErr := repository.ListAdminOrdersByDistributor(tx, owner, "", 2)
+		page, readErr := repository.ListAdminOrdersByDistributor(tx, owner, "", 10)
 		if readErr != nil {
 			return readErr
 		}
@@ -58,7 +69,7 @@ func TestPostgreSQLAdminDistributorOrderDetailPagination(t *testing.T) {
 			}
 		}
 		cursor = page.NextCursor
-		page, readErr = repository.ListAdminOrdersByDistributor(tx, owner, cursor, 2)
+		page, readErr = repository.ListAdminOrdersByDistributor(tx, owner, cursor, 10)
 		if readErr != nil {
 			return readErr
 		}
@@ -71,16 +82,36 @@ func TestPostgreSQLAdminDistributorOrderDetailPagination(t *testing.T) {
 		if page.NextCursor != "" {
 			return fmt.Errorf("unexpected terminal cursor %q", page.NextCursor)
 		}
+		detail, readErr := repository.ReadAdminDistributorDetail(tx, owner)
+		if readErr != nil {
+			return readErr
+		}
+		earnings = detail.Earnings
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 2 || first[0] != firstID || first[1] != secondID || cursor != fmt.Sprint(secondID) {
+	if len(first) != 10 || cursor != fmt.Sprint(ownerIDs[9]) {
 		t.Fatalf("first detail page ids=%v cursor=%q", first, cursor)
 	}
-	if len(secondIDs) != 1 || secondIDs[0] != thirdID {
+	for index, attributionID := range first {
+		if attributionID != ownerIDs[index] {
+			t.Fatalf("first detail page ids=%v want=%v", first, ownerIDs[:10])
+		}
+	}
+	if len(secondIDs) != 1 || secondIDs[0] != ownerIDs[10] {
 		t.Fatalf("second detail page ids=%v", secondIDs)
+	}
+	if earnings.GrossPaidSalesMinor != 11000 || earnings.SuccessfulRefundsMinor != 500 || earnings.InitialCommissionMinor != 1000 || earnings.CommissionAdjustmentsMinor != -50 || earnings.UnsettledPayableMinor != 950 || earnings.PaidCommissionMinor != 0 || earnings.RecoveredMinor != 0 {
+		t.Fatalf("earnings omitted zero/refund facts: %+v", earnings)
+	}
+}
+
+func updateAdminDetailCommission(t *testing.T, ctx context.Context, pool *pgxpool.Pool, attributionID, successfulRefund, initial, payable int64, status string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `UPDATE distribution_commissions SET successful_refund_minor=$2,initial_minor=$3,current_payable_minor=$4,status=$5 WHERE attribution_id=$1`, attributionID, successfulRefund, initial, payable, status); err != nil {
+		t.Fatal(err)
 	}
 }
 

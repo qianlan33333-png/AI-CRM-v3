@@ -32,6 +32,12 @@ var ErrIdentityConflict = errors.New("payment H5 OAuth identities require review
 var returnPathPattern = regexp.MustCompile(`^/(?:p/[^/?#]+|pay/[^/?#]+|s/[^/?#]+(?:/pay)?|c/[a-z][a-z0-9-]{5,119})$`)
 var distributionApplicationReturnPathPattern = regexp.MustCompile(`^/distribution\?product_id=([1-9][0-9]*)&product_type=(standard_product|service_period)$`)
 
+// A promotion credential is an opaque, fixed-size Distribution capability.
+// It may follow the public standard-product or service-period route, but no
+// other query key is allowed on an OAuth return. Keeping this separate from
+// returnPathPattern preserves the existing query-free commerce return paths.
+var promotionReturnPathPattern = regexp.MustCompile(`^/(?:p/([^/?#]+)|pay/([^/?#]+)|s/([^/?#]+)(?:/pay)?)\?promotion_context=(dpc_[A-Za-z0-9_-]{43})$`)
+
 type Provider interface {
 	Enabled() bool
 	AuthorizationURL(string) string
@@ -154,6 +160,20 @@ func validReturnPath(value string) bool {
 	if matches := distributionApplicationReturnPathPattern.FindStringSubmatch(value); matches != nil {
 		productID, err := strconv.ParseInt(matches[1], 10, 64)
 		return err == nil && productID > 0
+	}
+	// A promotion must remain in the exact page chain that Product accepts.
+	// Reject all percent encoding here, including harmless-looking escaped
+	// characters, so an alternate raw URL cannot be accepted and then decoded
+	// into the same public product route by a later layer.
+	if matches := promotionReturnPathPattern.FindStringSubmatch(value); matches != nil {
+		code := matches[1]
+		if code == "" {
+			code = matches[2]
+		}
+		if code == "" {
+			code = matches[3]
+		}
+		return !strings.Contains(code, "%") && safe(code, 200) && !strings.ContainsAny(code, "/\\?#")
 	}
 	if !returnPathPattern.MatchString(value) {
 		return false

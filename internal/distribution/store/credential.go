@@ -41,7 +41,7 @@ func (r *Repository) InsertPromotionCredentialWithin(ctx context.Context, creden
 	if err != nil {
 		return distributiondomain.PromotionCredential{}, err
 	}
-	if !credential.Valid() || credential.ID != 0 || credential.Status != distributiondomain.CredentialActive || credential.RevokedAt != nil {
+	if !credential.ValidForInsert() {
 		return distributiondomain.PromotionCredential{}, ErrInvalid
 	}
 	return scanPromotionCredential(tx.QueryRow(ctx, `INSERT INTO distribution_promotion_credentials(distributor_id,product_id,product_type,token_digest,status,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING `+credentialColumns, credential.DistributorID, credential.ProductID, string(credential.ProductType), credential.TokenDigest[:], string(credential.Status), credential.CreatedAt.UTC(), credential.ExpiresAt.UTC()))
@@ -57,6 +57,21 @@ func (r *Repository) ReadPromotionCredentialByDigestWithin(ctx context.Context, 
 		query += " FOR UPDATE"
 	}
 	return scanPromotionCredential(tx.QueryRow(ctx, query, digest[:]))
+}
+
+func (r *Repository) ReadPromotionCredentialWithin(ctx context.Context, credentialID int64, lock bool) (distributiondomain.PromotionCredential, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return distributiondomain.PromotionCredential{}, err
+	}
+	if credentialID < 1 {
+		return distributiondomain.PromotionCredential{}, ErrInvalid
+	}
+	query := `SELECT ` + credentialColumns + ` FROM distribution_promotion_credentials WHERE id=$1`
+	if lock {
+		query += " FOR UPDATE"
+	}
+	return scanPromotionCredential(tx.QueryRow(ctx, query, credentialID))
 }
 
 func (r *Repository) ExpirePromotionCredentialWithin(ctx context.Context, credential distributiondomain.PromotionCredential, at time.Time) error {

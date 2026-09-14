@@ -109,7 +109,16 @@ func (r *Repository) InsertDistributorWithin(ctx context.Context, customerID int
 	if customerID < 1 || publicNo == "" || agreementVersion == "" || registeredAt.IsZero() {
 		return distributiondomain.Distributor{}, distributionport.ReceiverReadiness{}, ErrInvalid
 	}
-	return scanDistributor(tx.QueryRow(ctx, `INSERT INTO distribution_distributors(customer_id,public_no,agreement_version,enabled,registered_at,version,created_at,updated_at) VALUES($1,$2,$3,TRUE,$4,1,$4,$4) RETURNING id,customer_id,public_no,agreement_version,enabled,receiver_reference,receiver_app_id,receiver_ready,receiver_reason,receiver_checked_at,registered_at,version`, customerID, publicNo, agreementVersion, registeredAt.UTC()))
+	// A conflicting distributor can be the same customer registering in a
+	// concurrent request, or the (rare) generated public-number collision. Do
+	// not let either expected conflict abort the surrounding Unit of Work: the
+	// registration application service must be able to read the winner's
+	// receipt/customer record and replay it in that same transaction.
+	distributor, readiness, err := scanDistributor(tx.QueryRow(ctx, `INSERT INTO distribution_distributors(customer_id,public_no,agreement_version,enabled,registered_at,version,created_at,updated_at) VALUES($1,$2,$3,TRUE,$4,1,$4,$4) ON CONFLICT DO NOTHING RETURNING id,customer_id,public_no,agreement_version,enabled,receiver_reference,receiver_app_id,receiver_ready,receiver_reason,receiver_checked_at,registered_at,version`, customerID, publicNo, agreementVersion, registeredAt.UTC()))
+	if errors.Is(err, distributionport.ErrNotFound) {
+		return distributiondomain.Distributor{}, distributionport.ReceiverReadiness{}, distributionport.ErrConflict
+	}
+	return distributor, readiness, err
 }
 
 func (r *Repository) UpdateReceiverReadinessWithin(ctx context.Context, distributorID, expectedVersion int64, readiness distributionport.ReceiverReadiness, at time.Time) (distributiondomain.Distributor, distributionport.ReceiverReadiness, error) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,13 +155,15 @@ type h5OAuthStub struct {
 	completeError error
 	enabled       bool
 	starts        int
+	returnPath    string
 	issued        paymentsession.Issued
 }
 
 func (stub *h5OAuthStub) Enabled() bool { return stub.enabled }
 func (stub *h5OAuthStub) Start(_ context.Context, returnPath string) (string, error) {
 	stub.starts++
-	if returnPath != "/pay/course-7" {
+	stub.returnPath = returnPath
+	if returnPath != "/pay/course-7" && returnPath != "/distribution?product_id=7&product_type=standard_product" && returnPath != "/s/term-31/pay?promotion_context=dpc_"+strings.Repeat("A", 43) {
 		return "", errors.New("invalid")
 	}
 	return "https://open.weixin.qq.com/oauth", nil
@@ -557,6 +560,21 @@ func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "https://open.weixin.qq.com/oauth" {
 		t.Fatalf("code=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fdistribution%3Fproduct_id%3D7%26product_type%3Dstandard_product", nil)
+	request.Header.Set("User-Agent", "MicroMessenger")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusFound || response.Header().Get("Location") != "https://open.weixin.qq.com/oauth" || enabled.returnPath != "/distribution?product_id=7&product_type=standard_product" {
+		t.Fatalf("distribution oauth=%d location=%q return=%q", response.Code, response.Header().Get("Location"), enabled.returnPath)
+	}
+	promotion := "dpc_" + strings.Repeat("A", 43)
+	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url="+url.QueryEscape("/s/term-31/pay?promotion_context="+promotion), nil)
+	request.Header.Set("User-Agent", "MicroMessenger")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusFound || response.Header().Get("Location") != "https://open.weixin.qq.com/oauth" || enabled.returnPath != "/s/term-31/pay?promotion_context="+promotion {
+		t.Fatalf("promotion oauth=%d location=%q return=%q", response.Code, response.Header().Get("Location"), enabled.returnPath)
 	}
 }
 

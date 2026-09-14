@@ -1310,7 +1310,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if distributionErr != nil {
 			return fail(distributionErr)
 		}
-		promotion, distributionErr := distributionapp.NewPromotionService(uow, distributionRepository, qualificationService, productCatalog, productTargets, queries, cfg.PublicOrigin)
+		promotion, distributionErr := distributionapp.NewPromotionService(uow, distributionRepository, qualificationService, productCatalog, productTargets, queries, cfg.PublicOrigin, cfg.Survey.DataKey)
 		if distributionErr != nil {
 			return fail(distributionErr)
 		}

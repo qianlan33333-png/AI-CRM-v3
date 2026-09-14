@@ -51,7 +51,8 @@ func (adminHTTPDetailReader) ListAdminOrdersByDistributor(context.Context, int64
 }
 func (adminHTTPDetailReader) ReadAdminOrderDetail(context.Context, int64) (distributionport.AdminOrderDetail, error) {
 	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-	return distributionport.AdminOrderDetail{Order: distributionport.AdminOrder{AttributionID: 11, OrderReference: "order-8", ProductName: "增长课", DistributorPublicNo: "D-9", QualificationState: "eligible", QualificationEvidenceReference: "order:8:item:1", PolicyVersion: 2, RateBasisPoints: 3000, WaitDays: 7, PaidMinor: 19900, Currency: "CNY"}, Commission: &distributionport.AdminCommissionDetail{CommissionID: "22", OriginalItemPaidMinor: 19900, SuccessfulRefundMinor: 9900, InitialMinor: 5970, CurrentPayableMinor: 3000, PaidMinor: 0, Status: "held", PaidConfirmedAt: now, DueAt: now.AddDate(0, 0, 7), Currency: "CNY"}, Adjustments: []distributionport.AdminCommissionAdjustment{{ID: 31, Kind: "buyer_refund", DeltaMinor: -2970, ResultingPayableMinor: 3000, Reason: "buyer_refund", SourceReference: "refund:8", OccurredAt: now}}, Settlements: []distributionport.AdminSettlement{{ID: 41, Reference: "settlement-41", AmountMinor: 3000, Currency: "CNY", State: "outcome_unknown"}}}, nil
+	deadline := now.AddDate(0, 0, 7)
+	return distributionport.AdminOrderDetail{Order: distributionport.AdminOrder{AttributionID: 11, OrderReference: "order-8", ProductName: "增长课", DistributorPublicNo: "D-9", QualificationState: "eligible", QualificationEvidenceReference: "order:8:item:1", PolicyVersion: 2, RateBasisPoints: 3000, WaitDays: 7, PaidMinor: 19900, Currency: "CNY"}, Commission: &distributionport.AdminCommissionDetail{CommissionID: "22", OriginalItemPaidMinor: 19900, SuccessfulRefundMinor: 9900, InitialMinor: 5970, CurrentPayableMinor: 3000, PaidMinor: 0, Status: "held", PaidConfirmedAt: now, DueAt: deadline, Currency: "CNY"}, Adjustments: []distributionport.AdminCommissionAdjustment{{ID: 31, Kind: "buyer_refund", DeltaMinor: -2970, ResultingPayableMinor: 3000, Reason: "buyer_refund", SourceReference: "refund:8", OccurredAt: now}}, Settlements: []distributionport.AdminSettlement{{ID: 41, Reference: "settlement-41", AmountMinor: 3000, Currency: "CNY", State: "outcome_unknown", ProviderDeadlineAt: &deadline, CreatedAt: &now, UpdatedAt: &deadline}}}, nil
 }
 func (adminHTTPDetailReader) ReadAdminExceptionDetail(context.Context, int64) (distributionport.AdminException, error) {
 	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
@@ -168,7 +169,7 @@ func TestAdminHandlerDetailReadsRemainServerFilteredAndExposeFrozenFacts(t *test
 	for path, want := range map[string]string{
 		"/api/admin/distribution/distributors/9":                 `"unsettled_payable_minor":1200`,
 		"/api/admin/distribution/distributors/9/orders?limit=10": `"attribution_id":11`,
-		"/api/admin/distribution/orders/11":                      `"successful_refund_minor":9900`,
+		"/api/admin/distribution/orders/11":                      `"delta_minor":-2970`,
 		"/api/admin/distribution/exceptions/51":                  `"evidence_reference":"receipt:51"`,
 	} {
 		response := httptest.NewRecorder()
@@ -178,6 +179,17 @@ func TestAdminHandlerDetailReadsRemainServerFilteredAndExposeFrozenFacts(t *test
 		}
 	}
 	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/distribution/orders/11", nil))
+	body := response.Body.String()
+	for _, want := range []string{`"resulting_payable_minor":3000`, `"provider_deadline_at":"2026-09-21T10:00:00Z"`, `"created_at":"2026-09-14T10:00:00Z"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("detail DTO omitted %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"DeltaMinor"`) || strings.Contains(body, `"CreatedAt"`) {
+		t.Fatalf("detail DTO exposed Go field names: %s", body)
+	}
+	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/distribution/orders/11?cursor=1", nil))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("detail must reject unowned cursor query, got %d", response.Code)
