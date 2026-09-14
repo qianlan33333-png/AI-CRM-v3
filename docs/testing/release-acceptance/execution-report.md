@@ -17,9 +17,9 @@ CI 的成功是技术层证据，不能替代白名单业务验收、Provider re
 
 ## 隔离入口与本地 preflight
 
-隔离入口的当前代码提交为 `1790494d8498506bac9fd473a161683ca8a9cec2`。入口只允许本地 `aicrm_test_*` 数据库，拒绝 `host`、`hostaddr`、`service`、`dbname` 等 URL 覆盖，构造最小子进程环境并强制 Provider disabled。其单元测试覆盖 URL 绕过、环境泄漏、测试源变更、脏 harness、异常 receipt、超时子进程和异常后的状态捕获。当前入口对 execute 默认限时 1800 秒、preflight 默认限时 120 秒；超时会终止整个子进程组、保留已捕获的脱敏日志，并写入 `timeout`/exit `124` receipt。SIGTERM 或交互中断会写入 `interrupted` receipt；不可捕获的 SIGKILL 可能留下 `running` receipt，不能作为通过证据。Git porcelain 仍严格阻止 tracked、staged 和 untracked 源码变化；Git 已忽略的构建缓存不在该检查范围。
+隔离入口在本次最终 preflight 中使用的 harness 提交为 `899233a2fb52008b0885fc0cbec8e0debc7baf4b`。入口只允许本地 `aicrm_test_*` 数据库，拒绝 `host`、`hostaddr`、`service`、`dbname` 等 URL 覆盖，构造最小子进程环境并强制 Provider disabled。其单元测试覆盖 URL 绕过、环境泄漏、测试源变更、脏 harness、异常 receipt、超时子进程和异常后的状态捕获。当前入口对 execute 默认限时 1800 秒、preflight 默认限时 120 秒；超时会终止整个子进程组、保留已捕获的脱敏日志，并写入 `timeout`/exit `124` receipt。SIGTERM 或交互中断会写入 `interrupted` receipt；不可捕获的 SIGKILL 可能留下 `running` receipt，不能作为通过证据。Git porcelain 仍严格阻止 tracked、staged 和 untracked 源码变化；Git 已忽略的构建缓存不在该检查范围。
 
-coverage inventory 提交后的干净 harness 为 `aa03ab97cfe0d5cf073df8d4e27628c3311b0a47`。它对候选运行 preflight 成功，原始 receipt 为 `/private/tmp/aicrm-release-reports/dcfc022/preflight_aa03ab97/environment-receipt.json`：`run_id=preflight_aa03ab97`、exit code `0`、候选和 harness 均在执行后干净，`integrity_violations=[]`。此前 `fbacac7e` receipt 保留为历史记录，不再作为最终本地 preflight 证据。
+最终本地 preflight 使用独立、干净的 detached harness `899233a2`，对候选运行成功。原始 receipt 为 `/private/tmp/aicrm-release-reports/dcfc022/preflight_899233a2/environment-receipt.json`，配套脱敏 stdout/stderr 位于同目录：`run_id=preflight_899233a2`、UTC `2026-09-14T02:17:01.263722Z` 至 `2026-09-14T02:17:14.922881Z`、执行模式、timeout `180` 秒、exit code `0`、候选 `dcfc022...` 与 harness `899233a2...` 均在执行后干净、`integrity_violations=[]`。它运行了候选既有 preflight 的 74 项本地检查；该成功是隔离技术证据，仍不构成业务或 Provider 验收。此前 `aa03ab97` 与 `fbacac7e` receipt 保留为历史记录，不再作为最终本地 preflight 证据。
 
 ## 隔离迁移、幂等与恢复演练
 
