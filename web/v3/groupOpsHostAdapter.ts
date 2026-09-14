@@ -1,6 +1,8 @@
 // V3 Host adapter for the byte-derived Group Ops presentation. It owns only
 // authenticated transport and DTO projection; plan, node and directory facts
 // remain in internal/groupops and the existing WeCom read adapter.
+import { openGroupPicker, type GroupPickerRecord } from './shared/ui/groupPickerAdapter';
+
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";
 const revisions = new Map<number, number>();
@@ -648,6 +650,112 @@ function installSaveFailureFeedback(): void {
     return nodes;
   }) as typeof app.querySelectorAll;
 }
+function groupRecord(asset: Json, directoryItem?: Json): GroupPickerRecord {
+  const reference = String(asset.asset_reference || asset.chat_reference || "").trim();
+  const displayName = String(directoryItem?.display_name || asset.display_name || "群名称待同步").trim() || "群名称待同步";
+  return {
+    chat_reference: reference,
+    display_name: displayName,
+    owner_staff_id: Number.isSafeInteger(Number(directoryItem?.owner_staff_id)) ? Number(directoryItem?.owner_staff_id) : undefined,
+    member_count: Number.isFinite(Number(directoryItem?.member_count)) ? Number(directoryItem?.member_count) : undefined,
+    external_member_count: directoryItem?.external_member_count === null ? null : Number.isFinite(Number(directoryItem?.external_member_count)) ? Number(directoryItem?.external_member_count) : undefined,
+    unavailable_reason: directoryItem ? undefined : "群目录中未找到，仍保留已绑定记录。",
+  };
+}
+
+async function selectedGroupRecords(planID: number): Promise<{ records: GroupPickerRecord[]; ownerStaffID: number | undefined; archived: boolean }> {
+  const [value, directoryItems] = await Promise.all([detail(planID), directory()]);
+  const current = value.plan || value;
+  const ownerStaffID = Number(current?.owner?.staff_id);
+  const owner = Number.isSafeInteger(ownerStaffID) && ownerStaffID > 0 ? ownerStaffID : undefined;
+  const archived = current?.status === "archived";
+  const byReference = new Map(directoryItems.map((entry) => [String(entry.chat_reference || ""), entry]));
+  return {
+    ownerStaffID: owner,
+    archived,
+    records: (value.group_assets || []).flatMap((asset: Json) => {
+      const row = groupRecord(asset, byReference.get(String(asset.asset_reference || "")));
+      return row.chat_reference ? [row] : [];
+    }),
+  };
+}
+
+function updateGroupRevision(planID: number, value: Json): void {
+  const candidate = value.plan && typeof value.plan === "object" ? value.plan : value;
+  const next = Number(candidate.revision);
+  if (Number.isSafeInteger(next) && next >= 0) revisions.set(planID, next);
+}
+
+async function saveGroupSelection(planID: number, added: GroupPickerRecord[], removed: GroupPickerRecord[]): Promise<void> {
+  // The GroupOps picker is a presentation/session component. These are the
+  // existing Owner commands, kept sequential because each command consumes
+  // the plan CAS revision. A failure leaves the dialog open for explicit retry.
+  for (const record of added) {
+    const value = await nativeRequest(`${base}/plans/${planID}/groups`, {
+      method: "POST",
+      body: { expected_revision: await revision(planID), asset_reference: record.chat_reference },
+    });
+    updateGroupRevision(planID, value);
+  }
+  for (const record of removed) {
+    const value = await nativeRequest(`${base}/plans/${planID}/groups/${encodeURIComponent(record.chat_reference)}`, {
+      method: "DELETE",
+      body: { expected_revision: await revision(planID) },
+    });
+    updateGroupRevision(planID, value);
+  }
+  // Read the Owner projection once after all mutations. The next opening is
+  // therefore based on persisted group assets, never local chat-id aliases.
+  await detail(planID);
+}
+
+function installGroupPickerBridge(): void {
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>("#group-ops-app [data-action='open-group-picker']") : null;
+    if (!target) return;
+    const app = document.getElementById("group-ops-app");
+    const planID = Number(app?.dataset.planId);
+    if (!Number.isSafeInteger(planID) || planID < 1) return;
+    // Capture before the frozen donor's click listener. The standard picker
+    // remains untouched; this V3 overlay has no legacy raw chat_id channel.
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void (async () => {
+      try {
+        const initial = await selectedGroupRecords(planID);
+        openGroupPicker({
+          source: `groupops-plan-${planID}`,
+          scope: "group_ops.plan_group_assets",
+          selectedRecords: initial.records,
+          readonly: initial.archived,
+          loadPage: async ({ query, cursor, signal }) => {
+            const offset = Number(cursor || "0");
+            if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("群目录分页标记无效，请重新打开选择器。");
+            const page = await nativeRequest(`${base}/groups?limit=50&offset=${offset}`);
+            if (signal.aborted) throw new DOMException("群目录读取已替换", "AbortError");
+            const items = Array.isArray(page.items) ? page.items : [];
+            const needle = query.trim().toLocaleLowerCase();
+            return {
+              items: items.flatMap((entry: Json) => {
+                const record = groupRecord({ chat_reference: entry.chat_reference }, entry);
+                if (!record.chat_reference || (needle && !`${record.display_name} ${record.chat_reference}`.toLocaleLowerCase().includes(needle))) return [];
+                if (initial.ownerStaffID && record.owner_staff_id !== initial.ownerStaffID) record.unavailable_reason = "当前负责人不可管理此群。";
+                return [record];
+              }),
+              nextCursor: page.has_more === true && items.length ? String(offset + items.length) : undefined,
+            };
+          },
+          onCommit: ({ added, removed }) => saveGroupSelection(planID, added, removed),
+        });
+      } catch (error) {
+        const notice = document.querySelector<HTMLElement>("#group-ops-app .group-ops__notice");
+        if (notice) { notice.hidden = false; notice.textContent = `群聊选择器无法打开：${errorMessage(error, "请重试")}`; }
+      }
+    })();
+  }, true);
+}
+installGroupPickerBridge();
+
 installSaveFailureFeedback();
 // @ts-expect-error The standard donor script is intentionally JavaScript.
 void import("./groupOpsStandard.js");

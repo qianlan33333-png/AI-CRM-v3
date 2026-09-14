@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+import { JSDOM } from 'jsdom';
+
+const dom = new JSDOM('<!doctype html><button id="trigger">选择群</button>', { url: 'https://test.invalid' });
+Object.assign(globalThis, { window: dom.window, document: dom.window.document, Element: dom.window.Element, HTMLElement: dom.window.HTMLElement, KeyboardEvent: dom.window.KeyboardEvent, Event: dom.window.Event, DOMException: dom.window.DOMException, AbortController: dom.window.AbortController });
+const bundle = await build({ stdin: { contents: "export { openGroupPicker } from './web/v3/shared/ui/groupPickerAdapter';", resolveDir: process.cwd(), sourcefile: 'group-picker-test.ts' }, bundle: true, format: 'esm', platform: 'node', write: false, target: 'es2020' });
+const { openGroupPicker } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+const calls = [];
+let committed; let cancelled = 0;
+const trigger = document.querySelector('#trigger'); trigger.focus();
+openGroupPicker({ source: 'plan-41', scope: 'group_ops.plan_group_assets', selectedRecords: [{ chat_reference: 'bound-missing', display_name: '历史绑定', unavailable_reason: '群目录中未找到，仍保留已绑定记录。' }], loadPage: async ({ query, cursor, signal }) => { calls.push({ query, cursor, aborted: signal.aborted }); if (query === '故障') throw new Error('群目录暂不可用'); if (cursor === 'next') return { items: [{ chat_reference: 'group-2', display_name: '第二群' }] }; return { items: [{ chat_reference: 'group-1', display_name: '第一群' }, { chat_reference: 'forbidden', display_name: '不可选群', unavailable_reason: '当前负责人不可管理此群。' }], nextCursor: 'next' }; }, onCommit: value => { committed = value; }, onCancel: () => { cancelled += 1; } });
+await flush();
+const mask = document.querySelector('[data-v3-selection-session="group"]');
+assert.ok(mask); assert.equal(mask.dataset.selectionSource, 'plan-41'); assert.equal(mask.dataset.selectionScope, 'group_ops.plan_group_assets');
+const search = mask.querySelector('[data-v3-picker-search-input]');
+assert.equal(search.matches('[data-group-picker-search]'), false, 'V3 search cannot be captured by frozen group picker');
+const beforeIME = calls.length; search.value = '中文候选'; search.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true })); search.dispatchEvent(new Event('input', { bubbles: true })); search.dispatchEvent(new dom.window.CompositionEvent('compositionend', { bubbles: true })); const candidate = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }); Object.defineProperty(candidate, 'keyCode', { value: 229 }); search.dispatchEvent(candidate); await flush(); assert.equal(calls.length, beforeIME); assert.equal(candidate.defaultPrevented, false);
+search.value = '第一'; search.dispatchEvent(new Event('input', { bubbles: true })); assert.equal(calls.length, beforeIME); search.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })); await flush(); assert.deepEqual(calls.at(-1), { query: '第一', cursor: undefined, aborted: false });
+assert.match(mask.textContent, /群目录中未找到/); assert.match(mask.textContent, /当前负责人不可管理/);
+mask.querySelector('[data-v3-group-key$="group-1"]').click(); mask.querySelector('[data-v3-group-more]').click(); await flush(); assert.equal(calls.at(-1).cursor, 'next'); mask.querySelector('[data-v3-group-key$="group-2"]').click(); mask.querySelector('[data-v3-group-remove]').click();
+search.value = '故障'; search.dispatchEvent(new Event('input', { bubbles: true })); search.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })); await flush(); assert.match(mask.textContent, /群目录暂不可用/); assert.match(mask.textContent, /第二群/, 'failure keeps the usable selection page');
+mask.querySelector('[data-v3-group-confirm]').click(); await flush(); assert.deepEqual(committed.added.map(x => x.chat_reference), ['group-1', 'group-2']); assert.deepEqual(committed.removed.map(x => x.chat_reference), ['bound-missing']); assert.equal(document.querySelector('[data-v3-selection-session="group"]'), null); assert.equal(document.activeElement, trigger);
+openGroupPicker({ source: 'plan-41', scope: 'group_ops.plan_group_assets', selectedRecords: [], loadPage: async () => ({ items: [{ chat_reference: 'group-1', display_name: '第一群' }] }), onCommit: () => { throw new Error('不应提交'); }, onCancel: () => { cancelled += 1; } }); await flush(); const second = document.querySelector('[data-v3-selection-session="group"]'); second.querySelector('[data-v3-group-key]').click(); second.querySelector('[data-v3-group-cancel]').click(); assert.equal(cancelled, 1, 'cancel does not commit'); assert.equal(document.querySelector('[data-v3-selection-session="group"]'), null);
+dom.window.close(); console.log('group picker adapter: scoped records, IME, paging, failure retention, commit, cancel PASS');
