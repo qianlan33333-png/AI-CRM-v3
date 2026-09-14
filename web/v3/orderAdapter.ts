@@ -6,6 +6,7 @@
 import { AdminController } from '../src/admin/controller';
 // @ts-ignore Frozen transport reused only for same-origin CSRF/session headers.
 import { apiRequestOptions } from '../src/api/transport';
+import { api } from '../src/shared/api/client';
 import { commerceProviderLabel, commerceStatusLabel } from './commercePresentation';
 import { formatShanghaiDateTime } from './adminDateTime';
 import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionReasonLabel, distributionSettlementStatusLabel } from './distributionPresentation';
@@ -21,10 +22,17 @@ type RefundIntent = { idempotencyKey: string; payloadDigest: string; state: Refu
 type DurableRefundIntent = { provider: RefundScope['provider']; order_no: string; idempotency_key: string; payload_digest: string; state: RefundIntentState; actor_binding: string; receipt_id?: number; receipt_refund_no?: string };
 type RefundRecovery = { actorBinding: string; receipt: RefundReceipt | null };
 type DetailContext = { order?: DetailRecord; items?: unknown[]; refunds?: unknown[]; effects?: unknown[]; refundsUnavailable?: boolean; orderRefreshUnavailable?: boolean; effectsUnavailable?: boolean; invalidLocator?: boolean };
-type OrderListResponse = { tokens: string[] };
+type OrderLoadCapture = { claimed: boolean; records?: DetailRecord[] };
 
 const orderPrototype = AdminController.prototype as unknown as { renderVals(this: OrderController): Record<string, any> };
 const donorRenderOrders = orderPrototype.renderVals;
+const orderCorrelation = Symbol('aicrm.order-list-correlation');
+type CorrelatedOrderRow = { [orderCorrelation]?: DetailRecord };
+
+function correlatedOrderRecord(value: unknown): DetailRecord | undefined {
+  return value !== null && typeof value === 'object' ? (value as CorrelatedOrderRow)[orderCorrelation] : undefined;
+}
+
 orderPrototype.renderVals = function () {
   if (this.page !== 'orders' || this.api.mode !== 'http') return donorRenderOrders.call(this);
   const filters = this.state.orderFilters;
@@ -34,18 +42,7 @@ orderPrototype.renderVals = function () {
   try {
     const values = donorRenderOrders.call(this);
     const rows = values.rows?.orders;
-    if (Array.isArray(rows)) {
-      activateOrderListForRenderedRows(rows);
-      // Preserve the opaque token only in the controller's private DTO so a
-      // later frozen re-render can select the same response. The template
-      // receives a clone with the ordinary provider/channel label, ensuring
-      // the marker never reaches DOM text, clipboard, or accessibility APIs.
-      values.rows = { ...values.rows, orders: rows.map((row) => {
-        const item = asRecord(row);
-        if (!item || typeof item.pay !== 'string' || !item.pay.includes(orderRendererTokenPrefix)) return row;
-        return { ...item, pay: stripOrderRendererToken(item.pay) };
-      }) };
-    }
+    if (Array.isArray(rows)) activateOrderListForRenderedRows(rows);
     if (values.orderPage) values.orderPage.filters = filters;
     return values;
   } finally { this.state.orderFilters = filters; }
@@ -55,9 +52,7 @@ const originalFetch = globalThis.fetch.bind(globalThis);
 let detailContext: DetailContext = {};
 const listDistributionByOrderID = new Map<string, DetailRecord>();
 let latestOrderList: DetailRecord[] = [];
-let latestOrderListRequest = 0;
-const orderListResponses = new Map<number, OrderListResponse>();
-const orderListRecordsByToken = new Map<string, DetailRecord>();
+const pendingOrderLoads: OrderLoadCapture[] = [];
 const refundIntents = new Map<string, RefundIntent>();
 const pendingRefundIntentScopes = new Set<string>();
 const refundIntentStorageKey = 'aicrm.order-refund-intents.v1';
@@ -87,18 +82,6 @@ function text(value: unknown, fallback = '未提供'): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
-const orderRendererTokenPrefix = '\u2063aicrm-order-v3:';
-const orderRendererTokenPattern = /\u2063aicrm-order-v3:([a-z0-9-]+)\u2063$/i;
-
-function orderRendererToken(value: unknown): string | undefined {
-  const match = typeof value === 'string' ? value.match(orderRendererTokenPattern) : undefined;
-  return match?.[1];
-}
-
-function stripOrderRendererToken(value: string): string {
-  return value.replace(orderRendererTokenPattern, '');
-}
-
 function activateOrderList(records: DetailRecord[]): void {
   latestOrderList = records;
   listDistributionByOrderID.clear();
@@ -109,18 +92,68 @@ function activateOrderList(records: DetailRecord[]): void {
 }
 
 function activateOrderListForRenderedRows(rows: unknown[]): void {
-  const tokens = rows.map((row) => orderRendererToken(asRecord(row)?.pay));
-  if (tokens.some((token) => !token) || new Set(tokens).size !== tokens.length) {
-    activateOrderList([]);
-    return;
-  }
-  const records = tokens.map((token) => orderListRecordsByToken.get(token as string));
+  const records = rows.map(correlatedOrderRecord);
+  // A render row must carry an exact object association installed only after
+  // its own `api.loadDb({page:'orders'})` response resolved. A visible-field
+  // fingerprint could attach a duplicate provider/merchant row to another
+  // response, so an uncorrelated row fails closed.
   if (records.some((record) => !record)) {
     activateOrderList([]);
     return;
   }
   activateOrderList(records as DetailRecord[]);
 }
+
+function installOrderListCorrelation(): void {
+  const donorLoadDb = api.loadDb.bind(api);
+  api.loadDb = async (context) => {
+    if (context?.page !== 'orders' || api.mode !== 'http') return donorLoadDb(context);
+    const capture: OrderLoadCapture = { claimed: false };
+    pendingOrderLoads.push(capture);
+    let result: ReturnType<typeof donorLoadDb>;
+    try {
+      result = donorLoadDb(context);
+    } finally {
+      // `readAdminRows` starts its only orders request before returning its
+      // promise. An unrelated raw reader after this call cannot claim this
+      // page-load association; an unexpected deferred request fails closed.
+      if (!capture.claimed) {
+        const index = pendingOrderLoads.indexOf(capture);
+        if (index >= 0) pendingOrderLoads.splice(index, 1);
+      }
+    }
+    try {
+      const db = await result;
+      const records = capture.records;
+      const rows = db.rows?.orders;
+      if (!records || !Array.isArray(rows) || rows.length !== records.length) {
+        activateOrderList([]);
+        return db;
+      }
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index] as unknown as DetailRecord;
+        // `orderPageDto` uses currency for the frozen renderer's payment
+        // column. Keep the API currency canonical; only its in-memory DTO
+        // receives the server-owned provider label for that legacy column.
+        const providerLabel = text(records[index].provider_label, text(records[index].provider, ''));
+        if (providerLabel) row.pay = providerLabel;
+        // Symbols survive the frozen DTO's object-spread render path but are
+        // absent from JSON, Object.keys, DOM text, clipboard data, and exports.
+        Object.defineProperty(row, orderCorrelation, {
+          configurable: true, enumerable: true, value: records[index], writable: false,
+        });
+      }
+      return db;
+    } finally {
+      // A rejected or mismatched page load cannot leave an association for a
+      // later unrelated render. Claimed captures retain request order even
+      // when the provider resolves concurrent pages out of order.
+      const index = pendingOrderLoads.indexOf(capture);
+      if (index >= 0) pendingOrderLoads.splice(index, 1);
+    }
+  };
+}
+installOrderListCorrelation();
 
 function arrayField(value: unknown, ...keys: string[]): unknown[] {
   const record = asRecord(value);
@@ -480,8 +513,15 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (method !== 'GET') return originalFetch(input, init);
   const url = new URL(request?.url || String(input), location.origin);
   if (url.origin !== location.origin) return originalFetch(input, init);
-  const listRequest = url.pathname === '/api/admin/orders' ? ++latestOrderListRequest : 0;
   orderQuery(url);
+  // A list fetch is claimed before awaiting its response. `api.loadDb` owns
+  // exactly one such request for an orders page; raw API readers do not alter
+  // their JSON and, if they race this internal loader, presentation fails
+  // closed rather than attaching their response to a different rendered row.
+  const orderLoadCapture = url.pathname === '/api/admin/orders'
+    ? pendingOrderLoads.find((capture) => !capture.claimed)
+    : undefined;
+  if (orderLoadCapture) orderLoadCapture.claimed = true;
 
   if (isOrderDetailPage() && /^\/api\/admin\/orders\/[^/]+(?:\/items)?$/.test(url.pathname)) {
     const provider = detailProvider();
@@ -528,36 +568,19 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   try {
     const payload = await response.clone().json() as { items?: unknown[] };
     if (!Array.isArray(payload.items)) return response;
-    const records: DetailRecord[] = [];
-    const tokens: string[] = [];
-    const items = payload.items.map((value) => {
+    const records = payload.items.flatMap((value) => {
       const item = asRecord(value);
-      if (!item) return value;
-      records.push(item);
-      const token = `${listRequest}-${records.length - 1}`;
-      tokens.push(token);
-      orderListRecordsByToken.set(token, item);
-      const channel = typeof item.provider_label === 'string' && item.provider_label.trim()
-        ? item.provider_label : typeof item.provider === 'string' ? item.provider : item.currency;
-      // Frozen orderPageDto omits the canonical ID. Carry a V3-only opaque
-      // token through its existing `pay` field and remove it before painting;
-      // no displayed business field participates in identity matching.
-      return { ...item, currency: `${text(channel, '')}${orderRendererTokenPrefix}${token}\u2063` };
+      return item ? [item] : [];
     });
-    orderListResponses.set(listRequest, { tokens });
-    while (orderListResponses.size > 6) {
-      const oldest = orderListResponses.keys().next().value as number;
-      const retired = orderListResponses.get(oldest);
-      if (retired) for (const token of retired.tokens) orderListRecordsByToken.delete(token);
-      orderListResponses.delete(oldest);
+    // `api.loadDb` gives this raw response a private, non-serialised object
+    // association after the frozen DTO projection. Do not add an opaque token
+    // to currency/provider or any API payload field: callers that read this
+    // response directly must still receive the canonical business JSON.
+    if (orderLoadCapture && records.length === payload.items.length) {
+      orderLoadCapture.records = records;
     }
-    // Real pages activate only after the frozen renderer returns the matching
-    // DTO rows above. The no-stage path is the narrow test/static-host seam.
-    if (!document.getElementById('stage')) activateOrderList(records);
     schedulePresentation();
-    const headers = new Headers(response.headers);
-    headers.delete('content-length');
-    return new Response(JSON.stringify({ ...payload, items }), { status: response.status, statusText: response.statusText, headers });
+    return response;
   } catch {
     return response;
   }
@@ -582,11 +605,6 @@ function applyOrderPresentation(): void {
     }
     const internal = cells[2].querySelector<HTMLElement>('div:nth-child(2)');
     if (internal && !internal.hidden) internal.hidden = true;
-    const paymentSource = cells[6];
-    if (paymentSource && paymentSource.textContent?.includes(orderRendererTokenPrefix)) {
-      const visible = stripOrderRendererToken(paymentSource.textContent);
-      if (paymentSource.textContent !== visible) paymentSource.textContent = visible;
-    }
     const statusCell = cells[5];
     if (statusCell) {
       const label = statusCell.querySelector<HTMLElement>('span') || statusCell;

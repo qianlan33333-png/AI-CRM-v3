@@ -7,7 +7,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const bundle = await build({ stdin: { contents: "import './web/v3/orderAdapter'; import {AdminController} from './web/src/admin/controller'; window.OrderControllerFixture = AdminController;", resolveDir: root, loader: 'ts' }, bundle: true, format: 'iife', write: false, platform: 'browser', logLevel: 'silent' });
+const bundle = await build({ stdin: { contents: "import './web/v3/orderAdapter'; import {AdminController} from './web/src/admin/controller'; import {api} from './web/src/shared/api/client'; window.OrderControllerFixture = AdminController; window.OrderAdapterApi = api;", resolveDir: root, loader: 'ts' }, bundle: true, format: 'iife', write: false, platform: 'browser', logLevel: 'silent' });
 const host = bundle.outputFiles[0].text;
 const pause = () => new Promise((resolve) => setTimeout(resolve, 15));
 const refundActorBinding = 'b'.repeat(64);
@@ -70,10 +70,22 @@ try {
   document.querySelector('button').click(); await pause();
   assert.match(document.body.textContent, /筛选暂不支持导出/, 'identity-filtered result sets must not silently export all orders');
   document.getElementById('orderMobile').value = '138 0013 8000';
-  await dom.window.fetch('/api/admin/orders?limit=50&offset=0');
+  const directListResponse = await dom.window.fetch('/api/admin/orders?limit=50&offset=0');
   assert.equal(calls.at(-1).searchParams.get('phone'), '13800138000', 'phone searches must stay server-side and preserve paging');
-  assert.match(document.querySelector('tbody td:nth-child(2)').textContent, /非分销订单/, 'the list must show the server-provided centralized distribution summary');
+  assert.equal((await directListResponse.json()).items[0].currency, 'CNY', 'direct API consumers retain the canonical currency code');
   assert.equal(calls.at(-1).searchParams.get('external_userid'), null, 'phone and external-contact filters are mutually exclusive');
+
+  // The public response remains canonical. The frozen order DTO receives its
+  // payment-channel label only after this exact loadDb call has completed.
+  const renderedDb = await dom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  assert.equal(renderedDb.rows.orders[0].pay, '微信支付', 'the frozen DTO payment column receives the provider label after projection');
+  assert.ok(!JSON.stringify(renderedDb.rows.orders).includes('aicrm-order-v3:'), 'the DTO carries no serialised correlation field');
+  controller.db = renderedDb;
+  const renderedValues = controller.renderVals();
+  assert.equal(renderedValues.rows.orders[0].pay, '微信支付', 'the exact loadDb association survives the frozen controller object-spread path');
+  document.querySelector('tbody tr').append(document.createElement('span')); await pause();
+  assert.match(document.querySelector('tbody td:nth-child(2)').textContent, /非分销订单/, 'the actual loadDb-to-renderVals path activates the matching distribution summary');
+  assert.ok(!document.body.textContent.includes('aicrm-order-v3:'), 'the full renderer path never exposes a correlation marker');
 
   document.getElementById('orderMobile').value = 'external-contact-fixture';
   await dom.window.fetch('/api/admin/orders?limit=50&offset=50');
@@ -108,7 +120,10 @@ const collisionDom = new JSDOM(`<!doctype html><body>
 });
 try {
   collisionDom.window.eval(host);
-  await collisionDom.window.fetch('/api/admin/orders');
+  const collisionController = new collisionDom.window.OrderControllerFixture({ mode: 'http' }, 'orders');
+  collisionController.db = await collisionDom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  collisionController.renderVals();
+  collisionDom.window.document.querySelector('tbody tr').append(collisionDom.window.document.createElement('span'));
   await pause();
   const rows = Array.from(collisionDom.window.document.querySelectorAll('tbody tr'));
   assert.match(rows[0].textContent, /分销：分销员成功 · 佣金总额 ¥1\.00/, 'provider-scoped successful row labels the preserved commission total rather than an unpaid balance');
@@ -139,7 +154,10 @@ const mixedDistributionDom = new JSDOM(`<!doctype html><body>
 });
 try {
   mixedDistributionDom.window.eval(host);
-  await mixedDistributionDom.window.fetch('/api/admin/orders');
+  const mixedController = new mixedDistributionDom.window.OrderControllerFixture({ mode: 'http' }, 'orders');
+  mixedController.db = await mixedDistributionDom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  mixedController.renderVals();
+  mixedDistributionDom.window.document.querySelector('tbody tr').append(mixedDistributionDom.window.document.createElement('span'));
   await pause();
   const summary = mixedDistributionDom.window.document.querySelector('tbody tr').textContent;
   assert.match(summary, /2项已形成 \/ 1项待形成/, 'a partially formed order must preserve both formed and pending attribution lines');
@@ -159,41 +177,48 @@ const listRaceDom = new JSDOM(`<!doctype html><body>
   virtualConsole: new VirtualConsole(),
   beforeParse(window) {
     browserRuntime(window);
+    let orderRequestCount = 0;
     window.fetch = async (input) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       const wechatResponse = () => new Response(JSON.stringify({ items: [{ id: 801, created_at: '2026-09-15T00:00:00Z', merchant_order_no: collisionReference, detail_url: `/admin/orderDetail.html?id=${collisionReference}&provider=wechat`, provider: 'wechat', provider_label: '微信支付', payer_name: '买家甲', payer_id: 'customer:1', product_name: '成功商品', amount_yuan: '1.00', status: 'paid', currency: 'CNY', distribution_read_state: 'available', distribution: [{ distributor_display_name: '分销员成功', has_commission: true, current_payable_minor: 100, currency: 'CNY' }] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       const alipayResponse = () => new Response(JSON.stringify({ items: [{ id: 802, created_at: '2026-09-15T00:01:00Z', merchant_order_no: collisionReference, detail_url: `/admin/orderDetail.html?id=${collisionReference}&provider=alipay`, provider: 'alipay', provider_label: '支付宝', payer_name: '买家乙', payer_id: 'customer:2', product_name: '待核验商品', amount_yuan: '1.00', status: 'paid', currency: 'CNY', distribution_read_state: 'available', distribution: [] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      if (url.searchParams.get('request') === 'earlier') return new Promise((resolve) => { resolveEarlierList = () => resolve(wechatResponse()); });
+      if (url.pathname === '/api/admin/orders' && ++orderRequestCount === 1) return new Promise((resolve) => { resolveEarlierList = () => resolve(wechatResponse()); });
       return alipayResponse();
     };
   },
 });
 try {
   listRaceDom.window.eval(host);
-  const earlier = listRaceDom.window.fetch('/api/admin/orders?request=earlier');
-  await listRaceDom.window.fetch('/api/admin/orders?request=later');
+  const earlier = listRaceDom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  await pause();
+  assert.equal(typeof resolveEarlierList, 'function', 'the earlier page has claimed its own list request before the later page starts');
+  const rawReader = await listRaceDom.window.fetch('/api/admin/orders?raw-reader=1');
+  assert.equal((await rawReader.json()).items[0].currency, 'CNY', 'an unrelated raw reader keeps canonical JSON and cannot claim the pending page association');
+  const laterDb = await listRaceDom.window.OrderAdapterApi.loadDb({ page: 'orders' });
   const controller = new listRaceDom.window.OrderControllerFixture({ mode: 'http' }, 'orders');
-  controller.db.rows.orders = [{ time: '2026-09-15T00:01:00Z', no: collisionReference, plat: '支付宝', payer: '买家乙', uid: 'customer:2', product: '待核验商品', amount: '1.00', status: 'paid', pay: '支付宝\u2063aicrm-order-v3:2-0\u2063', tone: 'ok' }];
+  controller.db = laterDb;
   const firstValues = controller.renderVals();
-  assert.ok(!String(firstValues.rows.orders[0].pay).includes('aicrm-order-v3:'), 'the frozen template receives a display-safe cloned provider label');
-  assert.match(controller.db.rows.orders[0].pay, /aicrm-order-v3:2-0/, 'the controller retains the opaque token only for the next render binding');
+  assert.equal(firstValues.rows.orders[0].pay, '支付宝', 'the later load binds its own server provider label after the frozen controller projection');
+  assert.ok(Object.getOwnPropertySymbols(firstValues.rows.orders[0]).length > 0, 'the exact record association survives the donor object-spread renderer');
+  assert.ok(!JSON.stringify(laterDb.rows.orders).includes('aicrm-order-v3:'), 'the later DTO has no serialised opaque correlation data');
   listRaceDom.window.document.querySelector('tbody tr').append(listRaceDom.window.document.createElement('span'));
   await pause();
-  assert.match(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单/, 'the renderer token activates exactly the later provider response');
-  assert.ok(!listRaceDom.window.document.body.textContent.includes('aicrm-order-v3:'), 'the opaque response token never reaches DOM text');
+  assert.match(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单/, 'the later provider response activates its own rendered row');
+  assert.ok(!listRaceDom.window.document.body.textContent.includes('aicrm-order-v3:'), 'the opaque association never reaches DOM text');
   resolveEarlierList();
-  await earlier;
+  const earlierDb = await earlier;
+  assert.equal(earlierDb.rows.orders[0].pay, '微信支付', 'the delayed page keeps its own provider label rather than adopting the later response');
   controller.renderVals();
   listRaceDom.window.document.querySelector('tbody tr').append(listRaceDom.window.document.createElement('span'));
   await pause();
-  assert.match(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单/, 'a delayed response cannot replace the selected provider row when its renderer token remains current');
+  assert.match(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单/, 'a delayed response cannot replace the later rendered provider row');
   assert.ok(!listRaceDom.window.document.body.textContent.includes('分销员成功'), 'a delayed WeChat response never leaks into the rendered Alipay row');
-  controller.db.rows.orders[0].pay = '支付宝';
+  controller.db.rows.orders = [{ time: '2026-09-15T00:01:00Z', no: collisionReference, plat: '支付宝', payer: '买家乙', uid: 'customer:2', product: '待核验商品', amount: '1.00', status: 'paid', pay: '支付宝', tone: 'ok' }];
   controller.renderVals();
   listRaceDom.window.document.querySelector('tbody tr').append(listRaceDom.window.document.createElement('span'));
   await pause();
-  assert.ok(!listRaceDom.window.document.querySelector('tbody tr').textContent.includes('分销：'), 'a missing renderer token clears the prior selection instead of retaining stale distribution facts');
-  assert.equal(listRaceDom.window.document.querySelector('tbody tr').dataset.orderDetailUrl, undefined, 'a missing renderer token also removes the stale provider detail URL');
+  assert.ok(!listRaceDom.window.document.querySelector('tbody tr').textContent.includes('分销：'), 'a missing renderer association clears the prior selection instead of retaining stale distribution facts');
+  assert.equal(listRaceDom.window.document.querySelector('tbody tr').dataset.orderDetailUrl, undefined, 'a missing renderer association also removes the stale provider detail URL');
 } finally {
   listRaceDom.window.close();
 }
