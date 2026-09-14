@@ -25,9 +25,9 @@
 
 1. 冻结 `origin/main` SHA，创建独立工作树；记录候选 SHA。
 2. 提交 PRD、报告模板和隔离入口，记录 harness SHA；从该 harness 的干净 checkout 指向另一个精确候选 SHA 的干净工作树执行，候选和 harness SHA 分开报告。
-3. `scripts/testing/run_release_acceptance.py` 只接收 `localhost`、`127.0.0.1` 或 `::1` 的 `postgres://` URL，且数据库名必须以 `aicrm_test_` 开头。报告目录必须在源码树外。
+3. `scripts/testing/run_release_acceptance.py` 只接收 `localhost`、`127.0.0.1` 或 `::1` 的 `postgres://` URL，数据库名必须匹配 `aicrm_test_[A-Za-z0-9_]+`，查询参数仅可使用 `sslmode=disable|prefer|require`。它从最小允许列表构造子进程环境，显式清除 PostgreSQL service、host override、password file、options、通用数据库 URL 和所有遗留 donor alias。
 4. 按现有 quality lanes 分别运行 preflight、backend、frontend、browser、archive-sdk。backend 可不需要 Chromium；browser 必须单独在 Linux amd64 + Chrome + Noto Sans CJK SC 环境运行。
-5. 对每一项 skip 记录原因、适用性、关联用例、候选 SHA 和闭合证据。仅当同一候选 SHA 的明确执行 lane 已通过该用例时，skip 才能关闭。平台不适用专项不会自动计业务失败，但未关闭的必测 skip 阻断上线。
+5. 每次执行生成不可覆盖的 `run_id` 目录，持久化脱敏的 stdout/stderr、开始/结束 UTC 时间、实际无凭据命令、候选和 harness 的 SHA/tree/dirty 前后快照。对每一项 skip 记录原因、适用性、关联用例、候选 SHA 和闭合证据。仅当同一候选 SHA 的明确执行 lane 已通过该用例时，skip 才能关闭。平台不适用专项不会自动计业务失败，但未关闭的必测 skip 阻断上线。
 6. 缺陷修复后先重现原失败，再运行受影响 lane；报告同时保留首次失败和最终结果。
 
 ## 门禁与交付
