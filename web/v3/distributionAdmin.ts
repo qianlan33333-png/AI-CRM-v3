@@ -375,6 +375,7 @@ async function loadOverview(): Promise<void> {
 }
 
 async function load(next = '', target: Tab = tab): Promise<LoadResult> {
+  if (target !== tab) return 'stale';
   const generation = ++listGeneration;
   const state = pageState(target);
   state.loading = true;
