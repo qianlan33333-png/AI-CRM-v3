@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	paymenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/http"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	producthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/http"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -70,7 +72,7 @@ func (app *checkoutJourneyApplication) Create(_ context.Context, command payment
 	defer app.mu.Unlock()
 	if existing := app.records[command.IdempotencyKey]; existing != nil {
 		existing.createCalls++
-		if existing.command.SessionToken != command.SessionToken || existing.command.CheckoutSessionBinding != command.CheckoutSessionBinding || existing.command.ProductID != command.ProductID || existing.command.ProductType != command.ProductType || existing.command.CouponClaimID != command.CouponClaimID || existing.command.MobileE164 != command.MobileE164 || existing.command.BeneficiarySelection != command.BeneficiarySelection {
+		if existing.command.SessionToken != command.SessionToken || existing.command.CheckoutSessionBinding != command.CheckoutSessionBinding || existing.command.ProductID != command.ProductID || existing.command.ProductType != command.ProductType || existing.command.CouponClaimID != command.CouponClaimID || existing.command.MobileE164 != command.MobileE164 || existing.command.BeneficiarySelection != command.BeneficiarySelection || existing.command.PromotionContext != command.PromotionContext {
 			return paymentdomain.Payment{}, paymentport.ErrConflict
 		}
 		return paymentdomain.Payment{ID: int64(len(app.records)), OrderID: int64(len(app.records)), MerchantOrderNo: existing.merchant, Status: paymentdomain.StatusAwaitingPayment}, nil
@@ -234,22 +236,7 @@ func TestPublicCheckoutBrowserJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	application := &checkoutJourneyApplication{records: make(map[string]*checkoutJourneyRecord)}
-	payment, err := paymenthttp.NewHandler(application, nil, checkoutJourneySecurity{}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	mux.Handle("/pay/", public)
-	mux.Handle("/api/v1/wechat-pay/", &checkoutJourneyResponseLoss{next: payment})
-	mux.HandleFunc("/api/h5/coupons/available", func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet || request.URL.Query().Get("target_ref") != "standard_product:7" {
-			http.NotFound(writer, request)
-			return
-		}
-		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = writer.Write([]byte(`{"items":[]}`))
-	})
-	server := httptest.NewServer(mux)
+	server := newPublicCheckoutJourneyServer(t, public, application)
 	defer server.Close()
 
 	_, source, _, ok := runtime.Caller(0)
@@ -274,7 +261,7 @@ func TestPublicCheckoutBrowserJourney(t *testing.T) {
 		t.Fatalf("records=%+v", records)
 	}
 	lost := records["checkout-journey-1"]
-	if lost.createCalls != 2 || lost.statusCalls != 2 || lost.command.CouponClaimID != 11 || lost.command.MobileE164 != "+8613800138000" {
+	if lost.createCalls != 2 || lost.statusCalls != 2 || lost.command.CouponClaimID != 11 || lost.command.MobileE164 != "+8613800138000" || lost.command.PromotionContext != "dpc_"+strings.Repeat("A", 43) {
 		t.Fatalf("lost-response replay=%+v", lost)
 	}
 	cancelled := records["checkout-journey-2"]
@@ -286,5 +273,54 @@ func TestPublicCheckoutBrowserJourney(t *testing.T) {
 	}
 	if _, exists := records["checkout-journey-5"]; exists {
 		t.Fatalf("unavailable browser storage must block checkout request: %+v", records["checkout-journey-5"])
+	}
+	if platformconfig.ChromiumJourneyRequired() {
+		runPublicCheckoutChromiumJourney(t, public, root)
+	}
+}
+
+func newPublicCheckoutJourneyServer(t *testing.T, public http.Handler, application *checkoutJourneyApplication) *httptest.Server {
+	t.Helper()
+	payment, err := paymenthttp.NewHandler(application, nil, checkoutJourneySecurity{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/pay/", public)
+	mux.Handle("/api/v1/wechat-pay/", &checkoutJourneyResponseLoss{next: payment})
+	mux.HandleFunc("/api/h5/coupons/available", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Query().Get("target_ref") != "standard_product:7" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = writer.Write([]byte(`{"items":[]}`))
+	})
+	return httptest.NewServer(mux)
+}
+
+func runPublicCheckoutChromiumJourney(t *testing.T, public http.Handler, root string) {
+	t.Helper()
+	application := &checkoutJourneyApplication{records: make(map[string]*checkoutJourneyRecord)}
+	server := newPublicCheckoutJourneyServer(t, public, application)
+	defer server.Close()
+	command := exec.Command("node", filepath.Join(root, "cmd", "aicrm", "public_checkout_chromium_journey.mjs"))
+	command.Dir = root
+	command.Env = append(os.Environ(),
+		"AICRM_PUBLIC_CHECKOUT_CHROMIUM_BASE_URL="+server.URL,
+		"AICRM_PUBLIC_CHECKOUT_CHROMIUM_SESSION="+paymentport.TrustedSessionCookieName+"=trusted-payment-session-one",
+	)
+	output, err := command.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "public_checkout_chromium: PASS") {
+		t.Fatalf("public checkout Chromium journey: %v\n%s", err, output)
+	}
+	records := application.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("Chromium records=%+v", records)
+	}
+	for key, record := range records {
+		if record.createCalls != 2 || record.command.PromotionContext != "dpc_"+strings.Repeat("A", 43) || record.command.CouponClaimID != 11 {
+			t.Fatalf("Chromium recovered record %q=%+v", key, record)
+		}
 	}
 }
