@@ -77,6 +77,121 @@
   margin-top: 12px;
 }
 
+.customer-profile-summary,
+.customer-tag-draft {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.customer-profile-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.customer-profile-section-head h3 {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.customer-profile-section-head > p {
+  max-width: 360px;
+  margin: 3px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: right;
+}
+
+.customer-profile-eyebrow {
+  margin: 0;
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.customer-tag-draft-form {
+  align-items: flex-start;
+  padding-top: 2px;
+}
+
+.customer-tag-draft-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.customer-tag-picker-error {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.customer-record-card {
+  padding: 16px;
+}
+
+.customer-record-card > h2 {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.customer-record-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin: 0 0 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.customer-record-metrics > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+.customer-record-metrics > div:last-child {
+  border-right: 0;
+}
+
+.customer-record-metrics dt {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.customer-record-metrics dd {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.customer-record-table {
+  margin-top: 8px;
+}
+
+.customer-record-table td,
+.customer-record-table th {
+  white-space: normal;
+}
+
 .customer-section-note {
   margin-top: 10px;
   color: var(--text-3);
@@ -125,6 +240,35 @@
 
   .admin-profile-field {
     border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .customer-profile-summary,
+  .customer-tag-draft,
+  .customer-record-card {
+    padding: 12px;
+  }
+
+  .customer-profile-section-head {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .customer-profile-section-head > p {
+    max-width: none;
+    margin: 0;
+    text-align: left;
+  }
+
+  .customer-record-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .customer-record-metrics > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .customer-record-metrics > div:nth-child(-n + 2) {
     border-bottom: 1px solid var(--line-soft);
   }
 }

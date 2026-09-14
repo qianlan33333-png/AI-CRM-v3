@@ -24,7 +24,7 @@ dom.window.AdminFmt = { localTime: (value) => value === "2026-09-05T00:00:00Z" ?
 const tagCalls = [];
 const pickerCalls = [];
 let tagPreviewUnavailable = false;
-dom.window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+dom.window.AICRMStandardComponents = { readyFor: () => Promise.resolve() };
 dom.window.AICRMTagPicker = {
   createCatalogPageLoader: (source, reader) => async ({ signal }) => {
     const catalog = await reader({ signal });
@@ -92,7 +92,7 @@ refreshDOM.window.Headers = Headers;
 refreshDOM.window.AbortController = AbortController;
 refreshDOM.window.AdminDateTime = {};
 refreshDOM.window.AdminFmt = { localTime: (value) => value, whenAdminDateTimeReady: (ready) => ready(refreshDOM.window.AdminDateTime) };
-refreshDOM.window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+refreshDOM.window.AICRMStandardComponents = { readyFor: () => Promise.resolve() };
 const refreshPickerCalls = [];
 refreshDOM.window.AICRMTagPicker = {
   createCatalogPageLoader: (source, reader) => async ({ signal }) => {
@@ -133,6 +133,48 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 if (refreshPickerCalls[1].selectedRecords.map((tag) => tag.tag_id).join(",") !== "10") throw new Error("refreshed catalog tag B was not retained when reopening the customer picker");
 refreshDOM.window.close();
 
+const tagRetryDOM = new JSDOM(`<!doctype html>
+<div data-customer-directory-root data-customers-url="/api/admin/customers" data-tag-preview-url="/api/v1/customer-tag-commands/preview" data-tag-command-url="/api/v1/customer-tag-commands" data-tags-url="/api/admin/wecom/tags">
+  <form id="customer-list-filters"><input name="keyword"><input name="phone"><select name="status"><option value=""></option></select></form>
+  <button id="customer-list-clear"></button><button id="customer-list-refresh"></button><span id="customer-list-summary"></span><div id="customer-list-state"></div><div id="customer-list-table-wrap"><table><tbody id="customer-list-body"></tbody></table></div><button id="customer-prev-page"></button><button id="customer-next-page"></button>
+  <form id="customer-tag-batch"><select name="add_tag_ids" multiple disabled><option value="99" selected>目录状态待确认 / 标签 #99</option></select><select name="remove_tag_ids" multiple disabled></select><button type="submit">preview</button></form><span id="customer-tag-batch-result"></span>
+</div>`, { url: "https://test.invalid/admin/customers", runScripts: "outside-only" });
+tagRetryDOM.window.Headers = Headers;
+tagRetryDOM.window.AbortController = AbortController;
+tagRetryDOM.window.AdminDateTime = {};
+tagRetryDOM.window.AdminFmt = { localTime: (value) => value, whenAdminDateTimeReady: (ready) => ready(tagRetryDOM.window.AdminDateTime) };
+let tagReadyAttempts = 0;
+tagRetryDOM.window.AICRMStandardComponents = { readyFor: () => {
+  tagReadyAttempts += 1;
+  return tagReadyAttempts === 1 ? Promise.reject(new Error("tag component unavailable")) : Promise.resolve();
+} };
+tagRetryDOM.window.AICRMTagPicker = {
+  createCatalogPageLoader: (source, reader) => async ({ signal }) => {
+    const catalog = await reader({ signal });
+    const resolved = (catalog.items || []).map((tag) => ({ source, tag_id: String(tag.id || tag.tag_id), group_id: String(tag.group_id), tag_name: String(tag.tag_name || tag.name), group_name: String(tag.group_name) }));
+    return { items: resolved, resolved };
+  },
+  unresolvedRecord: (source, tagID) => ({ source, tag_id: String(tagID), group_id: "", tag_name: `标签 #${tagID}`, group_name: "目录状态待确认", unavailable_reason: "标签目录状态待确认" }),
+  open: () => {},
+};
+tagRetryDOM.window.fetch = async (input) => {
+  const url = new URL(String(input), tagRetryDOM.window.location.origin);
+  if (url.pathname === "/api/admin/wecom/tags") return { ok: true, status: 200, json: async () => ({ read_model_status: "ready", groups: [{ group_id: 1, group_name: "分组" }], items: [{ id: 9, group_id: 1, group_name: "分组", tag_name: "标签九" }], count: 1, total_tags: 1, tag_limit: 1000 }) };
+  if (url.pathname === "/api/admin/customers") return { ok: true, status: 200, json: async () => ({ items: [], total: 0, total_is_estimate: false }) };
+  throw new Error("unexpected tag retry request: " + url.pathname);
+};
+tagRetryDOM.window.eval(script);
+await new Promise((resolve) => setTimeout(resolve, 20));
+const tagRetryForm = tagRetryDOM.window.document.getElementById("customer-tag-batch");
+const tagRetryButton = tagRetryForm.querySelector("[data-customer-tag-picker-retry]");
+if (!tagRetryButton || !tagRetryForm.textContent.includes("当前标签草稿仍保留")) throw new Error("failed tag-only load did not expose a local retry with the retained draft");
+if ([...tagRetryForm.querySelector('[name="add_tag_ids"]').selectedOptions].map((option) => option.value).join(",") !== "99") throw new Error("failed tag-only load changed the existing customer draft");
+tagRetryButton.click();
+await new Promise((resolve) => setTimeout(resolve, 20));
+const recoveredDraft = [...tagRetryForm.querySelector('[name="add_tag_ids"]').selectedOptions].map((option) => option.value).join(",");
+if (tagReadyAttempts !== 2 || recoveredDraft !== "99" || ![...tagRetryForm.querySelectorAll("button")].some((button) => button.textContent === "选择标签")) throw new Error("tag-only retry did not mount the V3 entry and retain the pre-existing draft");
+tagRetryDOM.window.close();
+
 const concurrencyDOM = new JSDOM(`<!doctype html>
 <div data-customer-directory-root data-customers-url="/api/admin/customers" data-tag-preview-url="/api/v1/customer-tag-commands/preview" data-tags-url="/api/admin/wecom/tags">
   <form id="customer-list-filters"><input name="keyword"><input name="phone"><select name="status"><option value=""></option></select></form>
@@ -148,7 +190,7 @@ concurrencyDOM.window.document.cookie = "aicrm_admin_csrf=test-csrf; path=/";
 concurrencyDOM.window.confirm = () => false;
 concurrencyDOM.window.AdminDateTime = {};
 concurrencyDOM.window.AdminFmt = { localTime: (value) => value, whenAdminDateTimeReady: (ready) => ready(concurrencyDOM.window.AdminDateTime) };
-concurrencyDOM.window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+concurrencyDOM.window.AICRMStandardComponents = { readyFor: () => Promise.resolve() };
 concurrencyDOM.window.AICRMTagPicker = {
   createCatalogPageLoader: (source, reader) => async ({ signal }) => {
     const catalog = await reader({ signal });
@@ -284,7 +326,7 @@ detailDom.window.AbortController = AbortController;
 detailDom.window.AdminDateTime = {};
 detailDom.window.AdminFmt = { localTime: (value) => value === "2026-09-05T00:00:00Z" ? "2026-09-05 08:00:00" : "时间暂不可用", whenAdminDateTimeReady: (ready) => ready(detailDom.window.AdminDateTime) };
 const detailPickerCalls = [];
-detailDom.window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+detailDom.window.AICRMStandardComponents = { readyFor: () => Promise.resolve() };
 detailDom.window.AICRMTagPicker = {
   createCatalogPageLoader: (source, reader) => async ({ signal }) => {
     const catalog = await reader({ signal });
@@ -302,15 +344,19 @@ detailDom.window.fetch = async (input) => {
     profile: { status: "ready", data: { customer_id: 42, display_name: "测试客户", oneid: "cus_42", status: "active", last_synced_at: "2026-09-05T00:00:00Z" } },
     identity_summary: { status: "ready", data: { identities: [], phones: [] } },
     order_summary: { status: "ready", data: { total: 1, paid: 1, refunded: 0, failed: 0, recent: [{ id: 71, merchant_order_no: "MO-71", status: "paid" }] } },
-    questionnaire_summary: { status: "ready", data: { total: 0, recent: [] } },
+    questionnaire_summary: { status: "ready", data: { total: 2, recent: [{ id: 81, title: "首份问卷", assessment_label: "已完成", submitted_at: "2026-09-05T00:00:00Z" }, { id: 82, title: "后续问卷", score: 0, submitted_at: "2026-09-05T00:00:00Z" }] } },
     risk: { status: "ready", data: { level: "low", reasons: [] } },
-    recent_touchpoints: { status: "ready", data: [] },
+    recent_touchpoints: { status: "ready", data: [{ id: 91, title: "首次触达", source_domain: "customer", occurred_at: "2026-09-05T00:00:00Z" }, { id: 92, title: "后续触达", source_domain: "order", occurred_at: "2026-09-05T00:00:00Z" }] },
   }) };
 };
 detailDom.window.eval(script);
 await new Promise((resolve) => setTimeout(resolve, 20));
 const detailText = detailDom.window.document.getElementById("customer-360-main")?.textContent || "";
-if (!detailText.includes("MO-71 · 已支付") || detailText.includes("MO-71 · paid")) throw new Error(`recent order status leaked a machine value: ${detailText}`);
+if (!detailText.includes("订单总数1") || !detailText.includes("退款相关0") || !detailText.includes("MO-71") || !detailText.includes("已支付") || detailText.includes("paid")) throw new Error(`customer record table did not retain known facts without a machine status: ${detailText}`);
+if (!detailText.includes("待确认")) throw new Error(`missing order time was presented as a known value: ${detailText}`);
+if (!detailText.includes("首份问卷") || !detailText.includes("后续问卷") || !detailText.includes("评分 0")) throw new Error(`questionnaire records were truncated or an actual zero score was hidden: ${detailText}`);
+const touchpointText = detailDom.window.document.getElementById("customer-360-sidebar")?.textContent || "";
+if (!touchpointText.includes("首次触达") || !touchpointText.includes("后续触达")) throw new Error(`approved touchpoint records were truncated: ${touchpointText}`);
 const detailTagForm = detailDom.window.document.getElementById("customer-tag-single");
 const detailTagButton = [...detailTagForm.querySelectorAll("button")].find((button) => button.textContent === "选择标签");
 if (!detailTagButton) throw new Error("customer detail did not mount the V3 tag picker entry");
