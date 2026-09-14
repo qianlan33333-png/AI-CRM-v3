@@ -792,6 +792,80 @@ func TestChannelContactWayLifecycleAndWelcomeAttachments(t *testing.T) {
 	}
 }
 
+func TestSendWelcomeMessagePreflightFailureIsNotAttempted(t *testing.T) {
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.SendWelcomeMessage(context.Background(), "welcome-code", "hello", []wecomport.WelcomeAttachment{{MsgType: "image"}})
+	if err == nil || wecomport.ProviderCallAttempted(err) || wecomport.ProviderOutcomeUnknown(err) {
+		t.Fatalf("preflight err=%v attempted=%t unknown=%t", err, wecomport.ProviderCallAttempted(err), wecomport.ProviderOutcomeUnknown(err))
+	}
+}
+
+func TestSendWelcomeMessageClassifiesOnlyStrictNonzeroErrcodeAsRejected(t *testing.T) {
+	cases := []struct {
+		name     string
+		response string
+		accepted bool
+		rejected bool
+		code     int64
+	}{
+		{name: "accepted strict zero", response: `{"errcode":0}`, accepted: true},
+		{name: "rejected strict nonzero", response: `{"errcode":40003,"errmsg":"ignored"}`, rejected: true, code: 40003},
+		{name: "rejected negative numeric", response: `{"errcode":-1}`, rejected: true, code: -1},
+		{name: "missing errcode is unknown", response: `{}`},
+		{name: "null errcode is unknown", response: `{"errcode":null}`},
+		{name: "string errcode is unknown", response: `{"errcode":"0"}`},
+		{name: "fractional errcode is unknown", response: `{"errcode":0.0}`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/cgi-bin/gettoken":
+					if r.URL.Query().Get("corpsecret") != "contact-secret" {
+						t.Fatalf("welcome token did not use contact secret")
+					}
+					_, _ = w.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+				case "/cgi-bin/externalcontact/send_welcome_msg":
+					_, _ = w.Write([]byte(test.response))
+				default:
+					t.Fatalf("unexpected endpoint=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.SendWelcomeMessage(context.Background(), "welcome-code", "hello", nil)
+			if test.accepted {
+				if err != nil {
+					t.Fatalf("accepted welcome err=%v", err)
+				}
+				return
+			}
+			if err == nil || !wecomport.ProviderCallAttempted(err) {
+				t.Fatalf("welcome err=%v attempted=%t", err, wecomport.ProviderCallAttempted(err))
+			}
+			if test.rejected {
+				code, ok := wecomport.ProviderErrorCode(err)
+				if wecomport.ProviderOutcomeUnknown(err) || !ok || code != test.code {
+					t.Fatalf("rejected err=%v unknown=%t code=%d/%t", err, wecomport.ProviderOutcomeUnknown(err), code, ok)
+				}
+				return
+			}
+			if !wecomport.ProviderOutcomeUnknown(err) {
+				t.Fatalf("ambiguous response became final err=%v", err)
+			}
+			if _, ok := wecomport.ProviderErrorCode(err); ok {
+				t.Fatal("ambiguous response exposed a Provider error code")
+			}
+		})
+	}
+}
+
 func TestPrivateMessageUsesSingleCustomerContractAndRejectsFailList(t *testing.T) {
 	for name, providerResponse := range map[string]string{
 		"accepted":        `{"errcode":0,"msgid":"msg-1","fail_list":[]}`,

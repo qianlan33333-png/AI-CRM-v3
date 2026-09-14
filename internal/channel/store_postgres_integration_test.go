@@ -974,5 +974,6 @@ func channelMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0093_customer_tag_commands.sql"),
 		filepath.Join(root, "migrations", "0148_channel_archive_edit.sql"),
 		filepath.Join(root, "migrations", "0150_channel_welcome_message_snapshots.sql"),
+		filepath.Join(root, "migrations", "0164_channel_welcome_provider_rejections.sql"),
 	}
 }
