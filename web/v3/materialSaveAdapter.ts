@@ -148,6 +148,95 @@ function unknownMutation(state: SaveState, url: URL, method: string): void {
   message('素材保存结果未知；请在当前页面保持内容不变后重试，或先查看列表核对。');
 }
 
+type MiniProgramForm = {
+  name: HTMLInputElement;
+  appid: HTMLInputElement;
+  pagePath: HTMLInputElement;
+  title: HTMLInputElement;
+  fields: HTMLElement;
+};
+
+function miniProgramForm(): MiniProgramForm | undefined {
+  if (document.body.dataset.page !== 'mpLib') return undefined;
+  const name = document.getElementById('fMpName');
+  const appid = document.getElementById('fMpAppid');
+  const pagePath = document.getElementById('fMpPath');
+  const title = document.getElementById('fMpTitle');
+  if (!(name instanceof HTMLInputElement) || !(appid instanceof HTMLInputElement) ||
+      !(pagePath instanceof HTMLInputElement) || !(title instanceof HTMLInputElement)) return undefined;
+  const fields = name.parentElement?.parentElement;
+  if (!(fields instanceof HTMLElement)) return undefined;
+  return { name, appid, pagePath, title, fields };
+}
+
+function clearMiniProgramValidation(form: MiniProgramForm): void {
+  form.fields.querySelector('[data-material-mp-validation]')?.remove();
+  for (const input of [form.name, form.appid, form.pagePath, form.title]) {
+    input.removeAttribute('aria-invalid');
+    const describedBy = input.dataset.materialMpDescribedBy;
+    if (describedBy !== undefined) {
+      if (describedBy) input.setAttribute('aria-describedby', describedBy);
+      else input.removeAttribute('aria-describedby');
+      delete input.dataset.materialMpDescribedBy;
+    }
+  }
+}
+
+function showMiniProgramValidation(
+  form: MiniProgramForm,
+  text: string,
+  invalid: HTMLInputElement[] = [],
+): void {
+  clearMiniProgramValidation(form);
+  const status = document.createElement('p');
+  status.id = 'material-v3-mp-validation';
+  status.dataset.materialMpValidation = 'true';
+  status.setAttribute('role', invalid.length ? 'alert' : 'status');
+  status.textContent = text;
+  status.style.cssText = `margin:0;padding:9px 10px;border-radius:6px;font-size:13px;line-height:1.5;${invalid.length ? 'border:1px solid #FBC4C2;background:#FFF5F5;color:#B42318' : 'border:1px solid #D6E4FF;background:#F0F5FF;color:#245BDB'}`;
+  form.fields.prepend(status);
+  for (const input of invalid) {
+    input.dataset.materialMpDescribedBy = input.getAttribute('aria-describedby') || '';
+    const existing = input.dataset.materialMpDescribedBy.trim();
+    input.setAttribute('aria-describedby', [existing, status.id].filter(Boolean).join(' '));
+    input.setAttribute('aria-invalid', 'true');
+  }
+  invalid[0]?.focus();
+}
+
+function miniProgramPreflight(button: HTMLButtonElement): boolean {
+  const label = button.textContent?.trim();
+  if (label !== '创建' && label !== '保存') return false;
+  const form = miniProgramForm();
+  if (!form) return false;
+  const editing = label === '保存';
+  const required = editing
+    ? [
+      [form.name, '素材名称'],
+      [form.appid, '小程序 AppID'],
+      [form.pagePath, '页面路径'],
+      [form.title, '卡片标题'],
+    ] as const
+    : [
+      [form.name, '素材名称'],
+      [form.appid, '小程序 AppID'],
+      [form.pagePath, '页面路径'],
+    ] as const;
+  const missing = required.filter(([input]) => !input.value.trim());
+  if (missing.length) {
+    showMiniProgramValidation(
+      form,
+      `请填写${missing.map(([, label]) => label).join('、')}。`,
+      missing.map(([input]) => input),
+    );
+    return true;
+  }
+  if (!editing && !form.title.value.trim())
+    showMiniProgramValidation(form, '卡片标题为空，将使用素材名称。');
+  else clearMiniProgramValidation(form);
+  return false;
+}
+
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const request = input instanceof Request ? input : undefined;
   const method = (init?.method || request?.method || 'GET').toUpperCase();
@@ -214,6 +303,11 @@ document.addEventListener('click', (event) => {
   if (!(target instanceof Element)) return;
   const button = target.closest('button');
   if (!button || !['保存', '创建', '上传'].includes(button.textContent?.trim() || '')) return;
+  if (miniProgramPreflight(button)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
   if (activeSave) {
     event.preventDefault();
     event.stopImmediatePropagation();
