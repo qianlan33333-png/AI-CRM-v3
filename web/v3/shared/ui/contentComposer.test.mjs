@@ -66,6 +66,23 @@ assert.equal(requests, 0, 'confirm has no save/send/Provider request');
 assert.equal(document.querySelector('[data-v3-content-composer]'), null, 'successful local-draft callback closes the composer');
 assert.equal(document.activeElement, trigger, 'composer close restores its trigger focus');
 trigger.focus();
+let excelDraft;
+mod.openContentComposer({
+  title: '编辑 Excel 行话术', value: { content_text: '原始话术' }, materialKinds: [],
+  textRule: { normalize: (value) => value, validate: (value) => value.trim() ? undefined : '请输入话术' },
+  presentationSupplements: [{ key: 'excel-row-8', kind: 'excel_card', title: 'Excel 标题', description: '路径：pages/excel/index', thumbnailURL: '/cover.png' }],
+  onConfirm: (result) => { excelDraft = result; },
+});
+await flush();
+const excelMask = document.querySelector('[data-v3-content-composer]');
+assert.match(excelMask.textContent, /小程序卡片：Excel 标题/, 'text-only callers retain their Owner card in the shared preview');
+assert.equal(excelMask.querySelectorAll('[data-v3-composer-add]').length, 0, 'Excel callers do not receive unpersistable generic material controls');
+excelMask.querySelector('[data-v3-composer-text]').value = '更新后的 Excel 话术';
+excelMask.querySelector('[data-v3-composer-text]').dispatchEvent(new Event('input', { bubbles: true }));
+excelMask.querySelector('[data-v3-composer-confirm]').click();
+await flush();
+assert.equal(excelDraft.package.content_text, '更新后的 Excel 话术', 'text-only confirmation returns only a caller-owned local draft');
+trigger.focus();
 mod.openReadonlyContentPresentation({ title: '已保存群运营内容', value: committed.package, selectedRecords: committed.selectedRecords, materialOrder: 'caller_persisted' });
 await flush();
 assert.match(document.body.textContent, /最近一次保存结果/);

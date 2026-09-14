@@ -59,8 +59,26 @@ thumbnail.dispatchEvent(new Event('error'));
 assert.equal(target.textContent.includes('缩略图暂不可用'), true, 'a controlled thumbnail has an explicit local fallback');
 mod.renderContentPresentation(target, { mode: 'preview', package: { content_text: ' 前后空白 ' }, normalizeText: preserveText });
 assert.equal(target.querySelector('.aicrm-content-presentation__text').textContent, ' 前后空白 ', 'presentation uses the caller policy instead of silently applying the legacy trim default');
-mod.renderContentPresentation(target, { mode: 'readonly', package: normalized, selectedRecords: records });
-assert.match(target.textContent, /最近一次保存结果/);
+mod.renderContentPresentation(target, {
+  mode: 'readonly', package: { content_text: 'Excel 行话术' }, normalizeText: preserveText,
+  supplements: [
+    { key: 'excel-row-7', kind: 'excel_card', title: '课程标题', description: '路径：pages/course/index', thumbnailURL: '/batch-cover.png' },
+    { key: 'excel-row-7', kind: 'excel_card', title: '重复卡片' },
+    { key: 'invalid', kind: 'unknown', title: '不应出现' },
+  ],
+});
+assert.match(target.textContent, /小程序卡片：课程标题/, 'caller-owned Excel cards use the same preview and readonly renderer');
+assert.match(target.textContent, /路径：pages\/course\/index/);
+assert.equal(target.querySelectorAll('[data-content-presentation-supplement]').length, 1, 'supplement keys are deduplicated and unknown block kinds fail closed');
+const supplementThumbnail = target.querySelector('[data-content-presentation-supplement] img');
+supplementThumbnail.dispatchEvent(new Event('error'));
+assert.equal(target.textContent.includes('封面暂不可用'), true, 'an Excel-card thumbnail has an explicit local fallback');
+assert.equal(requests, 0, 'supplemental content remains a display-only caller projection');
+mod.renderContentPresentation(target, {
+  mode: 'readonly', package: normalized, selectedRecords: records,
+  readonlyNote: '此内容为所选历史版本的已保存内容。',
+});
+assert.match(target.textContent, /所选历史版本的已保存内容/);
 assert.equal(requests, 0, 'readonly rendering has no side effect');
 dom.window.close();
 console.log('content presentation: safe preview, readonly, caller variables, controlled thumbnails, unavailable selected records, and order PASS');

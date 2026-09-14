@@ -45,6 +45,21 @@ export type ContentVariablePolicy = {
 
 export type ContentVariableIssue = { token: string; reason: string; blocking: boolean };
 
+/**
+ * A caller-owned block that belongs beside a persisted content package but is
+ * not a Media-library selection.  It is deliberately display-only: the
+ * caller supplies the already-authorised title, path and preview URL, while
+ * this shared renderer never reads, saves or interprets the Owner contract.
+ */
+export type ContentPresentationSupplement = {
+  key: string;
+  kind: 'excel_card';
+  title: string;
+  description?: string;
+  thumbnailURL?: string;
+  unavailableReason?: string;
+};
+
 export type ContentPresentationOptions = {
   mode: 'preview' | 'readonly';
   package: unknown;
@@ -52,9 +67,13 @@ export type ContentPresentationOptions = {
   /** Caller-persisted order is accepted only where the domain supplied it. */
   materialOrder?: ContentMaterialOrder;
   variablePolicy?: ContentVariablePolicy;
+  /** Caller-owned persisted blocks, rendered after text and Media records. */
+  supplements?: readonly ContentPresentationSupplement[];
   /** The caller's storage/normalisation rule for visible text. */
   normalizeText?: (value: string) => string;
   title?: string;
+  /** A caller-specific persistence explanation for a readonly snapshot. */
+  readonlyNote?: string;
 };
 
 const kindFields: ReadonlyArray<readonly [ContentMaterialKind, keyof Pick<ContentPackage, 'image_library_ids' | 'miniprogram_library_ids' | 'attachment_library_ids' | 'group_invite_library_ids'>]> = [
@@ -253,6 +272,25 @@ function controlledThumbnail(value: string | undefined): string | undefined {
   }
 }
 
+function supplements(value: readonly ContentPresentationSupplement[] | undefined): ContentPresentationSupplement[] {
+  const output: ContentPresentationSupplement[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value || []) {
+    const key = String(candidate?.key || '').trim();
+    if (!key || seen.has(key) || candidate?.kind !== 'excel_card') continue;
+    seen.add(key);
+    output.push({
+      key,
+      kind: 'excel_card',
+      title: String(candidate.title || '标题未记录'),
+      description: candidate.description ? String(candidate.description) : undefined,
+      thumbnailURL: candidate.thumbnailURL ? String(candidate.thumbnailURL) : undefined,
+      unavailableReason: candidate.unavailableReason ? String(candidate.unavailableReason) : undefined,
+    });
+  }
+  return output;
+}
+
 /**
  * The sole browser renderer for draft preview and persisted readonly content.
  * It renders safe text/controlled thumbnails but never calls save, upload,
@@ -269,7 +307,10 @@ export function renderContentPresentation(target: HTMLElement, options: ContentP
   heading.textContent = options.title || (options.mode === 'preview' ? '内容预览' : '已保存内容');
   const note = document.createElement('p');
   note.className = 'aicrm-content-presentation__note';
-  note.textContent = options.mode === 'preview' ? '预览不会发送内容。' : '此内容以最近一次保存结果为准。';
+  const readonlyNote = String(options.readonlyNote || '').trim();
+  note.textContent = options.mode === 'preview'
+    ? '预览不会发送内容。'
+    : readonlyNote || '此内容以最近一次保存结果为准。';
   const text = document.createElement('div');
   text.className = 'aicrm-content-presentation__text';
   text.textContent = normalized.content_text || '未填写话术';
@@ -326,5 +367,50 @@ export function renderContentPresentation(target: HTMLElement, options: ContentP
     materials.append(item);
   }
   if (records.length) section.append(materials);
+  const supplementalBlocks = supplements(options.supplements);
+  if (supplementalBlocks.length) {
+    const list = document.createElement('ol');
+    list.className = 'aicrm-content-presentation__supplements';
+    for (const block of supplementalBlocks) {
+      const item = document.createElement('li');
+      item.className = 'aicrm-content-presentation__supplement';
+      item.dataset.contentPresentationSupplement = block.key;
+      const thumbnailURL = controlledThumbnail(block.thumbnailURL);
+      if (thumbnailURL) {
+        const visual = document.createElement('div');
+        visual.className = 'aicrm-content-presentation__visual';
+        const image = document.createElement('img');
+        image.className = 'aicrm-content-presentation__thumbnail';
+        image.src = thumbnailURL;
+        image.alt = '';
+        const fallback = document.createElement('span');
+        fallback.className = 'aicrm-content-presentation__thumbnail-fallback';
+        fallback.hidden = true;
+        fallback.textContent = '封面暂不可用';
+        image.addEventListener('error', () => { image.hidden = true; fallback.hidden = false; });
+        visual.append(image, fallback);
+        item.append(visual);
+      }
+      const details = document.createElement('div');
+      details.className = 'aicrm-content-presentation__material-details';
+      const title = document.createElement('strong');
+      title.textContent = `小程序卡片：${block.title}`;
+      details.append(title);
+      if (block.description) {
+        const description = document.createElement('span');
+        description.textContent = block.description;
+        details.append(description);
+      }
+      if (block.unavailableReason) {
+        const unavailable = document.createElement('span');
+        unavailable.className = 'aicrm-content-presentation__notice';
+        unavailable.textContent = block.unavailableReason;
+        details.append(unavailable);
+      }
+      item.append(details);
+      list.append(item);
+    }
+    section.append(list);
+  }
   target.replaceChildren(section);
 }

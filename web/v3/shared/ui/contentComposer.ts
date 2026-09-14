@@ -8,6 +8,7 @@ import {
   type ContentMaterialKind,
   type ContentMaterialOrder,
   type ContentMaterialRecord,
+  type ContentPresentationSupplement,
   type ContentPackage,
   type ContentVariable,
   type ContentVariableIssue,
@@ -44,6 +45,10 @@ export type ContentComposerOptions = {
   variablePolicy?: ContentVariablePolicy;
   /** Caller-provided capability guidance; this component never infers token syntax. */
   variableNotice?: string;
+  /** Caller-owned display-only blocks retained beside the shared text preview. */
+  presentationSupplements?: readonly ContentPresentationSupplement[];
+  /** Use a native top-layer dialog when this editor opens from another modal dialog. */
+  overlayMount?: 'body' | 'top-layer';
   materialKinds?: readonly ContentMaterialKind[];
   limits?: Partial<Record<ContentMaterialKind, number>>;
   totalLimit?: number;
@@ -148,9 +153,14 @@ export function openContentComposer(options: ContentComposerOptions): void {
   const normalizeText = options.textRule?.normalize;
   let text = normalizeContentPackage(options.value, normalizeText).content_text;
   let records = recordsForContentPackage(options.value, options.selectedRecords, materialOrder).map(copy);
-  const mask = document.createElement('div');
+  const topLayer = options.overlayMount === 'top-layer';
+  const mask = document.createElement(topLayer ? 'dialog' : 'div');
   mask.className = 'aicrm-content-composer-mask';
   mask.dataset.v3ContentComposer = '1';
+  if (topLayer) {
+    mask.dataset.v3ContentTopLayer = '1';
+    mask.setAttribute('aria-labelledby', 'aicrm-v3-content-composer-title');
+  }
   mask.innerHTML = `<section class="aicrm-content-composer" role="dialog" aria-modal="true" aria-labelledby="aicrm-v3-content-composer-title">
     <header class="aicrm-content-composer__head"><div><h3 id="aicrm-v3-content-composer-title"></h3><p>确认仅更新当前页面草稿，实际发送由计划执行触发。</p></div><button type="button" data-v3-composer-cancel>取消</button></header>
     <div class="aicrm-content-composer__body">
@@ -160,7 +170,12 @@ export function openContentComposer(options: ContentComposerOptions): void {
     <footer><button type="button" data-v3-composer-cancel>取消</button><button type="button" data-v3-composer-confirm>确认内容</button></footer>
   </section>`;
   document.body.append(mask);
+  if (topLayer) (mask as HTMLDialogElement).showModal();
   const dialog = mask.querySelector<HTMLElement>('.aicrm-content-composer')!;
+  if (topLayer) {
+    dialog.removeAttribute('role');
+    dialog.removeAttribute('aria-modal');
+  }
   const title = mask.querySelector<HTMLElement>('#aicrm-v3-content-composer-title')!;
   const editor = mask.querySelector<HTMLElement>('[data-v3-composer-editor]')!;
   const preview = mask.querySelector<HTMLElement>('[data-v3-composer-preview]')!;
@@ -174,6 +189,18 @@ export function openContentComposer(options: ContentComposerOptions): void {
   let notice = '';
   let textarea: HTMLTextAreaElement | undefined;
   let dialogControl!: SelectionDialogController;
+  // Native <dialog> emits cancel after Escape even when the inner selection
+  // dialog correctly leaves an active IME candidate session to the browser.
+  // Track composition at the top-layer boundary so that cancel cannot dismiss
+  // the editor and discard that candidate/draft.
+  let topLayerComposing = false;
+  const startTopLayerComposition = () => { topLayerComposing = true; };
+  const endTopLayerComposition = () => { topLayerComposing = false; };
+  if (topLayer) {
+    mask.addEventListener('compositionstart', startTopLayerComposition);
+    mask.addEventListener('compositionupdate', startTopLayerComposition);
+    mask.addEventListener('compositionend', endTopLayerComposition);
+  }
 
   const currentPackage = (): ContentPackage => textEnabled
     ? contentPackageFromRecords(text, records, normalizeText)
@@ -186,6 +213,7 @@ export function openContentComposer(options: ContentComposerOptions): void {
     // after the parent closes, but must never write a dead draft back into it.
     selectionSequence += 1;
     dialogControl.dispose();
+    if (topLayer && (mask as HTMLDialogElement).open) (mask as HTMLDialogElement).close();
     mask.remove();
     if (cancelled) options.onCancel?.();
   };
@@ -266,7 +294,9 @@ export function openContentComposer(options: ContentComposerOptions): void {
     button.textContent = `添加${labels[kind]}`;
     actionBar.append(button);
   }
-  editor.append(actionBar, recordsSlot);
+  // A caller with an Owner-fixed non-media block (for example an Excel card)
+  // must not expose an empty generic material workflow.
+  if (permittedKinds.length || records.length) editor.append(actionBar, recordsSlot);
 
   const draftValidationMessage = (): string | undefined => {
     const materialKeys = new Set<string>();
@@ -328,7 +358,7 @@ export function openContentComposer(options: ContentComposerOptions): void {
     variableBar.querySelectorAll<HTMLButtonElement>('button').forEach((button) => { button.disabled = confirming; });
     actionBar.querySelectorAll<HTMLButtonElement>('button').forEach((button) => { button.disabled = confirming || selecting || !options.selectMaterials; });
     recordsSlot.replaceChildren(renderRecords());
-    renderContentPresentation(preview, { mode: 'preview', package: currentPackage(), selectedRecords: records, materialOrder, variablePolicy: options.variablePolicy, normalizeText });
+    renderContentPresentation(preview, { mode: 'preview', package: currentPackage(), selectedRecords: records, materialOrder, variablePolicy: options.variablePolicy, normalizeText, supplements: options.presentationSupplements });
     const issueText = issues.map((issue) => `${issue.token}：${issue.reason}`).join('；');
     const capabilityNotice = String(options.variableNotice || '').trim();
     status.textContent = confirming ? '正在应用内容草稿…' : selecting ? '正在选择素材…' : notice || validation || issueText || capabilityNotice || '可确认后返回当前页面继续保存。';
@@ -411,6 +441,17 @@ export function openContentComposer(options: ContentComposerOptions): void {
     }
   });
 
+  if (topLayer) {
+    mask.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      // Do not alter the native Escape/IME candidate behavior at keydown.
+      // This merely keeps the outer dialog from applying its independent
+      // default close after the inner composer preserved the candidate.
+      if (topLayerComposing) return;
+      close(true);
+    });
+  }
+
   render();
   dialogControl = installSelectionDialog({ dialog, initialFocus: textarea || confirm, close: () => close(true), submit() {} });
 }
@@ -418,28 +459,42 @@ export function openContentComposer(options: ContentComposerOptions): void {
 /** Shows the same persisted-content renderer in a V3 readonly dialog. */
 export type ContentReadonlyOptions = Omit<ContentComposerOptions, 'onConfirm' | 'selectMaterials' | 'ordering' | 'limits' | 'totalLimit' | 'textEnabled'> & {
   onClose?(): void;
+  /** Caller-owned explanation for the particular persisted snapshot being shown. */
+  readonlyNote?: string;
 };
 
 export function openReadonlyContentPresentation(options: ContentReadonlyOptions): void {
-  const mask = document.createElement('div');
+  const topLayer = options.overlayMount === 'top-layer';
+  const mask = document.createElement(topLayer ? 'dialog' : 'div');
   mask.className = 'aicrm-content-composer-mask';
   mask.dataset.v3ContentReadonly = '1';
-  mask.innerHTML = `<section class="aicrm-content-composer aicrm-content-composer--readonly" role="dialog" aria-modal="true"><header class="aicrm-content-composer__head"><h3></h3><button type="button" data-v3-content-readonly-close>关闭</button></header><div data-v3-content-readonly-body></div></section>`;
+  if (topLayer) {
+    mask.dataset.v3ContentTopLayer = '1';
+    mask.setAttribute('aria-labelledby', 'aicrm-v3-content-readonly-title');
+  }
+  mask.innerHTML = `<section class="aicrm-content-composer aicrm-content-composer--readonly" role="dialog" aria-modal="true"><header class="aicrm-content-composer__head"><h3 id="aicrm-v3-content-readonly-title"></h3><button type="button" data-v3-content-readonly-close>关闭</button></header><div data-v3-content-readonly-body></div></section>`;
   document.body.append(mask);
+  if (topLayer) (mask as HTMLDialogElement).showModal();
   const dialog = mask.querySelector<HTMLElement>('.aicrm-content-composer')!;
+  if (topLayer) {
+    dialog.removeAttribute('role');
+    dialog.removeAttribute('aria-modal');
+  }
   const closeButton = mask.querySelector<HTMLButtonElement>('[data-v3-content-readonly-close]')!;
   dialog.querySelector('h3')!.textContent = options.title;
-  renderContentPresentation(mask.querySelector<HTMLElement>('[data-v3-content-readonly-body]')!, { mode: 'readonly', package: options.value, selectedRecords: options.selectedRecords, materialOrder: options.materialOrder, variablePolicy: options.variablePolicy, normalizeText: options.textRule?.normalize, title: options.title });
+  renderContentPresentation(mask.querySelector<HTMLElement>('[data-v3-content-readonly-body]')!, { mode: 'readonly', package: options.value, selectedRecords: options.selectedRecords, materialOrder: options.materialOrder, variablePolicy: options.variablePolicy, normalizeText: options.textRule?.normalize, supplements: options.presentationSupplements, title: options.title, readonlyNote: options.readonlyNote });
   let closed = false;
   let control!: SelectionDialogController;
   const close = () => {
     if (closed) return;
     closed = true;
     control.dispose();
+    if (topLayer && (mask as HTMLDialogElement).open) (mask as HTMLDialogElement).close();
     mask.remove();
     options.onClose?.();
   };
   closeButton.addEventListener('click', close);
   mask.addEventListener('click', (event) => { if (event.target === mask) close(); });
+  if (topLayer) mask.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
   control = installSelectionDialog({ dialog, initialFocus: closeButton, close, submit() {} });
 }

@@ -11,6 +11,23 @@
   background: rgba(16, 24, 40, .46);
 }
 
+/* A child editor opened from an existing native <dialog> must become its own
+   top-layer dialog; otherwise the parent modal makes a body overlay inert. */
+dialog.aicrm-content-composer-mask[data-v3-content-top-layer="1"] {
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  max-height: none;
+  margin: 0;
+  padding: 0 !important;
+  border: 0 !important;
+  outline: 0;
+  background: transparent !important;
+}
+dialog.aicrm-content-composer-mask[data-v3-content-top-layer="1"]::backdrop {
+  background: rgba(16, 24, 40, .46);
+}
+
 .aicrm-content-composer {
   width: min(960px, 100%);
   height: min(760px, calc(100vh - 48px));
@@ -115,10 +132,13 @@
 .aicrm-content-presentation__notice { margin: 0; }
 .aicrm-content-presentation__text { min-height: 48px; padding: 10px; border-radius: 8px; background: #fff; color: #344054; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .aicrm-content-presentation__notice { padding: 8px 10px; border-radius: 8px; background: #fffaeb; color: #93370d; font-size: 13px; line-height: 1.5; }
-.aicrm-content-presentation__materials { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.aicrm-content-composer-mask .aicrm-content-presentation__material { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; align-items: center; padding: 9px; border-radius: 8px; background: #fff; }
+.aicrm-content-presentation__materials,
+.aicrm-content-presentation__supplements { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.aicrm-content-composer-mask .aicrm-content-presentation__material,
+.aicrm-content-composer-mask .aicrm-content-presentation__supplement { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; align-items: center; padding: 9px; border-radius: 8px; background: #fff; }
 .aicrm-content-composer-mask .aicrm-content-presentation__visual { inline-size: 48px; block-size: 48px; min-inline-size: 48px; min-block-size: 48px; }
 .aicrm-content-composer-mask .aicrm-content-presentation__material img,
+.aicrm-content-composer-mask .aicrm-content-presentation__supplement img,
 .aicrm-content-composer-mask .aicrm-content-presentation__thumbnail-fallback { display: block; inline-size: 48px !important; block-size: 48px !important; max-inline-size: 48px !important; max-block-size: 48px !important; border-radius: 7px; object-fit: cover; background: #eef2f6; }
 .aicrm-content-presentation__thumbnail-fallback { display: grid; place-items: center; color: #667085; font-size: 12px; text-align: center; }
 .aicrm-content-presentation__material-details { display: grid; gap: 3px; min-width: 0; }
@@ -136,7 +156,8 @@
   .aicrm-content-composer__body { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 14px; }
   .aicrm-content-composer__materials li { grid-template-columns: minmax(0, 1fr); }
   .aicrm-content-composer__material-actions { justify-content: flex-start; }
-  .aicrm-content-composer-mask .aicrm-content-presentation__material { grid-template-columns: minmax(0, 1fr); align-items: start; }
+  .aicrm-content-composer-mask .aicrm-content-presentation__material,
+  .aicrm-content-composer-mask .aicrm-content-presentation__supplement { grid-template-columns: minmax(0, 1fr); align-items: start; }
   .aicrm-content-composer__status { margin: -2px 0 10px; padding-inline: 14px; }
   .aicrm-content-composer__head p { margin-top: 4px; }
   .aicrm-content-composer--readonly { height: auto; max-height: calc(100vh - 16px); }
