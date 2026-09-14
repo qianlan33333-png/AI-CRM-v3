@@ -15,6 +15,8 @@ let holdOverview = false;
 const pendingOverview = [];
 let holdLists = false;
 let failOrders = false;
+let failDistributors = false;
+let malformedMoreOnce = false;
 const pendingLists = [];
 const dom = new JSDOM('<!doctype html><main id="distribution-admin-root"></main>', { url: 'https://crm.example/admin/distribution', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
   window.Response = Response; window.Headers = Headers; Object.defineProperty(window.crypto, 'randomUUID', { value: globalThis.crypto.randomUUID.bind(globalThis.crypto) }); window.prompt = () => prompts.shift() || '';
@@ -29,12 +31,13 @@ const dom = new JSDOM('<!doctype html><main id="distribution-admin-root"></main>
 		return json({ distribution: { status: 'ready', as_of: '2026-09-15T00:00:00Z', currency: 'CNY', period_paid_sales_minor: 1200, period_initial_commission_minor: 0, period_commission_count: 2, current_unsettled_minor: 0, current_settled_minor: 330 }, todos: { status: 'ready', as_of: '2026-09-15T00:00:00Z', items: [{ code: 'unrelated_todo', count: 99, href: '/admin' }, { code: 'distribution_exceptions', count: 2, href: '/admin/distribution' }] } });
 	}
 	if (url.pathname === '/api/admin/distribution/distributors/9') return json({ distributor: { id: 9, display_name: '<img src=x onerror=window.__nameXss=1>', public_no: 'D-9', enabled: true, receiver_ready: false, receiver_status: 'receiver_final_failed' }, earnings: { gross_paid_sales_minor: 19900, unsettled_payable_minor: 3000, paid_commission_minor: 0, currency: 'CNY' } });
-	if (url.pathname === '/api/admin/distribution/distributors/9/orders') { if (url.searchParams.get('cursor') === '10') return json({ items: [{ attribution_id: 21, order_reference: 'O-19', product_name: '增长课' }], next_cursor: '' }); return json({ items: Array.from({ length: 10 }, (_, index) => ({ attribution_id: 11 + index, order_reference: index === 0 ? 'O-9' : `O-${9 + index}`, product_name: '增长课' })), next_cursor: '10' }); }
+	if (url.pathname === '/api/admin/distribution/distributors/9/orders') { if (url.searchParams.get('cursor') === '10') { if (malformedMoreOnce) { malformedMoreOnce = false; return json({ items: {} }); } return json({ items: [{ attribution_id: 21, order_reference: 'O-19', product_name: '增长课' }], next_cursor: '' }); } return json({ items: Array.from({ length: 10 }, (_, index) => ({ attribution_id: 11 + index, order_reference: index === 0 ? 'O-9' : `O-${9 + index}`, product_name: '增长课' })), next_cursor: '10' }); }
 	if (url.pathname === '/api/admin/distribution/orders/11') return json({ order: { attribution_id: 11, order_reference: 'O-9', product_name: '增长课', distributor_display_name: '<img src=x onerror=window.__nameXss=1>', qualification_evidence_reference: 'evidence:1', policy_version: '', rate_basis_points: null, wait_days: undefined, paid_minor: null, currency: 'CNY' }, commission: { status: 'held', initial_minor: null, successful_refund_minor: null, current_payable_minor: null, paid_minor: null, paid_confirmed_at: '', due_at: 'not-a-date', currency: 'CNY' }, adjustments: [{ kind: 'buyer_refund', delta_minor: -3300, resulting_payable_minor: 3327, reason: 'buyer_refund', source_reference: 'refund:9', occurred_at: '2026-09-15T00:00:00Z' }], settlements: [{ reference: 'SET-9', amount_minor: 3327, currency: 'CNY', state: 'receiver_succeeded', provider_deadline_at: '2026-09-22T00:00:00Z', settlement_confirmed_at: '2026-09-14T01:00:00Z', created_at: '2026-09-14T00:00:00Z', updated_at: '2026-09-15T00:00:00Z' }], exceptions: [{ exception_id: 51, kind: 'buyer_refund_after_paid', status: 'open', amount_minor: 1200, reason: 'buyer_refund_after_paid', updated_at: '2026-09-15T00:00:00Z' }] });
 	if (url.pathname === '/api/admin/distribution/exceptions/51') return json({ exception_id: 51, order_reference: 'O-9', kind: 'buyer_refund_after_paid', status: 'recovery_recorded', unpaid_due_minor: 1200, already_paid_minor: 3327, reason: 'buyer_refund_after_paid', evidence_reference: 'receipt:51', actor_scope: 'access:7', created_at: '2026-09-14T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', audit: [{ event_type: 'distribution.recovery_recorded.v1', actor_scope: 'access:7', amount_minor: 1200, evidence_reference: 'receipt:51', occurred_at: '2026-09-15T00:00:00Z' }] });
 	if (['/api/admin/distribution/distributors', '/api/admin/distribution/orders', '/api/admin/distribution/exceptions'].includes(url.pathname)) {
 		if (holdLists) return new Promise((resolve) => pendingLists.push({ url, resolve }));
 		if (failOrders && url.pathname === '/api/admin/distribution/orders') throw new Error('orders unavailable');
+		if (failDistributors && url.pathname === '/api/admin/distribution/distributors') throw new Error('distributors unavailable');
 	}
     if (url.pathname === '/api/admin/distribution/distributors') return json({ items: [{ id: 9, display_name: '<img src=x onerror=window.__nameXss=1>', agreement_version: '2026-09', enabled: true, receiver_ready: false, receiver_status: 'receiver_final_failed', registered_at: '2026-09-14T00:00:00Z', version: 3 }, { id: 10, display_name: '', agreement_version: '2026-09', enabled: false, receiver_ready: true, receiver_status: '', registered_at: '2026-09-14T00:00:00Z', version: 4 }], next_cursor: '' });
     if (url.pathname === '/api/admin/distribution/orders') return json({ items: [{ attribution_id: 11, order_reference: 'O-9', item_line: '1', product_id: 7, product_type: 'standard_product', product_name: '增长课', distributor_display_name: '<img src=x onerror=window.__nameXss=1>', qualification_state: 'eligible', qualification_evidence_reference: '', policy_version: '', rate_basis_points: null, wait_days: undefined, paid_minor: null, currency: 'CNY', attributed_at: 'not-a-date' }], next_cursor: '' });
@@ -166,7 +169,12 @@ await waitFor(() => dom.window.document.body.textContent.includes('商品售卖�
 await waitFor(() => dom.window.document.body.textContent.includes('关联推广订单'), 'distributor detail did not render');
 assert.equal(dom.window.document.body.textContent.includes('D-9'), true, 'distribution number is an auxiliary detail fact only');
 assert.equal([...dom.window.document.querySelectorAll('button')].filter((button) => button.textContent.includes('· 增长课')).length, 10, 'first server page must show exactly ten related orders');
+malformedMoreOnce = true;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '加载更多订单').click();
+await waitFor(() => dom.window.document.body.textContent.includes('读取更多关联订单失败：关联推广订单响应无效'), 'malformed related-order response did not leave an actionable retry');
+const retryMore = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '重试读取更多订单');
+assert.equal(retryMore?.isConnected, true, 'malformed related-order response must retain the retry control in the drawer');
+retryMore.click();
 await waitFor(() => dom.window.document.body.textContent.includes('O-19 · 增长课'), 'related-order load more did not append the next server page');
 assert.equal(calls.some((call) => call.path === '/api/admin/distribution/distributors/9/orders' && call.search === '?limit=10&cursor=10'), true, 'related-order continuation must pass the server cursor');
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === 'O-9 · 增长课').click();
@@ -184,11 +192,15 @@ assert.equal(settlementRecord?.textContent.includes('2026年9月15日 08:00'), t
 await waitFor(() => dom.window.document.body.textContent.includes('管理员') && dom.window.document.body.textContent.includes('已登记追回'), 'exception detail did not render readable audit facts');
 assert.equal(dom.window.document.body.textContent.includes('access:7') || dom.window.document.body.textContent.includes('distribution.recovery_recorded.v1'), false, 'exception detail must not expose internal actor or event codes');
 [...dom.window.document.querySelectorAll('button')].filter((button) => button.textContent === '关闭').forEach((button) => button.click());
+failDistributors = true;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用').click();
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用')?.click();
 await waitFor(() => calls.some((call) => call.path.endsWith('/disable')), 'disable did not call the real endpoint');
 assert.deepEqual(JSON.parse(calls.find((call) => call.path.endsWith('/disable')).body), { version: 3, reason: '不符合当前协议' }, 'disable body must be version and auditable reason only');
 assert.equal(calls.filter((call) => call.path.endsWith('/disable')).length, 1, 'a busy administrative action must not submit a duplicate write');
+await waitFor(() => dom.window.document.body.textContent.includes('操作已提交，但最新服务端记录读取失败'), 'a failed post-command readback must not claim the latest records were read');
+assert.equal(dom.window.document.body.textContent.includes('已读取最新服务端记录'), false, 'failed post-command readback must not falsely claim a successful read');
+failDistributors = false;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '异常').click();
 await waitFor(() => dom.window.document.body.textContent.includes('异常待确认'), 'exception list did not render');
 assert.equal(dom.window.document.body.textContent.includes('接收方收款额度已达上限，请核验额度'), true, 'bounded Payment failure class must give administrators a concrete Chinese action');

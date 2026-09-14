@@ -10,6 +10,7 @@ type SummaryPeriod = 'today' | '7d' | '30d';
 type SummaryStatus = 'ready' | 'zero' | 'data_missing' | 'failed';
 type PageState = { rows: Row[]; cursor: string; loading: boolean; failure: string; draftFilter: string; committedFilter: string };
 type FilterControl = { element: HTMLElement; input: HTMLInputElement };
+type LoadResult = 'applied' | 'failed' | 'stale';
 
 const root = document.getElementById('distribution-admin-root');
 if (!root) throw new Error('分销管理容器缺失');
@@ -373,7 +374,7 @@ async function loadOverview(): Promise<void> {
   }
 }
 
-async function load(next = '', target: Tab = tab): Promise<void> {
+async function load(next = '', target: Tab = tab): Promise<LoadResult> {
   const generation = ++listGeneration;
   const state = pageState(target);
   state.loading = true;
@@ -383,18 +384,20 @@ async function load(next = '', target: Tab = tab): Promise<void> {
   try {
     const payload = obj(await request(`/api/admin/distribution/${target}${next ? `?cursor=${encodeURIComponent(next)}` : ''}`));
     if (!Array.isArray(payload.items)) throw new Error('分销管理列表响应无效');
-    if (generation !== listGeneration || target !== tab) return;
+    if (generation !== listGeneration || target !== tab) return 'stale';
     state.rows = payload.items.map(obj);
     state.cursor = text(payload.next_cursor, '');
     state.loading = false;
     render();
     notice('');
+    return 'applied';
   } catch (error) {
-    if (generation !== listGeneration || target !== tab) return;
+    if (generation !== listGeneration || target !== tab) return 'stale';
     state.loading = false;
     state.failure = error instanceof Error ? error.message : '分销管理读取失败';
     render();
     notice(state.failure, true);
+    return 'failed';
   }
 }
 
@@ -475,7 +478,7 @@ function render(): void {
   if (pageState().cursor) {
     const footer = document.createElement('footer');
     footer.className = 'distribution-pagination';
-    footer.append(button('下一页', () => load(pageState().cursor)));
+    footer.append(button('下一页', () => { void load(pageState().cursor); }));
     paginationHost.append(footer);
   }
 }
@@ -557,6 +560,7 @@ function distributorOrdersList(distributorID: number, first: Row): HTMLElement {
       more.textContent = '正在读取更多订单…';
       try {
         const page = obj(await request(`/api/admin/distribution/distributors/${distributorID}/orders?limit=10&cursor=${encodeURIComponent(next)}`));
+        if (!Array.isArray(page.items)) throw new Error('关联推广订单响应无效');
         more.remove();
         list.querySelector('[data-distribution-more-error]')?.remove();
         append(page);
@@ -647,10 +651,22 @@ async function mutate(scope: string, path: string, body: string): Promise<void> 
   try {
     await request(path, { method: 'POST', body }, scope);
     keys.delete(scope);
-    await load();
+    const readback = await load();
+    if (readback === 'failed') {
+      notice('操作已提交，但最新服务端记录读取失败；请重新读取后确认。', true);
+    } else if (readback === 'stale') {
+      notice('操作已提交，但列表已切换或读取已过期；请重新读取后确认。', true);
+    }
   } catch (error) {
-    await load();
-    notice(`提交结果未确认，已读取最新服务端记录：${error instanceof Error ? error.message : '请核对后再操作。'}`, true);
+    const readback = await load();
+    const detail = error instanceof Error ? error.message : '请核对后再操作。';
+    if (readback === 'applied') {
+      notice(`提交结果未确认，已读取最新服务端记录：${detail}`, true);
+    } else if (readback === 'failed') {
+      notice(`提交结果仍未确认，最新服务端记录读取失败：${detail}`, true);
+    } else {
+      notice(`提交结果仍未确认，列表已切换或读取已过期：${detail}`, true);
+    }
   } finally {
     pendingMutations.delete(scope);
   }
