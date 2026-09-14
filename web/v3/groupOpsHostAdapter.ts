@@ -178,7 +178,9 @@ async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
       const planID = planIDFromAPIURL(url);
       if (planID !== null) revisions.delete(planID);
     }
-    throw new Error(responseMessage(data, `HTTP ${response.status}`));
+    const error = new Error(responseMessage(data, `HTTP ${response.status}`)) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -745,6 +747,7 @@ function installGroupPickerBridge(): void {
               nextCursor: page.has_more === true && items.length ? String(offset + items.length) : undefined,
             };
           },
+          accessLossMessage: (error) => { const status = (error as { status?: unknown }).status; return status === 401 || status === 403 ? '群目录权限已失效；已绑定群仍可查看，请取消后重新登录。' : undefined; },
           onCommit: ({ added, removed }) => saveGroupSelection(planID, added, removed),
         });
       } catch (error) {

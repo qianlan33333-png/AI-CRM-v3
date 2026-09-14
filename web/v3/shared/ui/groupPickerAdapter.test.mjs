@@ -23,4 +23,17 @@ mask.querySelector('[data-v3-group-key$="group-1"]').click(); const removeBound 
 search.value = '故障'; search.dispatchEvent(new Event('input', { bubbles: true })); search.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })); await flush(); assert.match(mask.textContent, /群目录暂不可用/); assert.match(mask.textContent, /第二群/, 'failure keeps the usable selection page');
 mask.querySelector('[data-v3-group-confirm]').click(); await flush(); assert.deepEqual(committed.added.map(x => x.chat_reference), ['group-1', 'group-2']); assert.deepEqual(committed.removed.map(x => x.chat_reference), ['bound-missing']); assert.equal(document.querySelector('[data-v3-selection-session="group"]'), null); assert.equal(document.activeElement, trigger);
 openGroupPicker({ source: 'plan-41', scope: 'group_ops.plan_group_assets', selectedRecords: [], loadPage: async () => ({ items: [{ chat_reference: 'group-1', display_name: '第一群' }] }), onCommit: () => { throw new Error('不应提交'); }, onCancel: () => { cancelled += 1; } }); await flush(); const second = document.querySelector('[data-v3-selection-session="group"]'); second.querySelector('[data-v3-group-key]').click(); second.querySelector('[data-v3-group-cancel]').click(); assert.equal(cancelled, 1, 'cancel does not commit'); assert.equal(document.querySelector('[data-v3-selection-session="group"]'), null);
-dom.window.close(); console.log('group picker adapter: scoped records, IME, paging, failure retention, commit, cancel PASS');
+let accessCommit = 0;
+openGroupPicker({ source: 'plan-41', scope: 'group_ops.plan_group_assets', selectedRecords: [{ chat_reference: 'bound-missing', display_name: '历史绑定' }], accessLossMessage: error => error?.status === 403 ? '群目录权限已失效；已绑定群仍可查看，请取消后重新登录。' : undefined, loadPage: async ({ query }) => { if (query === '权限') { const error = new Error('forbidden'); error.status = 403; throw error; } return { items: [] }; }, onCommit: () => { accessCommit += 1; } });
+await flush();
+const access = document.querySelector('[data-v3-selection-session="group"]');
+const accessSearch = access.querySelector('[data-v3-picker-search-input]');
+accessSearch.value = '权限'; accessSearch.dispatchEvent(new Event('input', { bubbles: true })); accessSearch.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+await flush();
+assert.match(access.textContent, /权限已失效/, 'caller-classified 403 remains explicit');
+assert.match(access.textContent, /历史绑定/, '403 retains existing group bindings for inspection');
+assert.equal(access.querySelector('[data-v3-group-confirm]').disabled, true, 'access loss blocks commit');
+access.querySelector('[data-v3-group-cancel]').click();
+assert.equal(accessCommit, 0);
+
+dom.window.close(); console.log('group picker adapter: scoped records, IME, paging, failure retention, access loss, commit, cancel PASS');
