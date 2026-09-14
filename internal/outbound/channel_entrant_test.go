@@ -101,6 +101,23 @@ func TestChannelWelcomeProviderUnknownKeepsSingleEffect(t *testing.T) {
 	}
 }
 
+func TestChannelWelcomeProviderRejectedIsFinalWithSafeCode(t *testing.T) {
+	now := time.Now().UTC()
+	grants := &welcomeGrantRedeemerStub{code: "grant-code"}
+	messages := &welcomeMessageFreezerStub{message: "hello"}
+	writer := &welcomeWriterStub{err: wecomport.WrapProviderWriteDispositionWithCode(errors.New("provider rejected"), true, false, false, 40003)}
+	provider := NewChannelEntrantProvider(channelWelcomeReaderStub{action: welcomeTestAction(now.Add(time.Second))}, messages, directChannelWelcomeUOW{}, grants, nil, nil, writer)
+	provider.Now = func() time.Time { return now }
+	result, err := provider.Execute(context.Background(), welcomeTestEnvelope(), effectport.Attempt{Number: 1})
+	if err != nil || result.Completion != effectport.StateFinalFailed || !result.CallAttempted || !result.RealExternalCallExecuted || result.FailureCode != "wecom_errcode_40003" || channelWelcomeCompletionReason(result) != "provider_rejected" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	code, codeErr := channelWelcomeProviderErrorCode(result, "provider_rejected")
+	if codeErr != nil || code != 40003 || writer.calls != 1 {
+		t.Fatalf("code=%d err=%v calls=%d", code, codeErr, writer.calls)
+	}
+}
+
 func TestChannelWelcomeFreezeRejectionsNeverRedeemOrCallProvider(t *testing.T) {
 	now := time.Now().UTC()
 	for _, item := range []struct {

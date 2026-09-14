@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
@@ -126,6 +127,15 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 			state = effectport.StateUnknown
 		}
 		if envelope.Kind == effectport.KindChannelWelcome {
+			// A strictly parsed numeric Provider errcode is a complete rejection,
+			// unlike a transport/proxy ambiguity. Return nil here so External
+			// Effects records the final result rather than conservatively replacing
+			// every non-nil post-call error with outcome_unknown.
+			if attempted && wecomport.ProviderWriteClassified(err) && !wecomport.ProviderOutcomeUnknown(err) {
+				if code, known := wecomport.ProviderErrorCode(err); known {
+					return welcomeProviderRejectedResult(action.EffectRef, attempt.Number, code), nil
+				}
+			}
 			reason := "provider_unavailable"
 			if attempted {
 				reason = "outcome_unknown"
@@ -157,6 +167,12 @@ func welcomeAdapterResult(state effectport.State, receipt effectport.Digest, rea
 	artifact := effectport.ResultArtifact{Kind: channelWelcomeOutcomeArtifactKind, Payload: payload}
 	artifact.Digest = effectport.Hash("external-effect.artifact.v1", artifact.Kind, string(payload))
 	return effectport.AdapterResult{Completion: state, ReceiptDigest: receipt, CallAttempted: attempted, RealExternalCallExecuted: attempted, Artifact: artifact}
+}
+
+func welcomeProviderRejectedResult(effectRef string, attempt int32, code int64) effectport.AdapterResult {
+	result := welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.provider-rejected", effectRef, strconv.Itoa(int(attempt)), strconv.FormatInt(code, 10)), "provider_rejected", true)
+	result.FailureCode = "wecom_errcode_" + strconv.FormatInt(code, 10)
+	return result
 }
 
 func welcomeAttachments(raw json.RawMessage) ([]wecomport.WelcomeAttachment, error) {
@@ -192,6 +208,11 @@ func (sink *ChannelEntrantCompletionSink) CompleteEffect(ctx context.Context, ef
 	completion := channelport.EntrantActionCompletion{EffectRef: effectRef, State: string(result.Completion), ResultDigest: string(result.ReceiptDigest), Attempt: attempt.Number, CompletedAt: time.Now().UTC()}
 	if envelope.Kind == effectport.KindChannelWelcome {
 		completion.ResultReason = channelWelcomeCompletionReason(result)
+		code, err := channelWelcomeProviderErrorCode(result, completion.ResultReason)
+		if err != nil {
+			return err
+		}
+		completion.ProviderErrorCode = code
 	}
 	return sink.writer.CompleteEntrantAction(ctx, completion)
 }
@@ -217,9 +238,27 @@ func channelWelcomeCompletionReason(result effectport.AdapterResult) string {
 	}
 }
 
+func channelWelcomeProviderErrorCode(result effectport.AdapterResult, reason string) (int64, error) {
+	if reason != "provider_rejected" {
+		if result.FailureCode != "" {
+			return 0, errors.New("unexpected channel welcome failure code")
+		}
+		return 0, nil
+	}
+	const prefix = "wecom_errcode_"
+	if !strings.HasPrefix(result.FailureCode, prefix) {
+		return 0, errors.New("missing channel welcome provider error code")
+	}
+	code, err := strconv.ParseInt(strings.TrimPrefix(result.FailureCode, prefix), 10, 64)
+	if err != nil || code == 0 {
+		return 0, errors.New("invalid channel welcome provider error code")
+	}
+	return code, nil
+}
+
 func validChannelWelcomeResultReason(reason string) bool {
 	switch reason {
-	case "welcome_not_configured", "deadline_missing", "deadline_expired", "grant_expired", "material_invalid", "provider_unavailable", "outcome_unknown", "sent", "final_failed", "customer_name_unavailable", "welcome_template_invalid", "welcome_message_too_long", "frozen_message_unavailable":
+	case "welcome_not_configured", "deadline_missing", "deadline_expired", "grant_expired", "material_invalid", "provider_unavailable", "outcome_unknown", "sent", "final_failed", "provider_rejected", "customer_name_unavailable", "welcome_template_invalid", "welcome_message_too_long", "frozen_message_unavailable":
 		return true
 	default:
 		return false

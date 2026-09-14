@@ -113,8 +113,11 @@ type WelcomeMessageFreezeRequest struct {
 
 type EntrantActionCompletion struct {
 	EffectRef, State, ResultDigest, ResultReason string
-	Attempt                                      int32
-	CompletedAt                                  time.Time
+	// ProviderErrorCode is a nonzero numeric code from a completed Provider
+	// rejection. It never carries a response body, credentials, or identity.
+	ProviderErrorCode int64
+	Attempt           int32
+	CompletedAt       time.Time
 }
 
 type EntrantActionCompletionWriter interface {

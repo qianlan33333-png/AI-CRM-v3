@@ -587,7 +587,7 @@ func (*EntrantActionStore) CompleteEntrantAction(ctx context.Context, completion
 	if err != nil {
 		return err
 	}
-	result, err := tx.Exec(ctx, `UPDATE channel_welcome_intents SET state=$2,result_digest=$3,result_reason=$4,attempt_count=GREATEST(attempt_count,$5),updated_at=$6 WHERE effect_ref=$1 AND state IN ('queued','attempted','outcome_unknown','retryable_failed')`, completion.EffectRef, completion.State, completion.ResultDigest, nullableString(completion.ResultReason), completion.Attempt, completion.CompletedAt.UTC())
+	result, err := tx.Exec(ctx, `UPDATE channel_welcome_intents SET state=$2,result_digest=$3,result_reason=$4,provider_error_code=$5,attempt_count=GREATEST(attempt_count,$6),updated_at=$7 WHERE effect_ref=$1 AND state IN ('queued','attempted','outcome_unknown','retryable_failed')`, completion.EffectRef, completion.State, completion.ResultDigest, nullableString(completion.ResultReason), nullableInt64(completion.ProviderErrorCode), completion.Attempt, completion.CompletedAt.UTC())
 	if err != nil {
 		return err
 	}

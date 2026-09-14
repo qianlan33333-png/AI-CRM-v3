@@ -187,6 +187,7 @@ test -f "$release_dir/migrations/0158_order_distribution_qualification_evidence.
 test -f "$release_dir/migrations/0159_distribution_admin_receipts.sql"
 test -f "$release_dir/migrations/0160_external_effect_system_control_actor.sql"
 test -f "$release_dir/migrations/0161_payment_paid_confirmation_time.sql"
+test -f "$release_dir/migrations/0164_channel_welcome_provider_rejections.sql"
 test -f "$release_dir/migrations/0162_payment_h5_distribution_return_path.sql"
 test -f "$release_dir/migrations/0163_payment_profit_sharing_receiver_recovery.sql"
 test -f "$release_dir/migrations/0067_survey_completion_snapshots.sql"

@@ -108,6 +108,7 @@ for migration_contract in \
   '0159_distribution_admin_receipts.sql:Distribution administrative receipts' \
   '0160_external_effect_system_control_actor.sql:External Effects system control actor' \
   '0161_payment_paid_confirmation_time.sql:Payment paid confirmation time' \
+  '0164_channel_welcome_provider_rejections.sql:Channel welcome Provider rejection disposition' \
   '0162_payment_h5_distribution_return_path.sql:Payment H5 Distribution return path' \
   '0163_payment_profit_sharing_receiver_recovery.sql:Payment profit-sharing receiver recovery' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \

@@ -907,7 +907,7 @@ func (client *Client) CreateCustomerAcquisitionLink(ctx context.Context, input w
 // The code is never logged or persisted by this adapter.
 func (client *Client) SendWelcomeMessage(ctx context.Context, welcomeCode, text string, attachments []wecomport.WelcomeAttachment) error {
 	if !client.DirectoryReady() || invalid(welcomeCode) || len([]rune(text)) > 4000 || len(attachments) > 9 || (text == "" && len(attachments) == 0) {
-		return ErrUnavailable
+		return wecomport.WrapProviderWriteError(ErrUnavailable, false)
 	}
 	token, err := client.contactAccessToken(ctx)
 	if err != nil {
@@ -924,26 +924,26 @@ func (client *Client) SendWelcomeMessage(ctx context.Context, welcomeCode, text 
 			switch item.MsgType {
 			case "image":
 				if invalid(item.MediaID) {
-					return ErrUnavailable
+					return wecomport.WrapProviderWriteError(ErrUnavailable, false)
 				}
 				payload = map[string]string{"media_id": item.MediaID}
 			case "file":
 				if invalid(item.MediaID) {
-					return ErrUnavailable
+					return wecomport.WrapProviderWriteError(ErrUnavailable, false)
 				}
 				payload = map[string]string{"media_id": item.MediaID}
 			case "miniprogram":
 				if invalid(item.MediaID) || invalid(item.AppID) || invalid(item.PagePath) || invalid(item.Title) {
-					return ErrUnavailable
+					return wecomport.WrapProviderWriteError(ErrUnavailable, false)
 				}
 				payload = map[string]string{"pic_media_id": item.MediaID, "appid": item.AppID, "page": item.PagePath, "title": item.Title}
 			case "link":
 				if invalid(item.URL) || invalid(item.Title) {
-					return ErrUnavailable
+					return wecomport.WrapProviderWriteError(ErrUnavailable, false)
 				}
 				payload = map[string]string{"title": item.Title, "url": item.URL, "desc": item.Description, "picurl": item.PicURL}
 			default:
-				return ErrUnavailable
+				return wecomport.WrapProviderWriteError(ErrUnavailable, false)
 			}
 			providerAttachments[index] = map[string]any{"msgtype": item.MsgType, item.MsgType: payload}
 		}
@@ -951,10 +951,35 @@ func (client *Client) SendWelcomeMessage(ctx context.Context, welcomeCode, text 
 	}
 	body, err := json.Marshal(request)
 	if err != nil {
-		return ErrResponse
+		return wecomport.WrapProviderWriteError(ErrResponse, false)
 	}
-	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/send_welcome_msg", url.Values{"access_token": {token}}, body)
-	return wecomport.WrapProviderWriteError(err, true)
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/send_welcome_msg", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return classifyWelcomeWriteError(err)
+	}
+	// requestJSON is shared with historical read paths, where omitted or string
+	// errcode values remain compatible. A welcome write needs stricter proof:
+	// only the JSON integer 0 proves acceptance. Every other 2xx shape may be a
+	// proxy/body mismatch after a write and stays outcome_unknown.
+	if code, ok := strictJSONInt(payload.ErrCode); !ok || code != 0 {
+		return wecomport.WrapProviderWriteDisposition(ErrResponse, true, true, false)
+	}
+	return nil
+}
+
+// classifyWelcomeWriteError treats only a completed 2xx JSON response with a
+// nonzero numeric errcode as a definite rejection. Transport errors, non-2xx
+// responses, unreadable bodies, and malformed/missing/string errcodes remain
+// unknown because the one-time welcome write may already have reached WeCom.
+func classifyWelcomeWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var responseErr *providerResponseError
+	if errors.As(err, &responseErr) && responseErr.statusCode >= http.StatusOK && responseErr.statusCode < http.StatusMultipleChoices && responseErr.errCode != 0 {
+		return wecomport.WrapProviderWriteDispositionWithCode(err, true, false, false, responseErr.errCode)
+	}
+	return wecomport.WrapProviderWriteDisposition(err, true, true, false)
 }
 
 func (client *Client) TransferCustomer(ctx context.Context, sourceUserID, targetUserID string, externalUserIDs []string, welcomeMessage string) (wecomport.CustomerTransferResult, error) {

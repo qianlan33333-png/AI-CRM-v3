@@ -109,7 +109,101 @@ func TestChannelWelcomeDedicatedRiverRuntimeJourney(t *testing.T) {
 			t.Fatalf("unknown welcome provider call count=%d", unknownWriter.calls())
 		}
 		fixture.assertWelcomeOutcome(t, unknownInput, effectport.StateUnknown, "outcome_unknown", true)
+
+		// A completed strict Provider rejection is terminal, retains only its safe
+		// numeric code, and must not be converted to unknown or retried.
+		rejectedWriter := &runtimeWelcomeWriter{called: make(chan runtimeWelcomeCall, 1), err: wecomport.WrapProviderWriteDispositionWithCode(errors.New("provider rejected"), true, false, false, 40003)}
+		rejectedInput, _ := fixture.acceptWelcome(t, "runtime-rejected-0001", fixture.now)
+		_, stopRejected := fixture.startRuntime(t, rejectedWriter, nil, true)
+		fixture.waitEffect(t, rejectedInput, effectport.StateFinalFailed)
+		stopRejected()
+		if rejectedWriter.calls() != 1 {
+			t.Fatalf("rejected welcome provider call count=%d", rejectedWriter.calls())
+		}
+		fixture.assertWelcomeOutcome(t, rejectedInput, effectport.StateFinalFailed, "provider_rejected", true)
+		var providerCode *int64
+		if err := fixture.native.QueryRow(fixture.ctx, `SELECT provider_error_code FROM channel_welcome_intents WHERE callback_id=$1`, rejectedInput.CallbackKey).Scan(&providerCode); err != nil || providerCode == nil || *providerCode != 40003 {
+			t.Fatalf("provider rejection code=%v err=%v", providerCode, err)
+		}
+		_, stopRejectedAgain := fixture.startRuntime(t, rejectedWriter, nil, true)
+		time.Sleep(300 * time.Millisecond)
+		stopRejectedAgain()
+		if rejectedWriter.calls() != 1 {
+			t.Fatalf("rejected terminal welcome replayed provider call count=%d", rejectedWriter.calls())
+		}
 	})
+}
+
+func TestChannelWelcomeProviderRejectionCompletionRollsBackAtomically(t *testing.T) {
+	fixture := newChannelWelcomeRuntimeFixture(t)
+	defer fixture.close()
+	input, _ := fixture.acceptWelcome(t, "runtime-rejection-rollback-0001", fixture.now)
+	var effectRef string
+	var jobID int64
+	if err := fixture.native.QueryRow(fixture.ctx, `SELECT i.effect_ref,j.river_job_id FROM channel_welcome_intents i JOIN external_effect_jobs j ON j.effect_id=substring(i.effect_ref FROM 5)::bigint WHERE i.callback_id=$1`, input.CallbackKey).Scan(&effectRef, &jobID); err != nil {
+		t.Fatal(err)
+	}
+	writer := &runtimeWelcomeWriter{called: make(chan runtimeWelcomeCall, 1), err: wecomport.WrapProviderWriteDispositionWithCode(errors.New("provider rejected"), true, false, false, 40003)}
+	reader := channelEntrantActionReaderAdapter{uow: fixture.unit, source: fixture.actions}
+	provider := outbound.NewChannelEntrantProvider(reader, reader, fixture.unit, fixture.grants, nil, nil, writer)
+	completion, err := outbound.NewChannelEntrantCompletionSink(fixture.actions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.effects.SetCompletionSink(channelWelcomeCompletionRouter{welcome: completion, failAfter: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.effects.RunAttempt(fixture.ctx, effectIDNumber(t, effectRef), 1, jobID, provider); err == nil {
+		t.Fatal("expected completion transaction failure")
+	}
+	if writer.calls() != 1 {
+		t.Fatalf("provider calls=%d", writer.calls())
+	}
+	var effectState, intentState string
+	var providerCode *int64
+	if err = fixture.native.QueryRow(fixture.ctx, `SELECT e.state,i.state,i.provider_error_code FROM channel_welcome_intents i JOIN external_effects e ON e.id=substring(i.effect_ref FROM 5)::bigint WHERE i.callback_id=$1`, input.CallbackKey).Scan(&effectState, &intentState, &providerCode); err != nil || effectState != "attempted" || intentState != "queued" || providerCode != nil {
+		t.Fatalf("completion rollback effect=%q intent=%q code=%v err=%v", effectState, intentState, providerCode, err)
+	}
+
+	// River re-delivery after the failed completion sees the committed attempted
+	// lease. It cannot cross the Provider boundary again; it waits for recovery.
+	replayErr := fixture.effects.RunAttempt(fixture.ctx, effectIDNumber(t, effectRef), 1, jobID, provider)
+	var snooze *river.JobSnoozeError
+	if !errors.As(replayErr, &snooze) || snooze.Duration <= 0 || writer.calls() != 1 {
+		t.Fatalf("completion retry err=%v snooze=%+v provider calls=%d", replayErr, snooze, writer.calls())
+	}
+	if _, err = fixture.native.Exec(fixture.ctx, `UPDATE external_effects SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, effectIDNumber(t, effectRef)); err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.effects.RunAttempt(fixture.ctx, effectIDNumber(t, effectRef), 1, jobID, provider); err != nil || writer.calls() != 1 {
+		t.Fatalf("expired recovery err=%v provider calls=%d", err, writer.calls())
+	}
+	if err = fixture.native.QueryRow(fixture.ctx, `SELECT e.state,i.state,i.provider_error_code FROM channel_welcome_intents i JOIN external_effects e ON e.id=substring(i.effect_ref FROM 5)::bigint WHERE i.callback_id=$1`, input.CallbackKey).Scan(&effectState, &intentState, &providerCode); err != nil || effectState != "outcome_unknown" || intentState != "queued" || providerCode != nil {
+		t.Fatalf("recovered effect=%q intent=%q code=%v err=%v", effectState, intentState, providerCode, err)
+	}
+}
+
+func TestChannelWelcomeProviderRejectionCodeConstraintPostgreSQL(t *testing.T) {
+	fixture := newChannelWelcomeRuntimeFixture(t)
+	defer fixture.close()
+	input, _ := fixture.acceptWelcome(t, "runtime-provider-rejection-constraint-0001", fixture.now)
+	var reason *string
+	var code *int64
+	if err := fixture.native.QueryRow(fixture.ctx, `SELECT result_reason,provider_error_code FROM channel_welcome_intents WHERE callback_id=$1`, input.CallbackKey).Scan(&reason, &code); err != nil || reason != nil || code != nil {
+		t.Fatalf("initial NULL/NULL reason=%v code=%v err=%v", reason, code, err)
+	}
+	if _, err := fixture.native.Exec(fixture.ctx, `UPDATE channel_welcome_intents SET state='final_failed',result_reason='provider_rejected',provider_error_code=40003 WHERE callback_id=$1`, input.CallbackKey); err != nil {
+		t.Fatalf("provider_rejected/nonzero rejected: %v", err)
+	}
+	if _, err := fixture.native.Exec(fixture.ctx, `UPDATE channel_welcome_intents SET result_reason=NULL,provider_error_code=40003 WHERE callback_id=$1`, input.CallbackKey); err == nil {
+		t.Fatal("NULL reason with nonzero Provider code passed constraint")
+	}
+	if _, err := fixture.native.Exec(fixture.ctx, `UPDATE channel_welcome_intents SET result_reason='provider_rejected',provider_error_code=NULL WHERE callback_id=$1`, input.CallbackKey); err == nil {
+		t.Fatal("provider_rejected with NULL code passed constraint")
+	}
+	if _, err := fixture.native.Exec(fixture.ctx, `UPDATE channel_welcome_intents SET result_reason=NULL,provider_error_code=NULL WHERE callback_id=$1`, input.CallbackKey); err != nil {
+		t.Fatalf("final NULL/NULL rejected: %v", err)
+	}
 }
 
 func TestChannelWelcomePlainTextFreezesWithoutCustomerDirectoryRead(t *testing.T) {
@@ -432,12 +526,18 @@ func (adapter channelWelcomeRuntimeAdapter) Execute(ctx context.Context, envelop
 }
 
 type channelWelcomeCompletionRouter struct {
-	welcome *outbound.ChannelEntrantCompletionSink
+	welcome   *outbound.ChannelEntrantCompletionSink
+	failAfter bool
 }
 
 func (router channelWelcomeCompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
 	if envelope.Kind == effectport.KindChannelWelcome {
-		return router.welcome.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+		if err := router.welcome.CompleteEffect(ctx, effectRef, envelope, attempt, result); err != nil {
+			return err
+		}
+		if router.failAfter {
+			return errors.New("forced channel welcome completion failure")
+		}
 	}
 	return nil
 }

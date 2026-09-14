@@ -10,6 +10,10 @@ type ProviderWriteError struct {
 	Attempted      bool
 	OutcomeUnknown bool
 	Retryable      bool
+	// ErrorCode is a Provider-supplied numeric rejection code only after a
+	// complete, strictly parsed response. It never stores text, response bodies,
+	// credentials, or identifiers; zero means no safe Provider code exists.
+	ErrorCode int64
 }
 
 func (err *ProviderWriteError) Error() string { return err.Err.Error() }
@@ -31,13 +35,23 @@ func WrapProviderWriteOutcome(err error, attempted, outcomeUnknown bool) error {
 // and can distinguish a definite rejection, a retry-safe pre-request failure,
 // and an indeterminate post-request disconnect.
 func WrapProviderWriteDisposition(err error, attempted, outcomeUnknown, retryable bool) error {
+	return WrapProviderWriteDispositionWithCode(err, attempted, outcomeUnknown, retryable, 0)
+}
+
+// WrapProviderWriteDispositionWithCode carries a strictly parsed numeric
+// Provider rejection code. Callers must pass zero unless a complete Provider
+// response proved a nonzero errcode; unknown outcomes never carry a code.
+func WrapProviderWriteDispositionWithCode(err error, attempted, outcomeUnknown, retryable bool, errorCode int64) error {
 	if err == nil {
 		return nil
 	}
 	if outcomeUnknown || attempted {
 		retryable = false
 	}
-	return &ProviderWriteError{Err: err, Attempted: attempted, OutcomeUnknown: outcomeUnknown, Retryable: retryable}
+	if !attempted || outcomeUnknown || errorCode == 0 {
+		errorCode = 0
+	}
+	return &ProviderWriteError{Err: err, Attempted: attempted, OutcomeUnknown: outcomeUnknown, Retryable: retryable, ErrorCode: errorCode}
 }
 
 func ProviderCallAttempted(err error) bool {
@@ -63,4 +77,15 @@ func ProviderRetryable(err error) bool {
 func ProviderWriteClassified(err error) bool {
 	var providerErr *ProviderWriteError
 	return errors.As(err, &providerErr)
+}
+
+// ProviderErrorCode exposes only a nonzero numeric code from a completed,
+// classified Provider rejection. It deliberately has no access to errmsg or
+// response payloads.
+func ProviderErrorCode(err error) (int64, bool) {
+	var providerErr *ProviderWriteError
+	if !errors.As(err, &providerErr) || !providerErr.Attempted || providerErr.OutcomeUnknown || providerErr.ErrorCode == 0 {
+		return 0, false
+	}
+	return providerErr.ErrorCode, true
 }
