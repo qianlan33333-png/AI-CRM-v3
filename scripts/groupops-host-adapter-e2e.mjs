@@ -750,6 +750,7 @@ try {
   groupOpen.focus();
   groupOpen.click();
   await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key]'), "V3 scoped group picker did not render the authorised directory page");
+  assert.equal(fullWindow.document.querySelector('[data-group-picker-search]'), null, 'the frozen per-keystroke group picker never opens beneath the V3 session');
   const groupRow = fullWindow.document.querySelector('[data-v3-selection-session="group"] [data-v3-group-key]');
   assert.equal(groupRow.textContent.includes("group-9"), true, "picker displays the opaque GroupOps chat reference");
   groupRow.click();
