@@ -8,7 +8,7 @@ async function waitFor(check, message) { for (let attempt = 0; attempt < 100; at
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 function enter(window, input, properties = {}) { const event = new window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }); for (const [name, value] of Object.entries(properties)) Object.defineProperty(event, name, { value }); input.dispatchEvent(event); return event; }
 const calls = [];
-const prompts = ['不符合当前协议', '12', 'receipt-1', '12', 'receipt-1', '8', '商户承担原因'];
+const prompts = ['不符合当前协议', '跨标签读回', '12', 'receipt-1', '12', 'receipt-1', '8', '商户承担原因'];
 let recoveryAttempts = 0;
 let overviewMode = 'ready';
 let holdOverview = false;
@@ -16,8 +16,11 @@ const pendingOverview = [];
 let holdLists = false;
 let failOrders = false;
 let failDistributors = false;
+let failExceptions = false;
 let malformedMoreOnce = false;
 const pendingLists = [];
+let holdDisable = false;
+const pendingDisables = [];
 const dom = new JSDOM('<!doctype html><main id="distribution-admin-root"></main>', { url: 'https://crm.example/admin/distribution', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
   window.Response = Response; window.Headers = Headers; Object.defineProperty(window.crypto, 'randomUUID', { value: globalThis.crypto.randomUUID.bind(globalThis.crypto) }); window.prompt = () => prompts.shift() || '';
 	window.HTMLDialogElement.prototype.showModal = function showModal() { this.open = true; }; window.HTMLDialogElement.prototype.close = function close() { this.open = false; this.dispatchEvent(new window.Event('close')); };
@@ -38,7 +41,9 @@ const dom = new JSDOM('<!doctype html><main id="distribution-admin-root"></main>
 		if (holdLists) return new Promise((resolve) => pendingLists.push({ url, resolve }));
 		if (failOrders && url.pathname === '/api/admin/distribution/orders') throw new Error('orders unavailable');
 		if (failDistributors && url.pathname === '/api/admin/distribution/distributors') throw new Error('distributors unavailable');
+		if (failExceptions && url.pathname === '/api/admin/distribution/exceptions') throw new Error('exceptions unavailable');
 	}
+	if (/\/disable$/.test(url.pathname) && holdDisable) return new Promise((resolve) => pendingDisables.push(resolve));
     if (url.pathname === '/api/admin/distribution/distributors') return json({ items: [{ id: 9, display_name: '<img src=x onerror=window.__nameXss=1>', agreement_version: '2026-09', enabled: true, receiver_ready: false, receiver_status: 'receiver_final_failed', registered_at: '2026-09-14T00:00:00Z', version: 3 }, { id: 10, display_name: '', agreement_version: '2026-09', enabled: false, receiver_ready: true, receiver_status: '', registered_at: '2026-09-14T00:00:00Z', version: 4 }], next_cursor: '' });
     if (url.pathname === '/api/admin/distribution/orders') return json({ items: [{ attribution_id: 11, order_reference: 'O-9', item_line: '1', product_id: 7, product_type: 'standard_product', product_name: '增长课', distributor_display_name: '<img src=x onerror=window.__nameXss=1>', qualification_state: 'eligible', qualification_evidence_reference: '', policy_version: '', rate_basis_points: null, wait_days: undefined, paid_minor: null, currency: 'CNY', attributed_at: 'not-a-date' }], next_cursor: '' });
 	if (url.pathname === '/api/admin/distribution/exceptions') return json({ items: [{ exception_id: 'x1', commission_id: 'c1', distributor_display_name: '<img src=x onerror=window.__nameXss=1>', order_reference: 'O-9', kind: 'qualification_revoked', status: 'open', unpaid_due_minor: 12, already_paid_minor: 33, amount_minor: 12, reason: 'payment_receiver_receipt_limit', payment_instruction_reference: 'pi:1', created_at: '2026-09-14T00:00:00Z', updated_at: '2026-09-14T00:00:00Z', version: 4, can_reconcile: true, can_record_recovery: true, can_record_merchant_liability: true }], next_cursor: '' });
@@ -201,14 +206,28 @@ assert.equal(calls.filter((call) => call.path.endsWith('/disable')).length, 1, '
 await waitFor(() => dom.window.document.body.textContent.includes('操作已提交，但最新服务端记录读取失败'), 'a failed post-command readback must not claim the latest records were read');
 assert.equal(dom.window.document.body.textContent.includes('已读取最新服务端记录'), false, 'failed post-command readback must not falsely claim a successful read');
 failDistributors = false;
+holdDisable = true;
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用').click();
+await waitFor(() => pendingDisables.length === 1, 'delayed disable did not start');
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '订单').click();
+await waitFor(() => dom.window.document.body.textContent.includes('O-9'), 'switching tabs during a mutation did not render orders');
+pendingDisables.shift()(json({}));
+await waitFor(() => dom.window.document.body.textContent.includes('操作已提交，但列表已切换或读取已过期'), 'a switched tab must not be treated as a successful original-tab readback');
+assert.equal(dom.window.document.body.textContent.includes('O-9'), true, 'a stale mutation readback must not replace the current tab');
+assert.equal(dom.window.document.body.textContent.includes('已读取最新服务端记录'), false, 'a stale mutation readback must not claim the original tab was refreshed');
+holdDisable = false;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '异常').click();
 await waitFor(() => dom.window.document.body.textContent.includes('异常待确认'), 'exception list did not render');
 assert.equal(dom.window.document.body.textContent.includes('接收方收款额度已达上限，请核验额度'), true, 'bounded Payment failure class must give administrators a concrete Chinese action');
+failExceptions = true;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记追回').click();
 await waitFor(() => calls.some((call) => call.path.endsWith('/recoveries')), 'recovery did not call real endpoint');
 const recoveryCalls = calls.filter((call) => call.path.endsWith('/recoveries'));
 assert.deepEqual(JSON.parse(recoveryCalls[0].body), { version: 4, amount_minor: 12, evidence_reference: 'receipt-1' }, 'manual recovery cannot claim WeChat payout and must include evidence');
-await waitFor(() => dom.window.document.body.textContent.includes('提交结果未确认'), 'unknown recovery result did not force a server readback');
+await waitFor(() => dom.window.document.body.textContent.includes('提交结果仍未确认，最新服务端记录读取失败'), 'an unconfirmed command and failed readback must remain explicit');
+assert.equal(dom.window.document.body.textContent.includes('异常待确认'), true, 'a failed command readback must preserve the selected exception tab rather than covering it with another tab');
+assert.equal(dom.window.document.body.textContent.includes('已读取最新服务端记录'), false, 'a failed command plus failed readback must not claim a confirmed refresh');
+failExceptions = false;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记追回').click();
 await waitFor(() => calls.filter((call) => call.path.endsWith('/recoveries')).length === 2, 'recovery retry did not submit');
 const retriedRecoveryCalls = calls.filter((call) => call.path.endsWith('/recoveries'));

@@ -643,6 +643,7 @@ async function showException(id: string): Promise<void> {
 }
 
 async function mutate(scope: string, path: string, body: string): Promise<void> {
+  const targetTab = tab;
   if (pendingMutations.has(scope)) {
     notice('操作正在提交，请等待当前结果。');
     return;
@@ -651,14 +652,14 @@ async function mutate(scope: string, path: string, body: string): Promise<void> 
   try {
     await request(path, { method: 'POST', body }, scope);
     keys.delete(scope);
-    const readback = await load();
+    const readback = await load('', targetTab);
     if (readback === 'failed') {
       notice('操作已提交，但最新服务端记录读取失败；请重新读取后确认。', true);
     } else if (readback === 'stale') {
       notice('操作已提交，但列表已切换或读取已过期；请重新读取后确认。', true);
     }
   } catch (error) {
-    const readback = await load();
+    const readback = await load('', targetTab);
     const detail = error instanceof Error ? error.message : '请核对后再操作。';
     if (readback === 'applied') {
       notice(`提交结果未确认，已读取最新服务端记录：${detail}`, true);
