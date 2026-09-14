@@ -8,6 +8,7 @@ import { AdminController } from '../src/admin/controller';
 import { apiRequestOptions } from '../src/api/transport';
 import { commerceProviderLabel, commerceStatusLabel } from './commercePresentation';
 import { formatShanghaiDateTime } from './adminDateTime';
+import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionSettlementStatusLabel } from './distributionPresentation';
 
 type OrderController = { page: string; api: { mode: string }; state: { orderFilters: Record<string, string> } };
 type DetailRecord = Record<string, unknown>;
@@ -38,6 +39,7 @@ orderPrototype.renderVals = function () {
 
 const originalFetch = globalThis.fetch.bind(globalThis);
 let detailContext: DetailContext = {};
+const listDistributionByOrderReference = new Map<string, DetailRecord>();
 const refundIntents = new Map<string, RefundIntent>();
 const pendingRefundIntentScopes = new Set<string>();
 const refundIntentStorageKey = 'aicrm.order-refund-intents.v1';
@@ -421,10 +423,13 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     const items = payload.items.map((value) => {
       const item = asRecord(value);
       if (!item) return value;
+      const reference = text(item.merchant_order_no, '');
+      if (reference) listDistributionByOrderReference.set(reference, item);
       const channel = typeof item.provider_label === 'string' && item.provider_label.trim()
         ? item.provider_label : typeof item.provider === 'string' ? item.provider : item.currency;
       return { ...item, currency: channel };
     });
+    schedulePresentation();
     const headers = new Headers(response.headers);
     headers.delete('content-length');
     return new Response(JSON.stringify({ ...payload, items }), { status: response.status, statusText: response.statusText, headers });
@@ -457,6 +462,13 @@ function applyOrderPresentation(): void {
       if (!label.dataset.orderStatus) label.dataset.orderStatus = status;
       const localized = commerceStatusLabel('order', status);
       if (label.textContent !== localized) label.textContent = localized;
+    }
+    const summary = distributionListSummary(listDistributionByOrderReference.get(orderReference(row) || ''));
+    const host = cells[1];
+    if (host && summary) {
+      let node = host.querySelector<HTMLElement>('[data-order-distribution-summary]');
+      if (!node) { node = element('small'); node.dataset.orderDistributionSummary = ''; node.style.cssText = 'display:block;margin-top:4px;color:#69707A;font-size:12px'; host.appendChild(node); }
+      if (node.textContent !== summary) node.textContent = summary;
     }
   });
 }
@@ -1009,6 +1021,78 @@ async function submitRefundConfirmation(order: DetailRecord, scope: RefundScope,
   }
 }
 
+function signedMinorAmount(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value) : NaN;
+  return Number.isSafeInteger(number) ? number : undefined;
+}
+function moneyFromMinorCurrency(value: unknown, currency: unknown): string {
+  const minor = signedMinorAmount(value);
+  const code = text(currency, 'CNY');
+  if (minor == null) return '金额待确认';
+  const sign = minor < 0 ? '-' : '';
+  const decimal = decimalFromMinor(Math.abs(minor));
+  return code === 'CNY' ? `${sign}¥${decimal}` : `${sign}${code} ${decimal}`;
+}
+function distributionListSummary(order: DetailRecord | undefined): string | undefined {
+  if (!order || !Object.prototype.hasOwnProperty.call(order, 'distribution_read_state')) return '分销信息暂不可读取';
+  if (text(order.distribution_read_state, '') !== 'available') return '分销信息暂不可读取';
+  const lines = arrayField(order, 'distribution').map(asRecord).filter((line): line is DetailRecord => Boolean(line));
+  if (lines.length === 0) return '非分销订单';
+  const names = Array.from(new Set(lines.map((line) => text(line.distributor_display_name, '未设置昵称'))));
+  if (lines.some((line) => line.has_commission !== true)) return `分销：${names.join('、')} · 归因待付款`;
+  const totals = new Map<string, number>();
+  for (const line of lines) {
+    const currency = text(line.currency, 'CNY');
+    totals.set(currency, (totals.get(currency) || 0) + (signedMinorAmount(line.current_payable_minor) || 0));
+  }
+  return `分销：${names.join('、')} · 当前应付 ${Array.from(totals, ([currency, amount]) => moneyFromMinorCurrency(amount, currency)).join(' / ')}`;
+}
+function appendDistributionDetailSections(card: HTMLElement, order: DetailRecord): void {
+  if (!Object.prototype.hasOwnProperty.call(order, 'distribution_read_state') || text(order.distribution_read_state, '') !== 'available') {
+    appendDetailSection(card, '分销信息', [['读取状态', '分销信息暂不可读取']]);
+    return;
+  }
+  const lines = arrayField(order, 'distribution').map(asRecord).filter((line): line is DetailRecord => Boolean(line));
+  if (lines.length === 0) {
+    appendDetailSection(card, '分销信息', [['订单归因', '非分销订单']]);
+    return;
+  }
+  for (const line of lines) {
+    const currency = text(line.currency, 'CNY');
+    const entries: Array<[string, string]> = [
+      ['商品行', `${String(line.item_line || '—')} · ${text(line.product_name, '未提供')}`],
+      ['分销员', text(line.distributor_display_name, '未设置昵称')],
+      ['冻结佣金比例', `${(Number(line.rate_basis_points) / 100).toFixed(2)}%`],
+      ['退款复核等待', `${String(line.wait_days)} 天`],
+    ];
+    if (line.has_commission !== true) {
+      entries.push(['佣金状态', '归因待付款／未形成佣金']);
+      appendDetailSection(card, '分销信息', entries);
+      continue;
+    }
+    entries.push(
+      ['初始佣金', moneyFromMinorCurrency(line.initial_minor, currency)],
+      ['当前应付佣金', moneyFromMinorCurrency(line.current_payable_minor, currency)],
+      ['已分账佣金', moneyFromMinorCurrency(line.paid_minor, currency)],
+      ['佣金状态', distributionCommissionStatusLabel(line.status)],
+      ['预计可结算时间', formatShanghaiDateTime(line.due_at)],
+      ['分账成功确认时间', line.settlement_confirmed_at ? formatShanghaiDateTime(line.settlement_confirmed_at) : '未记录'],
+    );
+    const reasons = [text(line.hold_reason, ''), text(line.cancel_reason, ''), text(line.exception_reason, '')].filter(Boolean);
+    if (reasons.length) entries.push(['状态说明', reasons.join('；')]);
+    for (const adjustment of arrayField(line, 'adjustments').map(asRecord).filter((item): item is DetailRecord => Boolean(item))) {
+      entries.push([distributionAdjustmentLabel(adjustment.kind), `${moneyFromMinorCurrency(adjustment.delta_minor, currency)} · ${text(adjustment.reason, '未说明')}`]);
+    }
+    for (const settlement of arrayField(line, 'settlements').map(asRecord).filter((item): item is DetailRecord => Boolean(item))) {
+      entries.push([`分账记录 ${text(settlement.reference, '未记录')}`, `${moneyFromMinorCurrency(settlement.amount_minor, settlement.currency || currency)} · ${distributionSettlementStatusLabel(settlement.state)} · 分账成功确认时间 ${settlement.settlement_confirmed_at ? formatShanghaiDateTime(settlement.settlement_confirmed_at) : '未记录'}`]);
+    }
+    for (const exception of arrayField(line, 'exceptions').map(asRecord).filter((item): item is DetailRecord => Boolean(item))) {
+      entries.push([distributionExceptionLabel(exception.kind), text(exception.reason, '未说明')]);
+    }
+    appendDetailSection(card, '分销信息', entries);
+  }
+}
+
 function applyOrderDetailStatusBadge(order: DetailRecord): void {
   const orderNo = text(order.merchant_order_no, '');
   if (!orderNo) return;
@@ -1103,6 +1187,7 @@ function applyOrderDetailPresentation(): void {
     ['付款金额', money(order.amount_yuan)],
     ['当前可退金额', moneyFromMinor(order.refundable_amount_total)],
   ]);
+  appendDistributionDetailSections(card, order);
   replaceExternalEffectsPanel();
   replaceRefundPanel(order);
 }

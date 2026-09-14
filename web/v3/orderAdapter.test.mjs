@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
 
@@ -38,7 +38,7 @@ const dom = new JSDOM(`<!doctype html><body>
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       calls.push(url);
-      return new Response(JSON.stringify({ items: [{ created_at: '2026-09-08T00:00:00Z', payer_name: '付款人姓名', payer_id: 'customer:123', provider_label: '微信支付', currency: 'CNY' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [{ merchant_order_no: 'merchant-1', distribution_read_state: 'available', distribution: [], created_at: '2026-09-08T00:00:00Z', payer_name: '付款人姓名', payer_id: 'customer:123', provider_label: '微信支付', currency: 'CNY' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
   },
 });
@@ -72,6 +72,7 @@ try {
   document.getElementById('orderMobile').value = '138 0013 8000';
   await dom.window.fetch('/api/admin/orders?limit=50&offset=0');
   assert.equal(calls.at(-1).searchParams.get('phone'), '13800138000', 'phone searches must stay server-side and preserve paging');
+  assert.match(document.querySelector('tbody td:nth-child(2)').textContent, /非分销订单/, 'the list must show the server-provided centralized distribution summary');
   assert.equal(calls.at(-1).searchParams.get('external_userid'), null, 'phone and external-contact filters are mutually exclusive');
 
   document.getElementById('orderMobile').value = 'external-contact-fixture';
@@ -102,6 +103,7 @@ const detailDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
         record_origin: 'native', merchant_order_no: 'M-ORDER-TEST-0001', provider: 'wechat',
         transaction_id: '4200000000000000000000000000', payer_name: '测试买家', payer_id: 'customer:101', payer_phone_masked: '138****0000',
         product_name: '测试商品', amount_yuan: '20.00', refundable_amount_total: 2000, created_at: '2026-09-30T16:01:02Z', status: 'paid',
+        distribution_read_state: 'available', distribution: [{ item_line: 1, product_name: '测试商品', distributor_display_name: '分销员甲', rate_basis_points: 1234, wait_days: 7, policy_version: 3, has_commission: true, initial_minor: 246, current_payable_minor: 222, paid_minor: 100, currency: 'CNY', status: 'exception', hold_reason: '退款复核中', cancel_reason: '', exception_reason: '部分退款待处理', due_at: '2026-10-07T16:01:02Z', settlement_confirmed_at: '2026-10-08T16:01:02Z', adjustments: [{ kind: 'buyer_refund', delta_minor: -24, resulting_payable_minor: 222, reason: '部分退款', occurred_at: '2026-10-02T16:01:02Z' }], settlements: [{ reference: 'dstl_1', amount_minor: 100, currency: 'CNY', state: 'receiver_succeeded', settlement_confirmed_at: '2026-10-08T16:01:02Z' }, { reference: 'dstl_2', amount_minor: 22, currency: 'CNY', state: 'receiver_succeeded', settlement_confirmed_at: null }], exceptions: [{ kind: 'buyer_refund_after_paid', status: 'open', amount_minor: 100, reason: '退款后待处理', evidence_reference: 'refund_1' }] }],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage([
         { refund_no: 'RF-TEST-1', refund_amount_total: 2000, status: 'completed', reason: '测试退款', created_at: '2026-10-01T00:01:02+08:00' },
@@ -133,6 +135,14 @@ try {
   assert.match(detailDom.window.document.body.textContent, /支付信息/, 'payment facts belong in their own partition');
   assert.match(detailDom.window.document.body.textContent, /买家信息/, 'buyer facts belong in their own partition');
   assert.match(detailDom.window.document.body.textContent, /商品与金额/, 'item and amount facts belong in their own partition');
+  assert.match(detailDom.window.document.body.textContent, /分销信息/, 'detail must include the Distribution-owned item snapshot section');
+  assert.match(detailDom.window.document.body.textContent, /冻结佣金比例12.34%/, 'detail must use the frozen attribution ratio, not current product policy');
+  assert.match(detailDom.window.document.body.textContent, /退款复核等待7 天/, 'detail must show the frozen refund-review wait days');
+  assert.match(detailDom.window.document.body.textContent, /分账成功确认时间2026-10-09 00:01:02/, 'detail labels audit fact as system split confirmation, not bank arrival');
+  assert.match(detailDom.window.document.body.textContent, /买家退款调整/, 'partial refund adjustment evidence remains visible');
+  assert.match(detailDom.window.document.body.textContent, /退款后已分账/, 'exception evidence remains visible');
+  assert.match(detailDom.window.document.body.textContent, /分账记录 dstl_1.*分账成功确认时间\s*2026-10-09 00:01:02/, 'each settlement must use its own audit confirmation time');
+  assert.match(detailDom.window.document.body.textContent, /分账记录 dstl_2.*分账成功确认时间\s*未记录/, 'a settlement without an audit fact must not borrow created or updated time');
   assert.match(detailDom.window.document.body.textContent, /CID-101/, 'customer information must expose a business-facing canonical customer number');
   assert.ok(!detailDom.window.document.body.textContent.includes('customer:101'), 'the internal canonical key must not be shown directly');
   assert.match(detailDom.window.document.body.textContent, /4200000000000000000000000000/, 'the true provider transaction identifier remains available for confirmation');
@@ -829,6 +839,35 @@ try {
   assert.ok(Array.from(networkDom.window.document.querySelectorAll('button')).some((button) => button.textContent === '读取当前订单退款记录'), 'network failure keeps the scoped readback recovery control');
 } finally {
   networkDom.window.close();
+}
+
+
+const attributedUnpaidOrderNo = 'M-DISTRIBUTION-UNPAID';
+const attributedUnpaidDom = new JSDOM(refundDetailHTML(attributedUnpaidOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${attributedUnpaidOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === `/api/admin/orders/${attributedUnpaidOrderNo}`) return new Response(JSON.stringify({ ...nativeOrderFixture(attributedUnpaidOrderNo), distribution_read_state: 'available', distribution: [{ item_line: 2, product_name: '待付款归因商品', distributor_display_name: '分销员乙', rate_basis_points: 2345, wait_days: 9, policy_version: 4, has_commission: false, initial_minor: 0, current_payable_minor: 0, paid_minor: 0, currency: 'CNY', status: '', hold_reason: '', cancel_reason: '', exception_reason: '', due_at: null, settlement_confirmed_at: null, adjustments: [], settlements: [], exceptions: [] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  attributedUnpaidDom.window.eval(host);
+  await pause();
+  await attributedUnpaidDom.window.fetch('/api/admin/refunds');
+  await pause();
+  const body = attributedUnpaidDom.window.document.body.textContent;
+  assert.match(body, /分销员乙/, 'unpaid attribution keeps its distributor display name');
+  assert.match(body, /冻结佣金比例23.45%/, 'unpaid attribution keeps its frozen policy snapshot');
+  assert.match(body, /退款复核等待9 天/, 'unpaid attribution keeps its frozen wait days');
+  assert.match(body, /归因待付款／未形成佣金/, 'unpaid attribution is distinct from a zero commission or non-distribution order');
+} finally {
+  attributedUnpaidDom.window.close();
 }
 
 console.log('order refund idempotency, exact readback, and unavailable-state journeys: PASS');

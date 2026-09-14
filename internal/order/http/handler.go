@@ -18,6 +18,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 )
@@ -39,12 +40,23 @@ type Handler struct {
 	security        RequestSecurity
 	customers       customerport.DirectoryContactDisplayReader
 	customerFilters orderport.CustomerFilterResolver
+	distribution    distributionport.OrderDistributionReader
 }
 
 // SetCustomerFilterResolver installs the composition-owned OneID read bridge
 // for the optional phone/external-contact list filters.  Absence of this
 // bridge fails closed for those filters; it never turns them into an
 // unfiltered order query.
+// SetDistributionReader installs Distribution's Order-ID batch read port. Order
+// authorization remains the gate before this projection is requested.
+func (h *Handler) SetDistributionReader(reader distributionport.OrderDistributionReader) error {
+	if h == nil || reader == nil {
+		return errors.New("order distribution reader is required")
+	}
+	h.distribution = reader
+	return nil
+}
+
 func (h *Handler) SetCustomerFilterResolver(resolver orderport.CustomerFilterResolver) error {
 	if h == nil || resolver == nil {
 		return errors.New("order customer filter resolver is required")
@@ -115,8 +127,12 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, path string) {
 	}
 	items := make([]orderResponse, 0, len(page.Items))
 	names := h.payerDisplays(r.Context(), page.Items)
+	distribution, distributionState := h.distributionFor(r.Context(), page.Items)
 	for _, item := range page.Items {
-		items = append(items, responseFrom(item, names))
+		response := responseFrom(item, names)
+		response.DistributionReadState = distributionState
+		response.Distribution = orderDistributionJSON(distribution[item.ID])
+		items = append(items, response)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "orders": items, "total": page.Total, "limit": query.Limit, "offset": query.Offset, "has_more": page.NextCursor != "", "next_cursor": page.NextCursor})
 }
@@ -185,6 +201,9 @@ func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string)
 	}
 	if len(parts) == 1 {
 		response := responseFrom(order, h.payerDisplays(r.Context(), []domain.Snapshot{order}))
+		distribution, state := h.distributionFor(r.Context(), []domain.Snapshot{order})
+		response.DistributionReadState = state
+		response.Distribution = orderDistributionJSON(distribution[order.ID])
 		response.RefundableAmountTotal = order.Amount.AmountMinor - order.RefundedMinor
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -383,27 +402,92 @@ func parseListQuery(values url.Values) (orderport.ListQuery, bool) {
 }
 
 type orderResponse struct {
-	ID                    int64         `json:"id"`
-	RecordOrigin          string        `json:"record_origin"`
-	CreatedAt             time.Time     `json:"created_at"`
-	MerchantOrderNo       string        `json:"merchant_order_no"`
-	OutTradeNo            string        `json:"out_trade_no"`
-	OrderNo               string        `json:"order_no"`
-	PlatformTransactionNo string        `json:"platform_transaction_no"`
-	TransactionID         string        `json:"transaction_id"`
-	PayerName             string        `json:"payer_name"`
-	PayerID               string        `json:"payer_id"`
-	PayerPhoneMasked      string        `json:"payer_phone_masked"`
-	ProductCode           string        `json:"product_code"`
-	ProductName           string        `json:"product_name"`
-	AmountYuan            string        `json:"amount_yuan"`
-	Currency              string        `json:"currency"`
-	Status                domain.Status `json:"status"`
-	StatusLabel           string        `json:"status_label"`
-	Provider              string        `json:"provider"`
-	ProviderLabel         string        `json:"provider_label"`
-	DetailURL             string        `json:"detail_url"`
-	RefundableAmountTotal int64         `json:"refundable_amount_total"`
+	ID                    int64            `json:"id"`
+	RecordOrigin          string           `json:"record_origin"`
+	CreatedAt             time.Time        `json:"created_at"`
+	MerchantOrderNo       string           `json:"merchant_order_no"`
+	OutTradeNo            string           `json:"out_trade_no"`
+	OrderNo               string           `json:"order_no"`
+	PlatformTransactionNo string           `json:"platform_transaction_no"`
+	TransactionID         string           `json:"transaction_id"`
+	PayerName             string           `json:"payer_name"`
+	PayerID               string           `json:"payer_id"`
+	PayerPhoneMasked      string           `json:"payer_phone_masked"`
+	ProductCode           string           `json:"product_code"`
+	ProductName           string           `json:"product_name"`
+	AmountYuan            string           `json:"amount_yuan"`
+	Currency              string           `json:"currency"`
+	Status                domain.Status    `json:"status"`
+	StatusLabel           string           `json:"status_label"`
+	Provider              string           `json:"provider"`
+	ProviderLabel         string           `json:"provider_label"`
+	DetailURL             string           `json:"detail_url"`
+	RefundableAmountTotal int64            `json:"refundable_amount_total"`
+	DistributionReadState string           `json:"distribution_read_state,omitempty"`
+	Distribution          []map[string]any `json:"distribution,omitempty"`
+}
+
+func (h *Handler) distributionFor(ctx context.Context, orders []domain.Snapshot) (map[int64][]distributionport.OrderDistributionLine, string) {
+	if h == nil || h.distribution == nil {
+		return nil, "unavailable"
+	}
+	ids := make([]int64, 0, len(orders))
+	for _, order := range orders {
+		if order.ID > 0 {
+			ids = append(ids, order.ID)
+		}
+	}
+	values, err := h.distribution.ReadOrderDistribution(ctx, ids)
+	if err != nil {
+		return nil, "unavailable"
+	}
+	return values, "available"
+}
+
+func orderDistributionJSON(lines []distributionport.OrderDistributionLine) []map[string]any {
+	if len(lines) == 0 {
+		return []map[string]any{}
+	}
+	result := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		value := map[string]any{
+			"item_line": line.ItemLine, "product_name": line.ProductName,
+			"distributor_display_name": line.DistributorDisplayName,
+			"rate_basis_points":        line.RateBasisPoints, "wait_days": line.WaitDays,
+			"policy_version": line.PolicyVersion, "has_commission": line.HasCommission,
+			"initial_minor": line.InitialMinor, "current_payable_minor": line.CurrentPayableMinor,
+			"paid_minor": line.PaidMinor, "currency": line.Currency, "status": line.Status,
+			"hold_reason": line.HoldReason, "cancel_reason": line.CancelReason,
+			"exception_reason": line.ExceptionReason, "due_at": line.DueAt,
+			"settlement_confirmed_at": line.SettlementConfirmedAt,
+			"adjustments":             orderDistributionAdjustmentsJSON(line.Adjustments),
+			"settlements":             orderDistributionSettlementsJSON(line.Settlements),
+			"exceptions":              orderDistributionExceptionsJSON(line.Exceptions),
+		}
+		result = append(result, value)
+	}
+	return result
+}
+func orderDistributionAdjustmentsJSON(items []distributionport.OrderDistributionAdjustment) []map[string]any {
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		result = append(result, map[string]any{"kind": item.Kind, "delta_minor": item.DeltaMinor, "resulting_payable_minor": item.ResultingPayableMinor, "reason": item.Reason, "occurred_at": item.OccurredAt.UTC()})
+	}
+	return result
+}
+func orderDistributionSettlementsJSON(items []distributionport.OrderDistributionSettlement) []map[string]any {
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		result = append(result, map[string]any{"reference": item.Reference, "amount_minor": item.AmountMinor, "currency": item.Currency, "state": item.State, "provider_deadline_at": item.ProviderDeadlineAt, "settlement_confirmed_at": item.SettlementConfirmedAt, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
+	}
+	return result
+}
+func orderDistributionExceptionsJSON(items []distributionport.OrderDistributionException) []map[string]any {
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		result = append(result, map[string]any{"kind": item.Kind, "status": item.Status, "amount_minor": item.AmountMinor, "reason": item.Reason, "evidence_reference": item.EvidenceReference, "created_at": item.CreatedAt.UTC(), "updated_at": item.UpdatedAt.UTC()})
+	}
+	return result
 }
 
 func responseFrom(order domain.Snapshot, customers map[customerdomain.CustomerID]customerport.DirectoryContactDisplay) orderResponse {

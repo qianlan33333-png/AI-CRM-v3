@@ -131,6 +131,55 @@ func (s *ReadModelService) ReadAdminOrderDetail(c context.Context, id int64) (v 
 	}
 	return
 }
+
+// orderDistributionStore is deliberately optional so older public/admin read
+// model fakes and callers do not acquire Order data access. Repository is the
+// only production implementation and still owns its Distribution tables.
+type orderDistributionStore interface {
+	ReadOrderDistribution(context.Context, []int64) (map[int64][]distributionport.OrderDistributionLine, error)
+}
+
+// ReadOrderDistribution supplies Order with a bounded, batch-only snapshot.
+// Customer display names are resolved after Distribution's transaction, as in
+// the admin read model, and no Order table is read here.
+func (s *ReadModelService) ReadOrderDistribution(c context.Context, ids []int64) (v map[int64][]distributionport.OrderDistributionLine, e error) {
+	if len(ids) == 0 {
+		return map[int64][]distributionport.OrderDistributionLine{}, nil
+	}
+	store, ok := s.store.(orderDistributionStore)
+	if !ok {
+		return nil, distributionport.ErrUnavailable
+	}
+	v = make(map[int64][]distributionport.OrderDistributionLine)
+	e = s.uow.Within(c, func(t context.Context) error {
+		v, e = store.ReadOrderDistribution(t, ids)
+		return e
+	})
+	if e != nil {
+		return nil, e
+	}
+	customerIDs := make([]customerdomain.CustomerID, 0)
+	for _, lines := range v {
+		for _, line := range lines {
+			customerIDs = append(customerIDs, line.DistributorCustomerID)
+		}
+	}
+	if len(customerIDs) == 0 {
+		return v, nil
+	}
+	names, e := s.adminDisplayNames(c, uniqueAdminCustomerIDs(customerIDs))
+	if e != nil {
+		return nil, e
+	}
+	for orderID, lines := range v {
+		for i := range lines {
+			lines[i].DistributorDisplayName = adminDisplayName(names, lines[i].DistributorCustomerID)
+		}
+		v[orderID] = lines
+	}
+	return v, nil
+}
+
 func (s *ReadModelService) ReadAdminExceptionDetail(c context.Context, id int64) (v distributionport.AdminException, e error) {
 	if id < 1 {
 		return v, distributionport.ErrNotFound

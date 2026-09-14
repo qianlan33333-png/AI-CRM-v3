@@ -1373,6 +1373,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if distributionErr = readModelService.SetDirectoryDisplayNameReader(orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); distributionErr != nil {
 			return fail(distributionErr)
 		}
+		if distributionErr = orderHandler.SetDistributionReader(readModelService); distributionErr != nil {
+			return fail(distributionErr)
+		}
 		distributionPublic, distributionErr = distributionhttp.NewHandler(distributionhttp.Config{Registration: registration, Promotion: promotion, Earnings: readModelService, Sessions: browserSessions, Bridge: bridge, CookieSecure: true, AllowedOrigins: []string{cfg.PublicOrigin, h5PublicOrigin(cfg)}})
 		if distributionErr != nil {
 			return fail(distributionErr)

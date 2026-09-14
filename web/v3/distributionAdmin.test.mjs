@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
 import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
 
-const bundle = await buildTestBrowserBundle(new URL('./distributionAdmin.ts', import.meta.url).pathname);
+const bundle = await buildTestBrowserBundle(fileURLToPath(new URL('./distributionAdmin.ts', import.meta.url)));
 const delay = (ms = 15) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(check, message) { for (let attempt = 0; attempt < 100; attempt++) { if (check()) return; await delay(); } throw new Error(message); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -43,7 +44,7 @@ assert.equal(calls.some((call) => call.path === '/api/admin/distribution/distrib
 await waitFor(() => dom.window.document.body.textContent.includes('买家退款调整') && dom.window.document.body.textContent.includes('SET-9'), 'order detail did not render concrete adjustment and settlement facts');
 assert.equal(dom.window.document.body.textContent.includes('创建时间'), true, 'settlement detail must show its persisted created time');
 assert.equal(dom.window.document.body.textContent.includes('退款/资格调整：'), false, 'order detail cannot replace facts with aggregate counts');
-[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.includes('退款后已付')).click();
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.includes('退款后已分账')).click();
 await waitFor(() => dom.window.document.body.textContent.includes('管理员') && dom.window.document.body.textContent.includes('已登记追回'), 'exception detail did not render readable audit facts');
 assert.equal(dom.window.document.body.textContent.includes('access:7') || dom.window.document.body.textContent.includes('distribution.recovery_recorded.v1'), false, 'exception detail must not expose internal actor or event codes');
 [...dom.window.document.querySelectorAll('button')].filter((button) => button.textContent === '关闭').forEach((button) => button.click());
