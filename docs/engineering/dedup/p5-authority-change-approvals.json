@@ -665,6 +665,28 @@
       ],
       "reason": "Add the Root-directed GroupOps owner-scoped directory q parameter to the active V3 OpenAPI contract. The query remains a local authorized read; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
       "review_reference": "Root review of PR #300 GroupOps directory pagination and search contract on 2026-09-15"
+    },
+    {
+      "base_commit": "2cc2fd86c73384fa6e5a6830373178310c5b95a0",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b7553012d12adfcb9b424d3980167b69e9e3515d9f8f7128b63f99e13cb279eb",
+          "head_sha256": "dc700ae5927e99f6ce5319e9121bb94dced11f221e4ac6a81d7a8d73fa58a2f3"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "021866a04c93fe46f5e7ebb2ba8bcdd0e93a41c109012b798f891b11d9095e02",
+          "head_sha256": "b720029b6996b5e9f1a2ca6c029bbc27c48eac85e1d756057f7519aa561e730f"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "5d310bfb95ec614c28df656f147425355451ba2ae8680e2667d7e167416802f9",
+          "head_sha256": "4236850f0acd37d9647290ce0abdf632bf938bf2d3a0d0094d6f7d20f78292c7"
+        }
+      ],
+      "reason": "Rebind the already Root-reviewed GroupOps owner-scoped directory query authority metadata after synchronizing the reviewed material, group, and tag selection stack to the current V3 main baseline. Frozen donor payloads remain unchanged.",
+      "review_reference": "Root review of PR #300 GroupOps directory pagination and search contract on 2026-09-15"
     }
   ]
 }
