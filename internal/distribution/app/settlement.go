@@ -34,6 +34,7 @@ type settlementStore interface {
 	FindOpenExceptionWithin(context.Context, int64, string) (distributionstore.Exception, error)
 	FindExceptionByEvidenceWithin(context.Context, int64, string, string) (distributionstore.Exception, error)
 	HasExceptionWithReasonWithin(context.Context, int64, string, string) (bool, error)
+	ResolveOpenBusinessExceptionsWithin(context.Context, int64, time.Time) ([]distributionstore.Exception, error)
 	AppendAuditWithin(context.Context, string, string, int64, string, any, time.Time) error
 	AppendOutboxWithin(context.Context, string, string, int64, any, time.Time) error
 }
@@ -310,6 +311,9 @@ func (s *SettlementService) applyReconciliation(ctx context.Context, commissionI
 				if _, err = s.store.UpdateCommissionWithin(tx, next, commission.Version); err != nil {
 					return err
 				}
+				if err = s.resolveBusinessExceptionsWithin(tx, commission.ID, reason, now); err != nil {
+					return err
+				}
 				if next.CurrentPayableMinor != commission.CurrentPayableMinor {
 					if err = s.store.AppendCommissionAdjustmentWithin(tx, distributionstore.CommissionAdjustment{CommissionID: commission.ID, Kind: "qualification_revoke", DeltaMinor: next.CurrentPayableMinor - commission.CurrentPayableMinor, ResultingPayableMinor: next.CurrentPayableMinor, Reason: reason, SourceRef: value.Attribution.QualificationEvidenceRef, OccurredAt: now}); err != nil {
 						return err
@@ -347,6 +351,19 @@ func (s *SettlementService) applyReconciliation(ctx context.Context, commissionI
 			return err
 		}
 		return s.releaseRemaining(ctx, value, settlement)
+	}
+	return nil
+}
+
+func (s *SettlementService) resolveBusinessExceptionsWithin(ctx context.Context, commissionID int64, cancellationReason string, now time.Time) error {
+	exceptions, err := s.store.ResolveOpenBusinessExceptionsWithin(ctx, commissionID, now)
+	if err != nil {
+		return err
+	}
+	for _, exception := range exceptions {
+		if err = s.auditWithin(ctx, "distribution.exception_resolved.v1", "exception", exception.ID, "worker:distribution-due", map[string]any{"commission_id": commissionID, "reason": cancellationReason, "exception_kind": exception.Kind, "resolution": "commission_cancelled"}, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }

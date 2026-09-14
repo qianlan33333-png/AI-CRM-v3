@@ -21,6 +21,7 @@ type adminStore interface {
 	ReadAdminExceptionWithin(context.Context, int64, bool) (distributionstore.AdminExceptionDetail, error)
 	UpdateAdminExceptionWithin(context.Context, distributionstore.AdminExceptionDetail, int64, time.Time) (distributionstore.AdminExceptionDetail, error)
 	ReadCommissionWithin(context.Context, int64, bool) (distributiondomain.Commission, error)
+	SumRecordedAfterSalesHandlingWithin(context.Context, int64) (int64, error)
 	AppendCommissionAdjustmentWithin(context.Context, distributionstore.CommissionAdjustment) error
 	ReadOperationReceiptWithin(context.Context, string, string, string) (distributionstore.OperationReceipt, bool, error)
 	AppendOperationReceiptWithin(context.Context, string, string, string, [sha256.Size]byte, string, int64, time.Time) error
@@ -118,14 +119,19 @@ func (s *AdminService) ReconcileException(ctx context.Context, command distribut
 	}
 
 	var initial distributionstore.AdminExceptionDetail
+	var initialCommission distributiondomain.Commission
 	if err := s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
 		initial, err = s.store.ReadAdminExceptionWithin(tx, command.ExceptionID, false)
+		if err != nil {
+			return err
+		}
+		initialCommission, err = s.store.ReadCommissionWithin(tx, initial.CommissionID, false)
 		return err
 	}); err != nil {
 		return err
 	}
-	if initial.Version != command.ExpectedVersion || !adminActionableException(initial) || !validAdminReconcileTarget(initial) {
+	if initial.Version != command.ExpectedVersion || !adminReconcileActionable(initial, initialCommission) {
 		return distributionport.ErrConflict
 	}
 
@@ -140,22 +146,16 @@ func (s *AdminService) ReconcileException(ctx context.Context, command distribut
 		if replay, err := adminReplay(s.store, tx, "exception_reconcile", command.ActorScope, command.IdempotencyKey, digest); err != nil || replay {
 			return err
 		}
-		current, err := s.store.ReadAdminExceptionWithin(tx, command.ExceptionID, true)
+		current, commission, err := s.lockCommissionThenException(tx, command.ExceptionID)
 		if err != nil {
 			return err
 		}
-		if current.Version != command.ExpectedVersion || !adminActionableException(current) || current.ReconcileTarget != initial.ReconcileTarget || !validAdminReconcileTarget(current) {
+		if current.Version != command.ExpectedVersion || !adminReconcileActionable(current, commission) || current.ReconcileTarget != initial.ReconcileTarget {
 			return distributionport.ErrConflict
 		}
 		now := s.now().UTC()
 		current.Version++
 		current.Status = "open"
-		current.Reason = observation.reason
-		// The unfreeze evidence is its trusted reconciliation target. Retain it
-		// so failed or unknown observations remain safely queryable.
-		if current.ReconcileTarget != distributionport.AdminReconcileTargetUnfreeze {
-			current.EvidenceReference = observation.evidenceReference
-		}
 		if observation.succeeded {
 			current.Status = "resolved"
 		}
@@ -163,7 +163,11 @@ func (s *AdminService) ReconcileException(ctx context.Context, command distribut
 		if err != nil {
 			return err
 		}
-		result := map[string]any{"exception_id": updated.ID, "status": updated.Status, "reconcile_target": current.ReconcileTarget, "payment_state": observation.state, "payment_failure_class": observation.failureClass, "outcome_known": observation.outcomeKnown, "succeeded": observation.succeeded, "version": updated.Version}
+		// Reason, evidence and amount on the exception are the immutable source
+		// fact that lets a due replay distinguish a real qualification revocation
+		// from an unavailable check.  The Payment observation belongs in this
+		// append-only audit result instead of overwriting that source fact.
+		result := map[string]any{"exception_id": updated.ID, "status": updated.Status, "reconcile_target": current.ReconcileTarget, "payment_state": observation.state, "payment_failure_class": observation.failureClass, "outcome_known": observation.outcomeKnown, "succeeded": observation.succeeded, "reason": observation.reason, "evidence_reference": observation.evidenceReference, "version": updated.Version}
 		if err = s.store.AppendOperationReceiptWithin(tx, "exception_reconcile", command.ActorScope, command.IdempotencyKey, digest, "exception", updated.ID, now); err != nil {
 			return err
 		}
@@ -236,31 +240,34 @@ func (s *AdminService) recordExceptionAmount(ctx context.Context, command distri
 		if replay, err := adminReplay(s.store, tx, operation, command.ActorScope, command.IdempotencyKey, digest); err != nil || replay {
 			return err
 		}
-		current, err := s.store.ReadAdminExceptionWithin(tx, command.ExceptionID, true)
+		current, commission, err := s.lockCommissionThenException(tx, command.ExceptionID)
 		if err != nil {
 			return err
 		}
-		if current.Version != command.ExpectedVersion || !adminActionableException(current) || !canRecordException(current.Status) || command.AmountMinor > current.AmountMinor {
+		handled, err := s.store.SumRecordedAfterSalesHandlingWithin(tx, commission.ID)
+		if err != nil {
+			return err
+		}
+		if current.Version != command.ExpectedVersion || !adminAfterSalesActionable(current, commission, handled) || !canRecordException(current.Status) || command.AmountMinor > adminAfterSalesAvailableMinor(current, commission, handled) {
 			return distributionport.ErrConflict
 		}
 		now := s.now().UTC()
 		current.Version++
-		current.Status, current.Reason = status, command.Reason
-		if operation == "recovery" {
-			current.EvidenceReference = command.EvidenceReference
-		}
+		// The exception itself remains the original immutable after-sales fact.
+		// The operator's amount/reason/evidence are recorded in the append-only
+		// adjustment and audit below, so a later due replay cannot lose its
+		// cancellation proof or its evidence-based idempotency key.
+		current.Status = status
 		updated, err := s.store.UpdateAdminExceptionWithin(tx, current, command.ExpectedVersion, now)
 		if err != nil {
 			return err
 		}
+		adjustmentKind := "merchant_liability"
 		if operation == "recovery" {
-			commission, readErr := s.store.ReadCommissionWithin(tx, updated.CommissionID, false)
-			if readErr != nil {
-				return readErr
-			}
-			if err = s.store.AppendCommissionAdjustmentWithin(tx, distributionstore.CommissionAdjustment{CommissionID: commission.ID, Kind: "manual_recovery", DeltaMinor: command.AmountMinor, ResultingPayableMinor: commission.CurrentPayableMinor, Reason: "manual_recovery", SourceRef: command.EvidenceReference, OccurredAt: now}); err != nil {
-				return err
-			}
+			adjustmentKind = "manual_recovery"
+		}
+		if err = s.store.AppendCommissionAdjustmentWithin(tx, distributionstore.CommissionAdjustment{CommissionID: commission.ID, Kind: adjustmentKind, DeltaMinor: command.AmountMinor, ResultingPayableMinor: commission.CurrentPayableMinor, Reason: command.Reason, SourceRef: command.EvidenceReference, OccurredAt: now}); err != nil {
+			return err
 		}
 		result := map[string]any{"exception_id": updated.ID, "commission_id": updated.CommissionID, "amount_minor": command.AmountMinor, "reason": command.Reason, "evidence_reference": command.EvidenceReference, "status": updated.Status, "version": updated.Version}
 		if err = s.store.AppendOperationReceiptWithin(tx, operation, command.ActorScope, command.IdempotencyKey, digest, "exception", updated.ID, now); err != nil {
@@ -294,6 +301,78 @@ func adminActionableException(value distributionstore.AdminExceptionDetail) bool
 	default:
 		return false
 	}
+}
+
+func adminReconcileActionable(value distributionstore.AdminExceptionDetail, commission distributiondomain.Commission) bool {
+	if !adminActionableException(value) || !validAdminReconcileTarget(value) {
+		return false
+	}
+	// Releasing a remaining Payment reserve is an operational query, not a
+	// commission-liability action. It remains available after a cancellation.
+	if value.ReconcileTarget == distributionport.AdminReconcileTargetUnfreeze {
+		return true
+	}
+	return commissionHasOutstandingLiability(commission)
+}
+
+// adminAfterSalesActionable allows staff to record a recovery or merchant
+// liability only for an already-paid, after-sales delta. A merely unpaid or
+// unknown Provider instruction remains a payable operational exception; this
+// command must never relabel it as money received or forgiven.
+func adminAfterSalesActionable(value distributionstore.AdminExceptionDetail, commission distributiondomain.Commission, recordedMinor int64) bool {
+	return canRecordException(value.Status) && commission.Status != distributiondomain.CommissionCancelled && commission.Status != distributiondomain.CommissionZero && adminAfterSalesAvailableMinor(value, commission, recordedMinor) > 0
+}
+
+func commissionHasOutstandingLiability(value distributiondomain.Commission) bool {
+	if value.Status == distributiondomain.CommissionCancelled || value.Status == distributiondomain.CommissionZero {
+		return false
+	}
+	return value.CurrentPayableMinor > value.PaidMinor
+}
+
+func adminAfterSalesAvailableMinor(value distributionstore.AdminExceptionDetail, commission distributiondomain.Commission, recordedMinor int64) int64 {
+	if recordedMinor < 0 || commission.PaidMinor < 1 {
+		return 0
+	}
+	var total int64
+	switch value.Kind {
+	case "buyer_refund_after_paid":
+		total = commission.PaidMinor - commission.CurrentPayableMinor
+	case "qualification_revoked_after_paid":
+		if value.Reason == "qualification_revoked_after_paid" {
+			// The affirmative revocation means the legally payable amount is
+			// zero even though the frozen commission row retains the pre-close
+			// amount until its original instruction is reconciled.
+			total = commission.PaidMinor
+		}
+	}
+	if total <= recordedMinor {
+		return 0
+	}
+	return total - recordedMinor
+}
+
+// lockCommissionThenException fixes the lock order shared with settlement
+// workers. The first exception read is only an immutable pointer lookup; all
+// mutation decisions are made after the commission lock and then the
+// settlement/exception lock have been acquired.
+func (s *AdminService) lockCommissionThenException(ctx context.Context, exceptionID int64) (distributionstore.AdminExceptionDetail, distributiondomain.Commission, error) {
+	initial, err := s.store.ReadAdminExceptionWithin(ctx, exceptionID, false)
+	if err != nil {
+		return distributionstore.AdminExceptionDetail{}, distributiondomain.Commission{}, err
+	}
+	commission, err := s.store.ReadCommissionWithin(ctx, initial.CommissionID, true)
+	if err != nil {
+		return distributionstore.AdminExceptionDetail{}, distributiondomain.Commission{}, err
+	}
+	current, err := s.store.ReadAdminExceptionWithin(ctx, exceptionID, true)
+	if err != nil {
+		return distributionstore.AdminExceptionDetail{}, distributiondomain.Commission{}, err
+	}
+	if current.CommissionID != commission.ID {
+		return distributionstore.AdminExceptionDetail{}, distributiondomain.Commission{}, distributionport.ErrConflict
+	}
+	return current, commission, nil
 }
 func adminDigest(operation string, payload any) [sha256.Size]byte {
 	return sha256.Sum256([]byte(fmt.Sprintf("%s:%#v", operation, payload)))

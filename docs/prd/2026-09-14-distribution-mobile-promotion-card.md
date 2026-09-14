@@ -23,7 +23,7 @@
 
 - OneID：不新增或修改身份、客户归属；继续消费既有可信会话。
 - 持久化：0165 由 Payment 为 receiver 增加受限 `failure_class`，仅保存空值或 `provider_permission_denied`；0166 为已验签、精确匹配的 CLOSED 分账指令保存八类有限诊断；0167 由 Distribution 增加 `settlement_not_paid` 异常。旧失败保持空值（未知），不回填或推断历史 Provider 响应。
-- 外部效果：凭证签发复用现有受控 HTTP 契约和既有幂等键；UI 不能自行生成 token 或 URL。Provider 查询仍在 UoW 外，状态、异常、审计、outbox 与既有 reserve-unfreeze 接受仍在各自既有同一 PostgreSQL UoW；不新增队列、EER 表或自动重试。生产分佣 Provider 仍默认关闭。
+- 外部效果：凭证签发复用现有受控 HTTP 契约和既有幂等键；UI 不能自行生成 token 或 URL。Provider 查询仍在 UoW 外，状态、异常、审计、outbox 与既有 reserve-unfreeze 接受仍在各自既有同一 PostgreSQL UoW；不新增队列、EER 表或自动重试。本 PR 不修改生产配置；真实 Provider 验收另行受控记录。
 
 ## 分佣结算启用边界
 
@@ -45,6 +45,14 @@
 
 只有两种已经持久化的业务事实可以在 CLOSED 后取消该笔已提交佣金：原购买金额已全额退款，或该笔佣金历史中存在 `qualification_revoked_after_paid` 且 reason 同为 `qualification_revoked_after_paid` 的明确撤销事实。资格证据不可用、冲突、当前重新购买合格或未知结果均不能触发取消。异常金额为 `max(current_payable_minor - paid_minor, 0)`，已付事实不会被重新记为待付；不生成负向佣金调整或新的分账付款。
 
+取消和异常处理也受同一佣金终态约束：全额退款或明确资格撤销使佣金取消时，同一 PostgreSQL UoW 会把对应仍打开的 `buyer_refund_after_paid`、`qualification_revoked_after_paid` 业务异常收敛为已解决并保留历史审计，不能继续展示或接受追回、商户承担操作。服务端再次核验佣金终态和未付金额；已取消或零欠佣的 split 查询、追回和承担均拒绝，只有原 payment reserve 的 unfreeze 查询仍可用于核实资金释放。
+
+追回和商户承担只针对已确认到账后的售后差额，并从最新佣金事实计算，不能依赖异常创建时的金额快照：退款后的可处理额为 `max(paid_minor-current_payable_minor,0)`；明确资格撤销的可处理额为 `paid_minor`。同一佣金已登记的追回与商户承担从 append-only `distribution_commission_adjustments` 账本累计扣减，合计不得超过该可处理额。未付或 unknown 的 CLOSED 仅保留欠佣异常，不可登记追回、承担或伪装成人工付款。
+
+异常的 `reason`、`evidence_reference` 和 `amount_minor` 是产生异常时的不可变业务来源。管理端的 Payment 查询、追回和商户承担只能更新处理状态，并把查询观察值、人工原因、凭证和金额写入已有 append-only 审计、收据及调整账本；不得覆盖来源字段。管理端写操作统一先锁佣金、再锁异常（nullable settlement join 仅 `FOR UPDATE OF e`），避免与 due worker 的锁序相反。管理员先查询后，后续 due 重放仍能依据原始资格撤销事实取消未付佣金；同一凭证重复不会重复记账。
+
+Payment 对管理端的稳定分账指令引用统一为严格 `psinst_<正整数>`。Distribution 只接受该格式，管理异常列表和详情用同一引用计算可查询状态；旧的 `psinstr_` 形式不能被前端或服务端误当作可查询指令。
+
 ## 参考与复用
 
 - [Ant Design DESIGN.md](https://github.com/ant-design/ant-design/blob/master/DESIGN.md)：借鉴语义清晰、单一主操作及 token 一致性；不引入依赖或平行设计系统。
@@ -59,5 +67,7 @@
 3. Clipboard 不可用或失败时，token 仍以可见受控输入框呈现；提示明确，不显示普通商品 URL。
 4. receiver、可信微信会话或商户分佣结算未就绪时，不调用凭证端点，显示对应短操作。
 5. `403 NO_AUTH` 的模拟 SDK 错误只留下 `provider_permission_denied`；Payment receiver、Payment/Distribution 审计、公开 profile 与管理端 read model 可读该安全类别，不保留 SDK Body/Message/Detail，其他错误仍是未知结果。
-6. 精确 `PERSONAL_OPENID` / 账号 / 金额匹配的 CLOSED 指令写入有限失败类别；八种、空和未知 `fail_reason` 都有 Payment adapter 覆盖。普通 CLOSED、部分退款、全额退款、明确历史资格撤销及资格证据不可用的真实 PostgreSQL 回归分别验证佣金金额、异常、调整和 stable unfreeze 副作用。
-7. 既有服务端资格严格过滤、分页、收益与后台分销管理回归保持通过；构建后以真实 Chromium 移动截图确认挂载 assets 和计算样式。
+6. 精确 `PERSONAL_OPENID` / 账号 / 金额匹配的 CLOSED 指令写入有限失败类别；八种、空和未知 `fail_reason` 都有 Payment adapter 覆盖。普通 CLOSED、部分退款、全额退款、明确历史资格撤销及资格证据不可用的真实 PostgreSQL 回归分别验证佣金金额、异常收敛、调整和 stable unfreeze 副作用。
+7. 真实 PostgreSQL 管理流验证：查询观察不改写资格撤销来源，随后 due 重放仍只取消一次；已到账售后按最新 `paid_minor/current_payable_minor` 计算，追回和承担共同受 append-only 账本上限约束，未付动作被拒绝。
+8. `psinst_` 的 Payment 稳定引用可由真实 PostgreSQL 管理异常详情和列表读取；取消佣金不再暴露资金操作，取消后的 unfreeze 仍可查询。
+8. 既有服务端资格严格过滤、分页、收益与后台分销管理回归保持通过；构建后以真实 Chromium 移动截图确认挂载 assets 和计算样式。

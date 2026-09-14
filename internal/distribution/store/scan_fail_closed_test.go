@@ -84,8 +84,8 @@ func TestAdminReconcileTargetUsesTrustedStoredReference(t *testing.T) {
 		want                              distributionport.AdminReconcileTarget
 	}{
 		{name: "cancelled unfreeze without settlement", kind: "unfreeze_final_failed", evidence: "psunfreeze_42", want: distributionport.AdminReconcileTargetUnfreeze},
-		{name: "paid unfreeze wins over split instruction", kind: "unfreeze_final_failed", evidence: "psunfreeze_43", instruction: "psinstr_8", want: distributionport.AdminReconcileTargetUnfreeze},
-		{name: "ordinary settlement", kind: "settlement_unknown", instruction: "psinstr_8", want: distributionport.AdminReconcileTargetSplit},
+		{name: "paid unfreeze wins over split instruction", kind: "unfreeze_final_failed", evidence: "psunfreeze_43", instruction: "psinst_8", want: distributionport.AdminReconcileTargetUnfreeze},
+		{name: "ordinary settlement", kind: "settlement_unknown", instruction: "psinst_8", want: distributionport.AdminReconcileTargetSplit},
 		{name: "untrusted evidence", kind: "unfreeze_final_failed", evidence: "browser:psunfreeze_8", want: distributionport.AdminReconcileTargetNone},
 	}
 	for _, test := range cases {

@@ -148,6 +148,38 @@ func (r *Repository) HasExceptionWithReasonWithin(ctx context.Context, commissio
 	return found, nil
 }
 
+// ResolveOpenBusinessExceptionsWithin closes only the post-submission buyer
+// refund and qualification-revocation facts once the same commission has
+// reached its durable non-payable terminal state.  It deliberately leaves
+// provider, reserve, and unrelated operational exceptions untouched.
+func (r *Repository) ResolveOpenBusinessExceptionsWithin(ctx context.Context, commissionID int64, at time.Time) ([]Exception, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if commissionID < 1 || at.IsZero() {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `UPDATE distribution_exceptions
+		SET status='resolved',version=version+1,updated_at=$2
+		WHERE commission_id=$1 AND status='open'
+		  AND kind IN ('buyer_refund_after_paid','qualification_revoked_after_paid')
+		RETURNING id,commission_id,COALESCE(settlement_id,0),kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at`, commissionID, at.UTC())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := []Exception{}
+	for rows.Next() {
+		value, scanErr := scanException(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, value)
+	}
+	return values, mapError(rows.Err())
+}
+
 func scanException(row rowScanner) (Exception, error) {
 	var value Exception
 	err := row.Scan(&value.ID, &value.CommissionID, &value.SettlementID, &value.Kind, &value.Status, &value.UnpaidDueMinor, &value.AlreadyPaidMinor, &value.AmountMinor, &value.Reason, &value.EvidenceReference, &value.ActorScope, &value.Version, &value.CreatedAt, &value.UpdatedAt)

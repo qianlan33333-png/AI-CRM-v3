@@ -21,6 +21,7 @@ import (
 	"time"
 
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	distributionstore "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/store"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -222,7 +223,7 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 			t.Fatal(err)
 		}
 		var settlementID int64
-		if err := pool.QueryRow(ctx, "INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,payment_instruction_reference,payment_effect_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'dstl_browser_partial',495,'CNY','payment:browser:9010','','','outcome_unknown',$2,1,$3,$3) RETURNING id", detailCommission, detailCreatedAt.Add(24*time.Hour), detailCreatedAt).Scan(&settlementID); err != nil {
+		if err := pool.QueryRow(ctx, "INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,payment_instruction_reference,payment_effect_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'dstl_browser_partial',495,'CNY','payment:browser:9010','psinst_1','','outcome_unknown',$2,1,$3,$3) RETURNING id", detailCommission, detailCreatedAt.Add(24*time.Hour), detailCreatedAt).Scan(&settlementID); err != nil {
 			t.Fatal(err)
 		}
 		if err := pool.QueryRow(ctx, "INSERT INTO distribution_exceptions(commission_id,settlement_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at) VALUES($1,$2,'settlement_unknown','open',495,0,495,'settlement_outcome_unknown','reconcile:browser-partial','worker:distribution-due',1,$3,$3) RETURNING id", detailCommission, settlementID, detailCreatedAt).Scan(&detailException); err != nil {
@@ -530,6 +531,37 @@ func assertDistributionPromotionProductsStrictlyFilter(t *testing.T, ctx context
 
 func assertDistributionAdminDetailFacts(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
 	t.Helper()
+	uow, err := platformpostgres.NewUnitOfWork(application.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := distributionstore.NewPostgreSQL(application.pool.Native(), uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This is the same commission -> exception lock order used by the admin
+	// command path. It proves an optional settlement row does not make the
+	// real PostgreSQL `FOR UPDATE OF e` query fail, while accepting Payment's
+	// actual psinst_<id> projection.
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		initial, readErr := repository.ReadAdminExceptionWithin(tx, seed.detailExceptionID, false)
+		if readErr != nil {
+			return readErr
+		}
+		if _, readErr = repository.ReadCommissionWithin(tx, initial.CommissionID, true); readErr != nil {
+			return readErr
+		}
+		locked, readErr := repository.ReadAdminExceptionWithin(tx, seed.detailExceptionID, true)
+		if readErr != nil {
+			return readErr
+		}
+		if locked.InstructionReference != "psinst_1" || locked.ReconcileTarget != "split" {
+			t.Fatalf("admin lock/query instruction=%q target=%q", locked.InstructionReference, locked.ReconcileTarget)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("admin commission-first lock/read: %v", err)
+	}
 	session, _ := adminAccessLogin(t, application.handler, "distribution-admin", "distribution-admin-password")
 	request := httptest.NewRequest(http.MethodGet, "/api/admin/distribution/orders/"+strconv.FormatInt(seed.detailAttributionID, 10), nil)
 	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
@@ -549,9 +581,19 @@ func assertDistributionAdminDetailFacts(t *testing.T, ctx context.Context, appli
 	response = httptest.NewRecorder()
 	application.handler.ServeHTTP(response, request)
 	body = response.Body.String()
-	for _, want := range []string{`"event_type":"distribution.exception_opened.v1"`, `"actor_scope":"worker:distribution-due"`, `"amount_minor":495`, `"occurred_at":"` + seed.detailCreatedAt.Format(time.RFC3339Nano) + `"`} {
+	for _, want := range []string{`"event_type":"distribution.exception_opened.v1"`, `"actor_scope":"worker:distribution-due"`, `"amount_minor":495`, `"payment_instruction_reference":"psinst_1"`, `"reconcile_target":"split"`, `"can_reconcile":true`, `"occurred_at":"` + seed.detailCreatedAt.Format(time.RFC3339Nano) + `"`} {
 		if response.Code != http.StatusOK || !strings.Contains(body, want) {
 			t.Fatalf("admin exception detail omitted real audit fact %s status=%d body=%s", want, response.Code, body)
+		}
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/admin/distribution/exceptions?limit=50", nil)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	response = httptest.NewRecorder()
+	application.handler.ServeHTTP(response, request)
+	body = response.Body.String()
+	for _, want := range []string{`"exception_id":` + strconv.FormatInt(seed.detailExceptionID, 10), `"payment_instruction_reference":"psinst_1"`, `"reconcile_target":"split"`, `"can_reconcile":true`} {
+		if response.Code != http.StatusOK || !strings.Contains(body, want) {
+			t.Fatalf("admin exception list rejected Payment stable instruction projection %s status=%d body=%s", want, response.Code, body)
 		}
 	}
 }
