@@ -36,7 +36,7 @@ function channel(overrides = {}) {
   };
 }
 
-function createPage({ saved = channel(), mutations = [], creates = [], resourceID = '17', donorScriptStatus = 200, delayDonorScript = false, operationMembers = { status: 200, payload: { items: [{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }] } } } = {}) {
+function createPage({ saved = channel(), mutations = [], creates = [], resourceID = '17', donorScriptStatus = 200, delayDonorScript = false, tagPickerReady = true, operationMembers = { status: 200, payload: { items: [{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }] } } } = {}) {
   const calls = [];
   let releaseDonorScript;
   const resourceAttribute = resourceID ? ` data-channel-resource-id="${resourceID}"` : '';
@@ -60,7 +60,8 @@ function createPage({ saved = channel(), mutations = [], creates = [], resourceI
       window.AdminConsole = { showToast() {} };
       window.AICRMStandardComponents = { ready: async () => undefined };
       window.AICRMSendContentComposer = { mount(_container, options) { window.__channelComposerOptions = options; } };
-      window.AICRMWeComTagPicker = { open() {} };
+      window.AICRMWeComTagPicker = { open() { window.__frozenTagPickerCalled = true; } };
+      if (tagPickerReady) window.AICRMTagPicker = { open(options) { window.__entryTagPickerOptions = options; options.onCommit({ selected: [{ source: 'local_tag_catalog', group_id: '4', group_name: '渠道标签', tag_id: '37', tag_name: '扫码入渠' }], added: [], removed: [] }); } };
       window.OperationMemberPicker = { open(options) { window.__pickerOptions = options; const { onConfirm } = options; onConfirm([{ staff_id: 12, user_id: 'wecom-alice', display_name: '测试客服' }]); } };
       window.fetch = async (input, init = {}) => {
         const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
@@ -73,6 +74,7 @@ function createPage({ saved = channel(), mutations = [], creates = [], resourceI
           if (unknown.length) return response({code:'MALFORMED_REQUEST'}, 400);
         }
         if (method === 'GET' && url.pathname === '/api/admin/common/operation-members') return response(operationMembers.payload, operationMembers.status);
+        if (method === 'GET' && url.pathname === '/api/admin/wecom/tags') return response({ read_model_status: 'ready', groups: [{ group_id: 4, group_name: '渠道标签' }], items: [{ tag_id: 37, group_id: 4, group_name: '渠道标签', tag_name: '扫码入渠' }], count: 1, total_tags: 1, tag_limit: 1000 });
         if (method === 'GET' && url.pathname === '/assets/standard-components/channel_code_form.html') return new Response(donorForm, { status: 200 });
         if (method === 'GET' && url.pathname === '/api/admin/channels/17') return response({ ok: true, channel: saved }, 200, { ETag: '"7"' });
         if (method === 'PATCH' && url.pathname === '/api/admin/channels/17') {
@@ -111,6 +113,16 @@ try {
   assert.equal(document.querySelector('[data-assignee-list]')?.textContent.includes('测试客服'), true, 'saved channel assignees must use the trusted local directory display name');
   assert.equal(document.querySelector('[data-assignee-list]')?.textContent.includes('客服 #12'), false, 'saved channel assignees must not retain synthetic service labels after directory hydration');
   assert.equal(stable.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/common/operation-members').length, 1, 'saved channel names must use one local directory read');
+  document.querySelector('[data-open-tag-picker]').click();
+  await waitFor(() => document.querySelector('[data-entry-tag-id]')?.value === '37', 'V3 entry tag picker must update only the channel form draft');
+  assert.equal(stable.dom.window.__entryTagPickerOptions?.scope, 'channel.entry_tag', 'channel tag caller must name its own UI scope');
+  assert.equal(stable.dom.window.__entryTagPickerOptions?.source, 'local_tag_catalog', 'channel tag caller must use the local Tag Owner source');
+  const catalog = await stable.dom.window.__entryTagPickerOptions.loadPage({ query: '', signal: new AbortController().signal });
+  assert.equal(catalog.items[0]?.tag_id, '37', 'channel caller must read the authoritative Tag Owner catalog through its V3 loader');
+  assert.equal(document.querySelector('[data-entry-tag-name]')?.value, '扫码入渠');
+  assert.equal(document.querySelector('[data-entry-tag-group-name]')?.value, '渠道标签');
+  assert.equal(stable.dom.window.__frozenTagPickerCalled, undefined, 'the actual Host capture must not fall through to the frozen picker');
+  assert.equal(stable.calls.some((call) => call.method === 'PATCH' || call.method === 'POST'), false, 'choosing an entry tag must not send a channel command before the existing save action');
   assert.equal(document.querySelectorAll('[data-generate-form-qrcode]').length, 1, 'an edit form must render one generate action');
   assert.equal(document.querySelectorAll('[data-download-channel-qrcode]').length, 0, 'an absent download URL must not leave a duplicate donor action');
   assert.equal(document.documentElement.innerHTML.includes('{%'), false, 'no Jinja control syntax may reach the Host DOM');
@@ -125,6 +137,49 @@ try {
   document.querySelector('[data-channel-type-card="wecom_customer_acquisition"]').click();
   assert.ok([...document.querySelectorAll('[data-link-section]')].every((node) => !node.hidden), 'acquisition links expose every standard link-only donor control');
 } finally { stable.dom.window.close(); }
+
+// A missing V3 adapter must preserve the channel draft and show an actionable
+// error. It may never silently fall through to the byte-frozen tag picker.
+const unavailableTagPicker = createPage({ tagPickerReady: false });
+try {
+  await waitFor(() => unavailableTagPicker.dom.window.document.querySelector('[data-channel-admission-page]'), 'channel form must mount before the V3 picker availability check');
+  await waitFor(() => unavailableTagPicker.dom.window.__channelComposerOptions, 'the donor script must bind before checking its intercepted tag button');
+  const document = unavailableTagPicker.dom.window.document;
+  document.querySelector('[data-open-tag-picker]').click();
+  await waitFor(() => document.querySelector('[data-channel-entry-tag-picker-error]'), 'missing V3 picker must leave a visible retryable error');
+  assert.match(document.querySelector('[data-channel-entry-tag-picker-error]')?.textContent || '', /尚未就绪/);
+  assert.equal(document.querySelector('[data-entry-tag-id]')?.value, '', 'missing picker must retain the untouched form draft');
+  assert.equal(unavailableTagPicker.dom.window.__frozenTagPickerCalled, undefined, 'missing V3 picker must not invoke the frozen fallback');
+  assert.equal(unavailableTagPicker.calls.some((call) => call.method === 'PATCH' || call.method === 'POST'), false, 'missing picker must not issue a channel command');
+} finally { unavailableTagPicker.dom.window.close(); }
+
+// The V3 picker updates the exact existing draft fields. The normal channel
+// save is the only persistence step, and a reopened Host must read those
+// accepted fields back into the same V3 selection contract.
+const entryTagSave = createPage({ mutations: [{ headers: { ETag: '"8"' }, payload: { ok: true, channel: channel({ entry_tag_id: 37, entry_tag_name: '扫码入渠', entry_tag_group_name: '渠道标签', version: 8 }) } }] });
+try {
+  await waitFor(() => entryTagSave.dom.window.document.querySelector('[data-save-channel]'), 'entry tag save button must mount');
+  await waitFor(() => entryTagSave.dom.window.__channelComposerOptions, 'entry tag save donor behavior must bind');
+  const document = entryTagSave.dom.window.document;
+  document.querySelector('[data-open-tag-picker]').click();
+  await waitFor(() => document.querySelector('[data-entry-tag-id]')?.value === '37', 'entry tag picker must finish before the normal save');
+  document.querySelector('[data-save-channel]').click();
+  await waitFor(() => entryTagSave.calls.some((call) => call.method === 'PATCH'), 'normal channel save must carry the accepted entry tag draft');
+  const payload = JSON.parse(entryTagSave.calls.find((call) => call.method === 'PATCH').body);
+  assert.equal(payload.entry_tag_id, '37', 'channel save must persist the selected local tag ID');
+  assert.equal(payload.entry_tag_name, '扫码入渠', 'channel save must persist the selected display name as its existing DTO field');
+  assert.equal(payload.entry_tag_group_name, '渠道标签', 'channel save must persist the selected group name as its existing DTO field');
+} finally { entryTagSave.dom.window.close(); }
+
+const entryTagReadback = createPage({ saved: channel({ entry_tag_id: 37, entry_tag_name: '扫码入渠', entry_tag_group_name: '渠道标签', version: 8 }) });
+try {
+  await waitFor(() => entryTagReadback.dom.window.document.querySelector('[data-entry-tag-id]')?.value === '37', 'reopened channel Host must hydrate the saved entry tag ID');
+  const document = entryTagReadback.dom.window.document;
+  assert.equal(document.querySelector('[data-entry-tag-name]')?.value, '扫码入渠', 'reopened channel Host must hydrate the saved entry tag name');
+  assert.equal(document.querySelector('[data-entry-tag-group-name]')?.value, '渠道标签', 'reopened channel Host must hydrate the saved entry tag group');
+  document.querySelector('[data-open-tag-picker]').click();
+  await waitFor(() => entryTagReadback.dom.window.__entryTagPickerOptions?.selectedRecords?.[0]?.tag_id === '37' && document.querySelector('[data-tag-selected] [data-remove-picked="tag"]'), 'reopened channel must pass the persisted tag into the V3 picker for resolution');
+} finally { entryTagReadback.dom.window.close(); }
 
 // An inactive definition retains its configuration for a deliberate CAS
 // recovery, but it must not offer a QR download or generation action that

@@ -211,19 +211,24 @@ for (const name of Object.keys(entryPoints)) {
 const standardHostEntry = manifest.entries.standardComponentsHost;
 if (typeof standardHostEntry !== 'string') throw new Error('standard Components Host entry is absent from manifest');
 const stableStandardHost = 'assets/standard-components/standard_components_host.js';
-const stableStandardHostContents = fs.readFileSync(path.join(dist, standardHostEntry));
+// The stable entry is one directory deeper than the hashed V3 bundle. Its
+// shared chunks remain under /assets/chunks, so rebase only those V3 module
+// specifiers and retain their manifest closure for release staging.
+const stableStandardHostContents = Buffer.from(fs.readFileSync(path.join(dist, standardHostEntry), 'utf8').replace(/(["'])\.\/chunks\//g, '$1../chunks/'));
+if (/(["'])\.\/chunks\//.test(stableStandardHostContents.toString('utf8'))) throw new Error('stable standard Components Host retained an invalid relative chunk path');
 fs.writeFileSync(path.join(dist, stableStandardHost), stableStandardHostContents);
 const stableStandardHostMetadata = metadataFor(stableStandardHostContents);
-manifest.files[stableStandardHost] = { ...stableStandardHostMetadata, entry_point: 'web/v3/standardComponentsHost.ts', imports: [], inputs: ['web/v3/standardComponentsHost.ts'] };
+manifest.files[stableStandardHost] = { ...stableStandardHostMetadata, entry_point: 'web/v3/standardComponentsHost.ts', imports: manifest.files[standardHostEntry].imports, inputs: ['web/v3/standardComponentsHost.ts'] };
 manifest.release_files[stableStandardHost] = stableStandardHostMetadata;
 manifest.entries.standardComponentsStableHost = stableStandardHost;
 
 const customerHost = manifest.entries.customerHost;
 const frozenAdmin = manifest.entries.admin;
-if (typeof customerHost !== 'string' || typeof frozenAdmin !== 'string') throw new Error('customer Host or frozen admin entry is absent from manifest');
+const selectionDialogStyles = manifest.entries.selectionDialogStyles;
+if (typeof customerHost !== 'string' || typeof frozenAdmin !== 'string' || typeof selectionDialogStyles !== 'string') throw new Error('customer Host, selection dialog stylesheet, or frozen admin entry is absent from manifest');
 const customerHostReference = `../${customerHost}`;
 const frozenAdminReference = `<script type="module" src="../${frozenAdmin}"></script>`;
-const standardCustomerReferences = `<link rel="stylesheet" href="../assets/standard-components/wecom_tag_picker.css">\n<script type="module" src="../${stableStandardHost}"></script>`;
+const standardCustomerReferences = `<link rel="stylesheet" href="../${selectionDialogStyles}">\n<link rel="stylesheet" href="../assets/standard-components/wecom_tag_picker.css">\n<script type="module" src="../${stableStandardHost}"></script>`;
 for (const documentName of ['customers.html', 'customerDetail.html']) {
   const documentPath = path.join(dist, 'admin', documentName);
   let documentHTML = fs.readFileSync(documentPath, 'utf8');

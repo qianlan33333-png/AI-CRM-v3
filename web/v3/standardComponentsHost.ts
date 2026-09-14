@@ -4,6 +4,7 @@ export {};
 // adapt selection data: each page Host remains responsible for scoped reads.
 // It supplies the V3 envelope for the shared directory refresh command and
 // guarantees dependency order and one evaluation per page.
+import { installTagPickerAdapter } from './shared/ui/tagPickerAdapter';
 declare global {
   interface Window {
     AICRMStandardComponents?: { ready(): Promise<void> };
@@ -111,4 +112,7 @@ window.AICRMStandardComponents = {
     return loading;
   },
 };
+// This is a separate V3 API. Keep the byte-frozen tag global available for
+// pages that still need it while V3-owned callers adopt the shared session.
+installTagPickerAdapter();
 void window.AICRMStandardComponents.ready();

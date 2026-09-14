@@ -7,6 +7,7 @@
 
 
 import { formatShanghaiDateTime } from './adminDateTime';
+import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
 
 type Json = Record<string, unknown>;
 type Channel = Json & { id?: number; version?: number; config_version?: number };
@@ -503,6 +504,112 @@ function installChannelPickerIdentityAdapter(): void {
   };
 }
 
+function tagPickerError(root: HTMLElement, message: string): void {
+  let notice = root.querySelector<HTMLElement>('[data-channel-entry-tag-picker-error]');
+  if (!notice) {
+    notice = document.createElement('p');
+    notice.dataset.channelEntryTagPickerError = '';
+    notice.className = 'save-feedback is-error';
+    notice.setAttribute('role', 'alert');
+    root.querySelector('[data-tag-selected]')?.insertAdjacentElement('afterend', notice);
+  }
+  notice.textContent = message;
+}
+
+function clearTagPickerError(root: HTMLElement): void {
+  root.querySelector('[data-channel-entry-tag-picker-error]')?.remove();
+}
+
+function renderEntryTagSummary(root: HTMLElement): void {
+  const selected = root.querySelector<HTMLElement>('[data-tag-selected]');
+  if (!selected) return;
+  const tagID = root.querySelector<HTMLInputElement>('[data-entry-tag-id]')?.value.trim() || '';
+  const tagName = root.querySelector<HTMLInputElement>('[data-entry-tag-name]')?.value.trim() || '';
+  const groupName = root.querySelector<HTMLInputElement>('[data-entry-tag-group-name]')?.value.trim() || '';
+  selected.replaceChildren();
+  if (!tagID) {
+    selected.textContent = '暂未选择标签';
+    return;
+  }
+  // The frozen page already owns the remove action. Rebuild only its existing
+  // summary pill with DOM APIs so a V3 selection remains removable through
+  // that single form state, without introducing another picker or command.
+  const pill = document.createElement('button');
+  pill.type = 'button';
+  pill.className = 'pill';
+  pill.dataset.removePicked = 'tag';
+  pill.textContent = `${groupName ? `${groupName} / ` : ''}${tagName || '已选择标签'} ×`;
+  selected.append(pill);
+}
+
+function tagPickerAccessLoss(error: unknown): string | undefined {
+  const status = Number((error as { status?: unknown } | null)?.status);
+  if (status === 401) return '登录已失效，标签目录不可读取；已保留当前渠道草稿。';
+  if (status === 403) return '当前账号无权读取标签目录；已保留当前渠道草稿。';
+  return undefined;
+}
+
+/**
+ * The byte-frozen channel script is loaded after this Host and binds the same
+ * button.  Capture only that form control, and only once the V3 picker is
+ * present, so the fallback never silently changes the source/contract.
+ */
+function installChannelEntryTagPicker(root: HTMLElement): void {
+  root.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target?.closest<HTMLButtonElement>('[data-open-tag-picker]');
+    if (!button || !root.contains(button)) return;
+
+    const picker = window.AICRMTagPicker;
+    if (!picker?.open) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      tagPickerError(root, 'V3 标签选择器尚未就绪；当前渠道草稿已保留，请刷新后重试。');
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const tagID = root.querySelector<HTMLInputElement>('[data-entry-tag-id]')?.value || '';
+    const selectedRecords: TagPickerRecord[] = [];
+    const existing = unresolvedTagRecord('local_tag_catalog', tagID);
+    if (existing) selectedRecords.push(existing);
+    try {
+      picker.open({
+        title: '选择入渠标签',
+        source: 'local_tag_catalog',
+        scope: 'channel.entry_tag',
+        selectedRecords,
+        mode: 'single',
+        limit: 1,
+        loadPage: createTagCatalogPageLoader('local_tag_catalog', async ({ signal }) => {
+          const response = await nativeFetch('/api/admin/wecom/tags', { credentials: 'same-origin', headers: { Accept: 'application/json' }, signal });
+          if (!response.ok) {
+            const failure = new Error(`标签目录读取失败（HTTP ${response.status}）`) as Error & { status?: number };
+            failure.status = response.status;
+            throw failure;
+          }
+          return response.json();
+        }),
+        accessLossMessage: tagPickerAccessLoss,
+        onCommit: ({ selected }) => {
+          const record = selected[0];
+          const id = root.querySelector<HTMLInputElement>('[data-entry-tag-id]');
+          const name = root.querySelector<HTMLInputElement>('[data-entry-tag-name]');
+          const group = root.querySelector<HTMLInputElement>('[data-entry-tag-group-name]');
+          if (id) id.value = record?.tag_id || '';
+          if (name) name.value = record?.tag_name || '';
+          if (group) group.value = record?.group_name || '';
+          clearTagPickerError(root);
+          renderEntryTagSummary(root);
+        },
+      });
+    } catch (error) {
+      tagPickerError(root, error instanceof Error ? `标签选择器无法打开：${error.message}` : '标签选择器无法打开；当前渠道草稿已保留，请重试。');
+    }
+  }, true);
+}
+
 export async function startChannelAdmissionHost(): Promise<void> {
   installCatalogTransport();
   try {
@@ -531,6 +638,7 @@ export async function startChannelAdmissionHost(): Promise<void> {
     }
     await (window as Window & { AICRMStandardComponents?: { ready?: () => Promise<void> } }).AICRMStandardComponents?.ready?.();
     installChannelPickerIdentityAdapter();
+    installChannelEntryTagPicker(root);
     installSaveFeedbackTime(root);
     await executeChannelDonorScript();
   } catch (error) {

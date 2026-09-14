@@ -16,15 +16,27 @@ const html = `<!doctype html>
 </div>`;
 const dom = new JSDOM(html, { url: "https://test.invalid/admin/customers", runScripts: "outside-only" });
 dom.window.Headers = Headers;
+dom.window.AbortController = AbortController;
 dom.window.document.cookie = "aicrm_admin_csrf=test-csrf; path=/";
 dom.window.confirm = () => true;
 dom.window.AdminDateTime = {};
 dom.window.AdminFmt = { localTime: (value) => value === "2026-09-05T00:00:00Z" ? "2026-09-05 08:00:00" : "时间暂不可用", whenAdminDateTimeReady: (ready) => ready(dom.window.AdminDateTime) };
 const tagCalls = [];
+const pickerCalls = [];
 let tagPreviewUnavailable = false;
+dom.window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+dom.window.AICRMTagPicker = {
+  createCatalogPageLoader: (source, reader) => async ({ signal }) => {
+    const catalog = await reader({ signal });
+    const resolved = (catalog.items || []).map((tag) => ({ source, tag_id: String(tag.id || tag.tag_id), group_id: String(tag.group_id), tag_name: String(tag.tag_name || tag.name), group_name: String(tag.group_name) }));
+    return { items: resolved, resolved };
+  },
+  unresolvedRecord: (source, tagID) => ({ source, tag_id: String(tagID), group_id: "", tag_name: `标签 #${tagID}`, group_name: "目录状态待确认", unavailable_reason: "标签目录状态待确认" }),
+  open: (options) => { pickerCalls.push(options); },
+};
 dom.window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), dom.window.location.origin);
-  if (url.pathname === "/api/admin/wecom/tags") return { ok: true, status: 200, json: async () => ({ items: [{ id: 9, group_name: "分组", tag_name: "标签九" }, { id: 10, group_name: "分组", tag_name: "标签十" }] }) };
+  if (url.pathname === "/api/admin/wecom/tags") return { ok: true, status: 200, json: async () => ({ read_model_status: "ready", groups: [{ group_id: 1, group_name: "分组" }], items: [{ id: 9, group_id: 1, group_name: "分组", tag_name: "标签九" }, { id: 10, group_id: 1, group_name: "分组", tag_name: "标签十" }], count: 2, total_tags: 2, tag_limit: 1000 }) };
   if (url.pathname === "/api/v1/customer-tag-commands/preview") { tagCalls.push({ path: url.pathname, options }); if (tagPreviewUnavailable) return { ok: false, status: 503, json: async () => ({ error: "provider_unavailable（上游错误）" }) }; return { ok: true, status: 200, json: async () => ({ state: "preview", lines: [{ customer_id: 42, state: "eligible" }] }) }; }
   if (url.pathname === "/api/v1/customer-tag-commands") { tagCalls.push({ path: url.pathname, options }); return { ok: true, status: 202, json: async () => ({ id: 7, state: "queued", lines: [{ customer_id: 42, state: "queued", effect_ref: "eer_7" }] }) }; }
   if (url.pathname === "/api/v1/customers/42/tag-commands") return { ok: true, status: 200, json: async () => ({ items: [{ id: 7, state: "executed", lines: [{ customer_id: 42, state: "executed" }] }] }) };
@@ -43,6 +55,14 @@ const checkbox = dom.window.document.querySelector('input[type="checkbox"]');
 checkbox.checked = true;
 checkbox.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
 const tagForm = dom.window.document.querySelector("#customer-tag-batch");
+const tagPickerButton = [...tagForm.querySelectorAll("button")].find((button) => button.textContent === "选择标签");
+if (!tagPickerButton) throw new Error("customer tag draft did not mount the V3 picker entry");
+tagPickerButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (pickerCalls.length !== 1 || pickerCalls[0].scope !== "customer.tag_draft" || pickerCalls[0].mode !== "multiple" || tagCalls.length !== 0) throw new Error("customer tag draft did not open the scoped V3 picker without sending a command");
+if ([...tagForm.querySelector('[name="add_tag_ids"]').selectedOptions].length !== 0) throw new Error("opening then cancelling the V3 picker changed the existing customer tag draft");
+pickerCalls[0].onCommit({ selected: [{ source: "local_tag_catalog", tag_id: "9", group_id: "1", tag_name: "标签九", group_name: "分组" }, { source: "local_tag_catalog", tag_id: "10", group_id: "1", tag_name: "标签十", group_name: "分组" }] });
+if ([...tagForm.querySelector('[name="add_tag_ids"]').selectedOptions].map((option) => option.value).join(",") !== "9,10" || tagCalls.length !== 0) throw new Error("customer V3 picker did not retain the add-tag draft without sending");
 for (const option of tagForm.querySelector('[name="add_tag_ids"]').options) option.selected = ["9", "10"].includes(option.value);
 tagForm.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
 await new Promise((resolve) => setTimeout(resolve, 20));
@@ -62,6 +82,57 @@ const tagFailure = dom.window.document.querySelector("#customer-tag-batch-result
 if (!tagFailure.includes("标签服务暂不可用") || tagFailure.includes("provider_unavailable") || tagFailure.includes("上游错误")) throw new Error(`tag failure leaked technical detail: ${tagFailure}`);
 dom.window.close();
 
+const refreshDOM = new JSDOM(`<!doctype html>
+<div data-customer-directory-root data-customers-url="/api/admin/customers" data-sync-url="/api/admin/customer-sync-runs" data-tag-preview-url="/api/v1/customer-tag-commands/preview" data-tag-command-url="/api/v1/customer-tag-commands" data-tags-url="/api/admin/wecom/tags">
+  <form id="customer-list-filters"><input name="keyword"><input name="phone"><select name="status"><option value=""></option></select></form>
+  <button id="customer-list-clear"></button><button id="customer-list-refresh"></button><span id="customer-list-summary"></span><div id="customer-list-state"></div><div id="customer-list-table-wrap"><table><tbody id="customer-list-body"></tbody></table></div><button id="customer-prev-page"></button><button id="customer-next-page"></button>
+  <form id="customer-tag-batch"><select name="add_tag_ids" multiple disabled></select><select name="remove_tag_ids" multiple disabled></select><button type="submit">preview</button></form><span id="customer-tag-batch-result"></span>
+</div>`, { url: "https://test.invalid/admin/customers", runScripts: "outside-only" });
+refreshDOM.window.Headers = Headers;
+refreshDOM.window.AbortController = AbortController;
+refreshDOM.window.AdminDateTime = {};
+refreshDOM.window.AdminFmt = { localTime: (value) => value, whenAdminDateTimeReady: (ready) => ready(refreshDOM.window.AdminDateTime) };
+refreshDOM.window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+const refreshPickerCalls = [];
+refreshDOM.window.AICRMTagPicker = {
+  createCatalogPageLoader: (source, reader) => async ({ signal }) => {
+    const catalog = await reader({ signal });
+    const resolved = (catalog.items || []).map((tag) => ({ source, tag_id: String(tag.id || tag.tag_id), group_id: String(tag.group_id), tag_name: String(tag.tag_name || tag.name), group_name: String(tag.group_name) }));
+    return { items: resolved, resolved };
+  },
+  unresolvedRecord: (source, tagID) => ({ source, tag_id: String(tagID), group_id: "", tag_name: `标签 #${tagID}`, group_name: "目录状态待确认", unavailable_reason: "标签目录状态待确认" }),
+  open: (options) => { refreshPickerCalls.push(options); },
+};
+let refreshedCatalog = false;
+const refreshResponse = (payload, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => payload });
+refreshDOM.window.fetch = async (input) => {
+  const url = new URL(String(input), refreshDOM.window.location.origin);
+  if (url.pathname === "/api/admin/wecom/tags") {
+    const items = refreshedCatalog
+      ? [{ id: 9, group_id: 1, group_name: "旧分组", tag_name: "A" }, { id: 10, group_id: 2, group_name: "新分组", tag_name: "B" }]
+      : [{ id: 9, group_id: 1, group_name: "旧分组", tag_name: "A" }];
+    return refreshResponse({ read_model_status: "ready", groups: refreshedCatalog ? [{ group_id: 1, group_name: "旧分组" }, { group_id: 2, group_name: "新分组" }] : [{ group_id: 1, group_name: "旧分组" }], items, count: items.length, total_tags: items.length, tag_limit: 1000 });
+  }
+  if (url.pathname === "/api/admin/customers") return refreshResponse({ items: [], total: 0, total_is_estimate: false });
+  throw new Error("unexpected refresh fixture request: " + url.pathname);
+};
+refreshDOM.window.eval(script);
+await new Promise((resolve) => setTimeout(resolve, 20));
+const refreshForm = refreshDOM.window.document.getElementById("customer-tag-batch");
+const refreshButton = [...refreshForm.querySelectorAll("button")].find((button) => button.textContent === "选择标签");
+if (!refreshButton || [...refreshForm.querySelector('[name="add_tag_ids"]').options].map((option) => option.value).join(",") !== "9") throw new Error("customer tag draft did not retain its initial catalog");
+refreshedCatalog = true;
+refreshButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const refreshedPage = await refreshPickerCalls[0].loadPage({ query: "", signal: new AbortController().signal });
+const refreshedB = refreshedPage.resolved.find((tag) => tag.tag_id === "10");
+refreshPickerCalls[0].onCommit({ selected: [refreshedB] });
+if (new refreshDOM.window.FormData(refreshForm).getAll("add_tag_ids").join(",") !== "10") throw new Error("refreshed catalog tag B was not retained in the original customer form draft");
+refreshButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (refreshPickerCalls[1].selectedRecords.map((tag) => tag.tag_id).join(",") !== "10") throw new Error("refreshed catalog tag B was not retained when reopening the customer picker");
+refreshDOM.window.close();
+
 const concurrencyDOM = new JSDOM(`<!doctype html>
 <div data-customer-directory-root data-customers-url="/api/admin/customers" data-tag-preview-url="/api/v1/customer-tag-commands/preview" data-tags-url="/api/admin/wecom/tags">
   <form id="customer-list-filters"><input name="keyword"><input name="phone"><select name="status"><option value=""></option></select></form>
@@ -77,6 +148,16 @@ concurrencyDOM.window.document.cookie = "aicrm_admin_csrf=test-csrf; path=/";
 concurrencyDOM.window.confirm = () => false;
 concurrencyDOM.window.AdminDateTime = {};
 concurrencyDOM.window.AdminFmt = { localTime: (value) => value, whenAdminDateTimeReady: (ready) => ready(concurrencyDOM.window.AdminDateTime) };
+concurrencyDOM.window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+concurrencyDOM.window.AICRMTagPicker = {
+  createCatalogPageLoader: (source, reader) => async ({ signal }) => {
+    const catalog = await reader({ signal });
+    const resolved = (catalog.items || []).map((tag) => ({ source, tag_id: String(tag.id || tag.tag_id), group_id: String(tag.group_id || 1), tag_name: String(tag.tag_name || tag.name), group_name: String(tag.group_name) }));
+    return { items: resolved, resolved };
+  },
+  unresolvedRecord: (source, tagID) => ({ source, tag_id: String(tagID), group_id: "", tag_name: `标签 #${tagID}`, group_name: "目录状态待确认" }),
+  open: () => {},
+};
 const listRequests = [];
 let crossPagePreview = null;
 const response = (payload, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => payload });
@@ -195,13 +276,27 @@ const detailDom = new JSDOM(`<!doctype html>
   <div id="customer-detail-state"></div><div id="customer-detail-content" hidden></div>
   <div id="customer-detail-fields"></div><div id="customer-profile-meta"></div>
   <div id="customer-phone-ephemeral" hidden></div>
+  <form id="customer-tag-single"><label>加标签 <select name="add_tag_ids" multiple disabled></select></label><label>移除标签 <select name="remove_tag_ids" multiple disabled></select></label><button type="submit">preview</button></form><span id="customer-tag-single-result"></span>
   <div id="customer-360-sections" hidden><div id="customer-360-main"></div><div id="customer-360-sidebar"></div></div>
 </div>`, { url: "https://test.invalid/admin/customers/42", runScripts: "outside-only" });
 detailDom.window.Headers = Headers;
+detailDom.window.AbortController = AbortController;
 detailDom.window.AdminDateTime = {};
 detailDom.window.AdminFmt = { localTime: (value) => value === "2026-09-05T00:00:00Z" ? "2026-09-05 08:00:00" : "时间暂不可用", whenAdminDateTimeReady: (ready) => ready(detailDom.window.AdminDateTime) };
+const detailPickerCalls = [];
+detailDom.window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+detailDom.window.AICRMTagPicker = {
+  createCatalogPageLoader: (source, reader) => async ({ signal }) => {
+    const catalog = await reader({ signal });
+    const resolved = (catalog.items || []).map((tag) => ({ source, tag_id: String(tag.id || tag.tag_id), group_id: String(tag.group_id), tag_name: String(tag.tag_name || tag.name), group_name: String(tag.group_name) }));
+    return { items: resolved, resolved };
+  },
+  unresolvedRecord: (source, tagID) => ({ source, tag_id: String(tagID), group_id: "", tag_name: `标签 #${tagID}`, group_name: "目录状态待确认", unavailable_reason: "标签目录状态待确认" }),
+  open: (options) => { detailPickerCalls.push(options); },
+};
 detailDom.window.fetch = async (input) => {
   const url = new URL(String(input), detailDom.window.location.origin);
+  if (url.pathname === "/api/admin/wecom/tags") return { ok: true, status: 200, json: async () => ({ read_model_status: "ready", groups: [{ group_id: 1, group_name: "分组" }], items: [{ id: 9, group_id: 1, group_name: "分组", tag_name: "标签九" }], count: 1, total_tags: 1, tag_limit: 1000 }) };
   if (url.pathname !== "/api/admin/customers/42/360") throw new Error("unexpected detail request: " + url.pathname);
   return { ok: true, status: 200, json: async () => ({
     profile: { status: "ready", data: { customer_id: 42, display_name: "测试客户", oneid: "cus_42", status: "active", last_synced_at: "2026-09-05T00:00:00Z" } },
@@ -216,5 +311,13 @@ detailDom.window.eval(script);
 await new Promise((resolve) => setTimeout(resolve, 20));
 const detailText = detailDom.window.document.getElementById("customer-360-main")?.textContent || "";
 if (!detailText.includes("MO-71 · 已支付") || detailText.includes("MO-71 · paid")) throw new Error(`recent order status leaked a machine value: ${detailText}`);
+const detailTagForm = detailDom.window.document.getElementById("customer-tag-single");
+const detailTagButton = [...detailTagForm.querySelectorAll("button")].find((button) => button.textContent === "选择标签");
+if (!detailTagButton) throw new Error("customer detail did not mount the V3 tag picker entry");
+detailTagButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (detailPickerCalls.length !== 1 || detailPickerCalls[0].scope !== "customer.tag_draft" || [...detailTagForm.querySelector('[name="add_tag_ids"]').selectedOptions].length !== 0) throw new Error("customer detail picker did not preserve its draft on open/cancel");
+detailPickerCalls[0].onCommit({ selected: [{ source: "local_tag_catalog", tag_id: "9", group_id: "1", tag_name: "标签九", group_name: "分组" }] });
+if ([...detailTagForm.querySelector('[name="add_tag_ids"]').selectedOptions].map((option) => option.value).join(",") !== "9") throw new Error("customer detail V3 picker did not update the existing add-tag draft");
 detailDom.window.close();
 console.log("admin-customers-browser: PASS");

@@ -215,6 +215,16 @@ export class SelectionSession<T> {
     return item ? copy(item) : undefined;
   }
 
+  /**
+   * Refresh record presentation without changing the current page or either
+   * selection set. A complete catalog can use this to resolve an initial
+   * selection that falls outside the current search/page.
+   */
+  reconcile(items: SelectionItem<T>[]): void {
+    this.upsert(items);
+    this.emit();
+  }
+
   /** Discard edits and invalidate an in-flight directory read. */
   cancel(): void {
     this.invalidateRead();
