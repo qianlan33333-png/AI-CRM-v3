@@ -29,4 +29,6 @@
 - GitHub 参考：已用 `gh pr view 296` 核验 [PR #296](https://github.com/qianlan33333-png/AI-CRM-v3/pull/296) 的 `SelectionSession`／素材选择器合同；本 PR 在其分支上复用并补足同一组件的共享 dialog、权限乱序和真实 GroupOps 受权读写，而不是复制冻结 donor。
 - 本仓现有 GroupOps Host 端到端参考：`scripts/groupops-host-adapter-e2e.mjs`。
 
+Chromium 对 Radar 页的素材弹窗只验收该真实 Host 能加载共享 dialog，以及 360／420／1280 宽度下多选、主体滚动和底部确认可达。Radar 现有 adapter 尚未把 `selectedRecords`／`onCommit` 接到其业务持久化；这项业务迁移不属于本 PR，不能把该布局验收描述为 Radar 素材保存验收。
+
 本 PR 仅迁移此一真实 GroupOps 调用点；素材、成员、标签和客服页面不在范围内。
