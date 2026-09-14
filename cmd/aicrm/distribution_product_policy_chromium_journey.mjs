@@ -16,13 +16,13 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function browser() { for (const item of [process.env.AICRM_CHROMIUM_BINARY, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "google-chrome", "chromium"].filter(Boolean)) if ((item.includes("/") ? spawnSync(item,["--version"],{stdio:"ignore"}) : spawnSync("which",[item],{stdio:"ignore"})).status === 0) return item; throw new Error("Chromium is unavailable"); }
 class CDP { constructor(socket) { this.socket=socket; this.id=0; this.pending=new Map(); socket.addEventListener("message", event => { const m=JSON.parse(String(event.data)); const p=this.pending.get(m.id); if (!p) return; this.pending.delete(m.id); m.error?p.reject(new Error(`CDP ${m.error.code}`)):p.resolve(m.result||{}); }); } call(method,params={}) { return new Promise((resolve,reject)=>{const id=++this.id,timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(`CDP ${method} timed out`));},8000);this.pending.set(id,{resolve:v=>{clearTimeout(timer);resolve(v)},reject});this.socket.send(JSON.stringify({id,method,params}));}); } }
 async function endpoint(profile) { for(let i=0;i<160;i++){try { const port=(await fs.readFile(path.join(profile,"DevToolsActivePort"),"utf8")).split("\n")[0]; if(/^\d+$/.test(port))return `http://127.0.0.1:${port}`; }catch{} await sleep(50);} throw new Error("Chromium DevTools did not start"); }
-async function value(cdp,expression) { const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails)throw new Error("page evaluation failed"); return result.result?.value; }
+async function value(cdp,expression) { const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails)throw new Error(`page evaluation failed: ${result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'unknown error'}`); return result.result?.value; }
 async function wait(cdp,expression,message) { for(let i=0;i<180;i++){if(await value(cdp,expression))return;await sleep(50);} throw new Error(message); }
 async function addCookie(cdp,name,value) { await cdp.call("Network.setCookie",{url:base,name,value,secure:true}); }
-async function capturePolicyForm(cdp, label) { if (!screenshotDir) return; await fs.mkdir(screenshotDir,{recursive:true}); await cdp.call("Emulation.setDeviceMetricsOverride",{width:1440,height:1000,deviceScaleFactor:1,mobile:false}); const image=await cdp.call("Page.captureScreenshot",{format:"png",captureBeyondViewport:true}); await fs.writeFile(path.join(screenshotDir,`distribution-policy-${label}.png`),Buffer.from(image.data,"base64")); }
+async function capturePolicyForm(cdp, label) { if (!screenshotDir) return; await fs.mkdir(screenshotDir,{recursive:true}); for (const width of [1440,1280]) { await cdp.call("Emulation.setDeviceMetricsOverride",{width,height:1000,deviceScaleFactor:1,mobile:false}); const image=await cdp.call("Page.captureScreenshot",{format:"png",captureBeyondViewport:true}); await fs.writeFile(path.join(screenshotDir,`distribution-policy-${label}-${width}.png`),Buffer.from(image.data,"base64")); } }
 async function login(cdp) { const page=await fetch(`${base}/login`,{redirect:"manual"}); const html=await page.text(), csrf=/name="login_csrf_token" value="([^"]+)"/.exec(html)?.[1]; if(!csrf)throw new Error("login CSRF unavailable"); const cookies=(typeof page.headers.getSetCookie==="function"?page.headers.getSetCookie():[]).map(value=>value.split(";",1)[0]).join("; "); const response=await fetch(`${base}/login`,{method:"POST",redirect:"manual",headers:{"Content-Type":"application/x-www-form-urlencoded",Cookie:cookies},body:new URLSearchParams({username,password,login_csrf_token:csrf})}); if(response.status!==303)throw new Error(`admin login status=${response.status}`); for(const raw of response.headers.getSetCookie?.()||[]){const pair=raw.split(";",1)[0],index=pair.indexOf("=");if(index>0)await addCookie(cdp,pair.slice(0,index),pair.slice(index+1));} }
 async function policySnapshot(cdp) {
-  return value(cdp, `(() => { const host=document.querySelector('[data-distribution-policy]'); const link=host?.querySelector('[data-distribution-application-link]')?.value || ''; return {version:host?.dataset.distributionPolicyVersion,enabled:host?.querySelector('[data-distribution-policy-enabled]')?.checked,rate:host?.querySelector('[data-distribution-policy-rate]')?.value,wait_days:host?.querySelector('[data-distribution-policy-wait-days]')?.value,application_link:link,has_qr:Boolean(host?.querySelector('.product-distribution-policy__qr svg')),has_pending:Boolean(host?.querySelector('[data-distribution-application-pending]'))}; })()`);
+  return value(cdp, `(() => { const host=document.querySelector('[data-distribution-policy]'); return {version:host?.dataset.distributionPolicyVersion,enabled:host?.querySelector('[data-distribution-policy-enabled]')?.checked,rate:host?.querySelector('[data-distribution-policy-rate]')?.value,wait_days:host?.querySelector('[data-distribution-policy-wait-days]')?.value,policy_parent:host?.parentElement?.id || '',has_application:Boolean(document.querySelector('[data-distribution-application-entry],[data-distribution-application-link],[data-distribution-application-qr],[data-distribution-application-pending]'))}; })()`);
 }
 async function reloadEditor(cdp, page) {
   await cdp.call("Page.reload", {ignoreCache:true});
@@ -31,7 +31,7 @@ async function reloadEditor(cdp, page) {
 async function waitForPolicy(cdp, expected, page) {
   for (let attempt = 0; attempt < 180; attempt += 1) {
     const actual = await policySnapshot(cdp);
-    if (actual?.version === String(expected.version) && actual.enabled === expected.enabled && Number(actual.rate) === Number(expected.rate) && actual.wait_days === String(expected.waitDays) && actual.application_link === expected.link && actual.has_qr === expected.hasQR && actual.has_pending === expected.hasPending) return actual;
+    if (actual?.version === String(expected.version) && actual.enabled === expected.enabled && Number(actual.rate) === Number(expected.rate) && actual.wait_days === String(expected.waitDays) && actual.policy_parent === expected.salePanel && actual.has_application === false) return actual;
     await sleep(50);
   }
   throw new Error(`policy readback mismatch ${page} expected=${JSON.stringify(expected)} actual=${JSON.stringify(await policySnapshot(cdp))}`);
@@ -51,31 +51,58 @@ async function savePolicy(cdp, enabledState, rate, waitDays, page) {
   })()`);
   await wait(cdp,"document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')",`product save did not finish ${page}`);
 }
+async function saveOtherDimension(cdp, id, page, expectedPolicy) {
+  await value(cdp, `(() => { const link=document.querySelector('a[href="#${id}"]'); if (!link) throw new Error('dimension link missing: ${id}'); link.click(); return true; })()`);
+  await wait(cdp, `document.querySelector('a[href="#${id}"]')?.getAttribute('aria-current') === 'step'`, `dimension did not become active: ${id}`);
+  const visible = await value(cdp, `(() => { const panel=document.getElementById(${JSON.stringify(id)}); const policy=document.querySelector('[data-distribution-policy]'); return {has_policy_in_panel:Boolean(panel?.querySelector('[data-distribution-policy]')), policy_parent:policy?.parentElement?.id || '', has_application:Boolean(document.querySelector('[data-distribution-application-entry],[data-distribution-application-link],[data-distribution-application-qr],[data-distribution-application-pending]'))}; })()`);
+  assert.equal(visible.has_policy_in_panel, false, `${id} must not render distribution controls`);
+  assert.equal(visible.has_application, false, `${id} must not render a distributor application entry`);
+  // External push owns separate configuration. With its disabled, unchanged
+  // fixture it emits no Product command, so this policy journey verifies its
+  // absence and policy readback without inventing a completed product save.
+  if (id.endsWith('push')) {
+    const serverPolicy = await value(cdp, "fetch(location.pathname.includes('spProductForm') ? '/api/admin/service-period-products/" + serviceProductID + "' : '/api/v1/products/" + productID + "').then(response => response.json()).then(value => value.product?.distribution_policy || value.distribution_policy)");
+    assert.deepEqual(serverPolicy, expectedPolicy, `${id} rewrote the persisted policy`);
+    return;
+  }
+  const saved = await value(cdp, `(() => { const node=document.querySelector('#product-v3-toast'); if (node) node.textContent=''; const save=[...document.querySelectorAll('button')].find(button=>button.textContent.trim()==='保存当前维度' && !button.hidden && !button.closest('#product-push,#sp-push')); if (!save) throw new Error('dimension save missing: ${id}'); save.click(); return true; })()`);
+  assert.equal(saved, true, `${id} save action was not invoked`);
+  await wait(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')", `dimension save did not complete: ${id}`);
+  const serverPolicy = await value(cdp, "fetch(location.pathname.includes('spProductForm') ? '/api/admin/service-period-products/" + serviceProductID + "' : '/api/v1/products/" + productID + "').then(response => response.json()).then(value => value.product?.distribution_policy || value.distribution_policy)");
+  assert.deepEqual(serverPolicy, expectedPolicy, `${id} save rewrote the persisted policy`);
+}
 async function saveAndReload(cdp, page, rate, waitDays) {
   await cdp.call("Page.navigate",{url:base+page});
   await wait(cdp,"Boolean(document.querySelector('[data-distribution-policy]'))",`policy controls did not load ${page}`);
   await value(cdp,"(() => { const prior=window.fetch; window.__distributionPolicyWrites=[]; window.fetch=(input,init) => { const request=input instanceof Request ? input : undefined; window.__distributionPolicyWrites.push({url:String(request?.url || input),method:String(init?.method || request?.method || 'GET'),body:String(init?.body || '')}); return prior(input,init); }; return true; })()");
   const before=await value(cdp,"document.querySelector('[data-distribution-policy]')?.dataset.distributionPolicyVersion");
   assert.equal(before,"0",`fresh fixture must load a revision-zero policy on ${page}`);
-  const expectedID=page.includes('spProductForm')?serviceProductID:productID;
   const expectedType=page.includes('spProductForm')?'service_period':'standard_product';
-  const applicationLink=`${base}/distribution?product_id=${expectedID}&product_type=${expectedType}`;
+  const salePanel=page.includes('spProductForm')?'sp-sale':'product-sale';
 
   await savePolicy(cdp, true, rate, waitDays, page);
   await reloadEditor(cdp, page);
-  await waitForPolicy(cdp,{version:1,enabled:true,rate,waitDays,link:applicationLink,hasQR:true,hasPending:false},page);
+  await waitForPolicy(cdp,{version:1,enabled:true,rate,waitDays,salePanel},page);
 
-  await savePolicy(cdp, false, rate, waitDays, page);
+  const draftRate='23.45';
+  await value(cdp, `(() => { const rate=document.querySelector('[data-distribution-policy-rate]'); if (!rate) throw new Error('sale commission input missing'); rate.value=${JSON.stringify(draftRate)}; rate.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
+  const otherDimensions=page.includes('spProductForm')?['sp-media','sp-action','sp-wecom','sp-push']:['product-media','product-action','product-wecom','product-push'];
+  const initialPolicy={enabled:true,commission_rate_basis_points:Math.round(Number(rate)*100),wait_days:waitDays,version:1};
+  for (const id of otherDimensions) await saveOtherDimension(cdp,id,page,initialPolicy);
+  await value(cdp, `(() => { const sale=document.querySelector('a[href="#${salePanel}"]'); sale?.click(); return document.querySelector('[data-distribution-policy-rate]')?.value; })()`);
+  assert.equal((await policySnapshot(cdp)).rate,draftRate,'returning to sale information must retain its unsaved commission draft');
+
+  await savePolicy(cdp, true, draftRate, waitDays, page);
   await reloadEditor(cdp, page);
-  await waitForPolicy(cdp,{version:2,enabled:false,rate,waitDays,link:'',hasQR:false,hasPending:true},page);
+  await waitForPolicy(cdp,{version:2,enabled:true,rate:draftRate,waitDays,salePanel},page);
 
-  await savePolicy(cdp, true, rate, waitDays, page);
+  await savePolicy(cdp, false, draftRate, waitDays, page);
   const writes = await value(cdp, "window.__distributionPolicyWrites");
   const serverPolicy = await value(cdp, "fetch(location.pathname.includes('spProductForm') ? '/api/admin/service-period-products/" + serviceProductID + "' : '/api/v1/products/" + productID + "').then(response => response.text())");
   await reloadEditor(cdp, page);
-  await waitForPolicy(cdp,{version:3,enabled:true,rate,waitDays,link:applicationLink,hasQR:true,hasPending:false},page);
+  await waitForPolicy(cdp,{version:3,enabled:false,rate:draftRate,waitDays,salePanel},page);
   await capturePolicyForm(cdp,expectedType);
-  if (!String(serverPolicy).includes('"version":3') || !String(serverPolicy).includes('"enabled":true')) throw new Error(`policy save/readback mismatch ${page} writes=${JSON.stringify(writes)} server=${serverPolicy}`);
+  if (!String(serverPolicy).includes('"version":3') || !String(serverPolicy).includes('"enabled":false') || !String(serverPolicy).includes('"commission_rate_basis_points":2345')) throw new Error(`policy save/readback mismatch ${page} writes=${JSON.stringify(writes)} server=${serverPolicy}`);
 }
 
 const profile=await fs.mkdtemp(path.join(os.tmpdir(),"aicrm-distribution-policy-chromium-")); let child,cdp;

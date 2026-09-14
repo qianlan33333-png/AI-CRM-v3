@@ -210,7 +210,23 @@ function distributionPolicy(raw: unknown): DistributionPolicy {
   return { enabled, commissionRateBasisPoints: rate, waitDays: days, version };
 }
 
-function currentDistributionPolicy(): DistributionPolicy {
+function productSaleDimension(): string | undefined {
+  const prefix = productPrefix();
+  return prefix === 'pf' ? 'product-sale' : prefix === 'spf' ? 'sp-sale' : undefined;
+}
+
+function distributionPolicyDimensionSelected(): boolean {
+  const sale = productSaleDimension();
+  if (!sale) return false;
+  const nav = document.querySelector<HTMLAnchorElement>(`a[href="#${sale}"]`)?.parentElement;
+  return nav?.dataset.productDimension === sale;
+}
+
+function currentDistributionPolicy(): DistributionPolicy | undefined {
+  // Policy is deliberately part of the sale dimension only. The frozen form
+  // sends one Product command for every dimension, but the Product contract
+  // treats an omitted policy as "leave the saved policy unchanged".
+  if (!distributionPolicyDimensionSelected()) return undefined;
   const host = document.querySelector<HTMLElement>('[data-distribution-policy]');
   // A new product genuinely has no stored policy. An existing editor without
   // its authoritative product payload is still loading (or failed), and must
@@ -252,7 +268,7 @@ function mountDistributionPolicyControls(): void {
   // its authoritative snapshot hook instead of mutating the DOM with an error,
   // which would trigger the observer again and fabricate a draft policy.
   if (!snapshot) return;
-  const anchor = document.getElementById(prefix === 'pf' ? 'product-action' : 'sp-action');
+  const anchor = document.getElementById(prefix === 'pf' ? 'product-sale' : 'sp-sale');
   if (!anchor) return;
   let policy: DistributionPolicy;
   try { policy = distributionPolicy(snapshot.distribution_policy); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
@@ -283,48 +299,9 @@ function mountDistributionPolicyControls(): void {
   const policyFields = host.querySelector<HTMLElement>('[data-distribution-policy-fields]')!;
   const update = () => { policyFields.classList.toggle('is-disabled', !enabled.checked); };
   enabled.addEventListener('change', update); update();
-  // This is a public application entry, not a promotion credential. It is
-  // intentionally derived only from the already persisted policy snapshot:
-  // ticking the checkbox must never claim that an unsaved policy is live.
-  if (policy.enabled) {
-    const application = document.createElement('div');
-    application.dataset.distributionApplicationEntry = '';
-    application.className = 'product-distribution-policy__application';
-    const title = document.createElement('strong');
-    title.className = 'product-distribution-policy__application-title';
-    title.textContent = '分销员申请入口';
-    const note = document.createElement('p');
-    note.className = 'product-distribution-policy__application-hint';
-    note.textContent = '分享给想申请推广的人。申请、购买资格和微信收款准备均以分销中心的服务端状态为准。';
-    const url = new URL('/distribution', location.origin);
-    url.searchParams.set('product_id', String(route.id));
-    url.searchParams.set('product_type', route.prefix === 'pf' ? 'standard_product' : 'service_period');
-    const link = document.createElement('input');
-    link.readOnly = true;
-    link.value = url.toString();
-    link.dataset.distributionApplicationLink = '';
-    link.className = 'product-distribution-policy__application-link';
-    const qr = document.createElement('div');
-    qr.dataset.distributionApplicationQR = '';
-    qr.className = 'product-distribution-policy__qr';
-    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'product-distribution-policy__copy'; copy.textContent = '复制申请链接';
-    copy.addEventListener('click', async () => {
-      if (!navigator.clipboard?.writeText) { link.focus(); link.select(); showMessage('当前环境不支持自动复制，请复制申请链接。'); return; }
-      try { await navigator.clipboard.writeText(url.toString()); showMessage('分销员申请链接已复制。', true); }
-      catch { link.focus(); link.select(); showMessage('未能自动复制，请复制申请链接。'); }
-    });
-    const linkRow = document.createElement('div'); linkRow.className = 'product-distribution-policy__application-row'; linkRow.append(link, copy);
-    application.append(title, note, linkRow, qr);
-    renderQr(qr, url.toString(), '分销员申请入口');
-    host.append(application);
-  } else {
-    const note = document.createElement('p');
-    note.dataset.distributionApplicationPending = '';
-    note.className = 'product-distribution-policy__pending';
-    note.textContent = '保存并启用分销后，才会生成可分享的分销员申请入口。';
-    host.append(note);
-  }
-  anchor.parentElement?.insertBefore(host, anchor);
+  // Product editing owns policy only. Distributor application, link copying,
+  // and QR entry points belong to the public Distribution centre.
+  anchor.firstElementChild?.after(host);
 }
 
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -1368,6 +1345,7 @@ function adaptDistributionPolicyWrite(init: RequestInit | undefined): RequestIni
   let body: RecordValue;
   try { body = object(JSON.parse(init.body)); } catch { throw new Error('商品保存请求无效，未提交分销设置。'); }
   const policy = currentDistributionPolicy();
+  if (!policy) return init;
   body.distribution_policy = {
     enabled: policy.enabled,
     commission_rate_basis_points: policy.commissionRateBasisPoints,
@@ -1385,7 +1363,8 @@ function distributionPolicyWritePath(url: URL, method: string): boolean {
 // policy injection lives at this tracked Host seam.  Install it only while the
 // one normal Product save runs: this preserves the Product owner's single
 // command/UoW and avoids changing an immutable donor API source.
-async function saveWithDistributionPolicy<T>(policy: DistributionPolicy, save: () => Promise<T>): Promise<T> {
+async function saveWithDistributionPolicy<T>(policy: DistributionPolicy | undefined, save: () => Promise<T>): Promise<T> {
+  if (!policy) return save();
   const prior = globalThis.fetch;
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request ? input : undefined;
