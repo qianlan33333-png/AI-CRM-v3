@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
@@ -81,7 +82,7 @@ type RuntimeApplication interface {
 	ReadProviderDelivery(context.Context, groupopsport.ProviderDeliveryReadCommand) (groupopsport.Execution, error)
 	ListOperationMembers(context.Context, int32, string) (groupopsport.OperationMemberPage, error)
 	RefreshOperationMembers(context.Context, groupopsport.OperationMemberRefreshCommand) (groupopsport.OperationMemberPage, error)
-	ListGroups(context.Context, int64, int32, int32) (groupopsport.GroupDirectoryPage, error)
+	ListGroups(context.Context, int64, string, int32, int32) (groupopsport.GroupDirectoryPage, error)
 	RefreshGroups(context.Context, groupopsport.GroupRefreshCommand) (groupopsport.GroupDirectoryPage, error)
 }
 
@@ -1099,8 +1100,18 @@ func (h *Handler) directory(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeError(w, stdhttp.StatusBadRequest, "invalid_page")
 		return
 	}
-	value, err := h.runtime.ListGroups(r.Context(), owner, limit, offset)
+	query, valid := directoryQuery(r.URL.Query().Get("q"))
+	if !valid {
+		writeError(w, stdhttp.StatusBadRequest, "invalid_query")
+		return
+	}
+	value, err := h.runtime.ListGroups(r.Context(), owner, query, limit, offset)
 	h.respond(w, value, err)
+}
+
+func directoryQuery(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	return value, utf8.ValidString(value) && utf8.RuneCountInString(value) <= 160
 }
 
 func (h *Handler) operationMembers(w stdhttp.ResponseWriter, r *stdhttp.Request) {

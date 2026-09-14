@@ -685,6 +685,14 @@
   background: #fff;
 }
 
+/* The V3 scoped picker uses the existing group row surface. A selected search
+   result remains visible as selected even while it is also listed above. */
+[data-v3-selection-session="group"] .group-ops__group-item.is-selected {
+  border-color: var(--group-ops-primary, #2563eb);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  background: #eff6ff;
+}
+
 .group-ops__group-name,
 .group-ops__summary {
   overflow: hidden;

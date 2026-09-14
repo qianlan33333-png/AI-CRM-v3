@@ -46,12 +46,31 @@ func TestGroupOpsDirectoryPersistsMixedNamedAndUnnamedGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = uow.Within(ctx, func(tx context.Context) error {
-		rows, total, readErr := store.ListDirectoryGroups(tx, owner, 100, 0)
+		rows, total, readErr := store.ListDirectoryGroups(tx, owner, "", 100, 0)
 		if readErr != nil {
 			return readErr
 		}
 		if total != 2 || len(rows) != 2 || rows[0].DisplayName != "真实群名" || rows[1].DisplayName != "" {
 			t.Fatalf("directory names were lost or fabricated: %+v", rows)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		rows, total, readErr := store.ListDirectoryGroups(tx, owner, "真实", 1, 0)
+		if readErr != nil {
+			return readErr
+		}
+		if total != 1 || len(rows) != 1 || rows[0].ChatReference != "named-chat" {
+			t.Fatalf("server query did not return the matching owner page: total=%d rows=%+v", total, rows)
+		}
+		rows, total, readErr = store.ListDirectoryGroups(tx, owner, "%", 100, 0)
+		if readErr != nil {
+			return readErr
+		}
+		if total != 0 || len(rows) != 0 {
+			t.Fatalf("literal wildcard query escaped its owner directory scope: total=%d rows=%+v", total, rows)
 		}
 		return nil
 	}); err != nil {

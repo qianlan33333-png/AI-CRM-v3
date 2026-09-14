@@ -14,11 +14,19 @@
 
 调用方显式提供 `source`、`scope`、带 query/cursor/signal 的分页读、初始完整 `selectedRecords`，以及一次完整结果的 `onCommit`。选择器支持多选、readonly、不可选原因、搜索按钮或非 IME Enter、分页选中保持、刷新失败保留草稿、乱序读保护、取消无写入、焦点返回和键盘操作。已绑定但目录缺失的群不静默丢弃，显示为不可用的历史绑定。
 
+## 本次业务判断
+
+- 打开选择器只读取计划详情和已绑定的 `chat_reference`，不为补显示名而预取整个群目录。首次目录读、搜索和分页都走 Owner 的本地受权 read port，按 `q`、`limit` 和 `offset` 查询；浏览器不再只过滤首个 50 条结果。
+- 初始绑定永远以计划详情为准。目录读取失败、搜索不命中或绑定群改属其他负责人时，绑定记录仍可查看；改属时明确显示“当前负责人不可管理此群”，不改变或混用 `chat_reference`、`rawchat_id`、群邀请素材 ID。
+- 一次“确认选择”固定每个新增／移除步骤的 idempotency key。重试先读回计划绑定，并只发送尚未达到原意图的差异；不能用全量覆盖抵消其他操作者刚新增的绑定。网络结果未知时沿用原 key 查询／重试，不生成新 key。部分成功会保留草稿并说明已保存的部分；取消仅关闭选择器，不伪造回滚。
+- 公共会话只管理草稿、当前查询、请求 epoch 和弹窗键盘行为；群运营调用方仍拥有本领域目录读取和计划资产命令，素材调用方仍拥有自己的授权 loader／commit。
+
 ## 实际接入与参考
 
 - 接入页：`web/v3/groupOpsHostAdapter.ts` 的群运营计划详情“选择群”；复用 `SelectionSession` 与既有 `group-ops` modal 样式，不修改冻结 `web/v3/groupOpsStandard.js`。
 - 领域读取/写入：`internal/groupops/http/handler.go`、`internal/groupops/app/runtime.go`、计划群资产端点。
 - 既有共享选择器参考：`web/v3/shared/ui/materialPickerAdapter.ts` 与 `SelectionSession`。
+- GitHub 参考：已用 `gh pr view 296` 核验 [PR #296](https://github.com/qianlan33333-png/AI-CRM-v3/pull/296) 的 `SelectionSession`／素材选择器合同；本 PR 在其分支上复用并补足同一组件的共享 dialog、权限乱序和真实 GroupOps 受权读写，而不是复制冻结 donor。
 - 本仓现有 GroupOps Host 端到端参考：`scripts/groupops-host-adapter-e2e.mjs`。
 
 本 PR 仅迁移此一真实 GroupOps 调用点；素材、成员、标签和客服页面不在范围内。
