@@ -179,3 +179,17 @@ body[data-ui-surface="share"] [data-share-read-error] { margin: 12px 0; color: #
 /* Page-owned dynamic commands share the single admin topbar with SSR links
  * and tabs. This stylesheet is mounted by every admin shell. */
 body[data-ui-surface="admin"] .admin-topbar .page-header-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+/* Cloud-plan commands are moved as their original nodes, so the donor's
+ * component-scoped custom properties would otherwise no longer inherit into
+ * the admin topbar. Keep the exact command semantics and disabled treatment
+ * available at their new, single page-header location without changing the
+ * frozen donor or recreating its callbacks. */
+body[data-ui-surface="admin"] .admin-topbar [data-page-header-actions="ai-plan-detail"] {
+  --plan-ink: #172033;
+  --plan-line: #d8dee8;
+  --plan-blue: #2563eb;
+  --plan-red: #d92d20;
+}
+/* The frozen Tags title uses an inline flex display. Keep the source row out
+ * of layout after the V3 shell becomes the one visible page title. */
+body[data-ui-surface="admin"] #stage [data-page-header-donor-title="tags"][hidden] { display: none !important; }
