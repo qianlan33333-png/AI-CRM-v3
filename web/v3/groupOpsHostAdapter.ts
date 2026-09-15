@@ -6,6 +6,9 @@ import { installStaffPickerAdapter } from './shared/ui/staffPickerAdapter';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord, type MaterialType } from './shared/ui/materialPickerAdapter';
 import { openContentComposer, openReadonlyContentPresentation, type ContentComposerResult } from './shared/ui/contentComposer';
 import type { ContentMaterialKind, ContentMaterialRecord } from './shared/ui/contentPresentation';
+import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+
+installCommittedTextSearch();
 
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";
@@ -156,9 +159,10 @@ function isOperationsConflict(data: Json): boolean {
   return data?.code === "operations_conflict" || (data?.error as Json)?.code === "operations_conflict";
 }
 function announceDirectoryReadFailure(): void {
-  // The frozen detail renderer still asks for its directory decoration while
-  // loading a plan. Preserve authoritative bindings and make that independent
-  // read failure visible after its own render completes.
+  // The detail renderer has a second, decorative owner-scoped group read.
+  // Its failure must remain visible without changing the saved bindings. The
+  // groups list owns its own explicit failed-read state instead.
+  if (document.getElementById("group-ops-app")?.dataset.pageMode !== "detail") return;
   window.setTimeout(() => {
     const notice = document.querySelector<HTMLElement>("#group-ops-app .group-ops__notice");
     if (notice) {
@@ -867,16 +871,17 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     let data: Json;
     try {
       data = await nativeRequest(url);
-    } catch {
+    } catch (error) {
       refreshedGroupTotal = null;
       announceDirectoryReadFailure();
-      // Keep the page and its Owner binding projection usable. The V3 picker
-      // performs its own scoped read and reports a retryable load failure.
-      return { items: [], total: 0, limit: 50, offset: 0, has_more: false };
+      // The groups screen distinguishes a directory outage from a confirmed
+      // empty page and retains any rows it already rendered. Do not translate
+      // a failed read into an empty success payload.
+      throw error;
     }
     if (!Array.isArray(data.items)) {
-      announceDirectoryReadFailure();
-      return { items: [], total: 0, limit: 50, offset: 0, has_more: false };
+      refreshedGroupTotal = null;
+      throw new Error("群聊列表暂不可读取");
     }
     return {
       ...data,

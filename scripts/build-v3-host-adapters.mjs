@@ -372,7 +372,10 @@ const injectSurfaceFeedback = (relative, surface) => {
   const documentPath = path.join(dist, relative);
   let documentHTML = fs.readFileSync(documentPath, 'utf8');
   const stylesheet = ['surfaceFeedbackStyles', 'actionFeedbackStyles', 'presentationStyles'].map((entry) => `<link rel="stylesheet" href="../${manifest.entries[entry]}">`).join('\n');
-  const host = `<script async src="../${surfaceFeedbackHost}"></script>`;
+  // surfaceFeedbackHost has shared ESM imports. Keep its previous eager async
+  // behavior while loading it as a module so emitted chunks remain valid in
+  // admin, sidebar, and public staged documents.
+  const host = `<script type="module" async src="../${surfaceFeedbackHost}"></script>`;
   if (!documentHTML.includes('</head>') || !documentHTML.includes('<body')) throw new Error(`${relative} has no HTML shell for surface feedback`);
   if (documentHTML.includes(stylesheet) || documentHTML.includes(host)) throw new Error(`${relative} already contains surface feedback`);
   documentHTML = documentHTML.replace('<head>', `<head>\n${host}`).replace('</head>', `${stylesheet}\n</head>`);
@@ -428,7 +431,7 @@ const distributionAdmin = manifest.entries.distributionAdmin;
 const distributionStyles = manifest.entries.distributionStyles;
 if (typeof distributionCenter !== 'string' || typeof distributionAdmin !== 'string' || typeof distributionStyles !== 'string') throw new Error('distribution frontend entries are absent from manifest');
 const distributionDocument = (title, rootID, entry, adminSurface = false) => {
-  const feedback = adminSurface ? `<link rel="stylesheet" href="../${entries.get('surfaceFeedbackStyles')}"><script async src="../${entries.get('surfaceFeedbackHost')}"></script>` : '';
+  const feedback = adminSurface ? `<link rel="stylesheet" href="../${entries.get('surfaceFeedbackStyles')}"><script type="module" async src="../${entries.get('surfaceFeedbackHost')}"></script>` : '';
   const surface = adminSurface ? ' data-ui-surface="admin"' : ' data-ui-surface="distribution"';
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${title} · AI-CRM</title><link rel="stylesheet" href="../${distributionStyles}">${feedback}</head><body${surface}><main id="${rootID}" class="distribution-shell" aria-live="polite"></main><script type="module" src="../${entry}"></script></body></html>\n`;
 };

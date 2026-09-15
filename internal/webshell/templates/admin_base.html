@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  {{with presentationAssets}}{{if .Script}}<script async src="{{.Script}}"></script>{{end}}{{end}}
+  {{with presentationAssets}}{{if .Script}}<script type="module" async src="{{.Script}}"></script>{{end}}{{end}}
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.PageTitle}} · 客户管理后台</title>

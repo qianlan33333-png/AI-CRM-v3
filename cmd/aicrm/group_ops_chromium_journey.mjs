@@ -219,6 +219,78 @@ try {
   if (screenshotDir) { const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, 'material-picker-thumbnail-fallback-360.png'); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]')", "material dialog cancel did not return to the actual Radar form");
+
+  const groupsPath = "/admin/automation-conversion/group-ops/groups/ui";
+  await cdp.call("Page.navigate", { url: `${baseURL}${groupsPath}` });
+  await waitFor(cdp, "Boolean(document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]'))", "Group Ops groups list did not render its real keyword filter");
+  const imeCandidatePrevented = await evaluate(cdp, `(() => {
+    const field = document.querySelector('#group-ops-app input[name="keyword"][data-filter]');
+    if (!field) return null;
+    window.__groupDirectoryReads = 0;
+    window.__groupDirectoryQueries = [];
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const request = typeof input === 'string' || input instanceof URL ? undefined : input;
+      const url = new URL(request ? request.url : String(input), location.href);
+      const method = String(init?.method || request?.method || 'GET').toUpperCase();
+      if (method === 'GET' && url.pathname === '/api/admin/automation-conversion/group-ops/groups') {
+        window.__groupDirectoryReads += 1;
+        window.__groupDirectoryQueries.push(url.search);
+        if (window.__delayNextGroupRead) {
+          window.__delayNextGroupRead = false;
+          return new Promise((resolve, reject) => {
+            window.__releaseGroupRead = () => nativeFetch(input, init).then(resolve, reject);
+          });
+        }
+      }
+      return nativeFetch(input, init);
+    };
+    field.focus();
+    field.value = 'Chromium';
+    field.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    field.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    field.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    const candidate = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' });
+    Object.defineProperty(candidate, 'keyCode', { value: 229 });
+    field.dispatchEvent(candidate);
+    return candidate.defaultPrevented;
+  })()`);
+  if (imeCandidatePrevented !== false) throw new Error("Group Ops keyword IME candidate Enter was prevented");
+  await delay(80);
+  const readsAfterCandidate = await evaluate(cdp, "window.__groupDirectoryReads");
+  if (readsAfterCandidate !== 0) throw new Error(`Group Ops keyword IME candidate Enter read the directory ${readsAfterCandidate} times`);
+  await evaluate(cdp, "window.__delayNextGroupRead = true; document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); true");
+  await waitFor(cdp, "window.__groupDirectoryReads === 1 && typeof window.__releaseGroupRead === 'function'", "Group Ops keyword Enter did not issue its delayed existing directory read");
+  const composingDraftStarted = await evaluate(cdp, `(() => {
+    const field=document.querySelector('#group-ops-app input[name="keyword"][data-filter]');
+    if (!field) return false;
+    window.__groupKeywordDOM = field;
+    field.focus(); field.value='中文草稿B';
+    field.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+    field.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+    window.__releaseGroupRead();
+    return true;
+  })()`);
+  if (!composingDraftStarted) throw new Error('Group Ops in-flight composition fixture did not start');
+  await delay(100);
+  const composingPreserved = await evaluate(cdp, "(()=>{const field=document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]');return Boolean(field===window.__groupKeywordDOM&&field?.value==='中文草稿B'&&document.activeElement===field)})()");
+  if (!composingPreserved) throw new Error('Group Ops delayed result replaced the active IME draft before composition ended');
+  await evaluate(cdp, "document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]').dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); true");
+  await waitFor(cdp, "(()=>{const field=document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]');return Boolean(field&&field!==window.__groupKeywordDOM&&field.value==='中文草稿B'&&document.activeElement===field)})()", "Group Ops composition completion did not render the delayed result while preserving the draft/focus");
+  await evaluate(cdp, `(() => {
+    const field=document.querySelector('#group-ops-app input[name="keyword"][data-filter]');
+    field.value='未提交'; field.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+    field.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
+    return true;
+  })()`);
+  await delay(100);
+  const blurRetained = await evaluate(cdp, "(()=>{const field=document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]');return Boolean(field&&field.value==='未提交'&&window.__groupDirectoryReads===1)})()");
+  if (!blurRetained) throw new Error('Group Ops keyword blur submitted or discarded its draft');
+  await evaluate(cdp, "(()=>{const select=document.querySelector('#group-ops-app select[name=\"bind_status\"][data-filter]');if(!select)return false;select.value='bound';select.dispatchEvent(new Event('change',{bubbles:true}));return true})()");
+  await waitFor(cdp, "window.__groupDirectoryReads === 2", "Group Ops binding filter did not issue its existing directory read");
+  const dropdownPreservedDraft = await evaluate(cdp, "(()=>{const field=document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]');const bind=document.querySelector('#group-ops-app select[name=\"bind_status\"][data-filter]');const query=window.__groupDirectoryQueries?.[1]||'';return Boolean(field&&bind&&field.value==='未提交'&&bind.value==='bound'&&new URLSearchParams(query).get('keyword')==='Chromium'&&new URLSearchParams(query).get('bind_status')==='bound')})()");
+  if (!dropdownPreservedDraft) throw new Error('Group Ops binding filter did not retain the draft or reuse the committed keyword');
+
   console.log("group_ops_chromium: PASS");
 } catch (error) {
   if (error instanceof DevToolsUnavailable) console.log("group_ops_chromium: SKIP_DEVTOOLS");
