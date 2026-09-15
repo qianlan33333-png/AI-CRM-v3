@@ -250,6 +250,26 @@ console.log('material library presentation: PASS');
     assert.equal(dom.window.document.querySelector('#stage').dataset.materialLibraryReadonly, 'true', 'an attachment 403 makes the existing workspace read-only');
     assert.equal(dom.window.document.querySelector('tbody tr').cells[3].textContent, '1 B', 'an attachment 403 clears previously enriched metadata back to its donor value');
     assert.match(dom.window.document.body.textContent, /当前账号无权查看该类素材/, 'an attachment 403 presents its authorization-specific recovery state');
+    assert.doesNotMatch(dom.window.document.body.textContent, /正在读取附件信息…/, 'an attachment 403 does not mask its authorization state with a loading notice');
+  } finally { dom.window.close(); }
+}
+
+{
+  let reads = 0;
+  const dom = domFor('attach', `
+    <div style="height:52px"><button>上传附件</button></div>
+    <section><div><input placeholder="搜索附件名"></div><table><thead><tr><th>附件名</th><th>标签</th><th>类型</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody><tr data-material-library-id="99"><td><span>PDF</span><span>暂不可读.pdf</span></td><td>课程</td><td>PDF</td><td>1 B</td><td>旧时间</td><td><button>编辑</button></td></tr></tbody></table></section>`, async (input) => {
+    const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
+    if (url.pathname !== '/api/admin/attachment-library') throw new Error(`unexpected initial attachment failure request ${url.pathname}`);
+    reads += 1;
+    return response({ code: 'UNAVAILABLE' }, 503);
+  });
+  try {
+    dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+    await settle(); await settle();
+    assert.equal(reads, 1, 'an initial attachment 503 does not retry from presentation-owned mutations');
+    assert.match(dom.window.document.body.textContent, /部分附件信息暂不可用，已保留原有记录。/, 'an initial attachment 503 states that the owner records remain available');
+    assert.doesNotMatch(dom.window.document.body.textContent, /正在读取附件信息…/, 'an initial attachment 503 does not remain in a loading state');
   } finally { dom.window.close(); }
 }
 

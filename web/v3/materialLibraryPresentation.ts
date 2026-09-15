@@ -544,7 +544,7 @@ class FrozenMaterialPresentation {
         notice.style.cssText = 'margin:8px 12px;color:#646A73;font-size:12px;line-height:18px';
         table.before(notice);
       }
-      const message = this.metadataLoaded
+      const message = this.metadataLoaded || this.metadataReadFailed
         ? '部分附件信息暂不可用，已保留原有记录。'
         : '正在读取附件信息…';
       if (notice.textContent !== message) notice.textContent = message;
