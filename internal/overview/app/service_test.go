@@ -246,3 +246,11 @@ func TestRefundAsOfIsTheRefundOwnerObservation(t *testing.T) {
 		t.Fatalf("refund as_of=%s want its own owner observation %s", outcome.response.Refunds.AsOf, want)
 	}
 }
+
+func TestDistributionResponseRemainsReadyForOpenExceptionOrdersWithoutMoney(t *testing.T) {
+	asOf := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+	response := distributionResponse(asOf, distributionport.Overview{CurrentExceptionOrderCount: 1, Currency: "CNY"}, nil)
+	if response.Status != StatusReady || response.CurrentExceptionOrderCount != 1 {
+		t.Fatalf("distribution exception-order-only response=%+v", response)
+	}
+}
