@@ -1303,6 +1303,28 @@
       ],
       "reason": "Bind the Root-reviewed combined read-only Overview paid-record drilldown and Distribution current distinct open/querying exception-order metric to current main after the ordered stack. Existing Distribution exception-record todos remain unchanged; frozen donors remain unchanged.",
       "review_reference": "Root approval of the exact combined authority diff for current main 1e91d8f8 on 2026-09-16; ordinary PR review and required CI remain pending."
+    },
+    {
+      "base_commit": "b4bb355d2b15324748fdc4f4d2a81e6e3523836b",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "a759668892f9d92ea21c50b4e1b4f3590cd0a53876aa14ecdf673f76c09a7aea",
+          "head_sha256": "5c172834a6a7f081d07827225ee558686920b70d32d4c988d06cc2557c4d1093"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "b946c5d6d2465933e976f57bb92aa6f0665cd95e475eec4dacf78fa1b98309e2",
+          "head_sha256": "cb37c3a505df9224b0e85f7686959d269701a58eafeceb465620cd9bf612d7be"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "250a407959db9d90fa377acb15fe735dcde152a82e8d81099d9669b380fc0c0b",
+          "head_sha256": "1db61b398ad05da054735b0aa50dd2b698c9ed9f36aa0b519592b949f1709bc0"
+        }
+      ],
+      "reason": "Bind the Root-approved combined read-only Overview paid-record drilldown and Distribution current distinct open/querying exception-order metric to current main after the ordered stack. Existing Distribution exception-record todos remain unchanged; frozen donors remain unchanged.",
+      "review_reference": "Root approval of the exact combined authority diff for current main b4bb355d on 2026-09-16; ordinary PR review and required CI remain pending."
     }
   ]
 }
