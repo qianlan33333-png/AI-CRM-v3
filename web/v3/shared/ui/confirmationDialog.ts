@@ -86,7 +86,10 @@ export function openConfirmationDialog(options: ConfirmationDialogOptions): Prom
       if (settled) return;
       settled = true;
       controller?.dispose();
-      if (dialog.open) dialog.close();
+      // JSDOM has no HTMLDialogElement.close(), while the production browser
+      // does. Keep the fallback modal attribute paired with showModal().
+      if (dialog.open && typeof dialog.close === 'function') dialog.close();
+      else dialog.removeAttribute('open');
       dialog.remove();
       const value = reasonField?.value.trim();
       resolve(confirmed ? { confirmed: true, ...(value ? { reason: value } : {}) } : { confirmed: false });

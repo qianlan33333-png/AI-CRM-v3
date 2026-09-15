@@ -89,6 +89,24 @@
     return { state: "unknown", message: "请求未完成，请刷新页面核对后重试。" };
   }
 
+  // The V3 confirmation surface owns only the temporary dialog result. This
+  // adapter keeps its existing authenticated Owner command, idempotency key,
+  // request body, and error/reload contract. A missing release asset fails
+  // closed rather than falling back to an unstyled browser confirmation.
+  async function confirmDestructiveAction(options, report) {
+    const confirm = window.AICRMConfirmation?.confirm;
+    if (typeof confirm !== "function") {
+      report("确认界面未完成加载，请重新加载页面后再试。", true);
+      return false;
+    }
+    try {
+      return (await confirm(options)).confirmed === true;
+    } catch (_error) {
+      report("确认界面暂时不可用，本次操作未提交；请重新加载页面后重试。", true);
+      return false;
+    }
+  }
+
   const readinessReasonLabels = {
     configuration_missing: "尚未配置人群筛选条件",
     automation_binding_missing: "未绑定已发布的话术智能体",
@@ -223,19 +241,30 @@
       if (state.busy || !["activate", "pause", "copy", "archive"].includes(action)) return;
       const item = state.packages.find((value) => value.id === id);
       if (!item) return;
-      if (action === "archive" && !window.confirm(`归档“${item.name}”？归档后不可编辑。`)) return;
+      // Freeze the visible target before awaiting the dialog: a refresh or
+      // row replacement cannot redirect the later command to another package.
+      const target = { id: item.id, version: item.version, name: item.name };
       state.busy = true;
+      if (action === "archive" && !await confirmDestructiveAction({
+        title: "归档人群包",
+        description: `归档“${target.name}”后不可编辑，历史版本仍保留用于审计。`,
+        confirmLabel: "确认归档",
+        tone: "danger",
+      }, showNotice)) {
+        state.busy = false;
+        return;
+      }
       showNotice("正在提交并等待持久化收据…");
       try {
         if (action === "activate") {
-          const checked = await request(`${API}/ai-audience/packages/${id}/precheck`, { method: "POST", body: {}, retryTransient: true });
+          const checked = await request(`${API}/ai-audience/packages/${target.id}/precheck`, { method: "POST", body: {}, retryTransient: true });
           if (!checked.precheck?.ready) {
             showNotice(`暂不能激活：${readinessMessage(checked.precheck?.reasons) || "执行条件未满足"}。请点击人群包名称进入配置。`, true);
             return;
           }
         }
-        const path = action === "archive" ? `${API}/ai-audience/packages/${id}?expected_version=${item.version}` : `${API}/ai-audience/packages/${id}/${action}`;
-        await request(path, { method: action === "archive" ? "DELETE" : "POST", mutate: true, scope: `audience-${action}`, body: action === "copy" ? undefined : { expected_version: item.version } });
+        const path = action === "archive" ? `${API}/ai-audience/packages/${target.id}?expected_version=${target.version}` : `${API}/ai-audience/packages/${target.id}/${action}`;
+        await request(path, { method: action === "archive" ? "DELETE" : "POST", mutate: true, scope: `audience-${action}`, body: action === "copy" ? undefined : { expected_version: target.version } });
         await load();
       } catch (error) {
         const detail = errorState(error);
@@ -268,10 +297,23 @@
       } catch (error) { const detail = errorState(error); showNotice(detail.message, true); }
     });
     byID("deleteGroupBtn").addEventListener("click", async () => {
+      if (state.busy) return;
       const group = state.groups.find((item) => item.id === state.groupID);
-      if (!group || !window.confirm(`删除空分组“${group.name}”？`)) return;
-      try { await request(`${API}/ai-audience/package-groups/${group.id}?expected_version=${group.version}`, { method: "DELETE", mutate: true, scope: "audience-group-delete" }); state.groupID = null; await load(); }
+      if (!group) return;
+      const target = { id: group.id, version: group.version, name: group.name };
+      state.busy = true;
+      if (!await confirmDestructiveAction({
+        title: "删除空分组",
+        description: `删除“${target.name}”不会归档人群包；仅空分组可以删除。`,
+        confirmLabel: "确认删除",
+        tone: "danger",
+      }, showNotice)) {
+        state.busy = false;
+        return;
+      }
+      try { await request(`${API}/ai-audience/package-groups/${target.id}?expected_version=${target.version}`, { method: "DELETE", mutate: true, scope: "audience-group-delete" }); state.groupID = null; await load(); }
       catch (error) { const detail = errorState(error); showNotice(detail.message, true); }
+      finally { state.busy = false; }
     });
     byID("prevBtn").addEventListener("click", () => { state.page--; render(); });
     byID("nextBtn").addEventListener("click", () => { state.page++; render(); });
@@ -625,9 +667,23 @@
     }
 
     async function transitionPolicy(id, version, action) {
-      if (action === "archive" && !window.confirm("归档该策略？")) return;
-      try { await request(`${API}/automations/${id}/${action}`, { method: "POST", mutate: true, scope: `automation-policy-${action}`, body: { expected_version: version } }); await loadPolicies(); }
+      if (state.busy) return;
+      const policy = state.policies.find((item) => item?.policy?.id === id)?.policy;
+      const target = { id, version, name: policy?.name || "该策略" };
+      state.busy = true;
+      const report = (message, isError) => setStatus(byID("policyStatusLine"), message, isError ? "error" : "");
+      if (action === "archive" && !await confirmDestructiveAction({
+        title: "归档触发策略",
+        description: `归档“${target.name}”后将停止后续触发，历史版本仍可审计。`,
+        confirmLabel: "确认归档",
+        tone: "danger",
+      }, report)) {
+        state.busy = false;
+        return;
+      }
+      try { await request(`${API}/automations/${target.id}/${action}`, { method: "POST", mutate: true, scope: `automation-policy-${action}`, body: { expected_version: target.version } }); await loadPolicies(); }
       catch (error) { const detail = errorState(error); setStatus(byID("policyStatusLine"), detail.message, "error"); }
+      finally { state.busy = false; }
     }
 
     byID("savePackageBtn").addEventListener("click", savePackage);
@@ -637,12 +693,25 @@
     byID("refreshMembersBtn").addEventListener("click", () => loadMembers());
     byID("saveAutomationBtn").addEventListener("click", saveBinding);
     byID("unbindAutomationBtn").addEventListener("click", async () => {
-      if (!state.binding || !state.pkg || !window.confirm("解除当前话术智能体绑定？历史版本仍会保留用于审计。")) return;
+      if (!state.binding || !state.pkg || state.busy) return;
+      const target = { packageID, version: state.pkg.version, agentID: state.binding.agent_id };
+      state.busy = true;
+      const report = (message, isError) => setStatus(byID("automationStatusLine"), message, isError ? "error" : "");
+      if (!await confirmDestructiveAction({
+        title: "解除话术智能体绑定",
+        description: `解除当前智能体 #${target.agentID} 的绑定后，历史冻结版本仍保留用于审计。`,
+        confirmLabel: "确认解绑",
+        tone: "danger",
+      }, report)) {
+        state.busy = false;
+        return;
+      }
       try {
-        await request(`${API}/ai-audience/packages/${packageID}/automation-binding?expected_version=${state.pkg.version}`, { method: "DELETE", mutate: true, scope: "audience-binding-delete" });
+        await request(`${API}/ai-audience/packages/${target.packageID}/automation-binding?expected_version=${target.version}`, { method: "DELETE", mutate: true, scope: "audience-binding-delete" });
         setStatus(byID("automationStatusLine"), "绑定已解除，历史冻结版本仍保留。", "success");
         await load();
       } catch (error) { const detail = errorState(error); setStatus(byID("automationStatusLine"), detail.message, "error"); }
+      finally { state.busy = false; }
     });
     byID("addSenderBtn").addEventListener("click", () => byID("senderReferenceInput")?.focus());
     byID("saveSendersBtn").addEventListener("click", saveSenders);

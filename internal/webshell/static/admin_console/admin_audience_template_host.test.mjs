@@ -32,6 +32,9 @@ const writes = [];
 const previewWrites = [];
 const packageWrites = [];
 const policyWrites = [];
+const confirmations = [];
+const policyArchives = [];
+const bindingDeletes = [];
 let templateReads = 0;
 let broadcastRuns = [];
 let broadcastPreviewCalls = 0;
@@ -43,6 +46,7 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   pretendToBeVisual: true,
   beforeParse(window) {
     window.Headers = globalThis.Headers;
+    window.AICRMConfirmation = { confirm: (options) => new Promise((resolve) => confirmations.push({ options, resolve })) };
     window.structuredClone = globalThis.structuredClone;
     window.AdminDateTime = {
       datetimeLocalValue: (value) => value === "2026-09-05T00:00:00.000Z" || value === "2026-09-05T00:00:00.611265Z" ? "2026-09-05T08:00:00" : value === "2026-09-05T01:00:00.000Z" || value === "2026-09-05T01:00:00.125Z" ? "2026-09-05T09:00:00" : "",
@@ -63,8 +67,13 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/configuration" && (!init.method || init.method === "GET")) return json({ configuration: config });
       if (url.pathname === "/api/admin/ai-audience/packages/13/owner-references") return json({ owner_userids: ["bob"] });
-      if (url.pathname === "/api/admin/ai-audience/packages/13/automation-binding" || url.pathname === "/api/admin/ai-audience/packages/13/senders" || url.pathname === "/api/admin/ai-audience/packages/13/members") return json({ error: "not_found" }, 404);
-      if (url.pathname === "/api/admin/automation-agents") return json({ items: [] });
+      if (url.pathname === "/api/admin/ai-audience/packages/13/automation-binding" && (!init.method || init.method === "GET")) return json({ binding: { agent_id: 8 } });
+      if (url.pathname === "/api/admin/ai-audience/packages/13/automation-binding" && init.method === "DELETE") {
+        bindingDeletes.push({ body: init.body, headers: Object.fromEntries(new window.Headers(init.headers || {})) });
+        return bindingDeletes.length === 1 ? json({ error: "not_ready" }, 503) : json({});
+      }
+      if (url.pathname === "/api/admin/ai-audience/packages/13/senders" || url.pathname === "/api/admin/ai-audience/packages/13/members") return json({ error: "not_found" }, 404);
+      if (url.pathname === "/api/admin/automation-agents") return json({ items: [{ id: 8, agent_name: "冻结话术", automation_type: "fixed_script", status: "active" }] });
       if (url.pathname === "/api/admin/ai-audience/packages/13/precheck") return json({ precheck: { ready: false, reasons: [] } });
       if (url.pathname === "/api/admin/ai-audience/packages/13/refresh" && init.method === "POST") return json({ refresh_run: { id: 71, state: "queued" } }, 202);
       if (url.pathname === "/api/admin/ai-audience/packages/13/refresh-runs/71") return json({ refresh_run: { id: 71, state: "failed", error_code: "refresh_unavailable" } });
@@ -114,7 +123,12 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         policyWrites.push(JSON.parse(init.body));
         return json({ policy: { id: 31 } });
       }
-      if (url.pathname === "/api/admin/automations" && (!init.method || init.method === "GET")) return json({ items: [] });
+      if (url.pathname === "/api/admin/automations" && (!init.method || init.method === "GET")) return json({ items: [{ id: 31 }] });
+      if (url.pathname === "/api/admin/automations/31") return json({ data: { policy: { id: 31, name: "留存策略", code: "retention", lifecycle: "paused", version: 9 }, version: { package_id: 13, version: 3, trigger_kind: "audience_member_entered", action_kind: "record" } } });
+      if (url.pathname === "/api/admin/automations/31/archive" && init.method === "POST") {
+        policyArchives.push({ body: init.body, headers: Object.fromEntries(new window.Headers(init.headers || {})) });
+        return policyArchives.length === 1 ? json({ error: "not_ready" }, 503) : json({});
+      }
       return json({ error: `unexpected ${url.pathname}` }, 500);
     };
   },
@@ -356,5 +370,50 @@ document.querySelector("#manualRefreshBtn").click();
 await wait(1700);
 const refreshFailureText = document.querySelector("#capabilityStatus")?.textContent || "";
 if (!refreshFailureText.includes("快照刷新失败：刷新服务暂不可用") || refreshFailureText.includes("refresh_unavailable")) throw new Error(`refresh failure leaked a raw error code: ${refreshFailureText}`);
+
+// The shared dialog may resolve only a temporary choice.  These are the real
+// detail-page bindings: cancel sends nothing; confirm preserves each Owner
+// route's original CAS body and per-command idempotency behavior.
+document.querySelector('[data-panel="automation"]').click();
+await wait(40);
+const unbind = () => document.querySelector("#unbindAutomationBtn")?.click();
+unbind();
+unbind();
+await wait(20);
+if (confirmations.length !== 1 || confirmations[0].options.title !== "解除话术智能体绑定" || !confirmations[0].options.description.includes("#8")) throw new Error(`unbind did not freeze its binding target: ${JSON.stringify(confirmations.map((entry) => entry.options))}`);
+confirmations.shift().resolve({ confirmed: false });
+await wait(40);
+if (bindingDeletes.length) throw new Error("cancelled unbind made a mutation");
+unbind();
+await wait(20);
+confirmations.shift().resolve({ confirmed: true });
+await wait(100);
+if (bindingDeletes.length !== 1 || bindingDeletes[0].body !== undefined || !bindingDeletes[0].headers["idempotency-key"] || !document.querySelector("#automationStatusLine")?.textContent.includes("能力尚未满足")) throw new Error(`unbind failure did not preserve its retryable Owner command: ${JSON.stringify({ bindingDeletes, status: document.querySelector("#automationStatusLine")?.textContent })}`);
+unbind();
+await wait(20);
+confirmations.shift().resolve({ confirmed: true });
+await wait(120);
+if (bindingDeletes.length !== 2 || !bindingDeletes[1].headers["idempotency-key"]) throw new Error(`unbind retry did not submit exactly one original command: ${JSON.stringify(bindingDeletes)}`);
+
+document.querySelector('[data-panel="policies"]').click();
+await wait(100);
+const archivePolicy = () => document.querySelector('[data-policy-action="archive"]')?.click();
+archivePolicy();
+archivePolicy();
+await wait(20);
+if (confirmations.length !== 1 || confirmations[0].options.title !== "归档触发策略" || !confirmations[0].options.description.includes("留存策略")) throw new Error(`policy archive did not freeze its visible target: ${JSON.stringify(confirmations.map((entry) => entry.options))}`);
+confirmations.shift().resolve({ confirmed: false });
+await wait(40);
+if (policyArchives.length) throw new Error("cancelled policy archive made a mutation");
+archivePolicy();
+await wait(20);
+confirmations.shift().resolve({ confirmed: true });
+await wait(100);
+if (policyArchives.length !== 1 || policyArchives[0].body !== JSON.stringify({ expected_version: 9 }) || !policyArchives[0].headers["idempotency-key"] || !document.querySelector("#policyStatusLine")?.textContent.includes("能力尚未满足")) throw new Error(`policy archive failure did not preserve its retryable Owner command: ${JSON.stringify({ policyArchives, status: document.querySelector("#policyStatusLine")?.textContent })}`);
+archivePolicy();
+await wait(20);
+confirmations.shift().resolve({ confirmed: true });
+await wait(120);
+if (policyArchives.length !== 2 || !policyArchives[1].headers["idempotency-key"]) throw new Error(`policy archive retry did not submit exactly one original command: ${JSON.stringify(policyArchives)}`);
 dom.window.close();
 console.log("admin-audience-template-host-browser: PASS");
