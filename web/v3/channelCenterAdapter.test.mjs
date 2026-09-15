@@ -44,7 +44,7 @@ const initialListReadGate = new Promise((resolve) => { releaseInitialListRead = 
 const state = {
   ids: ['9', '10', '11', '12'],
   names: new Map([['9', '同名渠道'], ['10', '同名渠道'], ['11', '权限渠道'], ['12', '预读渠道']]),
-  status: new Map([['9', 'archived'], ['10', 'active'], ['11', 'active'], ['12', 'active']]),
+  status: new Map([['9', 'archived'], ['10', 'active'], ['11', 'inactive'], ['12', 'active']]),
   calls: [], etag: new Map([['9', '"5"'], ['10', '"7"'], ['11', '"11"'], ['12', '"13"']]),
   listReads: 0, listSnapshots: [], holdInitialListRead: true, failNextListRead: false, outcomes: new Map([['10', 'proxy_502']]),
 };
@@ -94,6 +94,23 @@ function actionForName(name) {
   return [...list.window.document.querySelectorAll('a')].find((node) => node.textContent === '删除' && node.closest('tr')?.textContent?.includes(name));
 }
 
+function deleteActionsForName(name) {
+  const row = [...list.window.document.querySelectorAll('tbody tr')].find((node) => node.querySelector(':scope > td')?.textContent?.trim() === name);
+  assert.ok(row, `the ${name} row must render`);
+  return [...row.querySelectorAll('a')].filter((node) => node.textContent === '删除');
+}
+
+function assertUniqueArchiveDelete(name) {
+  const actions = deleteActionsForName(name);
+  assert.equal(actions.length, 1, `${name} renders one deletion action after the frozen controller rerender`);
+  assert.equal(actions[0].getAttribute('aria-disabled'), 'false', `${name} keeps its enabled archive deletion action`);
+  assert.equal(actions[0].title, '删除会停止扫码欢迎语和入渠标签，并保留历史；可编辑后再启用。', `${name} explains the archive deletion lifecycle`);
+}
+
+function assertNoPermanentDeletePlaceholder() {
+  assert.equal([...list.window.document.querySelectorAll('a')].some((node) => node.textContent === '删除不可用' || node.title?.includes('永久删除')), false, 'the frozen permanent-delete placeholder is absent from every rendered row');
+}
+
 async function confirm(action, message) {
   action.click();
   await waitFor(() => list.window.document.querySelector('#fb-mask')?.hidden === false, message);
@@ -122,7 +139,10 @@ try {
   assert.equal([...list.window.document.querySelectorAll('tbody tr')].length, 3, 'the normal channel list renders only its three non-archived rows');
   assert.equal([...list.window.document.querySelectorAll('tbody tr')].some((row) => row.querySelectorAll(':scope > td')[2]?.textContent?.trim() === '归档'), false, 'an archived row is not retained as a disabled normal-list row');
   assert.equal([...list.window.document.querySelectorAll('tr')].some((row) => row.textContent?.includes('同名渠道') && [...row.querySelectorAll('a')].some((node) => node.textContent === '下载二维码')), true, 'an active row keeps its QR download action');
-  assert.equal(list.window.document.querySelector('[title*="永久删除"]')?.textContent, '删除不可用', 'permanent deletion remains visibly unavailable');
+  for (const name of ['同名渠道', '权限渠道', '预读渠道']) {
+    assertUniqueArchiveDelete(name);
+  }
+  assertNoPermanentDeletePlaceholder();
   const activeAction = actionForName('同名渠道');
   activeAction.click();
   await waitFor(() => list.window.document.querySelector('#fb-mask')?.hidden === false, 'delete must use the shared confirmation dialog');
@@ -156,9 +176,13 @@ try {
   const listReadback = state.calls.filter((call) => call.method === 'GET' && call.path.startsWith('/api/admin/channels?')).at(-1);
   assert.equal(listReadback?.path, '/api/admin/channels?limit=50', 'delete readback keeps the normal-list request free of include_archived');
   assert.deepEqual(state.listSnapshots.at(-1), ['11', '12'], 'delete readback updates the normal list total without the archived resource');
+  assertUniqueArchiveDelete('权限渠道');
+  assertNoPermanentDeletePlaceholder();
   search.value = ''; search.dispatchEvent(new list.window.Event('input', { bubbles: true }));
   search.dispatchEvent(new list.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
   await waitFor(() => Boolean(actionForName('权限渠道')) && Boolean(actionForName('预读渠道')) && !actionForName('同名渠道'), 'refreshing the visible list keeps the archived channel hidden');
+  for (const name of ['权限渠道', '预读渠道']) assertUniqueArchiveDelete(name);
+  assertNoPermanentDeletePlaceholder();
   const writesAfterConfirmedReadback = state.calls.filter((call) => call.method === 'PATCH').length;
   activeAction.click(); await pause();
   assert.equal(state.calls.filter((call) => call.method === 'PATCH').length, writesAfterConfirmedReadback, 'a stale callback after confirmation cannot create a new write');
@@ -193,6 +217,11 @@ try {
   state.failNextListRead = true;
   await confirm(preflightAction, 'a confirmed delete can still have an unavailable normal-list readback');
   await waitFor(() => /已删除，但列表未更新/.test(list.window.document.querySelector('#fb-toast')?.textContent || ''), 'a failed authoritative list readback remains visible instead of inventing a refreshed list');
+  search.value = ''; search.dispatchEvent(new list.window.Event('input', { bubbles: true }));
+  search.dispatchEvent(new list.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+  await waitFor(() => Boolean(actionForName('权限渠道')) && !actionForName('预读渠道'), 'a later authoritative recovery removes the confirmed channel after the failed readback');
+  assertUniqueArchiveDelete('权限渠道');
+  assertNoPermanentDeletePlaceholder();
   assert.equal(state.calls.some((call) => call.method === 'DELETE'), false, 'the V3 archive path never issues DELETE');
 } finally {
   list.window.close();
