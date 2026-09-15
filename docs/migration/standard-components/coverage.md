@@ -15,5 +15,6 @@
 | 优惠券 | 优惠券原表单及抽取的同字节 runtime | CSP 使用 `/assets/standard-components/coupon_form_runtime.js`，由页面 Host 在挂载原 DOM 后加载。 | Coupon CSP/失败重试旅程由渠道 Owner 维护。 |
 | 组件状态示例（`/admin/component-states`） | Group、Material、Tag、Staff、Content Composer | `componentStatesHost` 只注入明确本地 fixture；确认只更新同页摘要。Tag/Staff 保持各自 source 与 ID 合同，Composer 仅用 `media-library + kind + id` 渲染本地预览与只读。 | 认证路由、零 API 请求、状态/IME/焦点和 360–1440 组件旅程覆盖。 |
 | Audience 管理（归档人群包、删除空群组、归档策略、解绑自动化） | `window.AICRMConfirmation.confirm` / `openConfirmationDialog` | `admin_audience_detail.js` 在请求前冻结既有目标与可见名称；组件只持有临时原因、校验、焦点、Escape、取消/确认结果与 busy 状态。既有 Audience Owner 命令仍由 caller 以原路径、正文、鉴权和幂等键发出。 | 浏览器覆盖取消零写入、确认单次归档与 Owner 读回；失败反馈后可按既有命令合同重试。 |
+| 分销管理（停用分销员、登记追回、登记商户承担） | `window.AICRMConfirmation.confirm` / `openConfirmationDialog` 的通用字段 | `distributionAdmin` 在打开前冻结分销员／异常 ID、版本、当前 tab 与授权 generation；组件只校验临时原因、正整数 `amount_minor`（分）和凭证参考。Distribution Owner 继续发送原路径、正文、CAS、CSRF、幂等键和读回。 | DOM 覆盖取消零写、确认单写、跨页失效、重复点击和原键重试；真实隔离 PostgreSQL + Chromium 由分销验收覆盖。 |
 
 没有选择动作的标签管理列表、只读展示和历史数据不替换控件。`agentEdit.html` 的固定素材区域是只读的：现有 API 把四个素材 ID 数组限制为 `maxItems=0`，没有可保存的选择动作。旧 `web/src/shared/ui/picker.ts` 中仍有冻结 controller 的历史方法；每次发布须按实际服务模板和路由确认可达性，不能凭全局组件加载把它们计为覆盖。
