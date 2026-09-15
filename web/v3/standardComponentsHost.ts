@@ -4,76 +4,80 @@ export {};
 // adapt selection data: each page Host remains responsible for scoped reads.
 // It supplies the V3 envelope for the shared directory refresh command and
 // guarantees dependency order and one evaluation per page.
+import { installTagPickerAdapter } from './shared/ui/tagPickerAdapter';
+import { installCommittedTextSearch, resetCommittedTextSearch } from './shared/ui/committedTextSearch';
+import { installStaffPickerAdapter } from './shared/ui/staffPickerAdapter';
 declare global {
   interface Window {
-    AICRMStandardComponents?: { ready(): Promise<void> };
+    AICRMStandardComponents?: {
+      ready(): Promise<void>;
+      readyFor(capabilities: readonly OnDemandStandardComponentCapability[]): Promise<void>;
+    };
     AICRMWeComTagPicker?: unknown;
   }
 }
 
-// The frozen picker refreshes the common saved staff-profile projection.
-// This is a Provider read plus a local projection update, never a message send.
-// Explicitly configured V3 requests keep their own envelope.
-const componentFetch = window.fetch.bind(window);
-window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const request = typeof input === 'string' || input instanceof URL ? undefined : input;
-  const url = new URL(request ? request.url : String(input), location.href);
-  const method = String(init?.method || request?.method || 'GET').toUpperCase();
-  if (url.origin !== location.origin || url.pathname !== '/api/admin/common/operation-members/sync' || method !== 'POST' || init?.body != null || request?.body != null) return componentFetch(input, init);
-  const headers = new Headers(init?.headers || request?.headers);
-  headers.set('Accept', 'application/json');
-  headers.set('Content-Type', 'application/json');
-  if (!headers.has('Idempotency-Key')) headers.set('Idempotency-Key', `operation-members-${crypto.randomUUID()}`);
-  const token = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('aicrm_admin_csrf=') || part.startsWith('aicrm_csrf='));
-  if (token && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', decodeURIComponent(token.slice(token.indexOf('=') + 1)));
-  return componentFetch(input, { ...init, method, headers, credentials: 'same-origin', body: JSON.stringify({ scope: 'group_ops', page_size: 100 }) });
-};
+type StandardComponentCapability = 'operationMembers' | 'groupChats' | 'materials' | 'sendContent' | 'tags';
+type OnDemandStandardComponentCapability = 'tags';
 
-// Keep the standard selector's current rows and selections while refreshing.
-// Its historical refresh handler clears all candidates on an HTTP error; the
-// V3 Host handles only this command and uses the existing search reload on success.
-let directoryRefreshPending = false;
-document.addEventListener('click', (event) => {
-  const button = (event.target as Element | null)?.closest<HTMLButtonElement>('[data-operation-member-refresh]');
-  if (!button) return;
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  if (directoryRefreshPending) return;
-  const modal = button.closest<HTMLElement>('[data-operation-member-picker]');
-  if (!modal) return;
-  directoryRefreshPending = true;
-  button.disabled = true;
-  button.textContent = '刷新中';
-  modal.querySelector('[data-v3-directory-refresh-error]')?.remove();
-  void (async () => {
-    try {
-      const response = await window.fetch('/api/admin/common/operation-members/sync', { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-      const data = await response.clone().json().catch(() => ({})) as { ok?: boolean };
-      if (!response.ok || data.ok === false) throw new Error(`刷新客服失败（HTTP ${response.status}），已保留当前列表和选择。`);
-      modal.querySelector<HTMLInputElement>('[data-operation-member-search]')?.dispatchEvent(new Event('input', { bubbles: true }));
-    } catch (error) {
-      const notice = document.createElement('div');
-      notice.dataset.v3DirectoryRefreshError = '1';
-      notice.setAttribute('role', 'alert');
-      notice.textContent = error instanceof Error ? error.message : '刷新客服失败，已保留当前列表和选择。';
-      modal.querySelector('[data-operation-member-list]')?.before(notice);
-    } finally {
-      directoryRefreshPending = false;
-      button.disabled = false;
-      button.textContent = '刷新客服';
-    }
-  })();
-}, true);
+type OperationMemberPickerOptions = Record<string, unknown>;
+type OperationMemberPicker = { open(options: OperationMemberPickerOptions): unknown };
+type OperationMemberPickerWindow = { OperationMemberPicker?: OperationMemberPicker };
 
-const scripts = [
-  '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948',
-  '/assets/standard-components/group_chat_picker.js',
-  '/assets/standard-components/material_picker.js',
-  '/assets/standard-components/send_content_composer.js',
-  '/assets/standard-components/wecom_tag_picker.js',
+function operationMemberPicker(): OperationMemberPicker | undefined {
+  return (window as unknown as OperationMemberPickerWindow).OperationMemberPicker;
+}
+
+const operationMemberSearchLifecycleInstalled = new WeakSet<object>();
+
+function installOperationMemberSearchLifecycle(): void {
+  const picker = operationMemberPicker();
+  if (!picker || operationMemberSearchLifecycleInstalled.has(picker)) return;
+  operationMemberSearchLifecycleInstalled.add(picker);
+  const open = picker.open.bind(picker);
+  picker.open = (options: OperationMemberPickerOptions) => {
+    const result = open(options);
+    const input = document.querySelector<HTMLInputElement>('[data-operation-member-picker] [data-operation-member-search]');
+    if (input) resetCommittedTextSearch(input);
+    return result;
+  };
+}
+
+// The frozen script assigns this global after the stable Host. Observe the
+// assignment once so every actual picker starts from its own empty committed
+// query. The V3 Host never changes its caller-owned read or refresh envelope.
+function observeOperationMemberPicker(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(window, 'OperationMemberPicker');
+  if (descriptor && !descriptor.configurable) {
+    installOperationMemberSearchLifecycle();
+    return;
+  }
+  let current = operationMemberPicker();
+  Object.defineProperty(window, 'OperationMemberPicker', {
+    configurable: true,
+    get: () => current,
+    set: (value) => {
+      current = value;
+      installOperationMemberSearchLifecycle();
+    },
+  });
+  installOperationMemberSearchLifecycle();
+}
+
+const components: ReadonlyArray<{ capability: StandardComponentCapability; source: string; ready: () => boolean }> = [
+  { capability: 'operationMembers', source: '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).OperationMemberPicker?.open === 'function' },
+  { capability: 'groupChats', source: '/assets/standard-components/group_chat_picker.js', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).AICRMGroupChatPicker?.open === 'function' },
+  { capability: 'materials', source: '/assets/standard-components/material_picker.js', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).AICRMMaterialPicker?.open === 'function' },
+  { capability: 'sendContent', source: '/assets/standard-components/send_content_composer.js', ready: () => {
+    const composer = (window as unknown as Record<string, { open?: unknown; mount?: unknown }>).AICRMSendContentComposer;
+    return typeof composer?.open === 'function' && typeof composer.mount === 'function';
+  } },
+  { capability: 'tags', source: '/assets/standard-components/wecom_tag_picker.js', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).AICRMWeComTagPicker?.open === 'function' },
 ];
 
-let loading: Promise<void> | undefined;
+const componentByCapability = new Map(components.map((component) => [component.capability, component]));
+const componentLoads = new Map<StandardComponentCapability, Promise<void>>();
+const readyComponents = new Set<StandardComponentCapability>();
 let tagPickerLocked = false;
 
 function lockOriginalTagPicker(): void {
@@ -89,26 +93,91 @@ function lockOriginalTagPicker(): void {
   });
 }
 
-function load(source: string): Promise<void> {
-  if (document.querySelector(`script[data-aicrm-standard-component="${source}"]`)) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.defer = true;
-    script.src = source;
-    script.dataset.aicrmStandardComponent = source;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('标准选择组件加载失败，请刷新页面后重试'));
-    document.head.append(script);
-  });
+function matchingScript(source: string): HTMLScriptElement | undefined {
+  return [...document.querySelectorAll<HTMLScriptElement>('script[data-aicrm-standard-component]')]
+    .find((script) => script.dataset.aicrmStandardComponent === source && script.src === new URL(source, document.baseURI).href);
 }
+
+function load(component: { capability: StandardComponentCapability; source: string; ready: () => boolean }): Promise<void> {
+  if (readyComponents.has(component.capability)) return Promise.resolve();
+  const pending = componentLoads.get(component.capability);
+  if (pending) return pending;
+  let startRequest: (() => void) | undefined;
+  const request = new Promise<void>((resolve, reject) => {
+    let script = matchingScript(component.source);
+    let appendScript = false;
+    let settled = false;
+    if (!script) {
+      script = document.createElement('script');
+      script.defer = true;
+      script.src = component.source;
+      script.dataset.aicrmStandardComponent = component.source;
+      script.dataset.aicrmStandardComponentProvenance = 'v3-standard-components-host';
+      script.dataset.aicrmStandardComponentState = 'pending';
+      appendScript = true;
+    }
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      if (appendScript) script?.remove();
+      reject(new Error('标准选择组件加载失败，请刷新页面后重试'));
+    };
+    const succeed = () => {
+      if (settled) return;
+      if (!component.ready()) { fail(); return; }
+      settled = true;
+      readyComponents.add(component.capability);
+      if (component.capability === 'tags') lockOriginalTagPicker();
+      if (component.capability === 'operationMembers') installOperationMemberSearchLifecycle();
+      resolve();
+    };
+    script.addEventListener('load', () => { script!.dataset.aicrmStandardComponentState = 'loaded'; succeed(); }, { once: true });
+    script.addEventListener('error', fail, { once: true });
+    if (appendScript) {
+      // Register the single-flight before appending. A cached load failure can
+      // arrive synchronously, including in a real browser.
+      startRequest = () => { if (!settled) document.head.append(script!); };
+    }
+    else if (script.dataset.aicrmStandardComponentState === 'loaded') queueMicrotask(succeed);
+  });
+  componentLoads.set(component.capability, request);
+  void request.then(undefined, () => {
+    // Do not let an older rejected request erase a later retry's single-flight.
+    if (componentLoads.get(component.capability) === request) componentLoads.delete(component.capability);
+  });
+  startRequest?.();
+  return request;
+}
+
+function readyFor(capabilities: readonly OnDemandStandardComponentCapability[]): Promise<void> {
+  const selected = [...new Set(capabilities)].map((capability) => {
+    const component = componentByCapability.get(capability);
+    if (!component) throw new Error(`未知标准选择组件：${capability}`);
+    return component;
+  });
+  return Promise.all(selected.map(load)).then(() => undefined);
+}
+
+installCommittedTextSearch();
+observeOperationMemberPicker();
 
 window.AICRMStandardComponents = {
   ready(): Promise<void> {
-    loading ||= scripts.reduce(async (previous, source) => {
+    return components.reduce(async (previous, component) => {
       await previous;
-      await load(source);
-    }, Promise.resolve()).then(() => { lockOriginalTagPicker(); });
-    return loading;
+      await load(component);
+    }, Promise.resolve());
   },
+  readyFor,
 };
-void window.AICRMStandardComponents.ready();
+// This is a separate V3 API. Keep the byte-frozen tag global available for
+// pages that still need it while V3-owned callers adopt the shared session.
+installTagPickerAdapter();
+// A separate V3 API. It never changes the frozen OperationMemberPicker's
+// request scope or refresh command: every migrated Host supplies its own
+// authorised read and optional refresh contract.
+installStaffPickerAdapter();
+const autoStart = document.querySelector('[data-customer-directory-root]')
+  ? window.AICRMStandardComponents.readyFor(['tags'])
+  : window.AICRMStandardComponents.ready();
+void autoStart.catch(() => undefined);

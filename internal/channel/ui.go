@@ -129,12 +129,17 @@ func channelAssets(dist string) (UIAssets, error) {
 	if err != nil {
 		return UIAssets{}, err
 	}
+	selectionDialogCSS, err := get("selectionDialogStyles")
+	if err != nil {
+		return UIAssets{}, err
+	}
 	standardCSS := []string{
 		"assets/standard-components/group_chat_picker.css",
 		"assets/standard-components/material_picker.css",
 		"assets/standard-components/send_content_composer.css",
 		"assets/standard-components/wecom_tag_picker.css",
 		"assets/channelAdmissionStandard.css",
+		strings.TrimPrefix(selectionDialogCSS, "/"),
 	}
 	for _, value := range standardCSS {
 		if _, ok := manifest.Files[value]; !ok {

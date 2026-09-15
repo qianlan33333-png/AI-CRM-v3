@@ -36,6 +36,18 @@ func TestPostgreSQLCustomerTagCommandChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
+	_, source, _, ok := goruntime.Caller(0)
+	if !ok {
+		t.Fatal("locate customer tag Chromium script")
+	}
+	repository := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	// The actual customer Host now waits for the manifest-built V3 standard
+	// component before it reads the tag directory. Compose must therefore use
+	// the repository root, just as the dedicated picker journey does; a raw
+	// cmd/aicrm working directory leaves Runtime assets empty and makes the
+	// real page fail closed.
+	t.Chdir(repository)
+	prepareTagPickerChromiumArtifacts(t, repository)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -86,10 +98,6 @@ func TestPostgreSQLCustomerTagCommandChromiumJourney(t *testing.T) {
 
 	server.Config.Handler = application.handler
 	server.StartTLS()
-	_, source, _, ok := goruntime.Caller(0)
-	if !ok {
-		t.Fatal("locate customer tag Chromium script")
-	}
 	command := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(source), "customer_tag_command_chromium_journey.mjs"))
 	command.Env = append(os.Environ(), "AICRM_CUSTOMER_TAG_TEST_URL="+server.URL, "AICRM_CUSTOMER_TAG_TEST_USERNAME=browser-owner", "AICRM_CUSTOMER_TAG_TEST_PASSWORD=browser-owner-password")
 	output, err := command.CombinedOutput()

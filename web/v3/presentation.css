@@ -1,3 +1,5 @@
+@import "./shared/ui/contentComposer.css";
+
 /* V3 presentation tokens. Loaded after donor styles, never inside previews.
    Inline-size selectors below are limited to frozen admin chrome: they adapt
    its 13px body type without changing the immutable source or rendered data. */

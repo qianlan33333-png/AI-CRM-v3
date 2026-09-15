@@ -34,7 +34,19 @@ func newDistFixture(t *testing.T) string {
 	write("assets/distributionAdmin-test.js", `console.log("distribution")`)
 	write("assets/distributionStyles-test.css", `.distribution-shell{}`)
 	write("assets/sharedDetailDrawerStyles-test.css", `.shared-detail-drawer{}`)
-	write("asset-manifest.json", `{"entries":{"distributionAdmin":"assets/distributionAdmin-test.js","distributionStyles":"assets/distributionStyles-test.css","sharedDetailDrawerStyles":"assets/sharedDetailDrawerStyles-test.css"},"files":{"assets/distributionAdmin-test.js":{},"assets/distributionStyles-test.css":{},"assets/sharedDetailDrawerStyles-test.css":{}}}`)
+	write("assets/sharedVisualTokens-test.css", `.visual-tokens{}`)
+	write("assets/componentStatesStyles-test.css", `.component-states{}`)
+	write("assets/selectionDialogStyles-test.css", `.selection-dialog{}`)
+	write("assets/groupopsStyles-test.css", `.group-ops{}`)
+	write("assets/componentStatesHost-test.js", `console.log("component states")`)
+	write("assets/standard-components/group_chat_picker.css", `.group-picker{}`)
+	write("assets/standard-components/material_picker.css", `.material-picker{}`)
+	write("assets/adminDateTimeHost-test.js", `console.log("date time")`)
+	write("assets/surfaceFeedbackHost-test.js", `console.log("surface feedback")`)
+	write("assets/surfaceFeedbackStyles-test.css", `.surface-feedback{}`)
+	write("assets/actionFeedbackStyles-test.css", `.action-feedback{}`)
+	write("assets/presentationStyles-test.css", `.presentation{}`)
+	write("asset-manifest.json", `{"entries":{"distributionAdmin":"assets/distributionAdmin-test.js","distributionStyles":"assets/distributionStyles-test.css","sharedDetailDrawerStyles":"assets/sharedDetailDrawerStyles-test.css","sharedVisualTokens":"assets/sharedVisualTokens-test.css","componentStatesStyles":"assets/componentStatesStyles-test.css","selectionDialogStyles":"assets/selectionDialogStyles-test.css","groupopsStyles":"assets/groupopsStyles-test.css","componentStatesHost":"assets/componentStatesHost-test.js","adminDateTimeHost":"assets/adminDateTimeHost-test.js","surfaceFeedbackHost":"assets/surfaceFeedbackHost-test.js","surfaceFeedbackStyles":"assets/surfaceFeedbackStyles-test.css","actionFeedbackStyles":"assets/actionFeedbackStyles-test.css","presentationStyles":"assets/presentationStyles-test.css"},"files":{"assets/distributionAdmin-test.js":{},"assets/distributionStyles-test.css":{},"assets/sharedDetailDrawerStyles-test.css":{},"assets/sharedVisualTokens-test.css":{},"assets/componentStatesStyles-test.css":{},"assets/selectionDialogStyles-test.css":{},"assets/groupopsStyles-test.css":{},"assets/componentStatesHost-test.js":{},"assets/standard-components/group_chat_picker.css":{},"assets/standard-components/material_picker.css":{},"assets/adminDateTimeHost-test.js":{},"assets/surfaceFeedbackHost-test.js":{},"assets/surfaceFeedbackStyles-test.css":{},"assets/actionFeedbackStyles-test.css":{},"assets/presentationStyles-test.css":{}}}`)
 	write("distribution/index.html", `<!doctype html><title>distribution</title><body data-page="distribution-center">分销中心</body>`)
 	write("sidebar/index.html", `<link rel="stylesheet" href="../assets/sidebarStyles-test.css"><script type="module" src="../assets/sidebar-test.js"></script>新侧边栏`)
 	write("assets/sidebar-test.js", `console.log("sidebar")`)
@@ -191,5 +203,61 @@ func TestDistDistributionPageAndAdminAlias(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/distribution.html", nil))
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/distribution" {
 		t.Fatalf("standalone distribution alias status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+}
+
+func TestComponentStatesUsesStagedAssetClosure(t *testing.T) {
+	dist := newDistFixture(t)
+	handler, err := NewHandler(HandlerOptions{DistDir: dist})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, ComponentStatesPath, nil))
+	body := response.Body.String()
+	if response.Code != http.StatusOK {
+		t.Fatalf("component state demo status=%d body=%q", response.Code, body)
+	}
+	for _, required := range []string{
+		`data-page="component-states"`,
+		`data-component-states-root`,
+		`href="/assets/sharedVisualTokens-test.css"`,
+		`href="/assets/componentStatesStyles-test.css"`,
+		`href="/assets/standard-components/group_chat_picker.css"`,
+		`href="/assets/standard-components/material_picker.css"`,
+		`src="/assets/componentStatesHost-test.js"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("component state demo misses staged resource %q: %q", required, body)
+		}
+	}
+	if strings.Index(body, `href="/assets/sharedVisualTokens-test.css"`) < strings.Index(body, `href="/assets/presentationStyles-test.css"`) {
+		t.Fatal("component visual token aliases must load after the presentation styles they map")
+	}
+
+	if err := os.Remove(filepath.Join(dist, "assets", "componentStatesHost-test.js")); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, ComponentStatesPath, nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing component host must reject the incomplete stage, status=%d", response.Code)
+	}
+
+	dist = newDistFixture(t)
+	manifestPath := filepath.Join(dist, "asset-manifest.json")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest = []byte(strings.Replace(string(manifest), "assets/sharedVisualTokens-test.css", "assets/../escape.css", -1))
+	if err := os.WriteFile(manifestPath, manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "escape.css"), []byte(".escape{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := DistComponentStatesAssets(dist); ok {
+		t.Fatal("component state asset closure accepted a traversal manifest entry")
 	}
 }

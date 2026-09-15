@@ -174,10 +174,11 @@ func TestGroupOpsPlanListReturnsResponsibleOwnerProjection(t *testing.T) {
 	}
 	var payload struct {
 		Items []struct {
-			Owner groupopsport.PlanOwner `json:"owner"`
+			Owner           groupopsport.PlanOwner `json:"owner"`
+			BoundGroupCount *int64                 `json:"bound_group_count"`
 		} `json:"items"`
 	}
-	if err = json.Unmarshal(response.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 || payload.Items[0].Owner.StaffID != 7 || payload.Items[0].Owner.SenderUserID != "wecom-owner" || payload.Items[0].Owner.DisplayName != "一号运营" || payload.Items[0].Owner.NameSource != "wecom_profile" || payload.Items[0].Owner.ProfileReadState != "ready" {
+	if err = json.Unmarshal(response.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 || payload.Items[0].Owner.StaffID != 7 || payload.Items[0].Owner.SenderUserID != "wecom-owner" || payload.Items[0].Owner.DisplayName != "一号运营" || payload.Items[0].Owner.NameSource != "wecom_profile" || payload.Items[0].Owner.ProfileReadState != "ready" || payload.Items[0].BoundGroupCount == nil || *payload.Items[0].BoundGroupCount != 0 {
 		t.Fatalf("payload=%s decoded=%+v err=%v", response.Body.String(), payload, err)
 	}
 }
@@ -409,5 +410,41 @@ func TestGroupOpsContentPackagePreviewUsesMediaPortAdapter(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || delivery.previewCalls != 1 || !strings.Contains(response.Body.String(), `"content_text":"正文"`) {
 		t.Fatalf("status=%d preview_calls=%d body=%s", response.Code, delivery.previewCalls, response.Body.String())
+	}
+}
+
+type directoryQueryRuntimeStub struct {
+	runtimeStub
+	owner  int64
+	query  string
+	limit  int32
+	offset int32
+	calls  int
+}
+
+func (stub *directoryQueryRuntimeStub) ListGroups(_ context.Context, owner int64, query string, limit, offset int32) (groupopsport.GroupDirectoryPage, error) {
+	stub.calls++
+	stub.owner, stub.query, stub.limit, stub.offset = owner, query, limit, offset
+	return groupopsport.GroupDirectoryPage{Items: []groupopsport.GroupDirectoryItem{{ChatReference: "query-group", OwnerStaffID: owner, DisplayName: "查询群"}}, Total: 1, Limit: limit, Offset: offset}, nil
+}
+
+func TestGroupOpsDirectoryQueryPassesScopedPaginationToRuntime(t *testing.T) {
+	runtime := &directoryQueryRuntimeStub{}
+	handler, err := groupopshttp.NewHandlerWithRuntime(applicationStub{}, runtime, adminSecurity(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, groupopshttp.GroupPickerPath+"?owner_userid=7&q=%E6%9F%A5%E8%AF%A2&limit=2&offset=1", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if runtime.calls != 1 || runtime.owner != 7 || runtime.query != "查询" || runtime.limit != 2 || runtime.offset != 1 {
+		t.Fatalf("runtime query=%+v", runtime)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, groupopshttp.DirectoryPath+"?q="+strings.Repeat("x", 161), nil))
+	if response.Code != http.StatusBadRequest || runtime.calls != 1 {
+		t.Fatalf("oversized q status=%d calls=%d body=%s", response.Code, runtime.calls, response.Body.String())
 	}
 }

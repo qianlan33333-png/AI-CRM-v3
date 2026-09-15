@@ -252,6 +252,41 @@ try {
   } catch (_) {
     throw new Error("product configuration did not load " + await browserSaveDiagnostic());
   }
+  // Field-variable filtering belongs to the mounted V3 mapping editor. It
+  // filters locally only after explicit Enter; preview/save remain unchanged.
+  const productPushTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-push\"]');const panel=document.querySelector('#product-push');if(!(tab instanceof HTMLAnchorElement)||!(panel instanceof HTMLElement))return false;tab.click();return true})()");
+  if (!productPushTabOpened) throw new Error('product external-push tab was unavailable');
+  await waitFor(cdp, "(()=>{const panel=document.querySelector('#product-push');const conversion=[...(panel?.querySelectorAll('button')||[])].find(item=>item.textContent?.trim()==='转换为字段映射');return Boolean(panel&&conversion&&panel.getClientRects().length&&getComputedStyle(panel).visibility!=='hidden')})()", "product external-push tab did not become visible before field-mapping conversion");
+  const conversionOpened = await evaluate(cdp, "(()=>{const panel=document.querySelector('#product-push');const button=[...(panel?.querySelectorAll('button')||[])].find(item=>item.textContent?.trim()==='转换为字段映射');if(!button)return false;button.click();return true})()");
+  if (!conversionOpened) throw new Error('product field-mapping conversion entry was unavailable');
+  await waitFor(cdp, "Boolean(document.querySelector('[data-mapping-conversion]'))", "product field-mapping conversion preview did not open");
+  await evaluate(cdp, "[...document.querySelectorAll('[data-mapping-conversion] button')].find(item=>item.textContent?.trim()==='确认转换').click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-fm-rows] .fm-row'))", "product field-mapping editor did not mount");
+  const mappingSearchCandidate = await evaluate(cdp, `(()=>{
+    const row=document.querySelector('[data-fm-rows] .fm-row');
+    const source=row?.querySelectorAll('select')[0];
+    if (!(source instanceof HTMLSelectElement)) return null;
+    source.value='variable'; source.dispatchEvent(new Event('change',{bubbles:true}));
+    const picker=row.querySelector('button.fm-variable'); picker?.click();
+    const input=row.querySelector('[data-field-mapping-variable-search]');
+    if (!(input instanceof HTMLInputElement)) return null;
+    const choices=()=>row.querySelectorAll('.fm-choice').length;
+    const before=choices(); input.focus(); const focused=document.activeElement===input; input.value='付款';
+    input.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+    input.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
+    input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+    input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));
+    const candidate=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter',isComposing:true});
+    Object.defineProperty(candidate,'keyCode',{value:229}); input.dispatchEvent(candidate);
+    return {before,after:choices(),focused,prevented:candidate.defaultPrevented};
+  })()`);
+  if (!mappingSearchCandidate || !mappingSearchCandidate.focused || mappingSearchCandidate.prevented || mappingSearchCandidate.before !== 3 || mappingSearchCandidate.after !== 3) throw new Error('product field-mapping IME candidate altered variable choices or did not receive focus');
+  await evaluate(cdp, "document.querySelector('[data-field-mapping-variable-search]').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); true");
+  await waitFor(cdp, "document.querySelectorAll('[data-fm-rows] .fm-choice').length===1 && document.querySelector('[data-fm-rows] .fm-choice')?.textContent.includes('付款人昵称')", "product field-mapping ordinary Enter did not filter variables");
+  const mappingSearchFocus = await evaluate(cdp, "(()=>{const input=document.querySelector('[data-field-mapping-variable-search]');return Boolean(input&&document.activeElement===input&&input.value==='付款')})()");
+  if (!mappingSearchFocus) throw new Error('product field-mapping Enter did not retain query focus');
+  await cdp.call("Page.navigate", { url: baseURL + productPath });
+  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 1'", "product form did not reset after local mapping search proof");
   await evaluate(cdp, "(() => { document.querySelector('a[href=\"#product-push\"]')?.click(); const enabled=document.querySelector('#pfExternalPushEnabled'); const reference=document.querySelector('#pfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-url').value='https://commerce-browser.invalid'; document.querySelector('#product-v3-external-push-type').value='member_open'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; (Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push')) || document.querySelector('[data-external-push-configuration-save]')).click(); return true; })()");
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '2' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存'", "browser configuration save did not finish");

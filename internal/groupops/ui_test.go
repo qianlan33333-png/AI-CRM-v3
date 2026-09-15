@@ -13,7 +13,7 @@ import (
 func TestActivePageUsesStandardHostAndManifestBoundAssets(t *testing.T) {
 	dist := t.TempDir()
 	files := map[string]string{
-		"assets/tokens.css": "", "assets/labs.css": "", "assets/admin.js": "", "assets/groupops.css": "", "assets/groupops-host.js": "",
+		"assets/tokens.css": "", "assets/labs.css": "", "assets/admin.js": "", "assets/groupops.css": "", "assets/groupops-host.js": "", "assets/selection-dialog.css": "",
 		"assets/standard-components/operation_member_picker.js": "", "assets/standard-components/group_chat_picker.css": "", "assets/standard-components/group_chat_picker.js": "", "assets/standard-components/material_picker.css": "", "assets/standard-components/material_picker.js": "", "assets/standard-components/send_content_composer.css": "", "assets/standard-components/send_content_composer.js": "",
 		"aiassistant/send_content_readonly_detail.css": "", "aiassistant/send_content_readonly_detail.js": "",
 	}
@@ -26,7 +26,7 @@ func TestActivePageUsesStandardHostAndManifestBoundAssets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","groupopsStyles":"assets/groupops.css","groupopsHost":"assets/groupops-host.js"},"files":{`
+	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","groupopsStyles":"assets/groupops.css","groupopsHost":"assets/groupops-host.js","selectionDialogStyles":"assets/selection-dialog.css"},"files":{`
 	parts := make([]string, 0, len(files))
 	for relative := range files {
 		parts = append(parts, fmt.Sprintf("%q:{}", relative))

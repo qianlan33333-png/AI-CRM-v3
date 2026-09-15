@@ -64,11 +64,22 @@ run_frontend_and_stage_checks() {
   node internal/webshell/owner_handoff_host.test.mjs
   node scripts/build-v3-host-adapters.mjs
   node scripts/groupops-host-adapter-e2e.mjs
+  node web/v3/shared/ui/selectionSession.test.mjs
+  node web/v3/shared/ui/selectionDialog.test.mjs
+  node web/v3/shared/ui/materialPickerAdapter.test.mjs
+  node --test web/v3/shared/ui/contentPresentation.test.mjs
+  node --test web/v3/shared/ui/contentComposer.test.mjs
+  node web/v3/shared/ui/groupPickerAdapter.test.mjs
+  node web/v3/shared/ui/tagPickerAdapter.test.mjs
+  node web/v3/shared/ui/staffPickerAdapter.test.mjs
+  node web/v3/componentStatesHost.test.mjs
   node scripts/operation-cycles-shell-e2e.mjs
+  node scripts/excel-batches-dom-test.mjs
   node scripts/ai-assistant-shell-e2e.mjs
   TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs
   node scripts/order-host-adapter-e2e.mjs
   node web/v3/channelCenterAdapter.test.mjs
+  node web/v3/hxcPresentation.test.mjs
   node web/v3/customerAdapter.test.mjs
   node web/v3/adminSessionHost.test.mjs
   node web/v3/h5AuthAdapter.test.mjs
@@ -89,6 +100,7 @@ run_frontend_and_stage_checks() {
   node web/v3/surfaceFeedbackHost.test.mjs
   node web/v3/memberGridFeedbackHost.test.mjs
   node web/v3/radarAdapter.test.mjs
+  node web/v3/radarAdapter.exact_id.test.mjs
   node web/v3/radarAdapter.presentation.test.mjs
   TZ=UTC node web/v3/radarAdapter.visitors.test.mjs
   TZ=America/Los_Angeles node web/v3/radarAdapter.visitors.test.mjs

@@ -57,6 +57,7 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 	rows, err := tx.Query(ctx, `
 		SELECT p.id,p.name,p.status,p.revision,p.created_by,p.updated_by,p.created_at,p.updated_at,p.plan_type,
 		       COALESCE(executions.queue_count,0),
+		       COALESCE(assets.bound_group_count,0),
 		       COALESCE(owner.staff_id,0),COALESCE(owner.sender_userid,''),COALESCE(owner.display_name,''),
 		       COALESCE(owner.name_source,''),COALESCE(owner.profile_read_state,''),COALESCE(owner.profile_read_error_code,'')
 		FROM group_ops_plans p
@@ -65,6 +66,11 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 			FROM group_ops_executions
 			WHERE plan_id=p.id
 		) executions ON true
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS bound_group_count
+			FROM group_ops_plan_group_assets
+			WHERE plan_id=p.id
+		) assets ON true
 		LEFT JOIN LATERAL (
 			SELECT pm.staff_id,d.sender_userid,d.display_name,d.name_source,d.profile_read_state,d.profile_read_error_code
 			FROM group_ops_plan_members pm
@@ -82,7 +88,7 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 	for rows.Next() {
 		var item groupopsport.PlanListItem
 		if err = rows.Scan(
-			&item.ID, &item.Name, &item.Status, &item.Revision, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.Type, &item.QueueCount,
+			&item.ID, &item.Name, &item.Status, &item.Revision, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.Type, &item.QueueCount, &item.BoundGroupCount,
 			&item.Owner.StaffID, &item.Owner.SenderUserID, &item.Owner.DisplayName, &item.Owner.NameSource, &item.Owner.ProfileReadState, &item.Owner.ProfileReadErrorCode,
 		); err != nil {
 			return nil, err
@@ -770,27 +776,20 @@ func (r *Repository) FindPlanByWebhookReference(ctx context.Context, reference s
 	return id, err
 }
 
-func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, limit, offset int32) ([]groupopsport.GroupDirectoryItem, int64, error) {
+func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, query string, limit, offset int32) ([]groupopsport.GroupDirectoryItem, int64, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
+	query = strings.TrimSpace(query)
+	where, args := directoryGroupFilter(owner, query)
 	var total int64
-	if owner > 0 {
-		err = tx.QueryRow(ctx, `SELECT count(*) FROM group_ops_directory_groups WHERE owner_staff_id=$1`, owner).Scan(&total)
-	} else {
-		err = tx.QueryRow(ctx, `SELECT count(*) FROM group_ops_directory_groups`).Scan(&total)
-	}
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM group_ops_directory_groups`+where, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups ORDER BY refreshed_at DESC,chat_reference LIMIT $1 OFFSET $2`
-	args := []any{limit, offset}
-	if owner > 0 {
-		query = `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups WHERE owner_staff_id=$1 ORDER BY refreshed_at DESC,chat_reference LIMIT $2 OFFSET $3`
-		args = []any{owner, limit, offset}
-	}
-	rows, err := tx.Query(ctx, query, args...)
+	pageArgs := append(args, limit, offset)
+	rows, err := tx.Query(ctx, `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups`+where+` ORDER BY refreshed_at DESC,chat_reference LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2), pageArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -804,6 +803,26 @@ func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, limit
 		items = append(items, item)
 	}
 	return items, total, rows.Err()
+}
+
+func directoryGroupFilter(owner int64, query string) (string, []any) {
+	clauses := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+	if owner > 0 {
+		args = append(args, owner)
+		clauses = append(clauses, `owner_staff_id=$`+strconv.Itoa(len(args)))
+	}
+	if query != "" {
+		// Query text is literal user input, not a SQL pattern. Escaping % and _
+		// keeps a search for those characters scoped to the stored opaque ref.
+		pattern := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query) + "%"
+		args = append(args, pattern)
+		clauses = append(clauses, `(display_name ILIKE $`+strconv.Itoa(len(args))+` ESCAPE '\' OR chat_reference ILIKE $`+strconv.Itoa(len(args))+` ESCAPE '\')`)
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
 func (r *Repository) ReplaceDirectoryGroups(ctx context.Context, owner int64, items []groupopsport.GroupDirectoryItem, now time.Time) error {

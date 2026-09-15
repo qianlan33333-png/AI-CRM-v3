@@ -13,6 +13,7 @@ const bundle = (await build({
   bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, minify: true, logLevel: 'warning',
 })).outputFiles[0].text;
 const wait = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const queryRequests = [];
 
 const dom = new JSDOM('<!doctype html><body><main id="stage"></main></body>', {
   url: 'https://test.invalid/admin/funnel.html', runScripts: 'dangerously', pretendToBeVisual: true,
@@ -23,6 +24,7 @@ const dom = new JSDOM('<!doctype html><body><main id="stage"></main></body>', {
       const url = new URL(String(input), window.location.href);
       const summary = url.pathname.endsWith('/summary');
       const request = summary ? {} : JSON.parse(String(init?.body || "{}"));
+      if (!summary) queryRequests.push(request);
       const body = summary
         ? {
           projection_id: 9,
@@ -74,6 +76,15 @@ assert.equal(text.includes('2026-09-07T00:00:00Z'), false, 'HXC does not expose 
 assert.equal(text.includes('free、'), false, 'HXC does not expose the free enum in the explanation');
 assert.equal(text.includes('no_match'), false, 'HXC does not expose the identity reason protocol enum');
 assert.equal(text.includes('· none'), false, 'HXC does not expose the attribution protocol enum');
+const exact = dom.window.document.querySelector('#hxcExact');
+assert.equal(exact?.getAttribute('aria-label'), '源系统 HXC 用户 ID', 'HXC exact query names the source-system identifier');
+assert.equal(exact?.getAttribute('aria-describedby'), 'hxcExactHelp', 'HXC exact query links its safety-reference help');
+assert.equal(dom.window.document.querySelector('label[for="hxcExact"]')?.textContent, '源系统 HXC 用户 ID', 'HXC exact query has a visible source-system label');
+assert.ok(dom.window.document.querySelector('#hxcExactHelp')?.textContent?.includes('安全用户引用（HXC-…）仅用于展示，不能用于此查询'), 'HXC exact query explains that its displayed safety reference is not a query value');
+exact.value = 'raw-source-hxc-user-id';
+dom.window.document.querySelector('#hxcApply').click();
+await wait(10);
+assert.equal(queryRequests.at(-1)?.exact_hxc_user_id, 'raw-source-hxc-user-id', 'HXC source ID query remains raw and is not replaced or hashed in the browser');
 
 dom.window.document.querySelector('#hxcGroup').value = 'identity_reason_code';
 dom.window.document.querySelector('#hxcApply').click();
