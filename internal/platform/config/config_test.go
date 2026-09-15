@@ -557,6 +557,17 @@ func TestAdminLayoutScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	}
 }
 
+func TestChannelCenterScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR", "")
+	if value := ChannelCenterScreenshotDirectory(); value != "" {
+		t.Fatalf("missing screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR", "/tmp/aicrm-channel-center-evidence")
+	if value := ChannelCenterScreenshotDirectory(); value != "/tmp/aicrm-channel-center-evidence" {
+		t.Fatalf("screenshot directory=%q", value)
+	}
+}
+
 func TestAccessGovernanceScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	t.Setenv("AICRM_ACCESS_UI_SCREENSHOT_DIR", "")
 	if value := AccessGovernanceScreenshotDirectory(); value != "" {
