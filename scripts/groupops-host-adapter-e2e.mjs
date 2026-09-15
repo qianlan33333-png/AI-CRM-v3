@@ -1134,7 +1134,7 @@ const collisionWindow = (mode, planID = "") => {
     const url = new URL(String(input), view.location.href); const method = String(init.method || "GET").toUpperCase();
     requests.push({ path: url.pathname, query: url.search, method });
     if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return collisionResponse({ items: collisionMembers });
-    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return collisionResponse({ items: [] });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return collisionResponse(planPage([]));
     if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return collisionResponse({ items: [] });
     if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52" && method === "GET") return collisionResponse({ plan: { plan_id: 52, name: "碰撞计划", revision: 1, status: "draft", plan_type: "standard", owner_userid: "2", owner_name: "本地二号员工" }, members: [{ staff_id: 2 }], group_assets: [], nodes: [] });
     if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/52/groups" && method === "GET") return collisionResponse({ items: [] });
