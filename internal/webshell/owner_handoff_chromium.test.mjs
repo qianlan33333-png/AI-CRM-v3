@@ -38,6 +38,7 @@ const downloadResultRowsExpression = () => `document.querySelector("[data-owner-
 const staffPickerSelector = userID => `[data-v3-selection-session="staff"] [data-v3-staff-key]`;
 const staffPickerPresentExpression = userID => `Array.from(document.querySelectorAll(${JSON.stringify(staffPickerSelector(userID))})).some(row=>String(row.textContent||'').includes(${JSON.stringify(userID)}))`;
 const staffPickerChooseExpression = userID => `(() => { const row=Array.from(document.querySelectorAll(${JSON.stringify(staffPickerSelector(userID))})).find(item=>String(item.textContent||'').includes(${JSON.stringify(userID)})); if(!row) return false; row.click(); return true; })()`;
+const ownerHandoffPickerReadyExpression = () => `(() => { const stage=document.querySelector('[data-owner-handoff-host]'); const root=stage?.querySelector('[data-owner-migration-page]'); const source=root?.querySelector('[data-owner-picker="source"]'); return stage?.dataset.ownerHandoffInit==='ready' && source instanceof HTMLButtonElement && !source.disabled && typeof window.AICRMStaffPicker?.open==='function'; })()`;
 const ownerHandoffBatchStateExpression = () => String.raw`(async () => {
   const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]');
   const batchID=String(root?.dataset.ownerHandoffBatchId || '').trim();
@@ -145,7 +146,24 @@ try {
   browserCDP=await openCDP(browserInfo.webSocketDebuggerUrl);
   await browserCDP.call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:downloads,eventsEnabled:true});
   const page=await (await fetch(`${address}/json/new?about:blank`,{method:"PUT"})).json();
-  cdp=await openCDP(page.webSocketDebuggerUrl); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
+  cdp=await openCDP(page.webSocketDebuggerUrl); await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
+  const ownerPickerResponses=[];
+  cdp.on("Network.responseReceived", params => {
+    try {
+      const url=new URL(String(params.response?.url||""));
+      if(url.pathname!=="/api/admin/common/operation-members"||url.searchParams.get("scope")!=="owner_migration") return;
+      ownerPickerResponses.push({include_inactive:url.searchParams.get("include_inactive"),status:Number(params.response?.status)||0});
+    } catch (_) {}
+  });
+  const waitForOwnerPickerResponse=async(start,includeInactive,message)=>{
+    for(let attempt=0;attempt<160;attempt++){
+      const response=ownerPickerResponses.slice(start).find(item=>item.include_inactive===includeInactive);
+      if(response?.status===200) return response;
+      if(response&&response.status!==200) throw new Error(`${message}: ${JSON.stringify(response)}`);
+      await sleep(50);
+    }
+    throw new Error(`${message}: ${JSON.stringify(ownerPickerResponses.slice(start))}`);
+  };
   const evaluate=async (expression, step="page_evaluation")=>{ compileRuntimeExpression(expression, step); const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) { const category=String(result.exceptionDetails.exception?.className || result.exceptionDetails.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g,"_").slice(0,96); throw new Error(`${step} page evaluation failed (${category})`); } return result.result?.value; };
   const waitFor=async(expression,message)=>{for(let attempt=0;attempt<160;attempt++){if(await evaluate(expression))return;await sleep(50);}throw new Error(message);};
   const awaitDownloadCompletion=(filename)=>new Promise((resolve,reject) => {
@@ -235,8 +253,11 @@ try {
   await cdp.call("Page.navigate",{url:`${baseURL}/admin/ownerMig.html`});
   await ownerAliasNav;
   await waitFor(`location.pathname === "/admin/ownerMig.html" && Boolean(document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'))`, "owner handoff legacy alias did not resolve the V3 Host");
+  await waitFor(ownerHandoffPickerReadyExpression(), "owner handoff legacy alias did not finish Host and staff-picker readiness");
   const run=async (mode, scope=requestedScope)=>{
+    const sourceReadStart=ownerPickerResponses.length;
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); root.querySelector('[data-owner-picker="source"]').click(); return true; })()`);
+    await waitForOwnerPickerResponse(sourceReadStart,"true","source picker did not receive the authorised inactive-directory response");
     await waitFor(staffPickerPresentExpression(sourceUserID),"source picker did not include inactive source");
     const pickerStyle = await evaluate(`(() => { const picker=document.querySelector('[data-v3-selection-session="staff"]'); return { display: picker ? getComputedStyle(picker).display : '', visibility: picker ? getComputedStyle(picker).visibility : '' }; })()`);
     if (pickerStyle.display === 'none' || pickerStyle.visibility !== 'visible') throw new Error(`owner handoff shared picker styles were blocked ${JSON.stringify(pickerStyle)}`);
