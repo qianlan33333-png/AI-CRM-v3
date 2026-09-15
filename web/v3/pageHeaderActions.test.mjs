@@ -104,12 +104,17 @@ try {
   original.addEventListener('click', () => { originalClicks += 1; });
   source.append(original, back);
   dom.window.document.body.append(source);
+  original.focus();
   const restoreOriginal = dom.window.mountElements('ai-plan-detail', [back, original]);
   const relocated = topbar.querySelector('[data-page-header-actions="ai-plan-detail"]');
   assert.deepEqual([...relocated.children].map((node) => node.textContent), ['返回一级页', '确认并发送'], 'existing controls move to the page header in requested order');
   assert.equal(relocated.querySelector('button'), original, 'existing page control identity is preserved');
+  assert.equal(dom.window.document.activeElement, original, 'a first move from the source preserves focus on that same original control');
   original.click();
   assert.equal(originalClicks, 1, 'moved controls retain their existing domain listener');
+  const foreignOwner = dom.window.mountElements('other-owner', [original]);
+  assert.equal(topbar.querySelector('[data-page-header-actions="other-owner"]'), null, 'another owner cannot steal an already-owned original control');
+  foreignOwner();
   original.disabled = true;
   assert.equal(relocated.querySelector('button').disabled, true, 'moved controls retain their live disabled state');
   original.textContent = '发送已锁定';
