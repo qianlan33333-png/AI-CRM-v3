@@ -125,7 +125,7 @@ jobs:
       classification: ${{ steps.receipt.outputs.classification }}
       observations: ${{ steps.receipt.outputs.observations }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
