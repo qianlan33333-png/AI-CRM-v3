@@ -2,7 +2,7 @@
 
 日期：2026-09-15
 状态：已批准，进入实施；本次治理更新继续由 PR #297 交付
-当前实施基线：`main=84c34e5ad784d3f4cf20082b6a83d39919bff7e5`
+当前实施基线：`main=0e73d42c433892a1f5088eea08d3a079c1c98455`
 实施方式：按可观察能力拆分独立工作树与 PR；本文不把任一未合入分支、CI 通过或本地截图视为已发布能力。
 
 本次文档核对以 GitHub 当前 main 和各 PR 的实际 head 为准。独立工作树为 `/private/tmp/aicrm-global-ui-governance-20260915`；原目录只读保留，冻结 donor 不修改。本 PR 只补治理入口、产品要求、组件调用清单和验收状态，不改业务源码、不合并、不部署。
@@ -93,7 +93,7 @@ root 负责分发审核，Terra high/xhigh 开发，Luna max 基础执行审计�
 
 页面台账把 C0–C3 当作证据级别，而非完成状态：C0 是 canonical 路由、Host、manifest assets 的静态核对；C1 是共享组件合同测试；C2 是实际挂载壳和视口证据；C3 是认证业务数据、关键交互以及保存后服务端 readback。每一页只按明确证据取最高级别；CI 绿灯、组件存在、注入 Host、截图或 fixture 成功都不能自动升级整页。99 条台账包含 route、alias、reserved placeholder、login/logout 和构建 artifact，不等于 99 个 canonical 页面。
 
-当前 main 已合入 #317（#287、#296、#300、#303、#305、#307、#310、#311、#315 的能力随其合入），但 #317 的 run `34924244166` deploy skipped；线上 IAB 只读访问超时且无认证读回。其余本任务 PR 仍按各自状态维护，均不能称为已部署或生产验收。Tag、Staff、Composer 的状态示例页仍缺，现有 `/admin/component-states` 只覆盖 Group、Material 和表单／IME 的本地示例；后台其余页面、企微 sidebar、H5 与公开问卷页继续逐页验收。
+当前 main 已合入 #317（#287、#296、#300、#303、#305、#307、#310、#311、#315 的能力随其合入），随后合入 #324 Radar 管理列表筛选分页（merge commit `0e73d42c433892a1f5088eea08d3a079c1c98455`，head `cedc7cb98afe920c91378319361ef44b44f5bf5b`）。#317 的 run `34924244166` 与 #324 的 run `34926594842` 均 deploy skipped；本次同步前 #297 的 strict gate 为 BEHIND，现已以最新 main 为基线。线上 IAB 只读访问超时且无认证读回，不能称为已部署或生产验收。其余本任务 PR 仍按各自状态维护。Tag、Staff、Composer 的状态示例页仍缺，现有 `/admin/component-states` 只覆盖 Group、Material 和表单／IME 的本地示例；后台其余页面、企微 sidebar、H5 与公开问卷页继续逐页验收。
 
 最终交付：图像模板引用、全局 PRD、标准组件真实调用目录与状态示例记录、全部改造页面、逐页验收记录和独立 PR 证据。本轮 PR #297 仅交付治理文档与规则入口，不能缩减已批准的全局页面改造范围。
 

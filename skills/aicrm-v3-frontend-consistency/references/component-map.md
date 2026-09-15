@@ -1,6 +1,6 @@
 # 前端真实组件索引（全局 UI 治理核对，2026-09-15）
 
-以当前 main `84c34e5ad784d3f4cf20082b6a83d39919bff7e5` 的实际仓库路径为准。索引用于选择现有入口，不授权跨领域读取或写入；动工前除路径外，还要追踪 canonical 路由、handler／adapter、`Render*` 或挂载、manifest assets 和页面调用。链路固定为“canonical route → handler／领域 UI adapter → `Render*` 或对应 mount → manifest asset → page caller”。未挂载实现、历史快照和构建产物不能单独作为当前标准；冻结 donor 只作行为／视觉证据，禁止修改。
+以当前 main `0e73d42c433892a1f5088eea08d3a079c1c98455` 的实际仓库路径为准。索引用于选择现有入口，不授权跨领域读取或写入；动工前除路径外，还要追踪 canonical 路由、handler／adapter、`Render*` 或挂载、manifest assets 和页面调用。链路固定为“canonical route → handler／领域 UI adapter → `Render*` 或对应 mount → manifest asset → page caller”。未挂载实现、历史快照和构建产物不能单独作为当前标准；冻结 donor 只作行为／视觉证据，禁止修改。
 
 | 场景 | 入口 | 调用／装配 | 边界 |
 | --- | --- | --- | --- |
@@ -12,7 +12,7 @@
 
 ## 全局统一 UI 增补清单（2026-09-15）
 
-本节登记当前 main 的实际 Host、授权读取和未完成合同。#317 已于 `2026-09-15T03:29:19Z` squash 合入 main；其 review head `09cf5d7…` 与 main `84c34e5…` 的 tree 均为 `6838f977…`，包含 #287、#296、#300、#303、#305、#307、#310、#311、#315 的能力。CI run `34924244166` 的必跑 lane 全 PASS、deploy SKIPPED；线上 IAB 仍无认证读回。未合入或未真实页面验收的调用不得因共享模块存在而标覆盖。商品编辑分销行由商品专项 PR 单独维护，避免与该专项并行修改。
+本节登记当前 main 的实际 Host、授权读取和未完成合同。#317 已于 `2026-09-15T03:29:19Z` squash 合入 main；其 review head `09cf5d7…` 与当时 main `84c34e5…` 的 tree 均为 `6838f977…`，包含 #287、#296、#300、#303、#305、#307、#310、#311、#315 的能力。随后 #324 以 merge commit `0e73d42c433892a1f5088eea08d3a079c1c98455` 合入 Radar 管理列表筛选分页，run `34926594842` 必跑 lane 全 PASS、deploy SKIPPED；本工作树已同步该最新 main。线上 IAB 仍无认证读回。未合入或未真实页面验收的调用不得因共享模块存在而标覆盖。商品编辑分销行由商品专项 PR 单独维护，避免与该专项并行修改。
 
 | 场景 | 入口 | 调用／装配 | 已核实状态与边界 |
 | --- | --- | --- | --- |
@@ -46,7 +46,7 @@
 
 ## 路由／页面条目逐项验收矩阵（2026-09-15）
 
-本矩阵以历史 clean main `3eda04cbd56d7bfdf44ba2a15d573ee29703926a` 的实际路由装配为初始盘点基线；当前 main 为 `84c34e5ad784d3f4cf20082b6a83d39919bff7e5`，已包含 #317 的共享组件与状态示例、#318/#319/#321/#323 的后续主线修复。未合入能力的 branch head、CI 和本地证据单独记录，不能写成 main 已发布。条目总数以表中连续编号自动核算，涵盖 canonical route、alias、reserved placeholder、登录／退出和构建 artifact，不能描述为相同数量的 canonical 页面。`C0` 只表示源码路由、Host 和 assets 静态核对，不能当作页面通过；`C1` 是共享组件合同测试，`C2` 是实际挂载壳与视口证据，`C3` 才是认证业务数据和保存后读回。视口要求按页面类型执行：后台桌面 `1280/1440`、企微 sidebar `360/420`、公开或 H5 `375/390/430`。除“已测证据”明确列出的子集外，表中的“状态”统一表示“未执行/待验收”的逐项检查集合。
+本矩阵以历史 clean main `3eda04cbd56d7bfdf44ba2a15d573ee29703926a` 的实际路由装配为初始盘点基线；当前 main 为 `0e73d42c433892a1f5088eea08d3a079c1c98455`，已包含 #317 的共享组件与状态示例、#318/#319/#321/#323 的后续主线修复及 #324 的 Radar 管理列表筛选分页。未合入能力的 branch head、CI 和本地证据单独记录，不能写成 main 已发布。条目总数以表中连续编号自动核算，涵盖 canonical route、alias、reserved placeholder、登录／退出和构建 artifact，不能描述为相同数量的 canonical 页面。`C0` 只表示源码路由、Host 和 assets 静态核对，不能当作页面通过；`C1` 是共享组件合同测试，`C2` 是实际挂载壳与视口证据，`C3` 才是认证业务数据和保存后读回。视口要求按页面类型执行：后台桌面 `1280/1440`、企微 sidebar `360/420`、公开或 H5 `375/390/430`。除“已测证据”明确列出的子集外，表中的“状态”统一表示“未执行/待验收”的逐项检查集合。
 
 Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`RenderChannels` + `channelCenterHost/standardComponentsHost`；`SUR`=`RenderSurvey` + `surveyHost/questionnaireEditor/standardComponentsHost`；`RAD`=`RenderRadar` + `radarHost/standardComponentsHost`；`GRP`=`RenderGroupOps` + `groupOpsHost/operationPicker/groupPicker/materialPicker/composer/readonly`；`AI`=`RenderAIAssistant` + `aiAssistantHost` 及 group/material/composer/readonly；`ORD`=`RenderOrders` + `orderHost`；`PROD`=`RenderProducts` + `productHost/standardComponentsHost`；`COUP`=`RenderCoupons` + `couponHost`；`MED`=`RenderMedia` + `materialSaveHost/imageLibraryFilterHost`；`AUT`=`RenderAutomation`；`OP`=`RenderOperationCycles` + `operationCyclesHost`；`CFG-V3`=`RenderRuntimeConfig`；`CFG-D`=`RenderConfig`；`DIST`=`RenderDistribution` 或公开 Distribution handler；`PUB-*` 为各领域公开 handler；`LOGIN`/`SIDE` 为 `RenderLogin`/`RenderSidebar`。`E-T`=共享组件合同测试，`E-M`=素材 360/420/1280 视觉参考与 Radar Host 布局证据，`E-G`=群聊 360/420/1280 视觉参考，`E-PG`=GroupOps PostgreSQL/认证 Chromium Journey，`E-CH`=#287 渠道 Journey，`E-O`=#299 本地 consumer 证据，`E-ORD`=订单／下钻截图；历史或失败 CI 不计为通过，deploy skipped 不计为发布。
 
@@ -88,7 +88,7 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 | 32 | `/admin/questionnaireDetail.html?mode=assessment`（assessment） | SUR | survey host + editor | 评估只读/结果视图 | 1280/1440 | loading、空、失败、只读 | C0 | 评估数据、权限和无答卷态 |
 | 33 | `/admin/questionnaireOps.html?id={id}`（`questionnaireOps.html`） | SUR | survey host + standard CSS | 问卷运营/历史 | 1280/1440 | loading、空、错误、403、只读 | C0 | 外部效果回执与历史 readback；不把问卷列表证据复用为完成 |
 | 34 | `/admin/questionnaires/new`（registry route） | SUR | survey assets | 预期 questionnaire detail carrier | 1280/1440 | 404/redirect、未登录 | C0：route registry；当前 `surveyPage` 未接受该路径 | 修正 canonical route 或明确失效，避免导航指向未挂载页 |
-| 35 | `/admin/radar-links`（`radar.html`） | RAD | radar + standard Host | 内容雷达列表 | 1280/1440 | loading、空、错误、403、只读 | C0；E-M/E-R 只覆盖 picker 布局 | 雷达链接真实列表、统计 projection、权限和状态 |
+| 35 | `/admin/radar-links`（`radar.html`） | RAD | radar + standard Host | 内容雷达列表 | 1280/1440 | loading、空、错误、403、只读 | C0；#324 run `34926594842` 必跑 lane PASS、deploy SKIPPED；E-M/E-R 只覆盖 picker 布局 | Radar 筛选分页的认证浏览器读回、统计 projection、权限和状态仍待验收 |
 | 36 | `/admin/radarForm.html`（`radarForm.html` new） | RAD | 同上 | Radar form + material picker | 1280/1440 | 草稿、候选 Enter、Escape、素材 403、保存失败 | E-M、E-R；当前仅 legacy 单项 callback | Radar 只允许一个 image 或 PDF `media_item_id`；仍需真实单选、替换、移除、重开回显和业务保存/失败读回 |
 | 37 | `/admin/radarForm.html?id={id}`（edit） | RAD | 同上 | Radar edit + material picker | 1280/1440 | loading、404、已有素材、取消、错误、只读 | C0；无真实单项业务 evidence | 回显实际素材记录、删除/替换、保存后服务端 readback |
 | 38 | `/admin/radarDetail.html?id={id}`（`radarDetail.html`） | RAD | radar + standard Host | 雷达详情、访客/统计 | 1280/1440 | loading、无事件、错误、403、只读 | C0 | 统计可用/不可用和访客归因逐页验证；OneID assurance 不由页面自报 |

@@ -1,6 +1,6 @@
 # Global UI 执行状态
 
-更新时间：2026-09-15
+更新时间：2026-09-15；主线与 PR 状态核对截至 `2026-09-15T04:07:18Z`
 
 本文是当前事实台账，不把目录存在、接口骨架、CI 通过、合入、部署开关或截图单独当作业务完成。状态按“分支／CI → 合入 main → 发布 → 认证浏览器读回 → 真实业务/provider 回执”分层记录；未满足的层级继续保留。
 
@@ -8,14 +8,15 @@
 
 | 项目 | 当前事实 | 结论 |
 | --- | --- | --- |
-| 当前 main | `84c34e5ad784d3f4cf20082b6a83d39919bff7e5` | 已核实；该提交为 PR #317 squash merge commit。 |
+| 当前 main | `0e73d42c433892a1f5088eea08d3a079c1c98455` | 已核实；该提交为 PR #324 merge commit，包含此前 PR #317 的共享组件主线。 |
 | PR #317 | review head `09cf5d7ff6889834b6e0fd79cea88cd39d55836e`，于 `2026-09-15T03:29:19Z` squash 合入 | main 与 review head 的 tree 均为 `6838f97709d2e9845094a5cd2f595571be70cac7`；#317 的共享选择／内容／状态能力已在 main。 |
 | #317 CI | run `34924244166` | plan、preflight、backend、frontend、browser、archive-sdk、check、quality-report 全部 PASS；deploy 为 SKIPPED。 |
+| PR #324 | head `cedc7cb98afe920c91378319361ef44b44f5bf5b`，于 `2026-09-15T04:07:18Z` 合入 main | Radar 管理列表筛选分页；run `34926594842` 的 plan、preflight、backend、frontend、browser、archive-sdk、check、quality-report 全部 PASS，deploy 为 SKIPPED。同步前 #297 strict gate 为 `BEHIND`，本工作树已合入该最新 main。 |
 | 当前 PR | #297，分支 `codex/global-ui-governance-20260915`，独立工作树 `/private/tmp/aicrm-global-ui-governance-20260915` | 本次只改治理文档与规则入口；原目录只读保留，不改业务源码、不合并、不部署。 |
 | 部署开关 | `gh variable list` 未找到 `AICRM_ENABLE_ACTIONS_DEPLOY`；仓库变量当前只见 SSH 连接变量 | 没有部署证据。 |
 | 线上读回 | 生产 IAB 只读访问超时，未得到认证页面、API 或 provider 回执 | 不能称为已上线或生产验收。 |
 
-PR #317 的 squash tree 同时承载了已关闭的 #287、#296、#300、#303、#305、#307、#310、#311、#315；这些 PR 的能力随 #317 进入 main，但各自原分支保留，不能再按“未合入”描述。main 在此之前还包含已合入的 #318、#319、#321、#323（#323 的 exact-ID 修复 merge commit 为 `22e24ddcf646252985257fe55370a8f5fe3890f9`）。除明确列出的 main 事实外，其余本任务 PR 均未合入、未部署。
+PR #317 的 squash tree 同时承载了已关闭的 #287、#296、#300、#303、#305、#307、#310、#311、#315；这些 PR 的能力随 #317 进入 main，但各自原分支保留，不能再按“未合入”描述。main 在此之前还包含已合入的 #318、#319、#321、#323（#323 的 exact-ID 修复 merge commit 为 `22e24ddcf646252985257fe55370a8f5fe3890f9`），随后由 #324 合入 Radar 管理列表筛选分页。除明确列出的 main 事实外，其余本任务 PR 均未合入、未部署。
 
 ## 仍在推进的能力
 
@@ -43,7 +44,7 @@ PR #317 已把 V3-owned `SelectionSession`、selection dialog、tag/staff/group/
 | Material | `web/v3/shared/ui/materialPickerAdapter.ts`；Product、Radar、GroupOps 与 component-state demo | #296 的 adapter 状态测试、Radar renderer callback 和本地 Group/Material 状态示例已随 #317 入 main；失败保留 draft、缩略图 fallback、重复确认锁有合同证据。 | Radar 业务只允许一个 image 或 PDF `media_item_id`，仍需单选／替换／移除／重开回显和 save/GET；不能因共享 picker 支持多选而扩大 Radar 合同。Product 等其它 caller 是否多选由各自 owner 另行验收。 |
 | Tag | `web/v3/shared/ui/tagPickerAdapter.ts`、`standardComponentsHost.ts`；当前真实调用为 Channel、Customer、Product Host | #305 的真实 host 接入能力随 #317 入 main；共享 adapter 合同有单/多选、分组、失效、403、刷新与失败保留测试。 | `/admin/component-states` 尚无 Tag 的独立状态示例；问卷及其它调用页不能因标准 Host 存在而标完成。选择确认不自动给客户打标。 |
 | Staff | `web/v3/shared/ui/staffPickerAdapter.ts`、`standardComponentsHost.ts`；Channel 与 GroupOps 使用 V3 adapter，冻结员工 picker 仍由兼容 Host 装配 | #311 的 scope 约束与 adapter 合同随 #317 入 main；Channel 有真实授权 scope、刷新和保存前草稿测试。 | `/admin/component-states` 尚无 Staff 状态示例；非群运营目录不能套用 GroupOps 范围，Customer/owner migration 等调用仍需真实页面验收。 |
-| Composer／内容只读 | `web/v3/shared/ui/contentComposer.ts`、`contentPresentation.ts`；GroupOps 与 `excelBatches.ts` 调用 | #307/#310 的编辑、素材排序、预览/只读合同随 #317 入 main；预览不触发发送。 | `/admin/component-states` 尚无 Composer 状态示例；#322 固定话术仍有 browser/check FAIL，Prompt 分离和真实保存回读待完成。 |
+| Composer／内容只读 | `web/v3/shared/ui/contentComposer.ts`、`contentPresentation.ts`；GroupOps 与 `excelBatches.ts` 调用 | #307/#310 的编辑、素材排序、预览/只读合同随 #317 入 main；预览不触发发送。#322 本地 PostgreSQL Chromium 授权保存+GET readback 已通过。 | `/admin/component-states` 尚无 Composer 状态示例；#322 仍有 browser/check FAIL，Prompt 分离和最终 CI、发布、线上读回待完成。 |
 
 现有状态示例页 `/admin/component-states` 只覆盖 Group、Material 及表单／IME 本地示例，不调用 Provider、不保存业务数据。Tag、Staff、Composer 的状态示例仍欠；其余后台、企微 sidebar、H5 和公开问卷页保持独立壳、授权范围和逐页验收，不能由状态 demo 或单个共享组件测试升级。
 
