@@ -252,12 +252,10 @@ function prepareFrozenChannelListTemplate(): void {
     archive.setAttribute('style', '{{ r.archiveStyle }}');
   }
   const deletion = anchors.find((node) => node.textContent?.trim() === '删除' && node.title === '后端暂无渠道删除 operation');
-  if (deletion) {
-    deletion.textContent = '删除不可用';
-    deletion.title = '暂不支持永久删除；删除会保留历史配置和归因记录。';
-    deletion.style.color = '#A6AAB0';
-    deletion.style.cursor = 'not-allowed';
-  }
+  // The frozen donor exposes a second, permanently-disabled delete affordance.
+  // Archive is the sole supported deletion lifecycle here, so remove that
+  // placeholder and leave the stable archive binding above as the one action.
+  deletion?.remove();
 }
 
 function dependencyUnavailable(): Response {
