@@ -17,7 +17,6 @@ async function waitFor(check, label) {
   throw new Error(`timed out: ${label}`);
 }
 
-let includeDirectoryOnlyItem = false;
 const dom = new JSDOM(`<!doctype html><body data-page="radarForm"><main id="stage"></main></body>`, {
   url: 'https://test.invalid/admin/radarForm.html', runScripts: 'dangerously', pretendToBeVisual: true,
   beforeParse(window) {
@@ -29,9 +28,15 @@ const dom = new JSDOM(`<!doctype html><body data-page="radarForm"><main id="stag
     window.__AICRM_TEST_MOCK__ = true;
     window.fetch = async (input) => {
       const url = new URL(String(input), window.location.href);
-      if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return new Response(JSON.stringify({ items: [{ id: 1, name: '直播预告主视觉.png', enabled: true }], has_more: true, next_offset: 1 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '1') return new Response(JSON.stringify({ items: [{ id: 39, name: '目录新图片', enabled: true }], has_more: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      return new Response(JSON.stringify({ code: 'unexpected' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/image-library/1') return reply({ item: { id: 1, name: '直播预告主视觉.png', enabled: true, mime_type: 'image/png' } });
+      if (url.pathname === '/api/admin/image-library/39') return reply({ item: { id: 39, name: '目录新图片', enabled: true, mime_type: 'image/png' } });
+      if (url.pathname === '/api/admin/attachment-library/1') return reply({ item: { id: 1, name: '同号 PDF 附件.pdf', mime_type: 'application/pdf', enabled: true } });
+      if (url.pathname === '/api/admin/attachment-library/77') return reply({ item: { id: 77, name: '雷达资料.pdf', mime_type: 'application/pdf', enabled: true } });
+      if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return reply({ items: [{ id: 1, name: '直播预告主视觉.png', enabled: true, mime_type: 'image/png' }], has_more: true, next_offset: 1 });
+      if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '1') return reply({ items: [{ id: 39, name: '目录新图片', enabled: true, mime_type: 'image/png' }], has_more: false });
+      if (url.pathname === '/api/admin/attachment-library') return reply({ items: [{ id: 1, name: '同号 PDF 附件.pdf', mime_type: 'application/pdf', enabled: true }, { id: 77, name: '雷达资料.pdf', mime_type: 'application/pdf', enabled: true }, { id: 78, name: '不能用于雷达.txt', mime_type: 'text/plain', enabled: true }], has_more: false });
+      return reply({ code: 'unexpected' }, 500);
     };
   },
 });
@@ -44,10 +49,7 @@ document.querySelector('#fName').value = '实际冻结表单素材';
 document.querySelector('#fUrl').value = 'https://example.test/radar-target';
 document.querySelector('#btnPick').click();
 await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'the V3 picker replaced the frozen visual popup');
-const legacyMask = document.querySelector('.pk-mask');
-assert.ok(legacyMask, 'the frozen picker was created only after its delayed scoped load');
-assert.equal(legacyMask.style.getPropertyValue('display'), 'none', 'the Host suppresses the frozen popup even though it has inline display styling');
-assert.equal(legacyMask.style.getPropertyPriority('display'), 'important', 'the frozen popup cannot override the Host suppression');
+assert.equal(document.querySelector('.pk-mask'), null, 'opening the V3 dialog alone may not start a second frozen picker or mutate its draft');
 await waitFor(() => document.querySelector('[data-v3-material-key$=":1"]'), 'the scoped V3 picker rendered only its first server page');
 const search = document.querySelector('[data-v3-picker-search-input]');
 assert.equal(search.matches('[data-picker-search]'), false, 'the V3 dialog query is outside the frozen picker selector');
@@ -58,26 +60,100 @@ document.querySelector('[data-v3-material-key$=":1"]').click();
 assert.ok(document.querySelector('[data-v3-selection-session="material"]'), 'selection remains temporary until the operator confirms');
 assert.equal(document.querySelector('#mediaPicked').hidden, true, 'a temporary picker selection cannot write the frozen form');
 document.querySelector('[data-v3-picker-confirm]').click();
-await waitFor(() => document.querySelector('.pk-mask') === null, 'the frozen renderer received the standard picker selection and resolved its callback');
-assert.equal(document.querySelector('.pk-mask'), null, 'the frozen picker callback cleans itself after a standard selection');
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]') === null, 'the frozen renderer must resolve before the V3 picker closes');
+assert.equal(document.querySelector('.pk-mask'), null, 'the hidden frozen callback picker must clean itself after application');
 await waitFor(() => document.querySelector('#mediaName')?.textContent === '直播预告主视觉.png', 'the actual frozen form received its scoped material callback');
 assert.equal(document.querySelector('#mediaPicked').hidden, false, 'confirmation applies the V3 selection through the frozen caller callback');
-includeDirectoryOnlyItem = true;
 document.querySelector('#btnPick').click();
-await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'the V3 picker reopened for a directory race');
-await waitFor(() => document.querySelector('[data-v3-material-key$=":1"]'), 'the V3 picker starts again from the scoped first page');
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'the V3 picker reopened for a later directory page');
+await waitFor(() => document.querySelector('[data-v3-picker-selected]')?.textContent.includes('直播预告主视觉.png'), 'reopening must surface the owner draft as selectedRecords');
 document.querySelector('[data-v3-picker-more]').click();
-await waitFor(() => document.querySelector('[data-v3-material-key$=":39"]'), 'the standard directory may return an item absent from the frozen scoped snapshot');
+await waitFor(() => document.querySelector('[data-v3-material-key$=":39"]'), 'the standard directory must return a later image page');
 document.querySelector('[data-v3-material-key$=":39"]').click();
 document.querySelector('[data-v3-picker-confirm]').click();
-await waitFor(() => document.querySelector('#mediaHelp').textContent.includes('素材目录已变化'), 'an unavailable frozen callback row gives a visible retry message');
-assert.equal(document.querySelector('#mediaName').textContent, '直播预告主视觉.png', 'a directory race preserves the existing frozen draft');
-assert.equal(document.querySelector('.pk-mask'), null, 'a directory race resolves the hidden frozen picker without leaving a stale overlay');
-includeDirectoryOnlyItem = false;
+await waitFor(() => document.querySelector('#mediaName')?.textContent === '目录新图片', 'a later directory item must reach the original Radar form callback through its narrow owner bridge');
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]') === null, 'the V3 picker must finish its owner callback before it can reopen');
+assert.equal(document.querySelector('.pk-mask'), null, 'the narrow bridge must clean its temporary frozen callback picker');
 document.querySelector('#btnPick').click();
-await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'the V3 picker reopened for cancellation');
+await waitFor(() => document.querySelector('[data-v3-picker-selected]')?.textContent.includes('目录新图片'), 'reopening after a later-page selection must retain the same owner draft');
+document.querySelector('[data-v3-material-remove]').click();
+document.querySelector('[data-v3-picker-confirm]').click();
+await waitFor(() => document.querySelector('#mediaPicked').hidden, 'removing a selected material must apply through the original form remove control');
+assert.equal(document.querySelector('.pk-mask'), null, 'removing a selected material may not create a frozen picker');
+document.querySelector('[data-t="pdf"]').click();
+document.querySelector('#btnPick').click();
+await waitFor(() => document.querySelector('[data-v3-material-key$=":77"]'), 'the PDF picker must load authorised attachment records');
+assert.equal(document.querySelector('[data-v3-material-key$=":78"]'), null, 'non-PDF attachments must not be selectable for a PDF Radar');
+document.querySelector('[data-v3-material-key$=":77"]').click();
+document.querySelector('[data-v3-picker-confirm]').click();
+await waitFor(() => document.querySelector('#mediaName')?.textContent === '雷达资料.pdf', 'the PDF selection must reach the original Radar form callback');
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]') === null, 'the PDF callback must finish before reopening its shared dialog');
+document.querySelector('#btnPick').click();
+await waitFor(() => document.querySelector('[data-v3-picker-selected]')?.textContent.includes('雷达资料.pdf'), 'reopening must retain the selected PDF record');
 document.querySelector('[data-v3-picker-close]').click();
-await waitFor(() => document.querySelector('.pk-mask') === null, 'cancel cleans the pending frozen picker promise');
-assert.equal(document.querySelector('#mediaName').textContent, '直播预告主视觉.png', 'cancelling preserves the frozen form draft');
+assert.equal(document.querySelector('#mediaName').textContent, '雷达资料.pdf', 'cancelling preserves the frozen form draft');
+document.querySelector('[data-t="image"]').click();
+await wait(20);
+assert.equal(document.querySelector('#mediaPicked').hidden, true, 'switching type must clear the frozen form through its original remove action instead of treating a PDF ID as an image ID');
+assert.match(document.querySelector('#mediaHelp').textContent, /重新选择素材/, 'switching type must make the required re-selection visible');
+document.querySelector('#btnPick').click();
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'the image dialog must open after an explicit type switch');
+assert.match(document.querySelector('[data-v3-picker-selected]').textContent, /尚未选择素材/, 'the prior PDF selection must not become an image selection merely because its numeric ID exists in both libraries');
+assert.ok(document.querySelector('[data-v3-material-key$=":1"]'), 'the image library can independently contain the same numeric ID');
+document.querySelector('[data-v3-material-key$=":1"]').click();
+document.querySelector('[data-v3-picker-confirm]').click();
+await waitFor(() => document.querySelector('#mediaName')?.textContent === '直播预告主视觉.png', 'a newly selected image must apply only through the original frozen callback');
+document.querySelector('[data-t="pdf"]').click();
+await wait(20);
+assert.equal(document.querySelector('#mediaPicked').hidden, true, 'switching back to PDF must clear the image draft rather than relabel the same numeric ID as an attachment');
+document.querySelector('#btnPick').click();
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'the PDF dialog must open after the cleared type switch');
+assert.match(document.querySelector('[data-v3-picker-selected]').textContent, /尚未选择素材/, 'the selected image may not be replayed as the same-numbered PDF');
+assert.ok(document.querySelector('[data-v3-material-key$=":1"]'), 'the same-numbered attachment remains a separate explicit record');
+document.querySelector('[data-v3-picker-cancel]').click();
+document.querySelector('#mediaRemove').click();
+assert.equal(document.querySelector('#mediaPicked').hidden, true, 'the original remove control must clear the actual Radar form draft');
+document.querySelector('#btnPick').click();
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'the V3 dialog must reopen after the original remove control');
+assert.match(document.querySelector('[data-v3-picker-selected]').textContent, /尚未选择素材/, 'the V3 cache must follow the original remove control instead of restoring stale material');
+document.querySelector('[data-v3-picker-cancel]').click();
+
+// Editing an existing image starts with the frozen owner form's media closure,
+// before any V3 picker cache exists. Switching straight to PDF must remove that
+// real draft, including when attachment #1 also exists.
+const editedDB = JSON.parse(dom.window.sessionStorage.getItem('aicrm.mock.db.v4'));
+editedDB.radarLinks.unshift({ id: 99, title: '已有图片雷达', target_type: 'image', original_url: 'https://example.test/existing-image', file_name_snapshot: '已有图片 #1', media_item_id: '1', enabled: true, auth_required: true, staff_id: 'test', code: 'existing-image', total_landings: 0, authorized_users: 0, view_count: 0, last_viewed_at: '' });
 dom.window.close();
-console.log('radar Host actual frozen renderer material relay journey: PASS');
+const editDom = new JSDOM(`<!doctype html><body data-page="radarForm"><main id="stage"></main></body>`, {
+  url: 'https://test.invalid/admin/radarForm.html?id=99', runScripts: 'dangerously', pretendToBeVisual: true,
+  beforeParse(window) {
+    window.Response = Response; window.Headers = Headers;
+    window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+    window.__AICRM_TEST_MOCK__ = true;
+    window.sessionStorage.setItem('aicrm.mock.db.v4', JSON.stringify(editedDB));
+    window.fetch = async (input) => {
+      const url = new URL(String(input), window.location.href);
+      const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/attachment-library') return reply({ items: [{ id: 1, name: '同号 PDF 附件.pdf', mime_type: 'application/pdf', enabled: true }], has_more: false });
+      if (url.pathname === '/api/admin/attachment-library/1') return reply({ item: { id: 1, name: '同号 PDF 附件.pdf', mime_type: 'application/pdf', enabled: true } });
+      return reply({ code: 'unexpected_edit_radar_request' }, 500);
+    };
+  },
+});
+editDom.window.eval(picker);
+editDom.window.eval(host);
+const editDocument = editDom.window.document;
+await waitFor(() => editDocument.querySelector('#mediaPicked')?.hidden === false && editDocument.querySelector('[data-t="image"]')?.classList.contains('on'), 'the actual frozen edit form must render its persisted image before V3 opens');
+editDocument.querySelector('[data-t="pdf"]').click();
+await waitFor(() => editDocument.querySelector('#mediaPicked')?.hidden === true, 'an edit form type switch must clear its frozen image media even without a prior V3 dialog');
+assert.match(editDocument.querySelector('#mediaHelp').textContent, /重新选择素材/, 'the edit form explains the required explicit replacement');
+editDocument.querySelector('#fSave').click();
+assert.equal(editDocument.querySelector('#mediaPicked').hidden, true, 'the original save cannot serialize the former image ID under the new PDF type');
+editDocument.querySelector('#btnPick').click();
+await waitFor(() => editDocument.querySelector('[data-v3-selection-session="material"]'), 'the cleared PDF edit form opens the scoped V3 picker');
+assert.match(editDocument.querySelector('[data-v3-picker-selected]').textContent, /尚未选择素材/, 'the same numeric attachment ID is not automatically selected from the former image draft');
+assert.ok(editDocument.querySelector('[data-v3-material-key$=":1"]'), 'the separately authorised attachment #1 remains available for an explicit new choice');
+editDocument.querySelector('[data-v3-picker-cancel]').click();
+editDom.window.close();
+console.log('radar edit existing image direct PDF switch: PASS');
+

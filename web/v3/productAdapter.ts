@@ -12,6 +12,7 @@ import { downloadQr, renderQr } from '../src/admin/sections/qr';
 import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
+import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord } from './shared/ui/materialPickerAdapter';
 
 type RecordValue = Record<string, unknown>;
 type ProductProjection = Product & { resourceId: number };
@@ -206,50 +207,7 @@ async function recoverExternalPush(input: Parameters<typeof api.saveProduct>[0],
 
 const donorFetch = globalThis.fetch.bind(globalThis);
 
-type MaterialPickerItem = { library_id: number; title?: string; subtitle?: string; thumbnail_url?: string; metadata?: Record<string, unknown> };
-type StandardWindow = Window & { AdminApi?: { requestJson?: (path: string) => Promise<unknown> }; AICRMStandardComponents?: { ready?: () => Promise<void> } };
-
-async function materialPickerItems(path: string): Promise<unknown> {
-  const url = new URL(path, location.origin);
-  if (url.pathname !== '/api/admin/material-picker/items') throw new Error('素材选择请求不受支持');
-  const type = url.searchParams.get('type');
-  const endpoint = type === 'image' ? '/api/admin/image-library' : type === 'miniprogram' ? '/api/admin/miniprogram-library' : type === 'attachment' ? '/api/admin/attachment-library' : type === 'group_invite' ? '/api/admin/group-invite-library' : '';
-  if (!endpoint) throw new Error('素材类型不受支持');
-  const q = url.searchParams.get('q') || '';
-  const items: RecordValue[] = [];
-  for (let offset = 0; ; ) {
-    const source = new URL(endpoint, location.origin);
-    source.searchParams.set('limit', '100'); source.searchParams.set('offset', String(offset)); source.searchParams.set('q', q); source.searchParams.set('enabled_only', 'true');
-    const response = await donorFetch(source, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`素材目录读取失败（HTTP ${response.status}）`);
-    const page = list(object(payload).items).map(object);
-    items.push(...page);
-    const next = Number(object(payload).next_offset);
-    if (object(payload).has_more !== true || !Number.isSafeInteger(next) || next <= offset) break;
-    offset = next;
-  }
-  return { items: items.map((item) => {
-    const id = Number(item.id ?? item.library_id);
-    const originalURL = String(item.original_url ?? item.variant_url ?? (type === 'image' ? `/api/admin/image-library/${id}/variants/original` : ''));
-    return { type, library_id: id, title: String(item.name ?? item.title ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.thumbnail_url ?? item.variant_url ?? ''), enabled: item.enabled !== false, selectable: item.enabled !== false, metadata: { ...item, original_url: originalURL } };
-  }) };
-}
-
-function installMaterialPickerTransport(): void {
-  const target = window as StandardWindow;
-  const prior = target.AdminApi?.requestJson;
-  target.AdminApi ||= {};
-  target.AdminApi.requestJson = async (path: string): Promise<unknown> => {
-    if (new URL(path, location.origin).pathname === '/api/admin/material-picker/items') return materialPickerItems(path);
-    if (prior) return prior(path);
-    const response = await donorFetch(path, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
-    return payload;
-  };
-}
-installMaterialPickerTransport();
+type StandardWindow = Window & { AICRMStandardComponents?: { ready?: () => Promise<void> } };
 
 const periodicSnapshots = new Map<number, RecordValue>();
 
@@ -1577,43 +1535,111 @@ const servicePeriodDurationObserver = new MutationObserver(mountNewServicePeriod
 servicePeriodDurationObserver.observe(document, { childList: true, subtree: true });
 mountNewServicePeriodDuration();
 
-type ProductMaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: { type: 'image'; title: string; selectedIds: number[]; limit: number; onConfirm(item: MaterialPickerItem): void; onCancel(): void }): void } };
-let pendingProductMaterialObserver: MutationObserver | undefined;
+type ProductMaterial = MaterialPickerRecord & { metadata: RecordValue };
+type ProductMaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: {
+  type: 'image'; title: string; selectedIds: number[]; selectedRecords: ProductMaterial[]; limit: number;
+  onCommit(result: { selected: ProductMaterial[]; added: ProductMaterial[]; removed: ProductMaterial[] }): void | Promise<void>;
+  onCancel(): void;
+}): void } };
 
-// The frozen product forms await their scoped page data before appending the
-// legacy generic picker.  Keep that callback path for drafts/save, while the
-// user sees the released original material picker.
-document.addEventListener('click', (event) => {
-  const button = (event.target as Element | null)?.closest('button');
-  if (!button || button.textContent?.trim() !== '从素材库选择' || !button.closest('#product-media, #sp-media')) return;
-  pendingProductMaterialObserver?.disconnect();
-  const observer = new MutationObserver((records) => {
-    for (const record of records) for (const node of record.addedNodes) {
-      if (!(node instanceof HTMLElement) || !node.classList.contains('pk-mask')) continue;
-      observer.disconnect(); if (pendingProductMaterialObserver === observer) pendingProductMaterialObserver = undefined;
-      const picker = (window as ProductMaterialPickerWindow).AICRMMaterialPicker;
-      if (!picker) return;
-      node.style.setProperty('display', 'none', 'important'); node.setAttribute('aria-hidden', 'true');
-      picker.open({ type: 'image', title: '选择页面素材', selectedIds: [], limit: 10,
-        onConfirm(item) {
-          const row = Array.from(node.querySelectorAll<HTMLElement>('[data-pk-id]')).find((candidate) => candidate.dataset.pkId === String(item.library_id));
-          if (!row) {
-            const hint = button.closest<HTMLElement>('#product-media, #sp-media')?.querySelector<HTMLElement>('[data-product-material-error]') || document.createElement('p');
-            hint.dataset.productMaterialError = ''; hint.textContent = '素材目录已变化，未改动当前草稿；请刷新页面后重新选择。'; hint.setAttribute('role', 'alert');
-            if (!hint.parentElement) button.closest<HTMLElement>('#product-media, #sp-media')?.append(hint);
-            node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click(); return;
-          }
-          row.click(); node.querySelector<HTMLElement>('[data-pk="ok"]')?.click();
-        },
-        onCancel() { node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click(); },
-      });
-      return;
-    }
+function productImageOriginalURL(value: unknown, expectedID?: number): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    const url = new URL(value, location.origin);
+    if (url.origin !== location.origin || url.search || url.hash) return undefined;
+    const match = /^\/api\/admin\/image-library\/([1-9]\d*)\/variants\/original$/.exec(url.pathname);
+    if (!match) return undefined;
+    const id = Number(match[1]);
+    if (!Number.isSafeInteger(id) || id < 1 || (expectedID !== undefined && id !== expectedID)) return undefined;
+    return url.pathname;
+  } catch {
+    return undefined;
+  }
+}
+
+function productInitialMaterial(url: string): ProductMaterial | undefined {
+  const originalURL = productImageOriginalURL(url);
+  if (!originalURL) return undefined;
+  const id = Number(/^\/api\/admin\/image-library\/([1-9]\d*)\//.exec(originalURL)?.[1]);
+  return {
+    type: 'image', library_id: id,
+    title: `已选图片素材 ${id}`,
+    subtitle: '当前商品草稿，等待当前素材目录确认', thumbnail_url: originalURL.replace('/variants/original', '/variants/thumb_320'),
+    enabled: false, selectable: false, mime_type: '', metadata: { original_url: originalURL, authorized: false },
+    unavailable_reason: '素材状态待当前目录确认',
+  };
+}
+
+function productMaterialRecord(raw: RecordValue): ProductMaterial | undefined {
+  const id = Number(raw.id ?? raw.library_id);
+  if (!Number.isSafeInteger(id) || id < 1) return undefined;
+  const originalURL = productImageOriginalURL(raw.original_url ?? raw.variant_url, id);
+  const enabled = raw.enabled !== false;
+  const unavailable = !originalURL ? '素材没有可用于商品的可信原图地址' : enabled ? '' : '素材已停用';
+  return {
+    type: 'image', library_id: id,
+    title: String(raw.name ?? raw.title ?? raw.file_name ?? `图片素材 ${id}`),
+    subtitle: String(raw.description ?? raw.category ?? ''),
+    // The catalog's thumbnail endpoint is display-only. Confirmation always
+    // validates metadata.original_url above, so never attempt to treat a
+    // thumbnail URL as an owner-writeable original URL.
+    thumbnail_url: `/api/admin/image-library/${id}/variants/thumb_320`,
+    enabled, selectable: enabled && Boolean(originalURL), mime_type: String(raw.mime_type ?? ''),
+    metadata: { original_url: originalURL || '', authorized: true },
+    ...(unavailable ? { unavailable_reason: unavailable } : {}),
+  };
+}
+
+async function verifiedProductInitialMaterial(url: string): Promise<ProductMaterial | undefined> {
+  const pending = productInitialMaterial(url);
+  if (!pending) return undefined;
+  try {
+    const response = await donorFetch(new URL(`/api/admin/image-library/${pending.library_id}`, location.origin), { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    if (!response.ok) return pending;
+    const payload = object(await response.json().catch(() => ({})));
+    const material = productMaterialRecord(object(payload.item ?? payload.image));
+    return material?.library_id === pending.library_id ? material : pending;
+  } catch {
+    return pending;
+  }
+}
+
+async function loadProductMaterialPage(request: MaterialPickerLoadRequest): Promise<{ items: ProductMaterial[]; nextCursor?: string }> {
+  if (request.type !== 'image') throw new Error('当前商品仅支持图片素材。');
+  const offset = Number(request.cursor || '0');
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('素材目录分页标记无效，请重新搜索。');
+  const source = new URL('/api/admin/image-library', location.origin);
+  source.searchParams.set('limit', '50');
+  source.searchParams.set('offset', String(offset));
+  source.searchParams.set('q', request.query);
+  source.searchParams.set('enabled_only', 'true');
+  const response = await donorFetch(source, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' }, signal: request.signal });
+  const payload = object(await response.json().catch(() => ({})));
+  if (!response.ok) {
+    const error = new Error(response.status === 401 || response.status === 403 ? '素材目录权限已失效，请重新登录后重试。' : '素材目录暂时无法加载，请稍后重试。') as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  const next = Number(payload.next_offset);
+  return {
+    items: list(payload.items).map(object).flatMap((item) => {
+      const record = productMaterialRecord(item);
+      return record ? [record] : [];
+    }),
+    nextCursor: payload.has_more === true && Number.isSafeInteger(next) && next > offset ? String(next) : undefined,
+  };
+}
+
+const productMaterialAdapterReady = (async () => {
+  await (window as StandardWindow).AICRMStandardComponents?.ready?.();
+  installMaterialPickerAdapter({
+    source: 'product-media', scope: 'product-form-image-library', loadPage: loadProductMaterialPage,
+    accessLossMessage: (error) => {
+      const status = (error as { status?: unknown })?.status;
+      return status === 401 || status === 403 ? '素材目录权限已失效；当前商品草稿仍可查看，请取消后重新登录。' : undefined;
+    },
   });
-  pendingProductMaterialObserver = observer;
-  observer.observe(document.body, { childList: true, subtree: true });
-}, true);
-window.addEventListener('pagehide', () => pendingProductMaterialObserver?.disconnect(), { once: true });
+})();
 
 
 // Preserve the frozen form nodes and serializer while switching only the visible
@@ -1705,6 +1731,9 @@ type ProductController = {
   goto(page: string, query?: string): void;
   qs(): URLSearchParams;
   renderVals(): Record<string, unknown>;
+  currentCommerceImageUrls(kind: 'product' | 'service'): string[];
+  setCommerceImageUrls(kind: 'product' | 'service', urls: string[]): void;
+  pickCommerceImages(kind: 'product' | 'service'): void;
 };
 const productController = AdminController.prototype as unknown as ProductController;
 const donorProductQuery = productController.qs;
@@ -1713,6 +1742,70 @@ productController.qs = function () {
   const route = productEditorRoute();
   if (route && ((this.page === 'productForm' && route.prefix === 'pf') || (this.page === 'spProductForm' && route.prefix === 'spf'))) query.set('id', String(route.id));
   return query;
+};
+
+function productSelectedURL(item: ProductMaterial): string {
+  const value = item.metadata?.original_url;
+  const url = productImageOriginalURL(value, item.library_id);
+  if (!url || item.metadata?.authorized !== true) throw new Error(`素材「${item.title}」尚未在当前授权目录确认；请刷新或搜索该素材后再确认。`);
+  return url;
+}
+
+function mergeProtectedProductURLs(current: readonly string[], selected: readonly ProductMaterial[]): string[] {
+  const selectedURLs = selected.map(productSelectedURL);
+  const selectedSet = new Set(selectedURLs);
+  const preserved: string[] = [];
+  // Products historically permit a current URL which is not a Media-library
+  // original (for example an already uploaded or external image). The V3
+  // dialog cannot turn such a URL into a library id, so keep it in exactly the
+  // same owner draft rather than silently dropping it on a later selection.
+  // Keep the surviving library URLs and opaque URLs in their original relative
+  // order; additions from the V3 catalogue are appended after that draft.
+  for (const url of current) {
+    const canonical = productImageOriginalURL(url);
+    if (!canonical || selectedSet.has(canonical)) preserved.push(url);
+  }
+  const presentCanonical = new Set(preserved.flatMap((url) => {
+    const canonical = productImageOriginalURL(url);
+    return canonical ? [canonical] : [];
+  }));
+  return [...preserved, ...selectedURLs.filter((url) => !presentCanonical.has(url))];
+}
+
+function describeProductPicker(): void {
+  const hint = document.querySelector<HTMLElement>('[data-v3-selection-session="material"] .aicrm-material-picker__head p');
+  if (hint) hint.textContent = '素材库图片仅在确认后应用；上传或外部图片请在页面原图列表中管理。';
+}
+
+productController.pickCommerceImages = function (kind) {
+  const controller = this;
+  void productMaterialAdapterReady.then(async () => {
+    const picker = (window as ProductMaterialPickerWindow).AICRMMaterialPicker;
+    if (!picker) throw new Error('页面素材选择组件尚未就绪，请稍后重试。');
+    const current = controller.currentCommerceImageUrls(kind);
+    const selectedRecords = (await Promise.all(current.map(verifiedProductInitialMaterial))).flatMap((record) => record ? [record] : []);
+    const selectedIds = [...new Set(selectedRecords.map((item) => item.library_id))];
+    const protectedCount = current.length - selectedRecords.length;
+    const availableSlots = 10 - protectedCount;
+    if (availableSlots < 1) {
+      throw new Error('当前商品已有 10 张非素材库图片；请先用页面中的移除按钮释放名额。');
+    }
+    picker.open({
+      type: 'image', title: kind === 'product' ? '选择商品页面素材' : '选择周期商品页面素材',
+      selectedIds, selectedRecords, limit: availableSlots,
+      async onCommit(result) {
+        const urls = mergeProtectedProductURLs(current, result.selected);
+        if (urls.length > 10) throw new Error('页面素材最多 10 张；未改动当前商品草稿。');
+        controller.setCommerceImageUrls(kind, urls);
+      },
+      onCancel() { /* the shared session cancels its temporary draft only */ },
+    });
+    describeProductPicker();
+  }).catch((error) => {
+    // The frozen controller has not touched its draft yet. Report a scoped
+    // failure instead of opening its older picker with a partial callback.
+    showMessage(error instanceof Error ? error.message : '页面素材选择器暂时不可用，请稍后重试。');
+  });
 };
 const donorGotoProduct = productController.goto;
 productController.goto = function (page, query = '') {
