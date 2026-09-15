@@ -169,7 +169,13 @@ function createBridge(customerID, priorSession = [], options = {}) {
           }
           if (method === "sendChatMessage") {
             sendInvocations += 1;
-            queueMicrotask(() => callback({ err_msg: options.sdkSuccess ? "sendChatMessage:ok" : "sendChatMessage:fail" }));
+            queueMicrotask(() => {
+              callback({ err_msg: options.sdkSuccess ? "sendChatMessage:ok" : "sendChatMessage:fail" });
+              // This deliberately runs after the SDK callback but before the
+              // awaiting send continuation. A context refresh here must not
+              // prevent the accepted intent from recording its original grant.
+              options.afterSendCallback?.(window);
+            });
             return;
           }
           queueMicrotask(() => callback({ err_msg: `${method}:fail` }));
@@ -264,6 +270,102 @@ assert.equal(
   "the separate product binding may invoke its own SDK attempt",
 );
 
+// A successful SDK callback belongs to the originally accepted intent, even
+// if the visible WebView switches its current contact immediately afterwards.
+// Completion must use that frozen grant and original scoped token, not the
+// new context controller or a fresh outcome_unknown write.
+let callbackContact = "external-6";
+const callbackOutcomes = [];
+let callbackBridge;
+const callbackBackend = async (input, init = {}) => {
+  const url = new URL(
+    typeof input === "string" ? input : input.url,
+    "https://sidebar.test.invalid",
+  );
+  if (/^\/api\/sidebar\/v2\/send-intents\/\d+\/outcome$/.test(url.pathname)) {
+    const body = JSON.parse(String(init.body || "{}"));
+    callbackOutcomes.push({
+      body,
+      token: requestHeaders(init).get("X-Sidebar-Context-Token"),
+    });
+  }
+  return backend(6)(input, init);
+};
+const callbackFixture = createBridge(6, [], {
+  fetch: callbackBackend,
+  currentContact: () => callbackContact,
+  sdkSuccess: true,
+  afterSendCallback: (window) => {
+    callbackContact = "external-6-refreshed";
+    void window.__AICRMSidebarBridge.retry().catch(() => {});
+  },
+});
+callbackBridge = callbackFixture.bridge;
+await callbackBridge.send({
+  resource_kind: "product",
+  resource_id: "callback-7",
+  product_type: "standard",
+});
+assert.equal(callbackOutcomes.length, 1, "a successful SDK callback records one outcome");
+assert.equal(callbackOutcomes[0].body.outcome, "client_executed", "a refreshed contact cannot downgrade a confirmed SDK callback");
+assert.equal(callbackOutcomes[0].token, "context-6", "completion uses the original accepted context token");
+assert.equal(callbackOutcomes.filter((outcome) => outcome.body.outcome === "outcome_unknown").length, 0, "a successful callback must not add an outcome_unknown receipt");
+
+// A forbidden intent is rejected before client execution. It is a real scoped
+// authorization failure, so exactly one accept request occurs, JSSDK is never
+// called, and the current Host context is revoked.
+let forbiddenIntentRequests = 0;
+const beforeForbiddenIntentSends = sendInvocations;
+const forbiddenIntent = createBridge(9, [], {
+  fetch: async (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url, "https://sidebar.test.invalid");
+    if (url.pathname === "/api/sidebar/v2/send-intents" && String(init.method || "GET").toUpperCase() === "POST") {
+      forbiddenIntentRequests += 1;
+      return response({ code: "invalid_context" }, 403);
+    }
+    return backend(9)(input, init);
+  },
+  sdkSuccess: true,
+});
+await assert.rejects(
+  () => forbiddenIntent.bridge.send({ resource_kind: "product", resource_id: "forbidden-9", product_type: "standard" }),
+  /请求失败|上下文|403/,
+);
+assert.equal(forbiddenIntentRequests, 1, "a forbidden intent makes one real accept request");
+assert.equal(sendInvocations, beforeForbiddenIntentSends, "a forbidden intent never reaches sendChatMessage");
+assert.equal(forbiddenIntent.bridge.contextToken(), "", "a current send-intent 403 must revoke its current context before any later explicit retry");
+
+// An authorization failure while reading a thumbnail is a scoped read failure
+// too. It clears the current trusted context, while a profile CAS conflict is
+// kept as a profile-specific recovery message and leaves the context usable.
+const forbiddenThumbnail = createBridge(7, [], {
+  fetch: async (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url, "https://sidebar.test.invalid");
+    if (url.pathname.endsWith("/variants/thumb_320")) return response({ code: "invalid_context" }, 403);
+    return backend(7)(input, init);
+  },
+});
+const thumbnail = forbiddenThumbnail.dom.window.document.createElement("img");
+await assert.rejects(
+  () => forbiddenThumbnail.bridge.loadThumbnail(thumbnail, "/api/sidebar/v2/materials/77/variants/thumb_320"),
+  /预览不可用/,
+);
+assert.equal(forbiddenThumbnail.bridge.contextToken(), "", "a current thumbnail 403 must revoke its current context before any later explicit retry");
+
+const profileConflict = createBridge(8, [], {
+  fetch: async (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url, "https://sidebar.test.invalid");
+    if (url.pathname === "/api/sidebar/v2/profile" && String(init.method || "GET").toUpperCase() === "PUT") return response({ code: "conflict" }, 409);
+    if (url.pathname === "/api/sidebar/v2/materials") return response({ items: [], total: 0, limit: 5, offset: 0 });
+    return backend(8)(input, init);
+  },
+});
+await assert.rejects(
+  () => profileConflict.bridge.request("/api/sidebar/v2/profile", { method: "PUT", body: JSON.stringify({ source: "stale" }) }),
+  /客户资料已更新/,
+);
+await profileConflict.bridge.request("/api/sidebar/v2/materials?limit=5&offset=0");
+
 // Exercise the actual Host's 202 preparation polling, with no executable
 // grant until the durable material upload has completed.
 function preparingBackend(customerID, onPending) {
@@ -323,7 +425,7 @@ assert.equal(switchingPreparation.keys.length, 1, "a contact switch stops prepar
 assert.equal(sendInvocations, beforeSwitchSends, "a contact switch during polling must never invoke the SDK");
 assert.equal(accepts, beforeSwitchAccepts, "a contact switch cannot create a chat intent from prepared material");
 
-for (const fixture of [first, reloaded, switchedCustomer, preparedCustomer, switchingCustomer])
+for (const fixture of [first, reloaded, switchedCustomer, callbackFixture, forbiddenIntent, forbiddenThumbnail, profileConflict, preparedCustomer, switchingCustomer])
   fixture.dom.window.close();
 console.log(
   "sidebar Host reload, duplicate-send, and customer-scope recovery: PASS",

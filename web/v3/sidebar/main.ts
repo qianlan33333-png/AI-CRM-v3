@@ -158,6 +158,9 @@ export class SidebarBridge {
   private startFlight: Promise<void> | null = null;
   private refreshFlight: Promise<void> | null = null;
   private contextGeneration = 0;
+  // This is an opaque, in-memory UI stamp. It deliberately exposes neither a
+  // context bearer token nor an external identity to the standard overlay.
+  private contextIdentityStamp = "";
   private contextController = new AbortController();
   private contextNeedsValidation = false;
   private eventsBound = false;
@@ -175,6 +178,7 @@ export class SidebarBridge {
   private regularJSSDKIdentity: { corpID: string; agentID: string; url: string } | null = null;
 
   contextToken(): string { return this.token; }
+  contextIdentity(): string { return this.contextIdentityStamp; }
 
   async start(): Promise<void> {
     this.bindContextEvents();
@@ -247,6 +251,7 @@ export class SidebarBridge {
     this.token = "";
     this.externalUserID = "";
     this.customerID = "";
+    this.contextIdentityStamp = "";
     this.profile = {};
     this.profileVersion = 0;
     this.contextNeedsValidation = false;
@@ -302,6 +307,7 @@ export class SidebarBridge {
     this.externalUserID = externalUserID;
     this.customerID = String(customerID);
     this.token = String(bootstrap.context_token);
+    this.contextIdentityStamp = idempotency("sidebar-context");
     this.rememberWorkbench(bootstrap.workbench || {});
     this.contextNeedsValidation = false;
   }
@@ -548,7 +554,14 @@ export class SidebarBridge {
 
   private async scopedForSend(path: string, options: RequestOptions, scope: SendScope): Promise<Json> {
     const { timeoutMs: _timeout, retryCount: _retry, retryDelayMs: _delay, signal, ...init } = options;
-    const payload = await this.raw(path, { ...init, signal: anySignal([signal ?? undefined, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": scope.token, ...(init.headers || {}) } });
+    let payload: Json;
+    try {
+      payload = await this.raw(path, { ...init, signal: anySignal([signal ?? undefined, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": scope.token, ...(init.headers || {}) } });
+    } catch (error) {
+      const status = errorStatus(error);
+      if ((status === 401 || status === 403) && scope.generation === this.contextGeneration && scope.token === this.token) this.invalidateContext();
+      throw error;
+    }
     if (scope.generation !== this.contextGeneration || scope.token !== this.token) throw failure("发送期间客户上下文已变化，已停止发送。");
     return payload;
   }
@@ -705,19 +718,28 @@ export class SidebarBridge {
     await this.start();
     const generation = this.contextGeneration;
     const token = this.token;
-    options.onState?.("loading");
-    const url = new URL(input, window.location.origin);
-    const response = await fetch(url.pathname + url.search, { cache: "no-store", signal: anySignal([options.signal, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": token } });
-    if (!response.ok) throw failure("预览不可用。", response.status);
-    this.assertGeneration(generation);
-    const objectURL = URL.createObjectURL(await response.blob());
-    this.assertGeneration(generation);
-    const prior = image.dataset.sidebarBlobURL;
-    if (prior) URL.revokeObjectURL(prior);
-    image.dataset.sidebarBlobURL = objectURL;
-    image.src = objectURL;
-    image.dataset.materialPreview = "ready";
-    options.onState?.("ready");
+    try {
+      options.onState?.("loading");
+      const url = new URL(input, window.location.origin);
+      const response = await fetch(url.pathname + url.search, { cache: "no-store", signal: anySignal([options.signal, this.contextController.signal]), headers: { "X-Sidebar-Context-Token": token } });
+      if (!response.ok) throw failure("预览不可用。", response.status);
+      this.assertGeneration(generation);
+      const objectURL = URL.createObjectURL(await response.blob());
+      this.assertGeneration(generation);
+      const prior = image.dataset.sidebarBlobURL;
+      if (prior) URL.revokeObjectURL(prior);
+      image.dataset.sidebarBlobURL = objectURL;
+      image.src = objectURL;
+      image.dataset.materialPreview = "ready";
+      options.onState?.("ready");
+    } catch (error) {
+      // A thumbnail is still a scoped customer read. Its authorization failure
+      // must clear the same context as a section read, but a late failure from
+      // an earlier context must never revoke the current customer.
+      const status = errorStatus(error);
+      if ((status === 401 || status === 403) && generation === this.contextGeneration && token === this.token) this.invalidateContext();
+      throw error;
+    }
   }
 
   private rememberWorkbench(workbench: Json): void {
@@ -746,7 +768,16 @@ export class SidebarBridge {
     let donor: Json = {};
     try { donor = options.body ? JSON.parse(String(options.body)) : {}; } catch { throw failure("画像保存请求无效。"); }
     const body = { display_name: "", gender: 0, corp_name: "", expected_version: 0, expected_profile_version: this.profileVersion, source: String(donor.source ?? ""), industry: String(donor.industry ?? ""), industry_description: String(donor.industry_description ?? ""), needs_blockers_followup: String(donor.needs_blockers_followup ?? "") };
-    const updated = await this.scoped("/api/sidebar/v2/profile", { method: "PUT", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency("sidebar-profile") }, body: JSON.stringify(body) });
+    let updated: Json;
+    try {
+      updated = await this.scoped("/api/sidebar/v2/profile", { method: "PUT", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency("sidebar-profile") }, body: JSON.stringify(body) });
+    } catch (error) {
+      // The profile endpoint uses its own optimistic version. Keep that
+      // recoverable user message local to this write; other 409 contracts keep
+      // their existing owner-defined semantics.
+      if (errorStatus(error) === 409) throw failure("客户资料已更新，请重新打开侧边栏后再编辑。", 409, (error as { payload?: Json }).payload);
+      throw error;
+    }
     const profile = updated.customer || updated.profile || {};
     this.profile = profile;
     this.profileVersion = Number(profile.profile_version || this.profileVersion);
@@ -895,8 +926,12 @@ function start(): void {
     const retry = document.createElement("button");
     retry.type = "button";
     retry.className = "btn primary";
+    retry.dataset.v3SidebarRetryContext = "";
     retry.textContent = "重新打开侧边栏";
-    retry.addEventListener("click", () => window.location.reload());
+    retry.addEventListener("click", () => {
+      retry.disabled = true;
+      window.dispatchEvent(new CustomEvent("aicrm-sidebar-context-retry-requested"));
+    });
     panel.append(status, retry);
     content.replaceChildren(panel);
   };

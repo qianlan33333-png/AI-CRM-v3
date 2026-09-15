@@ -378,22 +378,41 @@ try {
   await captureScreenshot(cdp, "materials-forbidden-420");
   materialFaults.delete("Chromium");
 
-  // A 403 from the old signed context must not revoke the freshly renewed
-  // context. The request stays read-only and only checks the bridge boundary.
+  // Retry in this same document. The Host's invalidation recovery is not a
+  // navigation: it must establish a new signed scope, restore the phone
+  // controls, and then permit a fresh panel fetch.
+  const sameDocumentLocation = await evaluate(cdp, "location.href");
+  await evaluate(cdp, 'document.querySelector("[data-v3-sidebar-retry-context]")?.click(); true');
+  await waitFor(cdp, 'document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext==="ready" && Boolean(document.querySelector("#tabs button[data-tab=materials]:not([disabled])")) && !document.querySelector("#change-mobile-button")?.disabled', "same-document context retry did not recover the trusted sidebar");
+  const retryLocation = await evaluate(cdp, "location.href");
+  if (retryLocation !== sameDocumentLocation) throw new Error("sidebar context retry unexpectedly navigated the document");
+  const mobileRecovered = JSON.parse(await evaluate(cdp, 'JSON.stringify((()=>{document.querySelector("#change-mobile-button")?.click();return {modal:!document.querySelector("#mobile-modal")?.classList.contains("hidden"),inputDisabled:Boolean(document.querySelector("#mobile-input")?.disabled),confirmDisabled:Boolean(document.querySelector("#confirm-mobile-button")?.disabled)} })())'));
+  if (!mobileRecovered.modal || mobileRecovered.inputDisabled || mobileRecovered.confirmDisabled) throw new Error("same-document retry did not recover mobile controls " + JSON.stringify(mobileRecovered));
+  await evaluate(cdp, 'document.querySelector("#close-mobile-modal")?.click(); true');
+  await evaluate(cdp, 'document.querySelector("#tabs button[data-tab=materials]")?.click(); true');
+  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5', "same-document retry did not load fresh materials");
+
+  // A delayed 403 from an old panel request clears that old signed scope. Its
+  // exact promise may settle after the cache map has been reset, but a
+  // same-document retry and new material read must stay ready and must not be
+  // overwritten by the stale response.
   const staleContextStart = requestRecords.length;
   materialFaults.set("old-context", { status: 403, delayMs: 240 });
-  await cdp.call("Page.navigate", { url: `${baseURL}/sidebar/bind-mobile?sidebar_case=stale_context` });
-  await waitFor(cdp, 'Boolean(document.querySelector("#tabs button[data-tab=materials]:not([disabled])"))', "stale context fixture did not re-establish a trusted sidebar");
-  await evaluate(cdp, 'document.querySelector("#tabs button[data-tab=materials]")?.click(); true');
-  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5', "stale context materials did not load");
   await evaluate(cdp, '(()=>{const input=document.querySelector("[data-material-search-input]");input.value="old-context";document.querySelector("[data-material-search-form]").requestSubmit();return true})()');
   for (let attempt = 0; attempt < 80 && !requestRecords.slice(staleContextStart).some((record) => new URL(record.url).pathname === "/api/sidebar/v2/materials" && new URL(record.url).searchParams.get("q") === "old-context"); attempt += 1) await delay(50);
   if (!requestRecords.slice(staleContextStart).some((record) => new URL(record.url).pathname === "/api/sidebar/v2/materials" && new URL(record.url).searchParams.get("q") === "old-context")) throw new Error("old-context request did not start");
-  await evaluate(cdp, 'window.__AICRMSidebarBridge.retry().then(()=>true)');
-  await delay(320);
-  const freshAfterOld403 = await evaluate(cdp, 'window.__AICRMSidebarBridge.request("/api/sidebar/v2/materials?limit=5&offset=0&q=Chromium").then(()=>true).catch(()=>false)');
-  if (!freshAfterOld403) throw new Error("stale 403 revoked the renewed sidebar context");
+  await waitFor(cdp, 'document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext==="invalid" && Boolean(document.querySelector("[data-v3-sidebar-retry-context]"))', "old-context 403 did not clear its current sidebar context");
+  await evaluate(cdp, 'document.querySelector("[data-v3-sidebar-retry-context]")?.click(); true');
+  await waitFor(cdp, 'document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext==="ready" && Boolean(document.querySelector("#tabs button[data-tab=materials]:not([disabled])"))', "same-document retry after old response did not establish a new context");
   materialFaults.delete("old-context");
+  const freshReadStart = requestRecords.length;
+  await evaluate(cdp, 'document.querySelector("#tabs button[data-tab=materials]")?.click(); true');
+  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5 && document.querySelector("[data-material-search-input]")?.value===""', "new fetch after stale context retry did not render the fresh panel");
+  const freshReads = requestRecords.slice(freshReadStart).filter((record) => new URL(record.url).pathname === "/api/sidebar/v2/materials");
+  if (freshReads.length !== 1) throw new Error("same-document retry must issue one new material request " + JSON.stringify(freshReads));
+  await delay(320);
+  const freshAfterOld403 = JSON.parse(await evaluate(cdp, 'JSON.stringify({context:document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext,cards:document.querySelectorAll("[data-material-card]").length,query:document.querySelector("[data-material-search-input]")?.value||""})'));
+  if (freshAfterOld403.context !== "ready" || freshAfterOld403.cards !== 5 || freshAfterOld403.query !== "") throw new Error("old response polluted the renewed panel " + JSON.stringify(freshAfterOld403));
 
   if (!sidebarCSP.includes("img-src 'self' data: blob:")) throw new Error("sidebar CSP did not permit its scoped thumbnail blob URL");
   if (![...successfulResources].some((pathname) => /^\/sidebar-assets\/sidebarHost-/.test(pathname)) || ![...successfulResources].some((pathname) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(pathname)) || ![...successfulResources].some((pathname) => /^\/sidebar-assets\/sidebarImageResourceLoader-/.test(pathname)) || !successfulResources.has("/api/sidebar/v2/bootstrap") || !successfulResources.has("/api/sidebar/v2/materials") || ![...successfulResources].some((pathname) => /\/variants\/thumb_320$/.test(pathname))) throw new Error("sidebar Host/standard overlay resources did not use the actual scoped thumbnail route");

@@ -88,6 +88,7 @@ js = js.replace(sidebarContextInvalidationAnchor, `  // The trusted Host owns th
   // repopulate a newly cleared customer surface.
   function clearV3SensitiveSidebarState() {
     if (!state.v3TrustedContextRetrying) state.v3TrustedBootGeneration = Number(state.v3TrustedBootGeneration || 0) + 1;
+    state.v3PanelRequestEpoch = Number(state.v3PanelRequestEpoch || 0) + 1;
     state.materialRequestVersion = Number(state.materialRequestVersion || 0) + 1;
     if (state.materialSearchController) state.materialSearchController.abort();
     if (state.materialImageController) state.materialImageController.abort();
@@ -118,12 +119,72 @@ js = js.replace(sidebarContextInvalidationAnchor, `  // The trusted Host owns th
     state.bind_by_userid = "";
     state.activeTab = "profile";
     state.status = WORKBENCH_STATES.context_missing;
+    state.v3MobileFlightEpoch = Number(state.v3MobileFlightEpoch || 0) + 1;
+    state.v3MobileRequestID = Number(state.v3MobileRequestID || 0) + 1;
+    state.v3MobileRequestInFlight = 0;
+    state.v3MobileModalEpoch = 0;
+    state.v3MobileModalIdentity = "";
+    state.v3TrustedContextIdentity = "";
+    root.dataset.v3SidebarContext = "invalid";
+    // Context invalidation is destructive for all customer-facing controls.
+    // The explicit retry path re-enables these only after it has loaded a new
+    // signed context and its new workbench.
+    if (mobileModal) mobileModal.classList.add("hidden");
+    if (mobileInput) {
+      mobileInput.value = "";
+      mobileInput.disabled = true;
+    }
+    if (mobileStatus) {
+      mobileStatus.textContent = "";
+      mobileStatus.className = "status";
+    }
+    if (confirmMobileButton) confirmMobileButton.disabled = true;
+    const changeMobileButton = document.getElementById("change-mobile-button");
+    if (changeMobileButton) changeMobileButton.disabled = true;
     destroyMaterialResources();
   }
   window.addEventListener("aicrm-sidebar-context-invalidated", clearV3SensitiveSidebarState);
+  window.addEventListener("aicrm-sidebar-context-retry-requested", function () {
+    if (root.dataset.v3SidebarContext !== "invalid") return;
+    void boot({ forceSidebarOAuth: true });
+  });
 
   function endpoint(name) {
 `);
+
+// A signed context invalidation must also invalidate any in-flight donor panel
+// request. The donor cache key is deliberately stable within the overlay, so a
+// late promise from the old context needs an explicit epoch and exact-promise
+// cleanup guard before a same-document retry can reuse that key.
+replaceRange("  async function requestPanelJson(tab, url, options) {", "  function absoluteUrl(path) {", `  async function requestPanelJson(tab, url, options) {
+    const cached = readPanelCache(tab, url);
+    if (cached) return cached;
+    const key = panelCacheKey(tab, url);
+    const pending = state.panelRequests.get(key);
+    if (pending) return pending;
+    const requestEpoch = Number(state.v3PanelRequestEpoch || 0);
+    const request = requestJson(url, {
+      timeoutMs: PANEL_TIMEOUT_MS[tab] || DEFAULT_TIMEOUT_MS,
+      retryCount: 0,
+      ...(options || {}),
+    })
+      .then((payload) => {
+        if (requestEpoch !== Number(state.v3PanelRequestEpoch || 0) || root.dataset.v3SidebarContext === "invalid" || state.panelRequests.get(key) !== request) {
+          const error = new Error("侧边栏客户上下文已切换，已拒绝过期响应。");
+          error.name = "AbortError";
+          throw error;
+        }
+        writePanelCache(tab, url, payload);
+        return payload;
+      })
+      .finally(() => {
+        if (state.panelRequests.get(key) === request) state.panelRequests.delete(key);
+      });
+    state.panelRequests.set(key, request);
+    return request;
+  }
+
+`, "panel request context epoch");
 
 // The V3 bridge performs the exact current JSSDK/OAuth/contact sequence. The
 // donor remains responsible only for standard UI state and rendering.
@@ -147,10 +208,25 @@ replaceRange("  async function resolveContextFromQuery() {", "  tabsNode.addEven
         finally { state.v3TrustedContextRetrying = false; }
       } else await bridge.start();
       if (state.v3TrustedBootGeneration !== generation) return;
+      // The bridge has established a fresh signed scope. Permit only its
+      // current generation to repopulate the donor shell; old promises remain
+      // rejected by the epoch captured at request creation.
+      root.dataset.v3SidebarContext = "ready";
       // The overlay never receives or renders an external identifier. This
-      // stable local marker keeps its donor cache keys isolated per reload.
-      setExternalUserid("v3-trusted-context");
+      // opaque, token-free Host stamp keeps its donor cache keys and every
+      // mobile form flight isolated across same-document context renewals.
+      const contextIdentity = typeof bridge.contextIdentity === "function" ? String(bridge.contextIdentity() || "") : "";
+      if (!contextIdentity) throw new Error("侧边栏可信上下文未就绪");
+      state.v3TrustedContextIdentity = contextIdentity;
+      setExternalUserid("v3-scope:" + contextIdentity);
       await loadWorkbench();
+      if (state.v3TrustedBootGeneration !== generation || root.dataset.v3SidebarContext !== "ready") return;
+      if (mobileInput) mobileInput.disabled = false;
+      if (confirmMobileButton) confirmMobileButton.disabled = Boolean(state.v3MobileRequestInFlight);
+      if (mobileStatus) {
+        mobileStatus.textContent = "";
+        mobileStatus.className = "status";
+      }
     } catch (error) {
       if (state.v3TrustedBootGeneration !== generation) return;
       setWorkbenchState(WORKBENCH_STATES.error, { message: error.message || String(error) });
@@ -404,27 +480,76 @@ replaceRange("  function periodicOrderCards() {", "  function renderPeriodicOrde
   }
 
 `, "owner periodic render");
+// The phone dialog is a customer-scoped command. Opening and saving it keeps a
+// private epoch, opaque context stamp, and request ID so a late completion from
+// an invalidated customer cannot unlock or write into a newly opened dialog.
+replaceRange("  function openMobileModal() {", "  async function saveMobile() {", `  function currentV3MobileFlight() {
+    return {
+      epoch: Number(state.v3MobileFlightEpoch || 0),
+      identity: String(state.v3TrustedContextIdentity || ""),
+    };
+  }
+
+  function isCurrentV3MobileFlight(flight, requestID) {
+    return root.dataset.v3SidebarContext === "ready" &&
+      Boolean(flight.identity) &&
+      flight.epoch === Number(state.v3MobileFlightEpoch || 0) &&
+      flight.identity === String(state.v3TrustedContextIdentity || "") &&
+      (!requestID || requestID === Number(state.v3MobileRequestID || 0));
+  }
+
+  function openMobileModal() {
+    const flight = currentV3MobileFlight();
+    if (!isCurrentV3MobileFlight(flight)) {
+      showToast("当前客户上下文已失效，请重新打开侧边栏后重试。", "error");
+      return;
+    }
+    state.v3MobileModalEpoch = flight.epoch;
+    state.v3MobileModalIdentity = flight.identity;
+    mobileInput.value = ((state.workbench || {}).customer || {}).mobile || "";
+    mobileInput.disabled = false;
+    mobileStatus.textContent = "";
+    mobileStatus.className = "status";
+    confirmMobileButton.disabled = Boolean(state.v3MobileRequestInFlight);
+    mobileModal.classList.remove("hidden");
+    mobileInput.focus();
+  }
+
+  function closeMobileModal() {
+    mobileModal.classList.add("hidden");
+  }
+
+`, "scoped mobile dialog");
 replaceRange("  async function saveMobile() {", "  async function boot(options) {", `  async function saveMobile() {
+    const flight = currentV3MobileFlight();
+    if (!isCurrentV3MobileFlight(flight) || state.v3MobileModalEpoch !== flight.epoch || state.v3MobileModalIdentity !== flight.identity) return;
+    if (state.v3MobileRequestInFlight) return;
+    const requestID = Number(state.v3MobileRequestID || 0) + 1;
+    state.v3MobileRequestID = requestID;
+    state.v3MobileRequestInFlight = requestID;
+    const mobile = mobileInput.value;
+    const customer = (state.workbench || {}).customer || {};
+    const bindingInput = {
+      external_userid: state.external_userid,
+      owner_userid: state.owner_userid,
+      bind_by_userid: state.bind_by_userid || state.owner_userid,
+      mobile,
+      force_rebind: Boolean(customer.mobile_bound !== undefined ? customer.mobile_bound : customer.is_bound && customer.mobile),
+    };
     confirmMobileButton.disabled = true;
     mobileStatus.textContent = "正在保存…";
     try {
-      const customer = (state.workbench || {}).customer || {};
       if (customer.owner_pending) {
         throw new Error("请先从企微侧边栏重新打开以确认当前员工身份");
       }
       const payload = await requestJson(endpoint("bindMobileUrl"), {
         method: "POST",
-        body: JSON.stringify({
-          external_userid: state.external_userid,
-          owner_userid: state.owner_userid,
-          bind_by_userid: state.bind_by_userid || state.owner_userid,
-          mobile: mobileInput.value,
-          force_rebind: Boolean(customer.mobile_bound !== undefined ? customer.mobile_bound : customer.is_bound && customer.mobile),
-        }),
+        body: JSON.stringify(bindingInput),
       });
+      if (!isCurrentV3MobileFlight(flight, requestID)) return;
       const binding = payload.binding || payload;
       const assurance = String(binding.phone_assurance || "declared").toLowerCase();
-      state.workbench.customer.mobile = binding.mobile || mobileInput.value;
+      state.workbench.customer.mobile = binding.mobile || mobile;
       state.workbench.customer.is_bound = true;
       state.workbench.customer.mobile_bound = assurance === "verified";
       state.workbench.customer.phone_assurance = assurance;
@@ -432,11 +557,15 @@ replaceRange("  async function saveMobile() {", "  async function boot(options) 
       closeMobileModal();
       showToast(assurance === "verified" ? "手机号已验证" : "手机号已声明");
     } catch (error) {
+      if (!isCurrentV3MobileFlight(flight, requestID)) return;
       mobileStatus.textContent = error.message || "保存失败";
       mobileStatus.className = "status error";
       showToast(error.message || "保存失败", "error");
     } finally {
-      confirmMobileButton.disabled = false;
+      if (isCurrentV3MobileFlight(flight, requestID)) {
+        state.v3MobileRequestInFlight = 0;
+        confirmMobileButton.disabled = false;
+      }
     }
   }
 
