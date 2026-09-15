@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,8 +16,14 @@ import (
 	"time"
 
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	overviewapp "github.com/qianlan33333-png/AI-CRM-v3/internal/overview/app"
+	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 // OneID decision: the fixture inserts one already-verified canonical identity
@@ -105,6 +112,57 @@ func TestPostgreSQLAdminOverviewCanonicalPayersFollowCurrentMerge(t *testing.T) 
 	}
 	if persistedA != payerA || persistedB != payerB {
 		t.Fatalf("historical payment payer IDs were rewritten: a=%d b=%d want a=%d b=%d", persistedA, persistedB, payerA, payerB)
+	}
+}
+
+func TestPostgreSQLAdminOverviewCanonicalPayersKeepOneSnapshotAcrossConcurrentMerge(t *testing.T) {
+	fixture := newAdminOverviewFixture(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	payerA := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	payerB := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	insertAdminOverviewPayment(t, fixture.ctx, fixture.application, now, "snapshot-a", &payerA, 100)
+	insertAdminOverviewPayment(t, fixture.ctx, fixture.application, now, "snapshot-b", &payerB, 200)
+	readUoW, err := platformpostgres.NewReadOnlyRepeatableReadUnitOfWork(fixture.application.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := false
+	store := mergeAfterPaidOverviewStore{repository: paymentstore.NewPostgreSQL(), afterFirstPaidRead: func() error {
+		if merged {
+			return errors.New("fixture merge repeated")
+		}
+		merged = true
+		_, mergeErr := fixture.application.pool.Native().Exec(fixture.ctx, `UPDATE customers
+			SET status='merged',merged_into_customer_id=$2,merged_at=$3,updated_at=$3
+			WHERE id=$1`, payerA, payerB, now)
+		return mergeErr
+	}}
+	reader, err := paymentapp.NewOverviewReader(readUoW, store, identityquery.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := paymentport.OverviewWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
+	first, err := reader.ReadPaidOverview(fixture.ctx, window)
+	if err != nil || !merged || first.OrderCount != 3 || first.DistinctCanonicalPayers != 3 {
+		t.Fatalf("repeatable-read snapshot result=%+v merged=%t err=%v", first, merged, err)
+	}
+	currentReader, err := paymentapp.NewOverviewReader(readUoW, paymentstore.NewPostgreSQL(), identityquery.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := currentReader.ReadPaidOverview(fixture.ctx, window)
+	if err != nil || current.OrderCount != 3 || current.DistinctCanonicalPayers != 2 {
+		t.Fatalf("new snapshot result=%+v err=%v", current, err)
+	}
+	var persistedA, persistedB int64
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT payer_customer_id FROM payments WHERE merchant_order_no='M-OVERVIEW-snapshot-a'`).Scan(&persistedA); err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT payer_customer_id FROM payments WHERE merchant_order_no='M-OVERVIEW-snapshot-b'`).Scan(&persistedB); err != nil {
+		t.Fatal(err)
+	}
+	if persistedA != payerA || persistedB != payerB {
+		t.Fatalf("concurrent merge rewrote historical payer facts: a=%d b=%d", persistedA, persistedB)
 	}
 }
 
@@ -291,6 +349,27 @@ func seedAdminOverviewPayerScale(t *testing.T, ctx context.Context, application 
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+type mergeAfterPaidOverviewStore struct {
+	repository         *paymentstore.Repository
+	afterFirstPaidRead func() error
+}
+
+func (store mergeAfterPaidOverviewStore) ReadPaidOverview(ctx context.Context, window paymentport.OverviewWindow) (paymentport.PaidOverview, error) {
+	facts, err := store.repository.ReadPaidOverview(ctx, window)
+	if err != nil || store.afterFirstPaidRead == nil {
+		return facts, err
+	}
+	return facts, store.afterFirstPaidRead()
+}
+
+func (store mergeAfterPaidOverviewStore) ReadPaidOverviewPayerPage(ctx context.Context, window paymentport.OverviewWindow, after customerdomain.CustomerID, limit int) (paymentport.PaidOverviewPayerPage, error) {
+	return store.repository.ReadPaidOverviewPayerPage(ctx, window, after, limit)
+}
+
+func (store mergeAfterPaidOverviewStore) ReadRefundOverview(ctx context.Context, window paymentport.OverviewWindow) (paymentport.RefundOverview, error) {
+	return store.repository.ReadRefundOverview(ctx, window)
 }
 
 func overviewAuthenticatedGET(t *testing.T, handler http.Handler, session, path string) *httptest.ResponseRecorder {

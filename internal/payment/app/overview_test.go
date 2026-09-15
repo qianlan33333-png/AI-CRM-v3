@@ -18,16 +18,17 @@ func (overviewUoWStub) Within(ctx context.Context, callback func(context.Context
 }
 
 type overviewCanonicalStub struct {
-	calls [][]customerdomain.CustomerID
-	roots map[customerdomain.CustomerID]customerdomain.CustomerID
-	err   error
+	calls     [][]customerdomain.CustomerID
+	roots     map[customerdomain.CustomerID]customerdomain.CustomerID
+	err       error
+	errOnCall int
 }
 
 var _ identityport.CanonicalCustomerRootsReader = (*overviewCanonicalStub)(nil)
 
 func (stub *overviewCanonicalStub) CanonicalCustomerRoots(_ context.Context, ids []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerdomain.CustomerID, error) {
 	stub.calls = append(stub.calls, append([]customerdomain.CustomerID{}, ids...))
-	if stub.err != nil {
+	if stub.err != nil && (stub.errOnCall == 0 || len(stub.calls) == stub.errOnCall) {
 		return nil, stub.err
 	}
 	result := make(map[customerdomain.CustomerID]customerdomain.CustomerID, len(ids))
@@ -93,6 +94,28 @@ func TestOverviewReaderDoesNotReturnPartialCanonicalPayerCount(t *testing.T) {
 	result, readErr := reader.ReadPaidOverview(context.Background(), paymentport.OverviewWindow{Start: time.Now().UTC().Add(-time.Hour), End: time.Now().UTC()})
 	if !errors.Is(readErr, paymentport.ErrCanonicalPayerUnavailable) || result.DistinctCanonicalPayers != 0 {
 		t.Fatalf("partial canonical payer result=%+v error=%v", result, readErr)
+	}
+}
+
+func TestOverviewReaderDoesNotReturnCanonicalPayerCountWhenSecondPageFails(t *testing.T) {
+	first := make([]customerdomain.CustomerID, paidOverviewPayerPageLimit)
+	roots := make(map[customerdomain.CustomerID]customerdomain.CustomerID, paidOverviewPayerPageLimit)
+	for index := range first {
+		first[index] = customerdomain.CustomerID(index + 1)
+		roots[first[index]] = customerdomain.CustomerID(index + 1)
+	}
+	last := customerdomain.CustomerID(paidOverviewPayerPageLimit + 1)
+	canonical := &overviewCanonicalStub{roots: roots, err: errors.New("second root page unavailable"), errOnCall: 2}
+	reader, err := NewOverviewReader(overviewUoWStub{}, overviewStoreStub{paid: paymentport.PaidOverview{OrderCount: int64(paidOverviewPayerPageLimit + 1)}, pages: map[customerdomain.CustomerID][]customerdomain.CustomerID{
+		0:                              first,
+		customerdomain.CustomerID(500): {last},
+	}}, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, readErr := reader.ReadPaidOverview(context.Background(), paymentport.OverviewWindow{Start: time.Now().UTC().Add(-time.Hour), End: time.Now().UTC()})
+	if !errors.Is(readErr, paymentport.ErrCanonicalPayerUnavailable) || result.DistinctCanonicalPayers != 0 || len(canonical.calls) != 2 || len(canonical.calls[0]) != paidOverviewPayerPageLimit || len(canonical.calls[1]) != 1 {
+		t.Fatalf("partial second-page canonical payer result=%+v error=%v calls=%v", result, readErr, canonical.calls)
 	}
 }
 
