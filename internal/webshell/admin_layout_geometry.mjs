@@ -110,6 +110,7 @@ let child;
 let cdp;
 let failed = false;
 let currentStep = "bootstrap";
+const journeyStartedAt = Date.now();
 const requests = new Map();
 // Keep only same-origin admin requests and responses. Static assets can be
 // numerous across the route matrix and must not evict a later business action
@@ -182,7 +183,9 @@ try {
     }
     await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
   };
-  const captureFailureEvidence = async label => {
+  const diagnosticMessage = error => String(error instanceof Error ? error.message : error || "browser assertion failed")
+    .replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 240);
+  const captureFailureEvidence = async (label, failureReason = "") => {
     const safeLabel = label.replace(/[^A-Za-z0-9_.-]/g, "_");
     let screenshotCaptured = false;
     try {
@@ -193,7 +196,15 @@ try {
     // Geometry and safe route/status diagnostics remain available even if a
     // browser screenshot command itself fails while handling an earlier page
     // error. No response body, credential, or customer data is persisted.
-    let geometry = { path: "unavailable", screenshot_captured: screenshotCaptured, responses: responses.slice(-12), runtime_exceptions: runtimeExceptions.slice(-8) };
+    let geometry = {
+      path: "unavailable",
+      current_step: currentStep,
+      elapsed_ms: Date.now() - journeyStartedAt,
+      failure_reason: diagnosticMessage(failureReason),
+      screenshot_captured: screenshotCaptured,
+      responses: responses.slice(-12),
+      runtime_exceptions: runtimeExceptions.slice(-8),
+    };
     try {
       const measured = await evaluate(cdp, `(() => {
         const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
@@ -202,7 +213,15 @@ try {
         const dom = [document.body, ...document.querySelectorAll('.admin-main-wrap,.admin-sidebar,.admin-topbar,.side,#stage,.order-host-layout,[data-runtime-release-host],[data-open-platform-host],.open-platform-header,.sec-funnel')].filter((node, index, all) => node instanceof Element && all.indexOf(node) === index).slice(0, 20).map(node => ({tag:node.tagName.toLowerCase(),id:token(node.id),classes:Array.from(node.classList).map(token).filter(Boolean).slice(0, 12),visible:visible(node)}));
         return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),static_sidebar:box('.side'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),static_header:box('.open-platform-header'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,dom};
       })()`);
-      geometry = { ...measured, screenshot_captured: screenshotCaptured, responses: responses.slice(-12), runtime_exceptions: runtimeExceptions.slice(-8) };
+      geometry = {
+        ...measured,
+        current_step: currentStep,
+        elapsed_ms: Date.now() - journeyStartedAt,
+        failure_reason: diagnosticMessage(failureReason),
+        screenshot_captured: screenshotCaptured,
+        responses: responses.slice(-12),
+        runtime_exceptions: runtimeExceptions.slice(-8),
+      };
     } catch (_) {}
     await fs.writeFile(path.join(screenshotDirectory, "failure-" + safeLabel + "-geometry.json"), JSON.stringify(geometry), { mode: 0o600 });
   };
@@ -217,8 +236,8 @@ try {
       await assertion();
       if (screenshot) await capture(label);
     } catch (error) {
-      try { await captureFailureEvidence(label); } catch (_) {}
       const message = String(error instanceof Error ? error.message : "geometry assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160);
+      try { await captureFailureEvidence(label, message); } catch (_) {}
       geometryFailures.push(label + ":" + message);
     }
   };
@@ -447,8 +466,8 @@ try {
     await assertLayout("embedded", label, titleSelector);
   };
   const recordRouteFailure = async (label, error) => {
-    try { await captureFailureEvidence(label); } catch (_) {}
     const message = String(error instanceof Error ? error.message : "route assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160);
+    try { await captureFailureEvidence(label, message); } catch (_) {}
     geometryFailures.push(label + ":" + message);
   };
   const clickNavigation = async (pathname, label) => {
@@ -500,6 +519,158 @@ try {
     } catch (error) {
       await recordRouteFailure(label, error);
       return false;
+    }
+  };
+  const assertMaterialWorkspace = async (label, tab, actionLabel) => {
+    await assertLayout("standard", label, ".admin-page-title");
+    const material = await evaluate(cdp, `(() => {
+      const topbar=document.querySelector('.admin-topbar');
+      const stage=document.querySelector('#stage[data-material-library-workspace="true"]');
+      const title=topbar?.querySelector('.admin-page-title');
+      const tabs=Array.from(stage?.querySelectorAll('[data-material-library-tab]') || []);
+      const action=Array.from(topbar?.querySelectorAll('button') || []).find(node => String(node.textContent || '').trim() === ${JSON.stringify(actionLabel)});
+      const visible=node => { const rect=node?.getBoundingClientRect(), style=node ? getComputedStyle(node) : null; return Boolean(node && rect && rect.width > 1 && rect.height > 1 && style?.display !== 'none' && style.visibility !== 'hidden'); };
+      const donorHeaders=Array.from(stage?.querySelectorAll('div[style*="height: 52px"],div[style*="height:52px"]') || []).filter(visible);
+      const identityRows=Array.from(stage?.querySelectorAll('[data-material-library-id]') || []).filter(node => /^[0-9]+$/.test(String(node.dataset.materialLibraryId || '')));
+      const actionBox=action?.getBoundingClientRect();
+      return {title:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,tabs:tabs.map(node => ({tab:node.dataset.materialLibraryTab,current:node.getAttribute('aria-current'),href:node.getAttribute('href')})),action:visible(action),actionBox:actionBox ? {left:Math.round(actionBox.left),right:Math.round(actionBox.right),width:Math.round(actionBox.width),height:Math.round(actionBox.height)} : null,overflow:document.documentElement.scrollWidth > innerWidth + 1,donorHeaders:donorHeaders.length,identityRows:identityRows.length};
+    })()`);
+    const expectedTabs = ['images', 'attachments', 'miniprograms'];
+    const validTabs = material?.tabs?.length === expectedTabs.length && material.tabs.every((item, index) => item.tab === expectedTabs[index] && item.href === `/admin/materials?tab=${expectedTabs[index]}` && (item.tab === tab ? item.current === 'page' : item.current === null));
+    if (!material || material.title !== '素材库' || material.headers !== 1 || !validTabs || !material.action || material.overflow || material.donorHeaders !== 0 || (tab !== 'images' && material.identityRows < 1)) {
+      throw new Error(`${label} material_workspace title_ok=${material?.title === '素材库'} headers=${material?.headers} tabs_ok=${validTabs} action_visible=${material?.action} action_box=${JSON.stringify(material?.actionBox)} overflow=${material?.overflow} donor_headers=${material?.donorHeaders} identity_rows=${material?.identityRows}`);
+    }
+  };
+  const navigateMaterialWorkspace = async (tab, label, actionLabel, ready, ownerPath, requiredText) => {
+    const pathname = `/admin/materials?tab=${tab}`;
+    currentStep = label;
+    try {
+      const requestStart = requestEvents.length;
+      await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === '/admin/materials' && new URLSearchParams(location.search).get('tab') === ${JSON.stringify(tab)} && document.readyState !== 'loading'`, label + ' did not navigate');
+      await waitFor(cdp, ready, label + ' Host did not become ready');
+      const ownerReads = requestEvents.slice(requestStart).filter(value => /^GET \/api\/admin\/(?:image-library|attachment-library|miniprogram-library)$/.test(value));
+      if (!ownerReads.includes(`GET ${ownerPath}`) || ownerReads.some(value => value !== `GET ${ownerPath}`)) {
+        throw new Error(`${label} read a non-active material owner: ${JSON.stringify(ownerReads)}`);
+      }
+      if (requiredText) {
+        await waitFor(cdp, `document.querySelector('#stage')?.textContent?.includes(${JSON.stringify(requiredText)})`, `${label} did not present fixture metadata ${JSON.stringify(requiredText)}`);
+      }
+      await waitForFonts(label);
+      await recordGeometry(label, () => assertMaterialWorkspace(label, tab, actionLabel), false);
+      for (const width of [1280, 1440]) {
+        await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+        await delay(80);
+        await assertMaterialWorkspace(label + `-${width}`, tab, actionLabel);
+        if (tab === 'images') await assertImageDirectory(label + `-${width}`);
+        await capture(`${label}-${width}`);
+      }
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
+  };
+  const assertImageDirectory = async (label) => {
+    const result = await evaluate(cdp, `(() => {
+      const stage=document.querySelector('#stage[data-material-library-workspace="true"]');
+      const table=stage?.querySelector('[data-image-library-directory]');
+      const rows=Array.from(table?.querySelectorAll('tbody [data-image-library-row]') || []);
+      const names=['素材工作台横向缩略图','素材工作台纵向缩略图','素材工作台小尺寸缩略图'];
+      const thumbnails=Array.from(table?.querySelectorAll('[data-image-library-thumbnail] img') || []);
+      const overflow=Boolean(table && table.parentElement && (table.scrollWidth > table.parentElement.clientWidth + 1 || table.getBoundingClientRect().right > table.parentElement.getBoundingClientRect().right + 1));
+      return {rowCount:rows.length,names:names.map(name => stage?.textContent?.includes(name)),objectFits:thumbnails.map(node => getComputedStyle(node).objectFit),overflow};
+    })()`);
+    if (!result || result.rowCount < 3 || result.names.some(value => !value) || result.objectFits.length < 3 || result.objectFits.some(value => value !== 'contain') || result.overflow) {
+      throw new Error(`${label} compact image directory geometry invalid: ${JSON.stringify(result)}`);
+    }
+  };
+  const assertMaterialAlias = async (pathname, tab, ready, label) => {
+    currentStep = label;
+    try {
+      await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === '/admin/materials' && new URLSearchParams(location.search).get('tab') === ${JSON.stringify(tab)} && document.readyState !== 'loading'`, label + ' did not redirect to the selected workspace tab');
+      await waitFor(cdp, ready, label + ' material Host did not become ready');
+      await assertMaterialWorkspace(label, tab, tab === 'images' ? '上传图片' : tab === 'attachments' ? '上传附件' : '新建小程序卡片');
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
+  };
+  const assertMaterialHeaderActionOpens = async (owner, actionLabel, expectedInput, label) => {
+    try {
+      const opened = await evaluate(cdp, `(() => {
+        const action=Array.from(document.querySelectorAll('[data-page-header-actions=${JSON.stringify(owner)}] button')).find(node => String(node.textContent || '').trim() === ${JSON.stringify(actionLabel)});
+        if (!(action instanceof HTMLButtonElement) || action.disabled) return false;
+        action.click(); return true;
+      })()`);
+      if (!opened) throw new Error(label + ' topbar action was not actionable');
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(expectedInput)}) instanceof HTMLInputElement`, label + ' original modal did not open');
+      const closed = await evaluate(cdp, `(() => {
+        const input=document.querySelector(${JSON.stringify(expectedInput)});
+        const modal=input?.closest('div[style*="position: fixed"],div[style*="position:fixed"]');
+        const cancel=Array.from(modal?.querySelectorAll('button') || []).find(node => String(node.textContent || '').trim() === '取消');
+        if (!(cancel instanceof HTMLButtonElement)) return false;
+        cancel.click(); return true;
+      })()`);
+      if (!closed) throw new Error(label + ' modal could not be cancelled without a write');
+      await waitFor(cdp, `!document.querySelector(${JSON.stringify(expectedInput)})`, label + ' modal did not close after cancellation');
+    } catch (error) {
+      await recordRouteFailure(label, error);
+    }
+  };
+  const assertMiniProgramCommittedSearchAndSecondPage = async () => {
+    currentStep = 'materials-miniprograms-search-pagination';
+    try {
+      const ownerReadCount = () => requestEvents.filter(value => value === 'GET /api/admin/miniprogram-library').length;
+      const beforeDraft = ownerReadCount();
+      const drafted = await evaluate(cdp, `(() => {
+        const input=document.querySelector('#fMpQuery');
+        const stage=document.querySelector('#stage');
+        if (!(input instanceof HTMLInputElement) || !(stage instanceof HTMLElement)) return false;
+        input.focus(); input.value='输入法草稿';
+        input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+        input.dispatchEvent(new Event('input',{bubbles:true}));
+        stage.append(document.createElement('aside'));
+        return true;
+      })()`);
+      if (!drafted) throw new Error('mini-program search input was unavailable');
+      await delay(100);
+      if (ownerReadCount() !== beforeDraft) throw new Error('an IME draft or unrelated DOM mutation issued a mini-program read');
+      const committed = await evaluate(cdp, `(() => {
+        const input=document.querySelector('#fMpQuery');
+        if (!(input instanceof HTMLInputElement)) return false;
+        input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));
+        input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter'}));
+        return true;
+      })()`);
+      if (!committed) throw new Error('mini-program IME candidate input was unavailable');
+      await delay(50);
+      if (ownerReadCount() !== beforeDraft) throw new Error('an IME candidate Enter issued a mini-program read');
+      await evaluate(cdp, `(() => {
+        const input=document.querySelector('#fMpQuery');
+        if (!(input instanceof HTMLInputElement)) return false;
+        input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter'})); return true;
+      })()`);
+      await waitFor(cdp, `document.querySelector('#stage')?.textContent?.includes('当前条件下没有小程序素材。')`, 'explicit committed mini-program search did not complete');
+      const beforeContentChange = ownerReadCount();
+      await evaluate(cdp, `window.dispatchEvent(new Event('aicrm:media-content-changed'))`);
+      for (let attempt = 0; attempt < 40 && ownerReadCount() <= beforeContentChange; attempt += 1) await delay(50);
+      if (ownerReadCount() <= beforeContentChange) throw new Error('saved-content event did not refresh the current mini-program page');
+      const reset = await evaluate(cdp, `(() => { const button=document.querySelector('#mpReset'); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`);
+      if (!reset) throw new Error('mini-program reset was unavailable');
+      await waitFor(cdp, `document.querySelector('#stage')?.textContent?.includes('wx_material_layout') && document.querySelector('#mpNext') instanceof HTMLButtonElement`, 'mini-program reset did not restore the owner page');
+      const next = await evaluate(cdp, `(() => { const button=document.querySelector('#mpNext'); if (!(button instanceof HTMLButtonElement) || button.disabled) return false; button.click(); return true; })()`);
+      if (!next) throw new Error('mini-program second-page action was unavailable');
+      await waitFor(cdp, `document.querySelector('#stage')?.textContent?.includes('wx_material_page_01') && /51\\s*[-–—]\\s*51/.test(document.querySelector('#stage')?.textContent || '')`, 'mini-program second page did not render its owner row');
+      await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: 1280, screenHeight: 900 });
+      await assertMaterialWorkspace('materials-miniprograms-page-2-1280', 'miniprograms', '新建小程序卡片');
+      await capture('materials-miniprograms-page-2-1280');
+      await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+    } catch (error) {
+      await recordRouteFailure('materials-miniprograms-search-pagination', error);
     }
   };
   const assertGroupOpsLayout = async label => {
@@ -817,9 +988,18 @@ try {
   await assertProductDimensions('sp');
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
-  await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-title] h1'))", "image-library", "embedded", imageLibraryHostTitle, true, true);
-  await navigate("/admin/miniprogram-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "miniprogram-library", "embedded", frozenListToolbarTitle, true, true);
-  await navigate("/admin/attachment-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "attachment-library", "embedded", embeddedTitle, true, true);
+  await navigateMaterialWorkspace('images', 'materials-images', '上传图片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-cards]'))", '/api/admin/image-library', '素材工作台横向缩略图');
+  await navigateMaterialWorkspace('miniprograms', 'materials-miniprograms', '新建小程序卡片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-material-library-presentation-mounted=\"true\"] [data-material-library-tabs]')) && Boolean(document.querySelector('#fMpQuery'))", '/api/admin/miniprogram-library', 'wx_material_layout');
+  await assertMaterialHeaderActionOpens('material-library-mpLib', '新建小程序卡片', '#fMpAppid', 'materials-miniprograms-create');
+  await assertMiniProgramCommittedSearchAndSecondPage();
+  await navigateMaterialWorkspace('attachments', 'materials-attachments', '上传附件', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-material-library-presentation-mounted=\"true\"] [data-material-library-tabs]')) && Boolean(document.querySelector('input[data-material-library-query=\"attachment\"]'))", '/api/admin/attachment-library', '素材工作台附件');
+  await assertMaterialHeaderActionOpens('material-library-attach', '上传附件', '#fAttUpFile', 'materials-attachments-upload');
+  await assertMaterialAlias('/admin/image-library', 'images', "Boolean(document.querySelector('[data-image-library-host-mounted=\"true\"]'))", 'materials-image-alias');
+  await assertMaterialAlias('/admin/images.html', 'images', "Boolean(document.querySelector('[data-image-library-host-mounted=\"true\"]'))", 'materials-image-html-alias');
+  await assertMaterialAlias('/admin/attachment-library', 'attachments', "Boolean(document.querySelector('input[data-material-library-query=\"attachment\"]'))", 'materials-attachment-alias');
+  await assertMaterialAlias('/admin/attach.html', 'attachments', "Boolean(document.querySelector('input[data-material-library-query=\"attachment\"]'))", 'materials-attachment-html-alias');
+  await assertMaterialAlias('/admin/miniprogram-library', 'miniprograms', "Boolean(document.querySelector('#fMpQuery'))", 'materials-miniprogram-alias');
+  await assertMaterialAlias('/admin/mpLib.html', 'miniprograms', "Boolean(document.querySelector('#fMpQuery'))", 'materials-miniprogram-html-alias');
 
   await navigate("/admin/automation-agents", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "automation-agents", "embedded", embeddedTitle, true, true);
   const ownerMounted = await navigate("/admin/owner-migration", "Boolean(document.querySelector('[data-owner-handoff-host][data-owner-handoff-init=\"ready\"]')) && Boolean(document.querySelector('[data-owner-migration-page] .owner-migration-status-bar')) && Boolean(document.querySelector('[data-owner-migration-page] [data-owner-picker=\"source\"]'))", "owner-migration", "standard", "[data-owner-picker=\"source\"]", false, true);
@@ -988,7 +1168,7 @@ try {
 } catch (error) {
   failed = true;
   if (cdp) {
-    try { await captureFailureEvidence(currentStep); } catch (_) {}
+    try { await captureFailureEvidence(currentStep, error); } catch (_) {}
   }
   throw error;
 } finally {

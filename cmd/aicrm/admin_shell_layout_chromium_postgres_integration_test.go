@@ -6,6 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -94,7 +98,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		t.Fatalf("admin layout navigation status=%d", navigation.Code)
 	}
 	for _, href := range []string{
-		"/admin/automation-conversion", "/admin/operation-cycles", "/admin/automation-conversion/group-ops/ui", "/admin/channels", "/admin/cloud-orchestrator/plans", "/admin/customers", "/admin/hxc-dashboard", "/admin/questionnaires", "/admin/radar-links", "/admin/wecom-tags", "/admin/orders", "/admin/wechat-pay/products", "/admin/service-period-products", "/admin/coupons", "/admin/image-library", "/admin/miniprogram-library", "/admin/attachment-library", "/admin/automation-agents", "/admin/owner-migration", "/admin/config", "/admin/api-docs",
+		"/admin/automation-conversion", "/admin/operation-cycles", "/admin/automation-conversion/group-ops/ui", "/admin/channels", "/admin/cloud-orchestrator/plans", "/admin/customers", "/admin/hxc-dashboard", "/admin/questionnaires", "/admin/radar-links", "/admin/wecom-tags", "/admin/orders", "/admin/wechat-pay/products", "/admin/service-period-products", "/admin/coupons", "/admin/materials", "/admin/automation-agents", "/admin/owner-migration", "/admin/config", "/admin/api-docs",
 	} {
 		if !strings.Contains(navigation.Body.String(), `href="`+href+`"`) {
 			t.Fatalf("admin layout navigation href=%q is absent from the actual Webshell menu", href)
@@ -135,9 +139,10 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/wechat-pay/products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/service-period-products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/coupons", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/image-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/miniprogram-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/attachment-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/materials", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/image-library", canonicalPath: "/admin/materials?tab=images", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/miniprogram-library", canonicalPath: "/admin/materials?tab=miniprograms", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/attachment-library", canonicalPath: "/admin/materials?tab=attachments", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/automation-agents", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/owner-migration", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/config", marker: `data-runtime-release-host`, expectTopbar: true},
@@ -220,7 +225,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	}
 	for _, name := range []string{
 		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "ai-detail-1280.png", "ai-detail-1440.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png", "tags-1280.png", "tags-1440.png",
-		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
+		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "materials-images-1280.png", "materials-images-1440.png", "materials-miniprograms-1280.png", "materials-miniprograms-1440.png", "materials-miniprograms-page-2-1280.png", "materials-attachments-1280.png", "materials-attachments-1440.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
@@ -263,8 +268,73 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	seedAdminShellLayoutHXC(t, fixture.ctx, fixture.application)
 	fixture.radarID = seedAdminShellLayoutRadar(t, fixture.ctx, fixture.application)
 	fixture.aiPlanID = seedAdminShellLayoutAIAssistantPlan(t, fixture.ctx, fixture.application)
+	seedAdminShellLayoutMaterialImages(t, fixture.ctx, fixture.application)
+	seedAdminShellLayoutAttachmentAndMiniProgram(t, fixture.ctx, fixture.application)
 	fixture.nativeOrderReference = seedAdminShellLayoutNativeOrder(t, fixture.ctx, fixture.application, fixture.productID)
 	return fixture
+}
+
+// seedAdminShellLayoutMaterialImages creates three Media-owned, local-only image
+// records for the composed material-directory journey. They deliberately cover
+// landscape, portrait, and small square sources while keeping Provider effects
+// disabled; the browser only reads existing variants.
+func seedAdminShellLayoutMaterialImages(t *testing.T, ctx context.Context, application *composedApplication) {
+	t.Helper()
+	type imageFixture struct {
+		fileName, name string
+		width, height  int
+		fill           color.RGBA
+	}
+	for _, fixture := range []imageFixture{
+		{fileName: "material-landscape.png", name: "素材工作台横向缩略图", width: 160, height: 90, fill: color.RGBA{R: 36, G: 91, B: 219, A: 255}},
+		{fileName: "material-portrait.png", name: "素材工作台纵向缩略图", width: 90, height: 160, fill: color.RGBA{R: 25, G: 142, B: 118, A: 255}},
+		{fileName: "material-small.png", name: "素材工作台小尺寸缩略图", width: 24, height: 24, fill: color.RGBA{R: 132, G: 94, B: 194, A: 255}},
+	} {
+		canvas := image.NewRGBA(image.Rect(0, 0, fixture.width, fixture.height))
+		draw.Draw(canvas, canvas.Bounds(), image.NewUniform(fixture.fill), image.Point{}, draw.Src)
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, canvas); err != nil {
+			t.Fatal(err)
+		}
+		content := encoded.Bytes()
+		digestValue := sha256.Sum256(content)
+		digest := fmt.Sprintf("sha256:%x", digestValue)
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3) ON CONFLICT(digest) DO NOTHING`, digest, len(content), content); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'素材工作台 Chromium 目录缩略图','目录验收,素材库','目录验收','image/png',$4,$5,$6,true,1,1)`, digest, fixture.fileName, fixture.name, len(content), fixture.width, fixture.height); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// seedAdminShellLayoutAttachmentAndMiniProgram keeps the existing attachment
+// and miniprogram owners observable in the same browser journey. It writes
+// only local PostgreSQL fixture records, with no refresh, send, or Provider
+// invocation.
+func seedAdminShellLayoutAttachmentAndMiniProgram(t *testing.T, ctx context.Context, application *composedApplication) {
+	t.Helper()
+	pdf := []byte("%PDF-1.4\\n% admin material workspace fixture\\n")
+	digestValue := sha256.Sum256(pdf)
+	digest := fmt.Sprintf("sha256:%x", digestValue)
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'application/pdf',$2,$3) ON CONFLICT(digest) DO NOTHING`, digest, len(pdf), pdf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_attachments(blob_digest,file_name,name,description,tags,mime_type,byte_size,enabled,created_by,updated_by) VALUES($1,'material-workspace.pdf','素材工作台附件','Chromium 附件目录夹具','["目录验收"]'::jsonb,'application/pdf',$2,true,1,1)`, digest, len(pdf)); err != nil {
+		t.Fatal(err)
+	}
+	// Keep a real second owner page in the browser fixture. These are local
+	// PostgreSQL facts only: the journey exercises pagination/read rendering
+	// and never starts a Provider or mutation flow.
+	for index := 1; index <= 50; index++ {
+		name := fmt.Sprintf("wx_material_page_%02d", index)
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_miniprograms(name,app_id,page_path,title,thumb_image_id,enabled,created_by,updated_by) VALUES($1,$2,$3,$4,NULL,true,1,1)`, name, fmt.Sprintf("wx-material-page-%02d", index), fmt.Sprintf("pages/materials/%02d", index), fmt.Sprintf("素材工作台分页 %02d", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_miniprograms(name,app_id,page_path,title,thumb_image_id,enabled,created_by,updated_by) VALUES('wx_material_layout','wx-material-layout','pages/materials/index','素材工作台小程序',NULL,true,1,1)`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func authenticatedAdminGet(t *testing.T, handler interface {
