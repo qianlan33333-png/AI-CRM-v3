@@ -56,7 +56,7 @@ async function waitFor(check, message) {
 }
 const source = (resourceId, name, version) => ({
   resourceId, code: 'product-' + resourceId, name, price: '99.00', status: '已启用', tone: 'ok',
-  sold: '1', updated: '2026-09-15 09:00', lifecycle: 'enabled', version,
+  sold: '1', updated: '2026-09-15T01:02:03Z', lifecycle: 'enabled', version,
 });
 
 try {
@@ -101,6 +101,8 @@ try {
   );
   assert.equal(ordinaryHeaderAction.textContent, '创建商品');
   assert.equal(stage.textContent.includes('商品管理'), false, 'the donor list heading must not duplicate the shell title');
+  assert.match(stage.textContent, /2026-09-15 09:02:03/, 'ordinary product updated time is rendered with the shared Shanghai formatter');
+  assert.equal(stage.textContent.includes('2026-09-15T01:02:03Z'), false, 'ordinary product list does not expose raw ISO time');
   const ordinaryMore = await waitFor(
     () => actionMenuTrigger('product-products'),
     'ordinary frozen product row must expose the shared overflow action menu',

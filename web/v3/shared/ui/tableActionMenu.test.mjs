@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
 
-const dom = new JSDOM(`<!doctype html><table><tbody><tr><td id="cell"><div id="actions"><button id="edit">编辑</button><button id="data">数据</button><button id="share">分享</button><button id="copy">复制</button><button id="disable">停用</button><button id="delete" disabled>删除</button></div></td></tr></tbody></table>`, { url: 'https://test.invalid', pretendToBeVisual: true });
+const dom = new JSDOM(`<!doctype html><head><style>[hidden] { display:none !important; }</style></head><table><tbody><tr><td id="cell"><div id="actions"><button id="edit">编辑</button><button id="data">数据</button><button id="share">分享</button><button id="copy">复制</button><button id="disable">停用</button><button id="delete" disabled>删除</button></div></td></tr></tbody></table>`, { url: 'https://test.invalid', pretendToBeVisual: true });
 Object.assign(globalThis, {
   window: dom.window, document: dom.window.document, Node: dom.window.Node,
   HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -29,22 +29,46 @@ const trigger = container.querySelector('[data-table-action-menu-trigger="produc
 const panel = document.querySelector('[data-table-action-menu-panel="product-list"]');
 assert.equal(panel.hidden, true, 'overflow actions start closed');
 assert.equal(disabledDelete.disabled, true, 'disabled source action remains disabled after being rehomed');
+Object.defineProperties(dom.window, {
+  innerWidth: { configurable: true, value: 640 },
+  innerHeight: { configurable: true, value: 768 },
+});
+trigger.getBoundingClientRect = () => ({ left: 500, right: 560, top: 740, bottom: 766, width: 60, height: 26 });
+panel.getBoundingClientRect = () => ({ left: 0, right: 160, top: 0, bottom: 180, width: 160, height: 180 });
+const visiblyOpen = () => !panel.hidden && dom.window.getComputedStyle(panel).display !== 'none' && dom.window.getComputedStyle(panel).visibility !== 'hidden';
 
 trigger.focus();
 trigger.click();
 assert.equal(panel.hidden, false, 'trigger opens the overflow panel');
+assert.equal(visiblyOpen(), true, 'the opened panel has computed visibility even with the shell hidden rule');
+assert.equal(panel.dataset.tableActionMenuPlacement, 'up', 'a lower-edge trigger opens the overflow panel upward');
+assert.match(panel.style.bottom, /px$/, 'upward placement anchors the panel above its trigger');
+assert.equal(panel.style.top, '', 'upward placement does not also pin a below-trigger top offset');
+assert.match(panel.style.maxHeight, /px$/, 'the chosen viewport side bounds overflow height for scrolling');
 assert.equal(document.activeElement, share, 'opening moves keyboard focus to the first available overflow action');
 const escape = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' });
 document.dispatchEvent(escape);
 assert.equal(escape.defaultPrevented, true, 'Escape is consumed while the action panel is open');
 assert.equal(panel.hidden, true, 'Escape closes the panel');
+assert.equal(visiblyOpen(), false, 'Escape removes computed visibility rather than only changing an attribute');
 assert.equal(document.activeElement, trigger, 'Escape restores focus to the trigger');
 
 trigger.click();
 document.body.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
 assert.equal(panel.hidden, true, 'an outside pointer close does not leave an orphan popup');
+const afterMenu = document.createElement('button');
+afterMenu.textContent = '菜单后的焦点';
+document.body.append(afterMenu);
+trigger.click();
+copy.focus();
+copy.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Tab' }));
+afterMenu.focus();
+await Promise.resolve();
+assert.equal(panel.hidden, true, 'Tab leaving the menu closes the detached floating panel');
+assert.equal(visiblyOpen(), false, 'Tab leave cannot retain a computed-visible panel without menu focus');
 trigger.click();
 copy.click();
+await Promise.resolve();
 assert.equal(copied, 1, 'the original owner click handler executes exactly once from the overflow panel');
 assert.equal(panel.hidden, true, 'choosing an action closes the panel without changing its command semantics');
 

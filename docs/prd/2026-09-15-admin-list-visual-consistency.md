@@ -39,7 +39,8 @@ External Effects: not involved；不触发 Provider、支付、归档写入或�
 - 仅 `products` 与 `spProducts` 由 `RenderProducts` 启用既有 shell `.admin-topbar`，分别以“商品管理”“周期商品管理”作为唯一标题；`productForm`、`spProductForm` 与 `spProductData` 继续保持原嵌入式布局和顶部保存操作。
 - `mountPageHeaderActionElements` 将各列表已有的“创建”按钮节点（不克隆）移入 `.admin-topbar > .admin-topbar-meta`；原监听、href、禁用状态和权限可见性保持。Adapter 使用该共享组件公开的 `pageHeaderActionElementsHaveConnectedOrigins` 判断 donor 重绘期间是否仍有真实源位置，避免同文档重绘误清空或复活脱离 document 的旧按钮；无授权创建节点时才清除旧页头动作。随后只删除同一列表 donor 的直接标题子树，避免双标题或空白占位。
 - frozen runtime 在 `web/src/shared/ui/runtime.ts:134-137` 将 `onClick` 直接绑定到各按钮；行操作菜单仅搬移该原节点。每次 frozen controller 重绘后，Adapter 清理脱离 document 的旧浮层与监听，再挂载新行；不得依赖 stage/document 事件委托。
-- 周期商品只将已读取的生命周期显示值 `enabled` / `disabled` / `draft` 转为现有中文状态文案，并通过既有 `formatShanghaiDateTime` 以北京时间显示更新时间；未知值和非法时间不编造新值。
+- 普通商品与周期商品均通过既有 `formatShanghaiDateTime` 以北京时间显示已读取的更新时间，避免原始 ISO 折行；周期商品仍只将已读取的生命周期显示值 `enabled` / `disabled` / `draft` 转为现有中文状态文案。未知值和非法时间不编造新值。
+- 共享溢出菜单根据触发器上下可用空间择位，并限制可用高度后滚动；以计算后的可见状态管理打开、关闭和焦点。Tab 离开菜单关闭浮层，Escape 回收至触发器。
 
 ### 问卷列表空态
 
@@ -60,3 +61,7 @@ External Effects: not involved；不触发 Provider、支付、归档写入或�
 ## 非目标
 
 - 不修改冻结 donor、问卷/产品业务规则、身份模型、Provider、支付、归档保存、后台导航或其它列表空态。
+
+## 当前本地验证状态（未作为验收结论）
+
+共享菜单的 Node 键盘、计算可见性和源节点回调合同，以及商品归档 DOM 合同已通过。新增的真实 PostgreSQL/Chromium 下缘菜单旅程仍在排查：在长商品列表中打开“更多操作”后，删除确认未出现，因此下缘 1280 / 1440 截图、取消零写与确认一次 DELETE/readback **尚未完成验收**。保留失败原始日志，后续必须先修复并重跑该真实旅程，不能以已有普通视口截图替代。

@@ -702,7 +702,7 @@ try {
       const createBox = button?.getBoundingClientRect();
       return { shellTitle:String(shellTitle?.textContent || '').trim(), shellTitleCount:document.querySelectorAll('.admin-topbar .admin-page-title').length, donorTitleCount:donorTitles.length, createInTopbar:Boolean(topbarBox && createBox && createBox.top >= topbarBox.top - 1 && createBox.bottom <= topbarBox.bottom + 1), menu:menu instanceof HTMLElement, triggerVisible:trigger instanceof HTMLElement && trigger.getBoundingClientRect().width > 1, bodyOverflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1, status, updated };
     })()`);
-    const invalid = presentation.shellTitle !== (page === 'products' ? '商品管理' : '周期商品管理') || presentation.shellTitleCount !== 1 || presentation.donorTitleCount !== 0 || !presentation.createInTopbar || !presentation.menu || !presentation.triggerVisible || presentation.bodyOverflow || (page === 'spProducts' && (presentation.status !== '已启用' || /T\d{2}:\d{2}/.test(presentation.updated)));
+    const invalid = presentation.shellTitle !== (page === 'products' ? '商品管理' : '周期商品管理') || presentation.shellTitleCount !== 1 || presentation.donorTitleCount !== 0 || !presentation.createInTopbar || !presentation.menu || !presentation.triggerVisible || presentation.bodyOverflow || ((page === 'spProducts' && presentation.status !== '已启用') || /T\d{2}:\d{2}/.test(presentation.updated));
     if (invalid) throw new Error(label + ' product list presentation invalid ' + JSON.stringify(presentation));
   };
   for (const width of [1440, 1280]) {
@@ -712,6 +712,45 @@ try {
     await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded table'))", `service-period-products-actions-${width}`, "standard", "table", true);
     await assertProductListPresentation('spProducts', `service-period-products-actions-${width}`);
   }
+  const assertProductMenuAtViewportEdge = async (width) => {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 320, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 320 });
+    await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded table'))", `products-actions-edge-${width}`, "standard", "table", false);
+    const marked = await evaluate(cdp, `(() => {
+      const trigger = [...document.querySelectorAll('[data-table-action-menu-trigger^="product-products-"]')].at(-1);
+      if (!(trigger instanceof HTMLButtonElement)) return false;
+      trigger.scrollIntoView({ block: 'end' });
+      trigger.setAttribute('data-aicrm-product-edge-menu', 'true');
+      return true;
+    })()`);
+    if (!marked) throw new Error(`product lower-edge overflow trigger is unavailable at ${width}`);
+    await pointerClick('[data-aicrm-product-edge-menu=true]', `product lower-edge overflow trigger at ${width}`);
+    await waitFor(cdp, "document.querySelector('[data-aicrm-product-edge-menu=true]')?.getAttribute('aria-expanded') === 'true'", `product lower-edge overflow did not open at ${width}`);
+    const edge = await evaluate(cdp, `(() => {
+      const trigger = document.querySelector('[data-aicrm-product-edge-menu=true]');
+      const panel = trigger instanceof HTMLButtonElement ? document.getElementById(trigger.getAttribute('aria-controls') || '') : null;
+      if (!(panel instanceof HTMLElement) || !(trigger instanceof HTMLElement)) return { missing: true };
+      const style = getComputedStyle(panel);
+      const rect = panel.getBoundingClientRect();
+      return {
+        missing: false,
+        visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1,
+        placement: panel.dataset.tableActionMenuPlacement || '',
+        inViewport: rect.top >= -1 && rect.bottom <= innerHeight + 1,
+        triggerBottom: trigger.getBoundingClientRect().bottom,
+        viewportHeight: innerHeight,
+        belowTight: innerHeight - trigger.getBoundingClientRect().bottom - 8 - rect.height < 16,
+        scrollable: panel.scrollHeight >= panel.clientHeight,
+      };
+    })()`);
+    if (edge.missing || !edge.visible || edge.placement !== 'up' || !edge.inViewport || !edge.belowTight || !edge.scrollable) {
+      throw new Error(`product lower-edge overflow presentation invalid at ${width}: ${JSON.stringify(edge)}`);
+    }
+    await capture(`products-actions-edge-${width}`);
+    await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+    await waitFor(cdp, "document.querySelector('[data-aicrm-product-edge-menu=true]')?.getAttribute('aria-expanded') === 'false'", `product lower-edge overflow did not close on Escape at ${width}`);
+    await evaluate(cdp, 'window.scrollTo(0, 0)');
+  };
+  for (const width of [1440, 1280]) await assertProductMenuAtViewportEdge(width);
   await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
   const assertProductDimensions = async (prefix) => {
     const result = await evaluate(cdp, `(${function(prefix) {
@@ -766,7 +805,7 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('[data-aicrm-product-menu-trigger=\"true\"]')?.getAttribute('aria-expanded') === 'true')", 'product overflow menu did not open');
   if (!await markDelete()) throw new Error('product delete action is absent from the visible overflow menu');
   await pointerClick('[data-aicrm-product-delete="true"]', 'product delete action');
-  await waitFor(cdp, "Boolean(document.querySelector('#fb-cancel'))", 'product delete confirmation did not open');
+  await waitFor(cdp, "document.querySelector('#fb-mask')?.hidden === false && Boolean(document.querySelector('#fb-cancel'))", 'product delete confirmation did not open');
   await capture('products-delete-confirm');
   await pointerClick('#fb-cancel', 'product delete cancellation');
   if (requestEvents.some(value => value === productDeleteRequest)) throw new Error('cancelled product deletion issued a write');
@@ -775,7 +814,7 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('[data-aicrm-product-menu-trigger=\"true\"]')?.getAttribute('aria-expanded') === 'true')", 'product overflow menu did not reopen');
   if (!await markDelete()) throw new Error('product delete action disappeared after cancellation');
   await pointerClick('[data-aicrm-product-delete="true"]', 'product delete confirmation action');
-  await waitFor(cdp, "Boolean(document.querySelector('#fb-ok'))", 'product delete confirmation could not reopen');
+  await waitFor(cdp, "document.querySelector('#fb-mask')?.hidden === false && Boolean(document.querySelector('#fb-ok'))", 'product delete confirmation could not reopen');
   await pointerClick('#fb-ok', 'product delete confirmation submit');
   await waitForRecorded(requestEvents, value => value === productDeleteRequest, 'confirmed product deletion did not issue the owner DELETE');
   await waitForRecorded(responses, value => value.startsWith(productDeleteRequest + ':'), 'confirmed product deletion did not settle');

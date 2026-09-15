@@ -222,7 +222,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	for _, name := range []string{
 		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
-		"products-actions-1440.png", "service-period-products-actions-1440.png", "products-actions-1280.png", "service-period-products-actions-1280.png", "products-delete-confirm.png",
+		"products-actions-1440.png", "service-period-products-actions-1440.png", "products-actions-1280.png", "service-period-products-actions-1280.png", "products-actions-edge-1440.png", "products-actions-edge-1280.png", "products-delete-confirm.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
@@ -267,6 +267,7 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	fixture.aiPlanID = seedAdminShellLayoutAIAssistantPlan(t, fixture.ctx, fixture.application)
 	fixture.nativeOrderReference = seedAdminShellLayoutNativeOrder(t, fixture.ctx, fixture.application, fixture.productID)
 	fixture.archiveProductID = seedAdminShellLayoutArchiveProduct(t, fixture.ctx, fixture.application)
+	seedAdminShellLayoutOverflowProducts(t, fixture.ctx, fixture.application)
 	return fixture
 }
 
@@ -282,6 +283,19 @@ VALUES('admin-layout-delete-menu','菜单删除夹具商品','仅用于后台列
 		t.Fatalf("seed admin layout archive product: %v", err)
 	}
 	return id
+}
+
+// seedAdminShellLayoutOverflowProducts supplies a real long product table so
+// the Chromium journey can place the shared menu at the visible viewport edge.
+func seedAdminShellLayoutOverflowProducts(t *testing.T, ctx context.Context, application *composedApplication) {
+	t.Helper()
+	projection := `{"schema_version":1,"status":"enabled","enabled":true,"buy_button_text":"立即购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`
+	for index := 1; index <= 12; index++ {
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO products(product_code,name,description,price_minor,currency,stock_quantity,created_by,legacy_admin_projection)
+VALUES($1,$2,'仅用于后台列表边缘菜单回归',9900,'CNY',10,1,$3::jsonb)`, fmt.Sprintf("admin-layout-menu-row-%02d", index), fmt.Sprintf("菜单边缘夹具商品 %02d", index), projection); err != nil {
+			t.Fatalf("seed admin layout overflow product %d: %v", index, err)
+		}
+	}
 }
 
 func authenticatedAdminGet(t *testing.T, handler interface {

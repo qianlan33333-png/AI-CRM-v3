@@ -1751,6 +1751,7 @@ productController.renderVals = function renderProductListWithArchiveActions() {
       ...values.rows,
       products: this.page === 'products' ? ordinaryRows.map((row) => ({
         ...row,
+        updated: typeof row.updated === 'string' ? formatShanghaiDateTime(row.updated) : row.updated,
         del: () => confirmBox(
           '删除商品',
           `确认删除“${row.name || '未命名商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买；已支付订单、权益和审计记录会保留。`,
