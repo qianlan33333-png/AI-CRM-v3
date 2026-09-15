@@ -107,7 +107,9 @@ paths:
       security: [{adminSession: []}]
       parameters:
         - {name: status, in: query, schema: {type: string, enum: [all, draft, enabled, disabled], default: all}}
-        - {$ref: "#/components/parameters/Limit"}
+        - {name: search, in: query, description: Trimmed UTF-8 byte length must not exceed 200., schema: {type: string, maxLength: 200}}
+        - {name: content_type, in: query, schema: {type: string, enum: [link, image, pdf]}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
         - {$ref: "#/components/parameters/Offset"}
       responses:
         "200": {description: Radar definitions with local lifecycle facts, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkPage"}}}}
