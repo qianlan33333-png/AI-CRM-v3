@@ -107,7 +107,7 @@ try {
   await waitFor(cdp, `document.querySelector('#screen [data-h5-submit]') && document.querySelector('#screen [data-h5-progress]')?.textContent?.includes('2 / 2')`, 'final one-by-one submit step did not render');
   await evaluate(cdp, `document.querySelector('#screen [data-h5-submit]').click(); true`, 'submit controlled failure');
   await waitFor(cdp, `Boolean(document.querySelector('#screen [data-v3-survey-submitting]')) && !document.querySelector('#screen [data-h5-submit]')`, 'one-by-one submission did not expose its stable pending feedback');
-  await waitFor(cdp, `document.querySelector('#screen [data-v3-survey-recovery]')?.textContent?.includes('已填写的答案仍会保留') && document.querySelector('#screen [data-v3-survey-error-detail]')?.textContent === '问题详情：HTTP 503' && document.querySelector('#screen [data-h5-submit]')?.disabled === false`, 'failure did not expose a recoverable transport explanation and retry action');
+  await waitFor(cdp, `document.querySelector('#screen [data-v3-survey-recovery]')?.textContent === '暂时无法完成操作，请保留当前页面并稍后重试。' && document.querySelector('#screen [data-v3-survey-error-detail]')?.textContent === '问题详情：HTTP 503' && document.querySelector('#screen [data-h5-submit]')?.disabled === false`, 'failure did not expose a recoverable transport explanation and retry action');
   if (cdp.failureSubmissions !== 1) throw new Error(`first failure submission requests=${cdp.failureSubmissions}`);
   await screenshot(cdp, 430, 'public-survey-failure-430.png');
   await evaluate(cdp, `(() => { document.querySelector('#screen [data-h5-previous]')?.click(); return true; })()`, 'return to preserved answer');
