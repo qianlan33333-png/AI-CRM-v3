@@ -194,7 +194,18 @@ export function mountPageHeaderActionElements(owner: string, elements: readonly 
   const priorFocus = sourceFocus || Array.from(host.querySelectorAll<HTMLElement>(':scope > [data-page-header-action-element]'))
     .find((element) => document.activeElement === element);
   restoreRelocatedActions(host);
-  for (const element of controls) {
+  // An old header control is still document-connected before restoration, but
+  // its source marker may now belong to a donor subtree just removed by a
+  // redraw. Re-check after restoration so a stale caller cannot resurrect
+  // that detached action in the topbar.
+  const connectedControls = controls.filter((element) => element.isConnected);
+  if (connectedControls.length === 0) {
+    host.replaceChildren();
+    host.remove();
+    if (meta.dataset.pageHeaderActionsMeta === 'created' && meta.childElementCount === 0) meta.remove();
+    return () => {};
+  }
+  for (const element of connectedControls) {
     let marker = relocatedActionOrigins.get(element);
     if (!marker?.isConnected) {
       marker = document.createComment('aicrm-page-header-action-origin');
@@ -205,12 +216,12 @@ export function mountPageHeaderActionElements(owner: string, elements: readonly 
   }
   const revision = crypto.randomUUID();
   host.dataset.pageHeaderActionsRevision = revision;
-  host.replaceChildren(...controls);
-  refocus(controls.find((element) => element === priorFocus));
+  host.replaceChildren(...connectedControls);
+  refocus(connectedControls.find((element) => element === priorFocus));
   return () => {
     if (host.dataset.pageHeaderActionsRevision !== revision) return;
-    const focused = controls.find((element) => document.activeElement === element);
-    for (const element of controls) {
+    const focused = connectedControls.find((element) => document.activeElement === element);
+    for (const element of connectedControls) {
       if (element.dataset.pageHeaderActionElement === owner && element.parentElement === host) restoreRelocatedAction(element);
     }
     refocus(focused);
