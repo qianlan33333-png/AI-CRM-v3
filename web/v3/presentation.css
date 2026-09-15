@@ -179,3 +179,6 @@ body[data-ui-surface="share"] [data-share-read-error] { margin: 12px 0; color: #
 /* Page-owned dynamic commands share the single admin topbar with SSR links
  * and tabs. This stylesheet is mounted by every admin shell. */
 body[data-ui-surface="admin"] .admin-topbar .page-header-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+/* The frozen Tags title uses an inline flex display. Keep the source row out
+ * of layout after the V3 shell becomes the one visible page title. */
+body[data-ui-surface="admin"] #stage [data-page-header-donor-title="tags"][hidden] { display: none !important; }

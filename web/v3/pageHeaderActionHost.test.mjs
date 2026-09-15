@@ -9,7 +9,7 @@ const bundle = await build({
 async function settle() { await new Promise((resolve) => setTimeout(resolve, 0)); }
 async function settleMutations() { await settle(); await settle(); }
 
-const tags = new JSDOM(`<!doctype html><body data-page="tags"><header class="admin-topbar"><div class="admin-topbar-head"><h1>企微标签管理</h1></div></header><main id="stage"><div>客户管理后台 / 运营 / 企微标签管理</div><section><div><button>同步企微标签</button><button>新增标签组</button><button>新增标签</button></div></section></main></body>`, { runScripts: 'outside-only' });
+const tags = new JSDOM(`<!doctype html><body data-page="tags"><header class="admin-topbar"><div class="admin-topbar-head"><h1>企微标签管理</h1></div></header><main id="stage"><div style="height:52px">客户管理后台 / 运营 / 企微标签管理</div><section><div><button>同步企微标签</button><button>新增标签组</button><button>新增标签</button></div></section></main></body>`, { runScripts: 'outside-only' });
 try {
   tags.window.eval(bundle.outputFiles[0].text);
   await settle();
@@ -19,7 +19,7 @@ try {
   assert.equal(tags.window.document.querySelector('#stage > div').hidden, true, 'tag donor title row is visually hidden after shell title is enabled');
   assert.equal(tags.window.document.querySelector('#stage section button'), null, 'tag card no longer contains duplicated actions');
   const firstCreate = topbar.querySelector('[data-page-header-actions="wecom-tags"] button:last-child');
-  tags.window.document.querySelector('#stage').innerHTML = '<div>客户管理后台 / 运营 / 企微标签管理</div><section><div><button>同步企微标签</button><button>新增标签组</button><button>新增标签</button></div></section>';
+  tags.window.document.querySelector('#stage').innerHTML = '<div style="height:52px">客户管理后台 / 运营 / 企微标签管理</div><section><div><button>同步企微标签</button><button>新增标签组</button><button>新增标签</button></div></section>';
   await settleMutations();
   const refreshedCreate = topbar.querySelector('[data-page-header-actions="wecom-tags"] button:last-child');
   assert.notEqual(refreshedCreate, firstCreate, 'a donor redraw replaces stale header controls with the current original nodes');
@@ -28,6 +28,9 @@ try {
   tags.window.document.querySelector('#stage').append(tags.window.document.createElement('aside'));
   await settleMutations();
   assert.equal(topbar.querySelector('[data-page-header-actions="wecom-tags"] button:last-child'), beforeUnrelatedMutation, 'unrelated mutations do not remount or replace a current header action');
+  tags.window.document.querySelector('#stage').innerHTML = '<div>加载中</div>';
+  await settleMutations();
+  assert.equal(topbar.querySelector('[data-page-header-actions="wecom-tags"]'), null, 'a donor redraw without replacement actions removes stale controls from the header');
 } finally { tags.window.close(); }
 
 const plan = new JSDOM(`<!doctype html><body data-page="ai-assistant"><header class="admin-topbar"><div class="admin-topbar-head"><h1>AI 助手</h1></div></header><main id="stage"><section data-cloud-plan-root data-page-mode="detail"><div class="cloud-plan-detail-head"><span data-plan-detail-state>待审批</span><div class="cloud-plan-actions"><button data-plan-approve>确认并发送</button><button data-plan-reject>拒绝计划</button><a href="/admin/cloud-orchestrator/plans">返回一级页</a></div></div></section></main></body>`, { runScripts: 'outside-only' });
@@ -42,6 +45,9 @@ try {
   actions.querySelector('[data-plan-approve]').click();
   assert.equal(approved, 1, 'moved plan action retains the existing approval callback');
   assert.equal(plan.window.document.querySelector('.cloud-plan-actions').hidden, true, 'plan body action row is hidden once controls are relocated');
+  plan.window.document.querySelector('[data-cloud-plan-root]').innerHTML = '<div>计划信息加载中</div>';
+  await settleMutations();
+  assert.equal(topbar.querySelector('[data-page-header-actions="ai-plan-detail"]'), null, 'a plan redraw without replacement actions removes stale send controls from the header');
 } finally { plan.window.close(); }
 
 console.log('page header action host: PASS');
