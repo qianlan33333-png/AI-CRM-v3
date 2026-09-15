@@ -1921,7 +1921,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if page == "spProductData" {
 			return producthttp.RenderMemberGridInternal(writer, request, request.URL.Query().Get("id"))
 		}
-		titles := map[string]string{"products": "普通商品", "productForm": "创建普通商品", "spProducts": "周期商品", "spProductForm": "创建周期商品", "spProductData": "周期商品 · 会员数据"}
+		titles := map[string]string{"products": "商品管理", "productForm": "创建普通商品", "spProducts": "周期商品管理", "spProductForm": "创建周期商品", "spProductData": "周期商品 · 会员数据"}
 		if page == "productForm" && (request.URL.Query().Get("id") != "" || strings.HasSuffix(request.URL.Path, "/edit")) {
 			titles[page] = "编辑普通商品"
 		}

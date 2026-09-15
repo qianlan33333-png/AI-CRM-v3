@@ -178,4 +178,9 @@ assert.equal([...reopened.window.document.querySelectorAll('#stage button')].som
 assert.equal(reopened.window.document.querySelector('[data-product-purchase-enabled]').checked, true, 'reopening must retain the saved action switch');
 assert.equal(reopened.window.document.querySelector('input[name="spfPurchaseActionMode"][value="redirect"]').checked, true, 'reopening must retain redirect mode');
 assert.equal(reopened.window.document.querySelector('[data-product-tag-enabled]').checked, false, 'saved disabled tags must not be silently enabled from nonempty selections');
+// JSDOM close does not dispatch browser lifecycle events. Flush the Product
+// adapter's normal pagehide disposal path before destroying either test window.
+reopened.window.dispatchEvent(new reopened.window.Event('pagehide'));
+dom.window.dispatchEvent(new dom.window.Event('pagehide'));
+await wait(0);
 reopened.window.close(); dom.window.close(); console.log('periodic product dimensions, action reload, material selection, cancel, and save: PASS');

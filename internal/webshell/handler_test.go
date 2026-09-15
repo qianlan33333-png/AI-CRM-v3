@@ -634,8 +634,22 @@ func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="products">frozen donor product fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`) || strings.Contains(body, `<header class="admin-topbar">`) || !strings.Contains(body, `href="/product-assets/product-distribution.css"`) || !strings.Contains(body, `src="/product-assets/product-host.js"`) {
-		t.Fatalf("product shell mismatch status=%d body=%q", response.Code, body)
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="products">frozen donor product fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`) || strings.Count(body, `<header class="admin-topbar">`) != 1 || !strings.Contains(body, `<h1 class="admin-page-title">普通商品</h1>`) || !strings.Contains(body, `href="/product-assets/product-distribution.css"`) || !strings.Contains(body, `src="/product-assets/product-host.js"`) {
+		t.Fatalf("product list shell mismatch status=%d body=%q", response.Code, body)
+	}
+	for page, wantTopbar := range map[string]int{"productForm": 1, "spProductForm": 1, "spProductData": 0} {
+		response = httptest.NewRecorder()
+		err = renderer.RenderProducts(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/"+page+".html", nil), "产品编辑", "", "api.admin_products_page"), page, `<section data-page="`+page+`">frozen donor product fragment</section>`, ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", ProductCSS: "/product-assets/product-distribution.css", HostJS: "/product-assets/product-host.js", StandardHostJS: "/product-assets/standard-components-host.js", StandardCSS: []string{"/product-assets/standard-components/material_picker.css", "/product-assets/standard-components/send_content_composer.css", "/product-assets/standard-components/wecom_tag_picker.css", "/product-assets/selection-dialog.css"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := response.Body.String()
+		if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || strings.Count(body, `<header class="admin-topbar">`) != wantTopbar || !strings.Contains(body, `data-page="`+page+`"`) {
+			t.Fatalf("product embedded page=%s topbar=%d want=%d body=%q", page, strings.Count(body, `<header class="admin-topbar">`), wantTopbar, body)
+		}
+		if wantTopbar == 1 && strings.Count(body, `class="admin-page-title"`) != 1 {
+			t.Fatalf("product editor page=%s must have one shared page title body=%q", page, body)
+		}
 	}
 }
 

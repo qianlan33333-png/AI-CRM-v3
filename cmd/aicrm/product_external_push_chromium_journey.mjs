@@ -291,14 +291,39 @@ try {
   // session, CSRF header and CAS endpoint once in each direction before the
   // form journey, leaving the seeded fixture enabled for its remaining steps.
   const productsPath = "/admin/products.html";
+  const runProductLifecycleAction = async (label) => {
+    const result = await evaluate(cdp, `((label) => {
+      const row = Array.from(document.querySelectorAll('tbody tr')).find((item) => item.textContent.includes('browser-push-product'));
+      if (!row) return { invoked: false };
+      const trigger = row.querySelector('button[data-table-action-menu-trigger]');
+      if (!(trigger instanceof HTMLButtonElement) || trigger.disabled || trigger.getClientRects().length === 0 || getComputedStyle(trigger).visibility === 'hidden') return { invoked: false };
+      const panelID = trigger.getAttribute('aria-controls');
+      const panel = panelID ? document.getElementById(panelID) : null;
+      if (!(panel instanceof HTMLElement)) return { invoked: false };
+      trigger.click();
+      const menuVisible = !panel.hidden && panel.getClientRects().length > 0 && getComputedStyle(panel).display !== 'none' && getComputedStyle(panel).visibility === 'visible';
+      const action = menuVisible ? Array.from(panel.querySelectorAll('button')).find((button) => button.textContent.trim() === label) : undefined;
+      if (!(action instanceof HTMLButtonElement) || action.disabled || action.getClientRects().length === 0 || getComputedStyle(action).visibility === 'hidden') return { invoked: false, menuVisible };
+      action.click();
+      return { invoked: true, menuVisible, panelID };
+    })(${JSON.stringify(label)})`);
+    if (!result?.invoked || !result.menuVisible || typeof result.panelID !== 'string') throw new Error(`product lifecycle ${label} action was not invoked through its visible menu: ${JSON.stringify(result)}`);
+    return result.panelID;
+  };
+  const waitForLifecycleMenuClosed = async (panelID, label) => {
+    const encodedPanelID = JSON.stringify(panelID);
+    await waitFor(cdp, `(() => { const panel = document.getElementById(${encodedPanelID}); return !panel || panel.hidden || panel.getClientRects().length === 0 || getComputedStyle(panel).display === 'none' || getComputedStyle(panel).visibility === 'hidden'; })()`, `product lifecycle ${label} action left its overflow menu open after completion`);
+  };
   await cdp.call("Page.navigate", { url: baseURL + productsPath });
-  await waitFor(cdp, "location.pathname === '/admin/products.html' && Array.from(document.querySelectorAll('tbody tr')).some((row) => row.textContent.includes('browser-push-product') && Array.from(row.querySelectorAll('button')).some((button) => button.textContent.trim() === '停用'))", "product list lifecycle Host did not render the seeded enabled row");
-  await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='停用').click(); return true; })()");
+  await waitFor(cdp, "location.pathname === '/admin/products.html' && Array.from(document.querySelectorAll('tbody tr')).some((row) => { const trigger=row.querySelector('button[data-table-action-menu-trigger]'); return row.textContent.includes('browser-push-product') && trigger instanceof HTMLButtonElement && !trigger.disabled && trigger.getClientRects().length > 0 && getComputedStyle(trigger).visibility !== 'hidden' && Boolean(trigger.getAttribute('aria-controls')); })", "product list lifecycle Host did not render the seeded enabled action menu");
+  const disablePanelID = await runProductLifecycleAction('停用');
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已停用')", "product lifecycle disable did not complete through the Host");
+  await waitForLifecycleMenuClosed(disablePanelID, '停用');
   await cdp.call("Page.navigate", { url: baseURL + productsPath });
-  await waitFor(cdp, "Array.from(document.querySelectorAll('tbody tr')).some((row) => row.textContent.includes('browser-push-product') && Array.from(row.querySelectorAll('button')).some((button) => button.textContent.trim() === '启用'))", "product list did not read back the disabled lifecycle");
-  await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='启用').click(); return true; })()");
+  await waitFor(cdp, "Array.from(document.querySelectorAll('tbody tr')).some((row) => { const trigger=row.querySelector('button[data-table-action-menu-trigger]'); return row.textContent.includes('browser-push-product') && trigger instanceof HTMLButtonElement && !trigger.disabled && trigger.getClientRects().length > 0 && getComputedStyle(trigger).visibility !== 'hidden' && Boolean(trigger.getAttribute('aria-controls')); })", "product list did not read back the disabled lifecycle action menu");
+  const enablePanelID = await runProductLifecycleAction('启用');
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已启用')", "product lifecycle enable did not complete through the Host");
+  await waitForLifecycleMenuClosed(enablePanelID, '启用');
   await cdp.call("Page.navigate", { url: baseURL + productPath });
   await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html'", "product lifecycle return did not reach frozen product form");
   // Host mounting creates the editor before its configuration GET resolves.

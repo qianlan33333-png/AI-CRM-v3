@@ -12,7 +12,9 @@ import { downloadQr, renderQr } from '../src/admin/sections/qr';
 import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
+import { mountTableActionMenu, type TableActionMenu } from './shared/ui/tableActionMenu';
 import { mountPageHeaderActionElements, pageHeaderActionElementsHaveConnectedOrigins } from './shared/ui/pageHeaderActions';
+import { formatShanghaiDateTime } from './adminDateTime';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord } from './shared/ui/materialPickerAdapter';
 import { renderMaterialThumbnail } from './shared/ui/materialThumbnailPresentation';
 
@@ -94,6 +96,8 @@ let loadedProducts: ProductProjection[] = [];
 const openedProductPayloads = new Map<number, RecordValue>();
 const purchaseActionByProduct = new Map<number, { enabled: boolean; mode: '' | 'qr' | 'redirect' }>();
 const productLifecycleKeys = new Map<string, string>();
+type ProductLifecycleActionContext = { product: ProductProjection; row: HTMLTableRowElement; container: HTMLElement; page: 'products' };
+const productLifecycleActionContexts = new WeakMap<HTMLButtonElement, ProductLifecycleActionContext>();
 type ProductArchiveIntent = { key: string; body: string };
 const productArchiveIntents = new Map<string, ProductArchiveIntent>();
 
@@ -135,7 +139,7 @@ function productLifecycleKey(productID: number, version: number, enabled: boolea
   return key;
 }
 
-type ProductArchiveRow = { resourceId?: number; version?: number; name?: string };
+type ProductArchiveRow = { resourceId?: number; version?: number; name?: string; status?: string; updated?: string; toggle?: (event: Event) => void };
 type ProductArchiveController = { init(): Promise<void>; db: { rows: { products: ProductArchiveRow[]; spProducts: ProductArchiveRow[] } } };
 
 async function archiveProduct(controller: ProductArchiveController, kind: 'ordinary' | 'service-period', row: ProductArchiveRow): Promise<void> {
@@ -769,24 +773,36 @@ async function toggleProductLifecycle(button: HTMLButtonElement, product: Produc
   window.setTimeout(() => location.reload(), 550);
 }
 
-document.addEventListener('click', (event) => {
-  if (document.body.dataset.page !== 'products') return;
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  const button = target.closest('button');
-  if (!button || (button.textContent?.trim() !== '启用' && button.textContent?.trim() !== '停用')) return;
-  const row = button.closest('tbody tr');
-  const index = Array.from(row?.parentElement?.querySelectorAll(':scope > tr') || []).indexOf(row as HTMLTableRowElement);
-  const product = loadedProducts[index];
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  if (!product) return showMessage('商品缺少服务端 ID，未发送状态变更请求');
+function runProductLifecycleAction(button: HTMLButtonElement, product: ProductProjection): void {
+  const context = productLifecycleActionContexts.get(button);
+  if (!context || context.page !== 'products' || !context.row.isConnected || !context.container.isConnected) {
+    return showMessage('商品操作上下文已失效，请刷新列表后重试；未发送状态变更请求');
+  }
+  // The frozen template binds the handler supplied by renderVals to this exact
+  // row. The presentation pass may only use its index to retain the source
+  // row/container while it rehomes the existing button. Never let a later
+  // projection turn that button into a command for another Product.
+  if (context.product.resourceId !== product.resourceId || context.product.version !== product.version || context.product.lifecycle !== product.lifecycle) {
+    return showMessage('商品列表已更新，请刷新后重试；未发送状态变更请求');
+  }
+  const current = loadedProducts.find((item) => item.resourceId === product.resourceId);
+  if (!current || current.version !== product.version || current.lifecycle !== product.lifecycle) {
+    return showMessage('商品列表已更新，请刷新后重试；未发送状态变更请求');
+  }
   void toggleProductLifecycle(button, product).catch((error) => {
     button.disabled = false;
     button.textContent = product.lifecycle === 'enabled' ? '停用' : '启用';
     showMessage(error instanceof Error ? error.message : '商品状态变更失败');
   });
-}, true);
+}
+
+function lifecycleProjection(row: ProductArchiveRow): ProductProjection | undefined {
+  const product = row as ProductProjection;
+  const version = product.version;
+  if (!Number.isSafeInteger(product.resourceId) || product.resourceId < 1 || typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) return undefined;
+  if (product.lifecycle !== 'draft' && product.lifecycle !== 'enabled' && product.lifecycle !== 'disabled') return undefined;
+  return product;
+}
 
 type ExternalPushPage = {
   productID: number;
@@ -1366,8 +1382,35 @@ function mountProductTagPicker(): void {
   });
 }
 
-const productStandardObserver = new MutationObserver(mountProductTagPicker);
-productStandardObserver.observe(document, { childList: true, subtree: true });
+// JSDOM does not emit pagehide when a test Window is closed. All Product Host
+// observers therefore own their teardown and also fail closed if a queued
+// mutation is delivered after its document has been destroyed.
+function productDocumentIsActive(): boolean {
+  try {
+    return document.defaultView === window && document.documentElement !== null && document.body !== null;
+  } catch {
+    return false;
+  }
+}
+
+function observeProductDocument(callback: () => void): MutationObserver {
+  let observer: MutationObserver;
+  const run = (): void => {
+    if (!productDocumentIsActive()) {
+      observer.disconnect();
+      return;
+    }
+    callback();
+  };
+  observer = new MutationObserver(run);
+  observer.observe(document, { childList: true, subtree: true });
+  const dispose = (): void => observer.disconnect();
+  window.addEventListener('pagehide', dispose, { once: true });
+  window.addEventListener('unload', dispose, { once: true });
+  return observer;
+}
+
+const productStandardObserver = observeProductDocument(mountProductTagPicker);
 mountProductTagPicker();
 
 type PurchaseActionMode = '' | 'qr' | 'redirect';
@@ -1463,10 +1506,8 @@ function mountProductEditorHeaderActions(): void {
   mountedProductEditorHeaderActions = { ...source, cleanup };
 }
 
-const productEditorHeaderActionObserver = new MutationObserver(mountProductEditorHeaderActions);
-productEditorHeaderActionObserver.observe(document, { childList: true, subtree: true });
+const productEditorHeaderActionObserver = observeProductDocument(mountProductEditorHeaderActions);
 mountProductEditorHeaderActions();
-window.addEventListener('pagehide', () => productEditorHeaderActionObserver.disconnect(), { once: true });
 
 function productActionState(prefix: string): PurchaseActionDOM {
   const route = productEditorRoute();
@@ -1616,14 +1657,11 @@ function mountPurchaseActionControls(): void {
   purchaseActionControls(prefix);
 }
 
-const purchaseActionObserver = new MutationObserver(mountPurchaseActionControls);
-purchaseActionObserver.observe(document, { childList: true, subtree: true });
+const purchaseActionObserver = observeProductDocument(mountPurchaseActionControls);
 mountPurchaseActionControls();
-const distributionPolicyObserver = new MutationObserver(mountDistributionPolicyControls);
-distributionPolicyObserver.observe(document, { childList: true, subtree: true });
+const distributionPolicyObserver = observeProductDocument(mountDistributionPolicyControls);
 mountDistributionPolicyControls();
-const servicePeriodDurationObserver = new MutationObserver(mountNewServicePeriodDuration);
-servicePeriodDurationObserver.observe(document, { childList: true, subtree: true });
+const servicePeriodDurationObserver = observeProductDocument(mountNewServicePeriodDuration);
 mountNewServicePeriodDuration();
 
 type ProductMaterial = MaterialPickerRecord & { metadata: RecordValue };
@@ -1793,8 +1831,7 @@ function mountProductDimensions(): void {
   }
   select(nav.dataset.productDimension || first);
 }
-const productDimensionsObserver = new MutationObserver(mountProductDimensions);
-productDimensionsObserver.observe(document, { childList: true, subtree: true });
+const productDimensionsObserver = observeProductDocument(mountProductDimensions);
 mountProductDimensions();
 
 // A successful dimension save updates this editor rather than invoking the
@@ -2122,14 +2159,13 @@ productController.setCommerceImageUrls = function (kind, urls) {
   updateProductMaterialDraft(this, kind, urls);
 };
 
-const productMaterialPresentationObserver = new MutationObserver(() => {
+const productMaterialPresentationObserver = observeProductDocument(() => {
   const controller = activeProductMaterialController;
   if (!controller) return;
   const page = document.body?.dataset.page;
   if (page === 'productForm' && controller.page === page) renderProductMaterialDraft(controller, 'product');
   if (page === 'spProductForm' && controller.page === page) renderProductMaterialDraft(controller, 'service');
 });
-productMaterialPresentationObserver.observe(document, { childList: true, subtree: true });
 
 const productUploadIntentKeys = new Map<string, string>();
 const confirmedProductUploadMaterials = new Map<string, ProductMaterial>();
@@ -2353,8 +2389,23 @@ productController.renderVals = function renderProductListWithArchiveActions() {
     ...values,
     rows: {
       ...values.rows,
-      products: this.page === 'products' ? ordinaryRows.map((row) => ({
+      products: this.page === 'products' ? ordinaryRows.map((row) => {
+        const product = lifecycleProjection(row);
+        return {
         ...row,
+        updated: typeof row.updated === 'string' ? formatShanghaiDateTime(row.updated) : row.updated,
+        // The donor runtime gives this exact renderVals handler the action
+        // element as currentTarget. Keep Product identity and version in the
+        // closure created for this row; menu presentation must not infer a
+        // subject from a later list position.
+        toggle: product ? (event: Event) => {
+          const button = event.currentTarget instanceof HTMLButtonElement
+            ? event.currentTarget
+            : event.target instanceof HTMLButtonElement ? event.target : undefined;
+          if (!(button instanceof HTMLButtonElement)) return;
+          event.preventDefault();
+          runProductLifecycleAction(button, product);
+        } : row.toggle,
         del: () => confirmBox(
           '删除商品',
           `确认删除“${row.name || '未命名商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买；已支付订单、权益和审计记录会保留。`,
@@ -2362,9 +2413,12 @@ productController.renderVals = function renderProductListWithArchiveActions() {
 		  true,
 		  () => { void archiveProduct(this, 'ordinary', row).catch((error) => showMessage(error instanceof Error ? error.message : '商品删除失败')); },
         ),
-      })) : ordinaryRows,
+      };
+      }) : ordinaryRows,
       spProducts: this.page === 'spProducts' ? serviceRows.map((row) => ({
         ...row,
+        status: row.status === 'enabled' ? '已启用' : row.status === 'disabled' ? '已停用' : row.status === 'draft' ? '草稿' : row.status,
+        updated: typeof row.updated === 'string' ? formatShanghaiDateTime(row.updated) : row.updated,
         archive: () => confirmBox(
           '删除周期商品',
           `确认删除“${row.name || '未命名周期商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买和成员发放；既有成员权益、订单和审计记录会保留。`,
@@ -2377,16 +2431,126 @@ productController.renderVals = function renderProductListWithArchiveActions() {
   };
 };
 
-// The service-period table is a byte-frozen donor template. Reuse its one
-// archive action and only relabel the mounted DOM so the owner sees the same
-// “删除” verb as ordinary products; the owner command remains Archive.
+// The Product list fragments are byte-frozen. This V3 presentation pass keeps
+// their source controls and callbacks, only relocating page-level creation and
+// collapsing overflow actions after the donor has mounted a list row.
+const productListActionMenus = new Map<HTMLElement, TableActionMenu>();
+const productListHeaderCleanups = new Map<'products' | 'spProducts', () => void>();
+const productListHeaderElements = new Map<'products' | 'spProducts', HTMLButtonElement>();
+
+function productListPage(): 'products' | 'spProducts' | undefined {
+  const page = document.body?.dataset.page;
+  return page === 'products' || page === 'spProducts' ? page : undefined;
+}
+
 function relabelServiceProductDeleteAction(): void {
-  if (typeof document === 'undefined' || !document.body || document.body.dataset.page !== 'spProducts') return;
+  if (productListPage() !== 'spProducts') return;
   for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
     if (button.textContent?.trim() === '归档') button.textContent = '删除';
   }
 }
-const serviceProductDeleteLabelObserver = new MutationObserver(relabelServiceProductDeleteAction);
-serviceProductDeleteLabelObserver.observe(document, { childList: true, subtree: true });
-window.addEventListener('pagehide', () => serviceProductDeleteLabelObserver.disconnect(), { once: true });
-relabelServiceProductDeleteAction();
+
+function productListStage(): HTMLElement | undefined {
+  const stage = document.getElementById('stage');
+  return stage instanceof HTMLElement ? stage : undefined;
+}
+
+function removeDonorProductHeading(stage: HTMLElement, title: string): void {
+  const heading = Array.from(stage.querySelectorAll<HTMLElement>('div'))
+    .find((node) => node.children.length === 0 && node.textContent?.trim() === title);
+  // The frozen runtime keeps an otherwise transparent mount container directly
+  // under #stage. Remove the matching header child from that container, never
+  // the container itself or the list that follows it.
+  const contentRoot = stage.firstElementChild instanceof HTMLElement ? stage.firstElementChild : stage;
+  if (!heading || !contentRoot.contains(heading)) return;
+  let donorHeading: HTMLElement = heading;
+  while (donorHeading.parentElement && donorHeading.parentElement !== contentRoot) donorHeading = donorHeading.parentElement;
+  if (donorHeading.parentElement === contentRoot) donorHeading.remove();
+}
+
+function moveProductListCreateAction(page: 'products' | 'spProducts'): void {
+  const stage = productListStage();
+  if (!stage || !document.querySelector('.admin-topbar')) return;
+  const createLabel = page === 'products' ? '创建商品' : '创建周期商品';
+  const title = page === 'products' ? '商品管理' : '周期商品管理';
+  const create = Array.from(stage.querySelectorAll<HTMLButtonElement>('button'))
+    .find((button) => button.textContent?.trim() === createLabel);
+  const prior = productListHeaderCleanups.get(page);
+  if (!create) {
+    // Moving the existing control triggers this observer too. Its marker still
+    // points at a live donor source, so retain the same header node. A true
+    // donor redraw removes that source; only then can this page clear it.
+    const previous = productListHeaderElements.get(page);
+    if (previous && pageHeaderActionElementsHaveConnectedOrigins(`product-list-${page}`, [previous])) return;
+    prior?.();
+    productListHeaderCleanups.delete(page);
+    productListHeaderElements.delete(page);
+    return;
+  }
+  prior?.();
+  productListHeaderElements.set(page, create);
+  productListHeaderCleanups.set(page, mountPageHeaderActionElements(`product-list-${page}`, [create]));
+  // The V3 shell now owns this page's one title. Remove only the donor's
+  // matching direct stage child after its original create control is retained.
+  removeDonorProductHeading(stage, title);
+}
+
+function mountProductListActionMenus(page: 'products' | 'spProducts'): void {
+  for (const [container, menu] of productListActionMenus) {
+    if (container.isConnected) continue;
+    menu.dispose();
+    productListActionMenus.delete(container);
+  }
+  for (const [index, row] of Array.from(document.querySelectorAll<HTMLTableRowElement>('tbody tr')).entries()) {
+    const container = row.lastElementChild?.querySelector<HTMLElement>(':scope > div');
+    if (!container || productListActionMenus.has(container)) continue;
+    const product = page === 'products' ? loadedProducts[index] : undefined;
+    // Overflow actions are rehomed into a document-level panel. Bind the
+    // original Product projection and its still-mounted source row to every
+    // real lifecycle control, rather than deriving a new target from a later
+    // list order. A detached row/container or stale projection rejects before
+    // any write; the Product owner still enforces its original CAS server-side.
+    if (product) for (const action of container.querySelectorAll<HTMLButtonElement>('button')) {
+      if (action.textContent?.trim() === '启用' || action.textContent?.trim() === '停用') {
+        productLifecycleActionContexts.set(action, { product, row, container, page: 'products' });
+      }
+    }
+    const menu = mountTableActionMenu(container, { owner: `product-${page}-${index}`, primaryCount: 2 });
+    if (menu) productListActionMenus.set(container, menu);
+  }
+}
+
+let productListPresentationQueued = false;
+function presentProductLists(): void {
+  productListPresentationQueued = false;
+  if (!productDocumentIsActive()) return;
+  const page = productListPage();
+  if (!page) return;
+  for (const [mountedPage, cleanup] of productListHeaderCleanups) {
+    if (mountedPage === page) continue;
+    cleanup();
+    productListHeaderCleanups.delete(mountedPage);
+    productListHeaderElements.delete(mountedPage);
+  }
+  relabelServiceProductDeleteAction();
+  moveProductListCreateAction(page);
+  mountProductListActionMenus(page);
+}
+
+function scheduleProductListPresentation(): void {
+  if (productListPresentationQueued) return;
+  productListPresentationQueued = true;
+  queueMicrotask(presentProductLists);
+}
+
+const productListPresentationObserver = observeProductDocument(scheduleProductListPresentation);
+const disposeProductListPresentation = (): void => {
+  for (const menu of productListActionMenus.values()) menu.dispose();
+  productListActionMenus.clear();
+  for (const cleanup of productListHeaderCleanups.values()) cleanup();
+  productListHeaderCleanups.clear();
+  productListHeaderElements.clear();
+};
+window.addEventListener('pagehide', disposeProductListPresentation, { once: true });
+window.addEventListener('unload', disposeProductListPresentation, { once: true });
+scheduleProductListPresentation();
