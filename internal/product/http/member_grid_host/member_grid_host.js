@@ -96,4 +96,17 @@
   });
   new MutationObserver(renderUnavailableRenewals).observe(document.documentElement, {childList:true, subtree:true});
 
+  // The public query intentionally omits a global total. The frozen renderer
+  // treats its null sentinel as Number(null) and reports “共 0 行” even when
+  // it has rendered rows. The V3 Host can state the truthful loaded count
+  // without inventing a total or changing the frozen query contract.
+  const renderUnknownPublicTotal = () => {
+    if (memberGridRoot()?.dataset?.mode !== "public") return;
+    const summary = document.getElementById("spResultSummary");
+    const rows = document.querySelectorAll("#spGridBody tr[data-record-id]").length;
+    if (summary && rows > 0 && /^共\s*0\s*行(?:，已加载\s*\d+\s*行)?$/.test(summary.textContent.trim())) summary.textContent = `已加载 ${rows} 行`;
+  };
+  new MutationObserver(renderUnknownPublicTotal).observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+  renderUnknownPublicTotal();
+
 })(window, document);

@@ -177,6 +177,7 @@ async function runPublicJourney(token) {
     '/service-period-member-grid-assets/member_grid.js',
   ], 'public host must precede frozen state and grid scripts');
   await eventually(() => document.querySelector('#spGridBody tr[data-record-id]'), 'public grid read');
+  await eventually(() => document.getElementById('spResultSummary')?.textContent.trim() === '已加载 1 行', 'public grid unknown total summary');
   return publicPage;
 }
 
