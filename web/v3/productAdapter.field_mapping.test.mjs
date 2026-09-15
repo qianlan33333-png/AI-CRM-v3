@@ -227,6 +227,10 @@ for (const periodic of [false, true])
       false,
       "preview and save never test outbound",
     );
+    // JSDOM close does not dispatch browser lifecycle events. Flush the Product
+    // adapter's normal pagehide disposal path before destroying this test window.
+    dom.window.dispatchEvent(new dom.window.Event("pagehide"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     dom.window.close();
   }
 console.log(

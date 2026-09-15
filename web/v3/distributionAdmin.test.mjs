@@ -7,8 +7,9 @@ const delay = (ms = 15) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(check, message) { for (let attempt = 0; attempt < 100; attempt++) { if (check()) return; await delay(); } throw new Error(message); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 function enter(window, input, properties = {}) { const event = new window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }); for (const [name, value] of Object.entries(properties)) Object.defineProperty(event, name, { value }); input.dispatchEvent(event); return event; }
+function resolveConfirmation(result) { const current = confirmations.shift(); assert.ok(current, 'confirmation must be opened before it can resolve'); current.resolve(result); }
 const calls = [];
-const prompts = ['不符合当前协议', '跨标签读回', '12', 'receipt-1', '12', 'receipt-1', '8', '商户承担原因'];
+const confirmations = [];
 let recoveryAttempts = 0;
 let overviewMode = 'ready';
 let holdOverview = false;
@@ -24,7 +25,7 @@ const pendingOrderDetails = [];
 let holdDisable = false;
 const pendingDisables = [];
 const dom = new JSDOM('<!doctype html><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">分销管理</h1></div></header><main id="distribution-admin-root"></main>', { url: 'https://crm.example/admin/distribution', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
-  window.Response = Response; window.Headers = Headers; Object.defineProperty(window.crypto, 'randomUUID', { value: globalThis.crypto.randomUUID.bind(globalThis.crypto) }); window.prompt = () => prompts.shift() || '';
+  window.Response = Response; window.Headers = Headers; Object.defineProperty(window.crypto, 'randomUUID', { value: globalThis.crypto.randomUUID.bind(globalThis.crypto) }); window.AICRMConfirmation = { confirm: (options) => new Promise((resolve) => confirmations.push({ options, resolve })) };
 	window.HTMLDialogElement.prototype.showModal = function showModal() { this.open = true; }; window.HTMLDialogElement.prototype.close = function close() { this.open = false; this.dispatchEvent(new window.Event('close')); };
   window.fetch = async (input, init = {}) => { const url = new URL(String(input), window.location.href); calls.push({ path: url.pathname, search: url.search, method: init.method || 'GET', body: init.body || '', idempotencyKey: new Headers(init.headers).get('Idempotency-Key') || '' });
 	if (url.pathname === '/api/admin/overview') {
@@ -124,6 +125,16 @@ const restoredCrossTabDraft = dom.window.document.querySelector('input[aria-labe
 assert.equal(restoredCrossTabDraft, crossTabDraft, 'each tab must retain its own stable filter node');
 assert.equal(restoredCrossTabDraft.value, '跨标签草稿', 'switching tabs must retain an uncommitted draft');
 assert.equal(dom.window.document.body.textContent.includes('未设置昵称'), true, 'an uncommitted cross-tab draft must not filter rows');
+const writesBeforeStaleDisableConfirmation = calls.filter((call) => call.method !== 'GET').length;
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用').click();
+await waitFor(() => confirmations.length === 1, 'disable must freeze its distributor target before confirmation');
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '订单').click();
+await waitFor(() => dom.window.document.body.textContent.includes('O-9'), 'switching tabs during confirmation did not complete');
+resolveConfirmation({ confirmed: true, values: { reason: '已失效目标' } });
+await delay(80);
+assert.equal(calls.filter((call) => call.method !== 'GET').length, writesBeforeStaleDisableConfirmation, 'a cross-tab confirmation must not write its stale distributor target');
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '分销员').click();
+await waitFor(() => dom.window.document.body.textContent.includes('未设置昵称'), 'distributor list did not recover after stale confirmation');
 restoredCrossTabDraft.value = '';
 const distributionCallsBeforeFilter = calls.filter((call) => call.path === '/api/admin/distribution/distributors').length;
 const filter = dom.window.document.querySelector('input[aria-label="仅筛选当前已加载页"]');
@@ -287,8 +298,18 @@ holdLists = false;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '分销员').click();
 await waitFor(() => dom.window.document.body.textContent.includes('未设置昵称'), 'distributor list did not restore after detail authorization coverage');
 failDistributors = true;
+const writesBeforeCancelledDisable = calls.filter((call) => call.method !== 'GET').length;
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用').click();
+await waitFor(() => confirmations.length === 1, 'disable must open one shared confirmation');
+assert.match(confirmations[0].options.title, /停用分销员/, 'disable uses the shared confirmation contract');
+assert.match(confirmations[0].options.description, /分销员 ID 9/, 'disable confirmation identifies its frozen distributor target');
+resolveConfirmation({ confirmed: false });
+await delay();
+assert.equal(calls.filter((call) => call.method !== 'GET').length, writesBeforeCancelledDisable, 'cancelled disable must not write');
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用').click();
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用')?.click();
+await waitFor(() => confirmations.length === 1, 'duplicate disable click must not open a second confirmation');
+resolveConfirmation({ confirmed: true, values: { reason: '不符合当前协议' } });
 await waitFor(() => calls.some((call) => call.path.endsWith('/disable')), 'disable did not call the real endpoint');
 assert.deepEqual(JSON.parse(calls.find((call) => call.path.endsWith('/disable')).body), { version: 3, reason: '不符合当前协议' }, 'disable body must be version and auditable reason only');
 assert.equal(calls.filter((call) => call.path.endsWith('/disable')).length, 1, 'a busy administrative action must not submit a duplicate write');
@@ -297,6 +318,8 @@ assert.equal(dom.window.document.body.textContent.includes('已读取最新服�
 failDistributors = false;
 holdDisable = true;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用').click();
+await waitFor(() => confirmations.length === 1, 'delayed disable must open confirmation before transport');
+resolveConfirmation({ confirmed: true, values: { reason: '跨标签读回' } });
 await waitFor(() => pendingDisables.length === 1, 'delayed disable did not start');
 holdLists = true;
 const pendingOrdersAt = pendingLists.length;
@@ -317,6 +340,9 @@ assert.match(dom.window.document.body.textContent, /尚欠\s+¥0\.12/, 'exceptio
 assert.match(dom.window.document.body.textContent, /系统分账成功确认\s+¥0\.33/, 'exception list paid money must use the read model currency');
 failExceptions = true;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记追回').click();
+await waitFor(() => confirmations.length === 1, 'recovery must open confirmation before transport');
+assert.match(confirmations[0].options.description, /异常编号 x1/, 'recovery confirmation identifies its frozen exception target');
+resolveConfirmation({ confirmed: true, values: { amount_minor: '12', evidence_reference: 'receipt-1' } });
 await waitFor(() => calls.some((call) => call.path.endsWith('/recoveries')), 'recovery did not call real endpoint');
 const recoveryCalls = calls.filter((call) => call.path.endsWith('/recoveries'));
 assert.deepEqual(JSON.parse(recoveryCalls[0].body), { version: 4, amount_minor: 12, evidence_reference: 'receipt-1' }, 'manual recovery cannot claim WeChat payout and must include evidence');
@@ -325,10 +351,15 @@ assert.equal(dom.window.document.body.textContent.includes('异常待确认'), t
 assert.equal(dom.window.document.body.textContent.includes('已读取最新服务端记录'), false, 'a failed command plus failed readback must not claim a confirmed refresh');
 failExceptions = false;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记追回').click();
+await waitFor(() => confirmations.length === 1, 'recovery retry must open a new confirmation');
+resolveConfirmation({ confirmed: true, values: { amount_minor: '12', evidence_reference: 'receipt-1' } });
 await waitFor(() => calls.filter((call) => call.path.endsWith('/recoveries')).length === 2, 'recovery retry did not submit');
 const retriedRecoveryCalls = calls.filter((call) => call.path.endsWith('/recoveries'));
 assert.equal(retriedRecoveryCalls[1].idempotencyKey, retriedRecoveryCalls[0].idempotencyKey, 'unknown recovery retry must reuse the original idempotency key');
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记商户承担').click();
+await waitFor(() => confirmations.length === 1, 'liability must open confirmation before transport');
+assert.match(confirmations[0].options.description, /异常编号 x1/, 'liability confirmation identifies its frozen exception target');
+resolveConfirmation({ confirmed: true, values: { amount_minor: '8', reason: '商户承担原因' } });
 await waitFor(() => calls.some((call) => call.path.endsWith('/merchant-liabilities')), 'merchant liability did not call real endpoint');
 assert.deepEqual(JSON.parse(calls.find((call) => call.path.endsWith('/merchant-liabilities')).body), { version: 4, amount_minor: 8, reason: '商户承担原因' }, 'merchant liability must carry only frozen amount and reason');
 assert.equal(calls.some((call) => /paid|wechat/i.test(call.path)), false, 'admin UI must not invent a manual WeChat-paid action');
