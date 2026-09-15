@@ -32,6 +32,7 @@ if (document.body.dataset.page === 'channelForm' && channelResourceID) {
 const donorFetch = globalThis.fetch.bind(globalThis);
 const donorLoadDb = api.loadDb.bind(api);
 let channelFormDb: AdminDb | null = null;
+let channelListReadDepth = 0;
 let staffPickerSource: 'common' | 'channel' | null = null;
 let staffPickerTrigger: HTMLButtonElement | null = null;
 type ArchiveIntent = { payload: Record<string, unknown>; etag: string; key: string };
@@ -85,10 +86,10 @@ async function readArchiveChannel(channelID: string): Promise<{ channel: Record<
 }
 
 function archiveFailureMessage(status: number): string {
-  if (status === 401) return '登录已失效，未归档渠道。请重新登录后重试。';
-  if (status === 403) return '当前账号没有归档渠道的权限，未归档渠道。';
-  if (status === 409) return '渠道已被其他人更新，未归档渠道。请刷新后核对再试。';
-  return `渠道归档失败（HTTP ${status}），当前配置未在页面中改写。`;
+  if (status === 401) return '登录已失效，未删除渠道。请重新登录后重试。';
+  if (status === 403) return '当前账号没有删除渠道的权限，未删除渠道。';
+  if (status === 409) return '渠道已被其他人更新，未删除渠道。请刷新后核对再试。';
+  return `渠道删除失败（HTTP ${status}），当前配置未在页面中改写。`;
 }
 
 async function refreshConfirmedArchive(controller: ChannelListController, channelID: string): Promise<void> {
@@ -96,18 +97,18 @@ async function refreshConfirmedArchive(controller: ChannelListController, channe
   archiveIntents.delete(channelID);
   try {
     await controller.init();
-    toast('渠道已归档：扫码不会发送欢迎语或入渠标签；历史与配置仍保留，可编辑后再启用。');
+    toast('渠道已删除：扫码不会发送欢迎语或入渠标签；历史与配置仍保留，可编辑后再启用。');
   } catch {
     // Keep the confirmed ID in this controller seam. A stale callback cannot
     // become a new write while the authoritative list projection is unavailable.
-    toast('渠道已归档，但列表未更新；请刷新后核对归档状态。', true);
+    toast('渠道已删除，但列表未更新；请刷新后核对删除状态。', true);
   }
 }
 
 async function archiveChannel(channelID: string, controller: ChannelListController): Promise<void> {
   if (!validChannelID(channelID) || archiveBusy.has(channelID)) return;
   if (confirmedArchivedChannelIDs.has(channelID)) {
-    toast('渠道已归档，但列表未更新；请刷新后核对归档状态。', true);
+    toast('渠道已删除，但列表未更新；请刷新后核对删除状态。', true);
     return;
   }
   archiveBusy.add(channelID);
@@ -116,7 +117,7 @@ async function archiveChannel(channelID: string, controller: ChannelListControll
     try {
       current = await readArchiveChannel(channelID);
     } catch {
-      toast('读取渠道配置失败，未发送归档请求。请刷新后重试。', true);
+      toast('读取渠道配置失败，未发送删除请求。请刷新后重试。', true);
       return;
     }
     if (current?.channel.status === 'archived') {
@@ -125,13 +126,13 @@ async function archiveChannel(channelID: string, controller: ChannelListControll
     }
     const payload = current && channelArchivePayload(current.channel);
     if (!current || !payload) {
-      toast('未取得完整渠道配置或版本，未发送归档请求。请刷新后重试。', true);
+      toast('未取得完整渠道配置或版本，未发送删除请求。请刷新后重试。', true);
       return;
     }
     const existing = archiveIntents.get(channelID);
     if (existing && !sameArchiveIntent(existing, payload, current.etag)) {
       archiveIntents.delete(channelID);
-      toast('上次归档结果尚未确认，渠道配置已变化；请核对后重新确认。', true);
+      toast('上次删除结果尚未确认，渠道配置已变化；请核对后重新确认。', true);
       return;
     }
     const intent = existing || { payload, etag: current.etag, key: archiveKey() };
@@ -146,7 +147,7 @@ async function archiveChannel(channelID: string, controller: ChannelListControll
     } catch {
       try { readback = await readArchiveChannel(channelID); }
       catch {
-        toast('归档结果尚未确认，回读渠道失败；请稍后刷新核对。', true);
+        toast('删除结果尚未确认，回读渠道失败；请稍后刷新核对。', true);
         return;
       }
     }
@@ -158,12 +159,12 @@ async function archiveChannel(channelID: string, controller: ChannelListControll
     if (!readback) {
       try { readback = await readArchiveChannel(channelID); }
       catch {
-        toast('归档结果尚未确认，回读渠道失败；请稍后刷新核对。', true);
+        toast('删除结果尚未确认，回读渠道失败；请稍后刷新核对。', true);
         return;
       }
     }
     if (readback?.channel.status !== 'archived') {
-      toast('归档结果尚未确认，回读未确认归档；请刷新后核对。', true);
+      toast('删除结果尚未确认，回读未确认删除；请刷新后核对。', true);
       return;
     }
     await refreshConfirmedArchive(controller, channelID);
@@ -175,11 +176,11 @@ async function archiveChannel(channelID: string, controller: ChannelListControll
 function archiveAction(channelID: string, controller: ChannelListController, channelName: string): () => void {
   return () => {
     if (confirmedArchivedChannelIDs.has(channelID)) {
-      toast('渠道已归档，但列表未更新；请刷新后核对归档状态。', true);
+      toast('渠道已删除，但列表未更新；请刷新后核对删除状态。', true);
       return;
     }
     if (archiveBusy.has(channelID)) return;
-    confirmBox('归档渠道', `归档“${channelName || '该渠道'}”会停止新的扫码欢迎语和入渠标签，保留历史、配置与归因记录；可在编辑页选择“启用”后恢复。确认归档？`, '确认归档', true, () => { void archiveChannel(channelID, controller); });
+    confirmBox('删除渠道', `删除“${channelName || '该渠道'}”会停止新的扫码欢迎语和入渠标签，保留历史、配置与归因记录；可在编辑页选择“启用”后恢复。确认删除？`, '确认删除', true, () => { void archiveChannel(channelID, controller); });
   };
 }
 
@@ -199,11 +200,11 @@ function installStableChannelArchiveBinding(): void {
           if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
           const row = value as ChannelListRow;
           const channelID = String(row.resourceId ?? '');
-          if (!validChannelID(channelID)) return { ...row, archive: () => toast('渠道缺少服务端资源 ID，无法归档。', true), archiveLabel: '归档不可用', archiveDisabled: 'true', archiveTitle: '渠道缺少服务端资源 ID，无法归档。', archiveStyle: { fontSize: '13px', color: '#A6AAB0', cursor: 'not-allowed', whiteSpace: 'nowrap' } };
+          if (!validChannelID(channelID)) return { ...row, archive: () => toast('渠道缺少服务端资源 ID，无法删除。', true), archiveLabel: '删除不可用', archiveDisabled: 'true', archiveTitle: '渠道缺少服务端资源 ID，无法删除。', archiveStyle: { fontSize: '13px', color: '#A6AAB0', cursor: 'not-allowed', whiteSpace: 'nowrap' } };
           if (row.status === 'archived' || confirmedArchivedChannelIDs.has(channelID)) {
-            return { ...row, archive: () => toast('渠道已归档；请刷新后核对最新列表状态。'), archiveLabel: '已归档', archiveDisabled: 'true', archiveTitle: '渠道已归档：扫码不会发送欢迎语或入渠标签；可编辑后再启用。', archiveStyle: { fontSize: '13px', color: '#A6AAB0', cursor: 'not-allowed', whiteSpace: 'nowrap' } };
+            return { ...row, archive: () => toast('渠道已删除；请刷新后核对最新列表状态。'), archiveLabel: '已删除', archiveDisabled: 'true', archiveTitle: '渠道已删除：扫码不会发送欢迎语或入渠标签；可编辑后再启用。', archiveStyle: { fontSize: '13px', color: '#A6AAB0', cursor: 'not-allowed', whiteSpace: 'nowrap' } };
           }
-          return { ...row, archive: archiveAction(channelID, this, String(row.name || row.code || '该渠道')), archiveLabel: '归档', archiveDisabled: 'false', archiveTitle: '归档会停止扫码欢迎语和入渠标签，并保留历史；可编辑后再启用。', archiveStyle: { fontSize: '13px', color: '#3370FF', cursor: 'pointer', whiteSpace: 'nowrap' } };
+          return { ...row, archive: archiveAction(channelID, this, String(row.name || row.code || '该渠道')), archiveLabel: '删除', archiveDisabled: 'false', archiveTitle: '删除会停止扫码欢迎语和入渠标签，并保留历史；可编辑后再启用。', archiveStyle: { fontSize: '13px', color: '#3370FF', cursor: 'pointer', whiteSpace: 'nowrap' } };
         }),
       },
     };
@@ -231,7 +232,12 @@ function prepareFrozenChannelListTemplate(): void {
     archive.setAttribute('style', '{{ r.archiveStyle }}');
   }
   const deletion = anchors.find((node) => node.textContent?.trim() === '删除' && node.title === '后端暂无渠道删除 operation');
-  deletion?.remove();
+  if (deletion) {
+    deletion.textContent = '删除不可用';
+    deletion.title = '暂不支持永久删除；删除会保留历史配置和归因记录。';
+    deletion.style.color = '#A6AAB0';
+    deletion.style.cursor = 'not-allowed';
+  }
 }
 
 function dependencyUnavailable(): Response {
@@ -255,7 +261,7 @@ function blockedEntrantActionStatus(value: unknown): 'inactive' | 'archived' | '
 
 function blockedEntrantActionText(status: 'inactive' | 'archived'): string {
   return status === 'archived'
-    ? '已归档：扫码不会发送欢迎语或入渠标签；请编辑后选择“启用”并保存。'
+    ? '已删除：扫码不会发送欢迎语或入渠标签；请编辑后选择“启用”并保存。'
     : '已停用：扫码不会发送欢迎语或入渠标签；请编辑后选择“启用”并保存。';
 }
 
@@ -366,6 +372,22 @@ async function normalizeChannelResponse(response: Response, url: URL): Promise<R
     return responseWithJSON(response, payload);
   }
   return response;
+}
+
+function frozenChannelListRead(url: URL, method: string): boolean {
+  if (channelListReadDepth < 1 || method !== 'GET' || url.origin !== location.origin || url.pathname !== '/api/admin/channels') return false;
+  const params = url.searchParams;
+  return params.size === 2
+    && params.getAll('limit').length === 1
+    && params.get('limit') === '50'
+    && params.getAll('include_archived').length === 1
+    && params.get('include_archived') === 'true';
+}
+
+function currentChannelListURL(url: URL): string {
+  const current = new URL(url);
+  current.searchParams.delete('include_archived');
+  return current.toString();
 }
 
 async function waitForAsset(response: Response, url: URL, headers: Headers, credentials: RequestCredentials): Promise<Response> {
@@ -489,6 +511,14 @@ function renderStaffPickerFailure(): void {
 // read with the exact saved channel's acquisition-staff catalog; the picker
 // then completes through the donor controller as usual.
 api.loadDb = async (context) => {
+  if (context?.page === 'channels') {
+    channelListReadDepth += 1;
+    try {
+      return await donorLoadDb(context);
+    } finally {
+      channelListReadDepth -= 1;
+    }
+  }
   if (context?.page === 'channelForm') {
     const db = await donorLoadDb(context);
     channelFormDb = db;
@@ -530,10 +560,13 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   const request = input instanceof Request ? input : null;
   const method = String(init?.method || request?.method || 'GET').toUpperCase();
   const url = new URL(request?.url || String(input), location.href);
+  const listInput = frozenChannelListRead(url, method)
+    ? (request ? new Request(currentChannelListURL(url), request) : currentChannelListURL(url))
+    : input;
   const mutation = url.origin === location.origin ? channelMutation(url, method) : null;
   const headers = new Headers(init?.headers || request?.headers);
   if (!mutation || headers.has('If-Match')) {
-    const response = await donorFetch(input, init);
+    const response = await donorFetch(listInput, init);
     if (url.origin !== location.origin) return response;
     if (method === 'POST' && channelAssetPath(url)) return waitForAsset(response, url, headers, init?.credentials || request?.credentials || 'same-origin');
     return normalizeChannelResponse(response, url);

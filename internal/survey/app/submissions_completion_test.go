@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ type completionStore struct {
 	created       bool
 	accepted      int
 	bound         int
+	saveCalls     int
 	testSnapshot  CompletionTestSnapshot
 	testCreated   bool
 }
@@ -46,6 +48,12 @@ func (s *completionStore) CreateSubmission(_ context.Context, in PersistSubmissi
 }
 func (s *completionStore) GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error) {
 	return s.configuration, nil
+}
+func (s *completionStore) SaveOperationConfiguration(_ context.Context, value surveyport.OperationConfiguration, _ int64, now time.Time) (surveyport.OperationConfiguration, error) {
+	s.saveCalls++
+	value.UpdatedAt = now
+	s.configuration = value
+	return value, nil
 }
 func (s *completionStore) RecordCompletionEffect(context.Context, surveyport.ID, surveyport.ID, string, string, string, [32]byte, time.Time) error {
 	s.bound++
@@ -154,6 +162,29 @@ func TestOperationConfigurationRejectsNonObjectMetadata(t *testing.T) {
 	_, err := service.SaveOperationConfiguration(context.Background(), surveyport.OperationConfiguration{QuestionnaireID: 1, ExternalPushMetadata: []byte(`[]`)}, 1, "survey-config-invalid-metadata-0001")
 	if !errors.Is(err, surveyport.ErrInvalid) {
 		t.Fatalf("non-object metadata error=%v", err)
+	}
+}
+
+func TestOperationConfigurationRejectsArchivedQuestionnaireWithoutChangingRetainedConfiguration(t *testing.T) {
+	existing := surveyport.OperationConfiguration{
+		QuestionnaireID: 7, CompletionNavigationRef: "history-navigation", ExternalPushEnabled: true,
+		ExternalPushConfigurationRef: "history-push", ExternalPushMetadata: json.RawMessage(`{"remark":"retained"}`), Version: 4,
+	}
+	store := &completionStore{questionnaire: surveyport.Questionnaire{ID: 7, Status: surveyport.StatusArchived}, configuration: existing}
+	service := NewSubmissionService(oauthUOW{}, store, nil)
+	_, err := service.SaveOperationConfiguration(context.Background(), surveyport.OperationConfiguration{
+		QuestionnaireID: 7, CompletionNavigationRef: "new-navigation", ExternalPushEnabled: true,
+		ExternalPushConfigurationRef: "new-push", ExternalPushMetadata: json.RawMessage(`{"remark":"must-not-write"}`), Version: 4,
+	}, 8, "survey-archived-config-0001")
+	if !errors.Is(err, surveyport.ErrNotFound) {
+		t.Fatalf("archived configuration write error=%v", err)
+	}
+	if store.saveCalls != 0 || !reflect.DeepEqual(store.configuration, existing) {
+		t.Fatalf("archived configuration mutated retained history saves=%d configuration=%+v", store.saveCalls, store.configuration)
+	}
+	readback, err := service.GetOperationConfiguration(context.Background(), 7)
+	if err != nil || !reflect.DeepEqual(readback, existing) {
+		t.Fatalf("archived historical configuration readback=%+v err=%v", readback, err)
 	}
 }
 

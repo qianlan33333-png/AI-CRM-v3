@@ -70,8 +70,29 @@ func TestPostgreSQLCouponRulesAtomicReceiptAuditAndOutbox(t *testing.T) {
 	if err != nil || replayed.ID != created.ID {
 		t.Fatalf("replay=%#v err=%v", replayed, err)
 	}
-	if _, err = service.Publish(ctx, created.ID, 7, "coupon-pg-publish-key-01"); err != nil {
+	published, err := service.Publish(ctx, created.ID, 7, "coupon-pg-publish-key-01")
+	if err != nil {
 		t.Fatal(err)
+	}
+	archived, err := service.Archive(ctx, created.ID, published.Version, 7, "coupon-pg-archive-key-01")
+	if err != nil || archived.Status != "archived" {
+		t.Fatalf("archive=%+v err=%v", archived, err)
+	}
+	if replay, replayErr := service.Archive(ctx, created.ID, published.Version, 7, "coupon-pg-archive-key-01"); replayErr != nil || replay.ID != archived.ID || replay.Version != archived.Version || replay.Status != "archived" {
+		t.Fatalf("archive replay=%+v err=%v", replay, replayErr)
+	}
+	if _, err = service.Archive(ctx, created.ID, published.Version, 7, "coupon-pg-archive-stale-01"); !errors.Is(err, couponapp.ErrConflict) {
+		t.Fatalf("stale archive error=%v", err)
+	}
+	retained, err := service.Get(ctx, created.ID)
+	if err != nil || retained.ID != created.ID || retained.Status != "archived" || retained.Version != archived.Version {
+		t.Fatalf("retained archive=%+v err=%v", retained, err)
+	}
+	if _, err = service.Copy(ctx, created.ID, 7, "coupon-pg-copy-archived-01"); !errors.Is(err, couponapp.ErrConflict) {
+		t.Fatalf("archived copy error=%v", err)
+	}
+	if _, err = service.Publish(ctx, created.ID, 7, "coupon-pg-publish-archived-01"); !errors.Is(err, couponapp.ErrConflict) {
+		t.Fatalf("archived publish error=%v", err)
 	}
 	var repositoryItems []couponport.Coupon
 	if err = uow.Within(ctx, func(txCtx context.Context) error {
@@ -80,21 +101,25 @@ func TestPostgreSQLCouponRulesAtomicReceiptAuditAndOutbox(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("repository list persisted coupons: %v", err)
 	}
-	if len(repositoryItems) != 1 || repositoryItems[0].ID != created.ID {
+	if len(repositoryItems) != 0 {
 		t.Fatalf("repository list=%#v", repositoryItems)
 	}
 	page, err := service.List(ctx, 50, 0, "", "")
 	if err != nil {
 		t.Fatalf("list persisted coupons: %v", err)
 	}
-	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].ID != created.ID || len(page.Items[0].TargetRefs) != 1 || page.Items[0].TargetRefs[0] != "standard_product:9" {
-		t.Fatalf("persisted list=%#v", page)
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("normal list must exclude archived coupon: %#v", page)
+	}
+	historyPage, err := service.List(ctx, 50, 0, "", "archived")
+	if err != nil || historyPage.Total != 1 || len(historyPage.Items) != 1 || historyPage.Items[0].ID != created.ID || len(historyPage.Items[0].TargetRefs) != 1 || historyPage.Items[0].TargetRefs[0] != "standard_product:9" {
+		t.Fatalf("retained history list=%#v err=%v", historyPage, err)
 	}
 	var rules, targets, receipts, audits, outbox int
 	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM coupon_rules),(SELECT count(*) FROM coupon_rule_targets),(SELECT count(*) FROM coupon_operation_receipts),(SELECT count(*) FROM coupon_audit_events),(SELECT count(*) FROM coupon_outbox)`).Scan(&rules, &targets, &receipts, &audits, &outbox); err != nil {
 		t.Fatal(err)
 	}
-	if rules != 1 || targets != 1 || receipts != 2 || audits != 2 || outbox != 2 {
+	if rules != 1 || targets != 1 || receipts != 3 || audits != 3 || outbox != 3 {
 		t.Fatalf("rows rules=%d targets=%d receipts=%d audits=%d outbox=%d", rules, targets, receipts, audits, outbox)
 	}
 	if _, err = native.Exec(ctx, `UPDATE coupon_audit_events SET event_type=event_type`); err == nil {

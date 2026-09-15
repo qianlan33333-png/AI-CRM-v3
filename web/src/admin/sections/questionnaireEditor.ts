@@ -1412,13 +1412,13 @@ async function toggleQuestionnaire(item) {
 
 async function deleteQuestionnaireItem(item) {
   const expectedVersion = Number(item?.version ?? state.questionnaire?.version);
-  if (!window.confirm('归档后，问卷会从正常列表和新的填写入口移除；历史答卷、结果和导出记录会保留。确认归档该问卷吗？')) return;
+  if (!window.confirm('删除后，问卷会从正常列表和新的填写入口移除；历史答卷、结果和导出记录会保留。确认删除该问卷吗？')) return;
   await deleteEditorQuestionnaire(item.id, expectedVersion);
   if (state.currentId === item.id) {
     window.location.assign(editorConfig.backHref);
     return;
   }
-  showToast('问卷已归档');
+  showToast('问卷已删除');
   await loadList();
 }
 
@@ -1734,9 +1734,9 @@ function renderQuestionnaireInspector() {
         type="button"
         class="link-btn danger"
       >
-        归档此问卷
+        删除此问卷
       </button>
-      <p>归档会停止新的填写入口，历史答卷和结果保留。</p>
+      <p>删除会停止新的填写入口，历史答卷和结果保留。</p>
     </section>
   ` : '';
   inspectorBodyEl.innerHTML = `

@@ -236,7 +236,7 @@ func (s *Service) Copy(ctx context.Context, id couponport.ID, actor int64, key s
 		if e != nil {
 			return couponport.Coupon{}, false, e
 		}
-		if old.HistoryOnly {
+		if old.HistoryOnly || old.Status == "archived" {
 			return couponport.Coupon{}, false, ErrConflict
 		}
 		command, ids, e := normalize(couponport.UpsertCommand{Coupon: couponport.Coupon{Name: copiedCouponName(old.Name), DiscountAmountTotal: old.DiscountAmountTotal, TotalIssueLimit: old.TotalIssueLimit, PerUserIssueLimit: old.PerUserIssueLimit, ClaimStartsAt: old.ClaimStartsAt, ClaimEndsAt: old.ClaimEndsAt, ValidityMode: old.ValidityMode, UseStartsAt: old.UseStartsAt, UseEndsAt: old.UseEndsAt, RelativeValidityDays: old.RelativeValidityDays, Instructions: old.Instructions, TargetRefs: old.TargetRefs}, Actor: actor, IdempotencyKey: key})
@@ -383,7 +383,7 @@ func (s *Service) mutate(ctx context.Context, operation string, input couponport
 		case "update":
 			var old couponport.Coupon
 			old, e = s.store.Lock(tx, command.ID)
-			if e == nil && old.HistoryOnly {
+			if e == nil && (old.HistoryOnly || old.Status == "archived") {
 				e = ErrConflict
 			}
 			if e == nil && draftOnly {

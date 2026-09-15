@@ -554,7 +554,17 @@ func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, valu
 	now := s.now().UTC()
 	var stored surveyport.OperationConfiguration
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		var e error
+		// Take the same questionnaire row lock used by lifecycle transitions.
+		// This makes archive and a new operation-configuration write serialize:
+		// after archive commits, retained configuration can still be read but no
+		// completion/external-push entry may be created or changed.
+		questionnaire, e := s.store.Get(tx, value.QuestionnaireID, true)
+		if e != nil {
+			return e
+		}
+		if questionnaire.Status == surveyport.StatusArchived {
+			return surveyport.ErrNotFound
+		}
 		stored, e = s.store.SaveOperationConfiguration(tx, value, actor, now)
 		if e != nil {
 			return e

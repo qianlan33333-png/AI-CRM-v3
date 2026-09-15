@@ -1905,13 +1905,13 @@ try {
     await waitFor(() => pagedEnableWrites === (reply === "empty" ? 2 : reply === "wrong-id" ? 3 : reply === "boolean-id" ? 4 : 5) && paginationWindow.document.body.textContent.includes("启用结果未确认"), `a 200 ${reply} enable reply was incorrectly accepted`);
   }
   paginationWindow.document.querySelector('[data-action="delete-plan"]').click();
-  await waitFor(() => pagedArchiveWrites === 1 && paginationWindow.document.body.textContent.includes("归档结果未确认"), "a wrong-state archive reply was incorrectly accepted");
+  await waitFor(() => pagedArchiveWrites === 1 && paginationWindow.document.body.textContent.includes("删除结果未确认"), "a wrong-state archive reply was incorrectly accepted");
   pageFiftyFails = false;
   paginationWindow.document.querySelector('[data-action="next-list-page"]').click();
   await waitFor(() => paginationWindow.document.querySelector('[data-action="delete-plan"]')?.dataset.planId === "141", "the tail page did not render for archive fallback");
   const tailReadsBeforeArchive = pagedRequests.filter((request) => request.path === "/api/admin/automation-conversion/group-ops/plans?limit=50&offset=50" && request.method === "GET").length;
   paginationWindow.document.querySelector('[data-action="delete-plan"]').click();
-  await waitFor(() => paginationWindow.document.querySelector('[data-action="enable-plan"]')?.dataset.planId === "91" && paginationWindow.document.body.textContent.includes("已归档"), "an empty tail page after archive did not return once to the previous page");
+  await waitFor(() => paginationWindow.document.querySelector('[data-action="enable-plan"]')?.dataset.planId === "91" && paginationWindow.document.body.textContent.includes("已删除"), "an empty tail page after archive did not return once to the previous page");
   assert.equal(pagedRequests.filter((request) => request.path === "/api/admin/automation-conversion/group-ops/plans?limit=50&offset=50" && request.method === "GET").length, tailReadsBeforeArchive + 1, "tail-page archive must reread its own offset once before fallback");
   console.log("groupops-list-pagination-dom: PASS");
 } finally {
@@ -2954,7 +2954,7 @@ console.log("groupops-create-recovery-dom: PASS");
 // browser must not render an enable/delete path or a writable detail control.
 const archivedPlan = {
   plan_id: 77,
-  name: "已归档群运营计划",
+  name: "已删除群运营计划",
   revision: 12,
   status: "archived",
   plan_type: "standard",
@@ -2988,7 +2988,7 @@ archivedListWindow.fetch = async (input, init = {}) => {
 try {
   archivedListWindow.eval(pickerSource);
   archivedListWindow.eval(bundle.outputFiles[0].text);
-  await waitFor(() => archivedListWindow.document.body.textContent.includes("已归档"), "archived list status did not render");
+  await waitFor(() => archivedListWindow.document.body.textContent.includes("已删除"), "archived list status did not render");
   assert(archivedListWindow.document.body.textContent.includes("已绑定群（暂不可用）"), "an older list response must make the missing binding metric visibly unknown");
   assert(archivedListWindow.document.body.textContent.includes("一号运营"), "list must render the same trusted owner projection as detail");
   assert.equal(archivedListWindow.document.querySelector('[data-action="enable-plan"]'), null, "archived list must not render an enable action");

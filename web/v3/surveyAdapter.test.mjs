@@ -95,7 +95,7 @@ try {
   const deleteLink = [...dom.window.document.querySelectorAll('a')].find((node) => node.textContent === '删除');
   assert.ok(deleteLink, 'the rendered questionnaire table has the archive action');
   deleteLink.click();
-  assert.equal(dom.window.document.getElementById('fb-head')?.textContent, '归档问卷', 'the rendered action opens the archive confirmation');
+  assert.equal(dom.window.document.getElementById('fb-head')?.textContent, '删除问卷', 'the rendered action opens the owner-visible delete confirmation');
   assert.match(dom.window.document.getElementById('fb-body')?.textContent || '', /过期问卷标题/, 'the confirmation identifies the frozen row');
   dom.window.document.getElementById('fb-ok').click();
   await pause();

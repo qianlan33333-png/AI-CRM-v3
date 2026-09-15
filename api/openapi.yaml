@@ -1326,12 +1326,12 @@ paths:
     delete:
       operationId: deleteLocalWechatPayProduct
       tags: [Products]
-      description: Physical deletion is allowed only for an unreferenced local draft; enabled/used facts fail closed.
+      description: Archives a local product. It leaves normal owner discovery and new purchase or selection entry points while retained orders, receipts, and audit history remain readable.
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
-      requestBody: {required: false, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
       responses:
-        "200": {description: Local delete result, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProductDelete"}}}}
+        "200": {description: Archived local product, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProduct"}}}}
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
@@ -5480,7 +5480,7 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         version: {$ref: "#/components/schemas/PositiveID"}
-        lifecycle: {type: string, enum: [draft, enabled, disabled]}
+        lifecycle: {type: string, enum: [draft, enabled, disabled, archived]}
         enabled: {type: boolean}
         paid_order_count: {type: integer, format: int64, minimum: 0}
         refund_order_count: {type: integer, format: int64, minimum: 0}
@@ -5553,16 +5553,9 @@ components:
         created_by: {$ref: "#/components/schemas/PositiveID"}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
-        lifecycle: {type: string, enum: [draft, disabled, enabled]}
+        lifecycle: {type: string, enum: [draft, disabled, enabled, archived]}
         enabled: {type: boolean}
         version: {$ref: "#/components/schemas/PositiveID"}
-    LocalProductDelete:
-      type: object
-      additionalProperties: false
-      required: [product_id, deleted]
-      properties:
-        product_id: {$ref: "#/components/schemas/PositiveID"}
-        deleted: {type: boolean}
     LocalProductShare:
       type: object
       additionalProperties: false

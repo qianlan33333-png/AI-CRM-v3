@@ -80,7 +80,7 @@ async function archiveQuestionnaire(controller: SurveyListController, id: number
       return;
     }
     archiveIntents.delete(id);
-    toast('问卷已归档，已停止新的公开提交。');
+    toast('问卷已删除，已停止新的公开提交。');
   } catch (error) {
     // Keep the exact immutable command for retry. A different list version
     // intentionally receives a new confirmation and a new idempotency scope.
@@ -142,9 +142,9 @@ void (async () => {
               del: () => {
                 const title = typeof row.title === 'string' && row.title.trim() ? row.title.trim() : displayName;
                 confirmBox(
-                  '归档问卷',
-                  `确认归档“${title}”吗？将停止新的公开提交，并从正常列表移除；已提交答卷、结果快照和审计记录会保留。`,
-                  '确认归档',
+                  '删除问卷',
+                  `确认删除“${title}”吗？将停止新的公开提交，并从正常列表移除；已提交答卷、结果快照和审计记录会保留。`,
+                  '确认删除',
                   true,
                   () => { void archiveQuestionnaire(this, id, expectedVersion); },
                 );
