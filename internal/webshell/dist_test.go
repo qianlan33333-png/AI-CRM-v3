@@ -47,7 +47,7 @@ func newDistFixture(t *testing.T) string {
 func TestDistOverviewAdminAssetsRequireManifestAndFiles(t *testing.T) {
 	root := newDistFixture(t)
 	assets, ok := DistOverviewAdminAssets(root)
-	if !ok || assets.CSS != "/assets/overviewStyles-test.css" || assets.AdminJS != "/assets/overviewAdmin-test.js" {
+	if !ok || assets.CSS != "/assets/overviewStyles-test.css" || assets.DetailDrawerCSS != "/assets/sharedDetailDrawerStyles-test.css" || assets.AdminJS != "/assets/overviewAdmin-test.js" {
 		t.Fatalf("overview assets=%+v ok=%t", assets, ok)
 	}
 	if err := os.Remove(filepath.Join(root, "assets", "overviewAdmin-test.js")); err != nil {
@@ -55,6 +55,13 @@ func TestDistOverviewAdminAssetsRequireManifestAndFiles(t *testing.T) {
 	}
 	if _, ok := DistOverviewAdminAssets(root); ok {
 		t.Fatal("manifest entry with a missing physical overview asset was accepted")
+	}
+	root = newDistFixture(t)
+	if err := os.Remove(filepath.Join(root, "assets", "sharedDetailDrawerStyles-test.css")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := DistOverviewAdminAssets(root); ok {
+		t.Fatal("manifest entry with a missing shared drawer stylesheet was accepted")
 	}
 }
 
@@ -108,7 +115,7 @@ func TestDistAdminPagesReplacePlaceholderShell(t *testing.T) {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, root, nil))
 		body := response.Body.String()
-		if response.Code != http.StatusOK || strings.Contains(response.Header().Get("Location"), "customers") || !strings.Contains(body, `id="overview-admin-root"`) || !strings.Contains(body, `href="/assets/overviewStyles-test.css"`) || !strings.Contains(body, `src="/assets/overviewAdmin-test.js"`) {
+		if response.Code != http.StatusOK || strings.Contains(response.Header().Get("Location"), "customers") || !strings.Contains(body, `id="overview-admin-root"`) || !strings.Contains(body, `href="/assets/overviewStyles-test.css"`) || !strings.Contains(body, `href="/assets/sharedDetailDrawerStyles-test.css"`) || !strings.Contains(body, `src="/assets/overviewAdmin-test.js"`) {
 			t.Fatalf("admin root %s status=%d location=%q body=%q", root, response.Code, response.Header().Get("Location"), body)
 		}
 	}

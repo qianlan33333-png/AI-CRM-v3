@@ -192,10 +192,12 @@ type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, Compos
 // admin shell. It never contains a donor document or business data.
 type DistributionAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
 
-// OverviewAssets is the V3-owned stylesheet and Host module for the
-// read-only operating overview. The shell receives only manifest-derived
-// URLs; all business facts remain in the authorized HTTP endpoint.
-type OverviewAssets struct{ CSS, AdminJS string }
+// OverviewAssets are the V3-owned stylesheets and Host module for the
+// read-only operating overview. The shared drawer stylesheet is explicit:
+// importing its TypeScript helper does not load CSS into the rendered shell.
+// The shell receives only manifest-derived URLs; facts remain in the
+// authorized HTTP endpoint.
+type OverviewAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import

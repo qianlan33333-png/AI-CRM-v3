@@ -72,6 +72,14 @@ func TestPostgreSQLAdminOverviewPaidRecordsCompositionUsesPaidConfirmationFact(t
 	if response.Code != http.StatusOK || body.Range.Timezone != "Asia/Shanghai" || len(body.Items) != 3 || total != 2400 || body.NextCursor != "" || strings.Contains(response.Body.String(), "payment_id") || strings.Contains(response.Body.String(), "provider_transaction") {
 		t.Fatalf("paid records status=%d body=%s", response.Code, response.Body.String())
 	}
+	detail := overviewAuthenticatedGET(t, fixture.application.handler, fixture.session, "/api/admin/orders/M-OVERVIEW-BROWSER?provider=wechat")
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"merchant_order_no":"M-OVERVIEW-BROWSER"`) || !strings.Contains(detail.Body.String(), `"provider":"wechat"`) || !strings.Contains(detail.Body.String(), `"detail_url":"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER\u0026provider=wechat"`) {
+		t.Fatalf("provider-scoped paid-record detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	list := overviewAuthenticatedGET(t, fixture.application.handler, fixture.session, "/api/admin/orders?limit=50&offset=0")
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"merchant_order_no":"M-OVERVIEW-BROWSER"`) {
+		t.Fatalf("order list for paid-record detail shell status=%d body=%s", list.Code, list.Body.String())
+	}
 }
 
 func TestPostgreSQLAdminOverviewChromiumJourney(t *testing.T) {
@@ -289,6 +297,9 @@ func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *comp
 	if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','overview-browser','overview-browser-order','M-OVERVIEW-BROWSER',$1,$1,1200,'CNY','paid','native',true,1,$2,$2) RETURNING id`, customerID, now).Scan(&orderID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,1,'overview-browser-product','Overview Browser Product',1200,1,1200)`, orderID); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical) VALUES($1,'wechat_pay','mini_program','M-OVERVIEW-BROWSER',$2,$3,$3,1200,'CNY','paid',1,$4,$4,$4,false) RETURNING id`, orderID, identityID, customerID, now).Scan(&paymentID); err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +316,9 @@ func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *comp
 	} {
 		var extraOrderID int64
 		if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','overview-browser',$1,$2,$3,$3,$4,'CNY','paid','native',true,1,$5,$5) RETURNING id`, extra.sourceKey, extra.merchantOrder, customerID, extra.amount, extra.confirmedAt).Scan(&extraOrderID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,1,'overview-browser-product','Overview Browser Product',$2,1,$2)`, extraOrderID, extra.amount); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := pool.Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical) VALUES($1,'wechat_pay','mini_program',$2,$3,$4,$4,$5,'CNY','paid',1,$6,$6,$6,false)`, extraOrderID, extra.merchantOrder, identityID, customerID, extra.amount, extra.confirmedAt); err != nil {

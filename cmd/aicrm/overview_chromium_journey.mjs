@@ -89,13 +89,20 @@ try {
   cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
   const assetResponses = new Map();
   const orderDetailResponses = [];
+  const orderResponses = [];
+  const orderAssetResponses = [];
   cdp.on("Network.responseReceived", (params) => {
     try {
       const responseURL = new URL(String(params.response?.url || ""));
       if (responseURL.origin !== new URL(baseURL).origin) return;
-      const match = responseURL.pathname.match(/^\/assets\/(overviewAdmin|overviewStyles|navigationHost)-[A-Za-z0-9_-]+\.(?:js|css)$/);
+      const match = responseURL.pathname.match(/^\/assets\/(overviewAdmin|overviewStyles|sharedDetailDrawerStyles|navigationHost)-[A-Za-z0-9_-]+\.(?:js|css)$/);
       if (match) assetResponses.set(match[1], Number(params.response?.status) || 0);
-      if (responseURL.pathname === "/api/admin/orders/M-OVERVIEW-BROWSER") orderDetailResponses.push({ provider: responseURL.searchParams.get("provider"), status: Number(params.response?.status) || 0 });
+      if (responseURL.pathname.startsWith("/order-assets/")) orderAssetResponses.push({ path: responseURL.pathname, status: Number(params.response?.status) || 0 });
+      if (responseURL.pathname.startsWith("/api/admin/orders")) {
+        const response = { path: responseURL.pathname, query: responseURL.search, status: Number(params.response?.status) || 0 };
+        orderResponses.push(response);
+        if (responseURL.pathname === "/api/admin/orders/M-OVERVIEW-BROWSER") orderDetailResponses.push({ provider: responseURL.searchParams.get("provider"), status: response.status });
+      }
     } catch (_) {}
   });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin` });
@@ -108,7 +115,7 @@ try {
     const diagnostics = await evaluate(cdp, "JSON.stringify({root:document.querySelector('#overview-admin-root')?.outerHTML||'',scripts:[...document.scripts].map((script)=>script.src),text:document.body.textContent.slice(0,1200)})");
     throw new Error(`${error.message}: ${diagnostics}`);
   }
-  for (const asset of ["overviewAdmin", "overviewStyles"]) {
+  for (const asset of ["overviewAdmin", "overviewStyles", "sharedDetailDrawerStyles"]) {
     if (assetResponses.get(asset) !== 200) throw new Error(`staged overview asset ${asset} HTTP status=${assetResponses.get(asset) || 0}`);
   }
   const overviewDOM = await evaluate(cdp, "JSON.stringify({primary:[...document.querySelectorAll('.overview-metrics--primary .overview-metric')].map((node)=>node.textContent),secondary:[...document.querySelectorAll('.overview-metrics--secondary .overview-metric')].map((node)=>node.textContent),today:performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/overview?period=today')),nav:[...document.querySelectorAll('.admin-nav-section-title')].map((node)=>node.textContent)})");
@@ -121,12 +128,28 @@ try {
   const paidRecordsOpened = await evaluate(cdp, "(() => { const button=document.querySelector('[data-overview-paid-records]'); if (!button) return false; button.click(); return true; })()");
   if (!paidRecordsOpened) throw new Error("overview paid-record action is unavailable for a ready payment section");
   await waitFor(cdp, "document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]')", "paid-record drawer did not form the provider-scoped order detail link");
+  const drawerGeometry = JSON.parse(await evaluate(cdp, "(() => { const drawer=document.querySelector('.shared-detail-drawer'); if (!drawer) return '{}'; const box=drawer.getBoundingClientRect(); const style=getComputedStyle(drawer); return JSON.stringify({width:box.width,right:innerWidth-box.right,border:style.borderTopWidth}); })()") || "{}");
+  if (drawerGeometry.width < 600 || drawerGeometry.right < 0 || drawerGeometry.right > 32 || drawerGeometry.border !== "0px") throw new Error(`shared detail drawer stylesheet did not form the right-aligned drawer: ${JSON.stringify(drawerGeometry)}`);
   await captureOverview(cdp, "overview-paid-records-1280.png", 1280);
   await captureOverview(cdp, "overview-paid-records-1440.png", 1440);
   const openedOrder = await evaluate(cdp, "(() => { const link=document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]'); if (!link) return false; link.click(); return true; })()");
   if (!openedOrder) throw new Error("paid-record drawer link disappeared before navigation");
-  await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/orders/M-OVERVIEW-BROWSER?provider=wechat'))", "provider-scoped order detail did not request its exact Order API URL");
+  try {
+    await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/orders/M-OVERVIEW-BROWSER?provider=wechat'))", "provider-scoped order detail did not request its exact Order API URL");
+  } catch (error) {
+    const detailDiagnostics = await evaluate(cdp, "JSON.stringify({path:location.pathname,query:location.search,bodyPage:document.body.dataset.page||'',scripts:[...document.scripts].map((script)=>script.src),resources:performance.getEntriesByType('resource').map((entry)=>String(entry.name)).filter((name)=>name.includes('/api/admin/orders/')||name.includes('orderHost'))})");
+    throw new Error(`${error.message}: ${detailDiagnostics}; responses=${JSON.stringify(orderDetailResponses)}`);
+  }
   if (!orderDetailResponses.some((value) => value.provider === "wechat" && value.status === 200)) throw new Error(`provider-scoped Order detail response missing: ${JSON.stringify(orderDetailResponses)}`);
+  try {
+    await waitFor(cdp, "document.body.textContent.includes('Overview Browser Product') && document.body.textContent.includes('M-OVERVIEW-BROWSER')", "provider-scoped order detail did not render its selected Order facts");
+  } catch (error) {
+    const detailDiagnostics = await evaluate(cdp, "JSON.stringify({path:location.pathname,query:location.search,text:document.body.textContent.slice(0,1600),scripts:[...document.scripts].map((script)=>script.src)})");
+    throw new Error(`${error.message}: ${detailDiagnostics}; responses=${JSON.stringify(orderResponses)}`);
+  }
+  if (!orderAssetResponses.some((value) => /\/orderHost-[A-Za-z0-9_-]+\.js$/.test(value.path)) || orderAssetResponses.some((value) => value.status !== 200)) throw new Error(`provider-scoped Order detail did not load its full Host closure: ${JSON.stringify(orderAssetResponses)}`);
+  await captureOverview(cdp, "overview-paid-record-order-detail-1280.png", 1280);
+  await captureOverview(cdp, "overview-paid-record-order-detail-1440.png", 1440);
   await cdp.call("Page.navigate", { url: `${baseURL}/admin` });
   await waitFor(cdp, "Boolean(document.querySelector('#overview-admin-root .overview-metrics--primary')) && document.body.textContent.includes('已确认支付')", "overview did not return after paid-record detail navigation");
   await selectOverviewPeriod(cdp, "近 7 天", "7d");

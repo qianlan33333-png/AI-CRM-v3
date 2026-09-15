@@ -35,9 +35,9 @@ func DistDistributionAdminAssets(distRoot string) (DistributionAssets, bool) {
 	return DistributionAssets{CSS: "/" + css, DetailDrawerCSS: "/" + drawerCSS, AdminJS: "/" + js}, true
 }
 
-// DistOverviewAdminAssets returns only the V3 overview stylesheet and Host
-// module recorded in the release manifest. A missing or malformed pair keeps
-// the generic shell available rather than falling back to a frozen document.
+// DistOverviewAdminAssets returns only the V3 overview, shared drawer, and
+// Host assets recorded in the release manifest. A missing or malformed set
+// keeps the generic shell available rather than an unstyled dialog.
 func DistOverviewAdminAssets(distRoot string) (OverviewAssets, bool) {
 	if distRoot == "" {
 		return OverviewAssets{}, false
@@ -50,11 +50,11 @@ func DistOverviewAdminAssets(distRoot string) (OverviewAssets, bool) {
 	if err != nil || json.Unmarshal(raw, &manifest) != nil {
 		return OverviewAssets{}, false
 	}
-	css, js := manifest.Entries["overviewStyles"], manifest.Entries["overviewAdmin"]
-	if !validDistManifestAsset(distRoot, manifest.Files, css, ".css") || !validDistManifestAsset(distRoot, manifest.Files, js, ".js") {
+	css, drawerCSS, js := manifest.Entries["overviewStyles"], manifest.Entries["sharedDetailDrawerStyles"], manifest.Entries["overviewAdmin"]
+	if !validDistManifestAsset(distRoot, manifest.Files, css, ".css") || !validDistManifestAsset(distRoot, manifest.Files, drawerCSS, ".css") || !validDistManifestAsset(distRoot, manifest.Files, js, ".js") {
 		return OverviewAssets{}, false
 	}
-	return OverviewAssets{CSS: "/" + css, AdminJS: "/" + js}, true
+	return OverviewAssets{CSS: "/" + css, DetailDrawerCSS: "/" + drawerCSS, AdminJS: "/" + js}, true
 }
 
 func validDistManifestAsset(distRoot string, files map[string]json.RawMessage, entry, extension string) bool {
