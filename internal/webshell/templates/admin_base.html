@@ -176,6 +176,7 @@
   {{if .Distribution}}
   <link rel="stylesheet" href="{{.DistributionAssets.CSS}}">
 	<link rel="stylesheet" href="{{.DistributionAssets.DetailDrawerCSS}}">
+  {{with presentationAssets}}{{if .ConfirmationDialogCSS}}<link rel="stylesheet" href="{{.ConfirmationDialogCSS}}">{{end}}{{if .ConfirmationDialogScript}}<script type="module" src="{{.ConfirmationDialogScript}}"></script>{{end}}{{end}}
   <script type="module" src="{{.DistributionAssets.AdminJS}}"></script>
   {{end}}
   {{if .Overview}}

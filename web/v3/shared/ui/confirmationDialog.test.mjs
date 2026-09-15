@@ -34,6 +34,26 @@ assert.equal(document.querySelector('[data-v3-confirmation-dialog]'), null, 'con
 assert.equal(document.activeElement, trigger, 'confirm restores the original trigger focus');
 
 trigger.focus();
+const structured = mod.openConfirmationDialog({
+  title: '登记追回', description: '金额单位为分。', confirmLabel: '确认登记',
+  fields: [
+    { name: 'amount_minor', label: '追回金额（分）', kind: 'positive-integer', required: true },
+    { name: 'evidence_reference', label: '凭证参考', kind: 'text', required: true },
+  ],
+});
+await tick();
+dialog = document.querySelector('[data-v3-confirmation-dialog]');
+const amount = dialog.querySelector('input[name="amount_minor"]');
+const evidence = dialog.querySelector('input[name="evidence_reference"]');
+assert.equal(document.activeElement, amount, 'the first structured field receives initial focus');
+amount.value = '0';
+dialog.querySelector('[data-v3-confirmation-confirm]').click();
+assert.match(dialog.querySelector('[data-v3-confirmation-status]').textContent, /正整数金额/);
+amount.value = '1200'; evidence.value = 'receipt-1200';
+dialog.querySelector('[data-v3-confirmation-confirm]').click();
+assert.deepEqual(await structured, { confirmed: true, values: { amount_minor: '1200', evidence_reference: 'receipt-1200' } }, 'structured fields return caller-owned temporary values');
+
+trigger.focus();
 const cancelled = mod.openConfirmationDialog({ title: '删除分组', description: '仅删除空分组。', confirmLabel: '确认删除', tone: 'danger' });
 await tick();
 dialog = document.querySelector('[data-v3-confirmation-dialog]');
