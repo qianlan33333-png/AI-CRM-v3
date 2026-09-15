@@ -93,6 +93,18 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('[data-survey-host-test-confirmation] button[data-survey-host-test-confirm]'))", 'controlled test confirmation did not render');
   await evaluate(cdp, "document.querySelector('[data-survey-host-test-confirmation] button[data-survey-host-test-confirm]').click(); true", 'confirm controlled test');
   await waitFor(cdp, "document.querySelector('button[data-survey-host-test-push]')?.dataset.surveyHostTestReceipt === 'queued' && document.querySelector('button[data-survey-host-test-push]')?.textContent.includes('等待处理结果')", 'controlled test receipt did not render');
+  await waitFor(cdp, "Boolean(document.querySelector('input[data-survey-log-search]'))", 'V3 local survey-log search did not render');
+  await evaluate(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); input.value='definitely-no-survey-log'; input.dispatchEvent(new Event('input',{bubbles:true})); return document.querySelector('[data-survey-host-logs]').textContent.includes('没有匹配的测试记录。'); })()", 'type survey log draft');
+  await delay(80);
+  if (await evaluate(cdp, "document.querySelector('[data-survey-host-logs]')?.textContent.includes('没有匹配的测试记录。')")) throw new Error('survey log draft filtered before an explicit Enter');
+  const surveyCandidate = await evaluate(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'}); Object.defineProperty(event,'keyCode',{value:229}); input.dispatchEvent(event); return event.defaultPrevented; })()", 'survey log IME candidate Enter');
+  if (surveyCandidate) throw new Error('survey log IME candidate Enter was consumed as a search');
+  await delay(20);
+  if (await evaluate(cdp, "document.querySelector('[data-survey-host-logs]')?.textContent.includes('没有匹配的测试记录。')")) throw new Error('survey log IME candidate Enter filtered local records');
+  await evaluate(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'}); input.dispatchEvent(event); return event.defaultPrevented; })()", 'submit survey local log search');
+  await waitFor(cdp, "document.querySelector('[data-survey-host-logs]')?.textContent.includes('没有匹配的测试记录。')", 'ordinary Enter did not apply the local survey-log filter');
+  await evaluate(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); input.value=''; input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); return true; })()", 'clear survey local log search');
+  await waitFor(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); const text=document.querySelector('[data-survey-host-logs]')?.textContent || ''; return input?.value === '' && !text.includes('没有匹配的测试记录。'); })()", 'empty Enter did not restore the actual survey-log source state');
   console.log('survey_completion_chromium: PASS');
   socket.close();
 } catch (error) {

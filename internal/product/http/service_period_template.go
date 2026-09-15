@@ -30,6 +30,10 @@ type servicePeriodPublicState struct {
 // this function substitutes only the V3 Host facts that the Python code used
 // to calculate before rendering.
 func renderServicePeriodPublicPage(w io.Writer, state servicePeriodPublicState) error {
+	return renderServicePeriodPublicPageWithPresentation(w, state, PublicPresentationAssets{})
+}
+
+func renderServicePeriodPublicPageWithPresentation(w io.Writer, state servicePeriodPublicState, presentation PublicPresentationAssets) error {
 	page := frozenServicePeriodPageBody()
 	if page == "" {
 		return fmt.Errorf("frozen service-period renderer body unavailable")
@@ -117,8 +121,28 @@ func renderServicePeriodPublicPage(w io.Writer, state servicePeriodPublicState) 
 	if err != nil {
 		return err
 	}
+	if presentation.configured() {
+		page, err = decorateFrozenServicePeriodPresentation(page, presentation)
+		if err != nil {
+			return err
+		}
+	}
 	_, err = io.WriteString(w, page)
 	return err
+}
+
+func decorateFrozenServicePeriodPresentation(page string, presentation PublicPresentationAssets) (string, error) {
+	if !presentation.configured() {
+		return page, nil
+	}
+	const closingHead = "</head>"
+	const servicePeriodRoot = "<main class=\"service-period-page "
+	if strings.Count(page, closingHead) != 1 || strings.Count(page, servicePeriodRoot) != 1 {
+		return "", fmt.Errorf("frozen service-period page has no stable presentation insertion point")
+	}
+	assets := `<link rel="stylesheet" href="` + html.EscapeString(presentation.StylesheetURL) + `"><script type="module" src="` + html.EscapeString(presentation.HostURL) + `"></script>`
+	page = strings.Replace(page, closingHead, assets+closingHead, 1)
+	return strings.Replace(page, servicePeriodRoot, `<main data-v3-public-commerce data-public-commerce-route="service-period-state" data-product-kind="service_period" class="service-period-page "`, 1), nil
 }
 
 const frozenServicePeriodEndDateFunction = `      function endDate(value) {{

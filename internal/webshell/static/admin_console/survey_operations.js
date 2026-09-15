@@ -301,15 +301,20 @@
     });
     return form;
   }
-  function renderLogs(card, current, global, scope, keyword, setScope) {
+  // The shared committedTextSearch adapter forwards this input only after a
+  // normal Enter. This Host owns the local query state so scope changes and
+  // log refreshes retain a submitted query without treating a newer draft as
+  // a search.
+  function renderLogs(card, current, global, scope, committedKeyword, draftKeyword, setScope, setCommittedKeyword) {
     card.replaceChildren(); card.dataset.surveyHostLogs = 'true';
     const header = document.createElement('div'); header.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:center'; const heading = document.createElement('h3'); heading.textContent = scope === 'global' ? '全部问卷外推记录' : '当前问卷外推记录'; heading.style.cssText = 'margin:0;font-size:15px'; const count = document.createElement('span'); count.style.cssText = 'font-size:12px;color:#8F959E'; header.append(heading, count); card.appendChild(header);
     const controls = document.createElement('div'); controls.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px';
-    [['当前问卷', 'current'], ['全部问卷', 'global']].forEach(function (item) { const button = document.createElement('button'); button.type = 'button'; button.textContent = item[0]; button.dataset.surveyLogScope = item[1]; button.style.cssText = 'height:28px;padding:0 10px;border:1px solid #DEE0E3;border-radius:6px;background:' + (scope === item[1] ? '#EFF4FF' : '#fff') + ';font-size:12px'; button.onclick = function () { setScope(item[1]); }; controls.appendChild(button); });
-    const filter = document.createElement('input'); filter.placeholder = '测试记录 ID / 问卷 ID'; filter.value = keyword; filter.style.cssText = 'height:28px;min-width:180px;border:1px solid #DEE0E3;border-radius:6px;padding:0 8px;font-size:12px'; controls.appendChild(filter); card.appendChild(controls);
-    const source = scope === 'global' ? global : current; const rows = source.filter(function (item) { return !filter.value.trim() || JSON.stringify(item).toLowerCase().includes(filter.value.trim().toLowerCase()); }); count.textContent = rows.length + ' 条';
-    filter.oninput = function () { Array.from(body.querySelectorAll('tr')).forEach(function (row) { row.hidden = !row.dataset.surveySearch.includes(filter.value.trim().toLowerCase()); }); };
-    if (!rows.length) { const empty = document.createElement('p'); empty.textContent = '暂无测试记录。'; card.appendChild(empty); return; }
+    const filter = document.createElement('input'); filter.type = 'search'; filter.placeholder = '测试记录 ID / 问卷 ID'; filter.setAttribute('aria-label', '搜索问卷外推记录'); filter.dataset.surveyLogSearch = 'true'; filter.value = draftKeyword; filter.style.cssText = 'height:28px;min-width:180px;border:1px solid #DEE0E3;border-radius:6px;padding:0 8px;font-size:12px';
+    [['当前问卷', 'current'], ['全部问卷', 'global']].forEach(function (item) { const button = document.createElement('button'); button.type = 'button'; button.textContent = item[0]; button.dataset.surveyLogScope = item[1]; button.style.cssText = 'height:28px;padding:0 10px;border:1px solid #DEE0E3;border-radius:6px;background:' + (scope === item[1] ? '#EFF4FF' : '#fff') + ';font-size:12px'; button.onclick = function () { setScope(item[1], filter.value); }; controls.appendChild(button); });
+    controls.appendChild(filter); card.appendChild(controls);
+    const query = String(committedKeyword || '').trim().toLowerCase(); const source = scope === 'global' ? global : current; const rows = source.filter(function (item) { return !query || JSON.stringify(item).toLowerCase().includes(query); }); count.textContent = rows.length + ' 条' + (filter.value !== committedKeyword ? ' · 输入后按 Enter 搜索' : '');
+    filter.oninput = function () { setCommittedKeyword(filter.value); };
+    if (!rows.length) { const empty = document.createElement('p'); empty.textContent = query ? '没有匹配的测试记录。' : '暂无测试记录。'; card.appendChild(empty); return; }
     const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-top:10px;font-size:12px'; const head = document.createElement('thead'), headRow = document.createElement('tr'); ['时间', '外推记录', '处理状态', '尝试情况', '备注'].forEach(function (label) { const cell = document.createElement('th'); cell.textContent = label; cell.style.cssText = 'text-align:left;padding:8px;border-bottom:1px solid #DEE0E3'; headRow.appendChild(cell); }); head.appendChild(headRow); const body = document.createElement('tbody'); rows.forEach(function (item) { const row = document.createElement('tr'); row.dataset.surveySearch = JSON.stringify(item).toLowerCase(); appendCell(row, logTime(item.occurred_at || item.updated_at || item.created_at)); appendCell(row, item.source_pk || item.test_run_id || item.id); appendCell(row, statusLabel(item)); appendCell(row, attemptLabel(item)); appendCell(row, item.failure_category ? failureCategoryLabel(item.failure_category) : (item.read_only_legacy ? '历史只读记录' : '—')); body.appendChild(row); }); table.append(head, body); card.appendChild(table);
   }
   function confirmControlledPush(button) {
@@ -362,7 +367,17 @@
       installTargetSelector(payload.target_catalog_available === true ? payload.available_configuration_references : []);
       const legacyLogBoundary = Array.from((logCard.parentElement || logCard).querySelectorAll('p')).find(function (node) { return node.textContent.includes('只显示本地 queued 测试记录') || node.textContent.includes('没有 Provider 调用'); });
       if (legacyLogBoundary) { legacyLogBoundary.dataset.surveyHostLogBoundary = 'true'; legacyLogBoundary.textContent = '受控外推记录展示创建、尝试和处理回执；HTTP 受理不代表接收方业务已生效。'; }
-      const logState = { current: payload.items, global: page && Array.isArray(page.items) ? page.items : [], scope: 'current' }; const redraw = function (nextScope) { logState.scope = nextScope; renderLogs(logCard, logState.current, logState.global, logState.scope, '', redraw); }; redraw(logState.scope);
+      const logState = { current: payload.items, global: page && Array.isArray(page.items) ? page.items : [], scope: 'current', committedQuery: '', draftQuery: '' };
+      const redraw = function (nextScope, draftQuery) {
+        logState.scope = nextScope || logState.scope;
+        const live = logCard.querySelector('input[data-survey-log-search]');
+        if (draftQuery !== undefined) logState.draftQuery = String(draftQuery);
+        else if (live) logState.draftQuery = live.value;
+        renderLogs(logCard, logState.current, logState.global, logState.scope, logState.committedQuery, logState.draftQuery,
+          function (scope, draft) { redraw(scope, draft); },
+          function (query) { logState.committedQuery = String(query).trim(); logState.draftQuery = String(query); redraw(logState.scope, logState.draftQuery); });
+      };
+      redraw(logState.scope);
       const originalTest = Array.from(externalCard.querySelectorAll('button')).find(function (button) { return button.textContent.includes('测试推送（仅本地记录）') || button.dataset.surveyHostTestPush === 'true'; }); if (originalTest) { originalTest.dataset.surveyHostTestPush = 'true'; originalTest.textContent = '创建受控外推测试'; }
       window.__surveyHostTestPush = async function (button) { button.disabled = true; button.textContent = '正在创建受控测试…'; try { const receipt = await adminRequest(operationsPath + '/external-push/test', { method: 'POST', headers: { Accept: 'application/json' } }); button.dataset.surveyHostTestReceipt = text(receipt && receipt.status); button.textContent = receipt && receipt.status === 'queued' ? '受控外推测试已创建，等待处理结果' : '受控外推测试已创建'; const refreshed = await adminRequest(operationsPath, { method: 'GET', headers: { Accept: 'application/json' } }); const refreshedPage = await adminRequest('/admin/questionnaires/external-push-logs?limit=100&offset=0', { method: 'GET', headers: { Accept: 'application/json' } }); logState.current = refreshed.items || []; logState.global = refreshedPage.items || []; redraw(logState.scope); } catch (error) { button.textContent = error && error.status === 403 ? '创建受控测试失败：无操作权限' : '创建受控测试失败'; } finally { button.disabled = false; } };
     } catch (_error) { const note = document.createElement('p'); note.setAttribute('role', 'alert'); note.textContent = '外推设置读取失败，请稍后重试。'; externalCard.appendChild(note); }

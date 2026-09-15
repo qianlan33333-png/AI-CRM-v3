@@ -121,7 +121,7 @@ func TestPostgreSQLAccessGovernanceUIChromiumJourney(t *testing.T) {
 	if !strings.Contains(string(output), "access_governance_ui_chromium: PASS") {
 		t.Fatalf("Access UI Chromium journey did not report success: %q", output)
 	}
-	for _, name := range []string{"access-governance-1440.png", "access-governance-780.png", "access-governance-390.png", "access-governance-provision-confirm.png", "access-governance-admin-drawer.png", "access-governance-transfer-confirm.png", "access-governance-transfer-complete.png"} {
+	for _, name := range []string{"access-governance-1440.png", "access-governance-1280.png", "access-governance-780.png", "access-governance-390.png", "access-governance-provision-confirm.png", "access-governance-provision-420.png", "access-governance-admin-drawer.png", "access-governance-transfer-confirm.png", "access-governance-transfer-complete.png"} {
 		info, statErr := os.Stat(filepath.Join(screenshots, name))
 		if statErr != nil || info.Size() < 512 {
 			t.Fatalf("Access UI screenshot=%s exists=%t", name, statErr == nil)
