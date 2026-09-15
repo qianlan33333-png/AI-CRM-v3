@@ -64,7 +64,10 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	// The independently named preflight above always covers the release artifact
 	// and real Composition Root. Chromium is an explicit Linux CI gate, rather
 	// than a developer-machine substitute for that contract.
-	if goruntime.GOOS == "darwin" {
+	// Linux CI is the release gate. A developer may explicitly run the same
+	// trusted fixture on Darwin to diagnose a browser-only regression; the
+	// opt-in never turns an unavailable local DevTools session into a pass.
+	if goruntime.GOOS == "darwin" && os.Getenv("AICRM_PRODUCT_PUSH_ALLOW_DARWIN_CHROMIUM") != "1" {
 		t.Skip("Chromium CDP journey requires Linux CI; the PostgreSQL Composition preflight runs separately")
 	}
 	if !platformconfig.ChromiumJourneyRequired() {
@@ -108,7 +111,11 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		t.Fatalf("product external push Chromium journey did not report success: %q", output)
 	}
 
-	assertProductExternalPushSyntheticDurableFacts(t, fixture.ctx, fixture.application, fixture.productID, fixture.dataKey, 2)
+	// The confirmed product-material save preserves the existing configuration
+	// but goes through the Product owner's complete command, advancing its CAS
+	// revision from 1 to 2. The later explicit configuration save advances the
+	// same row to 3 before the synthetic outbound intent is accepted.
+	assertProductExternalPushSyntheticDurableFacts(t, fixture.ctx, fixture.application, fixture.productID, fixture.dataKey, 3)
 	var serviceRevision, serviceStoredExpiry int64
 	var serviceStored json.RawMessage
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", fixture.serviceProductID).Scan(&serviceRevision, &serviceStoredExpiry, &serviceStored); err != nil {
