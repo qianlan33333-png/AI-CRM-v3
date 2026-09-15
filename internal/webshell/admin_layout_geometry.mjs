@@ -550,14 +550,15 @@ try {
       const refresh=toolbar?.querySelector('[data-plan-refresh]');
       const detailHead=root?.querySelector('.cloud-plan-detail-head');
       const detailState=root?.querySelector('[data-plan-detail-state]');
-      const approve=root?.querySelector('[data-plan-approve]');
-      const reject=root?.querySelector('[data-plan-reject]');
-      const back=root?.querySelector('a[href="/admin/cloud-orchestrator/plans"]');
       const planActions=topbar?.querySelector('[data-page-header-actions="ai-plan-detail"]');
       const approveInHeader=planActions?.querySelector('[data-plan-approve]');
       const rejectInHeader=planActions?.querySelector('[data-plan-reject]');
       const backInHeader=planActions?.querySelector('a[href="/admin/cloud-orchestrator/plans"]');
-      const sourceActions=approve?.closest('.cloud-plan-actions');
+      // Relocated controls are intentionally no longer descendants of the
+      // plan root. Inspect the original donor container directly so this
+      // verifies its hidden state rather than treating a missing moved button
+      // as proof that the duplicate toolbar disappeared.
+      const sourceActions=detailHead?.querySelector('.cloud-plan-actions');
       return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),refreshVisible:visible(refresh),detailHead:box(detailHead),detailStateVisible:visible(detailState),planActions:box(planActions),approveVisible:visible(approveInHeader),rejectVisible:visible(rejectInHeader),backVisible:visible(backInHeader),sourceActionsHidden:!visible(sourceActions),stageDuplicateActions:Boolean(root?.querySelector('[data-plan-approve],[data-plan-reject]')),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
     })()`);
     const commonInvalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "AI 助手" || !layout.root || layout.overflow || layout.stage.paddingLeft !== "20px" || layout.stage.paddingTop !== "16px" || layout.root.top + 1 < layout.topbar.bottom;
@@ -590,8 +591,12 @@ try {
       const stage=document.querySelector('#stage'); const topbar=document.querySelector('.admin-topbar');
       const visible=node => { const rect=node?.getBoundingClientRect(); const style=node && getComputedStyle(node); return Boolean(node && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1); };
       const actions=topbar?.querySelector('[data-page-header-actions="wecom-tags"]');
-      const localTitle=Array.from(stage?.children || []).find(node => String(node.textContent || '').includes('企微标签管理'));
-      return {title:String(topbar?.querySelector('.admin-page-title')?.textContent || '').trim(),titleCount:Array.from(document.querySelectorAll('.admin-topbar h1')).filter(visible).length,labels:Array.from(actions?.children || []).map(node => String(node.textContent || '').trim()),actionsVisible:Array.from(actions?.children || []).every(visible),sourceVisible:['同步企微标签','新增标签组','新增标签'].some(label => Array.from(stage?.querySelectorAll('button') || []).some(button => String(button.textContent || '').trim() === label && visible(button))),localTitleHidden:!visible(localTitle),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+      const localTitle=stage?.querySelector('[data-page-header-donor-title="tags"]');
+      // The frozen source gives this row an inline flex display. Assert the
+      // computed style, not only the hidden attribute, so an author rule can
+      // never leave a second visible title behind.
+      const localTitleHidden=Boolean(localTitle) && getComputedStyle(localTitle).display === 'none';
+      return {title:String(topbar?.querySelector('.admin-page-title')?.textContent || '').trim(),titleCount:Array.from(document.querySelectorAll('.admin-topbar h1')).filter(visible).length,labels:Array.from(actions?.children || []).map(node => String(node.textContent || '').trim()),actionsVisible:Array.from(actions?.children || []).every(visible),sourceVisible:['同步企微标签','新增标签组','新增标签'].some(label => Array.from(stage?.querySelectorAll('button') || []).some(button => String(button.textContent || '').trim() === label && visible(button))),localTitleHidden,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
     })()`);
     if (layout.title !== '企微标签管理' || layout.titleCount !== 1 || layout.labels.join('|') !== '同步企微标签|新增标签组|新增标签' || !layout.actionsVisible || layout.sourceVisible || !layout.localTitleHidden || layout.overflow) throw new Error(label + ' V3 tag topbar action layout invalid: ' + JSON.stringify(layout));
   };
