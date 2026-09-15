@@ -19,8 +19,9 @@ import (
 
 // This is a real PostgreSQL check of the Product-owned typed batch query used
 // by Coupon presentation. It runs in an isolated schema and never touches a
-// shared Product table.
-func TestProductTargetBatchPostgreSQLKeepsTypeAndMissingFacts(t *testing.T) {
+// shared Product table. Archived products remain a historical target fact;
+// availability for a new target is enforced by ProductTargetReader instead.
+func TestProductTargetBatchPostgreSQLRetainsArchivedHistoryAndTypeFacts(t *testing.T) {
 	databaseURL, err := platformconfig.DatabaseURL()
 	if err != nil {
 		t.Skip("AICRM_DATABASE_URL is not configured; skipping Product target batch PostgreSQL integration test")
@@ -69,7 +70,7 @@ func TestProductTargetBatchPostgreSQLKeepsTypeAndMissingFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var standardID, periodID int64
-	if err = native.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('target-standard','已停用普通商品',100,'CNY',0,1,'{"schema_version":1,"status":"disabled","enabled":false}') RETURNING id`).Scan(&standardID); err != nil {
+	if err = native.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('target-standard','已归档普通商品',100,'CNY',0,1,'{"schema_version":1,"status":"archived","enabled":false}') RETURNING id`).Scan(&standardID); err != nil {
 		t.Fatal(err)
 	}
 	if err = native.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('target-period','已归档周期商品',100,'CNY',0,1,'{"schema_version":1,"status":"service_period_archived","enabled":false}') RETURNING id`).Scan(&periodID); err != nil {
@@ -101,7 +102,7 @@ func TestProductTargetBatchPostgreSQLKeepsTypeAndMissingFacts(t *testing.T) {
 	if err != nil || len(lookups) != 4 {
 		t.Fatalf("lookups=%+v err=%v", lookups, err)
 	}
-	if !lookups[0].Found || lookups[0].Name != "已停用普通商品" || !lookups[1].Found || lookups[1].Name != "已归档周期商品" || lookups[2].Found || lookups[3].Found {
+	if !lookups[0].Found || lookups[0].Name != "已归档普通商品" || !lookups[1].Found || lookups[1].Name != "已归档周期商品" || lookups[2].Found || lookups[3].Found {
 		t.Fatalf("typed Product projection=%+v", lookups)
 	}
 }

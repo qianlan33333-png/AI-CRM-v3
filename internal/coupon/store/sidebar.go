@@ -108,7 +108,7 @@ func (r *Repository) ListSidebarClaimable(ctx context.Context, customerID int64,
 	page := couponapp.SidebarClaimableRecordPage{Items: []couponapp.SidebarClaimableRecord{}, Limit: limit, Offset: offset}
 	rows, err := tx.Query(ctx, `SELECT `+couponColumns+`,COALESCE(rule.public_slug,''),(SELECT count(*) FROM coupon_customer_claims claim WHERE claim.customer_id=$1 AND claim.coupon_id=rule.id)
 		FROM coupon_rules rule
-		WHERE rule.status<>'draft'
+		WHERE rule.status<>'draft' AND rule.status<>'archived'
 		ORDER BY rule.updated_at DESC,rule.id DESC
 		LIMIT $2 OFFSET $3`, customerID, limit, offset)
 	if err != nil {
@@ -135,7 +135,7 @@ func (r *Repository) ListSidebarClaimable(ctx context.Context, customerID int64,
 			return page, err
 		}
 	}
-	err = tx.QueryRow(ctx, `SELECT count(*) FROM coupon_rules WHERE status<>'draft'`).Scan(&page.Total)
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM coupon_rules WHERE status<>'draft' AND status<>'archived'`).Scan(&page.Total)
 	return page, err
 }
 
@@ -153,7 +153,7 @@ func (r *Repository) ReadSidebarClaimable(ctx context.Context, customerID int64,
 	var record couponapp.SidebarClaimableRecord
 	var mode string
 	err = tx.QueryRow(ctx, `SELECT `+couponColumns+`,COALESCE(rule.public_slug,''),(SELECT count(*) FROM coupon_customer_claims claim WHERE claim.customer_id=$1 AND claim.coupon_id=rule.id)
-		FROM coupon_rules rule WHERE rule.id=$2 AND rule.status<>'draft'`, customerID, couponID).Scan(
+		FROM coupon_rules rule WHERE rule.id=$2 AND rule.status<>'draft' AND rule.status<>'archived'`, customerID, couponID).Scan(
 		&record.Coupon.ID, &record.Coupon.Name, &record.Coupon.DiscountAmountTotal, &record.Coupon.Currency, &record.Coupon.Status, &record.Coupon.TotalIssueLimit, &record.Coupon.PerUserIssueLimit, &record.Coupon.IssuedCount, &record.Coupon.ClaimStartsAt, &record.Coupon.ClaimEndsAt, &mode, &record.Coupon.UseStartsAt, &record.Coupon.UseEndsAt, &record.Coupon.RelativeValidityDays, &record.Coupon.Instructions, &record.Coupon.CreatedBy, &record.Coupon.UpdatedBy, &record.Coupon.Version, &record.Coupon.CreatedAt, &record.Coupon.UpdatedAt, &record.PublicSlug, &record.ClaimCount,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
