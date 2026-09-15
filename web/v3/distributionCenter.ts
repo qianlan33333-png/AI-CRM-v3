@@ -219,10 +219,9 @@ function applyApplicationTarget(value: ApplicationTargetRead): void {
 function clearAuthorizedFacts(): void {
   me = undefined;
   agreement = undefined;
-  // The application target is read with the authorized distribution session.
-  // Do not retain a product name from a session that has just lost access.
-  applicationTarget = undefined;
-  applicationTargetState = applicationContext ? "failed" : "none";
+  // This is a strictly public product read, not a customer or distributor
+  // projection. Keep its server-confirmed result through OAuth recovery so an
+  // application link can still identify its product before login.
   products = [];
   productCursor = "";
   productEmptyReason = "";
@@ -332,6 +331,10 @@ async function reload(): Promise<void> {
   try {
     nextApplicationTarget = await readApplicationTarget();
     if (!isCurrentRead(generation, epoch)) return;
+    // The application target is a strict public product read. Commit it before
+    // the session-bound profile read so a 401 can still render the verified
+    // application context while OAuth recovery begins.
+    applyApplicationTarget(nextApplicationTarget);
     message("正在读取服务端分销状态…");
     const nextMe = parseMe(await request("/api/v1/distribution/me"));
     if (nextMe.registrationRequired) {
