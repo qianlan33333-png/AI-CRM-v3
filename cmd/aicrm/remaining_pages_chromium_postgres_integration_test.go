@@ -32,6 +32,7 @@ func TestPostgreSQLRemainingPagesChromiumJourney(t *testing.T) {
 	assertRemainingPagesArchiveRead(t, fixture, adminSession, csrf, archiveCustomerID)
 	radarCode := seedRemainingPagesRadar(t, fixture)
 	couponSlug := seedRemainingPagesCoupon(t, fixture)
+	assertRemainingPagesCouponClaimWindow(t, fixture, couponSlug)
 	seedRemainingPagesGridMember(t, fixture)
 	gridToken := enableRemainingPagesGridShare(t, fixture, adminSession, csrf)
 
@@ -130,7 +131,7 @@ func assertRemainingPagesArchiveRead(t *testing.T, fixture *productExternalPushC
 func seedRemainingPagesRadar(t *testing.T, fixture *productExternalPushChromiumFixture) string {
 	t.Helper()
 	const code = "rd_remainingpageschromium"
-	now := time.Date(2026, time.September, 16, 8, 1, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	var id int64
 	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `INSERT INTO radar_links(public_code,name,title,description,content_type,media_id,auth_policy,status,created_by,updated_by,created_at,updated_at) VALUES($1,'剩余页面雷达','剩余页面雷达图片','Chromium public fixture','image',$2,'anonymous','enabled',1,1,$3,$3) RETURNING id`, code, fixture.materialFirstID, now).Scan(&id); err != nil {
 		t.Fatal(err)
@@ -144,7 +145,7 @@ func seedRemainingPagesRadar(t *testing.T, fixture *productExternalPushChromiumF
 func seedRemainingPagesCoupon(t *testing.T, fixture *productExternalPushChromiumFixture) string {
 	t.Helper()
 	const slug = "remaining-pages-coupon"
-	now := time.Date(2026, time.September, 16, 8, 2, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	var couponID int64
 	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `INSERT INTO coupon_rules(name,discount_amount_total,currency,status,total_issue_limit,per_user_issue_limit,issued_count,claim_starts_at,claim_ends_at,validity_mode,relative_validity_days,instructions,created_by,updated_by,created_at,updated_at,public_slug) VALUES('剩余页面公开优惠券',1000,'CNY','published',100,1,0,$1,$2,'relative_days',30,'Chromium 公开优惠券夹具',1,1,$3,$3,$4) RETURNING id`, now.Add(-time.Hour), now.Add(24*time.Hour), now, slug).Scan(&couponID); err != nil {
 		t.Fatal(err)
@@ -153,6 +154,18 @@ func seedRemainingPagesCoupon(t *testing.T, fixture *productExternalPushChromium
 		t.Fatal(err)
 	}
 	return slug
+}
+
+func assertRemainingPagesCouponClaimWindow(t *testing.T, fixture *productExternalPushChromiumFixture, slug string) {
+	t.Helper()
+	var startsAt, endsAt time.Time
+	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT claim_starts_at,claim_ends_at FROM coupon_rules WHERE public_slug=$1`, slug).Scan(&startsAt, &endsAt); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if startsAt.After(now) || !endsAt.After(now) {
+		t.Fatalf("coupon fixture must be inside its claim window now=%s starts_at=%s ends_at=%s", now.Format(time.RFC3339), startsAt.Format(time.RFC3339), endsAt.Format(time.RFC3339))
+	}
 }
 
 func assertRemainingPagesRadarImageReceipt(t *testing.T, fixture *productExternalPushChromiumFixture, code string) {

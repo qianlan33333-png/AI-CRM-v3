@@ -92,7 +92,10 @@ try {
     await resize(width); await visit(`/c/${couponSlug}`);
     await waitFor(cdp, "document.querySelector('[data-route-owner=ai_crm_next]') && document.querySelector('#claimButton')", `coupon page did not render at ${width}`);
     assert.match(await evaluate(cdp, "document.querySelector('h1')?.textContent || ''"), /剩余页面公开优惠券/, "coupon page must show fixture coupon");
+    assert.match(await evaluate(cdp, "document.querySelector('.rule')?.textContent || ''"), /领取时间：/, "coupon page must render its active claim-window disclosure");
+    assert.match(await evaluate(cdp, "document.querySelector('.wechat-tip')?.textContent || ''"), /请使用微信打开此页面后领取优惠券/, "coupon page must disclose the non-WeChat boundary");
     assert.equal(await evaluate(cdp, "document.querySelector('#claimButton')?.disabled"), true, "non-WeChat coupon page must retain safe disabled claim");
+    assert.equal(await evaluate(cdp, "document.querySelector('#claimButton')?.textContent?.trim()"), "请在微信中领取", "non-WeChat coupon page must not report an inactive coupon as its disabled reason");
     await noOverflow(`coupon ${width}`); await capture(`coupon-${width}.png`);
   }
   await visit("/c/missing-remaining-pages-coupon");
