@@ -221,7 +221,16 @@ try {
   await clickVisibleButton(cdp,"[...document.querySelectorAll('#distribution-admin-root button')].find(x=>x.textContent==='异常')",'异常 tab');
   await wait(cdp,`document.querySelector('[data-exception="${confirmationException}"]')&&document.querySelector('[data-exception="${confirmationFailureException}"]')`,'admin confirmation fixture exceptions did not render');
   const confirmationFixture=await value(cdp,`(async()=>{const r=await fetch('/api/admin/distribution/exceptions/${confirmationException}');return {status:r.status,body:await r.json()}})()`); assert.equal(confirmationFixture.status,200,'confirmation fixture readback status'); assert.equal(confirmationFixture.body.version,1,'confirmation fixture begins at the rendered version'); assert.equal(confirmationFixture.body.can_record_recovery,true,'confirmation fixture is an actionable after-sales case');
-  const clickRecovery = async id => clickVisibleButton(cdp,`[...document.querySelectorAll('[data-exception="${id}"] button')].find(x=>x.textContent==='登记追回')`,'登记追回');
+  const recoveryButton = id => `[...document.querySelectorAll('[data-exception="${id}"] button')].find(x=>x.textContent==='登记追回')`;
+  const clickRecovery = async id => {
+    const expression = recoveryButton(id);
+    // A failed owner command refreshes this table. The old node can remain in
+    // the document briefly while the new actionable row is laid out, so wait
+    // for the actual source control rather than treating selector presence as
+    // evidence that a user can submit a retry.
+    await wait(cdp, `(()=>{const button=${expression};if(!(button instanceof HTMLButtonElement)||button.disabled)return false;button.scrollIntoView({block:'center',inline:'center'});const rect=button.getBoundingClientRect(),style=getComputedStyle(button),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&button.contains(hit)})()`, 'recovery action did not become visible after its owner readback');
+    await clickVisibleButton(cdp, expression, '登记追回');
+  };
   await clickRecovery(confirmationException);
   await wait(cdp,"document.querySelector('[data-v3-confirmation-dialog]')?.textContent.includes('登记追回')",'recovery confirmation dialog did not open');
   assert.match(await value(cdp,"document.querySelector('[data-v3-confirmation-dialog]')?.textContent||''"),new RegExp(`异常编号\\s*${confirmationException}`),'recovery confirmation must identify the captured exception target');
